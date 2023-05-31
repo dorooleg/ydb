@@ -42,17 +42,14 @@ TReadActor
 
 // TODO: напишите реализацию TReadActor
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
-    TDuration Latency;
-    TInstant LastTime;
     bool Finish = false;
-    // std::vector<TMaximumPrimeDevisorActor> actors;	
+    	
 public:
-    TReadActor(const TDuration& latency)
-        : Latency(latency)
+    TReadActor()
+        : Finish(false)
     {}
 
     void Bootstrap() {
-        LastTime = TInstant::Now();
         Become(&TReadActor::StateFunc);
         Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
@@ -63,10 +60,6 @@ public:
     });
 
     void HandleWakeup() {
-        auto now = TInstant::Now();
-        TDuration delta = now - LastTime;
-        Y_VERIFY(delta <= Latency, "Latency too big");
-        LastTime = now;
         int64_t value;
         if (std::cin >> value) {
             Register(CreateTMaximumPrimeDevisorActor(SelfId(), value).Release());
@@ -78,7 +71,7 @@ public:
     }
     
     void HandleDone() {
-       
+       // std::cout << "ыыыыы" << std::endl;
     }
 };
 /*
@@ -115,6 +108,7 @@ TMaximumPrimeDevisorActor
 class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
     int64_t Value;
     const NActors::TActorIdentity ReadActor;
+    // const NActors::TActorIdentity WriteActor;
     bool Calculated;
     int64_t Prime;	
 	
@@ -136,6 +130,7 @@ public:
         // std::cout << Value << std::endl;
         CalculatePrimes();
         std::cout << Prime << std::endl;
+        Send(ReadActor, std::make_unique<TEvents::TEvDone>());
     }
 
     void CalculatePrimes() {
@@ -232,8 +227,8 @@ THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
 }
 
-THolder<NActors::IActor> CreateTReadActor(const TDuration& latency) {
-    return MakeHolder<TReadActor>(latency);
+THolder<NActors::IActor> CreateTReadActor() {
+    return MakeHolder<TReadActor>();
 }
 
 THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(const auto readActor, int64_t value) {
