@@ -13,7 +13,7 @@ struct TEvents {
   
     struct TEvDone : NActors::TEventLocal<TEvDone, EvDiscoveryResponse> {}; 	
     
-    struct TEvWriteValueRequest {
+    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvDiscoveryResponse> {
     	int Value;
     };
     struct TEvPoisonPill {};

@@ -43,10 +43,10 @@ TReadActor
 // TODO: напишите реализацию TReadActor
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     bool Finish = false;
-    	
+    const NActors::TActorId WriteActor;	
 public:
-    TReadActor()
-        : Finish(false)
+    TReadActor(const NActors::TActorId writeActor)
+        : Finish(false), WriteActor(writeActor)
     {}
 
     void Bootstrap() {
@@ -64,6 +64,7 @@ public:
         if (std::cin >> value) {
             Register(CreateTMaximumPrimeDevisorActor(SelfId(), value).Release());
             // std::cout << value << std::endl;
+            Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>());
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             Finish = true;
@@ -176,23 +177,22 @@ TWriteActor
 
 // TODO: напишите реализацию TWriteActor
 class TWriteActor : public NActors::TActor<TWriteActor> {
-public:
-    ~TWriteActor() {
-    	Sum = 0;
-    }
-    void ProcessMessage(const TEvents::TEvWriteValueRequest& ev) {
-        Sum += ev.Value;
-    }
-
-    void ProcessMessage(const NActors::TEvents::TEvPoisonPill&) {
-        std::cout << Sum << std::endl;
-        // ShouldStop();
-        PassAway();
-    }
-		
-
-private:
     int Sum;
+public:
+    using TBase = NActors::TActor<TWriteActor>;
+    
+    TWriteActor() : TBase(&TWriteActor::Handler), Sum(0) {
+    
+    }
+     	
+    STRICT_STFUNC(Handler, {
+        hFunc(TEvents::TEvWriteValueRequest, Handle);
+    });
+    
+    void Handle(TEvents::TEvWriteValueRequest::TPtr event) {
+       std::cout << "Урааа!!!" << std::endl;
+    }
+   		
 };
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
@@ -227,12 +227,16 @@ THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
 }
 
-THolder<NActors::IActor> CreateTReadActor() {
-    return MakeHolder<TReadActor>();
+THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writeActor) {
+    return MakeHolder<TReadActor>(writeActor);
 }
 
 THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(const auto readActor, int64_t value) {
     return MakeHolder<TMaximumPrimeDevisorActor>(readActor, value);
+}
+
+THolder<NActors::IActor> CreateTWriteActor() {
+    return MakeHolder<TWriteActor>();
 }
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
