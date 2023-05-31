@@ -62,9 +62,8 @@ public:
     void HandleWakeup() {
         int64_t value;
         if (std::cin >> value) {
-            Register(CreateTMaximumPrimeDevisorActor(SelfId(), value).Release());
+            Register(CreateTMaximumPrimeDevisorActor(SelfId(), value, WriteActor).Release());
             // std::cout << value << std::endl;
-            Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>());
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             Finish = true;
@@ -72,7 +71,7 @@ public:
     }
     
     void HandleDone() {
-       // std::cout << "ыыыыы" << std::endl;
+       
     }
 };
 /*
@@ -109,13 +108,13 @@ TMaximumPrimeDevisorActor
 class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
     int64_t Value;
     const NActors::TActorIdentity ReadActor;
-    // const NActors::TActorIdentity WriteActor;
+    const NActors::TActorId WriteActor;
     bool Calculated;
     int64_t Prime;	
 	
 public:
-    TMaximumPrimeDevisorActor(const NActors::TActorIdentity readActor, int64_t value)
-        : Value(value), ReadActor(readActor), Calculated(false), Prime(0)
+    TMaximumPrimeDevisorActor(const NActors::TActorIdentity readActor, int64_t value, const NActors::TActorId writeActor)
+        : Value(value), ReadActor(readActor), Calculated(false), Prime(0), WriteActor(writeActor)
     {}
 
     void Bootstrap() {
@@ -128,14 +127,14 @@ public:
     });
 
     void HandleWakeup() {
-        // std::cout << Value << std::endl;
         CalculatePrimes();
-        std::cout << Prime << std::endl;
+        // std::cout << Prime << std::endl;
+        Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(Prime));
         Send(ReadActor, std::make_unique<TEvents::TEvDone>());
     }
 
     void CalculatePrimes() {
-        for (int64_t i = 2; i <= Value; ++i) {
+        for (int64_t i = 2; i <= Value; i++) {
             if (IsPrime(i) && Value % i == 0) {
                 Prime = i;
             }
@@ -148,7 +147,7 @@ public:
             return false;
         }
 
-        for (int64_t i = 2; i * i <= n; ++i) {
+        for (int64_t i = 2; i * i <= n; i++) {
             if (n % i == 0) {
                 return false;
             }
@@ -189,8 +188,9 @@ public:
         hFunc(TEvents::TEvWriteValueRequest, Handle);
     });
     
-    void Handle(TEvents::TEvWriteValueRequest::TPtr event) {
-       std::cout << "Урааа!!!" << std::endl;
+    void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
+        auto& event = *ev->Get();
+        std::cout << event.Value << std::endl;
     }
    		
 };
@@ -231,8 +231,8 @@ THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writeActor) {
     return MakeHolder<TReadActor>(writeActor);
 }
 
-THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(const auto readActor, int64_t value) {
-    return MakeHolder<TMaximumPrimeDevisorActor>(readActor, value);
+THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(const auto readActor, int64_t value, const NActors::TActorId writeActor) {
+    return MakeHolder<TMaximumPrimeDevisorActor>(readActor, value, writeActor);
 }
 
 THolder<NActors::IActor> CreateTWriteActor() {
