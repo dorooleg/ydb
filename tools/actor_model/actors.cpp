@@ -63,7 +63,6 @@ public:
         int64_t value;
         if (std::cin >> value) {
             Register(CreateTMaximumPrimeDevisorActor(SelfId(), value, WriteActor).Release());
-            // std::cout << value << std::endl;
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             Finish = true;
@@ -128,7 +127,6 @@ public:
 
     void HandleWakeup() {
         CalculatePrimes();
-        // std::cout << Prime << std::endl;
         Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(Prime));
         Send(ReadActor, std::make_unique<TEvents::TEvDone>());
     }
@@ -180,19 +178,21 @@ class TWriteActor : public NActors::TActor<TWriteActor> {
 public:
     using TBase = NActors::TActor<TWriteActor>;
     
-    TWriteActor() : TBase(&TWriteActor::Handler), Sum(0) {
-    
-    }
+    TWriteActor() : TBase(&TWriteActor::Handler), Sum(0) {}
      	
     STRICT_STFUNC(Handler, {
         hFunc(TEvents::TEvWriteValueRequest, Handle);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandleDone);
     });
     
     void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
         auto& event = *ev->Get();
-        std::cout << event.Value << std::endl;
+        Sum = Sum + event.Value; 
     }
-   		
+   
+    void HandleDone() {
+       std::cout << Sum << std::endl;
+    }		
 };
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {

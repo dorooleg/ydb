@@ -17,5 +17,5 @@ struct TEvents {
     	int64_t Value;
     	explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
     };
-    struct TEvPoisonPill {};
+    struct TEvPoisonPill : NActors::TEventLocal<TEvPoisonPill, EvDiscoveryResponse> {};
 };
