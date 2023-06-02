@@ -44,9 +44,10 @@ TReadActor
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     bool Finish = false;
     const NActors::TActorId WriteActor;	
+    int Count;
 public:
     TReadActor(const NActors::TActorId writeActor)
-        : Finish(false), WriteActor(writeActor)
+        : Finish(false), WriteActor(writeActor), Count(0)
     {}
 
     void Bootstrap() {
@@ -64,13 +65,17 @@ public:
         if (std::cin >> value) {
             Register(CreateTMaximumPrimeDevisorActor(SelfId(), value, WriteActor).Release());
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            Count++;
         } else {
             Finish = true;
         }
     }
     
     void HandleDone() {
-       
+       Count--;
+       if (Finish && Count == 0) {
+            Send(WriteActor, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        }
     }
 };
 /*
@@ -129,6 +134,7 @@ public:
         CalculatePrimes();
         Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(Prime));
         Send(ReadActor, std::make_unique<TEvents::TEvDone>());
+        PassAway();
     }
 
     void CalculatePrimes() {
@@ -187,11 +193,13 @@ public:
     
     void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
         auto& event = *ev->Get();
-        Sum = Sum + event.Value; 
+        Sum = Sum + event.Value;
     }
    
     void HandleDone() {
        std::cout << Sum << std::endl;
+       // ShouldStop();
+       PassAway();
     }		
 };
 
