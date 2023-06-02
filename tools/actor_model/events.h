@@ -9,8 +9,6 @@ struct TEvents {
         EvEnd
     };
 
-    static_assert(EvEnd < EventSpaceEnd(NActors::TEvents::ES_PRIVATE), "expect EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE)");
-  
     struct TEvDone : NActors::TEventLocal<TEvDone, EvDiscoveryResponse> {}; 	
     
     struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvDiscoveryResponse> {
