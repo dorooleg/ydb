@@ -10,10 +10,10 @@ class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     bool Finish = false;
     const NActors::TActorId WriteActor;	
     int Count;
-    bool first_enter;
+    bool FirstEnter;
 public:
     TReadActor(const NActors::TActorId writeActor)
-        : Finish(false), WriteActor(writeActor), Count(0), first_enter(true)
+        : Finish(false), WriteActor(writeActor), Count(0), FirstEnter(true)
     {}
 
     void Bootstrap() {
@@ -29,12 +29,12 @@ public:
     void HandleWakeUp() {
         int64_t value;
         if (std::cin >> value) {
-            first_enter = false;	
+            FirstEnter = false;	
             Register(CreateTMaximumPrimeDevisorActor(value, SelfId(), WriteActor).Release());
             Count++;
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
-            if (first_enter) {
+            if (FirstEnter) {
             	Register(CreateTMaximumPrimeDevisorActor(0, SelfId(), WriteActor).Release());
             	Count++;
             	Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
@@ -56,13 +56,13 @@ class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPri
     const NActors::TActorIdentity ReadActor;
     const NActors::TActorId WriteActor;
     int64_t Prime;	
-    int64_t CurrentState_first;
-    int64_t CurrentState_second;
+    int64_t CurrentStateFirst;
+    int64_t CurrentStateSecond;
     bool flag;
     	
 public:
     TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor)
-        : Value(value), ReadActor(readActor), WriteActor(writeActor), CurrentState_first(1), Prime(0), flag(true), CurrentState_second(2)
+        : Value(value), ReadActor(readActor), WriteActor(writeActor), CurrentStateFirst(1), Prime(0), flag(true), CurrentStateSecond(2)
     {}
 
     void Bootstrap() {
@@ -78,17 +78,17 @@ public:
     	auto startTime = std::chrono::steady_clock::now();
     	auto endTime = std::chrono::steady_clock::now();
         auto elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-        for (int64_t i = CurrentState_first; i <= Value; i++) {
-            for (int64_t j = CurrentState_second; j * j <= i; j++) {
+        for (int64_t i = CurrentStateFirst; i <= Value; i++) {
+            for (int64_t j = CurrentStateSecond; j * j <= i; j++) {
                 if (i % j == 0) {
                     flag = false;
-		    break;
-		}
-		endTime = std::chrono::steady_clock::now();
+		            break;
+		        }
+		        endTime = std::chrono::steady_clock::now();
             	elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
             	if (elapsedTime > 10) {
-            	    CurrentState_first = i;
-            	    CurrentState_second = j;
+            	    CurrentStateFirst = i;
+            	    CurrentStateSecond = j;
             	    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
                     return;
                 }
@@ -166,7 +166,7 @@ THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writeActor) {
     return MakeHolder<TReadActor>(writeActor);
 }
 
-THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(int64_t value, const auto readActor, const NActors::TActorId writeActor) {
+THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor) {
     return MakeHolder<TMaximumPrimeDevisorActor>(value, readActor, writeActor);
 }
 
