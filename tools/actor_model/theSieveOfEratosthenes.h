@@ -8,9 +8,14 @@
 class TheSieveOfEratosthenes {
 private:
     std::vector<bool> prime;
+    int n;
 public:
     TheSieveOfEratosthenes() {
-        int n = std::numeric_limits<int>::max() - 1000;
+        selfResize(10);
+    }
+
+    void selfResize(int n){
+        n = n + 1;
         prime.resize(n, true);
         prime[0] = prime[1] = false;
         for (int i = 2; i <= n; i++) {
@@ -20,11 +25,9 @@ public:
                         prime[j] = false;
         }
     }
-    void toString(){
-        for(int i = 1; i <= 10; i++){
-            std::cout << prime[i] << " ";
-        }
-        std::cout << "\n";
+
+    int getN(){
+        return n;
     }
 
     bool checkPrime(int value){

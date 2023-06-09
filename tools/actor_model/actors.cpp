@@ -135,6 +135,9 @@ public:
 
     void HandleWakeUp() {
         auto startTime = std::chrono::steady_clock::now();
+        if(Value >= theSieveOfEratosthenes->getN()){
+            theSieveOfEratosthenes->selfResize(Value);
+        }
         if(theSieveOfEratosthenes->checkPrime(Value)){
             answer = Value;
         }
