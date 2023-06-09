@@ -114,8 +114,8 @@ class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPri
     int64_t OriginNum;
     const NActors::TActorId ReadActorId;
     const NActors::TActorId WriteActorId;
-    int64_t current_divisor = 2;
-    int64_t max_divisor = 0;
+    int64_t CurrentDivisor = 2;
+    int64_t MaxDivisor = 0;
 public:
     TMaximumPrimeDevisorActor(int64_t num, const NActors::TActorId readActorId, const NActors::TActorId writeActorId): Num(num),OriginNum(num) ,ReadActorId(readActorId), WriteActorId(writeActorId)
     {
@@ -133,35 +133,35 @@ public:
     void HandleWakeUp() {
         auto start = TInstant::Now();
         TInstant end;
-        TDuration max_delay = TDuration::MilliSeconds(10);
-        for (int64_t i=current_divisor; i <= sqrt(Num); i+=(i==2?1:2)) {
-            current_divisor = i;
+        TDuration maxDelay = TDuration::MilliSeconds(10);
+        for (int64_t i=CurrentDivisor; i <= sqrt(Num); i+=(i==2?1:2)) {
+            CurrentDivisor = i;
 
-            while (Num % current_divisor == 0) {
-                max_divisor = current_divisor;
-                Num /= current_divisor;
+            while (Num % CurrentDivisor == 0) {
+                MaxDivisor = CurrentDivisor;
+                Num /= CurrentDivisor;
                 end = TInstant::Now();
-                if (end - start >= max_delay) {
+                if (end - start >= maxDelay) {
                     Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
                     return;
                 }
             }
             end = TInstant::Now();
-            if (end - start >= max_delay) {
+            if (end - start >= maxDelay) {
                 Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
                 return;
             }
         }
 
         if (Num >= 2) {
-            max_divisor = Num;
+            MaxDivisor = Num;
         }
 
         if (OriginNum == 1) {
-            max_divisor = 1;
+            MaxDivisor = 1;
         }
 
-        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(max_divisor));
+        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(MaxDivisor));
         Send(ReadActorId, std::make_unique<TEvents::TEvDone>());
         PassAway();
     }
