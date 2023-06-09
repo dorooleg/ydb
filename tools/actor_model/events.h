@@ -4,7 +4,8 @@
 struct TEvents : public NActors::TEvents {
     enum EEv {
         EvDiscoveryResponse = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
-        EvWriteValueRequest
+        EvWriteValueRequest,
+        EvDone
     };
 
     struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvWriteValueRequest> {
@@ -12,4 +13,6 @@ struct TEvents : public NActors::TEvents {
 
         explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
     };
+
+    struct TEvDone : NActors::TEventLocal<TEvDone, EvDone> {};
 };

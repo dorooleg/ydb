@@ -7,7 +7,7 @@ THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency);
 
 THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writeActor);
 
-THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor);
+THolder<NActors::IActor> CreateTMaximumPrimeDivisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor);
 
 THolder<NActors::IActor> CreateTWriteActor();
 
