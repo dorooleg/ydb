@@ -10,9 +10,8 @@ private:
     std::vector<bool> prime;
 public:
     TheSieveOfEratosthenes() {
-//        int n = std::numeric_limits<int>::max() - 100;
-        int n = 10;
-        prime.resize(n + 1, true);
+        int n = std::numeric_limits<int>::max() - 1;
+        prime.resize(n, true);
         prime[0] = prime[1] = false;
         for (int i = 2; i <= n; i++) {
             if (prime[i])
