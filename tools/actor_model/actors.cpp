@@ -38,7 +38,48 @@ TReadActor
             ...
 */
 
-// TODO: напишите реализацию TReadActor
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+    NActors::TActorId WriteActor;
+    size_t PendingActors = 0;
+    bool EndOfInput = false;
+
+public:
+    using TBase = NActors::TActorBootstrapped<TReadActor>;
+    TReadActor(const NActors::TActorId writeActor) : TBase(&TReadActor::Handler), WriteActor(writeActor) {}
+
+    STRICT_STFUNC(Handler, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        cFunc(TEvents::TEvDone::EventType, HandleDone);
+    });
+
+    void Bootstrap() {
+        Send<NActors::TEvents::TEvWakeup>(GetIdentity());
+    }
+
+    void HandleWakeup() {
+        int64_t value;
+        if (std::cin >> value) {
+            auto maximumPrimeDevisorActor = CreateTMaximumPrimeDevisorActor(value, GetIdentity(), WriteActor);
+            Register(maximumPrimeDevisorActor.Release());
+            ++PendingActors;
+            Send<NActors::TEvents::TEvWakeup>(GetIdentity());
+        } else {
+            EndOfInput = true;
+            if (PendingActors == 0) {
+                Send<NActors::TEvents::TEvPoisonPill>(WriteActor);
+                PassAway();
+            }
+        }
+    }
+
+    void HandleDone() {
+        --PendingActors;
+        if (EndOfInput && PendingActors == 0) {
+            Send<NActors::TEvents::TEvPoisonPill>(WriteActor);
+            PassAway();
+        }
+    }
+};
 
 /*
 Требования к TMaximumPrimeDevisorActor:
@@ -68,7 +109,48 @@ TMaximumPrimeDevisorActor
             PassAway()
 */
 
-// TODO: напишите реализацию TMaximumPrimeDevisorActor
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
+    int64_t Value;
+    NActors::TActorIdentity ReadActor;
+    NActors::TActorId WriteActor;
+    int64_t CurrentDivisor;
+    int64_t MaximumPrimeDivisor;
+
+public:
+    using TBase = NActors::TActorBootstrapped<TMaximumPrimeDevisorActor>;
+    TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor)
+        : TBase(&TMaximumPrimeDevisorActor::Handler), Value(value), ReadActor(readActor), WriteActor(writeActor), CurrentDivisor(2), MaximumPrimeDivisor(1) {}
+
+    STRICT_STFUNC(Handler, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    });
+
+    void Bootstrap() {
+        Send<NActors::TEvents::TEvWakeup>(GetIdentity());
+    }
+
+    void HandleWakeup() {
+        TInstant start = Now();
+        while (Value > 1 && Now() - start < TDuration::MilliSeconds(10)) {
+            while (Value % CurrentDivisor == 0) {
+                MaximumPrimeDivisor = CurrentDivisor;
+                Value /= CurrentDivisor;
+            }
+            ++CurrentDivisor;
+        }
+
+        if (Value > 1) {
+            Send<NActors::TEvents::TEvWakeup>(GetIdentity());
+        } else {
+            if (CurrentDivisor > MaximumPrimeDivisor) {
+                MaximumPrimeDivisor = CurrentDivisor;
+            }
+            Send<TEvents::TEvWriteValueRequest>(WriteActor, MaximumPrimeDivisor);
+            Send<TEvents::TEvDone>(ReadActor);
+            PassAway();
+        }
+    }
+};
 
 /*
 Требования к TWriteActor:
@@ -87,7 +169,29 @@ TWriteActor
         PassAway()
 */
 
-// TODO: напишите реализацию TWriteActor
+class TWriteActor : public NActors::TActor<TWriteActor> {
+    int64_t Sum;
+
+public:
+    using TBase = NActors::TActor<TWriteActor>;
+    TWriteActor() : TBase(&TWriteActor::Handler), Sum(0) {}
+
+    STRICT_STFUNC(Handler, {
+        hFunc(TEvents::TEvWriteValueRequest, Handle);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandleDone);
+    });
+
+    void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
+        auto& event = *ev->Get();
+        Sum += event.Value;
+    }
+
+    void HandleDone() {
+        std::cout << Sum << std::endl;
+        ShouldContinue->ShouldStop();
+        PassAway();
+    }
+};
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
