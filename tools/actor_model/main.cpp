@@ -35,3 +35,4 @@ int main(int argc, const char* argv[])
     actorSystem.Cleanup();
     return shouldContinue->GetReturnCode();
 }
+
