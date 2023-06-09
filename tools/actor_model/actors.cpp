@@ -41,7 +41,7 @@ TReadActor
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     bool Finish;
     const NActors::TActorId WriteActorId;
-    int count = 0;
+    int Count = 0;
 
 public:
     TReadActor(const NActors::TActorId writeActorId)
@@ -62,11 +62,11 @@ public:
         int64_t value;
         if (std::cin >> value) {
             Register(CreateMaximumPrimeDivisorActor(value, SelfId(), WriteActorId).Release());
-            count++;
+            Count++;
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             Finish = true;
-            if (count == 0) {
+            if (Count == 0) {
                 Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
                 PassAway();
             }
@@ -74,8 +74,8 @@ public:
     }
 
     void HandleDone() {
-        count--;
-        if (Finish && count == 0) {
+        Count--;
+        if (Finish && Count == 0) {
             Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
             PassAway();
         }
@@ -119,8 +119,8 @@ class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPri
     const NActors::TActorId WriteActorId;
     int64_t InitialValue;
     int64_t Value;
-    int64_t current_divisor = 2;
-    int64_t max_divisor = 0;
+    int64_t CurrentDivisor = 2;
+    int64_t MaxDivisor = 0;
 
 public:
     TMaximumPrimeDivisorActor(const int64_t value, const NActors::TActorId readActorId, const NActors::TActorId writeActorId)
@@ -140,12 +140,12 @@ public:
         auto start = TInstant::Now();
         TInstant end;
         TDuration max_delay = TDuration::MilliSeconds(10);
-        for (int64_t i=current_divisor; i <= sqrt(Value); i+=(i==2?1:2)) {
-            current_divisor = i;
+        for (int64_t i=CurrentDivisor; i <= sqrt(Value); i+=(i==2?1:2)) {
+            CurrentDivisor = i;
 
-            while (Value % current_divisor == 0) {
-                max_divisor = current_divisor;
-                Value /= current_divisor;
+            while (Value % CurrentDivisor == 0) {
+                MaxDivisor = CurrentDivisor;
+                Value /= CurrentDivisor;
                 end = TInstant::Now();
                 if (end - start >= max_delay) {
                     Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
@@ -160,14 +160,14 @@ public:
         }
 
         if (Value >= 2) {
-            max_divisor = Value;
+            MaxDivisor = Value;
         }
 
         if (InitialValue == 1) {
-            max_divisor = 1;
+            MaxDivisor = 1;
         }
 
-        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(max_divisor));
+        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(MaxDivisor));
         Send(ReadActorId, std::make_unique<TEvents::TEvDone>());
         PassAway();
     }
@@ -211,9 +211,9 @@ public:
         cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
     });
 
-    void HandleWriteValueRequest(TEvents::TEvWriteValueRequest::TPtr& evnt) {
-        auto& event = *evnt->Get();
-        Sum += event.Value;
+    void HandleWriteValueRequest(TEvents::TEvWriteValueRequest::TPtr& event) {
+        int64_t val = (*event->Get()).Value;
+        Sum += val;
     }
 
     void HandlePoisonPill() {
