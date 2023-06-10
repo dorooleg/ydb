@@ -146,8 +146,8 @@ public:
         if (Value > 1) {
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
-            if (CurrentDivisor > MaximumPrimeDivisor) {
-                MaximumPrimeDivisor = CurrentDivisor;
+            if (CurrentDivisor - 1 > MaximumPrimeDivisor) {
+                MaximumPrimeDivisor = CurrentDivisor - 1;
             }
             Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(MaximumPrimeDivisor));
             Send(ReadActorId, std::make_unique<TEvents::TEvDone>());
