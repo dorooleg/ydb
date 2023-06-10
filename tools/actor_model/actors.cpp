@@ -39,35 +39,35 @@ TReadActor
 */
 
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
-    NActors::TActorId WriteActor;
-    size_t PendingActors = 0;
+    const NActors::TActorId WriteActorId;
     bool EndOfInput = false;
+    size_t PendingActors = 0;
 
 public:
-    using TBase = NActors::TActorBootstrapped<TReadActor>;
-    TReadActor(const NActors::TActorId writeActor) : TBase(&TReadActor::Handler), WriteActor(writeActor) {}
+    TReadActor(const NActors::TActorId writeActorId)
+        : EndOfInput(false), WriteActorId(writeActorId), PendingActors(0)
+    {}
 
-    STRICT_STFUNC(Handler, {
-        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeUp);
         cFunc(TEvents::TEvDone::EventType, HandleDone);
     });
 
-    void Bootstrap() {
-        Become(&TReadActor::Handler);
-        Send<NActors::TEvents::TEvWakeup>(SelfId());
-    }
-
-    void HandleWakeup() {
+    void HandleWakeUp() {
         int64_t value;
         if (std::cin >> value) {
-            auto maximumPrimeDivisorActor = CreateTMaximumPrimeDivisorActor(value, SelfId(), WriteActor);
-            Register(maximumPrimeDivisorActor.Release());
+            Register(CreateTMaximumPrimeDivisorActor(value, SelfId(), WriteActorId).Release());
             ++PendingActors;
-            Send<NActors::TEvents::TEvWakeup>(SelfId());
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             EndOfInput = true;
-            if (PendingActors == 0) {
-                Send<NActors::TEvents::TEvPoisonPill>(WriteActor);
+            if(PendingActors == 0) {
+                Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
                 PassAway();
             }
         }
@@ -76,11 +76,12 @@ public:
     void HandleDone() {
         --PendingActors;
         if (EndOfInput && PendingActors == 0) {
-            Send<NActors::TEvents::TEvPoisonPill>(WriteActor);
+            Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
             PassAway();
         }
     }
 };
+
 
 /*
 Требования к TMaximumPrimeDivisorActor:
@@ -111,24 +112,24 @@ TMaximumPrimeDivisorActor
 */
 
 class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
+    const NActors::TActorId ReadActorId;
+    const NActors::TActorId WriteActorId;
     int64_t Value;
-    NActors::TActorIdentity ReadActor;
-    NActors::TActorId WriteActor;
     int64_t CurrentDivisor;
     int64_t MaximumPrimeDivisor;
 
 public:
     using TBase = NActors::TActorBootstrapped<TMaximumPrimeDivisorActor>;
-    TMaximumPrimeDivisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor)
-        : TBase(&TMaximumPrimeDivisorActor::Handler), Value(value), ReadActor(readActor), WriteActor(writeActor), CurrentDivisor(2), MaximumPrimeDivisor(1) {}
+    TMaximumPrimeDivisorActor(int64_t value, const NActors::TActorId readActorId, const NActors::TActorId writeActorId)
+        : TBase(&TMaximumPrimeDivisorActor::StateFunc), Value(value), ReadActorId(readActorId), WriteActorId(writeActorId), CurrentDivisor(2), MaximumPrimeDivisor(1) {}
 
-    STRICT_STFUNC(Handler, {
+    STRICT_STFUNC(StateFunc, {
         cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
     });
 
     void Bootstrap() {
-        Become(&TMaximumPrimeDivisorActor::Handler);
-        Send<NActors::TEvents::TEvWakeup>(SelfId());
+        Become(&TMaximumPrimeDivisorActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
     void HandleWakeup() {
@@ -142,13 +143,13 @@ public:
         }
 
         if (Value > 1) {
-            Send<NActors::TEvents::TEvWakeup>(SelfId());
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             if (CurrentDivisor > MaximumPrimeDivisor) {
                 MaximumPrimeDivisor = CurrentDivisor;
             }
-            Send<TEvents::TEvWriteValueRequest>(WriteActor, MaximumPrimeDivisor);
-            Send<TEvents::TEvDone>(ReadActor);
+            Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(MaximumPrimeDivisor));
+            Send(ReadActorId, std::make_unique<TEvents::TEvDone>());
             PassAway();
         }
     }
@@ -176,9 +177,9 @@ class TWriteActor : public NActors::TActor<TWriteActor> {
 
 public:
     using TBase = NActors::TActor<TWriteActor>;
-    TWriteActor() : TBase(&TWriteActor::Handler), Sum(0) {}
+    TWriteActor() : TBase(&TWriteActor::StateFunc), Sum(0) {}
 
-    STRICT_STFUNC(Handler, {
+    STRICT_STFUNC(StateFunc, {
         hFunc(TEvents::TEvWriteValueRequest, Handle);
         cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandleDone);
     });
@@ -189,7 +190,7 @@ public:
     }
 
     void HandleDone() {
-        std::cout << Sum << std::endl;
+        std::cout << Sum << "\n";
         ShouldContinue->ShouldStop();
         PassAway();
     }
