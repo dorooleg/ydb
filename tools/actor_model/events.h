@@ -2,9 +2,8 @@
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents : public NActors::TEvents {
-    enum EEv {
-        EvDiscoveryResponse = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
-        EvWriteValueRequest,
+    enum {
+        EvWriteValueRequest = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
         EvDone
     };
 
