@@ -3,4 +3,15 @@
 
 struct TEvents {
     // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
+    enum EEv {
+        EvRequest = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
+        EvDone
+    };
+
+    struct TEvDone : NActors::TEventLocal<TEvDone, EvDone> {};
+
+    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvRequest> {
+        int64_t Value;
+        explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
+    };
 };
