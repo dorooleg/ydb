@@ -24,3 +24,5 @@ COPY . ydb/
 WORKDIR build
 
 RUN cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../ydb/clang.toolchain ../ydb
+
+RUN ninja tools/actor_model/all
