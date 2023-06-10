@@ -45,8 +45,7 @@ class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
 
 public:
     TReadActor(const NActors::TActorId writeActorId)
-        : EndOfInput(false), WriteActorId(writeActorId), PendingActors(0)
-    {}
+        : WriteActorId(writeActorId), EndOfInput(false), PendingActors(0) {}
 
     void Bootstrap() {
         Become(&TReadActor::StateFunc);
@@ -82,6 +81,9 @@ public:
     }
 };
 
+THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writeActorId) {
+    return MakeHolder<TReadActor>(writeActorId);
+}
 
 /*
 Требования к TMaximumPrimeDivisorActor:
@@ -112,16 +114,15 @@ TMaximumPrimeDivisorActor
 */
 
 class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
+    int64_t Value;
     const NActors::TActorId ReadActorId;
     const NActors::TActorId WriteActorId;
-    int64_t Value;
     int64_t CurrentDivisor;
     int64_t MaximumPrimeDivisor;
 
 public:
-    using TBase = NActors::TActorBootstrapped<TMaximumPrimeDivisorActor>;
     TMaximumPrimeDivisorActor(int64_t value, const NActors::TActorId readActorId, const NActors::TActorId writeActorId)
-        : TBase(&TMaximumPrimeDivisorActor::StateFunc), Value(value), ReadActorId(readActorId), WriteActorId(writeActorId), CurrentDivisor(2), MaximumPrimeDivisor(1) {}
+        : Value(value), ReadActorId(readActorId), WriteActorId(writeActorId), CurrentDivisor(2), MaximumPrimeDivisor(1) {}
 
     STRICT_STFUNC(StateFunc, {
         cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
@@ -155,6 +156,9 @@ public:
     }
 };
 
+THolder<NActors::IActor> CreateTMaximumPrimeDivisorActor(int64_t value, const NActors::TActorId readActorId, const NActors::TActorId writeActorId) {
+    return MakeHolder<TMaximumPrimeDivisorActor>(value, readActorId, writeActorId);
+}
 /*
 Требования к TWriteActor:
 1. Рекомендуется отнаследовать этот актор от NActors::TActor
@@ -195,6 +199,10 @@ public:
         PassAway();
     }
 };
+
+THolder<NActors::IActor> CreateTWriteActor() {
+    return MakeHolder<TWriteActor>();
+}
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
