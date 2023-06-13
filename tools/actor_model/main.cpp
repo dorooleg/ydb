@@ -37,5 +37,5 @@ int main(int argc, const char* argv[])
     actorSystem.Stop();
     actorSystem.Cleanup();
     // return shouldContinue->GetReturnCode();
-    return shouldContinue-
-        
+    return shouldContinue->GetReturnCode();
+}
