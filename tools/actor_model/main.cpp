@@ -25,12 +25,14 @@ int main(int argc, const char* argv[])
 
     // Зарегистрируйте Write и Read акторы здесь
 
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
+    NActors::TActorId writerID = actorSystem.Register(CreateTWriteActor().Release());
+    actorSystem.Register(CreateTReadActor(writerID).Release());
+
+    auto shouldContinue = GetProgramShouldContinue();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
     actorSystem.Stop();
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    return shouldContinue->GetReturnCode();
 }
