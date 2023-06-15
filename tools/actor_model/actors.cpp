@@ -138,7 +138,7 @@ public:
                 max = current;
                 value /= current;
             }
-            ++current;
+            current++;
         }
 
         if (value > 1) {
@@ -189,11 +189,11 @@ public:
 
     void HandleWriteValueRequest(TEvents::TEvWriteValueRequest::TPtr& event) {
         int64_t value = (*event->Get()).Value;
-        Sum += value;
+        sum += value;
     }
 
     void HandlePoisonPill() {
-        std::cout << Sum << std::endl;
+        std::cout << sum << std::endl;
         ShouldContinue->ShouldStop();
         PassAway();
     }
