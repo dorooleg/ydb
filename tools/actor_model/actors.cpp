@@ -2,7 +2,7 @@
 #include "events.h"
 #include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/actors/core/hfunc.h>
-
+#include <fstream>
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
 /*
@@ -38,7 +38,54 @@ TReadActor
             ...
 */
 
-// TODO: напишите реализацию TReadActor
+
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> { 
+private:
+    const NActors::TActorId WriteActor; 
+    bool Finish_input = false;
+    size_t DoneCount = 0;
+
+public:
+    TReadActor(const NActors::TActorId writeActor)
+        :  WriteActor(writeActor), 
+        Finish_input(false),
+        DoneCount(0)
+    {}
+
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>()); 
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeUp);
+        cFunc(TEvents::TEvDone::EventType, HandleDone);
+    });
+
+    void HandleWakeUp() {
+        int64_t value;
+        if (std::cin >> value) {
+            Register(CreateTMaximumPrimeDevisorActor(value, SelfId(), WriteActor).Release());
+            DoneCount++;
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        } else {
+            if (DoneCount == 0) {
+            	Register(CreateTMaximumPrimeDevisorActor(0, SelfId(), WriteActor).Release());
+            	DoneCount++;
+            	Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            	}
+            Finish_input = true;
+        }
+    }
+
+    void HandleDone() {
+       DoneCount--;
+       if (Finish_input && DoneCount == 0) {
+            Send(WriteActor, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        }
+    }
+};
 
 /*
 Требования к TMaximumPrimeDevisorActor:
@@ -68,7 +115,59 @@ TMaximumPrimeDevisorActor
             PassAway()
 */
 
-// TODO: напишите реализацию TMaximumPrimeDevisorActor
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
+private:
+    int64_t Value;
+    const NActors::TActorIdentity ReadActor;
+    const NActors::TActorId WriteActor;
+    int64_t Result = 0;
+    int64_t Curr_divisor = 2;	
+
+public:
+    TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor)
+        : Value(value), 
+        ReadActor(readActor), 
+        WriteActor(writeActor), 
+        Result(0),
+        Curr_divisor(2)
+    {}
+
+    void Bootstrap() {
+        Become(&TMaximumPrimeDevisorActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeUp);
+    });
+
+    void HandleWakeUp() {
+    	auto start = std::chrono::high_resolution_clock::now();
+        for (int64_t i = Curr_divisor; i*i <= Value; i++) {
+            Curr_divisor = i;
+            if (Value % i == 0) {
+                   Result = i;
+                   Value /= i;
+                }
+		if (std::chrono::high_resolution_clock::now() - start > std::chrono::milliseconds(10)) {
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                return;
+            }
+        }
+        if (Value > 1) {   
+            Result = Value;
+        } else {
+            if (Value == 1) {
+            	Result = Value;
+            }
+        }
+        Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(Result));
+        Send(ReadActor, std::make_unique<TEvents::TEvDone>());
+        PassAway();
+    }
+
+};
+
 
 /*
 Требования к TWriteActor:
@@ -87,7 +186,31 @@ TWriteActor
         PassAway()
 */
 
-// TODO: напишите реализацию TWriteActor
+class TWriteActor : public NActors::TActor<TWriteActor> {
+private:
+    int Sum;
+public:
+    using TBase = NActors::TActor<TWriteActor>;
+    TWriteActor() : TBase(&TWriteActor::Handler), 
+    Sum(0) 
+    {}
+
+    STRICT_STFUNC(Handler, {
+        hFunc(TEvents::TEvWriteValueRequest, Handle);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandleDone);
+    });
+
+    void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
+        auto& event = *ev->Get();
+        Sum += event.Value;
+    }
+
+    void HandleDone() {
+       std::cout << Sum << std::endl;
+       ShouldContinue->ShouldStop();
+       PassAway();
+    }		
+};
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
@@ -120,6 +243,19 @@ public:
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
 }
+
+THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writeActor) {
+    return MakeHolder<TReadActor>(writeActor);
+}
+
+THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor) {
+    return MakeHolder<TMaximumPrimeDevisorActor>(value, readActor, writeActor);
+}
+
+THolder<NActors::IActor> CreateTWriteActor() {
+    return MakeHolder<TWriteActor>();
+}
+
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
     return ShouldContinue;
