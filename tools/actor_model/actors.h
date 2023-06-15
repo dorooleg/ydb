@@ -12,3 +12,4 @@ THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(int64_t value, const NA
 THolder<NActors::IActor> CreateTWriteActor();
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue();
+
