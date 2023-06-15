@@ -40,12 +40,12 @@ TReadActor
 
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     NActors::TActorId Writer_id;
+    int Counter;
 public:
     TReadActor(const NActors::TActorId writer_id)
-        : Writer_id(writer_id)
+        : Writer_id(writer_id), Counter(0)
     {}
     
-    int counter = 0;
 
     void Bootstrap() {
         Become(&TReadActor::StateFunc);
@@ -61,16 +61,16 @@ public:
         int64_t n;
         if (std::cin >> n)
         {
-            counter++;
-            Register(CreateTMaximumPrimeDevisorActor(n, Writer_id, static_cast<NActors::TActorId>(SelfId())).Release());
-            Send(SelfId(),  std::make_unique<TEvents::TEvWakeup>());
+            Counter++;
+            Register(CreateTMaximumPrimeDevisorActor(n, Writer_id, SelfId()).Release());
+            Send(SelfId(),  std::make_unique<NActors::TEvents::TEvWakeup>());
         }
     }
 
     void HandleEventDone(){
-        counter--;
-        if(counter == 0){
-            Send(Writer_id, std::make_unique<TEvents::TEvPoisonPill>());
+        Counter--;
+        if(Counter == 0){
+            Send(Writer_id, std::make_unique<NActors::TEvents::TEvPoisonPill>());
         }
     }
 };
@@ -113,9 +113,9 @@ class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPri
     NActors::TActorId Writer_id;
     NActors::TActorId Reader_id;
     TInstant StartTime;
-    int Cur;
+    int64_t Cur;
     TDuration Latency;
-    int Res;
+    int64_t Res;
 public:
     TMaximumPrimeDevisorActor(const int64_t& value, const NActors::TActorId& writer_id,const NActors::TActorId& reader_id)
         : Value(value), Writer_id(writer_id), Reader_id(reader_id), Cur(1), Res(0) 
@@ -128,13 +128,32 @@ public:
     }
 
 
-    int Calculate() {
-        int maxPrime = 1;
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    });
+    
+
+    void HandleWakeup() {
+        if (Res == 0){
+            Calculate();
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            return;
+        }
+        else{
+            Send(Writer_id, std::make_unique<TEvents::TEvWriteValueRequest>(Res));
+            Send(Reader_id, std::make_unique<TEvents::TEvDone>());
+            PassAway();
+        }
+    }
+
+
+    int64_t Calculate() {
+        int64_t maxPrime = 1;
         StartTime = TInstant::Now();
-        for (int i = Cur; i <= Value; ++i) {
+        for (int64_t i = Cur; i <= Value; i++) {
             if (Value % i == 0) {
                 bool isPrime = true;
-                for (int j = 2; j <= i / 2; ++j) {
+                for (int64_t j = 2; j <= i / 2; j++) {
                     if(StartTime - TInstant::Now() > Latency){
                         Cur = i;
                         return 0;
@@ -153,26 +172,6 @@ public:
         return 1;
     }
 
-
-    STRICT_STFUNC(StateFunc, {
-        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
-    });
-    
-
-    void HandleWakeup() {
-        if (Res == 0){
-            if(!Calculate()){
-                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
-                return;
-            }
-        }
-        else{
-
-            Send(Writer_id, std::unique_ptr<TEvents::TEvWriteValueRequest>(Res));
-            Send(Reader_id, std::make_unique<TEvents::TEvDone>());
-            PassAway();
-        }
-    }
 };
 
 
@@ -197,11 +196,6 @@ TWriteActor
 
 class TWriteActor : public NActors::TActor<TWriteActor> {
     int64_t Sum = 0;
-    
-    void Handle(TEvents::TEvWriteValueRequest::TPtr &ev){
-        auto *msg = ev->Get();
-        Sum = Sum + msg->Value;  
-    }
 
 public:
     TWriteActor()
@@ -213,8 +207,13 @@ public:
         hFunc(TEvents::TEvWriteValueRequest, Handle)
     });
 
+    void Handle(TEvents::TEvWriteValueRequest::TPtr &ev){
+        auto *msg = ev->Get();
+        Sum = Sum + msg->Value;  
+    }
+
     void HandlePill(){
-        std::cout << Sum;
+        std::cout << Sum << std::endl;
         ShouldContinue->ShouldStop();
         PassAway();
     }
