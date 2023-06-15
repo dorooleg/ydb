@@ -1,19 +1,28 @@
 #include <library/cpp/actors/core/event_local.h>
 #include <library/cpp/actors/core/events.h>
+#include <stdint.h>
 
 struct TEvents {
-    // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
-    
     enum EEv {
-        EvDiscoveryResponse = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
-        EvDone
+        EvWriteValueRequest = EventSpaceBegin(NActors::TEvents::ES_USERSPACE +  1),
+        Poison,
+        Gone
     };
-
-    struct TEvDone : NActors::TEventLocal<TEvDone, EvDone> {};
     
-    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvDiscoveryResponse> {
-    	int64_t Value;
-    	explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
-    };
-};
+    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvWriteValueRequest>
+    {
+        int64_t Value;
 
+        TEvWriteValueRequest(int64_t &value)
+        : Value(value)
+        {}
+        
+    };
+    
+
+    struct TEvDone: public NActors::TEventBase<TEvDone, EEv::Gone> {
+            DEFINE_SIMPLE_LOCAL_EVENT(TEvDone, "System: TEvGone")
+        };
+
+    // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
+};
