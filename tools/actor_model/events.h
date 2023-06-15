@@ -3,7 +3,6 @@
 
 struct TEvents {
     // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
-    
     enum {
         EvWriteValueRequest = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
         EvDone
