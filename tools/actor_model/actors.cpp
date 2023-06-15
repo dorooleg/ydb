@@ -157,7 +157,7 @@ public:
         largest_div = value;
       }
 
-      Send(writeActor, std::make_unique<TEvents::TEvWriteValueRequest>(largest_devisor));
+      Send(writeActor, std::make_unique<TEvents::TEvWriteValueRequest>(largest_div));
       Send(readActor, std::make_unique<TEvents::TEvDone>());
       PassAway();
     }

@@ -13,6 +13,7 @@ struct TEvents {
 
     struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvDiscoveryResponse> {
         int64_t value;
+
         TEvWriteValueRequest(int64_t value)
                 : value(value)
         {}
