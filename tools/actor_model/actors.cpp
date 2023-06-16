@@ -102,11 +102,11 @@ public:
     });
 
     void HandleWakeup() {
-        auto start_time = std::chrono::system_clock::now();
-        for (int64_t i = current_divisor; i <= sqrt(value); i+=(i==2?1:2)) {
+        auto start_time = std::chrono::system_clock::now(); // сохраняем текущее время, для расчёта в будущем
+        for (int64_t i = current_divisor; i <= sqrt(value); i+=(i==2?1:2)) { // проходим от нашего текущего максимального делителя до корня из данного числа (условие для инкрементации нужно для уменьшения числа шагов, чтобы игнорировать числа, кратные 2-м)
             current_divisor = i;
 
-            while (value % current_divisor == 0) {
+            while (value % current_divisor == 0) { // когда нашли делитель, то уменьшаем значение данного числа, и будим актора
                 largest_divisor = current_divisor;
                 value /= current_divisor;
                 auto current_time = std::chrono::system_clock::now();
