@@ -152,6 +152,7 @@ public:
             PassAway();
         }
     };
+};
 
 
 /*
@@ -240,8 +241,7 @@ TWriteActor
         return MakeHolder<TReadActor>(writerId);
     }
 
-    THolder <NActors::IActor>
-    CreateTMaximumPrimeDevisorActor(const NActors::TActorIdentity readerId, const NActors::TActorId writerId,
+    THolder <NActors::IActor>CreateTMaximumPrimeDevisorActor(const NActors::TActorIdentity readerId, const NActors::TActorId writerId,
                                     int64_t value) {
         return MakeHolder<TMaximumPrimeDevisorActor>(readerId, writerId, value);
     }
@@ -249,4 +249,3 @@ TWriteActor
     THolder <NActors::IActor> CreateTWriteActor() {
         return MakeHolder<TWriteActor>();
     }
-}
