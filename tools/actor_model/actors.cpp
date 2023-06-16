@@ -48,9 +48,9 @@ public:
             : writerId(writerId), end(false)
     {}
 
-    void Bootstrap() { //init
+    void Bootstrap() { //entry point
         Become(&TReadActor::StateFunc); //start cond
-        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>()); // send message to itself
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>()); // send message to itself to start finding the largest simple divisor
     }
 
     STRICT_STFUNC(StateFunc, { // check cond
