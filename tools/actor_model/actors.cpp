@@ -106,7 +106,7 @@ public:
         for (int64_t i = current_divisor; i <= sqrt(value); i+=(i==2?1:2)) { // проходим от нашего текущего максимального делителя до корня из данного числа (условие для инкрементации нужно для уменьшения числа шагов, чтобы игнорировать числа, кратные 2-м)
             current_divisor = i;
 
-            while (value % current_divisor == 0) { // когда нашли делитель, то уменьшаем значение данного числа, и будим актора
+            while (value % current_divisor == 0) { // когда нашли делитель, то уменьшаем значение данного числа, и (если вычисления были больше 10 мс) отправляем себе TevWakeuo
                 largest_divisor = current_divisor;
                 value /= current_divisor;
                 auto current_time = std::chrono::system_clock::now();
@@ -115,7 +115,7 @@ public:
                     return;
                 }
             }
-            auto current_time = std::chrono::system_clock::now();
+            auto current_time = std::chrono::system_clock::now(); // Та же самая проверка и здесь
             if(std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count() > 10){
                 Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
                 return;
