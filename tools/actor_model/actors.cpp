@@ -154,7 +154,7 @@ public:
             if (Value % i == 0) {
                 bool isPrime = true;
                 for (int64_t j = 2; j <= i / 2; j++) {
-                    if(StartTime - TInstant::Now() > Latency){
+                    if(TInstant::Now() - StartTime > Latency){
                         Cur = i;
                         return 0;
                     }
