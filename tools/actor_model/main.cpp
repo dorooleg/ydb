@@ -14,16 +14,20 @@ THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 poo
     return setup;
 }
 
-int main(int argc, const char* argv[])
-{
+int main(int argc, const char* argv[]) {
     Y_UNUSED(argc, argv);
-    auto actorySystemSetup = BuildActorSystemSetup(20, 1);
-    NActors::TActorSystem actorSystem(actorySystemSetup);
+
+    auto actorSystemSetup = BuildActorSystemSetup(20, 1);
+    NActors::TActorSystem actorSystem(actorSystemSetup);
     actorSystem.Start();
 
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
 
-    // Зарегистрируйте Write и Read акторы здесь
+    actorSystem.Stop();
+    actorSystem.Cleanup();
+    // return shouldContinue->GetReturnCode();
+    
+        // Зарегистрируйте Write и Read акторы здесь
 
     // Раскомментируйте этот код
     // auto shouldContinue = GetProgramShouldContinue();
@@ -33,4 +37,5 @@ int main(int argc, const char* argv[])
     actorSystem.Stop();
     actorSystem.Cleanup();
     // return shouldContinue->GetReturnCode();
+}
 }
