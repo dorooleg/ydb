@@ -44,36 +44,36 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor>{
     int count;
 
 public:
-    TReadActor(const NActors::TActorId writerId)
+    TReadActor(const NActors::TActorId writerId) //constructor
             : writerId(writerId), end(false)
     {}
 
-    void Bootstrap() {
-        Become(&TReadActor::StateFunc);
-        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    void Bootstrap() { //init
+        Become(&TReadActor::StateFunc); //start cond
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>()); // send message to itself
     }
 
-    STRICT_STFUNC(StateFunc, {
-        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
-        cFunc(TEvents::TEvDone::EventType, HandleDone);
+    STRICT_STFUNC(StateFunc, { // check cond
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup); // init fun when TEvWakeup type message is received
+        cFunc(TEvents::TEvDone::EventType, HandleDone); // init fun when TEvDone type message is received
     });
 
     void HandleWakeup() {
         int64_t value;
         if (std::cin >> value) {
-            Register(CreateTMaximumPrimeDevisorActor(SelfId(), writerId, value).Release());
+            Register(CreateTMaximumPrimeDevisorActor(SelfId(), writerId, value).Release()); //create new actor
             count++;
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
             end = true;
-            if(count == 0) {
-                Send(writerId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+            if(count == 0) { //actors were not created
+                Send(writerId, std::make_unique<NActors::TEvents::TEvPoisonPill>()); //send event, complete actor work
                 PassAway();
             }
         }
     }
 
-    void HandleDone(){
+    void HandleDone(){ //when actors done
         count--;
         if(end && count == 0){
             Send(writerId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
@@ -131,9 +131,9 @@ public:
         cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
     });
 
-    void HandleWakeup() {
+    void HandleWakeup() { //calculating the max divisor
         auto startTime = std::chrono::system_clock::now();
-        while (value > 1 && std::chrono::system_clock::now() - startTime < TDuration::MilliSeconds(10)) {
+        while (value > 1 && std::chrono::system_clock::now() - startTime < TDuration::MilliSeconds(10)) { // check 10 milsec and val>1
             while (value % current == 0) {
                 max = current;
                 value /= current;
@@ -141,10 +141,10 @@ public:
             current++;
         }
 
-        if (value > 1) {
+        if (value > 1) { //check that val is simple
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
-            if (current - 1 > max) {
+            if (current - 1 > max) { //check "is max is max?"
                 max = current - 1;
             }
             Send(writerId, std::make_unique<TEvents::TEvWriteValueRequest>(max));
@@ -193,10 +193,10 @@ TWriteActor
             sum += value;
         }
 
-        void HandlePoisonPill() {
-            std::cout << sum << std::endl;
-            ShouldContinue->ShouldStop();
-            PassAway();
+        void HandlePoisonPill() { //ending
+            std::cout << sum << std::endl; //show sum
+            ShouldContinue->ShouldStop(); //set flag
+            PassAway(); //end
         }
     };
 
