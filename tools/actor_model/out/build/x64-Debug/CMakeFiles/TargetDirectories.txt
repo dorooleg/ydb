@@ -1,0 +1,3 @@
+C:/ydb-ydb_assignment/tools/actor_model/out/build/x64-Debug/CMakeFiles/actor_model.dir
+C:/ydb-ydb_assignment/tools/actor_model/out/build/x64-Debug/CMakeFiles/edit_cache.dir
+C:/ydb-ydb_assignment/tools/actor_model/out/build/x64-Debug/CMakeFiles/rebuild_cache.dir

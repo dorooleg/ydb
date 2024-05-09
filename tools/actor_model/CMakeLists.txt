@@ -4,7 +4,8 @@
 # like target_include_directories). These modifications will be ported to original
 # ya.make files by maintainers. Any complex modifications which can't be ported back to the
 # original buildsystem will not be accepted.
-
+cmake_minimum_required(VERSION 3.15)
+project(kwork)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" AND NOT HAVE_CUDA)
   include(CMakeLists.linux-aarch64.txt)

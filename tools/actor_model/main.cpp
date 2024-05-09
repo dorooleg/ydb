@@ -14,8 +14,7 @@ THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 poo
     return setup;
 }
 
-int main(int argc, const char* argv[])
-{
+int main(int argc, const char* argv[]) {
     Y_UNUSED(argc, argv);
     auto actorySystemSetup = BuildActorSystemSetup(20, 1);
     NActors::TActorSystem actorSystem(actorySystemSetup);
@@ -23,14 +22,18 @@ int main(int argc, const char* argv[])
 
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
 
-    // Зарегистрируйте Write и Read акторы здесь
+    auto writeActorId = actorSystem.Register(new TWriteActor()); // создаем и заносим в систему актора, который будет писать
+    auto readActorId = actorSystem.Register(new TReadActor(writeActorId)); // ещё одного актора регистрируем, который читает, передаем ему id писателя
 
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
-    actorSystem.Stop();
-    actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    GetProgramShouldContinue()->SetWriteActorId(writeActorId); // сохраняем id писателя, чтобы потом знать, куда данные слать
+
+    // теперь блокируемся на цикле и ждем, когда акторы скажут, что пора завершаться
+    auto shouldContinue = GetProgramShouldContinue();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
+
+    actorSystem.Stop(); // останавливаем систему акторов, работа сделана
+    actorSystem.Cleanup(); // чистим за собой
+    return shouldContinue->GetReturnCode(); // возвращаем код завершения
 }
