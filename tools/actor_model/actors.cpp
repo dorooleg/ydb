@@ -82,71 +82,81 @@ public:
   TMaximumPrimeDivisorActor(int64_t Val, NActors::TActorId Rd, NActors::TActorId Wr)
       : Rd(Rd), Wr(Wr), Val(Val) {}
 
- void Bootstrap() {
-        Become(&TMaximumPrimeDivisorActor::StateFunc);
-        Send(SelfId(), new NActors::TEvents::TEvWakeup());
-    }
+  void Bootstrap() {
+    Become(&TMaximumPrimeDivisorActor::StateFunc);
+    Send(SelfId(), new NActors::TEvents::TEvWakeup());
+  }
 
 STFUNC(StateFunc) {
-    switch(ev->GetTypeRewrite()) {
-        case NActors::TEvents::TEvWakeup::EventType:
-            WakeupHandler();
-            break;
-        default:
-            break;
-    }
+  switch (ev->GetTypeRewrite()) {
+    case NActors::TEvents::TEvWakeup::EventType:
+      WakeupHandler();
+      break;
+    default:
+      break;
+  }
 }
 
-  void WakeupHandler() {
-    LastTime = TInstant::Now();
-    Flag = false;
+void WakeupHandler() {
+  LastTime = TInstant::Now();
+  Flag = false;
 
-    int64_t maxDivider = CalculateMaxPrimeDivisor(Val);
+  int64_t maxDivider = CalculateMaxPrimeDivisor(Val);
 
-    if (Flag) {
-      Send(SelfId(), new NActors::TEvents::TEvWakeup());
-    } else {
-      Send(Wr, new TEvents::TEvWriteValueRequest(maxDivider));
-      Send(Rd, new TEvents::TEvDone());
-      PassAway();
-    }
+  if (Flag) {
+    // Timeout
+    Send(SelfId(), new NActors::TEvents::TEvWakeup());
+  } else {
+    Send(Wr, new TEvents::TEvWriteValueRequest(maxDivider));
+    Send(Rd, new TEvents::TEvDone());
+    PassAway();
   }
-  int64_t CalculateMaxPrimeDivisor(int64_t val) {
-     int64_t max_divisor = -1;
+}
 
-    // **Проверка на квадратное число:**
-    int64_t sqrt_val = sqrt(val);
-    if (sqrt_val * sqrt_val == val) {
-        max_divisor = sqrt_val;
-        return max_divisor;
-    }
+int64_t CalculateMaxPrimeDivisor(int64_t val) {
+  int64_t max_divisor = -1;
 
-    // Проверка на четность
-    while (val % 2 == 0) {
-        max_divisor = 2;
-        val /= 2;
-    }
-
-    // Поиск простых делителей
-    for (int64_t i = 3; i * i <= val; ++i) {
-        while (val % i == 0) {
-            max_divisor = i;
-            val /= i;
-        }
-    }
-
-    // Обработка оставшегося числа
-    if (val > 2) {
-        max_divisor = val;
-    }
-
+  // **Проверка на квадратное число:**
+  int64_t sqrt_val = sqrt(val);
+  if (sqrt_val * sqrt_val == val) {
+    max_divisor = sqrt_val;
     return max_divisor;
   }
 
-  bool CheckExecutionTime() {
-      auto now = TInstant::Now();
-      return static_cast<int64_t>(now.MilliSeconds() - LastTime.MilliSeconds()) >= MAX_TIMEOUT;
+  // Проверка на четность
+  while (val % 2 == 0) {
+    max_divisor = 2;
+    val /= 2;
+
+    if (CheckExecutionTime()) {
+      Flag = true;
+      return 1; 
+    }
   }
+
+  for (int64_t i = 3; i * i <= val; ++i) {
+    while (val % i == 0) {
+      max_divisor = i;
+      val /= i;
+
+      if (CheckExecutionTime()) {
+        Flag = true;
+        return 1; 
+      }
+    }
+  }
+
+  if (val > 2) {
+    max_divisor = val;
+  }
+
+  return max_divisor;
+}
+
+bool CheckExecutionTime() {
+  auto now = TInstant::Now();
+  return static_cast<int64_t>(now.MilliSeconds() - LastTime.MilliSeconds()) >= MAX_TIMEOUT;
+}
 };
 
 NActors::IActor* CreateDivideActor(int64_t val, NActors::TActorId rd, NActors::TActorId wr) {
