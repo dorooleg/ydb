@@ -18,25 +18,32 @@ static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 5. Далее актор посылает себе сообщение NActors::TEvents::TEvWakeup чтобы не блокировать поток этим актором
 6. Актор дожидается завершения всех TMaximumPrimeDevisorActor через TEvents::TEvDone
 7. Когда чтение из файла завершено и получены подтверждения от всех TMaximumPrimeDevisorActor,
-этот актор отправляет сообщение NActors::TEvents::TEvPoisonPill в TWriteActor
+этот актор отправляет сообщение NActors::TEvents::TEvPoisonPill в TWriteActor*/
 
-TReadActor
-    Bootstrap:
-        send(self, NActors::TEvents::TEvWakeup)
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+
+public:
+    TReadActor() {}
+    void Bootstrap() {}
+};
+
+//class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+    /*Bootstrap:
+        send(self, NActors::TEvents::TEvWakeup);
 
     NActors::TEvents::TEvWakeup:
         if read(strm) -> value:
-            register(TMaximumPrimeDevisorActor(value, self, receipment))
-            send(self, NActors::TEvents::TEvWakeup)
+            register(TMaximumPrimeDevisorActor(value, self, receipment));
+            send(self, NActors::TEvents::TEvWakeup);
         else:
-            ...
+            //
 
     TEvents::TEvDone:
         if Finish:
-            send(receipment, NActors::TEvents::TEvPoisonPill)
+            send(receipment, NActors::TEvents::TEvPoisonPill);
         else:
-            ...
-*/
+            //*/
+//};
 
 // TODO: напишите реализацию TReadActor
 
@@ -52,21 +59,27 @@ TReadActor
 4. По истечении этого времени нужно сохранить текущее состояние вычислений в акторе и отправить себе NActors::TEvents::TEvWakeup
 5. Когда результат вычислен он посылается в TWriteActor c использованием сообщения TEvWriteValueRequest
 6. Далее отправляет ReadActor сообщение TEvents::TEvDone
-7. Завершает свою работу
+7. Завершает свою работу */
 
-TMaximumPrimeDevisorActor
-    Bootstrap:
-        send(self, NActors::TEvents::TEvWakeup)
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
 
+public:
+    TMaximumPrimeDevisorActor() {}
+    void Bootstrap() {}
+};
+
+//class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
+    /*Bootstrap:
+        send(self, NActors::TEvents::TEvWakeup);
     NActors::TEvents::TEvWakeup:
-        calculate
+        calculate;
         if > 10 ms:
-            Send(SelfId(), NActors::TEvents::TEvWakeup)
+            Send(SelfId(), NActors::TEvents::TEvWakeup);
         else:
-            Send(WriteActor, TEvents::TEvWriteValueRequest)
-            Send(ReadActor, TEvents::TEvDone)
-            PassAway()
-*/
+            Send(WriteActor, TEvents::TEvWriteValueRequest);
+            Send(ReadActor, TEvents::TEvDone);
+            PassAway();*/
+//};
 
 // TODO: напишите реализацию TMaximumPrimeDevisorActor
 
@@ -76,16 +89,23 @@ TMaximumPrimeDevisorActor
 2. Этот актор получает два типа сообщений NActors::TEvents::TEvPoisonPill::EventType и TEvents::TEvWriteValueRequest
 2. В случае TEvents::TEvWriteValueRequest он принимает результат посчитанный в TMaximumPrimeDevisorActor и прибавляет его к локальной сумме
 4. В случае NActors::TEvents::TEvPoisonPill::EventType актор выводит в Cout посчитанную локальнкую сумму, проставляет ShouldStop и завершает свое выполнение через PassAway
+*/
 
-TWriteActor
-    TEvents::TEvWriteValueRequest ev:
-        Sum += ev->Value
+class TWriteActor : public NActors::TActorBootstrapped<TWriteActor> {
 
+public:
+    TWriteActor() {}
+    void Bootstrap() {}
+};
+
+//class TWriteActor : public NActors::TActorBootstrapped<TWriteActor> {
+    /*TEvents::TEvWriteValueRequest ev:
+        Sum += ev -> Value;
     NActors::TEvents::TEvPoisonPill::EventType:
         Cout << Sum << Endl;
-        ShouldStop()
-        PassAway()
-*/
+        ShouldStop();
+        PassAway();*/
+//};
 
 // TODO: напишите реализацию TWriteActor
 
@@ -93,10 +113,9 @@ class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
     TInstant LastTime;
 
+
 public:
-    TSelfPingActor(const TDuration& latency)
-        : Latency(latency)
-    {}
+    TSelfPingActor(const TDuration& latency) : Latency(latency) {}
 
     void Bootstrap() {
         LastTime = TInstant::Now();
@@ -119,6 +138,18 @@ public:
 
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
+}
+
+THolder<NActors::IActor> CreateReadActor() { // TODO
+    return MakeHolder<TReadActor>();
+}
+
+THolder<NActors::IActor> CreateMaximumPrimeDevisorActor() { // TODO
+    return MakeHolder<TMaximumPrimeDevisorActor>();
+}
+
+THolder<NActors::IActor> CreateWriteActor() { // TODO
+    return MakeHolder<TWriteActor>();
 }
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
