@@ -11,3 +11,4 @@ __pycache__/
 # Steplet ignors
 build/*.cmake
 build/CMake*
+.vscode

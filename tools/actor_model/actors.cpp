@@ -40,6 +40,17 @@ TReadActor
 
 // TODO: напишите реализацию TReadActor
 
+class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
+    private:
+        NActors::TActorId writer_id;
+        int actors_counter = 0;
+
+    public:
+        TReadActor(NActors::TActorId writer_id)
+        :
+}
+
+
 /*
 Требования к TMaximumPrimeDevisorActor:
 1. Рекомендуется отнаследовать этот актор от NActors::TActorBootstrapped
