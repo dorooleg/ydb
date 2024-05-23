@@ -4,7 +4,6 @@
 #include <library/cpp/actors/core/hfunc.h>
 
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
-
 /*
 Вам нужно написать реализацию TReadActor, TMaximumPrimeDevisorActor, TWriteActor
 */
@@ -42,13 +41,58 @@ TReadActor
 
 class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
     private:
+
         NActors::TActorId writer_id;
         int actors_counter = 0;
+        bool finish= false;
+
+        void Handel(NActors::TEvents::TEvWakeup::TPtr ev){
+            Y_UNUSED(ev);
+            int64_t input;
+            while (std::cin >> input){
+                // register divizer
+                actors_counter ++;
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            }
+
+            finish = true;
+        }
+
+        void Handel(TEvents::TEvDone::TPtr ev){
+            Y_UNUSED(ev);
+            actors_counter --;
+            if (actors_counter == 0 && finish)
+            {
+                Send(writer_id, std::make_unique<NActors::TEvents::TEvPoisonPill>())
+            }
+            
+        }
+
 
     public:
+
         TReadActor(NActors::TActorId writer_id)
-        :
-}
+        : writer_id(writer_id){}
+    
+        void Bootstrap() {
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            Become(&TThis::StateFunc);
+            
+        }
+
+        STFUNC(StateFunc) {
+            switch (ev->GetTypeRewrite)
+            {
+            case NActors::TEvents::TEvWakeup::EventType:
+                cFunc(NActors::TEvents::TEvWakeup, Handel)
+            
+            case TEvents::TEvDone::EventType :
+                cFunc(TEvents::TEvDone, Handel)
+            }
+        };
+
+
+};
 
 
 /*
