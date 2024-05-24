@@ -46,24 +46,25 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
         int actors_counter = 0;
         bool finish= false;
 
-        void Handel(NActors::TEvents::TEvWakeup::TPtr ev){
-            Y_UNUSED(ev);
+        void Handel(){
+            // std::cout << "handel" << std::endl;
             int64_t input;
             while (std::cin >> input){
-                Register(CreateTMaximumPrimeDevisorActor(SelfId(), writer_id, input).Release())
+                Register(CreateTMaximumPrimeDevisorActor(SelfId(), writer_id, input).Release());
                 actors_counter ++;
                 Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
             }
 
             finish = true;
+            // std::cout << "handel_finish" << std::endl;
         }
 
-        void Handel(TEvents::TEvDone::TPtr ev){
-            Y_UNUSED(ev);
+        void HandelDone(){
+            // std::cout << "handelDONE" << std::endl;
             actors_counter --;
             if (actors_counter == 0 && finish)
             {
-                Send(writer_id, std::make_unique<NActors::TEvents::TEvPoisonPill>())
+                Send(writer_id, std::make_unique<NActors::TEvents::TEvPoisonPill>());
             }
             
         }
@@ -75,28 +76,22 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
         : writer_id(writer_id){}
     
         void Bootstrap() {
-            Become(&TThis::StateFunc);
+            // std::cout << "test" << std::endl;
+            Become(&TReadActor::StateFunc);
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
             
         }
 
-        STFUNC(StateFunc) {
-            switch (ev->GetTypeRewrite())
-            {
-            case NActors::TEvents::TEvWakeup::EventType:
-                cFunc(NActors::TEvents::TEvWakeup, Handel)
-            
-            case TEvents::TEvDone::EventType :
-                cFunc(TEvents::TEvDone, Handel)
-            }
-        };
-
-        THolder<NActors::IActor> CreateTReadActor(NActors::TActorId writer_id) {
-            return MakeHolder<TReadActor>(writer_id);
-}
-
+        STRICT_STFUNC(StateFunc, {
+            cFunc(NActors::TEvents::TEvWakeup::EventType, Handel);
+            cFunc(TEvents::TEvDone::EventType, HandelDone);
+        });
 
 };
+
+    THolder<NActors::IActor> CreateTReadActor(NActors::TActorId writer_id) {
+        return MakeHolder<TReadActor>(writer_id);
+}
 
 
 /*
@@ -135,8 +130,8 @@ private:
     NActors::TActorId reader_id;
     NActors::TActorId writer_id;
     int64_t value;
-    bool time_out;
-    std::chrono::time_point<chrono::high_resolution_clock> time_start;
+    bool time_out = false;
+    TInstant time_start;
 
 
 public:
@@ -146,27 +141,26 @@ public:
     , writer_id(writer_id){}
 
     void Bootstrap() {
-    Become(&TThis::StateFunc);
+    Become(&TMaximumPrimeDevisorActor::StateFunc);
     Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
-    STFUNC(StateFunc) {
-    switch (ev->GetTypeRewrite())
-    {
-    case NActors::TEvents::TEvWakeup::EventType:
-        cFunc(NActors::TEvents::TEvWakeup, Handel)
-    
-    }
-    };
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, Handel);
+    });
 
-    void Handel(TEvents::TEvWakeup::TPtr ev){
-        Y_UNUSED(ev);
-        time_start = std::chrono::high_resolution_clock::now();
+    void Handel(){
+        // std::cout << "handel DIVizer start" << std::endl;
+        time_start = TInstant::Now();
         int64_t div = CalcMaxPrimeDiv(value);
+        // std::cout << "time out "<< std::endl;
+        // std::cout << time_out << std::endl;
         if (time_out)
-        {
+        {   
+            // std::cout << "handel DIVizer time out true" << std::endl;
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         }else{
+            // std::cout << "handel DIVizer finish" << std::endl;
             Send(writer_id, std::make_unique<TEvents::TEvWriteValueRequest>(div));
             Send(reader_id, std::make_unique<TEvents::TEvDone>());
             PassAway();
@@ -176,17 +170,20 @@ public:
     }
 
     int64_t CalcMaxPrimeDiv(int64_t value){
+        std::cout << "calc start" << std::endl;
+        std::cout << value << std::endl;
         int64_t result = 0;
-        if (value == 1){
-            return 1
+        if (value == 1 || value == 0){
+            // std::cout << "calc return 1" << std::endl;
+            return value;
         }
         while (value % 2 == 0)
         {
             result = 2;
             value /= 2;
-            auto time_now = chrono::high_resolution_clock::now();
-            chrono::duration<double, milli> time_m = time_now - time_start;
-            if (time_m.count() > 10.0){
+            auto time_now = TInstant::Now();
+            TDuration time_m = time_now - time_start;
+            if (time_m > TDuration::MilliSeconds(10)){
                 time_out = true;
                 return result;
             }
@@ -196,9 +193,9 @@ public:
                 while (value % i == 0) {
                     result = i;
                     value /= i;
-                    auto time_now = chrono::high_resolution_clock::now();
-                    chrono::duration<double, milli> time_m = time_now - time_begin;
-                    if (time_m.count() > 10.0) {
+                    auto time_now = TInstant::Now();
+                    TDuration time_m = time_now - time_start;
+                    if (time_m > TDuration::MilliSeconds(10)) {
                         time_out = true;
                         return result;
                     }
@@ -213,13 +210,11 @@ public:
 
     }
 
-    THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(NActors::TActorIdentity read_id, NActors::TActorId write_id, int64_t value) {
-       return MakeHolder<TMaximumPrimeDevisorActor>(read_id, write_id, value);
+};
+
+    THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(NActors::TActorId read_id, NActors::TActorId write_id, int64_t value) {
+       return MakeHolder<TMaximumPrimeDevisorActor>(value, read_id, write_id);
 }
-
-
-}
-
 /*
 Требования к TWriteActor:
 1. Рекомендуется отнаследовать этот актор от NActors::TActor
@@ -241,29 +236,31 @@ TWriteActor
 
 class TWriteActor : public NActors::TActor<TWriteActor>{
     private:
-        int64_t res;
+        int64_t res = 0;
 
     public:
-    TWriteActor():TActor(&TWriteActor::StateFunc), res(0) {}
+    TWriteActor():TActor(&TWriteActor::StateFunc) {}
 
-    STFUNC(StateFunc) {
+    STRICT_STFUNC(StateFunc, {
          hFunc(TEvents::TEvWriteValueRequest, GetVal);
          cFunc(NActors::TEvents::TEvPoisonPill::EventType, Output);
-    }
+    });
 
     void GetVal(TEvents::TEvWriteValueRequest::TPtr& ev){
         res += ev->Get()->value;
     }
 
     void Output(){
-        std::cout << summ << std::endl;
+        std::cout << res << std::endl;
         GetProgramShouldContinue()->ShouldStop();
         PassAway();
     }
+
+
+};
+
     THolder<NActors::IActor> CreateTWriteActor() {
        return MakeHolder<TWriteActor>();
-}
-
 }
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
