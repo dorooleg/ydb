@@ -50,7 +50,7 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
             Y_UNUSED(ev);
             int64_t input;
             while (std::cin >> input){
-                // register divizer
+                Register(MakeHolder<TMaximumPrimeDevisorActor>(SelfId(), writer_id, input).Release())
                 actors_counter ++;
                 Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
             }
@@ -75,13 +75,13 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
         : writer_id(writer_id){}
     
         void Bootstrap() {
-            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
             Become(&TThis::StateFunc);
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
             
         }
 
         STFUNC(StateFunc) {
-            switch (ev->GetTypeRewrite)
+            switch (ev->GetTypeRewrite())
             {
             case NActors::TEvents::TEvWakeup::EventType:
                 cFunc(NActors::TEvents::TEvWakeup, Handel)
@@ -125,6 +125,93 @@ TMaximumPrimeDevisorActor
 
 // TODO: напишите реализацию TMaximumPrimeDevisorActor
 
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor>
+{
+private:
+    NActors::TActorId reader_id;
+    NActors::TActorId writer_id;
+    int64_t value;
+    bool time_out;
+    std::chrono::time_point<chrono::high_resolution_clock> time_start;
+
+
+public:
+    TMaximumPrimeDevisorActor(int64_t value, NActors::TActorId reader_id, NActors::TActorId writer_id)
+    : value(value)
+    , reader_id(reader_id)
+    , writer_id(writer_id){}
+
+    void Bootstrap() {
+    Become(&TThis::StateFunc);
+    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STFUNC(StateFunc) {
+    switch (ev->GetTypeRewrite())
+    {
+    case NActors::TEvents::TEvWakeup::EventType:
+        cFunc(NActors::TEvents::TEvWakeup, Handel)
+    
+    }
+    };
+
+    void Handel(TEvents::TEvWakeup::TPtr ev){
+        Y_UNUSED(ev);
+        time_start = std::chrono::high_resolution_clock::now();
+        int64_t div = CalcMaxPrimeDiv(value);
+        if (time_out)
+        {
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        }else{
+            Send(writer_id, std::make_unique<TEvents::TEvWriteValueRequest>(div));
+            Send(reader_id, std::make_unique<TEvents::TEvDone>());
+            PassAway();
+        }
+        
+
+    }
+
+    int64_t CalcMaxPrimeDiv(int64_t value){
+        int64_t result = 0;
+        if (value == 1){
+            return 1
+        }
+        while (value % 2 == 0)
+        {
+            result = 2;
+            value /= 2;
+            auto time_now = chrono::high_resolution_clock::now();
+            chrono::duration<double, milli> time_m = time_now - time_start;
+            if (time_m.count() > 10.0){
+                time_out = true;
+                return result;
+            }
+        }
+
+        for (int i = 3; i <= sqrt(value); i += 2) {
+                while (value % i == 0) {
+                    result = i;
+                    value /= i;
+                    auto time_now = chrono::high_resolution_clock::now();
+                    chrono::duration<double, milli> time_m = time_now - time_begin;
+                    if (time_m.count() > 10.0) {
+                        time_out = true;
+                        return result;
+                    }
+                }
+            }
+        if (value > 1) {
+            result = value;
+        }
+
+        return result;
+        
+
+    }
+
+
+}
+
 /*
 Требования к TWriteActor:
 1. Рекомендуется отнаследовать этот актор от NActors::TActor
@@ -143,6 +230,30 @@ TWriteActor
 */
 
 // TODO: напишите реализацию TWriteActor
+
+class TWriteActor : public NActors::TActor<TWriteActor>{
+    private:
+        int64_t res;
+
+    public:
+    TWriteActor():TActor(&TWriteActor::StateFunc), res(0) {}
+
+    STFUNC(StateFunc) {
+         hFunc(TEvents::TEvWriteValueRequest, GetVal);
+         cFunc(NActors::TEvents::TEvPoisonPill::EventType, Output);
+    }
+
+    void GetVal(TEvents::TEvWriteValueRequest::TPtr& ev){
+        res += ev->Get()->value;
+    }
+
+    void Output(){
+        std::cout << summ << std::endl;
+        GetProgramShouldContinue()->ShouldStop();
+        PassAway();
+    }
+
+}
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
