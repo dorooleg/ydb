@@ -50,7 +50,7 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
             Y_UNUSED(ev);
             int64_t input;
             while (std::cin >> input){
-                Register(MakeHolder<TMaximumPrimeDevisorActor>(SelfId(), writer_id, input).Release())
+                Register(CreateTMaximumPrimeDevisorActor(SelfId(), writer_id, input).Release())
                 actors_counter ++;
                 Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
             }
@@ -90,6 +90,10 @@ class TReadActor: public NActors::TActorBootstrapped<TReadActor> {
                 cFunc(TEvents::TEvDone, Handel)
             }
         };
+
+        THolder<NActors::IActor> CreateTReadActor(NActors::TActorId writer_id) {
+            return MakeHolder<TReadActor>(writer_id);
+}
 
 
 };
@@ -209,6 +213,10 @@ public:
 
     }
 
+    THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(NActors::TActorIdentity read_id, NActors::TActorId write_id, int64_t value) {
+       return MakeHolder<TMaximumPrimeDevisorActor>(read_id, write_id, value);
+}
+
 
 }
 
@@ -252,6 +260,9 @@ class TWriteActor : public NActors::TActor<TWriteActor>{
         GetProgramShouldContinue()->ShouldStop();
         PassAway();
     }
+    THolder<NActors::IActor> CreateTWriteActor() {
+       return MakeHolder<TWriteActor>();
+}
 
 }
 
