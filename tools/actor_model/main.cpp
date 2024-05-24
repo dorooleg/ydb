@@ -18,29 +18,26 @@ int main(int argc, const char* argv[])
 {
     Y_UNUSED(argc, argv);
     auto actorySystemSetup = BuildActorSystemSetup(20, 1); // 20 threads, 1 pool
-    NActors::TActorSystem actorSystem(actorySystemSetup);  // creating actorSystem from Setup
-    actorSystem.Start(); // START
+    NActors::TActorSystem actorSystem(actorySystemSetup);
+    actorSystem.Start();
 
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
 
-    // Зарегистрируйте Write и Read акторы здесь
+    // Зарегистрируйте Write и Read акторы
 
-    actorSystem.Register(CreateReadActor().Release());
-    actorSystem.Register(CreateMaximumPrimeDevisorActor().Release());
-    actorSystem.Register(CreateWriteActor().Release());
-
-    std::cout << "Yep i am working\n";
+    NActors::TActorId writeActor = actorSystem.Register(CreateWriteActor().Release());
+    actorSystem.Register(CreateReadActor(std::cin, writeActor).Release());
 
     // Раскомментируйте этот код
 
     auto shouldContinue = GetProgramShouldContinue();
 
-    /*while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
         Sleep(TDuration::MilliSeconds(200));
-    }*/
+    }
 
-    actorSystem.Stop();    // STOP
-    actorSystem.Cleanup(); // DESTROY
+    actorSystem.Stop();
+    actorSystem.Cleanup();
 
     return shouldContinue->GetReturnCode();
 }
