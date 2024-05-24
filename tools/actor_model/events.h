@@ -2,5 +2,9 @@
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents {
-    // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
+    struct TEventFinish : public NActors::TEventLocal<TEventFinish, NActors::TEvents::ES_PRIVATE> {};
+    struct TEventWriteValueRequest : public NActors::TEventLocal<TEventWriteValueRequest, NActors::TEvents::ES_PRIVATE> {
+        int64_t Value;
+        TEventWriteValueRequest(int64_t value) : Value(value) {}
+    };
 };

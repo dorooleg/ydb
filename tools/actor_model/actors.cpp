@@ -2,92 +2,117 @@
 #include "events.h"
 #include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/events.h>
+#include <util/system/datetime.h>
+#include <cmath>
 
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
-/*
-Вам нужно написать реализацию TReadActor, TMaximumPrimeDevisorActor, TWriteActor
-*/
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
 
-/*
-Требования к TReadActor:
-1. Рекомендуется отнаследовать этот актор от NActors::TActorBootstrapped
-2. В Boostrap этот актор отправляет себе NActors::TEvents::TEvWakeup
-3. После получения этого сообщения считывается новое int64_t значение из strm
-4. После этого порождается новый TMaximumPrimeDevisorActor который занимается вычислениями
-5. Далее актор посылает себе сообщение NActors::TEvents::TEvWakeup чтобы не блокировать поток этим актором
-6. Актор дожидается завершения всех TMaximumPrimeDevisorActor через TEvents::TEvDone
-7. Когда чтение из файла завершено и получены подтверждения от всех TMaximumPrimeDevisorActor,
-этот актор отправляет сообщение NActors::TEvents::TEvPoisonPill в TWriteActor
+    public: TReadActor(std::istream& strm, NActors::TActorId recipient) : inputStream(strm), writeActorId(recipient) {}
+    std::istream& inputStream;
+    NActors::TActorId writeActorId;
+    int actorsNumber = 0;
+    bool isInputFinished = false;
 
-TReadActor
-    Bootstrap:
-        send(self, NActors::TEvents::TEvWakeup)
+    void Bootstrap() {
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        Become(&TReadActor::StateFunc);
+    }
 
-    NActors::TEvents::TEvWakeup:
-        if read(strm) -> value:
-            register(TMaximumPrimeDevisorActor(value, self, receipment))
-            send(self, NActors::TEvents::TEvWakeup)
-        else:
-            ...
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        cFunc(TEvents::TEventFinish::EventType, HandleFinished);
+    });
 
-    TEvents::TEvDone:
-        if Finish:
-            send(receipment, NActors::TEvents::TEvPoisonPill)
-        else:
-            ...
-*/
+    void HandleWakeup() {
+        int64_t value;
+        while (inputStream >> value) {
+            Register(CreateMaximumPrimeDevisorActor(value, SelfId(), writeActorId).Release());
+            ++actorsNumber;
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        }
+        isInputFinished = true;
+    }
 
-// TODO: напишите реализацию TReadActor
+    void HandleFinished() {
+        --actorsNumber;
+        if (isInputFinished && actorsNumber <= 0) {
+            Send(writeActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+            PassAway();
+        }
+    }
 
-/*
-Требования к TMaximumPrimeDevisorActor:
-1. Рекомендуется отнаследовать этот актор от NActors::TActorBootstrapped
-2. В конструкторе этот актор принимает:
- - значение для которого нужно вычислить простое число
- - ActorId отправителя (ReadActor)
- - ActorId получателя (WriteActor)
-2. В Boostrap этот актор отправляет себе NActors::TEvents::TEvWakeup по вызову которого происходит вызов Handler для вычислений
-3. Вычисления нельзя проводить больше 10 миллисекунд
-4. По истечении этого времени нужно сохранить текущее состояние вычислений в акторе и отправить себе NActors::TEvents::TEvWakeup
-5. Когда результат вычислен он посылается в TWriteActor c использованием сообщения TEvWriteValueRequest
-6. Далее отправляет ReadActor сообщение TEvents::TEvDone
-7. Завершает свою работу
+};
 
-TMaximumPrimeDevisorActor
-    Bootstrap:
-        send(self, NActors::TEvents::TEvWakeup)
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
 
-    NActors::TEvents::TEvWakeup:
-        calculate
-        if > 10 ms:
-            Send(SelfId(), NActors::TEvents::TEvWakeup)
-        else:
-            Send(WriteActor, TEvents::TEvWriteValueRequest)
-            Send(ReadActor, TEvents::TEvDone)
-            PassAway()
-*/
+    public: TMaximumPrimeDevisorActor(int64_t value, NActors::TActorId readActorId, NActors::TActorId recipient)
+        : value(value), readActorId(readActorId), writeActorId(recipient) {}
+    int64_t value;
+    NActors::TActorId readActorId;
+    NActors::TActorId writeActorId;
+    int64_t CurrentDivisor = 1;
+    int64_t MaxPrimeDivisor = 0;
 
-// TODO: напишите реализацию TMaximumPrimeDevisorActor
+    void Bootstrap() {
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        Become(&TMaximumPrimeDevisorActor::StateFunc);
+    }
 
-/*
-Требования к TWriteActor:
-1. Рекомендуется отнаследовать этот актор от NActors::TActor
-2. Этот актор получает два типа сообщений NActors::TEvents::TEvPoisonPill::EventType и TEvents::TEvWriteValueRequest
-2. В случае TEvents::TEvWriteValueRequest он принимает результат посчитанный в TMaximumPrimeDevisorActor и прибавляет его к локальной сумме
-4. В случае NActors::TEvents::TEvPoisonPill::EventType актор выводит в Cout посчитанную локальнкую сумму, проставляет ShouldStop и завершает свое выполнение через PassAway
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    });
 
-TWriteActor
-    TEvents::TEvWriteValueRequest ev:
-        Sum += ev->Value
+    void HandleWakeup() {
+        TInstant startTime = TInstant::Now();
+        while (CurrentDivisor <= value) {
+            if (value % CurrentDivisor == 0 && IsPrime(CurrentDivisor)) {
+                MaxPrimeDivisor = CurrentDivisor;
+            }
+            CurrentDivisor++;
+            if ((TInstant::Now() - startTime).MilliSeconds() >= 10) {
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            }
+        }
+        Send(writeActorId, std::make_unique<TEvents::TEventWriteValueRequest>(MaxPrimeDivisor));
+        Send(readActorId, std::make_unique<TEvents::TEventFinish>());
+        PassAway();
+    }
 
-    NActors::TEvents::TEvPoisonPill::EventType:
-        Cout << Sum << Endl;
-        ShouldStop()
-        PassAway()
-*/
+    static bool IsPrime(int64_t n) {
+        if (n <= 3) return true;
+        if (n % 2 == 0 || n % 3 == 0) return false;
+        for (int64_t i = 5; i * i <= n; i += 6) {
+            if (n % i == 0 || n % (i + 2) == 0) return false;
+        }
+        return true;
+    }
+};
 
-// TODO: напишите реализацию TWriteActor
+
+class TWriteActor : public NActors::TActor<TWriteActor> {
+
+    public: TWriteActor() : TActor(&TWriteActor::StateFunc) {}
+    int64_t Sum = 0;
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
+        hFunc(TEvents::TEventWriteValueRequest, HandleWriteValueRequest);
+    });
+
+    void HandleWriteValueRequest(TEvents::TEventWriteValueRequest::TPtr event) {
+        Sum += event->Get()->Value;
+    }
+
+    void HandlePoisonPill() {
+        Cout<<Sum<<Endl;
+        GetProgramShouldContinue()->ShouldStop();
+        PassAway();
+    }
+};
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
@@ -119,6 +144,18 @@ public:
 
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
+}
+
+THolder<NActors::IActor> CreateWriteActor() {
+    return MakeHolder<TWriteActor>();
+}
+
+THolder<NActors::IActor> CreateReadActor(std::istream& strm, NActors::TActorId recipient) {
+    return MakeHolder<TReadActor>(strm, recipient);
+}
+
+THolder<NActors::IActor> CreateMaximumPrimeDevisorActor(int64_t value, NActors::TActorId readActorId, NActors::TActorId recipient) {
+    return MakeHolder<TMaximumPrimeDevisorActor>(value, readActorId, recipient);
 }
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
