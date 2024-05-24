@@ -276,7 +276,7 @@ Y_UNIT_TEST_SUITE(TErasureTypeTest) {
                                 isRestoreParts = true;
                                 break;
                             default:
-                                Y_ABORT();
+                                Y_FAIL();
                         }
 
                         partSet = originalPartSet;
@@ -378,7 +378,7 @@ Y_UNIT_TEST_SUITE(TErasureTypeTest) {
 //                    TString base = GenerateRandomString(1);
 //                    rope.Insert(rope.End(), TRopeHelpers::RopeFromStringReference(base));
 //                }
-//                Y_ABORT_UNLESS(rope.GetSize() == dataSize);
+//                Y_VERIFY(rope.GetSize() == dataSize);
 //                return rope;
 //            };
 //            TestAllLossesDifferentSizes<maxMissingParts>(groupType, maxParts, ropeGen);
@@ -395,7 +395,7 @@ Y_UNIT_TEST_SUITE(TErasureTypeTest) {
 //                    TString base = GenerateRandomString(dataSize - rope.GetSize());
 //                    rope.Insert(rope.End(), TRopeHelpers::RopeFromStringReference(base));
 //                }
-//                Y_ABORT_UNLESS(rope.GetSize() == dataSize);
+//                Y_VERIFY(rope.GetSize() == dataSize);
 //                return rope;
 //            };
 //            TestAllLossesDifferentSizes<maxMissingParts>(groupType, maxParts, ropeGen);
@@ -417,7 +417,7 @@ Y_UNIT_TEST_SUITE(TErasureTypeTest) {
 //                        rope.Insert(rope.End(), TRopeHelpers::RopeFromStringReference(base));
 //                    }
 //                }
-//                Y_ABORT_UNLESS(rope.GetSize() == dataSize);
+//                Y_VERIFY(rope.GetSize() == dataSize);
 //                return rope;
 //            };
 //            TestAllLossesDifferentSizes<maxMissingParts>(groupType, maxParts, ropeGen);
@@ -551,7 +551,7 @@ Y_UNIT_TEST_SUITE(TErasureTypeTest) {
                         isRestoreParityParts = true;
                         break;
                     default:
-                        Y_ABORT();
+                        Y_FAIL();
                 }
                 partSet = originalPartSet;
                 partSet.ResetWithFullCopy();
@@ -580,9 +580,9 @@ Y_UNIT_TEST_SUITE(TErasureTypeTest) {
                 }
                 for (ui32 part = 0; part < groupType.TotalPartCount(); ++part) {
                     if (part < groupType.DataParts() && isRestoreParts) {
-                        Y_ABORT_UNLESS(CheckCrcAtTheEnd(crcMode, partSet.Parts[part].OwnedRope));
+                        Y_VERIFY(CheckCrcAtTheEnd(crcMode, partSet.Parts[part].OwnedRope));
                     } else if (part >= groupType.DataParts() && isRestoreParityParts) {
-                        Y_ABORT_UNLESS(CheckCrcAtTheEnd(crcMode, partSet.Parts[part].OwnedRope));
+                        Y_VERIFY(CheckCrcAtTheEnd(crcMode, partSet.Parts[part].OwnedRope));
                     }
                 }
                 TString restoredString = restoredRope.ConvertToString();

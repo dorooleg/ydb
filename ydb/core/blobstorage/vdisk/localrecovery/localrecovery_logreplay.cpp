@@ -111,7 +111,7 @@ namespace NKikimr {
                 Finish(ctx, ReadLogCtx->Msg->Status, "Recovery log read failed");
                 return;
             } else {
-                Y_ABORT_UNLESS(ReadLogCtx->Msg->Position == PrevLogPos);
+                Y_VERIFY(ReadLogCtx->Msg->Position == PrevLogPos);
                 // update RecovInfo
                 LocRecCtx->RecovInfo->HandleReadLogResult(ReadLogCtx->Msg->Results);
                 // run dispatcher
@@ -132,7 +132,7 @@ namespace NKikimr {
                     case EDispatchStatus::Async:
                         return; // wait for async call
                     default:
-                        Y_ABORT("Unexpected case");
+                        Y_FAIL("Unexpected case");
                 }
             }
 
@@ -149,7 +149,6 @@ namespace NKikimr {
                 LocRecCtx->RepairedHuge->FinishRecovery(ctx);
                 VerifyOwnedChunks(ctx);
 
-                LocRecCtx->VCtx->LocalRecoveryErrorStr = "";
                 Finish(ctx, NKikimrProto::OK, {});
             }
         }
@@ -384,10 +383,9 @@ namespace NKikimr {
             const bool fromVPutCommand = true;
             const TLogoBlobID id = LogoBlobIDFromLogoBlobID(PutMsg.GetBlobID());
             const TString &buf = PutMsg.GetBuffer();
-            TMaybe<TIngress> ingress = TIngress::CreateIngressWithLocal(LocRecCtx->VCtx->Top.get(), LocRecCtx->VCtx->ShortSelfVDisk, id);
-            Y_VERIFY_S(ingress, "Failed to create ingress, VDiskId# " << LocRecCtx->VCtx->ShortSelfVDisk << ", BlobId# " << id);
+            TIngress ingress = *TIngress::CreateIngressWithLocal(LocRecCtx->VCtx->Top.get(), LocRecCtx->VCtx->ShortSelfVDisk, id);
 
-            PutLogoBlobToHullAndSyncLog(ctx, record.Lsn, id, *ingress, buf, fromVPutCommand);
+            PutLogoBlobToHullAndSyncLog(ctx, record.Lsn, id, ingress, buf, fromVPutCommand);
             return EDispatchStatus::Success;
         }
 
@@ -397,12 +395,10 @@ namespace NKikimr {
                 return EDispatchStatus::Error;
 
             const bool fromVPutCommand = true;
-            TMaybe<TIngress> ingress = TIngress::CreateIngressWithLocal(LocRecCtx->VCtx->Top.get(), LocRecCtx->VCtx->ShortSelfVDisk,
+            TIngress ingress = *TIngress::CreateIngressWithLocal(LocRecCtx->VCtx->Top.get(), LocRecCtx->VCtx->ShortSelfVDisk,
                 PutMsgOpt.Id);
-            Y_VERIFY_S(ingress, "Failed to create ingress, VDiskId# " << LocRecCtx->VCtx->ShortSelfVDisk << 
-                    ", BlobId# " << PutMsgOpt.Id);
 
-            PutLogoBlobToHullAndSyncLog(ctx, record.Lsn, PutMsgOpt.Id, *ingress, PutMsgOpt.Data, fromVPutCommand);
+            PutLogoBlobToHullAndSyncLog(ctx, record.Lsn, PutMsgOpt.Id, ingress, PutMsgOpt.Data, fromVPutCommand);
             return EDispatchStatus::Success;
         }
 
@@ -435,7 +431,7 @@ namespace NKikimr {
             fragment.ForEach(count, count, count, count);
 
             // calculate lsn
-            Y_DEBUG_ABORT_UNLESS(recordLsn >= recsNum, "recordLsn# %" PRIu64 " recsNum# %" PRIu64,
+            Y_VERIFY_DEBUG(recordLsn >= recsNum, "recordLsn# %" PRIu64 " recsNum# %" PRIu64,
                            recordLsn, recsNum);
             ui64 lsn = recordLsn - recsNum + 1;
 
@@ -755,7 +751,7 @@ namespace NKikimr {
             }
 
             TEvAnubisOsirisPut put(AnubisOsirisPutMsg);
-            THullDbInsert insert = put.PrepareInsert(LocRecCtx->VCtx->Top.get(), LocRecCtx->VCtx->ShortSelfVDisk);
+            TEvAnubisOsirisPut::THullDbInsert insert = put.PrepareInsert(LocRecCtx->VCtx->Top.get(), LocRecCtx->VCtx->ShortSelfVDisk);
             const bool fromVPutCommand = false;
             PutLogoBlobToHullAndSyncLog(ctx, record.Lsn, insert.Id, insert.Ingress, TString(), fromVPutCommand);
             return EDispatchStatus::Success;
@@ -776,7 +772,7 @@ namespace NKikimr {
                 IActor *actor = CreateBulkSstLoaderActor(LocRecCtx->VCtx, LocRecCtx->PDiskCtx, proto, ctx.SelfID,
                         lsn, loadLogoBlobs, loadBlocks, loadBarriers);
                 auto aid = ctx.Register(actor);
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
                 return EDispatchStatus::Async;
             } else {
                 // skip record for all databases
@@ -805,7 +801,7 @@ namespace NKikimr {
                             "DISPATCH RECORD: %s", record.ToString().data()));
 
             // Remember last seen lsn
-            Y_ABORT_UNLESS(RecoveredLsn < record.Lsn,
+            Y_VERIFY(RecoveredLsn < record.Lsn,
                      "%s RecoveredLsn# %" PRIu64 " recordLsn# %" PRIu64 " signature# %" PRIu64,
                      LocRecCtx->VCtx->VDiskLogPrefix.data(), RecoveredLsn, record.Lsn, ui64(record.Signature));
             RecoveredLsn = record.Lsn;

@@ -63,42 +63,19 @@ TFollowerId TLeaderTabletInfo::GetFollowerPromotableOnNode(TNodeId nodeId) const
 }
 
 void TLeaderTabletInfo::AssignDomains(const TSubDomainKey& objectDomain, const TVector<TSubDomainKey>& allowedDomains) {
-    const TSubDomainKey oldObjectDomain = ObjectDomain;
-
     if (!allowedDomains.empty()) {
-        NodeFilter.AllowedDomains = allowedDomains;
+        EffectiveAllowedDomains = allowedDomains;
         if (!objectDomain) {
             ObjectDomain = allowedDomains.front();
         } else {
             ObjectDomain = objectDomain;
         }
     } else if (objectDomain) {
-        NodeFilter.AllowedDomains = { objectDomain };
+        EffectiveAllowedDomains = { objectDomain };
         ObjectDomain = objectDomain;
     } else  {
-        NodeFilter.AllowedDomains = { Hive.GetRootDomainKey() };
+        EffectiveAllowedDomains = { Hive.GetRootDomainKey() };
         ObjectDomain = { Hive.GetRootDomainKey() };
-    }
-    NodeFilter.ObjectDomain = ObjectDomain;
-    for (auto& followerGroup : FollowerGroups) {
-        followerGroup.NodeFilter.AllowedDomains = NodeFilter.AllowedDomains;
-        followerGroup.NodeFilter.ObjectDomain = NodeFilter.ObjectDomain;
-    }
-
-    const ui64 leaderAndFollowers = 1 + Followers.size();
-    Hive.UpdateDomainTabletsTotal(oldObjectDomain, -leaderAndFollowers);
-    Hive.UpdateDomainTabletsTotal(ObjectDomain, +leaderAndFollowers);
-
-    if (IsAlive()) {
-        Hive.UpdateDomainTabletsAlive(oldObjectDomain, -1, Node->GetServicedDomain());
-        Hive.UpdateDomainTabletsAlive(ObjectDomain, +1, Node->GetServicedDomain());
-    }
-
-    for (const auto& follower : Followers) {
-        if (follower.IsAlive()) {
-            Hive.UpdateDomainTabletsAlive(oldObjectDomain, -1, follower.Node->GetServicedDomain());
-            Hive.UpdateDomainTabletsAlive(ObjectDomain, +1, follower.Node->GetServicedDomain());
-        }
     }
 }
 
@@ -124,7 +101,7 @@ bool TLeaderTabletInfo::InitiateBlockStorage(TSideEffects& sideEffects, ui32 gen
     if (IsDeleting() && channel == nullptr) {
         return false;
     }
-    Y_ABORT_UNLESS(channel != nullptr && !channel->History.empty());
+    Y_VERIFY(channel != nullptr && !channel->History.empty());
     IActor* x = CreateTabletReqBlockBlobStorage(Hive.SelfId(), TabletStorageInfo.Get(), generation, false);
     sideEffects.Register(x);
     return true;
@@ -145,7 +122,6 @@ TFollowerTabletInfo& TLeaderTabletInfo::AddFollower(TFollowerGroup& followerGrou
         follower.Id = followerId;
     }
     Hive.UpdateCounterTabletsTotal(+1);
-    Hive.UpdateDomainTabletsTotal(ObjectDomain, +1);
     return follower;
 }
 
@@ -154,16 +130,13 @@ TFollowerGroupId TLeaderTabletInfo::GenerateFollowerGroupId() const {
 }
 
 TFollowerGroup& TLeaderTabletInfo::AddFollowerGroup(TFollowerGroupId followerGroupId) {
-    FollowerGroups.emplace_back(Hive);
+    FollowerGroups.emplace_back();
     TFollowerGroup& followerGroup = FollowerGroups.back();
     if (followerGroupId == 0) {
         followerGroup.Id = GenerateFollowerGroupId();
     } else {
         followerGroup.Id = followerGroupId;
     }
-    followerGroup.NodeFilter.AllowedDomains = NodeFilter.AllowedDomains;
-    followerGroup.NodeFilter.ObjectDomain = NodeFilter.ObjectDomain;
-    followerGroup.NodeFilter.TabletType = Type;
     return followerGroup;
 }
 
@@ -183,12 +156,12 @@ TActorId TLeaderTabletInfo::SetLockedToActor(const TActorId& actor, const TDurat
         if (LockedToActor.NodeId() != actor.NodeId()) {
             if (LockedToActor) {
                 TNodeId oldNodeId = LockedToActor.NodeId();
-                Y_ABORT_UNLESS(oldNodeId != 0, "Unexpected oldNodeId == 0");
+                Y_VERIFY(oldNodeId != 0, "Unexpected oldNodeId == 0");
                 Hive.GetNode(oldNodeId).LockedTablets.erase(this);
             }
             if (actor) {
                 TNodeId newNodeId = actor.NodeId();
-                Y_ABORT_UNLESS(newNodeId != 0, "Unexpected newNodeId == 0");
+                Y_VERIFY(newNodeId != 0, "Unexpected newNodeId == 0");
                 Hive.GetNode(newNodeId).LockedTablets.insert(this);
             }
         }
@@ -262,67 +235,41 @@ const NKikimrBlobStorage::TEvControllerSelectGroupsResult::TGroupParameters* TLe
                 });
                 break;
             }
-            case NKikimrHive::TEvReassignTablet::HIVE_REASSIGN_REASON_BALANCE: {
-                auto channel = GetChannel(channelId);
-                auto filter = [&params](const TStorageGroupInfo& newGroup) -> bool {
-                    return newGroup.IsMatchesParameters(*params);
-                };
-                auto calculateUsageWithTablet = [&channel](const TStorageGroupInfo* newGroup) -> double {
-                    return newGroup->GetUsageForChannel(channel);
-                };
-                return storagePool->FindFreeAllocationUnit(filter, calculateUsageWithTablet);
-                break;
-            }
             case NKikimrHive::TEvReassignTablet::HIVE_REASSIGN_REASON_SPACE: {
                 NKikimrConfig::THiveConfig::EHiveStorageBalanceStrategy balanceStrategy = Hive.CurrentConfig.GetStorageBalanceStrategy();
                 Hive.CurrentConfig.SetStorageBalanceStrategy(NKikimrConfig::THiveConfig::HIVE_STORAGE_BALANCE_STRATEGY_SIZE);
-                std::optional<double> maxUsage;
-                bool areAllWeightsSame = true;
-                auto filterBySpace = [params = *params, currentGroup, &maxUsage, &areAllWeightsSame](const TStorageGroupInfo& newGroup) -> bool {
-                    bool result = false;
+                double maxUsage = 0;
+                auto filterBySpace = [params = *params, currentGroup, &maxUsage](const TStorageGroupInfo& newGroup) -> bool {
                     if (newGroup.IsMatchesParameters(params)) {
                         if (currentGroup) {
-                            result = newGroup.Id != currentGroup->Id;
-                            if (currentGroup->GroupParameters.GetCurrentResources().HasOccupancy()) {
-                                result &= newGroup.GroupParameters.GetCurrentResources().GetOccupancy()
-                                          < currentGroup->GroupParameters.GetCurrentResources().GetOccupancy();
+                            double currentMaximumSize = 1.0;
+                            double newMaximumSize = 1.0;
+                            if (newGroup.MaximumSize != 0 && currentGroup->MaximumSize != 0) {
+                                currentMaximumSize = currentGroup->MaximumSize;
+                                newMaximumSize = newGroup.MaximumSize;
                             }
-                        } else {
-                            result = true;
-                        }
-                    }
-                    if (result) {
-                        double usage = newGroup.GetUsage();
-                        if (maxUsage) {
-                            if (fabs(usage - *maxUsage) > 1e-10) {
-                                areAllWeightsSame = false;
+                            bool result = newGroup.Id != currentGroup->Id
+                                          && newGroup.GroupParameters.GetAvailableSize() * currentMaximumSize
+                                          > currentGroup->GroupParameters.GetAvailableSize() * newMaximumSize;
+                            if (result) {
+                                maxUsage = std::max(maxUsage, newGroup.GetUsage());
                             }
-                            maxUsage = std::max(*maxUsage, usage);
-                        } else {
-                            maxUsage = usage;
+                            return result;
                         }
+                        maxUsage = std::max(maxUsage, newGroup.GetUsage());
+                        return true;
                     }
-                    return result;
+                    return false;
                 };
-                double maxUsageFound = maxUsage.value_or(0.0);
-                if (areAllWeightsSame) {
-                    // In this case all weights get turned into zero
-                    // and multiplicative penalty does nothing.
-                    // To avoid this, we modify maxUsageFound so there is room to add penalty
-                    maxUsageFound += 1;
-                }
                 double spacePenaltyThreshold = Hive.GetSpaceUsagePenaltyThreshold();
                 double spacePenalty = Hive.GetSpaceUsagePenalty();
-                auto calculateUsageWithSpacePenalty = [currentGroup, maxUsageFound, spacePenaltyThreshold, spacePenalty](const TStorageGroupInfo* newGroup) -> double {
+                auto calculateUsageWithSpacePenalty = [currentGroup, &maxUsage, spacePenaltyThreshold, spacePenalty](const TStorageGroupInfo* newGroup) -> double {
                     double usage = newGroup->GetUsage();
-                    if (currentGroup && currentGroup->GroupParameters.GetCurrentResources().HasOccupancy()) {
-                        if (!newGroup->GroupParameters.GetCurrentResources().HasOccupancy()) {
-                            return maxUsageFound;
-                        }
-                        if (1 - newGroup->GroupParameters.GetCurrentResources().GetOccupancy()
-                            < spacePenaltyThreshold * (1 - currentGroup->GroupParameters.GetCurrentResources().GetOccupancy())) {
-                            double avail = maxUsageFound - usage;
-                            usage = maxUsageFound - avail * spacePenalty;
+                    if (currentGroup && currentGroup->MaximumSize) {
+                        if (newGroup->GroupParameters.GetAvailableSize() * currentGroup->MaximumSize
+                            < spacePenaltyThreshold * currentGroup->GroupParameters.GetAvailableSize() * newGroup->MaximumSize) {
+                            double avail = maxUsage - usage;
+                            usage = maxUsage - avail * spacePenalty;
                         }
                     }
                     return usage;
@@ -337,15 +284,15 @@ const NKikimrBlobStorage::TEvControllerSelectGroupsResult::TGroupParameters* TLe
     return nullptr;
 }
 
-TString TLeaderTabletInfo::GetChannelStoragePoolName(const TTabletChannelInfo& channel) const {
+TString TLeaderTabletInfo::GetChannelStoragePoolName(const TTabletChannelInfo& channel) {
     return channel.StoragePool.empty() ? DEFAULT_STORAGE_POOL_NAME : channel.StoragePool;
 }
 
-TString TLeaderTabletInfo::GetChannelStoragePoolName(const TChannelProfiles::TProfile::TChannel& channel) const {
+TString TLeaderTabletInfo::GetChannelStoragePoolName(const TChannelProfiles::TProfile::TChannel& channel) {
     return channel.PoolKind.empty() ? DEFAULT_STORAGE_POOL_NAME : channel.PoolKind;
 }
 
-TString TLeaderTabletInfo::GetChannelStoragePoolName(ui32 channelId) const {
+TString TLeaderTabletInfo::GetChannelStoragePoolName(ui32 channelId) {
     if (BoundChannels.size() > channelId) {
         return BoundChannels[channelId].GetStoragePoolName();
     }
@@ -355,7 +302,7 @@ TString TLeaderTabletInfo::GetChannelStoragePoolName(ui32 channelId) const {
     return DEFAULT_STORAGE_POOL_NAME;
 }
 
-TStoragePoolInfo& TLeaderTabletInfo::GetStoragePool(ui32 channelId) const {
+TStoragePoolInfo& TLeaderTabletInfo::GetStoragePool(ui32 channelId) {
     TStoragePoolInfo& storagePool = Hive.GetStoragePool(GetChannelStoragePoolName(channelId));
     return storagePool;
 }
@@ -367,10 +314,5 @@ void TLeaderTabletInfo::ActualizeTabletStatistics(TInstant now) {
     }
 }
 
-void TLeaderTabletInfo::SetType(TTabletTypes::EType type) {
-    Type = type;
-    NodeFilter.TabletType = type;
-    Hive.SeenTabletTypes.insert(type);
-}
 }
 }

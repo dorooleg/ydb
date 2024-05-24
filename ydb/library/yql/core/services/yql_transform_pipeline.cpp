@@ -56,11 +56,11 @@ TTransformationPipeline& TTransformationPipeline::AddParametersEvaluation(const 
 
 TTransformationPipeline& TTransformationPipeline::AddExpressionEvaluation(const NKikimr::NMiniKQL::IFunctionRegistry& functionRegistry,
     IGraphTransformer* calcTransfomer, EYqlIssueCode issueCode) {
-    auto& typeCtx = *TypeAnnotationContext_;
-    auto& funcReg = functionRegistry;
+    auto typeCtx = TypeAnnotationContext_;
+    auto funcReg = &functionRegistry;
     Transformers_.push_back(TTransformStage(CreateFunctorTransformer(
-        [&typeCtx, &funcReg, calcTransfomer](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {
-        return EvaluateExpression(input, output, typeCtx, ctx, funcReg, calcTransfomer);
+        [=](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {
+        return EvaluateExpression(input, output, *typeCtx, ctx, *funcReg, calcTransfomer);
     }), "EvaluateExpression", issueCode));
 
     return *this;
@@ -81,20 +81,18 @@ TTransformationPipeline& TTransformationPipeline::AddPreTypeAnnotation(EYqlIssue
     return *this;
 }
 
-TTransformationPipeline& TTransformationPipeline::AddPreIOAnnotation(bool withEpochsTransformer, EYqlIssueCode issueCode) {
+TTransformationPipeline& TTransformationPipeline::AddPreIOAnnotation(EYqlIssueCode issueCode) {
     Transformers_.push_back(TTransformStage(
         CreateIODiscoveryTransformer(*TypeAnnotationContext_), "IODiscovery", issueCode));
-    if (withEpochsTransformer) {
-        Transformers_.push_back(TTransformStage(
-            CreateEpochsTransformer(*TypeAnnotationContext_), "Epochs", issueCode));
-    }
+    Transformers_.push_back(TTransformStage(
+        CreateEpochsTransformer(*TypeAnnotationContext_), "Epochs", issueCode));
     AddIntentDeterminationTransformer();
 
     return *this;
 }
 
-TTransformationPipeline& TTransformationPipeline::AddIOAnnotation(bool withEpochsTransformer, EYqlIssueCode issueCode) {
-    AddPreIOAnnotation(withEpochsTransformer, issueCode);
+TTransformationPipeline& TTransformationPipeline::AddIOAnnotation(EYqlIssueCode issueCode) {
+    AddPreIOAnnotation(issueCode);
     AddTableMetadataLoaderTransformer();
 
     auto& typeCtx = *TypeAnnotationContext_;
@@ -164,11 +162,6 @@ TTransformationPipeline& TTransformationPipeline::AddOptimization(bool checkWorl
         "RecaptureDataProposals",
         issueCode));
     Transformers_.push_back(TTransformStage(
-        CreateStatisticsProposalsInspector(*TypeAnnotationContext_, TString{DqProviderName}),
-        "StatisticsProposals",
-        issueCode
-    ));
-    Transformers_.push_back(TTransformStage(
         CreateLogicalDataProposalsInspector(*TypeAnnotationContext_),
         "LogicalDataProposals",
         issueCode));
@@ -192,8 +185,9 @@ TTransformationPipeline& TTransformationPipeline::AddLineageOptimization(TMaybe<
     Transformers_.push_back(TTransformStage(
         CreateFunctorTransformer(
             [typeCtx = TypeAnnotationContext_, &lineageOut](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {
+                Y_UNUSED(ctx);
                 output = input;
-                lineageOut = CalculateLineage(*input, *typeCtx, ctx);
+                lineageOut = CalculateLineage(*input, *typeCtx);
                 return IGraphTransformer::TStatus::Ok;
             }
         ),

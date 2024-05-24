@@ -132,7 +132,7 @@ public:
         }
 
         TIterator completelyRemoveEnd = completelyRemoveBegin != Tree.end() ? Tree.lower_bound(end) : Tree.end();
-        if (completelyRemoveEnd != Tree.begin() && (completelyRemoveEnd == Tree.end() || completelyRemoveEnd->first != end)) {
+        if (completelyRemoveEnd != Tree.end() && completelyRemoveEnd != Tree.begin() && completelyRemoveEnd->first != end) {
             TIterator containingEnd = completelyRemoveEnd;
             --containingEnd;
             if (containingEnd->second > end) {
@@ -214,9 +214,9 @@ private:
 
 #ifndef NDEBUG
         TIterator u = Tree.upper_bound(begin);
-        Y_DEBUG_ABORT_UNLESS(u == Tree.end() || u->first >= end, "Trying to add [%" PRIu64 ", %" PRIu64 ") which intersects with existing [%" PRIu64 ", %" PRIu64 ")", begin, end, u->first, u->second);
-        Y_DEBUG_ABORT_UNLESS(l == Tree.end() || l == u, "Trying to add [%" PRIu64 ", %" PRIu64 ") which intersects with existing [%" PRIu64 ", %" PRIu64 ")", begin, end, l->first, l->second);
-        Y_DEBUG_ABORT_UNLESS(p == Tree.end() || p->second <= begin, "Trying to add [%" PRIu64 ", %" PRIu64 ") which intersects with existing [%" PRIu64 ", %" PRIu64 ")", begin, end, p->first, p->second);
+        Y_VERIFY_DEBUG(u == Tree.end() || u->first >= end, "Trying to add [%" PRIu64 ", %" PRIu64 ") which intersects with existing [%" PRIu64 ", %" PRIu64 ")", begin, end, u->first, u->second);
+        Y_VERIFY_DEBUG(l == Tree.end() || l == u, "Trying to add [%" PRIu64 ", %" PRIu64 ") which intersects with existing [%" PRIu64 ", %" PRIu64 ")", begin, end, l->first, l->second);
+        Y_VERIFY_DEBUG(p == Tree.end() || p->second <= begin, "Trying to add [%" PRIu64 ", %" PRIu64 ") which intersects with existing [%" PRIu64 ", %" PRIu64 ")", begin, end, p->first, p->second);
 #endif
 
         // try to extend interval

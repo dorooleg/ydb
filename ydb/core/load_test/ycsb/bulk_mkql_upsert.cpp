@@ -3,7 +3,6 @@
 
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/protos/tx_proxy.pb.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -106,7 +105,7 @@ TUploadRequest GenerateRequest(
         break;
     default:
         // should not happen, just for compiler
-        Y_ABORT("Unsupported request type");
+        Y_FAIL("Unsupported request type");
     }
 }
 

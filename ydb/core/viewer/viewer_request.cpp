@@ -1,13 +1,7 @@
-#include <ydb/core/blobstorage/base/blobstorage_events.h>
-
 #include "viewer_request.h"
 #include "wb_req.h"
 
 #include "json_tabletinfo.h"
-#include "json_sysinfo.h"
-#include "json_query.h"
-#include "json_render.h"
-#include "json_autocomplete.h"
 
 namespace NKikimr {
 namespace NViewer {
@@ -44,66 +38,27 @@ public:
         TBase::Bootstrap();
     }
 
-    template<typename ResponseType> void MergeWhiteboardResponses(TEvViewer::TEvViewerResponse* response, TMap<TNodeId, ResponseType>& perNodeStateInfo, const TString& fields);
-
-    template<> void MergeWhiteboardResponses<NKikimrWhiteboard::TEvTabletStateResponse>(TEvViewer::TEvViewerResponse* response, TMap<TNodeId, NKikimrWhiteboard::TEvTabletStateResponse>& perNodeStateInfo, const TString& fields) {
-        NKikimr::NViewer::MergeWhiteboardResponses(*(response->Record.MutableTabletResponse()), perNodeStateInfo, fields);
-    }
-
-    template<> void MergeWhiteboardResponses<NKikimrWhiteboard::TEvSystemStateResponse>(TEvViewer::TEvViewerResponse* response, TMap<TNodeId, NKikimrWhiteboard::TEvSystemStateResponse>& perNodeStateInfo, const TString& fields) {
-        NKikimr::NViewer::MergeWhiteboardResponses(*(response->Record.MutableSystemResponse()), perNodeStateInfo, fields);
-    }
-
     void ReplyAndPassAway() {
         auto response = MakeHolder<TEvViewer::TEvViewerResponse>();
         auto& locationResponded = (*response->Record.MutableLocationResponded());
         for (const auto& [nodeId, nodeResponse] : TBase::PerNodeStateInfo) {
             locationResponded.AddNodeId(nodeId);
         }
-
-        MergeWhiteboardResponses(response.Get(), TBase::PerNodeStateInfo, TBase::RequestSettings.MergeFields); // PerNodeStateInfo will be invalidated
+        MergeWhiteboardResponses((*response->Record.MutableTabletResponse()), TBase::PerNodeStateInfo, TBase::RequestSettings.MergeFields); // PerNodeStateInfo will be invalidated
 
         TBase::Send(Event->Sender, response.Release(), 0, Event->Cookie);
         TBase::PassAway();
     }
 };
 
-IActor* CreateViewerRequestHandler(TEvViewer::TEvViewerRequest::TPtr& request) {
+IActor* CreateViewerRequestHandler(TEvViewer::TEvViewerRequest::TPtr request) {
     switch (request->Get()->Record.GetRequestCase()) {
         case NKikimrViewer::TEvViewerRequest::kTabletRequest:
             return new TViewerWhiteboardRequest<TEvWhiteboard::TEvTabletStateRequest, TEvWhiteboard::TEvTabletStateResponse>(request);
-        case NKikimrViewer::TEvViewerRequest::kSystemRequest:
-            return new TViewerWhiteboardRequest<TEvWhiteboard::TEvSystemStateRequest, TEvWhiteboard::TEvSystemStateResponse>(request);
-        case NKikimrViewer::TEvViewerRequest::kQueryRequest:
-            return new TJsonQuery(request);
-        case NKikimrViewer::TEvViewerRequest::kRenderRequest:
-            return new TJsonRender(request);
-        case NKikimrViewer::TEvViewerRequest::kAutocompleteRequest:
-            return new TJsonAutocomplete(request);
-        case NKikimrViewer::TEvViewerRequest::kReserved16:
-        case NKikimrViewer::TEvViewerRequest::kReserved17:
-        case NKikimrViewer::TEvViewerRequest::kReserved18:
         case NKikimrViewer::TEvViewerRequest::REQUEST_NOT_SET:
             return nullptr;
     }
     return nullptr;
-}
-
-bool IsPostContent(const NMon::TEvHttpInfo::TPtr& event) {
-    if (event->Get()->Request.GetMethod() == HTTP_METHOD_POST) {
-        const THttpHeaders& headers = event->Get()->Request.GetHeaders();
-
-        auto itContentType = FindIf(headers, [](const auto& header) {
-            return AsciiEqualsIgnoreCase(header.Name(),  "Content-Type");
-        });
-
-        if (itContentType != headers.end()) {
-            TStringBuf contentTypeHeader = itContentType->Value();
-            TStringBuf contentType = contentTypeHeader.NextTok(';');
-            return contentType == "application/json";
-        }
-    }
-    return false;
 }
 
 }

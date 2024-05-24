@@ -1,21 +1,19 @@
 #include "double_indexed.h"
 #include "events.h"
-#include "events_internal.h"
-#include "events_schemeshard.h"
 #include "helpers.h"
 #include "monitorable_actor.h"
-#include "opaque_path_description.h"
 #include "replica.h"
 
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <contrib/libs/protobuf/src/google/protobuf/util/json_util.h>
 
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/protos/flat_tx_scheme.pb.h>
+#include <ydb/core/protos/services.pb.h>
+#include <ydb/core/util/yverify_stream.h>
 
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/util/memory_track.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/util/memory_track.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/map.h>
@@ -114,7 +112,7 @@ private:
             return true;
         }
 
-        bool EnqueueVersion(const NInternalEvents::TEvNotifyBuilder* notify) {
+        bool EnqueueVersion(const TSchemeBoardEvents::TEvNotifyBuilder* notify) {
             const auto& record = notify->Record;
             return EnqueueVersion(record.GetVersion(), record.GetStrong());
         }
@@ -194,16 +192,24 @@ public:
             MultiSend(subscribers, Owner->SelfId(), std::move(notify));
         }
 
+        void CalculateResultSize() {
+            ResultSize = DescribeSchemeResult.ByteSizeLong();
+        }
+
+        size_t FullSize() const {
+            size_t size = ResultSize;
+            if (PreSerializedDescribeSchemeResult) {
+                size += PreSerializedDescribeSchemeResult->size();
+            }
+            return size;
+        }
+
         void TrackMemory() const {
-            NActors::NMemory::TLabel<MemoryLabelDescribeResult>::Add(
-                PathDescription.DescribeSchemeResultSerialized.size()
-            );
+            NActors::NMemory::TLabel<MemoryLabelDescribeResult>::Add(FullSize());
         }
 
         void UntrackMemory() const {
-            NActors::NMemory::TLabel<MemoryLabelDescribeResult>::Sub(
-                PathDescription.DescribeSchemeResultSerialized.size()
-            );
+            NActors::NMemory::TLabel<MemoryLabelDescribeResult>::Sub(FullSize());
         }
 
         void Move(TDescription&& other) {
@@ -213,10 +219,13 @@ public:
             Owner = other.Owner;
             Path = std::move(other.Path);
             PathId = std::move(other.PathId);
-            PathDescription = std::move(other.PathDescription);
+            DescribeSchemeResult = std::move(other.DescribeSchemeResult);
+            PreSerializedDescribeSchemeResult = std::move(other.PreSerializedDescribeSchemeResult);
             ExplicitlyDeleted = other.ExplicitlyDeleted;
             Subscribers = std::move(other.Subscribers);
 
+            ResultSize = other.ResultSize;
+            other.ResultSize = 0;
             TrackNotify = other.TrackNotify;
 
             TrackMemory();
@@ -252,14 +261,27 @@ public:
 
         explicit TDescription(
                 TReplica* owner,
+                const TPathId& pathId,
+                TDescribeSchemeResult&& describeSchemeResult)
+            : Owner(owner)
+            , PathId(pathId)
+            , DescribeSchemeResult(std::move(describeSchemeResult))
+        {
+            CalculateResultSize();
+            TrackMemory();
+        }
+
+        explicit TDescription(
+                TReplica* owner,
                 const TString& path,
                 const TPathId& pathId,
-                TOpaquePathDescription&& pathDescription)
+                TDescribeSchemeResult&& describeSchemeResult)
             : Owner(owner)
             , Path(path)
             , PathId(pathId)
-            , PathDescription(std::move(pathDescription))
+            , DescribeSchemeResult(std::move(describeSchemeResult))
         {
+            CalculateResultSize();
             TrackMemory();
         }
 
@@ -289,7 +311,7 @@ public:
         }
 
         TDescription& Merge(TDescription&& other) noexcept {
-            Y_ABORT_UNLESS(Owner == other.Owner);
+            Y_VERIFY(Owner == other.Owner);
 
             if (!Path) {
                 Path = other.Path;
@@ -317,17 +339,21 @@ public:
             other.TrackNotify = false;
 
             if (*this > other) {
-                // this desc is newer then the other
-                std::swap(other.PathDescription, PathDescription);
+                other.DescribeSchemeResult.Swap(&DescribeSchemeResult);
+                other.PreSerializedDescribeSchemeResult.Clear();
                 other.ExplicitlyDeleted = ExplicitlyDeleted;
                 other.Notify();
-                std::swap(PathDescription, other.PathDescription);
+                DescribeSchemeResult.Swap(&other.DescribeSchemeResult);
+                other.PreSerializedDescribeSchemeResult.Clear();
             } else if (*this < other) {
-                // this desc is older then the other
-                PathDescription = std::move(other.PathDescription);
+                DescribeSchemeResult = std::move(other.DescribeSchemeResult);
+                PreSerializedDescribeSchemeResult.Clear();
                 ExplicitlyDeleted = other.ExplicitlyDeleted;
                 Notify();
             }
+
+            CalculateResultSize();
+            other.CalculateResultSize();
 
             TrackNotify = true;
             other.TrackNotify = true;
@@ -339,15 +365,15 @@ public:
             return *this;
         }
 
-        TString GetDescribeSchemeResultSerialized() const {
-            return PathDescription.DescribeSchemeResultSerialized;
+        const TDescribeSchemeResult& GetProto() const {
+            return DescribeSchemeResult;
         }
 
         TString ToString() const {
             return TStringBuilder() << "{"
                 << " Path# " << Path
                 << " PathId# " << PathId
-                << " PathDescription# " << PathDescription.ToString()
+                << " DescribeSchemeResult# " << DescribeSchemeResult.ShortDebugString()
                 << " ExplicitlyDeleted# " << (ExplicitlyDeleted ? "true" : "false")
             << " }";
         }
@@ -377,63 +403,65 @@ public:
             if (ExplicitlyDeleted) {
                 return Max<ui64>();
             }
-            return PathDescription.PathVersion;
+
+            return ::NKikimr::NSchemeBoard::GetPathVersion(DescribeSchemeResult);
         }
 
         TDomainId GetDomainId() const {
-            if (IsEmpty()) {
-                return TDomainId();
-            }
-            return PathDescription.SubdomainPathId;
+            return IsFilled() ? ::NKikimr::NSchemeBoard::GetDomainId(DescribeSchemeResult) : TDomainId();
         }
 
         TSet<ui64> GetAbandonedSchemeShardIds() const {
-            if (IsEmpty()) {
-                return TSet<ui64>();
-            }
-            return PathDescription.PathAbandonedTenantsSchemeShards;
+            return IsFilled() ? ::NKikimr::NSchemeBoard::GetAbandonedSchemeShardIds(DescribeSchemeResult) : TSet<ui64>();
         }
 
-        bool IsEmpty() const {
-            return PathDescription.IsEmpty();
+        bool IsFilled() const {
+            return DescribeSchemeResult.ByteSizeLong();
         }
 
         void Clear() {
             ExplicitlyDeleted = true;
             UntrackMemory();
-            {
-                TOpaquePathDescription empty;
-                std::swap(PathDescription, empty);
-            }
+            TDescribeSchemeResult().Swap(&DescribeSchemeResult);
+            PreSerializedDescribeSchemeResult.Clear();
+            ResultSize = 0;
             TrackMemory();
             Notify();
         }
 
-        THolder<NInternalEvents::TEvNotifyBuilder> BuildNotify(bool forceStrong = false) const {
-            THolder<NInternalEvents::TEvNotifyBuilder> notify;
+        THolder<TSchemeBoardEvents::TEvNotifyBuilder> BuildNotify(bool forceStrong = false) const {
+            THolder<TSchemeBoardEvents::TEvNotifyBuilder> notify;
 
-            const bool isDeletion = IsEmpty();
+            const bool isDeletion = !IsFilled();
 
             if (!PathId) {
-                Y_ABORT_UNLESS(isDeletion);
-                notify = MakeHolder<NInternalEvents::TEvNotifyBuilder>(Path, isDeletion);
+                Y_VERIFY(isDeletion);
+                notify = MakeHolder<TSchemeBoardEvents::TEvNotifyBuilder>(Path, isDeletion);
             } else if (!Path) {
-                Y_ABORT_UNLESS(isDeletion);
-                notify = MakeHolder<NInternalEvents::TEvNotifyBuilder>(PathId, isDeletion);
+                Y_VERIFY(isDeletion);
+                notify = MakeHolder<TSchemeBoardEvents::TEvNotifyBuilder>(PathId, isDeletion);
             } else {
-                notify = MakeHolder<NInternalEvents::TEvNotifyBuilder>(Path, PathId, isDeletion);
+                notify = MakeHolder<TSchemeBoardEvents::TEvNotifyBuilder>(Path, PathId, isDeletion);
             }
 
             if (!isDeletion) {
-                notify->SetPathDescription(PathDescription);
-                if (TrackNotify) {
-                    TrackMemory();
+                if (!PreSerializedDescribeSchemeResult) {
+                    TString serialized;
+                    Y_PROTOBUF_SUPPRESS_NODISCARD DescribeSchemeResult.SerializeToString(&serialized);
+                    if (TrackNotify) {
+                        UntrackMemory();
+                    }
+                    PreSerializedDescribeSchemeResult = std::move(serialized);
+                    if (TrackNotify) {
+                        TrackMemory();
+                    }
                 }
+
+                notify->SetDescribeSchemeResult(*PreSerializedDescribeSchemeResult);
             }
 
             notify->Record.SetVersion(GetVersion());
-
-            if (!IsEmpty() || IsExplicitlyDeleted() || forceStrong) {
+            if (IsFilled() || IsExplicitlyDeleted() || forceStrong) {
                 notify->Record.SetStrong(true);
             }
 
@@ -454,7 +482,7 @@ public:
 
         TSubscriberInfo& GetSubscriberInfo(const TActorId& subscriber) {
             auto it = Subscribers.find(subscriber);
-            Y_ABORT_UNLESS(it != Subscribers.end());
+            Y_VERIFY(it != Subscribers.end());
             return it->second;
         }
 
@@ -477,14 +505,15 @@ public:
         // data
         TString Path;
         TPathId PathId;
-        TOpaquePathDescription PathDescription;
-
+        TDescribeSchemeResult DescribeSchemeResult;
+        mutable TMaybe<TString> PreSerializedDescribeSchemeResult;
         bool ExplicitlyDeleted = false;
 
         // subscribers
         THashMap<TActorId, TSubscriberInfo> Subscribers;
 
         // memory tracking
+        size_t ResultSize = 0;
         bool TrackNotify = true;
 
     }; // TDescription
@@ -512,7 +541,6 @@ private:
         return false;
     }
 
-    // register empty entry by path OR pathId
     template <typename TPath>
     TDescription& UpsertDescription(const TPath& path) {
         SBR_LOG_I("Upsert description"
@@ -521,7 +549,6 @@ private:
         return Descriptions.Upsert(path, TDescription(this, path));
     }
 
-    // register empty entry by path AND pathId both
     TDescription& UpsertDescription(const TString& path, const TPathId& pathId) {
         SBR_LOG_I("Upsert description"
             << ": path# " << path
@@ -530,25 +557,25 @@ private:
         return Descriptions.Upsert(path, pathId, TDescription(this, path, pathId));
     }
 
-    // upsert description only by pathId
-    TDescription& UpsertDescriptionByPathId(const TString& path, const TPathId& pathId, TOpaquePathDescription&& pathDescription) {
-        SBR_LOG_I("Upsert description"
-            << ": pathId# " << pathId
-            << ", pathDescription# " << pathDescription.ToString()
-        );
-
-        return Descriptions.Upsert(pathId, TDescription(this, path, pathId, std::move(pathDescription)));
-    }
-
-    // upsert description by path AND pathId both
-    TDescription& UpsertDescription(const TString& path, const TPathId& pathId, TOpaquePathDescription&& pathDescription) {
+    template <typename TPath>
+    TDescription& UpsertDescription(const TPath& path, TDescription&& description) {
         SBR_LOG_I("Upsert description"
             << ": path# " << path
-            << ", pathId# " << pathId
-            << ", pathDescription# " << pathDescription.ToString()
-        );
+            << ", desc# " << description.ToLogString());
 
-        return Descriptions.Upsert(path, pathId, TDescription(this, path, pathId, std::move(pathDescription)));
+        return Descriptions.Upsert(path, std::move(description));
+    }
+
+    TDescription& UpsertDescription(
+        const TString& path,
+        const TPathId& pathId,
+        TDescribeSchemeResult&& describeSchemeResult
+    ) {
+        SBR_LOG_I("Upsert description"
+            << ": path# " << path
+            << ", pathId# " << pathId);
+
+        return Descriptions.Upsert(path, pathId, TDescription(this, path, pathId, std::move(describeSchemeResult)));
     }
 
     void SoftDeleteDescription(const TPathId& pathId, bool createIfNotExists = false) {
@@ -563,7 +590,7 @@ private:
             return;
         }
 
-        if (desc->IsEmpty()) {
+        if (!desc->IsFilled()) {
             return;
         }
 
@@ -574,7 +601,7 @@ private:
             << ", pathId# " << pathId);
 
         if (TDescription* descByPath = Descriptions.FindPtr(path)) {
-            if (descByPath != desc && !descByPath->IsEmpty()) {
+            if (descByPath != desc && descByPath->IsFilled()) {
                 if (descByPath->GetPathId().OwnerId != pathId.OwnerId) {
                     auto curPathId = descByPath->GetPathId();
                     auto curDomainId = descByPath->GetDomainId();
@@ -628,7 +655,7 @@ private:
     bool IsSingleSubscriberOnNode(const TActorId& subscriber) const {
         const ui32 nodeId = subscriber.NodeId();
         auto it = Subscribers.lower_bound(TActorId(nodeId, 0, 0, 0));
-        Y_ABORT_UNLESS(it != Subscribers.end());
+        Y_VERIFY(it != Subscribers.end());
 
         return ++it == Subscribers.end() || it->first.NodeId() != nodeId;
     }
@@ -636,7 +663,7 @@ private:
     template <typename TPath>
     void Subscribe(const TActorId& subscriber, const TPath& path, ui64 domainOwnerId, const TCapabilities& capabilities) {
         TDescription* desc = Descriptions.FindPtr(path);
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
 
         SBR_LOG_I("Subscribe"
             << ": subscriber# " << subscriber
@@ -647,14 +674,14 @@ private:
         desc->Subscribe(subscriber, path, domainOwnerId, capabilities);
 
         auto it = Subscribers.find(subscriber);
-        Y_DEBUG_ABORT_UNLESS(it == Subscribers.end() || std::holds_alternative<TPath>(it->second) && std::get<TPath>(it->second) == path);
+        Y_VERIFY_DEBUG(it == Subscribers.end() || std::holds_alternative<TPath>(it->second) && std::get<TPath>(it->second) == path);
         Subscribers.emplace(subscriber, path);
     }
 
     template <typename TPath>
     void Unsubscribe(const TActorId& subscriber, const TPath& path) {
         TDescription* desc = Descriptions.FindPtr(path);
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
 
         SBR_LOG_I("Unsubscribe"
             << ": subscriber# " << subscriber
@@ -714,14 +741,14 @@ private:
         return desc ? desc->GetVersion() : 0;
     }
 
-    void AckUpdate(NInternalEvents::TEvUpdate::TPtr& ev) {
+    void AckUpdate(TSchemeBoardEvents::TEvUpdate::TPtr& ev) {
         const auto& record = ev->Get()->GetRecord();
 
         const ui64 owner = record.GetOwner();
         const ui64 generation = record.GetGeneration();
 
-        Y_ABORT_UNLESS(Populators.contains(owner));
-        Y_ABORT_UNLESS(Populators.at(owner).PendingGeneration == generation);
+        Y_VERIFY(Populators.contains(owner));
+        Y_VERIFY(Populators.at(owner).PendingGeneration == generation);
 
         if (!record.GetNeedAck()) {
             return;
@@ -742,10 +769,10 @@ private:
         }
 
         const ui64 version = GetVersion(ackPathId);
-        Send(ev->Sender, new NSchemeshardEvents::TEvUpdateAck(owner, generation, ackPathId, version), 0, ev->Cookie);
+        Send(ev->Sender, new TSchemeBoardEvents::TEvUpdateAck(owner, generation, ackPathId, version), 0, ev->Cookie);
     }
 
-    void Handle(NInternalEvents::TEvHandshakeRequest::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvHandshakeRequest::TPtr& ev) {
         SBR_LOG_D("Handle " << ev->Get()->ToString()
             << ": sender# " << ev->Sender);
 
@@ -770,61 +797,57 @@ private:
         info.PendingGeneration = generation;
         info.PopulatorActor = ev->Sender;
 
-        Send(ev->Sender, new NInternalEvents::TEvHandshakeResponse(owner, info.Generation), 0, ev->Cookie);
+        Send(ev->Sender, new TSchemeBoardEvents::TEvHandshakeResponse(owner, info.Generation), 0, ev->Cookie);
     }
 
-    void Handle(NInternalEvents::TEvUpdate::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvUpdate::TPtr& ev) {
         SBR_LOG_D("Handle " << ev->Get()->ToString()
             << ": sender# " << ev->Sender
-            << ", cookie# " << ev->Cookie
-            << ", event size# " << ev->Get()->GetCachedByteSize()
-        );
+            << ", cookie# " << ev->Cookie);
 
-        const TString& path = ev->Get()->GetPath();
-        const TPathId& pathId = ev->Get()->GetPathId();
+        auto& record = *ev->Get()->MutableRecord();
+        const ui64 owner = record.GetOwner();
+        const ui64 generation = record.GetGeneration();
 
-       {
-            auto& record = *ev->Get()->MutableRecord();
-            const ui64 owner = record.GetOwner();
-            const ui64 generation = record.GetGeneration();
+        const auto populatorIt = Populators.find(owner);
+        if (populatorIt == Populators.end()) {
+            SBR_LOG_E("Reject update from unknown populator"
+                << ": sender# " << ev->Sender
+                << ", owner# " << owner
+                << ", generation# " << generation);
+            return;
+        }
+        if (generation != populatorIt->second.PendingGeneration) {
+            SBR_LOG_E("Reject update from stale populator"
+                << ": sender# " << ev->Sender
+                << ", owner# " << owner
+                << ", generation# " << generation
+                << ", pending generation# " << populatorIt->second.PendingGeneration);
+            return;
+        }
 
-            const auto populatorIt = Populators.find(owner);
-            if (populatorIt == Populators.end()) {
-                SBR_LOG_E("Reject update from unknown populator"
-                    << ": sender# " << ev->Sender
-                    << ", owner# " << owner
-                    << ", generation# " << generation);
-                return;
-            }
-            if (generation != populatorIt->second.PendingGeneration) {
-                SBR_LOG_E("Reject update from stale populator"
-                    << ": sender# " << ev->Sender
-                    << ", owner# " << owner
-                    << ", generation# " << generation
-                    << ", pending generation# " << populatorIt->second.PendingGeneration);
-                return;
-            }
+        if (record.HasDeletedLocalPathIds()) {
+            const TPathId begin(owner, record.GetDeletedLocalPathIds().GetBegin());
+            const TPathId end(owner, record.GetDeletedLocalPathIds().GetEnd());
+            SoftDeleteDescriptions(begin, end);
+        }
 
-            if (record.HasDeletedLocalPathIds()) {
-                const TPathId begin(owner, record.GetDeletedLocalPathIds().GetBegin());
-                const TPathId end(owner, record.GetDeletedLocalPathIds().GetEnd());
-                SoftDeleteDescriptions(begin, end);
-            }
+        if (!record.HasLocalPathId()) {
+            return AckUpdate(ev);
+        }
 
-            if (!record.HasLocalPathId()) {
-                return AckUpdate(ev);
-            }
+        const TString& path = record.GetPath();
+        const TPathId pathId = ev->Get()->GetPathId();
 
-            SBR_LOG_N("Update description"
-                << ": path# " << path
-                << ", pathId# " << pathId
-                << ", deletion# " << (record.GetIsDeletion() ? "true" : "false"));
+        SBR_LOG_N("Update description"
+            << ": path# " << path
+            << ", pathId# " << pathId
+            << ", deletion# " << (record.GetIsDeletion() ? "true" : "false"));
 
-            if (record.GetIsDeletion()) {
-                SoftDeleteDescription(pathId, true);
-                return AckUpdate(ev);
-            }
-       }
+        if (record.GetIsDeletion()) {
+            SoftDeleteDescription(pathId, true);
+            return AckUpdate(ev);
+        }
 
         if (TDescription* desc = Descriptions.FindPtr(pathId)) {
             if (desc->IsExplicitlyDeleted()) {
@@ -836,24 +859,20 @@ private:
             }
         }
 
-        // TEvUpdate is partially consumed here, with DescribeSchemeResult blob being moved out.
-        // AckUpdate(ev) calls below are ok, AckUpdate() doesn't use DescribeSchemeResult.
-        TOpaquePathDescription pathDescription = ev->Get()->ExtractPathDescription();
-
         TDescription* desc = Descriptions.FindPtr(path);
         if (!desc) {
-            UpsertDescription(path, pathId, std::move(pathDescription));
+            UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
             return AckUpdate(ev);
         }
 
         if (!desc->GetPathId()) {
-            UpsertDescription(path, pathId, std::move(pathDescription));
+            UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
             return AckUpdate(ev);
         }
 
         auto curPathId = desc->GetPathId();
 
-        if (curPathId.OwnerId == pathId.OwnerId || desc->IsEmpty()) {
+        if (curPathId.OwnerId == pathId.OwnerId || !desc->IsFilled()) {
             if (curPathId > pathId) {
                 return AckUpdate(ev);
             }
@@ -864,15 +883,15 @@ private:
                 RelinkSubscribers(desc, path);
             }
 
-            UpsertDescription(path, pathId, std::move(pathDescription));
+            UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
             return AckUpdate(ev);
         }
 
-        Y_VERIFY_S(!desc->IsEmpty(), "Description is not filled"
+        Y_VERIFY_S(desc->IsFilled(), "Description is not filled"
             << ": desc# " << desc->ToLogString());
 
         auto curDomainId = desc->GetDomainId();
-        const auto& domainId = pathDescription.SubdomainPathId;
+        auto domainId = GetDomainId(record.GetDescribeSchemeResult());
 
         auto log = [&](const TString& message) {
             SBR_LOG_N("" << message
@@ -885,36 +904,36 @@ private:
 
         if (curPathId == domainId) { // Update from TSS, GSS->TSS
             // it is only because we need to manage undo of upgrade subdomain, finally remove it
-            const auto& abandonedSchemeShards = desc->GetAbandonedSchemeShardIds();
+            auto abandonedSchemeShards = desc->GetAbandonedSchemeShardIds();
             if (abandonedSchemeShards.contains(pathId.OwnerId)) { // TSS is ignored, present GSS reverted it
                 log("Replace GSS by TSS description is rejected, GSS implicitly knows that TSS has been reverted"
                     ", but still inject description only by pathId for safe");
-                UpsertDescriptionByPathId(path, pathId, std::move(pathDescription));
+                UpsertDescription(pathId, TDescription(this, path, pathId, std::move(*record.MutableDescribeSchemeResult())));
                 return AckUpdate(ev);
             }
 
             log("Replace GSS by TSS description");
-            // unlink GSS desc by path
+            // unlick GSS desc by path
             Descriptions.DeleteIndex(path);
             RelinkSubscribers(desc, path);
-            UpsertDescription(path, pathId, std::move(pathDescription));
+            UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
             return AckUpdate(ev);
         }
 
         if (curDomainId == pathId) { // Update from GSS, TSS->GSS
             // it is only because we need to manage undo of upgrade subdomain, finally remove it
-            const auto& abandonedSchemeShards = pathDescription.PathAbandonedTenantsSchemeShards;
+            auto abandonedSchemeShards = GetAbandonedSchemeShardIds(record.GetDescribeSchemeResult());
             if (abandonedSchemeShards.contains(curPathId.OwnerId)) { // GSS reverts TSS
                 log("Replace TSS by GSS description, TSS was implicitly reverted by GSS");
-                // unlink TSS desc by path
+                // unlick TSS desc by path
                 Descriptions.DeleteIndex(path);
                 RelinkSubscribers(desc, path);
-                UpsertDescription(path, pathId, std::move(pathDescription));
+                UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
                 return AckUpdate(ev);
             }
 
             log("Inject description only by pathId, it is update from GSS");
-            UpsertDescriptionByPathId(path, pathId, std::move(pathDescription));
+            UpsertDescription(pathId, TDescription(this, path, pathId, std::move(*record.MutableDescribeSchemeResult())));
             return AckUpdate(ev);
         }
 
@@ -931,13 +950,13 @@ private:
                 RelinkSubscribers(desc, path);
             }
 
-            UpsertDescription(path, pathId, std::move(pathDescription));
+            UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
             return AckUpdate(ev);
         } else if (curDomainId < domainId) {
             log("Update description by newest path with newer domainId");
             Descriptions.DeleteIndex(path);
             RelinkSubscribers(desc, path);
-            UpsertDescription(path, pathId, std::move(pathDescription));
+            UpsertDescription(path, pathId, std::move(*record.MutableDescribeSchemeResult()));
             return AckUpdate(ev);
         } else {
             log("Totally ignore description, path with obsolete domainId");
@@ -952,7 +971,7 @@ private:
             << ", curDomainId# " << curDomainId);
     }
 
-    void Handle(NInternalEvents::TEvCommitRequest::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvCommitRequest::TPtr& ev) {
         SBR_LOG_D("Handle " << ev->Get()->ToString()
             << ": sender# " << ev->Sender);
 
@@ -985,7 +1004,7 @@ private:
 
         info.Generation = info.PendingGeneration;
         info.IsCommited = true;
-        Send(ev->Sender, new NInternalEvents::TEvCommitResponse(owner, info.Generation), 0, ev->Cookie);
+        Send(ev->Sender, new TSchemeBoardEvents::TEvCommitResponse(owner, info.Generation), 0, ev->Cookie);
 
         if (WaitStrongNotifications.contains(owner)) {
             Send(SelfId(), new TEvPrivate::TEvSendStrongNotifications(owner));
@@ -1031,10 +1050,10 @@ private:
                 desc = Descriptions.FindPtr(*pathId);
             }
 
-            Y_ABORT_UNLESS(desc);
+            Y_VERIFY(desc);
             auto& info = desc->GetSubscriberInfo(subscriber);
 
-            Y_ABORT_UNLESS(info.GetDomainOwnerId() == owner);
+            Y_VERIFY(info.GetDomainOwnerId() == owner);
             if (info.IsNotifiedStrongly() || info.IsWaitForAck()) {
                 continue;
             }
@@ -1051,7 +1070,7 @@ private:
         }
     }
 
-    void Handle(NInternalEvents::TEvSubscribe::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvSubscribe::TPtr& ev) {
         const auto& record = ev->Get()->Record;
         const ui64 domainOwnerId = record.GetDomainOwnerId();
         const auto& capabilities = record.GetCapabilities();
@@ -1062,12 +1081,12 @@ private:
         if (record.HasPath()) {
             SubscribeBy(ev->Sender, record.GetPath(), domainOwnerId, capabilities);
         } else {
-            Y_ABORT_UNLESS(record.HasPathOwnerId() && record.HasLocalPathId());
+            Y_VERIFY(record.HasPathOwnerId() && record.HasLocalPathId());
             SubscribeBy(ev->Sender, TPathId(record.GetPathOwnerId(), record.GetLocalPathId()), domainOwnerId, capabilities);
         }
     }
 
-    void Handle(NInternalEvents::TEvUnsubscribe::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvUnsubscribe::TPtr& ev) {
         const auto& record = ev->Get()->Record;
 
         SBR_LOG_D("Handle " << ev->Get()->ToString()
@@ -1076,12 +1095,12 @@ private:
         if (record.HasPath()) {
             UnsubscribeBy(ev->Sender, record.GetPath());
         } else {
-            Y_ABORT_UNLESS(record.HasPathOwnerId() && record.HasLocalPathId());
+            Y_VERIFY(record.HasPathOwnerId() && record.HasLocalPathId());
             UnsubscribeBy(ev->Sender, TPathId(record.GetPathOwnerId(), record.GetLocalPathId()));
         }
     }
 
-    void Handle(NInternalEvents::TEvNotifyAck::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvNotifyAck::TPtr& ev) {
         const auto& record = ev->Get()->Record;
 
         SBR_LOG_D("Handle " << ev->Get()->ToString()
@@ -1100,7 +1119,7 @@ private:
             desc = Descriptions.FindPtr(*pathId);
         }
 
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
         auto& info = desc->GetSubscriberInfo(ev->Sender);
 
         const ui64 version = record.GetVersion();
@@ -1115,11 +1134,11 @@ private:
         }
 
         if (auto cookie = info.ProcessSyncRequest()) {
-            Send(ev->Sender, new NInternalEvents::TEvSyncVersionResponse(desc->GetVersion()), 0, *cookie);
+            Send(ev->Sender, new TSchemeBoardEvents::TEvSyncVersionResponse(desc->GetVersion()), 0, *cookie);
         }
     }
 
-    void Handle(NInternalEvents::TEvSyncVersionRequest::TPtr& ev) {
+    void Handle(TSchemeBoardEvents::TEvSyncVersionRequest::TPtr& ev) {
         const auto& record = ev->Get()->Record;
 
         SBR_LOG_D("Handle " << ev->Get()->ToString()
@@ -1128,7 +1147,7 @@ private:
 
         auto it = Subscribers.find(ev->Sender);
         if (it == Subscribers.end()) {
-            // for backward compatibility
+            // for backward compatability
             ui64 version = 0;
 
             if (record.HasPath()) {
@@ -1137,7 +1156,7 @@ private:
                 version = GetVersion(TPathId(record.GetPathOwnerId(), record.GetLocalPathId()));
             }
 
-            Send(ev->Sender, new NInternalEvents::TEvSyncVersionResponse(version), 0, ev->Cookie);
+            Send(ev->Sender, new TSchemeBoardEvents::TEvSyncVersionResponse(version), 0, ev->Cookie);
             return;
         }
 
@@ -1149,7 +1168,7 @@ private:
             desc = Descriptions.FindPtr(*pathId);
         }
 
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
         auto& info = desc->GetSubscriberInfo(ev->Sender);
 
         if (!info.EnqueueSyncRequest(ev->Cookie) || info.IsWaitForAck()) {
@@ -1157,9 +1176,9 @@ private:
         }
 
         auto cookie = info.ProcessSyncRequest();
-        Y_ABORT_UNLESS(cookie && *cookie == ev->Cookie);
+        Y_VERIFY(cookie && *cookie == ev->Cookie);
 
-        Send(ev->Sender, new NInternalEvents::TEvSyncVersionResponse(desc->GetVersion()), 0, *cookie);
+        Send(ev->Sender, new TSchemeBoardEvents::TEvSyncVersionResponse(desc->GetVersion()), 0, *cookie);
     }
 
     void Handle(TSchemeBoardMonEvents::TEvInfoRequest::TPtr& ev) {
@@ -1218,7 +1237,11 @@ private:
 
         TString json;
         if (desc) {
-            json = JsonFromDescribeSchemeResult(desc->GetDescribeSchemeResultSerialized());
+            using namespace google::protobuf::util;
+
+            JsonPrintOptions opts;
+            opts.preserve_proto_field_names = true;
+            MessageToJsonString(desc->GetProto(), &json, opts);
         } else {
             json = "{}";
         }
@@ -1274,14 +1297,14 @@ public:
 
     STATEFN(StateWork) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(NInternalEvents::TEvHandshakeRequest, Handle);
-            hFunc(NInternalEvents::TEvUpdate, Handle);
-            hFunc(NInternalEvents::TEvCommitRequest, Handle);
+            hFunc(TSchemeBoardEvents::TEvHandshakeRequest, Handle);
+            hFunc(TSchemeBoardEvents::TEvUpdate, Handle);
+            hFunc(TSchemeBoardEvents::TEvCommitRequest, Handle);
             hFunc(TEvPrivate::TEvSendStrongNotifications, Handle);
-            hFunc(NInternalEvents::TEvSubscribe, Handle);
-            hFunc(NInternalEvents::TEvUnsubscribe, Handle);
-            hFunc(NInternalEvents::TEvNotifyAck, Handle);
-            hFunc(NInternalEvents::TEvSyncVersionRequest, Handle);
+            hFunc(TSchemeBoardEvents::TEvSubscribe, Handle);
+            hFunc(TSchemeBoardEvents::TEvUnsubscribe, Handle);
+            hFunc(TSchemeBoardEvents::TEvNotifyAck, Handle);
+            hFunc(TSchemeBoardEvents::TEvSyncVersionRequest, Handle);
 
             hFunc(TSchemeBoardMonEvents::TEvInfoRequest, Handle);
             hFunc(TSchemeBoardMonEvents::TEvDescribeRequest, Handle);

@@ -4,8 +4,7 @@
 namespace NYql {
 
 struct TTypeAnnotationContext;
-struct TExprContext;
 
-TString CalculateLineage(const TExprNode& root, const TTypeAnnotationContext& ctx, TExprContext& exprCtx);
+TString CalculateLineage(const TExprNode& root, const TTypeAnnotationContext& ctx);
 
 }

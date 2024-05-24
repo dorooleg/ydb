@@ -12,18 +12,16 @@ namespace NKikimr {
         TActorId ParentId;
         std::deque<std::pair<TVDiskID, TActorId>> Donors;
         TDynBitMap UnresolvedItems;
-        TIntrusivePtr<TVDiskContext> VCtx;
 
     public:
-        TDonorQueryActor(TEvBlobStorage::TEvEnrichNotYet& msg, std::deque<std::pair<TVDiskID, TActorId>> donors, const TIntrusivePtr<TVDiskContext>& vCtx)
+        TDonorQueryActor(TEvBlobStorage::TEvEnrichNotYet& msg, std::deque<std::pair<TVDiskID, TActorId>> donors)
             : Query(msg.Query->Release().Release())
             , Sender(msg.Query->Sender)
             , Cookie(msg.Query->Cookie)
             , Result(std::move(msg.Result))
             , Donors(std::move(donors))
-            , VCtx(vCtx)
         {
-            Y_ABORT_UNLESS(!Query->Record.HasRangeQuery());
+            Y_VERIFY(!Query->Record.HasRangeQuery());
         }
 
         void Bootstrap(const TActorId& parentId) {
@@ -82,17 +80,13 @@ namespace NKikimr {
             auto& result = Result->Record;
             for (const auto& item : ev->Get()->Record.GetResult()) {
                 const ui64 index = item.GetCookie();
-                Y_DEBUG_ABORT_UNLESS(UnresolvedItems[index]);
+                Y_VERIFY_DEBUG(UnresolvedItems[index]);
 
                 if (item.GetStatus() == NKikimrProto::OK /* || item.GetStatus() == NKikimrProto::ERROR */) {
                     auto *res = result.MutableResult(index);
 
                     std::optional<ui64> cookie = res->HasCookie() ? std::make_optional(res->GetCookie()) : std::nullopt;
                     res->CopyFrom(item);
-                    res->ClearPayload();
-                    if (ev->Get()->HasBlob(item)) {
-                        Result->SetBlobData(*res, ev->Get()->GetBlobData(item));
-                    }
                     if (cookie) { // retain original cookie
                         res->SetCookie(*cookie);
                     } else {
@@ -110,7 +104,7 @@ namespace NKikimr {
         void PassAway() override {
             LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::BS_VDISK_GET, SelfId() << " finished query");
             Send(ParentId, new TEvents::TEvActorDied);
-            SendVDiskResponse(TActivationContext::AsActorContext(), Sender, Result.release(), Cookie, VCtx);
+            SendVDiskResponse(TActivationContext::AsActorContext(), Sender, Result.release(), Cookie);
             TActorBootstrapped::PassAway();
         }
 

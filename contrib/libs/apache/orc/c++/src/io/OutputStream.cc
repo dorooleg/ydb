@@ -16,9 +16,8 @@
  * limitations under the License.
  */
 
-#include "OutputStream.hh"
-#include "Utils.hh"
 #include "orc/Exceptions.hh"
+#include "OutputStream.hh"
 
 #include <sstream>
 
@@ -28,11 +27,14 @@ namespace orc {
     // PASS
   }
 
-  BufferedOutputStream::BufferedOutputStream(MemoryPool& pool, OutputStream* outStream,
-                                             uint64_t capacity_, uint64_t blockSize_,
-                                             WriterMetrics* metrics_)
-      : outputStream(outStream), blockSize(blockSize_), metrics(metrics_) {
-    dataBuffer.reset(new BlockBuffer(pool, blockSize));
+  BufferedOutputStream::BufferedOutputStream(
+                                    MemoryPool& pool,
+                                    OutputStream * outStream,
+                                    uint64_t capacity_,
+                                    uint64_t blockSize_)
+                                    : outputStream(outStream),
+                                      blockSize(blockSize_) {
+    dataBuffer.reset(new DataBuffer<char>(pool));
     dataBuffer->reserve(capacity_);
   }
 
@@ -41,12 +43,16 @@ namespace orc {
   }
 
   bool BufferedOutputStream::Next(void** buffer, int* size) {
-    auto block = dataBuffer->getNextBlock();
-    if (block.data == nullptr) {
-      throw std::logic_error("Failed to get next buffer from block buffer.");
+    *size = static_cast<int>(blockSize);
+    uint64_t oldSize = dataBuffer->size();
+    uint64_t newSize = oldSize + blockSize;
+    uint64_t newCapacity = dataBuffer->capacity();
+    while (newCapacity < newSize) {
+      newCapacity += dataBuffer->capacity();
     }
-    *buffer = block.data;
-    *size = static_cast<int>(block.size);
+    dataBuffer->reserve(newCapacity);
+    dataBuffer->resize(newSize);
+    *buffer = dataBuffer->data() + oldSize;
     return true;
   }
 
@@ -65,7 +71,7 @@ namespace orc {
     return static_cast<google::protobuf::int64>(dataBuffer->size());
   }
 
-  bool BufferedOutputStream::WriteAliasedRaw(const void*, int) {
+  bool BufferedOutputStream::WriteAliasedRaw(const void *, int) {
     throw NotImplementedYet("WriteAliasedRaw is not supported.");
   }
 
@@ -75,7 +81,8 @@ namespace orc {
 
   std::string BufferedOutputStream::getName() const {
     std::ostringstream result;
-    result << "BufferedOutputStream " << dataBuffer->size() << " of " << dataBuffer->capacity();
+    result << "BufferedOutputStream " << dataBuffer->size() << " of "
+                                              << dataBuffer->capacity();
     return result.str();
   }
 
@@ -85,11 +92,7 @@ namespace orc {
 
   uint64_t BufferedOutputStream::flush() {
     uint64_t dataSize = dataBuffer->size();
-    // flush data buffer into outputStream
-    if (dataSize > 0) {
-      SCOPED_STOPWATCH(metrics, IOBlockingLatencyUs, IOCount);
-      dataBuffer->writeTo(outputStream, metrics);
-    }
+    outputStream->write(dataBuffer->data(), dataSize);
     dataBuffer->resize(0);
     return dataSize;
   }
@@ -98,16 +101,20 @@ namespace orc {
     dataBuffer->resize(0);
   }
 
-  void AppendOnlyBufferedStream::write(const char* data, size_t size) {
+  void AppendOnlyBufferedStream::write(const char * data, size_t size) {
     size_t dataOffset = 0;
     while (size > 0) {
       if (bufferOffset == bufferLength) {
-        if (!outStream->Next(reinterpret_cast<void**>(&buffer), &bufferLength)) {
+        if (!outStream->Next(
+                              reinterpret_cast<void **>(&buffer),
+                              &bufferLength)) {
           throw std::logic_error("Failed to allocate buffer.");
         }
         bufferOffset = 0;
       }
-      size_t len = std::min(static_cast<size_t>(bufferLength - bufferOffset), size);
+      size_t len = std::min(
+                           static_cast<size_t>(bufferLength - bufferOffset),
+                           size);
       memcpy(buffer + bufferOffset, data + dataOffset, len);
       bufferOffset += static_cast<int>(len);
       dataOffset += len;
@@ -141,4 +148,4 @@ namespace orc {
     }
   }
 
-}  // namespace orc
+}

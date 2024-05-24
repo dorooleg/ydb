@@ -1,7 +1,7 @@
 #include "flat_part_slice.h"
 #include "util_fmt_desc.h"
 
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 
 namespace NKikimr {
 namespace NTable {
@@ -46,7 +46,7 @@ bool ValidateSlices(TConstArrayRef<TSlice> slices) noexcept
 
 int ComparePartKeys(TCellsRef left, TCellsRef right, const TKeyCellDefaults &keyDefaults) noexcept {
     size_t end = Max(left.size(), right.size());
-    Y_DEBUG_ABORT_UNLESS(end <= keyDefaults.Size(), "Key schema is smaller than compared keys");
+    Y_VERIFY_DEBUG(end <= keyDefaults.Size(), "Key schema is smaller than compared keys");
 
     for (size_t pos = 0; pos < end; ++pos) {
         const auto& leftCell = pos < left.size() ? left[pos] : keyDefaults.Defs[pos];
@@ -86,18 +86,18 @@ bool TBounds::LessByKey(const TBounds& a, const TBounds& b, const TKeyCellDefaul
     auto right = b.FirstKey.GetCells();
     if (Y_UNLIKELY(!left)) {
         // Empty LastKey is +inf-epsilon => +inf-epsilon < any is never true
-        Y_DEBUG_ABORT_UNLESS(!a.LastInclusive,
+        Y_VERIFY_DEBUG(!a.LastInclusive,
             "Unexpected inclusion of +inf: %s", NFmt::Ln(a, keyDefaults).data());
         return false;
     }
     if (Y_UNLIKELY(!right)) {
         // Empty FirstKey is -inf => any < -inf is never true
-        Y_DEBUG_ABORT_UNLESS(b.FirstInclusive,
+        Y_VERIFY_DEBUG(b.FirstInclusive,
             "Unexpected exclusion of -inf: %s", NFmt::Ln(b, keyDefaults).data());
         return false;
     }
     size_t end = Max(left.size(), right.size());
-    Y_DEBUG_ABORT_UNLESS(end <= keyDefaults.Size(), "Key schema is smaller than slice boundary keys");
+    Y_VERIFY_DEBUG(end <= keyDefaults.Size(), "Key schema is smaller than slice boundary keys");
     for (size_t pos = 0; pos < end; ++pos) {
         const auto& leftCell = pos < left.size() ? left[pos] : keyDefaults[pos];
         const auto& rightCell = pos < right.size() ? right[pos] : keyDefaults[pos];
@@ -120,12 +120,12 @@ int TBounds::CompareSearchKeyFirstKey(
     }
     auto right = bounds.FirstKey.GetCells();
     if (Y_UNLIKELY(!right)) {
-        Y_DEBUG_ABORT_UNLESS(bounds.FirstInclusive,
+        Y_VERIFY_DEBUG(bounds.FirstInclusive,
             "Unexpected exclusion of -inf: %s", NFmt::Ln(bounds, keyDefaults).data());
         // Empty FirstKey is -inf => any > -inf
         return +1;
     }
-    Y_DEBUG_ABORT_UNLESS(key.size() <= keyDefaults.Size(),
+    Y_VERIFY_DEBUG(key.size() <= keyDefaults.Size(),
         "Key schema is smaller than the search key");
     for (size_t pos = 0; pos < key.size(); ++pos) {
         const auto& leftCell = key[pos];
@@ -149,7 +149,7 @@ int TBounds::CompareLastKeySearchKey(
 {
     auto left = bounds.LastKey.GetCells();
     if (Y_UNLIKELY(!left)) {
-        Y_DEBUG_ABORT_UNLESS(!bounds.LastInclusive,
+        Y_VERIFY_DEBUG(!bounds.LastInclusive,
             "Unexpected inclusion of +inf: %s", NFmt::Ln(bounds, keyDefaults).data());
         // Empty LastKey is +inf-epsilon
         // +inf-epsilon > any,
@@ -160,7 +160,7 @@ int TBounds::CompareLastKeySearchKey(
         // Search key is +inf => any < +inf
         return -1;
     }
-    Y_DEBUG_ABORT_UNLESS(key.size() <= keyDefaults.Size(),
+    Y_VERIFY_DEBUG(key.size() <= keyDefaults.Size(),
         "Key schema is smaller than the search key");
     for (size_t pos = 0; pos < key.size(); ++pos) {
         const auto& leftCell = pos < left.size() ? left[pos] : keyDefaults[pos];
@@ -212,20 +212,20 @@ void TSlices::Validate() const noexcept
     for (const auto& bounds : *this) {
         TRowId begin = bounds.BeginRowId();
         TRowId end = bounds.EndRowId();
-        Y_ABORT_UNLESS(std::exchange(lastEnd, end) <= begin,
+        Y_VERIFY(std::exchange(lastEnd, end) <= begin,
             "Slices not sorted or have intersections, search may not work correctly");
-        Y_ABORT_UNLESS(begin < end,
+        Y_VERIFY(begin < end,
             "Sanity check: slice [%" PRIu64 ",%" PRIu64 ") has no rows, search may not work correctly",
             begin, end);
         if (!bounds.FirstKey.GetCells()) {
-            Y_ABORT_UNLESS(bounds.FirstInclusive, "Sanity check: slice has FirstKey == -inf, but it is not included");
-            Y_ABORT_UNLESS(bounds.FirstRowId == 0, "Sanity check: slice has FirstKey == -inf, but FirstRowId != 0");
+            Y_VERIFY(bounds.FirstInclusive, "Sanity check: slice has FirstKey == -inf, but it is not included");
+            Y_VERIFY(bounds.FirstRowId == 0, "Sanity check: slice has FirstKey == -inf, but FirstRowId != 0");
         }
         if (!bounds.LastKey.GetCells()) {
-            Y_ABORT_UNLESS(!bounds.LastInclusive, "Sanity check: slice has LastKey == +inf, but it is included");
-            Y_ABORT_UNLESS(bounds.LastRowId == Max<TRowId>(), "Sanity check: slice has LastKey == +inf, but LastRowId != +inf");
+            Y_VERIFY(!bounds.LastInclusive, "Sanity check: slice has LastKey == +inf, but it is included");
+            Y_VERIFY(bounds.LastRowId == Max<TRowId>(), "Sanity check: slice has LastKey == +inf, but LastRowId != +inf");
         } else {
-            Y_ABORT_UNLESS(bounds.LastRowId != Max<TRowId>(), "Sanity check: slice has LastRowId == +inf, but LastKey != +inf");
+            Y_VERIFY(bounds.LastRowId != Max<TRowId>(), "Sanity check: slice has LastRowId == +inf, but LastKey != +inf");
         }
     }
 }
@@ -312,7 +312,7 @@ TIntrusiveConstPtr<TSlices> TSlices::Subtract(
                 // then if k2 < k3 we must use k3 inclusive
                 // N.B.: when switching to k3 number of rows isn't changing
                 // should only be possible when right.end == left.begin
-                Y_DEBUG_ABORT_UNLESS(right.EndRowId() == left.BeginRowId());
+                Y_VERIFY_DEBUG(right.EndRowId() == left.BeginRowId());
                 left.FirstKey = right.LastKey;
                 left.FirstRowId = right.LastRowId;
                 left.FirstInclusive = !right.LastInclusive;
@@ -335,7 +335,7 @@ TIntrusiveConstPtr<TSlices> TSlices::Subtract(
                 // then if k2 < k3 we must use k2 inclusive
                 // N.B.: when switching to k2 number of rows isn't changing
                 // should only be possible when left.end == right.begin
-                Y_DEBUG_ABORT_UNLESS(left.EndRowId() == right.BeginRowId());
+                Y_VERIFY_DEBUG(left.EndRowId() == right.BeginRowId());
                 left.LastKey = right.FirstKey;
                 left.LastRowId = right.FirstRowId;
                 left.LastInclusive = !right.FirstInclusive;
@@ -395,7 +395,7 @@ TIntrusiveConstPtr<TSlices> TSlices::Merge(
             return;
         }
         auto& last = r.back();
-        Y_ABORT_UNLESS(!TSlice::LessByFirstRowId(slice, last), "Invalid merge order");
+        Y_VERIFY(!TSlice::LessByFirstRowId(slice, last), "Invalid merge order");
         if (last.LastRowId < slice.LastRowId ||
             last.LastRowId == slice.LastRowId && !last.LastInclusive && slice.LastInclusive)
         {
@@ -475,13 +475,13 @@ TIntrusiveConstPtr<TSlices> TSlices::Cut(
     if (!result->empty()) {
         auto& first = result->front();
         if (first.FirstRowId < beginRowId) {
-            first.FirstKey = TSerializedCellVec(beginKey);
+            first.FirstKey = TSerializedCellVec(TSerializedCellVec::Serialize(beginKey));
             first.FirstRowId = beginRowId;
             first.FirstInclusive = true;
         }
         auto& last = result->back();
         if (last.LastRowId > endRowId) {
-            last.LastKey = TSerializedCellVec(endKey);
+            last.LastKey = TSerializedCellVec(TSerializedCellVec::Serialize(endKey));
             last.LastRowId = endRowId;
             last.LastInclusive = false;
         } else if (last.LastRowId == endRowId && last.LastInclusive) {
@@ -493,13 +493,13 @@ TIntrusiveConstPtr<TSlices> TSlices::Cut(
 
 TIntrusiveConstPtr<TSlices> TSlices::Replace(TIntrusiveConstPtr<TSlices> run, TConstArrayRef<TSlice> slices) noexcept
 {
-    Y_ABORT_UNLESS(run && !run->empty());
-    Y_ABORT_UNLESS(slices);
+    Y_VERIFY(run && !run->empty());
+    Y_VERIFY(slices);
 
     TVector<TSlice> result(Reserve(run->size() - 1 + slices.size()));
 
-    Y_ABORT_UNLESS(ValidateSlices(*run), "TSlices::Replace got invalid source slices");
-    Y_ABORT_UNLESS(ValidateSlices(slices), "TSlices::Replace got invalid new slices");
+    Y_VERIFY(ValidateSlices(*run), "TSlices::Replace got invalid source slices");
+    Y_VERIFY(ValidateSlices(slices), "TSlices::Replace got invalid new slices");
 
     auto it = run->begin();
     auto next = slices.begin();
@@ -513,20 +513,20 @@ TIntrusiveConstPtr<TSlices> TSlices::Replace(TIntrusiveConstPtr<TSlices> run, TC
 
         // Remove slices matching the full removed range
         ui64 first = it->BeginRowId();
-        Y_ABORT_UNLESS(it->BeginRowId() == removed->Begin,
+        Y_VERIFY(it->BeginRowId() == removed->Begin,
             "Cannot remove range [%" PRIu64 ",%" PRIu64 ") -- found slice [%" PRIu64 ",%" PRIu64 ")",
             removed->Begin, removed->End,
             it->BeginRowId(), it->EndRowId());
         ui64 last = (it++)->EndRowId();
         while (it != run->end() && it->EndRowId() <= removed->End) {
-            Y_ABORT_UNLESS(last == it->BeginRowId(),
+            Y_VERIFY(last == it->BeginRowId(),
                 "Cannot remove range [%" PRIu64 ",%" PRIu64 ") -- found range [%" PRIu64 ",%" PRIu64 ") and slice [%" PRIu64 ",%" PRIu64 ")",
                 removed->Begin, removed->End,
                 first, last,
                 it->BeginRowId(), it->EndRowId());
             last = (it++)->EndRowId();
         }
-        Y_ABORT_UNLESS(last == removed->End,
+        Y_VERIFY(last == removed->End,
             "Cannot remove range [%" PRIu64 ",%" PRIu64 ") -- found range [%" PRIu64 ",%" PRIu64 ")",
             removed->Begin, removed->End,
             first, last);
@@ -539,11 +539,11 @@ TIntrusiveConstPtr<TSlices> TSlices::Replace(TIntrusiveConstPtr<TSlices> run, TC
         ++removed;
     }
 
-    Y_ABORT_UNLESS(!removed,
+    Y_VERIFY(!removed,
         "Cannot remove range [%" PRIu64 ",%" PRIu64 ") -- out of source slices",
         removed->Begin, removed->End);
 
-    Y_ABORT_UNLESS(next == slices.end(),
+    Y_VERIFY(next == slices.end(),
         "Cannot process slice [%" PRIu64 ",%" PRIu64 ") -- rows out of sync",
         next->BeginRowId(), next->EndRowId());
 
@@ -551,7 +551,7 @@ TIntrusiveConstPtr<TSlices> TSlices::Replace(TIntrusiveConstPtr<TSlices> run, TC
         result.emplace_back(*it++);
     }
 
-    Y_ABORT_UNLESS(ValidateSlices(result), "TSlices::Replace produced invalid slices");
+    Y_VERIFY(ValidateSlices(result), "TSlices::Replace produced invalid slices");
 
     result.shrink_to_fit();
     return new TSlices(std::move(result));
@@ -591,7 +591,7 @@ TLevels::TAddResult TLevels::Add(TIntrusiveConstPtr<TPart> part, const TSlice& s
     size_t before = insertLevel->size();
     auto pos = insertLevel->Insert(insertHint, std::move(part), slice);
     size_t after = insertLevel->size();
-    Y_DEBUG_ABORT_UNLESS(after == before + 1, "Slice was not inserted at a suitable level");
+    Y_VERIFY_DEBUG(after == before + 1, "Slice was not inserted at a suitable level");
 
     return TAddResult{ insertLevel, pos };
 }
@@ -644,7 +644,7 @@ void TLevels::AddContiguous(TIntrusiveConstPtr<TPart> part, const TIntrusiveCons
         insertLevel->Insert(insertHint, part, slice);
     }
     size_t after = insertLevel->size();
-    Y_DEBUG_ABORT_UNLESS(after == before + run->size(), "Slices were not inserted at a suitable level");
+    Y_VERIFY_DEBUG(after == before + run->size(), "Slices were not inserted at a suitable level");
 }
 
 ////////////////////////////////////////////////////////////////////////////////

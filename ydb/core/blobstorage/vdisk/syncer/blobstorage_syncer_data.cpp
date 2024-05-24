@@ -192,7 +192,7 @@ namespace NKikimr {
     }
 
     void TSyncNeighbors::OldParse(const TString &data) {
-        Y_ABORT_UNLESS(!data.empty());
+        Y_VERIFY(!data.empty());
         TStringInput str(data);
         OldParse(str);
     }
@@ -203,7 +203,7 @@ namespace NKikimr {
     }
 
     void TSyncNeighbors::Parse(const TString &data) {
-        Y_ABORT_UNLESS(!data.empty());
+        Y_VERIFY(!data.empty());
         TStringInput str(data);
         Parse(str);
     }
@@ -254,7 +254,6 @@ namespace NKikimr {
         s.Signature = SyncerDataSignature;
         Neighbors->Serialize(&s.Proto, info);
         LocalSyncerState.Serialize(s.Proto.MutableLocalGuidInfo());
-        s.Proto.MutableCompatibilityInfo()->CopyFrom(CurrentCompatibilityInfo);
     }
 
     TString TSyncerData::Serialize(const TBlobStorageGroupInfo *info) const {
@@ -267,14 +266,9 @@ namespace NKikimr {
         if (!serProto.empty()) {
             NKikimrVDiskData::TSyncerEntryPoint proto;
             auto status = proto.ParseFromString(serProto);
-            Y_ABORT_UNLESS(status);
+            Y_VERIFY(status);
             LocalSyncerState.Parse(proto.GetLocalGuidInfo());
             Neighbors->Parse(proto);
-
-            if (proto.HasCompatibilityInfo()) {
-                StoredCompatibilityInfo.emplace();
-                StoredCompatibilityInfo->CopyFrom(proto.GetCompatibilityInfo());
-            }
         }
     }
 
@@ -307,16 +301,6 @@ namespace NKikimr {
         }
     }
 
-    bool TSyncerData::CheckCompatibility(TString& errorReason) {
-        if (StoredCompatibilityInfo) {
-            return CompatibilityInfo.CheckCompatibility(&*StoredCompatibilityInfo,
-                    NKikimrConfig::TCompatibilityRule::VDisk, errorReason);
-        } else {
-            return CompatibilityInfo.CheckCompatibility(nullptr,
-                    NKikimrConfig::TCompatibilityRule::VDisk, errorReason);
-        }
-    }
-
     TSyncerData::TSyncerData(const TString &logPrefix,
                              const TActorId &notifyId,
                              const TVDiskIdShort &selfVDisk,
@@ -328,7 +312,6 @@ namespace NKikimr {
                                                   top))
         , LocalSyncerState()
         , NotifyId(notifyId)
-        , CurrentCompatibilityInfo(CompatibilityInfo.MakeStored(NKikimrConfig::TCompatibilityRule::VDisk))
     {
         TString serProto = WithoutSignature(Convert(selfVDisk, top, entryPoint));
         ParseWOSignature(serProto);
@@ -345,7 +328,6 @@ namespace NKikimr {
                                                   top))
         , LocalSyncerState()
         , NotifyId(notifyId)
-        , CurrentCompatibilityInfo(CompatibilityInfo.MakeStored(NKikimrConfig::TCompatibilityRule::VDisk))
     {
         TString serProto = WithoutSignature(Convert(selfVDisk, top, entryPoint));
         ParseWOSignature(serProto);
@@ -355,36 +337,30 @@ namespace NKikimr {
                                       const TActorId &notifyId,
                                       const TVDiskIdShort &selfVDisk,
                                       std::shared_ptr<TBlobStorageGroupInfo::TTopology> top,
-                                      const TString &entryPoint,
-                                      TString& errorReason,
-                                      bool suppressCompatibilityCheck) {
+                                      const TString &entryPoint) {
         try {
             TSyncerData n(logPrefix, notifyId, selfVDisk, top);
             TString serProto = WithoutSignature(Convert(selfVDisk, top, entryPoint));
             n.ParseWOSignature(serProto);
-            return suppressCompatibilityCheck || n.CheckCompatibility(errorReason);
-        } catch (yexception e) {
-            errorReason = e.what();
+        } catch (yexception) {
             return false;
         }
+        return true;
     }
 
     bool TSyncerData::CheckEntryPoint(const TString &logPrefix,
                                       const TActorId &notifyId,
                                       const TVDiskIdShort &selfVDisk,
                                       std::shared_ptr<TBlobStorageGroupInfo::TTopology> top,
-                                      const TContiguousSpan &entryPoint,
-                                      TString& errorReason,
-                                      bool suppressCompatibilityCheck) {
+                                      const TContiguousSpan &entryPoint) {
         try {
             TSyncerData n(logPrefix, notifyId, selfVDisk, top);
             TString serProto = WithoutSignature(Convert(selfVDisk, top, entryPoint)); //FIXME(innokentii) unnecessary copy
             n.ParseWOSignature(serProto);
-            return suppressCompatibilityCheck || n.CheckCompatibility(errorReason);
-        } catch (yexception e) {
-            errorReason = e.what();
+        } catch (yexception) {
             return false;
         }
+        return true;
     }
 
     // Convert from old entry point format to protobuf format

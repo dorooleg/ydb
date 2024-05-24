@@ -89,75 +89,6 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
         UNIT_ASSERT_VALUES_EQUAL(count, BATCH_COUNT * BATCH_SIZE);
     }
 
-    Y_UNIT_TEST(ValidRetry) {
-        TKikimrWithGrpcAndRootSchema server;
-        ui16 grpc = server.GetPort();
-
-        TString location = TStringBuilder() << "localhost:" << grpc;
-
-        auto connection = NYdb::TDriver(TDriverConfig().SetEndpoint(location));
-
-        NYdb::NTable::TTableClient client(connection);
-        auto session = client.GetSession().ExtractValueSync().GetSession();
-
-        {
-            auto tableBuilder = client.GetTableBuilder();
-            tableBuilder
-                .AddNullableColumn("Shard", EPrimitiveType::Uint64)
-                .AddNullableColumn("Message", EPrimitiveType::Utf8);
-            tableBuilder.SetPrimaryKeyColumns({"Shard"});
-            NYdb::NTable::TCreateTableSettings tableSettings;
-            tableSettings.PartitioningPolicy(NYdb::NTable::TPartitioningPolicy().UniformPartitions(32));
-            auto result = session.CreateTable("/Root/Logs", tableBuilder.Build(), tableSettings).ExtractValueSync();
-
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-        }
-
-        TValueBuilder rows;
-        rows.BeginList();
-        rows.AddListItem()
-            .BeginStruct()
-                .AddMember("Shard").Uint64(1)
-                .AddMember("Message").Utf8("message")
-            .EndStruct();
-        rows.EndList();
-
-        auto v1 = rows.Build();
-        auto v2 = v1;
-
-        ui32 limit = 100;
-        while (true && --limit) {
-            NYdb::NTable::TBulkUpsertSettings upsertSettings;
-            upsertSettings.ClientTimeout(TDuration::MicroSeconds(10));
-            auto res = client.BulkUpsert("/Root/Logs", std::move(v2), upsertSettings).GetValueSync();
-
-            Cerr << res.GetStatus() << Endl;
-            if (res.GetStatus() == EStatus::CLIENT_DEADLINE_EXCEEDED)
-                break;
-        }
-
-        UNIT_ASSERT_C(limit, "Unable to get client error response");
-
-        {
-            auto res = client.BulkUpsert("/Root/Logs", std::move(v1)).GetValueSync();
-            UNIT_ASSERT_EQUAL(res.GetStatus(), EStatus::SUCCESS);
-        }
-
-        {
-            auto res = session.ExecuteDataQuery(
-                "SELECT Message as col FROM `/Root/Logs`;",
-                NYdb::NTable::TTxControl::BeginTx().CommitTx()
-            ).ExtractValueSync();
-
-            UNIT_ASSERT_EQUAL(res.GetStatus(), EStatus::SUCCESS);
-
-            auto rs = NYdb::TResultSetParser(res.GetResultSet(0));
-            UNIT_ASSERT(rs.TryNextRow());
-            auto msg = rs.ColumnParser("col").GetOptionalUtf8();
-            UNIT_ASSERT_VALUES_EQUAL(msg, "message");
-        }
-    }
-
     void TestNull(NYdb::TDriver& connection, EPrimitiveType valueType, bool inKey) {
         TString tableName = Sprintf("/Root/TestNulls_0x%04x", valueType);
 
@@ -299,14 +230,17 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
 
         TString tableName = "/Root/TestNotNullColumns";
 
-        {  /* create table with not null data column */
+        {  /* create table with disabled not null data column */
             auto tableBuilder = client.GetTableBuilder();
             tableBuilder
                     .AddNonNullableColumn("Key", EPrimitiveType::Uint64)
                     .AddNonNullableColumn("Value", EPrimitiveType::Uint64)
                 .SetPrimaryKeyColumns({"Key"});
             auto result = session.CreateTable(tableName, tableBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+
+            Cerr << result.GetIssues().ToString() << Endl;
+            UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
+            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
         }
 
         {  /* create table with not null primary key column */
@@ -420,7 +354,7 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
 
             auto res = client.BulkUpsert("/Root/Traces", rows.Build()).GetValueSync();
             Cerr << res.GetIssues().ToString() << Endl;
-            UNIT_ASSERT_STRING_CONTAINS(res.GetIssues().ToString(), "unknown table");
+            UNIT_ASSERT_STRING_CONTAINS(res.GetIssues().ToString(), "Unknown table '/Root/Traces'");
             UNIT_ASSERT_EQUAL(res.GetStatus(), EStatus::SCHEME_ERROR);
         }
 
@@ -1149,7 +1083,6 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
         bool gotOverload = false;
         bool gotSuccess = false;
         TString blob(100, 'a');
-        TMonotonic start = TMonotonic::Now();
         for (ui64 count = 0; (!gotOverload || !gotSuccess) && count < 100000; count++) {
             TValueBuilder rows;
 
@@ -1185,13 +1118,9 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
                     gotOverload = true;
                 }
             }
-            auto elapsed = TMonotonic::Now() - start;
-            if (elapsed >= TDuration::Seconds(5)) {
-                break;
-            }
         }
+        UNIT_ASSERT(gotOverload);
         UNIT_ASSERT(gotSuccess);
-        UNIT_ASSERT(!gotOverload);
     }
 
     void CreateTestTable(NYdb::NTable::TTableClient& client) {

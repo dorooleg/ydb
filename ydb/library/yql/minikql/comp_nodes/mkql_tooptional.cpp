@@ -1,5 +1,5 @@
 #include "mkql_tooptional.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
 namespace NKikimr {
@@ -33,7 +33,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetValue(const TCodegenContext& ctx, Value* result, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto valueType = Type::getInt128Ty(context);
         const auto ptrType = PointerType::getUnqual(valueType);
 
@@ -129,7 +129,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetValue(const TCodegenContext& ctx, Value* result, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto valueType = Type::getInt128Ty(context);
         const auto ptrType = PointerType::getUnqual(valueType);
 

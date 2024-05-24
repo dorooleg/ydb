@@ -47,7 +47,6 @@ constexpr ui32 SmallDiskMaximumChunkSize = 32 * (1 << 20); // 32MB
 #define PDISK_SYS_LOG_RECORD_VERSION_4 4
 // #define PDISK_SYS_LOG_RECORD_VERSION_5 5 // It was used in reverted commits, just avoid this version
 #define PDISK_SYS_LOG_RECORD_VERSION_6 6
-#define PDISK_SYS_LOG_RECORD_VERSION_7 7
 #define PDISK_SYS_LOG_RECORD_INCOMPATIBLE_VERSION_1000 1000
 #define FORMAT_TEXT_SIZE 1024
 
@@ -332,7 +331,7 @@ struct TSysLogRecord {
     TVDiskID OwnerVDisks[256];
 
     TSysLogRecord()
-        : Version(PDISK_SYS_LOG_RECORD_VERSION_7)
+        : Version(PDISK_SYS_LOG_RECORD_VERSION_6)
         , LogHeadChunkIdx(0)
         , Reserved1(0)
         , LogHeadChunkPreviousNonce((ui64)-1)
@@ -431,17 +430,17 @@ struct TChunkTrimInfo {
     {}
 
     void SetChunkTrimmed(ui8 idx) {
-        Y_ABORT_UNLESS(idx < ChunksPerRecord);
+        Y_VERIFY(idx < ChunksPerRecord);
         TrimMask |= (1 << idx);
     }
 
     void SetChunkUntrimmed(ui8 idx) {
-        Y_ABORT_UNLESS(idx < ChunksPerRecord);
+        Y_VERIFY(idx < ChunksPerRecord);
         TrimMask &= ~(1 << idx);
     }
 
     bool IsChunkTrimmed(ui8 idx) {
-        Y_ABORT_UNLESS(idx < ChunksPerRecord);
+        Y_VERIFY(idx < ChunksPerRecord);
         return TrimMask & (1 << idx);
     }
 };
@@ -719,7 +718,7 @@ struct TDiskFormat {
         // Set Hash
         {
             NPDisk::TPDiskHashCalculator hashCalculator(false);
-            Y_ABORT_UNLESS(DiskFormatSize > sizeof(THash));
+            Y_VERIFY(DiskFormatSize > sizeof(THash));
             ui64 size = DiskFormatSize - sizeof(THash);
             hashCalculator.Hash(this, size);
             Hash = hashCalculator.GetHashResult();
@@ -767,8 +766,8 @@ struct TDiskFormat {
             FormatFlagErasureEncodeNextChunkReference |
             FormatFlagEncryptFormat |
             FormatFlagEncryptData;
-        Y_ABORT_UNLESS(format.Version <= Version);
-        Y_ABORT_UNLESS(format.GetUsedSize() <= sizeof(TDiskFormat));
+        Y_VERIFY(format.Version <= Version);
+        Y_VERIFY(format.GetUsedSize() <= sizeof(TDiskFormat));
         memcpy(this, &format, format.GetUsedSize());
     }
 

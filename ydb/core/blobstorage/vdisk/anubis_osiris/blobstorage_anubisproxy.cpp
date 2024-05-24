@@ -4,7 +4,7 @@
 #include <ydb/core/blobstorage/base/utility.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/protos/blobstorage.pb.h>
 
 using namespace NKikimrServices;
@@ -30,14 +30,14 @@ namespace NKikimr {
 
         void Bootstrap(const TActorContext &ctx) {
             CliId = ctx.Register(Actor.release());
-            ActiveActors.Insert(CliId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(CliId);
             Become(&TThis::StateFunc);
         }
 
         void Handle(TEvAnubisVGet::TPtr &ev, const TActorContext &ctx) {
             using TEvVGet = TEvBlobStorage::TEvVGet;
 
-            Y_ABORT_UNLESS(RequestFrom == TActorId());
+            Y_VERIFY(RequestFrom == TActorId());
             const auto eclass = NKikimrBlobStorage::EGetHandleClass::AsyncRead;
             auto msg = TEvVGet::CreateExtremeIndexQuery(TargetVDiskId, TInstant::Max(), eclass);
             msg->Record.SetSuppressBarrierCheck(true);
@@ -50,7 +50,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvBlobStorage::TEvVGetResult::TPtr &ev, const TActorContext &ctx) {
-            Y_ABORT_UNLESS(RequestFrom != TActorId());
+            Y_VERIFY(RequestFrom != TActorId());
 
             // check for RACE and update status if required
             NKikimrBlobStorage::TEvVGetResult &record = ev->Get()->Record;

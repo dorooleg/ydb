@@ -1,5 +1,4 @@
 #include "coordinator_impl.h"
-#include "coordinator_hooks.h"
 
 namespace NKikimr {
 namespace NFlatTxCoordinator {
@@ -37,7 +36,6 @@ struct TTxCoordinator::TTxConfigure : public TTransactionBase<TTxCoordinator> {
             return false;
 
         ui64 curVersion = 0;
-        bool curMissing = true;
         TVector<TTabletId> curMediators;
         ui64 curResolution = 0;
         bool curHaveConfig = false;
@@ -49,48 +47,33 @@ struct TTxCoordinator::TTxConfigure : public TTransactionBase<TTxCoordinator> {
 
             if (ver >= curVersion) {
                 curVersion = ver;
-                curMissing = false;
                 curMediators.swap(mediators);
                 curResolution = resolution;
-                curHaveConfig = !rowset.GetValue<Schema::DomainConfiguration::Config>().empty();
+                curHaveConfig = rowset.HaveValue<Schema::DomainConfiguration::Config>();
             }
 
             if (!rowset.Next())
                 return false;
         }
 
-        bool persistedConfig = false;
         auto persistConfig = [&]() {
+            TString encodedConfig;
+            Y_PROTOBUF_SUPPRESS_NODISCARD Config.SerializeToString(&encodedConfig);
             db.Table<Schema::DomainConfiguration>().Key(Version).Update(
                     NIceDb::TUpdate<Schema::DomainConfiguration::Mediators>(Mediators),
-                    NIceDb::TUpdate<Schema::DomainConfiguration::Resolution>(Resolution));
-
-            if (auto* hooks = ICoordinatorHooks::Get(); hooks && !hooks->PersistConfig(Self->TabletID(), Config)) {
-                return;
-            }
-
-            TString encodedConfig;
-            Y_ABORT_UNLESS(Config.SerializeToString(&encodedConfig));
-            db.Table<Schema::DomainConfiguration>().Key(Version).Update(
-                NIceDb::TUpdate<Schema::DomainConfiguration::Config>(encodedConfig));
-            persistedConfig = true;
+                    NIceDb::TUpdate<Schema::DomainConfiguration::Resolution>(Resolution),
+                    NIceDb::TUpdate<Schema::DomainConfiguration::Config>(encodedConfig));
         };
 
         auto updateCurrentConfig = [&]() {
-            Self->Config.Version = Version;
+            Self->Config.MediatorsVersion = Version;
             Self->Config.Coordinators.clear();
-            if (persistedConfig) {
-                for (ui64 coordinator : Config.GetCoordinators()) {
-                    Self->Config.Coordinators.push_back(coordinator);
-                }
-                if (Config.HasIdlePlanResolution()) {
-                    Self->Config.ReducedResolution = Max(Config.GetIdlePlanResolution(), Self->Config.Resolution);
-                }
-                Self->Config.HaveProcessingParams = true;
+            for (ui64 coordinator : Config.GetCoordinators()) {
+                Self->Config.Coordinators.push_back(coordinator);
             }
         };
 
-        if (curMissing) {
+        if (curVersion == 0) {
             // First config version
             Respond = new TEvSubDomain::TEvConfigureStatus(NKikimrTx::TEvSubDomainConfigurationAck::SUCCESS, Self->TabletID());
             persistConfig();
@@ -120,14 +103,8 @@ struct TTxCoordinator::TTxConfigure : public TTransactionBase<TTxCoordinator> {
              "tablet# " << Self->TabletID() <<
              " version# " << Version <<
              " TTxConfigure Complete");
-        if (ConfigurationApplied) {
+        if (ConfigurationApplied)
             Self->Execute(Self->CreateTxInit(), ctx);
-        } else {
-            Self->SetCounter(COUNTER_MISSING_CONFIG, Self->Config.HaveProcessingParams ? 1 : 0);
-            if (Self->Config.HaveProcessingParams) {
-                Self->SubscribeToSiblings();
-            }
-        }
 
         if (AckTo && Respond)
             ctx.Send(AckTo, Respond.Release());

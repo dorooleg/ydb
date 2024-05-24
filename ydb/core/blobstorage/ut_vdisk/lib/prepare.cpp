@@ -1,6 +1,5 @@
 #include "prepare.h"
 
-#include <ydb/core/base/appdata.h>
 #include <ydb/core/blobstorage/crypto/default.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdiskctx.h>
 #include <ydb/core/blobstorage/vdisk/vdisk_services.h>
@@ -11,10 +10,10 @@
 
 #include <ydb/core/scheme/scheme_type_registry.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 #include <library/cpp/testing/unittest/tests_data.h>
 
@@ -138,7 +137,7 @@ TAllPDisks::TAllPDisks(const TAllPDisksConfiguration &cfg)
         }
     } else {
         // using device
-        Y_ABORT_UNLESS(cfg.PDisksNum == 1 && cfg.DiskSize == 0);
+        Y_VERIFY(cfg.PDisksNum == 1 && cfg.DiskSize == 0);
         ui32 pDiskId = 1;
         ui64 pDiskGuid = 1; // some guide != 0
 
@@ -162,10 +161,10 @@ void TAllPDisks::ActorSetupCmd(NActors::TActorSystemSetup *setup, ui32 node,
                                            TPDiskCategory(deviceType, 0).GetRaw()));
         pDiskConfig->GetDriveDataSwitch = NKikimrBlobStorage::TPDiskConfig::DoNotTouch;
         pDiskConfig->WriteCacheSwitch = NKikimrBlobStorage::TPDiskConfig::DoNotTouch;
-        const NPDisk::TMainKey mainKey{ .Keys = { NPDisk::YdbDefaultPDiskSequence }, .IsInitialized = true };
+        const NPDisk::TMainKey mainKey = {NPDisk::YdbDefaultPDiskSequence};
         TActorSetupCmd pDiskSetup(CreatePDisk(pDiskConfig.Get(),
                     mainKey, counters), TMailboxType::Revolving, 0);
-        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(inst.PDiskActorID, std::move(pDiskSetup)));
+        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(inst.PDiskActorID, pDiskSetup));
     }
 }
 
@@ -216,7 +215,7 @@ void TAllVDisks::ActorSetupCmd(NActors::TActorSystemSetup *setup, NKikimr::TBlob
         TVDiskInstance &vdisk = VDisks[i];
         if (vdisk.Initialized) {
             TActorSetupCmd vdiskSetup(CreateVDisk(vdisk.Cfg.Get(), groupInfo, counters), TMailboxType::Revolving, 0);
-            setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(vdisk.ActorID, std::move(vdiskSetup)));
+            setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(vdisk.ActorID, vdiskSetup));
         }
     }
 }
@@ -236,6 +235,7 @@ TDefaultVDiskSetup::TDefaultVDiskSetup() {
         cfg->SyncJobTimeout = TDuration::Seconds(20);
         cfg->RunSyncer = true;
         cfg->ReplTimeInterval = TDuration::Seconds(10);
+        cfg->RunHandoff = true;
         cfg->SkeletonFrontQueueBackpressureCheckMsgId = false;
     };
     AddConfigModifier(modifier);
@@ -302,7 +302,7 @@ void TConfiguration::Prepare(IVDiskSetup *vdiskSetup, bool newPDisks, bool runRe
 
     const TActorId nameserviceId = GetNameserviceActorId();
     TActorSetupCmd nameserviceSetup(CreateNameserverTable(nameserverTable), TMailboxType::Simple, 0);
-    setup1->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(nameserviceId, std::move(nameserviceSetup)));
+    setup1->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(nameserviceId, nameserviceSetup));
 
     ui64 initOwnerRound = 1;
     // setup pdisks
@@ -323,7 +323,7 @@ void TConfiguration::Prepare(IVDiskSetup *vdiskSetup, bool newPDisks, bool runRe
     ///////////////////////// LOGGER ///////////////////////////////////////////////
     NActors::TActorId loggerActorId = NActors::TActorId(1, "logger");
     TIntrusivePtr<NActors::NLog::TSettings> logSettings;
-    logSettings.Reset(new NActors::NLog::TSettings(loggerActorId, NActorsServices::LOGGER, NActors::NLog::PRI_ERROR,
+    logSettings.Reset(new NActors::NLog::TSettings(loggerActorId, NKikimrServices::LOGGER, NActors::NLog::PRI_ERROR,
                                                    NActors::NLog::PRI_DEBUG, 0)); // NOTICE
     logSettings->Append(
         NActorsServices::EServiceCommon_MIN,
@@ -360,8 +360,8 @@ void TConfiguration::Prepare(IVDiskSetup *vdiskSetup, bool newPDisks, bool runRe
                                                                    NActors::CreateStderrBackend(),
                                                                    Counters->GetSubgroup("logger", "counters"));
     NActors::TActorSetupCmd loggerActorCmd(loggerActor, NActors::TMailboxType::Simple, 0);
-    std::pair<NActors::TActorId, NActors::TActorSetupCmd> loggerActorPair(loggerActorId, std::move(loggerActorCmd));
-    setup1->LocalServices.push_back(std::move(loggerActorPair));
+    std::pair<NActors::TActorId, NActors::TActorSetupCmd> loggerActorPair(loggerActorId, loggerActorCmd);
+    setup1->LocalServices.push_back(loggerActorPair);
     //////////////////////////////////////////////////////////////////////////////
 
     ///////////////////////// MONITORING SETTINGS /////////////////////////////////
@@ -476,5 +476,5 @@ void TConfiguration::PoisonVDisks() {
 
 void TConfiguration::PoisonPDisks() {
     // FIXME: implement
-    Y_DEBUG_ABORT_UNLESS(false);
+    Y_VERIFY_DEBUG(false);
 }

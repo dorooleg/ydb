@@ -4,9 +4,9 @@
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/set.h>
 
@@ -36,12 +36,11 @@ public:
     }
 
 public:
-    TKqpShardsResolver(const TActorId& owner, ui64 txId, bool useFollowers, TSet<ui64>&& shardIds)
+    TKqpShardsResolver(const TActorId& owner, ui64 txId, TSet<ui64>&& shardIds)
         : Owner(owner)
         , TxId(txId)
         , ShardIds(std::move(shardIds))
-        , UseFollowers(useFollowers)
-        , TabletResolver(MakePipePeNodeCacheID(UseFollowers))
+        , TabletResolver(MakePipePeNodeCacheID(false))
     {}
 
     void Bootstrap() {
@@ -50,7 +49,7 @@ public:
         for (ui64 tabletId : ShardIds) {
             LOG_T("Send request about tabletId: " << tabletId);
             bool sent = Send(TabletResolver, new TEvPipeCache::TEvGetTabletNode(tabletId));
-            Y_DEBUG_ABORT_UNLESS(sent);
+            Y_VERIFY_DEBUG(sent);
         }
 
         Become(&TKqpShardsResolver::ResolveState);
@@ -85,7 +84,7 @@ private:
         if (retryCount > MAX_RETRIES_COUNT) {
             TString reply = TStringBuilder() << "Failed to resolve tablet: " << msg->TabletId << " after several retries.";
             LOG_W(reply);
-            ReplyErrorAndDie(Ydb::StatusIds::UNAVAILABLE, std::move(reply));
+            ReplyErrorAndDie(Ydb::StatusIds::GENERIC_ERROR, std::move(reply));
             return;
 
         }
@@ -113,7 +112,6 @@ private:
     const TActorId Owner;
     const ui64 TxId;
     const TSet<ui64> ShardIds;
-    const bool UseFollowers;
     const TActorId TabletResolver;
     TMap<ui64, ui32> RetryCount;
     TMap<ui64, ui64> Result;
@@ -121,8 +119,8 @@ private:
 
 } // anonymous namespace
 
-IActor* CreateKqpShardsResolver(const TActorId& owner, ui64 txId, bool useFollowers, TSet<ui64>&& shardIds) {
-    return new TKqpShardsResolver(owner, txId, useFollowers, std::move(shardIds));
+IActor* CreateKqpShardsResolver(const TActorId& owner, ui64 txId, TSet<ui64>&& shardIds) {
+    return new TKqpShardsResolver(owner, txId, std::move(shardIds));
 }
 
 } // namespace NKikimr::NKqp

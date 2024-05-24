@@ -6,7 +6,7 @@
 #include <util/generic/map.h>
 #include <util/generic/vector.h>
 #include <util/generic/algorithm.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 
 namespace NKikimr {
 
@@ -20,7 +20,7 @@ namespace NKikimr {
      * through replication, or do something else. */
 
     class TBufferWithGaps {
-        TRcBuf Data;
+        TString Data;
         // <begin, size>
         TMap<ui32, ui32> Gaps;
         ui32 Offset; // Data's offset in Gaps space
@@ -40,7 +40,7 @@ namespace NKikimr {
         {}
 
         TBufferWithGaps(ui32 offset, ui32 size)
-            : Data(TRcBuf::Uninitialized(size))
+            : Data(TString::Uninitialized(size))
             , Offset(offset)
             , IsCommited(false)
         {}
@@ -63,21 +63,21 @@ namespace NKikimr {
             Gaps.emplace(begin, size);
         }
 
-        void SetData(TRcBuf&& data) {
+        void SetData(TString&& data) {
             Data = std::move(data);
             IsCommited = true;
         }
 
-        TRcBuf ToString() const {
+        TString ToString() const {
             Y_VERIFY_S(IsReadable(), "returned data is corrupt (or was never written) and therefore could not be used safely, State# "
                     << PrintState());
             return Data;
         }
 
-        TRcBuf Substr(ui32 offset, ui32 len) const {
+        TString Substr(ui32 offset, ui32 len) const {
             Y_VERIFY_S(IsReadable(offset, len), "returned data is corrupt (or was never written) at offset# %" << offset
                    << " len# " << len << " and therefore could not be used safely, State# " << PrintState());
-            return TRcBuf(TRcBuf::Piece, Data.data() + offset, len, Data);
+            return Data.substr(offset, len);
         }
 
         template<typename T>
@@ -88,10 +88,10 @@ namespace NKikimr {
         }
 
         ui8 *RawDataPtr(ui32 offset, ui32 len) {
-            Y_ABORT_UNLESS(offset + len <= Data.size(), "Buffer has size# %zu less then requested offset# %" PRIu32
+            Y_VERIFY(offset + len <= Data.size(), "Buffer has size# %zu less then requested offset# %" PRIu32
                     " len# %" PRIu32, Data.size(), offset, len);
             IsCommited = false;
-            return reinterpret_cast<ui8 *>(Data.GetDataMut() + offset);
+            return reinterpret_cast<ui8 *>(Data.Detach() + offset);
         }
 
         void Commit() {
@@ -99,12 +99,12 @@ namespace NKikimr {
         }
 
         bool IsReadable() const {
-            Y_ABORT_UNLESS(IsCommited, "returned data was not commited");
+            Y_VERIFY(IsCommited, "returned data was not commited");
             return Gaps.empty();
         }
 
         bool IsReadable(ui32 offset, ui32 len) const {
-            Y_ABORT_UNLESS(IsCommited, "returned data was not commited");
+            Y_VERIFY(IsCommited, "returned data was not commited");
             if (offset + len > Data.size()) {
                 return false;
             }
@@ -136,17 +136,21 @@ namespace NKikimr {
         }
 
         void Swap(TBufferWithGaps& other) {
-            std::swap(Data, other.Data);
+            Data.swap(other.Data);
             Gaps.swap(other.Gaps);
             DoSwap(Offset, other.Offset);
             DoSwap(IsCommited, other.IsCommited);
         }
 
         void Clear() {
-            Data = {};
+            Data.clear();
             Gaps.clear();
             Offset = 0;
             IsCommited = false;
+        }
+
+        bool IsDetached() const {
+            return Data.IsDetached();
         }
 
         bool Empty() const {
@@ -187,7 +191,7 @@ namespace NKikimr {
             str << "Offset# " << Offset;
             str << " Gaps# { ";
             for (auto [begin, size] : Gaps) {
-                str << "{ Begin# " << begin << " Size# " << size << " } ";
+                str << "{ Begin# " << begin << " Size# " << size << " } "; 
             }
             str << "}";
             str << " IsCommitted# " << IsCommited;

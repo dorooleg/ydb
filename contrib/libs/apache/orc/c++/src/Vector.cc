@@ -20,21 +20,21 @@
 
 #include "Adaptor.hh"
 #include "orc/Exceptions.hh"
-#include "orc/MemoryPool.hh"
 
-#include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <cstdlib>
 
 namespace orc {
 
-  ColumnVectorBatch::ColumnVectorBatch(uint64_t cap, MemoryPool& pool)
-      : capacity(cap),
-        numElements(0),
-        notNull(pool, cap),
-        hasNulls(false),
-        isEncoded(false),
-        memoryPool(pool) {
+  ColumnVectorBatch::ColumnVectorBatch(uint64_t cap,
+                                       MemoryPool& pool
+                                       ): capacity(cap),
+                                          numElements(0),
+                                          notNull(pool, cap),
+                                          hasNulls(false),
+                                          isEncoded(false),
+                                          memoryPool(pool) {
     std::memset(notNull.data(), 1, capacity);
   }
 
@@ -61,13 +61,81 @@ namespace orc {
     return false;
   }
 
-  StringDictionary::StringDictionary(MemoryPool& pool)
-      : dictionaryBlob(pool), dictionaryOffset(pool) {
+  LongVectorBatch::LongVectorBatch(uint64_t _capacity, MemoryPool& pool
+                     ): ColumnVectorBatch(_capacity, pool),
+                        data(pool, _capacity) {
     // PASS
   }
 
-  EncodedStringVectorBatch::EncodedStringVectorBatch(uint64_t _capacity, MemoryPool& pool)
-      : StringVectorBatch(_capacity, pool), dictionary(), index(pool, _capacity) {
+  LongVectorBatch::~LongVectorBatch() {
+    // PASS
+  }
+
+  std::string LongVectorBatch::toString() const {
+    std::ostringstream buffer;
+    buffer << "Long vector <" << numElements << " of " << capacity << ">";
+    return buffer.str();
+  }
+
+  void LongVectorBatch::resize(uint64_t cap) {
+    if (capacity < cap) {
+      ColumnVectorBatch::resize(cap);
+      data.resize(cap);
+    }
+  }
+
+  void LongVectorBatch::clear() {
+    numElements = 0;
+  }
+
+  uint64_t LongVectorBatch::getMemoryUsage() {
+    return ColumnVectorBatch::getMemoryUsage() +
+        static_cast<uint64_t>(data.capacity() * sizeof(int64_t));
+  }
+
+  DoubleVectorBatch::DoubleVectorBatch(uint64_t _capacity, MemoryPool& pool
+                   ): ColumnVectorBatch(_capacity, pool),
+                      data(pool, _capacity) {
+    // PASS
+  }
+
+  DoubleVectorBatch::~DoubleVectorBatch() {
+    // PASS
+  }
+
+  std::string DoubleVectorBatch::toString() const {
+    std::ostringstream buffer;
+    buffer << "Double vector <" << numElements << " of " << capacity << ">";
+    return buffer.str();
+  }
+
+  void DoubleVectorBatch::resize(uint64_t cap) {
+    if (capacity < cap) {
+      ColumnVectorBatch::resize(cap);
+      data.resize(cap);
+    }
+  }
+
+  void DoubleVectorBatch::clear() {
+    numElements = 0;
+  }
+
+  uint64_t DoubleVectorBatch::getMemoryUsage() {
+    return ColumnVectorBatch::getMemoryUsage()
+          + static_cast<uint64_t>(data.capacity() * sizeof(double));
+  }
+
+  StringDictionary::StringDictionary(MemoryPool& pool)
+              : dictionaryBlob(pool),
+                dictionaryOffset(pool) {
+    // PASS
+  }
+
+  EncodedStringVectorBatch::EncodedStringVectorBatch(uint64_t _capacity,
+                                                     MemoryPool& pool)
+                      : StringVectorBatch(_capacity, pool),
+                        dictionary(),
+                        index(pool, _capacity) {
     // PASS
   }
 
@@ -88,11 +156,11 @@ namespace orc {
     }
   }
 
-  StringVectorBatch::StringVectorBatch(uint64_t _capacity, MemoryPool& pool)
-      : ColumnVectorBatch(_capacity, pool),
-        data(pool, _capacity),
-        length(pool, _capacity),
-        blob(pool) {
+  StringVectorBatch::StringVectorBatch(uint64_t _capacity, MemoryPool& pool
+               ): ColumnVectorBatch(_capacity, pool),
+                  data(pool, _capacity),
+                  length(pool, _capacity),
+                  blob(pool) {
     // PASS
   }
 
@@ -119,27 +187,28 @@ namespace orc {
   }
 
   uint64_t StringVectorBatch::getMemoryUsage() {
-    return ColumnVectorBatch::getMemoryUsage() +
-           static_cast<uint64_t>(data.capacity() * sizeof(char*) +
-                                 length.capacity() * sizeof(int64_t));
+    return ColumnVectorBatch::getMemoryUsage()
+          + static_cast<uint64_t>(data.capacity() * sizeof(char*)
+          + length.capacity() * sizeof(int64_t));
   }
 
-  StructVectorBatch::StructVectorBatch(uint64_t cap, MemoryPool& pool)
-      : ColumnVectorBatch(cap, pool) {
+  StructVectorBatch::StructVectorBatch(uint64_t cap, MemoryPool& pool
+                                        ): ColumnVectorBatch(cap, pool) {
     // PASS
   }
 
   StructVectorBatch::~StructVectorBatch() {
-    for (uint64_t i = 0; i < this->fields.size(); i++) {
+    for (uint64_t i=0; i<this->fields.size(); i++) {
       delete this->fields[i];
     }
   }
 
   std::string StructVectorBatch::toString() const {
     std::ostringstream buffer;
-    buffer << "Struct vector <" << numElements << " of " << capacity << "; ";
-    for (std::vector<ColumnVectorBatch*>::const_iterator ptr = fields.begin(); ptr != fields.end();
-         ++ptr) {
+    buffer << "Struct vector <" << numElements << " of " << capacity
+           << "; ";
+    for(std::vector<ColumnVectorBatch*>::const_iterator ptr=fields.begin();
+        ptr != fields.end(); ++ptr) {
       buffer << (*ptr)->toString() << "; ";
     }
     buffer << ">";
@@ -151,7 +220,7 @@ namespace orc {
   }
 
   void StructVectorBatch::clear() {
-    for (size_t i = 0; i < fields.size(); i++) {
+    for(size_t i=0; i < fields.size(); i++) {
       fields[i]->clear();
     }
     numElements = 0;
@@ -159,14 +228,14 @@ namespace orc {
 
   uint64_t StructVectorBatch::getMemoryUsage() {
     uint64_t memory = ColumnVectorBatch::getMemoryUsage();
-    for (unsigned int i = 0; i < fields.size(); i++) {
+    for (unsigned int i=0; i < fields.size(); i++) {
       memory += fields[i]->getMemoryUsage();
     }
     return memory;
   }
 
   bool StructVectorBatch::hasVariableLength() {
-    for (unsigned int i = 0; i < fields.size(); i++) {
+    for (unsigned int i=0; i < fields.size(); i++) {
       if (fields[i]->hasVariableLength()) {
         return true;
       }
@@ -174,9 +243,10 @@ namespace orc {
     return false;
   }
 
-  ListVectorBatch::ListVectorBatch(uint64_t cap, MemoryPool& pool)
-      : ColumnVectorBatch(cap, pool), offsets(pool, cap + 1) {
-    offsets.zeroOut();
+  ListVectorBatch::ListVectorBatch(uint64_t cap, MemoryPool& pool
+                   ): ColumnVectorBatch(cap, pool),
+                      offsets(pool, cap+1) {
+    // PASS
   }
 
   ListVectorBatch::~ListVectorBatch() {
@@ -185,8 +255,8 @@ namespace orc {
 
   std::string ListVectorBatch::toString() const {
     std::ostringstream buffer;
-    buffer << "List vector <" << elements->toString() << " with " << numElements << " of "
-           << capacity << ">";
+    buffer << "List vector <" << elements->toString() << " with "
+           << numElements << " of " << capacity << ">";
     return buffer.str();
   }
 
@@ -203,17 +273,19 @@ namespace orc {
   }
 
   uint64_t ListVectorBatch::getMemoryUsage() {
-    return ColumnVectorBatch::getMemoryUsage() +
-           static_cast<uint64_t>(offsets.capacity() * sizeof(int64_t)) + elements->getMemoryUsage();
+    return ColumnVectorBatch::getMemoryUsage()
+           + static_cast<uint64_t>(offsets.capacity() * sizeof(int64_t))
+           + elements->getMemoryUsage();
   }
 
   bool ListVectorBatch::hasVariableLength() {
     return true;
   }
 
-  MapVectorBatch::MapVectorBatch(uint64_t cap, MemoryPool& pool)
-      : ColumnVectorBatch(cap, pool), offsets(pool, cap + 1) {
-    offsets.zeroOut();
+  MapVectorBatch::MapVectorBatch(uint64_t cap, MemoryPool& pool
+                 ): ColumnVectorBatch(cap, pool),
+                    offsets(pool, cap+1) {
+    // PASS
   }
 
   MapVectorBatch::~MapVectorBatch() {
@@ -222,9 +294,9 @@ namespace orc {
 
   std::string MapVectorBatch::toString() const {
     std::ostringstream buffer;
-    buffer << "Map vector <" << (keys ? keys->toString() : "key not selected") << ", "
-           << (elements ? elements->toString() : "value not selected") << " with " << numElements
-           << " of " << capacity << ">";
+    buffer << "Map vector <" << (keys ? keys->toString(): "key not selected") << ", "
+           << (elements ? elements->toString(): "value not selected")  << " with "
+           << numElements << " of " << capacity << ">";
     return buffer.str();
   }
 
@@ -242,23 +314,25 @@ namespace orc {
   }
 
   uint64_t MapVectorBatch::getMemoryUsage() {
-    return ColumnVectorBatch::getMemoryUsage() +
-           static_cast<uint64_t>(offsets.capacity() * sizeof(int64_t)) +
-           (keys ? keys->getMemoryUsage() : 0) + (elements ? elements->getMemoryUsage() : 0);
+    return ColumnVectorBatch::getMemoryUsage()
+           + static_cast<uint64_t>(offsets.capacity() * sizeof(int64_t))
+           + (keys ? keys->getMemoryUsage() : 0)
+           + (elements ? elements->getMemoryUsage() : 0);
   }
 
   bool MapVectorBatch::hasVariableLength() {
     return true;
   }
 
-  UnionVectorBatch::UnionVectorBatch(uint64_t cap, MemoryPool& pool)
-      : ColumnVectorBatch(cap, pool), tags(pool, cap), offsets(pool, cap) {
-    tags.zeroOut();
-    offsets.zeroOut();
+  UnionVectorBatch::UnionVectorBatch(uint64_t cap, MemoryPool& pool
+                                     ): ColumnVectorBatch(cap, pool),
+                                        tags(pool, cap),
+                                        offsets(pool, cap) {
+    // PASS
   }
 
   UnionVectorBatch::~UnionVectorBatch() {
-    for (uint64_t i = 0; i < children.size(); i++) {
+    for (uint64_t i=0; i < children.size(); i++) {
       delete children[i];
     }
   }
@@ -266,7 +340,7 @@ namespace orc {
   std::string UnionVectorBatch::toString() const {
     std::ostringstream buffer;
     buffer << "Union vector <";
-    for (size_t i = 0; i < children.size(); ++i) {
+    for(size_t i=0; i < children.size(); ++i) {
       if (i != 0) {
         buffer << ", ";
       }
@@ -285,24 +359,24 @@ namespace orc {
   }
 
   void UnionVectorBatch::clear() {
-    for (size_t i = 0; i < children.size(); i++) {
+    for(size_t i=0; i < children.size(); i++) {
       children[i]->clear();
     }
     numElements = 0;
   }
 
   uint64_t UnionVectorBatch::getMemoryUsage() {
-    uint64_t memory = ColumnVectorBatch::getMemoryUsage() +
-                      static_cast<uint64_t>(tags.capacity() * sizeof(unsigned char) +
-                                            offsets.capacity() * sizeof(uint64_t));
-    for (size_t i = 0; i < children.size(); ++i) {
+    uint64_t memory = ColumnVectorBatch::getMemoryUsage()
+               + static_cast<uint64_t>(tags.capacity() * sizeof(unsigned char)
+               + offsets.capacity() * sizeof(uint64_t));
+    for(size_t i=0; i < children.size(); ++i) {
       memory += children[i]->getMemoryUsage();
     }
     return memory;
   }
 
   bool UnionVectorBatch::hasVariableLength() {
-    for (size_t i = 0; i < children.size(); ++i) {
+    for(size_t i=0; i < children.size(); ++i) {
       if (children[i]->hasVariableLength()) {
         return true;
       }
@@ -310,12 +384,12 @@ namespace orc {
     return false;
   }
 
-  Decimal64VectorBatch::Decimal64VectorBatch(uint64_t cap, MemoryPool& pool)
-      : ColumnVectorBatch(cap, pool),
-        precision(0),
-        scale(0),
-        values(pool, cap),
-        readScales(pool, cap) {
+  Decimal64VectorBatch::Decimal64VectorBatch(uint64_t cap, MemoryPool& pool
+                 ): ColumnVectorBatch(cap, pool),
+                    precision(0),
+                    scale(0),
+                    values(pool, cap),
+                    readScales(pool, cap) {
     // PASS
   }
 
@@ -325,7 +399,8 @@ namespace orc {
 
   std::string Decimal64VectorBatch::toString() const {
     std::ostringstream buffer;
-    buffer << "Decimal64 vector  with " << numElements << " of " << capacity << ">";
+    buffer << "Decimal64 vector  with "
+           << numElements << " of " << capacity << ">";
     return buffer.str();
   }
 
@@ -342,16 +417,17 @@ namespace orc {
   }
 
   uint64_t Decimal64VectorBatch::getMemoryUsage() {
-    return ColumnVectorBatch::getMemoryUsage() +
-           static_cast<uint64_t>((values.capacity() + readScales.capacity()) * sizeof(int64_t));
+    return ColumnVectorBatch::getMemoryUsage()
+          + static_cast<uint64_t>(
+              (values.capacity() + readScales.capacity()) * sizeof(int64_t));
   }
 
-  Decimal128VectorBatch::Decimal128VectorBatch(uint64_t cap, MemoryPool& pool)
-      : ColumnVectorBatch(cap, pool),
-        precision(0),
-        scale(0),
-        values(pool, cap),
-        readScales(pool, cap) {
+  Decimal128VectorBatch::Decimal128VectorBatch(uint64_t cap, MemoryPool& pool
+               ): ColumnVectorBatch(cap, pool),
+                  precision(0),
+                  scale(0),
+                  values(pool, cap),
+                  readScales(pool, cap) {
     // PASS
   }
 
@@ -361,7 +437,8 @@ namespace orc {
 
   std::string Decimal128VectorBatch::toString() const {
     std::ostringstream buffer;
-    buffer << "Decimal128 vector  with " << numElements << " of " << capacity << ">";
+    buffer << "Decimal128 vector  with "
+           << numElements << " of " << capacity << ">";
     return buffer.str();
   }
 
@@ -378,22 +455,23 @@ namespace orc {
   }
 
   uint64_t Decimal128VectorBatch::getMemoryUsage() {
-    return ColumnVectorBatch::getMemoryUsage() +
-           static_cast<uint64_t>(values.capacity() * sizeof(Int128) +
-                                 readScales.capacity() * sizeof(int64_t));
+    return ColumnVectorBatch::getMemoryUsage()
+          + static_cast<uint64_t>(values.capacity() * sizeof(Int128)
+          + readScales.capacity() * sizeof(int64_t));
   }
 
-  Decimal::Decimal(const Int128& _value, int32_t _scale) : value(_value), scale(_scale) {
+  Decimal::Decimal(const Int128& _value,
+                   int32_t _scale): value(_value), scale(_scale) {
     // PASS
   }
 
   Decimal::Decimal(const std::string& str) {
     std::size_t foundPoint = str.find(".");
     // no decimal point, it is int
-    if (foundPoint == std::string::npos) {
+    if(foundPoint == std::string::npos){
       value = Int128(str);
       scale = 0;
-    } else {
+    }else{
       std::string copy(str);
       scale = static_cast<int32_t>(str.length() - foundPoint - 1);
       value = Int128(copy.replace(foundPoint, 1, ""));
@@ -408,8 +486,12 @@ namespace orc {
     return value.toDecimalString(scale, trimTrailingZeros);
   }
 
-  TimestampVectorBatch::TimestampVectorBatch(uint64_t _capacity, MemoryPool& pool)
-      : ColumnVectorBatch(_capacity, pool), data(pool, _capacity), nanoseconds(pool, _capacity) {
+  TimestampVectorBatch::TimestampVectorBatch(uint64_t _capacity,
+                                             MemoryPool& pool
+                                             ): ColumnVectorBatch(_capacity,
+                                                                  pool),
+                                                data(pool, _capacity),
+                                                nanoseconds(pool, _capacity) {
     // PASS
   }
 
@@ -436,7 +518,8 @@ namespace orc {
   }
 
   uint64_t TimestampVectorBatch::getMemoryUsage() {
-    return ColumnVectorBatch::getMemoryUsage() +
-           static_cast<uint64_t>((data.capacity() + nanoseconds.capacity()) * sizeof(int64_t));
+    return ColumnVectorBatch::getMemoryUsage()
+          + static_cast<uint64_t>(
+              (data.capacity() + nanoseconds.capacity()) * sizeof(int64_t));
   }
-}  // namespace orc
+}

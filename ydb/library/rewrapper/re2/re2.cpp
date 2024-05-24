@@ -50,7 +50,7 @@ public:
     TString Serialize() const override {
         TString data;
         auto res = RawRegexp.SerializeToString(&data);
-        Y_ABORT_UNLESS(res);
+        Y_VERIFY(res);
         return data;
     }
 

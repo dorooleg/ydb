@@ -1,7 +1,6 @@
 #include "blobstorage_vdisk_guids.h"
 
 #include <ydb/core/base/appdata.h>
-#include <library/cpp/random_provider/random_provider.h>
 
 namespace NKikimr {
 

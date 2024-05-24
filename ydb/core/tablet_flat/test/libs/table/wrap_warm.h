@@ -26,7 +26,7 @@ namespace NTest {
             return Iter && Iter->IsValid();
         }
 
-        TMemIter* Get() const noexcept
+        TMemIt* Get() const noexcept
         {
             return Iter.Get();
         }
@@ -45,7 +45,7 @@ namespace NTest {
         {
             const TCelled key(key_, *Scheme->Keys, false);
 
-            Iter = TMemIter::Make(*Table, Table->Immediate(), key, seek, Scheme->Keys, &Remap_, Env, Direction);
+            Iter = TMemIt::Make(*Table, Table->Immediate(), key, seek, Scheme->Keys, &Remap_, Env, Direction);
 
             return RollUp();
         }
@@ -63,7 +63,7 @@ namespace NTest {
 
         const TRowState& Apply() noexcept
         {
-            Y_ABORT_UNLESS(*this, "Iterator isn't ready");
+            Y_VERIFY(*this, "Iterator isn't ready");
 
             return State;
         }
@@ -96,7 +96,7 @@ namespace NTest {
     private:
         IPages *Env = nullptr;
         TRowState State;
-        TAutoPtr<TMemIter> Iter;
+        TAutoPtr<TMemIt> Iter;
     };
 
     using TWrapMemtable = TWrapMemtableImpl<EDirection::Forward>;

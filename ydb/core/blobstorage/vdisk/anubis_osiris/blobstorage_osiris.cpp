@@ -22,8 +22,9 @@ namespace NKikimr {
 
         bool Check(const TKeyLogoBlob &key,
                    const TMemRecLogoBlob &memRec,
+                   ui32 recsMerged,
                    bool allowKeepFlags) const {
-            return BarriersEssence->Keep(key, memRec, {}, allowKeepFlags, false /*allowGarbageCollection*/).KeepData;
+            return BarriersEssence->Keep(key, memRec, recsMerged, allowKeepFlags).KeepData;
         }
 
         TIntrusivePtr<THullCtx> HullCtx;
@@ -89,9 +90,9 @@ namespace NKikimr {
         bool ResurrectCur() {
             auto &self = HullCtx->VCtx->ShortSelfVDisk; // VDiskId we have
             const auto& topology = *HullCtx->VCtx->Top; // topology we have
-            Y_ABORT_UNLESS(topology.BelongsToSubgroup(self, CurKey.Hash())); // check that blob belongs to subgroup
+            Y_VERIFY(topology.BelongsToSubgroup(self, CurKey.Hash())); // check that blob belongs to subgroup
 
-            if (!Filter->Check(CurKey, CurIt.GetMemRec(), HullCtx->AllowKeepFlags)) {
+            if (!Filter->Check(CurKey, CurIt.GetMemRec(), CurIt.GetMemRecsMerged(), HullCtx->AllowKeepFlags)) {
                 // filter check returned false
                 return false;
             }
@@ -188,7 +189,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvAnubisOsirisPutResult::TPtr& ev, const TActorContext& ctx) {
-            Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK, "Status# %d", ev->Get()->Status);
+            Y_VERIFY(ev->Get()->Status == NKikimrProto::OK, "Status# %d", ev->Get()->Status);
             --InFly;
             // scan and send messages up to MaxInFly
             ScanAndSend(ctx);

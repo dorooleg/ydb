@@ -1,8 +1,8 @@
 #include "msgbus_server_request.h"
 #include "msgbus_securereq.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/console/console.h>
@@ -38,10 +38,23 @@ public:
     {
         auto dinfo = AppData(ctx)->DomainsInfo;
 
-        if (Request.HasDomainName() && (!dinfo->Domain || dinfo->GetDomain()->Name != Request.GetDomainName())) {
-            auto error = Sprintf("Unknown domain %s", Request.GetDomainName().data());
-            ReplyWithErrorAndDie(error, ctx);
-            return;
+        if (Request.HasDomainName()) {
+            auto *domain = dinfo->GetDomainByName(Request.GetDomainName());
+            if (!domain) {
+                auto error = Sprintf("Unknown domain %s", Request.GetDomainName().data());
+                ReplyWithErrorAndDie(error, ctx);
+                return;
+            }
+            StateStorageGroup = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
+        } else {
+            if (dinfo->Domains.size() > 1) {
+                auto error = "Ambiguous domain (use --domain option)";
+                ReplyWithErrorAndDie(error, ctx);
+                return;
+            }
+
+            auto domain = dinfo->Domains.begin()->second;
+            StateStorageGroup = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
         }
 
         SendRequest(ctx);
@@ -52,7 +65,7 @@ public:
     {
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = {.RetryLimitCount = 10};
-        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeConsoleID(), pipeConfig);
+        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeConsoleID(StateStorageGroup), pipeConfig);
         ConsolePipe = ctx.RegisterWithSameMailbox(pipe);
 
         // Don't print security token.
@@ -288,7 +301,7 @@ public:
 
     void SendReplyAndDie(const TActorContext &ctx)
     {
-        Y_ABORT_UNLESS(Response.HasStatus());
+        Y_VERIFY(Response.HasStatus());
 
         auto response = MakeHolder<TBusConsoleResponse>();
         response->Record = std::move(Response);
@@ -329,7 +342,7 @@ public:
             CFunc(TEvTabletPipe::EvClientDestroyed, Undelivered);
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
         default:
-            Y_ABORT("TConsoleRequestActor::MainState unexpected event type: %" PRIx32 " event: %s",
+            Y_FAIL("TConsoleRequestActor::MainState unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(),
                    ev->ToString().data());
         }
@@ -338,6 +351,7 @@ public:
 private:
     NKikimrClient::TConsoleRequest Request;
     NKikimrClient::TConsoleResponse Response;
+    ui32 StateStorageGroup = 0;
     TActorId ConsolePipe;
 };
 

@@ -71,15 +71,13 @@ class TBlobStorageQueue {
             , Cost(0)
             , DirtyCost(true)
         {
-            if (Span) {
-                Span
-                    .Attribute("event", TypeName<TEvent>())
-                    .Attribute("local", local);
-            }
+            Span
+                .Attribute("event", TypeName<TEvent>())
+                .Attribute("local", local);
         }
 
         ~TItem() {
-            Y_ABORT_UNLESS(Queue == EItemQueue::NotSet, "Queue# %" PRIu32, ui32(Queue));
+            Y_VERIFY(Queue == EItemQueue::NotSet, "Queue# %" PRIu32, ui32(Queue));
         }
 
         ui32 GetByteSize() const {
@@ -118,7 +116,7 @@ class TBlobStorageQueue {
 
     TString& LogPrefix;
 
-    std::shared_ptr<const TCostModel> CostModel;
+    TCostModel CostModel;
     TInstant CostSettingsUpdate;
 
     TBSProxyContextPtr BSProxyCtx;
@@ -165,7 +163,7 @@ public:
     }
 
     void SetMessageId(const NBackpressure::TMessageId& msgId) {
-        Y_ABORT_UNLESS(!InFlightCount());
+        Y_VERIFY(!InFlightCount());
         NextMsgId = msgId.MsgId;
         CurrentSequenceId = msgId.SequenceId;
     }
@@ -182,15 +180,10 @@ public:
         return Queues.InFlight.size();
     }
 
-    ui64 GetInFlightCost() const {
-        return InFlightCost;
-    }
-
     void UpdateCostModel(TInstant now, const NKikimrBlobStorage::TVDiskCostSettings& settings,
             const TBlobStorageGroupType& type);
     void InvalidateCosts();
     bool SetMaxWindowSize(ui64 maxWindowSize);
-    std::shared_ptr<const TCostModel> GetCostModel() const;
 
     void SetItemQueue(TItem& item, EItemQueue newQueue);
 

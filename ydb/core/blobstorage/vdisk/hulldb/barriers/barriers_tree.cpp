@@ -80,7 +80,7 @@ namespace NKikimr {
             if (it == Index.end()) {
                 // inserts are rare
                 auto res = Index.insert(TIndex::value_type(indexKey, {}));
-                Y_ABORT_UNLESS(res.second);
+                Y_VERIFY(res.second);
                 it = res.first;
             }
 
@@ -147,7 +147,7 @@ namespace NKikimr {
         {}
 
         void TMemView::TTreeWithLog::RollUp(bool gcOnlySynced){
-            Y_DEBUG_ABORT_UNLESS(!Shared());
+            Y_VERIFY_DEBUG(!Shared());
             for (const auto &x : Log) {
                 Tree->Update(gcOnlySynced, x.first, x.second);
             }

@@ -36,33 +36,19 @@
  */
 struct nghttp2_session_callbacks {
   /**
-   * Deprecated.  Use send_callback2 instead.  Callback function
-   * invoked when the session wants to send data to the remote peer.
-   * This callback is not necessary if the application uses solely
-   * `nghttp2_session_mem_send()` to serialize data to transmit.
+   * Callback function invoked when the session wants to send data to
+   * the remote peer.  This callback is not necessary if the
+   * application uses solely `nghttp2_session_mem_send()` to serialize
+   * data to transmit.
    */
   nghttp2_send_callback send_callback;
   /**
-   * Callback function invoked when the session wants to send data to
-   * the remote peer.  This callback is not necessary if the
-   * application uses solely `nghttp2_session_mem_send2()` to
-   * serialize data to transmit.
-   */
-  nghttp2_send_callback2 send_callback2;
-  /**
-   * Deprecated.  Use recv_callback2 instead.  Callback function
-   * invoked when the session wants to receive data from the remote
-   * peer.  This callback is not necessary if the application uses
-   * solely `nghttp2_session_mem_recv()` to process received data.
-   */
-  nghttp2_recv_callback recv_callback;
-  /**
    * Callback function invoked when the session wants to receive data
    * from the remote peer.  This callback is not necessary if the
-   * application uses solely `nghttp2_session_mem_recv2()` to process
+   * application uses solely `nghttp2_session_mem_recv()` to process
    * received data.
    */
-  nghttp2_recv_callback2 recv_callback2;
+  nghttp2_recv_callback recv_callback;
   /**
    * Callback function invoked by `nghttp2_session_recv()` when a
    * frame is received.
@@ -114,39 +100,22 @@ struct nghttp2_session_callbacks {
   nghttp2_on_invalid_header_callback on_invalid_header_callback;
   nghttp2_on_invalid_header_callback2 on_invalid_header_callback2;
   /**
-   * Deprecated.  Use select_padding_callback2 instead.  Callback
-   * function invoked when the library asks application how many
-   * padding bytes are required for the transmission of the given
-   * frame.
-   */
-  nghttp2_select_padding_callback select_padding_callback;
-  /**
    * Callback function invoked when the library asks application how
    * many padding bytes are required for the transmission of the given
    * frame.
    */
-  nghttp2_select_padding_callback2 select_padding_callback2;
+  nghttp2_select_padding_callback select_padding_callback;
   /**
-   * Deprecated.  Use read_length_callback2 instead.  The callback
-   * function used to determine the length allowed in
+   * The callback function used to determine the length allowed in
    * `nghttp2_data_source_read_callback()`
    */
   nghttp2_data_source_read_length_callback read_length_callback;
-  /**
-   * The callback function used to determine the length allowed in
-   * `nghttp2_data_source_read_callback2()`
-   */
-  nghttp2_data_source_read_length_callback2 read_length_callback2;
   /**
    * Sets callback function invoked when a frame header is received.
    */
   nghttp2_on_begin_frame_callback on_begin_frame_callback;
   nghttp2_send_data_callback send_data_callback;
-  /**
-   * Deprecated.  Use pack_extension_callback2 instead.
-   */
   nghttp2_pack_extension_callback pack_extension_callback;
-  nghttp2_pack_extension_callback2 pack_extension_callback2;
   nghttp2_unpack_extension_callback unpack_extension_callback;
   nghttp2_on_extension_chunk_recv_callback on_extension_chunk_recv_callback;
   nghttp2_error_callback error_callback;

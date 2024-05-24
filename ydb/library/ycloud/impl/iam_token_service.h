@@ -1,12 +1,12 @@
 #pragma once
 #include <ydb/library/ycloud/api/iam_token_service.h>
-#include <ydb/library/grpc/actor_client/grpc_service_settings.h>
+#include "grpc_service_settings.h"
 
 namespace NCloud {
 
 using namespace NKikimr;
 
-struct TIamTokenServiceSettings : NGrpcActorClient::TGrpcClientSettings {};
+struct TIamTokenServiceSettings : TGrpcClientSettings {};
 
 IActor* CreateIamTokenService(const TIamTokenServiceSettings& settings);
 

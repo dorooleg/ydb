@@ -6,7 +6,6 @@
 #include <util/generic/hash.h>
 
 #include <functional>
-#include <unordered_set>
 
 namespace NYql {
 
@@ -39,14 +38,6 @@ public:
     void SetUserCredentials(const TUserCredentials& userCredentials) {
         UserCredentials_ = userCredentials;
     }
-    
-    void SetGroups(std::unordered_set<TString>&& groups) {
-        Groups_ = std::move(groups);
-    }
-
-    const std::unordered_set<TString>& GetGroups() const {
-        return Groups_;
-    }
 
     const TCredential* FindCredential(const TStringBuf& name) const;
     TString FindCredentialContent(const TStringBuf& name1, const TStringBuf& name2, const TString& defaultContent) const;
@@ -59,7 +50,7 @@ public:
 private:
     THashMap<TString, TCredential> CredentialTable_;
     TUserCredentials UserCredentials_;
-    std::unordered_set<TString> Groups_;
+
 };
 
 } // namespace NYql

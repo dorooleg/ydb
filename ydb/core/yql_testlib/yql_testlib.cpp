@@ -4,7 +4,7 @@
 #include <ydb/core/base/hive.h>
 #include <ydb/public/lib/base/msgbus.h>
 #include <ydb/core/client/minikql_compile/mkql_compile_service.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/mind/local.h>
 #include <ydb/core/engine/mkql_engine_flat.h>
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
@@ -20,6 +20,8 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <ydb/core/keyvalue/keyvalue.h>
+
+#include <ydb/core/client/server/msgbus_server_tracer.h>
 
 using namespace NKikimr::NUdf;
 
@@ -162,7 +164,7 @@ void TYqlServer::Initialize() {
     SetupDomains(app);
     SetupChannelProfiles(app);
 
-    app.AddHive(ChangeStateStorage(Hive, Settings->Domain));
+    app.AddHive(Settings->Domain, ChangeStateStorage(Hive, Settings->Domain));
     app.SetFnRegistry([this](const NKikimr::NScheme::TTypeRegistry& typeRegistry) -> NKikimr::NMiniKQL::IFunctionRegistry* {
             Y_UNUSED(typeRegistry);
             // register test UDFs
@@ -172,7 +174,7 @@ void TYqlServer::Initialize() {
         }
     );
 
-    SetupMessageBus(GetSettings().Port);
+    SetupMessageBus(GetSettings().Port, GetSettings().TracePath);
 
     SetupTabletServices(*Runtime, &app, StaticNodes() == 1 && Settings->EnableMockOnSingleNode, Settings->CustomDiskParams);
 

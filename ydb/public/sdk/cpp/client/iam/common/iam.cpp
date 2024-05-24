@@ -1,11 +1,8 @@
 #include <ydb/public/sdk/cpp/client/iam/common/iam.h>
 
 #include <library/cpp/http/simple/http_client.h>
-#include <ydb/public/api/client/yc_public/iam/iam_token_service.pb.h>
-#include <ydb/public/api/client/yc_public/iam/iam_token_service.grpc.pb.h>
 
-using namespace NYdbGrpc;
-using namespace yandex::cloud::iam::v1;
+using namespace NGrpc;
 
 namespace NYdb {
 
@@ -59,11 +56,9 @@ private:
             if (auto it = respMap.find("expires_in"); it == respMap.end())
                 ythrow yexception() << "Result doesn't contain expires_in";
             else {
-                const TDuration expiresIn = TDuration::Seconds(it->second.GetUInteger()) / 2;
+                const TDuration expiresIn = TDuration::Seconds(it->second.GetUInteger());
 
-                const auto interval = std::max(std::min(expiresIn, RefreshPeriod_), TDuration::MilliSeconds(100));
-
-                NextTicketUpdate_ = TInstant::Now() + interval;
+                NextTicketUpdate_ = TInstant::Now() + std::max(expiresIn, RefreshPeriod_);
             }
         } catch (...) {
         }
@@ -86,27 +81,6 @@ private:
 /// Acquire an IAM token using a local metadata service on a virtual machine.
 TCredentialsProviderFactoryPtr CreateIamCredentialsProviderFactory(const TIamHost& params ) {
     return std::make_shared<TIamCredentialsProviderFactory>(params);
-}
-
-TCredentialsProviderFactoryPtr CreateIamJwtFileCredentialsProviderFactory(const TIamJwtFilename& params) {
-    TIamJwtParams jwtParams = { params, ReadJwtKeyFile(params.JwtFilename) };
-    return std::make_shared<TIamJwtCredentialsProviderFactory<CreateIamTokenRequest,
-                                                              CreateIamTokenResponse,
-                                                              IamTokenService>>(std::move(jwtParams));
-}
-
-TCredentialsProviderFactoryPtr CreateIamJwtParamsCredentialsProviderFactory(const TIamJwtContent& params) {
-    TIamJwtParams jwtParams = { params, ParseJwtParams(params.JwtContent) };
-    return std::make_shared<TIamJwtCredentialsProviderFactory<CreateIamTokenRequest,
-                                                              CreateIamTokenResponse,
-                                                              IamTokenService>>(std::move(jwtParams));
-}
-
-TCredentialsProviderFactoryPtr CreateIamOAuthCredentialsProviderFactory(const TIamOAuth& params) {
-    return std::make_shared<TIamOAuthCredentialsProviderFactory<CreateIamTokenRequest,
-                                                                CreateIamTokenResponse,
-                                                                IamTokenService>>(params);
-
 }
 
 }

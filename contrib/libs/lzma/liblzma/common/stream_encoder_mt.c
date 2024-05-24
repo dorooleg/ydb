@@ -645,7 +645,7 @@ stream_encode_in(lzma_stream_coder *coder, const lzma_allocator *allocator,
 		}
 
 		if (block_error) {
-			lzma_ret ret = LZMA_OK; // Init to silence a warning.
+			lzma_ret ret;
 
 			mythread_sync(coder->mutex) {
 				ret = coder->thread_error;
@@ -743,7 +743,7 @@ stream_encode_mt(void *coder_ptr, const lzma_allocator *allocator,
 
 		// These are for wait_for_work().
 		bool has_blocked = false;
-		mythread_condtime wait_abs = { 0 };
+		mythread_condtime wait_abs;
 
 		while (true) {
 			mythread_sync(coder->mutex) {

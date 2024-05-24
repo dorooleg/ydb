@@ -52,7 +52,7 @@ namespace NTable {
 
         bool Touch(ERowOp op) noexcept
         {
-            Y_ABORT_UNLESS(!(Rop == ERowOp::Erase || Rop == ERowOp::Reset),
+            Y_VERIFY(!(Rop == ERowOp::Erase || Rop == ERowOp::Reset),
                 "Sequence for row state is already finalized");
 
             switch (op) {
@@ -64,13 +64,13 @@ namespace NTable {
                     Rop = (Rop == ERowOp::Absent ? ERowOp::Erase : ERowOp::Reset);
                     return false; /* current row shouldn't be processed */
                 default:
-                    Y_ABORT("Unexpected row rolling operation code: %" PRIu8, ui8(op));
+                    Y_FAIL("Unexpected row rolling operation code: %" PRIu8, ui8(op));
             }
         }
 
         void Set(TPos on, TCellOp code, const TCell &cell) noexcept
         {
-            Y_ABORT_UNLESS(State[on] == ECellOp::Empty, "Updating cell that already has a value assigned");
+            Y_VERIFY(State[on] == ECellOp::Empty, "Updating cell that already has a value assigned");
 
             if (Y_UNLIKELY(code == ECellOp::Empty)) {
                 // Source column is not set, nothing to update
@@ -78,7 +78,7 @@ namespace NTable {
                 return;
             }
 
-            Y_ABORT_UNLESS(Left_ > 0, "Cells update counter is out of sync");
+            Y_VERIFY(Left_ > 0, "Cells update counter is out of sync");
             --Left_;
 
             if (Y_UNLIKELY(code == ECellOp::Reset)) {
@@ -102,7 +102,7 @@ namespace NTable {
         }
 
         void Merge(const TRowState& other) noexcept {
-            Y_ABORT_UNLESS(!(Rop == ERowOp::Erase || Rop == ERowOp::Reset),
+            Y_VERIFY(!(Rop == ERowOp::Erase || Rop == ERowOp::Reset),
                 "Sequence for row state is already finalized");
 
             if (Y_UNLIKELY(other.Rop == ERowOp::Absent)) {
@@ -110,7 +110,7 @@ namespace NTable {
             }
 
             if (Touch(other.Rop)) {
-                Y_DEBUG_ABORT_UNLESS(State.size() == other.State.size());
+                Y_VERIFY_DEBUG(State.size() == other.State.size());
                 for (TPos i = 0; i < other.State.size(); ++i) {
                     if (State[i] != ECellOp::Empty || other.State[i] == ECellOp::Empty) {
                         continue;

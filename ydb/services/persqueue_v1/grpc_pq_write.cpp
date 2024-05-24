@@ -37,8 +37,6 @@ TPQWriteService::TPQWriteService(const TActorId& schemeCache,
 void TPQWriteService::Bootstrap(const TActorContext& ctx) {
     HaveClusters = !AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen(); // ToDo[migration]: switch to proper option
     if (HaveClusters) {
-        LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "TPQWriteService: send TEvClusterTracker::TEvSubscribe");
-
         ctx.Send(NPQ::NClusterTracker::MakeClusterTrackerID(),
                  new NPQ::NClusterTracker::TEvClusterTracker::TEvSubscribe);
     }
@@ -63,8 +61,8 @@ void TPQWriteService::Handle(NNetClassifier::TEvNetClassifier::TEvClassifierUpda
 
 
 void TPQWriteService::Handle(NPQ::NClusterTracker::TEvClusterTracker::TEvClustersUpdate::TPtr& ev, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(ev->Get()->ClustersList);
-    Y_ABORT_UNLESS(ev->Get()->ClustersList->Clusters.size());
+    Y_VERIFY(ev->Get()->ClustersList);
+    Y_VERIFY(ev->Get()->ClustersList->Clusters.size());
 
     const auto& clusters = ev->Get()->ClustersList->Clusters;
 

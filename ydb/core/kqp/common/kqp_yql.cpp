@@ -2,8 +2,6 @@
 
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
-#include <ydb/library/yql/core/services/yql_transform_pipeline.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
 
 namespace NYql {
 
@@ -165,10 +163,6 @@ TKqpReadTableSettings ParseInternal(const TCoNameValueTupleList& node) {
         } else if (name == TKqpReadTableSettings::SequentialSettingName) {
             YQL_ENSURE(tuple.Ref().ChildrenSize() == 2);
             settings.SequentialInFlight = FromString<ui64>(tuple.Value().Cast<TCoAtom>().Value());
-        } else if (name == TKqpReadTableSettings::ForcePrimaryName) {
-            YQL_ENSURE(tuple.Ref().ChildrenSize() == 1);
-            settings.ForcePrimary = true;
-        } else if (name == TKqpReadTableSettings::GroupByFieldNames) {
         } else {
             YQL_ENSURE(false, "Unknown KqpReadTable setting name '" << name << "'");
         }
@@ -229,14 +223,6 @@ NNodes::TCoNameValueTupleList TKqpReadTableSettings::BuildNode(TExprContext& ctx
                 .Done());
     }
 
-    if (ForcePrimary) {
-        settings.emplace_back(
-            Build<TCoNameValueTuple>(ctx, pos)
-                .Name()
-                    .Build(ForcePrimaryName)
-                .Done());
-    }
-
     if (Sorted) {
         settings.emplace_back(
             Build<TCoNameValueTuple>(ctx, pos)
@@ -270,28 +256,21 @@ void TKqpReadTableSettings::AddSkipNullKey(const TString& key) {
     SkipNullKeys.emplace_back(key);
 }
 
-TKqpUpsertRowsSettings TKqpUpsertRowsSettings::Parse(const TCoNameValueTupleList& settingsList) {
+TKqpUpsertRowsSettings TKqpUpsertRowsSettings::Parse(const TKqpUpsertRows& node) {
     TKqpUpsertRowsSettings settings;
 
-    for (const auto& tuple : settingsList) {
+    for (const auto& tuple : node.Settings()) {
         TStringBuf name = tuple.Name().Value();
-        
+
         if (name == TKqpUpsertRowsSettings::InplaceSettingName) {
             YQL_ENSURE(tuple.Ref().ChildrenSize() == 1);
             settings.Inplace = true;
-        } else if (name == TKqpUpsertRowsSettings::IsUpdateSettingName) {
-            YQL_ENSURE(tuple.Ref().ChildrenSize() == 1);
-            settings.IsUpdate = true; 
         } else {
             YQL_ENSURE(false, "Unknown KqpUpsertRows setting name '" << name << "'");
         }
     }
 
     return settings;
-}
-
-TKqpUpsertRowsSettings TKqpUpsertRowsSettings::Parse(const NNodes::TKqpUpsertRows& node) {
-    return TKqpUpsertRowsSettings::Parse(node.Settings());
 }
 
 NNodes::TCoNameValueTupleList TKqpUpsertRowsSettings::BuildNode(TExprContext& ctx, TPositionHandle pos) const {
@@ -302,12 +281,6 @@ NNodes::TCoNameValueTupleList TKqpUpsertRowsSettings::BuildNode(TExprContext& ct
         settings.emplace_back(
             Build<TCoNameValueTuple>(ctx, pos)
                 .Name().Build(InplaceSettingName)
-                .Done());
-    }
-    if (IsUpdate) {
-        settings.emplace_back(
-            Build<TCoNameValueTuple>(ctx, pos)
-                .Name().Build(IsUpdateSettingName)
                 .Done());
     }
 
@@ -337,24 +310,16 @@ TCoNameValueTupleList TKqpReadTableExplainPrompt::BuildNode(TExprContext& ctx, T
             .Done()
     );
 
-    if (ExpectedMaxRanges) {
+    if (!ExpectedMaxRanges.empty()) {
         prompt.emplace_back(
             Build<TCoNameValueTuple>(ctx, pos)
                 .Name()
                     .Build(ExpectedMaxRangesName)
                 .Value<TCoAtom>()
-                    .Build(ToString(*ExpectedMaxRanges))
+                    .Build(ExpectedMaxRanges)
                 .Done()
         );
     }
-
-    prompt.emplace_back(
-        Build<TCoNameValueTuple>(ctx, pos)
-            .Name()
-                .Build(PointPrefixLenName)
-            .Value<TCoAtom>()
-                .Build(ToString(PointPrefixLen))
-            .Done());
 
     return Build<TCoNameValueTupleList>(ctx, pos)
         .Add(prompt)
@@ -380,13 +345,8 @@ TKqpReadTableExplainPrompt TKqpReadTableExplainPrompt::Parse(const NNodes::TCoNa
         }
 
         if (name == TKqpReadTableExplainPrompt::ExpectedMaxRangesName) {
-            prompt.ExpectedMaxRanges = FromString<ui64>(TString(tuple.Value().template Cast<TCoAtom>()));
-            continue;
-        }
-
-        if (name == TKqpReadTableExplainPrompt::PointPrefixLenName) {
-            prompt.PointPrefixLen = FromString<ui64>(TString(tuple.Value().template Cast<TCoAtom>()));
-            continue;
+            prompt.ExpectedMaxRanges = TString(tuple.Value().template Cast<TCoAtom>());
+             continue;
         }
 
         YQL_ENSURE(false, "Unknown KqpReadTableRanges explain prompt name '" << name << "'");
@@ -454,14 +414,6 @@ TString PrintKqpStageOnly(const TDqStageBase& stage, TExprContext& ctx) {
 
     auto newStage = ctx.ReplaceNodes(stage.Ptr(), replaces);
     return KqpExprToPrettyString(TExprBase(newStage), ctx);
-}
-
-TAutoPtr<IGraphTransformer> GetDqIntegrationPeepholeTransformer(bool beforeDqTransforms, TIntrusivePtr<TTypeAnnotationContext> typesCtx) {
-    TTransformationPipeline dqIntegrationPeepholePipeline(typesCtx);
-    for (auto* dqIntegration : GetUniqueIntegrations(*typesCtx)) {
-        dqIntegration->ConfigurePeepholePipeline(beforeDqTransforms, {}, &dqIntegrationPeepholePipeline);
-    }
-    return dqIntegrationPeepholePipeline.Build();
 }
 
 } // namespace NYql

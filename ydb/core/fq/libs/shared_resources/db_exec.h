@@ -136,36 +136,28 @@ public:
         SkipStep_ = true;
     }
 
-    static std::shared_ptr<TDbExecuter> Lock(const std::weak_ptr<TDbExecutable>& self) {
-        auto lock = self.lock();
-        return std::static_pointer_cast<TDbExecuter>(lock);
-    }
-
     TAsyncStatus NextStep(NYdb::NTable::TSession session) {
 
         if (CurrentStepIndex == Steps.size()) {
             if (Transaction) {
                 return Transaction->Commit()
-                .Apply([selfHolder=SelfHolder, session=session](const TFuture<TCommitTransactionResult>& future) {
-                    auto self = Lock(selfHolder);
-                    if (!self) {
-                        return MakeFuture(TStatus{EStatus::INTERNAL_ERROR, NYql::TIssues{NYql::TIssue{"self has been deleted"}}});
-                    }
+                .Apply([this, session=session](const TFuture<TCommitTransactionResult>& future) {
+
                     TCommitTransactionResult result = future.GetValue();
                     auto status = static_cast<TStatus>(result);
                     if (!status.IsSuccess()) {
                         return MakeFuture(status);
                     } else {
-                        self->Transaction.Clear();
-                        return self->NextStep(session);
+                        this->Transaction.Clear();
+                        return this->NextStep(session);
                     }
                 });
             }
             if (HandlerActorId != NActors::TActorId{}) {
-                auto holder = Lock(SelfHolder);
+                auto holder = SelfHolder.lock();
                 if (holder) {
-                    ActorSystem->Send(HandlerActorId, new TEvents::TEvCallback([holder=holder, handlerCallback=HandlerCallback]() {
-                        handlerCallback(*holder);
+                    ActorSystem->Send(HandlerActorId, new TEvents::TEvCallback([this, holder=holder, handlerCallback=HandlerCallback]() {
+                        handlerCallback(*this);
                     }));
                 }
             }
@@ -187,53 +179,49 @@ public:
             }
 
             return session.ExecuteDataQuery(query.Sql, transaction, query.Params, NYdb::NTable::TExecDataQuerySettings().KeepInQueryCache(true))
-            .Apply([selfHolder=SelfHolder, session=session](const TFuture<TDataQueryResult>& future) {
-                auto self = Lock(selfHolder);
-                if (!self) {
-                    return MakeFuture(TStatus{EStatus::INTERNAL_ERROR, NYql::TIssues{NYql::TIssue{"self has been deleted"}}});
-                }
+            .Apply([this, session=session](const TFuture<TDataQueryResult>& future) {
 
                 NYdb::NTable::TDataQueryResult result = future.GetValue();
                 auto status = static_cast<TStatus>(result);
 
                 if (status.GetStatus() == EStatus::SCHEME_ERROR) { // retry if table does not exist
-                    self->Transaction.Clear();
+                    this->Transaction.Clear();
                     return MakeFuture(TStatus{EStatus::UNAVAILABLE, NYql::TIssues{status.GetIssues()}});
                 }
                 if (!status.IsSuccess()) {
-                    self->Transaction.Clear();
+                    this->Transaction.Clear();
                     return MakeFuture(status);
                 }
 
-                if (self->Steps[self->CurrentStepIndex].Commit) {
-                    self->Transaction.Clear();
-                } else if (!self->Transaction) {
-                    self->Transaction = result.GetTransaction();
+                if (this->Steps[CurrentStepIndex].Commit) {
+                    this->Transaction.Clear();
+                } else if (!this->Transaction) {
+                    this->Transaction = result.GetTransaction();
                 }
 
-                if (self->Steps[self->CurrentStepIndex].ResultCallback) {
+                if (this->Steps[CurrentStepIndex].ResultCallback) {
                     try {
-                        self->Steps[self->CurrentStepIndex].ResultCallback(*self, result.GetResultSets());
+                        this->Steps[CurrentStepIndex].ResultCallback(*this, result.GetResultSets());
                     } catch (const TCodeLineException& exception) {
                         NYql::TIssue issue = MakeErrorIssue(exception.Code, exception.GetRawMessage());
-                        self->Issues.AddIssue(issue);
+                        Issues.AddIssue(issue);
                         NYql::TIssue internalIssue = MakeErrorIssue(exception.Code, CurrentExceptionMessage());
-                        self->InternalIssues.AddIssue(internalIssue);
+                        InternalIssues.AddIssue(internalIssue);
                     } catch (const std::exception& exception) {
                         NYql::TIssue issue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, exception.what());
-                        self->Issues.AddIssue(issue);
+                        Issues.AddIssue(issue);
                         NYql::TIssue internalIssue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, CurrentExceptionMessage());
-                        self->InternalIssues.AddIssue(internalIssue);
+                        InternalIssues.AddIssue(internalIssue);
                     } catch (...) {
                         NYql::TIssue issue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, CurrentExceptionMessage());
-                        self->Issues.AddIssue(issue);
+                        Issues.AddIssue(issue);
                         NYql::TIssue internalIssue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, CurrentExceptionMessage());
-                        self->InternalIssues.AddIssue(internalIssue);
+                        InternalIssues.AddIssue(internalIssue);
                     }
                 }
 
-                self->CurrentStepIndex++;
-                return self->NextStep(session);
+                this->CurrentStepIndex++;
+                return this->NextStep(session);
             });
         }
     }
@@ -269,7 +257,7 @@ public:
         NActors::TActorId actorId
         , TCallback handlerCallback
     ) {
-        Y_ABORT_UNLESS(HandlerActorId == NActors::TActorId{}, "Handler must be empty");
+        Y_VERIFY(HandlerActorId == NActors::TActorId{}, "Handler must be empty");
         ActorSystem = NActors::TActivationContext::ActorSystem();
         HandlerActorId = actorId;
         HandlerCallback = handlerCallback;

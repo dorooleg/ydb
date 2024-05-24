@@ -237,14 +237,10 @@ namespace NKikimr {
                     Parts = parts;
                     DiskPtrs = {begin, end};
                     CircaLsns = TCircaLsns(end - begin, circaLsn);
-                    Y_ABORT_UNLESS(DiskPtrs.size() == Parts.CountBits());
+                    Y_VERIFY(DiskPtrs.size() == Parts.CountBits());
                 } else {
                     Merge(begin, end, parts, circaLsn);
                 }
-            }
-
-            void AddDeletedPart(const TDiskPart &part) {
-                Deleted.push_back(part);
             }
 
             void AddMetadataParts(NMatrix::TVectorType parts) {
@@ -268,7 +264,7 @@ namespace NKikimr {
             }
 
             TBlobType::EType GetBlobType() const {
-                Y_ABORT_UNLESS(!Empty());
+                Y_VERIFY(!Empty());
                 return DiskPtrs.size() == 1 ? TBlobType::HugeBlob : TBlobType::ManyHugeBlobs;
             }
 
@@ -296,10 +292,6 @@ namespace NKikimr {
                 return str.Str();
             }
 
-            const NMatrix::TVectorType& GetParts() const {
-                return Parts;
-            }
-
             const TVector<TDiskPart> &SavedData() const {
                 return DiskPtrs;
             }
@@ -322,8 +314,8 @@ namespace NKikimr {
 
             void Merge(const TDiskPart *begin, const TDiskPart *end, const NMatrix::TVectorType &parts, ui64 circaLsn)
             {
-                Y_ABORT_UNLESS(end - begin == parts.CountBits());
-                Y_DEBUG_ABORT_UNLESS(Parts.GetSize() == parts.GetSize());
+                Y_VERIFY(end - begin == parts.CountBits());
+                Y_VERIFY_DEBUG(Parts.GetSize() == parts.GetSize());
                 const ui8 maxSize = parts.GetSize();
                 TDiskPtrs newDiskPtrs;
                 TCircaLsns newCircaLsns;
@@ -338,7 +330,7 @@ namespace NKikimr {
                 for (ui8 i = 0; i < maxSize; i++) {
                     if (Parts.Get(i) && parts.Get(i)) {
                         // both
-                        Y_DEBUG_ABORT_UNLESS(locIt != locEnd && it != end);
+                        Y_VERIFY_DEBUG(locIt != locEnd && it != end);
                         if (CircaLsns[locIt - locBegin] < circaLsn) {
                             // incoming value wins
                             newDiskPtrs.push_back(*it);
@@ -353,12 +345,12 @@ namespace NKikimr {
                         ++locIt;
                         ++it;
                     } else if (Parts.Get(i)) {
-                        Y_DEBUG_ABORT_UNLESS(locIt != locEnd);
+                        Y_VERIFY_DEBUG(locIt != locEnd);
                         newDiskPtrs.push_back(*locIt);
                         newCircaLsns.push_back(CircaLsns[locIt - locBegin]);
                         ++locIt;
                     } else if (parts.Get(i)) {
-                        Y_DEBUG_ABORT_UNLESS(it != end);
+                        Y_VERIFY_DEBUG(it != end);
                         newDiskPtrs.push_back(*it);
                         newCircaLsns.push_back(circaLsn);
                         ++it;
@@ -368,7 +360,7 @@ namespace NKikimr {
                 Parts |= parts;
                 DiskPtrs.swap(newDiskPtrs);
                 CircaLsns.swap(newCircaLsns);
-                Y_ABORT_UNLESS(DiskPtrs.size() == Parts.CountBits());
+                Y_VERIFY(DiskPtrs.size() == Parts.CountBits());
             }
         };
 

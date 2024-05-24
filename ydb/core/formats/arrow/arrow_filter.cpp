@@ -1,18 +1,14 @@
 #include "arrow_filter.h"
 #include "switch_type.h"
-#include "common/container.h"
-#include "common/adapter.h"
-
 #include <contrib/libs/apache/arrow/cpp/src/arrow/array/builder_primitive.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/chunked_array.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/compute/api_vector.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/record_batch.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
-#include <ydb/library/actors/core/log.h>
+#include <ydb/core/util/yverify_stream.h>
 
 namespace NKikimr::NArrow {
 
-#define Y_VERIFY_OK(status) Y_ABORT_UNLESS(status.ok(), "%s", status.ToString().c_str())
+#define Y_VERIFY_OK(status) Y_VERIFY(status.ok(), "%s", status.ToString().c_str())
 
 namespace {
 enum class ECompareResult: i8 {
@@ -94,13 +90,13 @@ bool Compare(const arrow::Datum& column, const std::shared_ptr<arrow::Array>& bo
         default:
             break;
     }
-    Y_ABORT_UNLESS(false);
+    Y_VERIFY(false);
     return false;
 }
 
 bool SwitchCompare(const arrow::Datum& column, const std::shared_ptr<arrow::Array>& border,
     std::vector<NArrow::ECompareResult>& rowsCmp) {
-    Y_ABORT_UNLESS(border->length() == 1);
+    Y_VERIFY(border->length() == 1);
 
     // first time it's empty
     if (rowsCmp.empty()) {
@@ -118,94 +114,31 @@ template <typename T>
 void CompositeCompare(std::shared_ptr<T> some, std::shared_ptr<arrow::RecordBatch> borderBatch,
     std::vector<NArrow::ECompareResult>& rowsCmp) {
     auto key = borderBatch->schema()->fields();
-    Y_ABORT_UNLESS(key.size());
+    Y_VERIFY(key.size());
 
     for (size_t i = 0; i < key.size(); ++i) {
         auto& field = key[i];
         auto typeId = field->type()->id();
         auto column = some->GetColumnByName(field->name());
         std::shared_ptr<arrow::Array> border = borderBatch->GetColumnByName(field->name());
-        Y_ABORT_UNLESS(column);
-        Y_ABORT_UNLESS(border);
-        Y_ABORT_UNLESS(some->schema()->GetFieldByName(field->name())->type()->id() == typeId);
+        Y_VERIFY(column);
+        Y_VERIFY(border);
+        Y_VERIFY(some->schema()->GetFieldByName(field->name())->type()->id() == typeId);
 
         if (SwitchCompare(column, border, rowsCmp)) {
             break; // early exit in case we have all rows compared: no borders, can omit key tail
         }
     }
 }
-
 }
 
-bool TColumnFilter::TIterator::Next(const ui32 size) {
-    Y_ABORT_UNLESS(size);
-    if (CurrentRemainVolume > size) {
-        InternalPosition += size;
-        CurrentRemainVolume -= size;
-        return true;
-    }
-    if (!FilterPointer && CurrentRemainVolume == size) {
-        InternalPosition += size;
-        CurrentRemainVolume -= size;
-        return false;
-    }
-    Y_ABORT_UNLESS(FilterPointer);
-    ui32 sizeRemain = size;
-    while (Position != FinishPosition) {
-        const ui32 currentVolume = (*FilterPointer)[Position];
-        if (currentVolume > sizeRemain + InternalPosition) {
-            InternalPosition += sizeRemain;
-            CurrentRemainVolume = currentVolume - InternalPosition;
-            return true;
-        } else {
-            sizeRemain -= currentVolume - InternalPosition;
-            InternalPosition = 0;
-            CurrentValue = !CurrentValue;
-            Position += DeltaPosition;
-        }
-    }
-    Y_ABORT_UNLESS(Position == FinishPosition);
-    CurrentRemainVolume = 0;
-    return false;
-}
-
-TString TColumnFilter::TIterator::DebugString() const {
-    TStringBuilder sb;
-    if (FilterPointer) {
-        sb << "filter_pointer=";
-        ui32 idx = 0;
-        ui64 sum = 0;
-        for (auto&& i : *FilterPointer) {
-            sb << i << ",";
-            sum += i;
-            if (++idx > 100) {
-                break;
-            }
-        }
-        sb << ";sum=" << sum << ";";
-    }
-    sb << "internal_position=" << InternalPosition << ";";
-    sb << "position=" << Position << ";";
-    sb << "current=" << CurrentValue << ";";
-    sb << "finish=" << FinishPosition << ";";
-    sb << "delta=" << DeltaPosition << ";";
-    sb << "remain=" << CurrentRemainVolume << ";";
-    return sb;
-}
-
-std::shared_ptr<arrow::BooleanArray> TColumnFilter::BuildArrowFilter(const ui32 expectedSize, const std::optional<ui32> startPos, const std::optional<ui32> count) const {
-    AFL_VERIFY(!!startPos == !!count);
-    auto& simpleFilter = BuildSimpleFilter();
+std::shared_ptr<arrow::BooleanArray> TColumnFilter::BuildArrowFilter(const ui32 expectedSize) const {
     arrow::BooleanBuilder builder;
-    auto res = builder.Reserve(count.value_or(expectedSize));
-    if (startPos) {
-        AFL_VERIFY(*startPos + *count <= simpleFilter.size());
-        Y_VERIFY_OK(builder.AppendValues(simpleFilter.begin() + *startPos, simpleFilter.begin() + *startPos + *count));
-    } else {
-        Y_VERIFY_OK(builder.AppendValues(simpleFilter));
-    }
+    auto res = builder.Reserve(expectedSize);
+    Y_VERIFY_OK(builder.AppendValues(BuildSimpleFilter(expectedSize)));
     std::shared_ptr<arrow::BooleanArray> out;
-    TStatusValidator::Validate(builder.Finish(&out));
+    res = builder.Finish(&out);
+    Y_VERIFY_OK(res);
     return out;
 }
 
@@ -213,7 +146,7 @@ bool TColumnFilter::IsTotalAllowFilter() const {
     if (DefaultFilterValue && Filter.empty()) {
         return true;
     }
-    if (Filter.size() == 1 && LastValue) {
+    if (Filter.size() == 1 && CurrentValue) {
         return true;
     }
     return false;
@@ -223,7 +156,7 @@ bool TColumnFilter::IsTotalDenyFilter() const {
     if (!DefaultFilterValue && Filter.empty()) {
         return true;
     }
-    if (Filter.size() == 1 && !LastValue) {
+    if (Filter.size() == 1 && !CurrentValue) {
         return true;
     }
     return false;
@@ -240,9 +173,9 @@ void TColumnFilter::Add(const bool value, const ui32 count) {
     if (!count) {
         return;
     }
-    if (Y_UNLIKELY(LastValue != value || !Count)) {
+    if (Y_UNLIKELY(CurrentValue != value || !Count)) {
         Filter.emplace_back(count);
-        LastValue = value;
+        CurrentValue = value;
     } else {
         Filter.back() += count;
     }
@@ -252,7 +185,7 @@ void TColumnFilter::Add(const bool value, const ui32 count) {
 ui32 TColumnFilter::CrossSize(const ui32 s1, const ui32 f1, const ui32 s2, const ui32 f2) {
     const ui32 f = std::min(f1, f2);
     const ui32 s = std::max(s1, s2);
-    Y_ABORT_UNLESS(f >= s);
+    Y_VERIFY(f >= s);
     return f - s;
 }
 
@@ -261,23 +194,23 @@ NKikimr::NArrow::TColumnFilter TColumnFilter::MakePredicateFilter(const arrow::D
 
     switch (datum.kind()) {
         case arrow::Datum::ARRAY:
-            Y_ABORT_UNLESS(border.kind() == arrow::Datum::ARRAY);
+            Y_VERIFY(border.kind() == arrow::Datum::ARRAY);
             SwitchCompare(datum, border.make_array(), cmps);
             break;
         case arrow::Datum::CHUNKED_ARRAY:
-            Y_ABORT_UNLESS(border.kind() == arrow::Datum::ARRAY);
+            Y_VERIFY(border.kind() == arrow::Datum::ARRAY);
             SwitchCompare(datum, border.make_array(), cmps);
             break;
         case arrow::Datum::RECORD_BATCH:
-            Y_ABORT_UNLESS(border.kind() == arrow::Datum::RECORD_BATCH);
+            Y_VERIFY(border.kind() == arrow::Datum::RECORD_BATCH);
             CompositeCompare(datum.record_batch(), border.record_batch(), cmps);
             break;
         case arrow::Datum::TABLE:
-            Y_ABORT_UNLESS(border.kind() == arrow::Datum::RECORD_BATCH);
+            Y_VERIFY(border.kind() == arrow::Datum::RECORD_BATCH);
             CompositeCompare(datum.table(), border.record_batch(), cmps);
             break;
         default:
-            Y_ABORT_UNLESS(false);
+            Y_VERIFY(false);
             break;
     }
 
@@ -310,92 +243,46 @@ NKikimr::NArrow::TColumnFilter TColumnFilter::MakePredicateFilter(const arrow::D
     return NArrow::TColumnFilter(std::move(bits));
 }
 
-template <class TData>
-bool ApplyImpl(const TColumnFilter& filter, std::shared_ptr<TData>& batch, const std::optional<ui32> startPos, const std::optional<ui32> count) {
+bool TColumnFilter::Apply(std::shared_ptr<arrow::RecordBatch>& batch) {
     if (!batch || !batch->num_rows()) {
         return false;
     }
-    AFL_VERIFY(!!startPos == !!count);
-    if (!filter.IsEmpty()) {
-        if (startPos) {
-            AFL_VERIFY(filter.Size() >= *startPos + *count)("filter_size", filter.Size())("start", *startPos)("count", *count);
-            AFL_VERIFY(*count == (size_t)batch->num_rows())("count", *count)("batch_size", batch->num_rows());
-        } else {
-            AFL_VERIFY(filter.Size() == (size_t)batch->num_rows())("filter_size", filter.Size())("batch_size", batch->num_rows());
-        }
+    Y_VERIFY_S(Filter.empty() || Count == (size_t)batch->num_rows(), Count << " != " << batch->num_rows());
+    if (IsTotalDenyFilter()) {
+        batch = batch->Slice(0, 0);
+        return false;
     }
-    if (filter.IsTotalDenyFilter()) {
-        batch = NAdapter::TDataBuilderPolicy<TData>::GetEmptySame(batch);
+    if (IsTotalAllowFilter()) {
         return true;
     }
-    if (filter.IsTotalAllowFilter()) {
-        return true;
-    }
-    batch = NAdapter::TDataBuilderPolicy<TData>::ApplyArrowFilter(batch, filter.BuildArrowFilter(batch->num_rows(), startPos, count));
+    auto res = arrow::compute::Filter(batch, BuildArrowFilter(batch->num_rows()));
+    Y_VERIFY_S(res.ok(), res.status().message());
+    Y_VERIFY((*res).kind() == arrow::Datum::RECORD_BATCH);
+    batch = (*res).record_batch();
     return batch->num_rows();
 }
 
-bool TColumnFilter::Apply(std::shared_ptr<TGeneralContainer>& batch, const std::optional<ui32> startPos, const std::optional<ui32> count) const {
-    return ApplyImpl(*this, batch, startPos, count);
-}
-
-bool TColumnFilter::Apply(std::shared_ptr<arrow::Table>& batch, const std::optional<ui32> startPos, const std::optional<ui32> count) const {
-    return ApplyImpl(*this, batch, startPos, count);
-}
-
-bool TColumnFilter::Apply(std::shared_ptr<arrow::RecordBatch>& batch, const std::optional<ui32> startPos, const std::optional<ui32> count) const {
-    return ApplyImpl(*this, batch, startPos, count);
-}
-
-void TColumnFilter::Apply(const ui32 expectedRecordsCount, std::vector<arrow::Datum*>& datums) const {
-    if (IsTotalAllowFilter()) {
-        return;
-    }
-    if (IsTotalDenyFilter()) {
-        for (auto&& d : datums) {
-            AFL_VERIFY(d);
-            switch (d->kind()) {
-                case arrow::Datum::ARRAY:
-                    *d = d->array()->Slice(0, 0);
-                    break;
-                case arrow::Datum::CHUNKED_ARRAY:
-                    *d = d->chunked_array()->Slice(0, 0);
-                    break;
-                case arrow::Datum::RECORD_BATCH:
-                    *d = d->record_batch()->Slice(0, 0);
-                    break;
-                case arrow::Datum::TABLE:
-                    *d = d->table()->Slice(0, 0);
-                    break;
-                default:
-                    AFL_VERIFY(false);
-            }
-        }
-    } else {
-        auto filter = BuildArrowFilter(expectedRecordsCount);
-        for (auto&& d : datums) {
-            AFL_VERIFY(d);
-            *d = TStatusValidator::GetValid(arrow::compute::Filter(*d, filter));
-        }
-    }
-}
-
-const std::vector<bool>& TColumnFilter::BuildSimpleFilter() const {
+const std::vector<bool>& TColumnFilter::BuildSimpleFilter(const ui32 expectedSize) const {
     if (!FilterPlain) {
-        Y_ABORT_UNLESS(Count);
+        Y_VERIFY(expectedSize == Count || !Count);
         std::vector<bool> result;
-        result.resize(Count, true);
-        bool currentValue = GetStartValue();
-        ui32 currentPosition = 0;
-        for (auto&& i : Filter) {
-            if (!currentValue) {
-                memset(&result[currentPosition], 0, sizeof(bool) * i);
+        if (Count) {
+            result.resize(Count, true);
+            bool currentValue = GetStartValue();
+            ui32 currentPosition = 0;
+            for (auto&& i : Filter) {
+                if (!currentValue) {
+                    memset(&result[currentPosition], 0, sizeof(bool) * i);
+                }
+                currentPosition += i;
+                currentValue = !currentValue;
             }
-            currentPosition += i;
-            currentValue = !currentValue;
+        } else {
+            result.resize(expectedSize, DefaultFilterValue);
         }
         FilterPlain = std::move(result);
     }
+    Y_VERIFY(FilterPlain->size() == expectedSize);
     return *FilterPlain;
 }
 
@@ -409,7 +296,7 @@ public:
         if (simpleValue) {
             return filter;
         } else {
-            return TColumnFilter::BuildDenyFilter();
+            return TColumnFilter::BuildStopFilter();
         }
     }
 };
@@ -450,7 +337,7 @@ public:
         } else if (Filter2.empty()) {
             return TMergePolicy::MergeWithSimple(Filter1, Filter2.DefaultFilterValue);
         } else {
-            Y_ABORT_UNLESS(Filter1.Count == Filter2.Count);
+            Y_VERIFY(Filter1.Count == Filter2.Count);
             auto it1 = Filter1.Filter.cbegin();
             auto it2 = Filter2.Filter.cbegin();
 
@@ -463,7 +350,7 @@ public:
             bool curCurrent = false;
             ui32 count = 0;
 
-            while (it1 != Filter1.Filter.cend() && it2 != Filter2.Filter.cend()) {
+            while (it1 != Filter1.Filter.end() && it2 != Filter2.Filter.cend()) {
                 const ui32 delta = TColumnFilter::CrossSize(pos2, pos2 + *it2, pos1, pos1 + *it1);
                 if (delta) {
                     if (!count || curCurrent != TMergePolicy::Calc(curValue1, curValue2)) {
@@ -485,16 +372,14 @@ public:
                 } else {
                     curValue2 = !curValue2;
                     curValue1 = !curValue1;
-                    pos1 += *it1;
-                    pos2 += *it2;
                     ++it1;
                     ++it2;
                 }
             }
-            Y_ABORT_UNLESS(it1 == Filter1.Filter.end() && it2 == Filter2.Filter.cend());
+            Y_VERIFY(it1 == Filter1.Filter.end() && it2 == Filter2.Filter.cend());
             TColumnFilter result = TColumnFilter::BuildAllowFilter();
             std::swap(resultFilter, result.Filter);
-            std::swap(curCurrent, result.LastValue);
+            std::swap(curCurrent, result.CurrentValue);
             std::swap(count, result.Count);
             return result;
         }
@@ -503,17 +388,16 @@ public:
 };
 
 TColumnFilter TColumnFilter::And(const TColumnFilter& extFilter) const {
-    ResetCaches();
+    FilterPlain.reset();
     return TMergerImpl(*this, extFilter).Merge<TMergePolicyAnd>();
 }
 
 TColumnFilter TColumnFilter::Or(const TColumnFilter& extFilter) const {
-    ResetCaches();
+    FilterPlain.reset();
     return TMergerImpl(*this, extFilter).Merge<TMergePolicyOr>();
 }
 
 TColumnFilter TColumnFilter::CombineSequentialAnd(const TColumnFilter& extFilter) const {
-    ResetCaches();
     if (Filter.empty()) {
         return TMergePolicyAnd::MergeWithSimple(extFilter, DefaultFilterValue);
     } else if (extFilter.Filter.empty()) {
@@ -532,7 +416,7 @@ TColumnFilter TColumnFilter::CombineSequentialAnd(const TColumnFilter& extFilter
         ui32 count = 0;
 
         while (itSelf != Filter.end()) {
-            Y_ABORT_UNLESS(!curSelf || itExt != extFilter.Filter.cend());
+            Y_VERIFY(!curSelf || itExt != extFilter.Filter.cend());
             const ui32 delta = curSelf ? CrossSize(extPos, extPos + *itExt, selfPos, selfPos + *itSelf) : *itSelf;
             if (delta) {
                 if (!count || curCurrent != (curSelf && curExt)) {
@@ -559,59 +443,16 @@ TColumnFilter TColumnFilter::CombineSequentialAnd(const TColumnFilter& extFilter
             } else {
                 curExt = !curExt;
                 curSelf = !curSelf;
-                selfPos += *itSelf;
-                extPos += *itExt;
                 ++itSelf;
                 ++itExt;
             }
         }
-        AFL_VERIFY(itSelf == Filter.end() && itExt == extFilter.Filter.cend());
+        Y_VERIFY(itSelf == Filter.end() && itExt == extFilter.Filter.cend());
         TColumnFilter result = TColumnFilter::BuildAllowFilter();
         std::swap(resultFilter, result.Filter);
-        std::swap(curCurrent, result.LastValue);
+        std::swap(curCurrent, result.CurrentValue);
         std::swap(count, result.Count);
         return result;
-    }
-}
-
-TColumnFilter::TIterator TColumnFilter::GetIterator(const bool reverse, const ui32 expectedSize) const {
-    if ((IsTotalAllowFilter() || IsTotalDenyFilter()) && !Filter.size()) {
-        return TIterator(reverse, expectedSize, LastValue);
-    } else {
-        AFL_VERIFY(expectedSize == Size())("expected", expectedSize)("size", Size())("reverse", reverse);
-        return TIterator(reverse, Filter, GetStartValue(reverse));
-    }
-}
-
-std::optional<ui32> TColumnFilter::GetFilteredCount() const {
-    if (!FilteredCount) {
-        if (IsTotalAllowFilter()) {
-            if (!Count) {
-                return {};
-            } else {
-                FilteredCount = Count;
-            }
-        } else if (IsTotalDenyFilter()) {
-            FilteredCount = 0;
-        } else {
-            FilteredCount = 0;
-            bool current = GetStartValue();
-            for (auto&& i : Filter) {
-                if (current) {
-                    *FilteredCount += i;
-                }
-                current = !current;
-            }
-        }
-    }
-    return *FilteredCount;
-}
-
-void TColumnFilter::Append(const TColumnFilter& filter) {
-    bool currentVal = filter.GetStartValue();
-    for (auto&& i : filter.Filter) {
-        Add(currentVal, i);
-        currentVal = !currentVal;
     }
 }
 

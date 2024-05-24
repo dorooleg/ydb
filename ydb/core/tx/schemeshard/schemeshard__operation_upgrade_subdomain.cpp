@@ -32,7 +32,7 @@ public:
         TTabletId ssId = context.SS->SelfTabletId();
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                    DebugHint() << " ProgressState"
@@ -57,7 +57,7 @@ public:
             LOG_ERROR_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, errMsg);
             Y_FAIL_S(errMsg);
 
-            Y_ABORT_UNLESS(context.SS->Operations.contains(otherTxId));
+            Y_VERIFY(context.SS->Operations.contains(otherTxId));
             context.OnComplete.Dependence(otherTxId, OperationId.GetTxId());
 
             isDone = false;
@@ -108,8 +108,8 @@ public:
                        << " at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxUpgradeSubDomain);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxUpgradeSubDomain);
         TPathId pathId = txState->TargetPathId;
 
         const auto& record = ev->Get()->Record;
@@ -118,7 +118,7 @@ public:
         auto status = record.GetStatus();
 
         auto shardIdx = context.SS->MustGetShardIdx(tabletId);
-        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
+        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
 
         if (status != NKikimrScheme::EStatus::StatusSuccess && status != NKikimrScheme::EStatus::StatusAlreadyExists) {
             LOG_CRIT_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -230,7 +230,6 @@ public:
             colDescr->SetDeleteVersion(column.DeleteVersion);
             colDescr->SetFamily(column.Family);
             colDescr->SetNotNull(column.NotNull);
-            colDescr->SetIsBuildInProgress(column.IsBuildInProgress);
             if (column.DefaultKind != ETableColumnDefaultKind::None) {
                 colDescr->SetDefaultKind(ui32(column.DefaultKind));
                 colDescr->SetDefaultValue(column.DefaultValue);
@@ -306,17 +305,16 @@ public:
             case NKikimrSchemeOp::EPathType::EPathTypeDir:
             case NKikimrSchemeOp::EPathType::EPathTypeExternalTable:
             case NKikimrSchemeOp::EPathType::EPathTypeExternalDataSource:
-            case NKikimrSchemeOp::EPathType::EPathTypeView:
-                Y_ABORT_UNLESS(!path.Base()->IsRoot());
+                Y_VERIFY(!path.Base()->IsRoot());
                 //no shards
                 break;
             case NKikimrSchemeOp::EPathType::EPathTypeSubDomain:
             case NKikimrSchemeOp::EPathType::EPathTypeExtSubDomain:
-                Y_ABORT("impossible to migrate subDomain or extSubDomain as part of the other subDomain");
+                Y_FAIL("impossible to migrate subDomain or extSubDomain as part of the other subDomain");
                 break;
             case NKikimrSchemeOp::EPathType::EPathTypeTable:
             {
-                Y_ABORT_UNLESS(context.SS->Tables.contains(pathId));
+                Y_VERIFY(context.SS->Tables.contains(pathId));
 
                 *event->Record.MutableTable() = DescribeTable(context, pathId);
 
@@ -331,7 +329,7 @@ public:
             }
             case NKikimrSchemeOp::EPathType::EPathTypeTableIndex:
             {
-                Y_ABORT_UNLESS(context.SS->Indexes.contains(pathId));
+                Y_VERIFY(context.SS->Indexes.contains(pathId));
                 *event->Record.MutableTableIndex() = DescribeTableIndex(context, pathId);
 
                 //no shards
@@ -340,12 +338,12 @@ public:
             }
             case NKikimrSchemeOp::EPathType::EPathTypeKesus:
             {
-                Y_ABORT_UNLESS(context.SS->KesusInfos.contains(pathId));
+                Y_VERIFY(context.SS->KesusInfos.contains(pathId));
                 *event->Record.MutableKesus() = DescribeKesus(context, pathId);
 
                 TKesusInfo::TPtr kesusInfo = context.SS->KesusInfos.at(pathId);
-                Y_ABORT_UNLESS(kesusInfo->KesusShardIdx);
-                Y_ABORT_UNLESS(context.SS->ShardInfos.contains(kesusInfo->KesusShardIdx));
+                Y_VERIFY(kesusInfo->KesusShardIdx);
+                Y_VERIFY(context.SS->ShardInfos.contains(kesusInfo->KesusShardIdx));
                 *migrateShards->Add() = DescribeShard(context, kesusInfo->KesusShardIdx);
 
                 break;
@@ -361,7 +359,7 @@ public:
             case NKikimrSchemeOp::EPathType::EPathTypeSequence:
             case NKikimrSchemeOp::EPathType::EPathTypeReplication:
             case NKikimrSchemeOp::EPathType::EPathTypeBlobDepot:
-                Y_ABORT("UNIMPLEMENTED");
+                Y_FAIL("UNIMPLEMENTED");
             case NKikimrSchemeOp::EPathType::EPathTypeInvalid:
                 Y_UNREACHABLE();
         }
@@ -375,7 +373,7 @@ public:
                    DebugHint() << " HandleReply TEvSchemeShard::TEvMigrateSchemeShardResult"
                                << ", at tablet" << ssId);
 
-        Y_ABORT_UNLESS(ev->Get()->GetPathId().OwnerId == context.SS->TabletID());
+        Y_VERIFY(ev->Get()->GetPathId().OwnerId == context.SS->TabletID());
 
         TPathId pathId = ev->Get()->GetPathId();
         context.OnComplete.UnbindMsgFromPipe(OperationId, TenantSchemeShardId, pathId);
@@ -404,15 +402,15 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxUpgradeSubDomain);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxUpgradeSubDomain);
 
         TPathId pathId = txState->TargetPathId;
         TPath path = TPath::Init(pathId, context.SS);
 
         auto subDomain = context.SS->SubDomains.at(pathId);
         auto alterData = subDomain->GetAlter();
-        Y_ABORT_UNLESS(alterData);
+        Y_VERIFY(alterData);
         alterData->Initialize(context.SS->ShardInfos);
 
         auto processing = alterData->GetProcessingParams();
@@ -428,7 +426,7 @@ public:
             schemeLimits, ui64(InvalidTabletId));
         event->Record.SetInitiateMigration(true);
 
-        Y_ABORT_UNLESS(1 == txState->Shards.size());
+        Y_VERIFY(1 == txState->Shards.size());
         auto &shard = *txState->Shards.begin();
         shard.Operation = TTxState::ConfigureParts;
 
@@ -473,7 +471,7 @@ public:
                    DebugHint() << " HandleReply TEvSchemeShard::TEvPublishTenantAsReadOnlyResult"
                                << ", at tablet" << ssId);
 
-        Y_ABORT_UNLESS(TTabletId(ev->Get()->Record.GetTenantSchemeShard()) == TenantSchemeShardId);
+        Y_VERIFY(TTabletId(ev->Get()->Record.GetTenantSchemeShard()) == TenantSchemeShardId);
 
         NIceDb::TNiceDb db(context.GetDB());
         context.SS->ChangeTxState(db, OperationId, TTxState::PublishGlobal);
@@ -489,9 +487,9 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
-        Y_ABORT_UNLESS(1 == txState->Shards.size());
+        Y_VERIFY(1 == txState->Shards.size());
         auto &shard = *txState->Shards.begin();
         shard.Operation = TTxState::ConfigureParts;
         txState->UpdateShardsInProgress();
@@ -499,7 +497,7 @@ public:
         TPathId pathId = txState->TargetPathId;
         auto subDomain = context.SS->SubDomains.at(pathId);
         auto alterData = subDomain->GetAlter();
-        Y_ABORT_UNLESS(alterData);
+        Y_VERIFY(alterData);
         alterData->Initialize(context.SS->ShardInfos);
         auto processing = alterData->GetProcessingParams();
         TenantSchemeShardId = TTabletId(processing.GetSchemeShard());
@@ -549,7 +547,7 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
 
@@ -565,7 +563,7 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(path->PathType == TPathElement::EPathType::EPathTypeExtSubDomain);
+        Y_VERIFY(path->PathType == TPathElement::EPathType::EPathTypeExtSubDomain);
         context.SS->PersistPath(db, path->PathId);
         context.SS->ClearDescribePathCaches(path);
 
@@ -589,22 +587,22 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         NIceDb::TNiceDb db(context.GetDB());
         TPathId pathId = txState->TargetPathId;
         TPathElement::TPtr item = context.SS->PathsById.at(pathId);
 
-        Y_ABORT_UNLESS(item->PathType == TPathElement::EPathType::EPathTypeExtSubDomain);
+        Y_VERIFY(item->PathType == TPathElement::EPathType::EPathTypeExtSubDomain);
         item->PathType = TPathElement::EPathType::EPathTypeSubDomain;
 
         item->SwapChildren(HiddenChildren); //return back children
         item->PreSerializedChildrenListing.clear();
 
         auto subDomain = context.SS->SubDomains.at(pathId);
-        Y_ABORT_UNLESS(subDomain);
+        Y_VERIFY(subDomain);
         auto alterData = subDomain->GetAlter();
-        Y_ABORT_UNLESS(alterData);
+        Y_VERIFY(alterData);
         alterData->Initialize(context.SS->ShardInfos);
         subDomain->ActualizeAlterData(context.SS->ShardInfos, context.Ctx.Now(), /* isExternal */ false, context.SS);
 
@@ -647,7 +645,7 @@ public:
         TTabletId ssId = context.SS->SelfTabletId();
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                    DebugHint() << " ProgressState"
@@ -660,8 +658,8 @@ public:
 
         auto subDomain = context.SS->SubDomains.at(pathId);
         auto alterData = subDomain->GetAlter();
-        Y_ABORT_UNLESS(alterData);
-        Y_ABORT_UNLESS(subDomain->GetVersion() < alterData->GetVersion());
+        Y_VERIFY(alterData);
+        Y_VERIFY(subDomain->GetVersion() < alterData->GetVersion());
 
         alterData->Initialize(context.SS->ShardInfos);
         subDomain->ActualizeAlterData(context.SS->ShardInfos, context.Ctx.Now(), /* isExternal */ true, context.SS);
@@ -718,18 +716,18 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
-        Y_ABORT_UNLESS(txState->Shards.size() == 1);
+        Y_VERIFY(txState->Shards.size() == 1);
         TShardIdx tenantSchemeShardIdx = txState->Shards.front().Idx;
 
         context.OnComplete.DeleteShard(tenantSchemeShardIdx);
 
         TPathId pathId = txState->TargetPathId;
         auto subDomain = context.SS->SubDomains.at(pathId);
-        Y_ABORT_UNLESS(subDomain);
+        Y_VERIFY(subDomain);
         auto alterData = subDomain->GetAlter();
-        Y_ABORT_UNLESS(!alterData);
+        Y_VERIFY(!alterData);
 
         context.OnComplete.ReleasePathState(OperationId, pathId, TPathElement::EPathState::EPathStateAlter);
         context.OnComplete.DoneOperation(OperationId);
@@ -775,7 +773,7 @@ public:
             return false;
         }
 
-        Y_ABORT_UNLESS(status == NKikimrTxDataShard::TEvMigrateSchemeShardResponse::Success
+        Y_VERIFY(status == NKikimrTxDataShard::TEvMigrateSchemeShardResponse::Success
                  || status == NKikimrTxDataShard::TEvMigrateSchemeShardResponse::Already);
 
         DatashardsInside.erase(dataShardId);
@@ -823,7 +821,7 @@ public:
         TTabletId ssId = context.SS->SelfTabletId();
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                    DebugHint() << " ProgressState"
@@ -833,7 +831,7 @@ public:
 
         auto subDomain = context.SS->SubDomains.at(targetPathId);
         TenantSchemeShardId = subDomain->GetTenantSchemeShardID();
-        Y_ABORT_UNLESS(TenantSchemeShardId);
+        Y_VERIFY(TenantSchemeShardId);
 
         auto pathsInside = context.SS->ListSubTree(targetPathId, context.Ctx);
         pathsInside.erase(targetPathId);
@@ -846,7 +844,7 @@ public:
                     break;
                 case NKikimrSchemeOp::EPathType::EPathTypeTable:
                 {
-                    Y_ABORT_UNLESS(context.SS->Tables.contains(pId));
+                    Y_VERIFY(context.SS->Tables.contains(pId));
                     TTableInfo::TPtr table = context.SS->Tables.at(pId);
                     for (auto item: table->GetPartitions()) {
                         auto shardIdx = item.ShardIdx;
@@ -854,7 +852,7 @@ public:
 
                         bool inserted = false;
                         std::tie(std::ignore, inserted) = DatashardsInside.insert(shardInfo.TabletID);
-                        Y_ABORT_UNLESS(inserted);
+                        Y_VERIFY(inserted);
                     }
                     break;
                 }
@@ -923,7 +921,7 @@ public:
         TTabletId ssId = context.SS->SelfTabletId();
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                    DebugHint() << " ProgressState"
@@ -996,7 +994,7 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         Init(txState->TargetPathId, context);
 
@@ -1152,7 +1150,7 @@ public:
 
         auto pathId = path.Base()->PathId;
 
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(pathId));
+        Y_VERIFY(context.SS->SubDomains.contains(pathId));
         TSubDomainInfo::TPtr subDomain = context.SS->SubDomains.at(pathId);
         if (!subDomain->IsSupportTransactions()) {
             result->SetError(NKikimrScheme::StatusSchemeError, "There are no sense to upgrade subdomain with out transactions support (NBS?).");
@@ -1247,7 +1245,7 @@ public:
                              << ", parent transaction: " << otherTxId
                              << ", at schemeshard: " << ssId);
 
-            Y_ABORT_UNLESS(context.SS->Operations.contains(otherTxId));
+            Y_VERIFY(context.SS->Operations.contains(otherTxId));
             context.OnComplete.Dependence(otherTxId, OperationId.GetTxId());
         }
 
@@ -1261,7 +1259,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TUpgradeSubDomain");
+        Y_FAIL("no AbortPropose for TUpgradeSubDomain");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -1272,13 +1270,13 @@ public:
                          << ", at schemeshard: " << context.SS->TabletID());
 
         TTxState* upgradeState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(upgradeState);
-        Y_ABORT_UNLESS(upgradeState->TxType == TTxState::TxUpgradeSubDomain);
+        Y_VERIFY(upgradeState);
+        Y_VERIFY(upgradeState->TxType == TTxState::TxUpgradeSubDomain);
 
         if (upgradeState->State == TTxState::PublishGlobal) {
-            Y_ABORT_UNLESS(context.SS->Operations.contains(OperationId.GetTxId()));
+            Y_VERIFY(context.SS->Operations.contains(OperationId.GetTxId()));
             TOperation::TPtr operation = context.SS->Operations.at(OperationId.GetTxId());
-            Y_ABORT_UNLESS(operation->Parts.size());
+            Y_VERIFY(operation->Parts.size());
 
             THolder<TEvPrivate::TEvUndoTenantUpdate> msg = MakeHolder<TEvPrivate::TEvUndoTenantUpdate>();
             TEvPrivate::TEvUndoTenantUpdate::TPtr personalEv = (TEventHandle<TEvPrivate::TEvUndoTenantUpdate>*) new IEventHandle(
@@ -1316,7 +1314,7 @@ public:
         TTxState* txState = context.SS->FindTx(OperationId);
 
         TPathId pathId = txState->TargetPathId;
-        Y_ABORT_UNLESS(context.SS->PathsById.contains(pathId));
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
 
         Y_VERIFY_S(path->PathState == TPathElement::EPathState::EPathStateAlter,
@@ -1406,10 +1404,10 @@ public:
             return result;
         }
         TOperation::TPtr operation = context.SS->Operations.at(txId);
-        Y_ABORT_UNLESS(operation->Parts.size());
+        Y_VERIFY(operation->Parts.size());
 
         TTxState* upgradeState = context.SS->FindTx(TOperationId(txId, 0));
-        Y_ABORT_UNLESS(upgradeState);
+        Y_VERIFY(upgradeState);
         if (upgradeState->TxType != TTxState::TxUpgradeSubDomain) {
             errStr = "no update subdomain transaction has been found at path";
             result->SetError(NKikimrScheme::StatusPreconditionFailed, errStr);
@@ -1466,7 +1464,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TUpgradeSubDomainDecision");
+        Y_FAIL("no AbortPropose for TUpgradeSubDomainDecision");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -1489,7 +1487,7 @@ ISubOperation::TPtr CreateUpgradeSubDomain(TOperationId id, const TTxTransaction
 }
 
 ISubOperation::TPtr CreateUpgradeSubDomain(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TUpgradeSubDomain>(id, state);
 }
 
@@ -1498,7 +1496,7 @@ ISubOperation::TPtr CreateUpgradeSubDomainDecision(TOperationId id, const TTxTra
 }
 
 ISubOperation::TPtr CreateUpgradeSubDomainDecision(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TUpgradeSubDomainDecision>(id, state);
 }
 

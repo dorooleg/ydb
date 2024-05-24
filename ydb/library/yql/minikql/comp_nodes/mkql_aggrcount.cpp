@@ -1,7 +1,6 @@
 #include "mkql_aggrcount.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
 namespace NKikimr {
@@ -25,7 +24,7 @@ public:
         const auto check = IsExists(value, block);
         if (Node->IsTemporaryValue())
             ValueCleanup(Node->GetRepresentation(), value, ctx, block);
-        return MakeBoolean(check, ctx.Codegen.GetContext(), block);
+        return MakeBoolean(check, ctx.Codegen->GetContext(), block);
     }
 #endif
 };

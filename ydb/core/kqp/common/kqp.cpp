@@ -1,16 +1,16 @@
 #include "kqp.h"
 
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actorsystem.h>
 
 #include <util/datetime/base.h>
 
 namespace NKikimr::NKqp {
 
-TString ScriptExecutionRunnerActorIdString(const NActors::TActorId& actorId) {
+TString ActorIdToScriptExecutionId(const NActors::TActorId& actorId) {
     return TStringBuilder() << "[" << actorId.NodeId() << ":" << actorId.LocalId() << ":" << actorId.Hint() << ":" << actorId.PoolID() << "]";
 }
 
-bool ScriptExecutionRunnerActorIdFromString(const TString& executionId, TActorId& actorId) {
+bool ScriptExecutionIdToActorId(const TString& executionId, TActorId& actorId) {
     if (executionId.Size() < 5 || executionId[0] != '[' || executionId[executionId.Size() - 1] != ']')
         return false;
 

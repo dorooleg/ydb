@@ -7,7 +7,7 @@
 #include "flat_row_nulls.h"
 #include "flat_part_pinout.h"
 
-#include <ydb/core/base/defs.h>
+#include <library/cpp/actors/util/shared_data.h>
 
 #include <util/generic/ptr.h>
 #include <util/generic/hash.h>
@@ -105,7 +105,7 @@ namespace NTable {
 
         const TGroupInfo& GetLayout(NPage::TGroupId groupId) const noexcept
         {
-            Y_ABORT_UNLESS(groupId.Index < Groups.size(), "Group is out of range");
+            Y_VERIFY(groupId.Index < Groups.size(), "Group is out of range");
 
             if (groupId.Index == 0) {
                 return groupId.Historic ? HistoryGroup : Groups[0];

@@ -32,10 +32,6 @@ struct TKqpOptimizeContext : public TSimpleRefCount<TKqpOptimizeContext> {
     bool IsScanQuery() const {
         return QueryCtx->Type == NYql::EKikimrQueryType::Scan;
     }
-
-    bool IsGenericQuery() const {
-        return QueryCtx->Type == NYql::EKikimrQueryType::Query || QueryCtx->Type == NYql::EKikimrQueryType::Script;
-    }
 };
 
 struct TKqpBuildQueryContext : TThrRefBase {

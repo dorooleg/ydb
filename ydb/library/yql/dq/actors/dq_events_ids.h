@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/events.h>
 
 namespace NYql {
 namespace NDq {
@@ -50,23 +50,12 @@ struct TDqComputeEvents {
         EvNewCheckpointCoordinatorAck,
         EvNewAsyncInputDataArrived,
         EvAsyncInputError,
-        EvLookupResult,
         // place all new events here
 
         EvEnd
     };
 
     static_assert(EvEnd < EventSpaceBegin((TDqEvents::ES_DQ_COMPUTE + 1)));
-};
-
-struct TDqSpillingEvents {
-    enum EDqSpillingEvents {
-        EvWrite = EventSpaceBegin(TDqEvents::ES_DQ_COMPUTE) + 100,
-        EvWriteResult,
-        EvRead,
-        EvReadResult,
-        EvError,
-    };
 };
 
 } // namespace NDq

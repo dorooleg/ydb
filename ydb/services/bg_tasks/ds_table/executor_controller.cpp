@@ -2,9 +2,8 @@
 #include "executor_controller.h"
 
 #include <ydb/services/bg_tasks/abstract/task.h>
-#include <ydb/services/metadata/initializer/events.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NKikimr::NBackgroundTasks {
 

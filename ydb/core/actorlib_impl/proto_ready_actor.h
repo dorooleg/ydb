@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 #include <util/system/type_name.h>
 
 template <typename TType, TType val>
@@ -91,7 +91,7 @@ private:
     IActor::TReceiveFunc DerivedActorFunc;
 
     STFUNC(ProtocolDispatcher) {
-        Y_ABORT_UNLESS(ev.Get() != nullptr);
+        Y_VERIFY(ev.Get() != nullptr);
 
         auto funcIter = ProtocolFunctions.find(ev->Type);
 

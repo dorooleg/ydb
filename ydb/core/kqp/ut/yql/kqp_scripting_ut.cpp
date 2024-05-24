@@ -15,6 +15,18 @@ namespace NKqp {
 using namespace NYdb;
 using namespace NYdb::NScripting;
 
+static const TString EXPECTED_EIGHTSHARD_VALUE1 = R"(
+[
+    [[1];[101u];["Value1"]];
+    [[2];[201u];["Value1"]];
+    [[3];[301u];["Value1"]];
+    [[1];[401u];["Value1"]];
+    [[2];[501u];["Value1"]];
+    [[3];[601u];["Value1"]];
+    [[1];[701u];["Value1"]];
+    [[2];[801u];["Value1"]]
+])";
+
 Y_UNIT_TEST_SUITE(KqpScripting) {
     Y_UNIT_TEST(EndOfQueryCommit) {
         TKikimrRunner kikimr;
@@ -44,84 +56,6 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
         TResultSetParser rs0(result.GetResultSets()[0]);
         UNIT_ASSERT(rs0.TryNextRow());
         UNIT_ASSERT_VALUES_EQUAL(rs0.ColumnParser(0).GetUint64(), 2u);
-    }
-
-    Y_UNIT_TEST(ScriptingCreateAndAlterTableTest) {
-        TKikimrRunner kikimr;
-        TScriptingClient client(kikimr.GetDriver());
-
-        auto result = client.ExecuteYqlScript(R"(
-            CREATE TABLE `/Root/ScriptingCreateAndAlterTableTest` (
-                Key Uint64,
-                Value String,
-                PRIMARY KEY (Key)
-            );
-            COMMIT;
-
-            REPLACE INTO `/Root/ScriptingCreateAndAlterTableTest` (Key, Value) VALUES
-                (1, "One"),
-                (2, "Two");
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-        UNIT_ASSERT_VALUES_EQUAL(result.GetResultSets().size(), 0);
-
-        result = client.ExecuteYqlScript(R"(
-            SELECT COUNT(*) FROM `/Root/ScriptingCreateAndAlterTableTest`;
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-        UNIT_ASSERT_VALUES_EQUAL(result.GetResultSets().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(result.GetResultSets()[0].RowsCount(), 1);
-        TResultSetParser rs0(result.GetResultSets()[0]);
-        UNIT_ASSERT(rs0.TryNextRow());
-        UNIT_ASSERT_VALUES_EQUAL(rs0.ColumnParser(0).GetUint64(), 2u);
-
-        result = client.ExecuteYqlScript(R"(
-            ALTER TABLE `/Root/ScriptingCreateAndAlterTableTest` SET (AUTO_PARTITIONING_BY_SIZE = ENABLED);
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-    
-        result = client.ExecuteYqlScript(R"(
-            ALTER TABLE `/Root/ScriptingCreateAndAlterTableTest` SET (AUTO_PARTITIONING_BY_SIZE = ENABLED);
-            COMMIT;
-            ALTER TABLE `/Root/ScriptingCreateAndAlterTableTest` SET (AUTO_PARTITIONING_PARTITION_SIZE_MB = 500);
-            COMMIT;
-            ALTER TABLE `/Root/ScriptingCreateAndAlterTableTest` SET (AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 4);
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-    
-        result = client.ExecuteYqlScript(R"(
-            ALTER TABLE `/Root/ScriptingCreateAndAlterTableTest` SET (AUTO_PARTITIONING_BY_SIZE = ENABLED);
-            COMMIT;
-            CREATE TABLE `/Root/ScriptingCreateAndAlterTableTest2` (
-                Key Uint64,
-                Value String,
-                PRIMARY KEY (Key)
-            );
-            COMMIT;
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        result = client.ExecuteYqlScript(R"(
-            SELECT COUNT(*) FROM `/Root/ScriptingCreateAndAlterTableTest2`;
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        result = client.ExecuteYqlScript(R"(
-            CREATE TABLE `/Root/ScriptingCreateAndAlterTableTest3` (
-                Key Uint64,
-                Value String,
-                PRIMARY KEY (Key)
-            );
-            COMMIT;
-            ALTER TABLE `/Root/ScriptingCreateAndAlterTableTest3` SET (AUTO_PARTITIONING_BY_SIZE = ENABLED);
-            COMMIT;
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        result = client.ExecuteYqlScript(R"(
-            SELECT COUNT(*) FROM `/Root/ScriptingCreateAndAlterTableTest3`;
-        )").GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
     }
 
     Y_UNIT_TEST(UnsafeTimestampCast) {
@@ -252,10 +186,7 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
     }
 
     Y_UNIT_TEST(LimitOnShard) {
-        auto app = NKikimrConfig::TAppConfig();
-        app.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
-        TKikimrRunner kikimr(app);
-
+        TKikimrRunner kikimr;
         TScriptingClient client(kikimr.GetDriver());
 
         NYdb::NScripting::TExecuteYqlRequestSettings execSettings;
@@ -278,10 +209,7 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
     }
 
     Y_UNIT_TEST(QueryStats) {
-        auto app = NKikimrConfig::TAppConfig();
-        app.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
-        TKikimrRunner kikimr(app);
-
+        TKikimrRunner kikimr;
         TScriptingClient client(kikimr.GetDriver());
 
         NYdb::NScripting::TExecuteYqlRequestSettings execSettings;
@@ -616,8 +544,8 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
 
         NJson::TJsonValue plan;
         NJson::ReadJsonTree(planJson, &plan, true);
-        auto node = FindPlanNodeByKv(plan.GetMap().at("queries").GetArray()[2], "Node Type", "Aggregate");
-        UNIT_ASSERT_EQUAL(node.GetMap().at("Stats").GetMapSafe().at("Tasks").GetIntegerSafe(), 1);
+        auto node = FindPlanNodeByKv(plan.GetMap().at("queries").GetArray()[2], "Node Type", "Aggregate-TableFullScan");
+        UNIT_ASSERT_EQUAL(node.GetMap().at("Stats").GetMapSafe().at("TotalTasks").GetIntegerSafe(), 1);
     }
 
     Y_UNIT_TEST(StreamExecuteYqlScriptScan) {
@@ -633,10 +561,7 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
     }
 
     Y_UNIT_TEST(StreamExecuteYqlScriptScanCancelation) {
-        auto app = NKikimrConfig::TAppConfig();
-        app.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
-        TKikimrRunner kikimr(app);
-
+        TKikimrRunner kikimr;
         TScriptingClient client(kikimr.GetDriver());
         NKqp::TKqpCounters counters(kikimr.GetTestServer().GetRuntime()->GetAppData().Counters);
 
@@ -943,7 +868,6 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
         auto stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
 
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 3);
-        UNIT_ASSERT(stats.query_phases(1).table_access().empty());
         for (const auto& phase : stats.query_phases()) {
             if (phase.table_access().size()) {
                 if (phase.table_access(0).name() == "/Root/EightShard") {
@@ -1179,53 +1103,6 @@ Y_UNIT_TEST_SUITE(KqpScripting) {
         CompareYson(R"([
             [[1];["Value21"]]
         ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(ExecuteYqlScriptPg) {
-        TKikimrRunner kikimr;
-
-        auto settings = TExecuteYqlRequestSettings()
-            .Syntax(Ydb::Query::SYNTAX_PG);
-
-        TScriptingClient client(kikimr.GetDriver());
-        auto result = client.ExecuteYqlScript(R"(
-            SELECT * FROM (VALUES
-                (1::int8, 'one'),
-                (2::int8, 'two'),
-                (3::int8, 'three')
-            ) AS t;
-        )", settings).GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        CompareYson(R"([
-            ["1";"one"];
-            ["2";"two"];
-            ["3";"three"]
-        ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(StreamExecuteYqlScriptPg) {
-        TKikimrRunner kikimr;
-        
-        auto settings = TExecuteYqlRequestSettings()
-            .Syntax(Ydb::Query::SYNTAX_PG);
-
-        TScriptingClient client(kikimr.GetDriver());
-
-        auto result = client.StreamExecuteYqlScript(R"(
-            SELECT * FROM (VALUES
-                (1::int8, 'one'),
-                (2::int8, 'two'),
-                (3::int8, 'three')
-            ) AS t;
-        )", settings).GetValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        CompareYson(R"([[
-            ["1";"one"];
-            ["2";"two"];
-            ["3";"three"]
-        ]])", StreamResultToYson(result));
     }
 }
 

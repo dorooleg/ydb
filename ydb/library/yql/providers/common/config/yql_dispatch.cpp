@@ -2,7 +2,6 @@
 
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/ast/yql_expr.h>
-#include <ydb/library/yql/utils/log/log.h>
 
 #include <library/cpp/string_utils/levenshtein_diff/levenshtein_diff.h>
 
@@ -90,20 +89,12 @@ YQL_CONTAINER_SETTING_PARSER_TYPES(YQL_DEFINE_CONTAINER_SETTING_PARSER)
 
 namespace NCommon {
 
-bool TSettingDispatcher::IsRuntime(const TString& name) {
-    auto normalizedName = NormalizeName(name);
-    if (auto handler = Handlers.Value(normalizedName, TSettingHandler::TPtr())) {
-        return handler->IsRuntime();
-    }
-    return false;
-}
-
-bool TSettingDispatcher::Dispatch(const TString& cluster, const TString& name, const TMaybe<TString>& value, EStage stage, const TErrorCallback& errorCallback) {
+bool TSettingDispatcher::Dispatch(const TString& cluster, const TString& name, const TMaybe<TString>& value, EStage stage) {
     auto normalizedName = NormalizeName(name);
     if (auto handler = Handlers.Value(normalizedName, TSettingHandler::TPtr())) {
         if (cluster != ALL_CLUSTERS) {
             if (!handler->IsRuntime()) {
-                return errorCallback(TStringBuilder() << "Static setting " << name.Quote() << " cannot be set for specific cluster", true);
+                ythrow yexception() << "Static setting " << name.Quote() << " cannot be set for specific cluster";
             }
             if (!ValidClusters.contains(cluster)) {
                 TStringBuilder nearClusterMsg;
@@ -113,12 +104,12 @@ bool TSettingDispatcher::Dispatch(const TString& cluster, const TString& name, c
                         break;
                     }
                 }
-                return errorCallback(TStringBuilder() << "Unknown cluster name " << cluster.Quote()
-                    << " for setting " << name.Quote() << nearClusterMsg, true);
+                ythrow yexception() << "Unknown cluster name " << cluster.Quote()
+                    << " for setting " << name.Quote() << nearClusterMsg;
             }
         }
         if (!value && !handler->IsRuntime()) {
-            return errorCallback(TStringBuilder() << "Static setting " << name.Quote() << " cannot be reset to default", true);
+            ythrow yexception() << "Static setting " << name.Quote() << " cannot be reset to default";
         }
 
         bool validateOnly = true;
@@ -134,11 +125,12 @@ bool TSettingDispatcher::Dispatch(const TString& cluster, const TString& name, c
             break;
         }
 
-        return handler->Handle(cluster, value, validateOnly, errorCallback);
+        handler->Handle(cluster, value, validateOnly);
+        return !validateOnly;
     } else {
         // ignore unknown names in config
         if (stage == EStage::CONFIG) {
-            return true;
+            return false;
         }
 
         TStringBuilder nearHandlerMsg;
@@ -148,7 +140,7 @@ bool TSettingDispatcher::Dispatch(const TString& cluster, const TString& name, c
                 break;
             }
         }
-        return errorCallback(TStringBuilder() << "Unknown setting name " << name.Quote() << nearHandlerMsg, true);
+        ythrow yexception() << "Unknown setting name " << name.Quote() << nearHandlerMsg;
     }
 }
 
@@ -163,29 +155,6 @@ void TSettingDispatcher::Restore() {
         item.second->Restore(ALL_CLUSTERS);
     }
 }
-
-TSettingDispatcher::TErrorCallback TSettingDispatcher::GetDefaultErrorCallback() {
-    return [] (const TString& msg, bool isError) -> bool {
-        if (isError) {
-            YQL_LOG(ERROR) << msg;
-            throw yexception() << msg;
-        }
-        YQL_LOG(WARN) << msg;
-        return true;
-    };
-}
-
-TSettingDispatcher::TErrorCallback TSettingDispatcher::GetErrorCallback(TPositionHandle pos, TExprContext& ctx) {
-    return [pos, &ctx](const TString& msg, bool isError) -> bool {
-        if (isError) {
-            ctx.AddError(YqlIssue(ctx.GetPosition(pos), TIssuesIds::DEFAULT_ERROR, msg));
-            return false;
-        } else {
-            return ctx.AddWarning(YqlIssue(ctx.GetPosition(pos), TIssuesIds::YQL_PRAGMA_WARNING_MSG, msg));
-        }
-    };
-}
-
 
 } // NCommon
 } // NYql

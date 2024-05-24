@@ -1,6 +1,6 @@
 #include "mkql_length.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
-#include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins_codegen.h>      // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 
@@ -29,7 +29,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto collection = GetNodeValue(Collection, ctx, block);
 
         if constexpr (IsOptional) {

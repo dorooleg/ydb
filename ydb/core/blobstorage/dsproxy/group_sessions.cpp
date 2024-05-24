@@ -23,7 +23,7 @@ TString QueueIdName(NKikimrBlobStorage::EVDiskQueueId queueId) {
         case NKikimrBlobStorage::EVDiskQueueId::GetFastRead:  return "GetFastRead";
         case NKikimrBlobStorage::EVDiskQueueId::GetDiscover:  return "GetDiscover";
         case NKikimrBlobStorage::EVDiskQueueId::GetLowRead:   return "GetLowRead";
-        default:                                              Y_ABORT("unexpected EVDiskQueueId");
+        default:                                              Y_FAIL("unexpected EVDiskQueueId");
     }
 }
 
@@ -63,7 +63,7 @@ TGroupSessions::TGroupSessions(const TIntrusivePtr<TBlobStorageGroupInfo>& info,
                     break;
 
                 default:
-                    Y_ABORT("unexpected queue id");
+                    Y_FAIL("unexpected queue id");
             }
 
             TIntrusivePtr<NBackpressure::TFlowRecord> flowRecord(new NBackpressure::TFlowRecord);
@@ -116,80 +116,18 @@ bool TGroupSessions::GoodToGo(const TBlobStorageGroupInfo::TTopology& topology, 
 }
 
 void TGroupSessions::QueueConnectUpdate(ui32 orderNumber, NKikimrBlobStorage::EVDiskQueueId queueId, bool connected,
-        bool extraGroupChecksSupport, std::shared_ptr<const TCostModel> costModel, const TBlobStorageGroupInfo::TTopology& topology) {
+        bool extraGroupChecksSupport, const TBlobStorageGroupInfo::TTopology& topology) {
     const auto v = topology.GetVDiskId(orderNumber);
     const ui32 fdom = topology.GetFailDomainOrderNumber(v);
-    auto& f = GroupQueues->FailDomains[fdom];
-    auto& vdisk = f.VDisks[v.VDisk];
-    auto& q = vdisk.Queues.GetQueue(queueId);
-
-    bool updated = false;
+    auto& q = GroupQueues->FailDomains[fdom].VDisks[v.VDisk].Queues.GetQueue(queueId);
 
     if (connected) {
         ConnectedQueuesMask[orderNumber] |= 1 << queueId;
         q.ExtraBlockChecksSupport = extraGroupChecksSupport;
-        Y_ABORT_UNLESS(costModel);
-        if (!q.CostModel || *q.CostModel != *costModel) {
-            updated = true;
-            q.CostModel = costModel;
-        }
     } else {
         ConnectedQueuesMask[orderNumber] &= ~(1 << queueId);
         q.ExtraBlockChecksSupport.reset();
-        if (q.CostModel) {
-            updated = true;
-            q.CostModel = nullptr;
-        }
     }
-    q.IsConnected = connected;
-
-    if (updated) {
-        auto iterate = [](auto& currentCostModel, const auto& next) {
-            if (next.CostModel) {
-                if (!currentCostModel) {
-                    currentCostModel.emplace(*next.CostModel);
-                } else {
-                    currentCostModel->PessimisticComposition(*next.CostModel);
-                }
-            }
-        };
-
-        auto update = [](std::shared_ptr<const TCostModel>& current, const std::optional<TCostModel>& recalculated) {
-            if (!recalculated) {
-                current.reset();
-            } else {
-                if (!current || *current != *recalculated) {
-                    current = std::make_shared<const TCostModel>(*recalculated);
-                }
-            }
-        };
-
-        // recalculate CostModel for the whole VDisk
-        std::optional<TCostModel> pessimistic;
-        vdisk.CostModel.reset();
-        vdisk.Queues.ForEachQueue([&](auto& q) { iterate(pessimistic, q); });
-        update(vdisk.CostModel, pessimistic);
-
-        // do the same for the fail domain
-        f.CostModel.reset();
-        pessimistic.reset();
-        for (const auto& vdisk : f.VDisks) {
-            iterate(pessimistic, vdisk);
-        }
-        update(f.CostModel, pessimistic);
-
-        // and for the whole group
-        GroupQueues->CostModel.reset();
-        pessimistic.reset();
-        for (const auto& fdom : GroupQueues->FailDomains) {
-            iterate(pessimistic, fdom);
-        }
-        update(GroupQueues->CostModel, pessimistic);
-    }
-}
-
-ui32 TGroupSessions::GetMinREALHugeBlobInBytes() const {
-    return GroupQueues->CostModel ? GroupQueues->CostModel->MinREALHugeBlobInBytes : 0;
 }
 
 ui32 TGroupSessions::GetNumUnconnectedDisks() {

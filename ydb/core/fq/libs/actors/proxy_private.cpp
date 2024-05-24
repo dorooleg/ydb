@@ -3,13 +3,13 @@
 
 #include <ydb/core/fq/libs/events/events.h>
 
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <ydb/core/fq/libs/config/yq_issue.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/deque.h>
 #include <util/generic/guid.h>
@@ -31,9 +31,9 @@ public:
         TIntrusivePtr<ITimeProvider> timeProvider,
         TIntrusivePtr<IRandomProvider> randomProvider,
         ::NMonitoring::TDynamicCounterPtr counters,
-        const ::NFq::TSigner::TPtr& signer)
+        const NConfig::TTokenAccessorConfig& tokenAccessorConfig)
         : PrivateProxyConfig(privateProxyConfig)
-        , Signer(signer)
+        , TokenAccessorConfig(tokenAccessorConfig)
         , TimeProvider(timeProvider)
         , RandomProvider(randomProvider)
         , Counters(counters->GetSubgroup("subsystem", "private_api"))
@@ -96,7 +96,7 @@ private:
         }
 
         Register(
-            CreateGetTaskRequestActor(ev->Sender, Signer, TimeProvider, ev->Release(), Counters),
+            CreateGetTaskRequestActor(ev->Sender, TokenAccessorConfig, TimeProvider, ev->Release(), Counters),
             NActors::TMailboxType::HTSwap, SelfId().PoolID());
     }
 
@@ -188,7 +188,7 @@ private:
 
 private:
     const NConfig::TPrivateProxyConfig PrivateProxyConfig;
-    const ::NFq::TSigner::TPtr Signer;
+    const NConfig::TTokenAccessorConfig TokenAccessorConfig;
     TIntrusivePtr<ITimeProvider> TimeProvider;
     TIntrusivePtr<IRandomProvider> RandomProvider;
     ::NMonitoring::TDynamicCounterPtr Counters;
@@ -204,8 +204,8 @@ IActor* CreateYqlAnalyticsPrivateProxy(
     TIntrusivePtr<ITimeProvider> timeProvider,
     TIntrusivePtr<IRandomProvider> randomProvider,
     ::NMonitoring::TDynamicCounterPtr counters,
-    const ::NFq::TSigner::TPtr& signer) {
-    return new TYqlAnalyticsPrivateProxy(privateProxyConfig, timeProvider, randomProvider, counters, signer);
+    const NConfig::TTokenAccessorConfig& tokenAccessorConfig) {
+    return new TYqlAnalyticsPrivateProxy(privateProxyConfig, timeProvider, randomProvider, counters, tokenAccessorConfig);
 }
 
 } // namespace NFq

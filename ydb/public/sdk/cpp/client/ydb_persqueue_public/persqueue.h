@@ -1,3 +1,2 @@
 #pragma once
-
-#include "include/client.h"
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/persqueue.h>

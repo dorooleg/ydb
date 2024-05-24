@@ -2,11 +2,12 @@
 #include "logging.h"
 #include "private_events.h"
 
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr::NReplication::NController {
 
@@ -65,7 +66,7 @@ class TDstRemover: public TActorBootstrapped<TDstRemover> {
 
         switch (record.GetStatus()) {
         case NKikimrScheme::StatusAccepted:
-            Y_DEBUG_ABORT_UNLESS(TxId == record.GetTxId());
+            Y_VERIFY_DEBUG(TxId == record.GetTxId());
             return SubscribeTx(record.GetTxId());
         case NKikimrScheme::StatusMultipleModifications:
             if (record.HasPathDropTxId()) {
@@ -182,13 +183,6 @@ private:
     TActorId PipeCache;
 
 }; // TDstRemover
-
-IActor* CreateDstRemover(TReplication::TPtr replication, ui64 targetId, const TActorContext& ctx) {
-    const auto* target = replication->FindTarget(targetId);
-    Y_ABORT_UNLESS(target);
-    return CreateDstRemover(ctx.SelfID, replication->GetSchemeShardId(), replication->GetYdbProxy(),
-        replication->GetId(), target->GetId(), target->GetKind(), target->GetDstPathId());
-}
 
 IActor* CreateDstRemover(const TActorId& parent, ui64 schemeShardId, const TActorId& proxy,
         ui64 rid, ui64 tid, TReplication::ETargetKind kind, const TPathId& dstPathId)

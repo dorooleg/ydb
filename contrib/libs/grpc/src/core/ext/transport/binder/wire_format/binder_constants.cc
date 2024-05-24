@@ -18,12 +18,12 @@
 
 #include "src/core/ext/transport/binder/wire_format/binder_constants.h"
 
-Y_ABSL_CONST_INIT const int FIRST_CALL_TRANSACTION = 0x00000001;
-Y_ABSL_CONST_INIT const int LAST_CALL_TRANSACTION = 0x00FFFFFF;
+const int FIRST_CALL_TRANSACTION = 0x00000001;
+const int LAST_CALL_TRANSACTION = 0x00FFFFFF;
 
 namespace grpc_binder {
 
-Y_ABSL_CONST_INIT const int kFirstCallId = FIRST_CALL_TRANSACTION + 1000;
+const int kFirstCallId = FIRST_CALL_TRANSACTION + 1000;
 
 }  // namespace grpc_binder
 #endif

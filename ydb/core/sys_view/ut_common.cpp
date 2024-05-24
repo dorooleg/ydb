@@ -32,9 +32,7 @@ TTestEnv::TTestEnv(ui32 staticNodes, ui32 dynamicNodes, ui32 storagePools, ui32 
 
     TVector<NKikimrKqp::TKqpSetting> kqpSettings;
 
-    NKikimrProto::TAuthConfig authConfig;
-    authConfig.SetUseBuiltinDomain(true);
-    Settings = new Tests::TServerSettings(mbusPort, authConfig);
+    Settings = new Tests::TServerSettings(mbusPort);
     Settings->SetDomainName("Root");
     Settings->SetNodeCount(staticNodes);
     Settings->SetDynamicNodeCount(dynamicNodes);
@@ -53,8 +51,7 @@ TTestEnv::TTestEnv(ui32 staticNodes, ui32 dynamicNodes, ui32 storagePools, ui32 
         Settings->AddStoragePool(poolName, TString("/Root:") + poolName, 2);
     }
 
-    Settings->AppConfig->MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(!disableSources);
-    Settings->AppConfig->MutableHiveConfig()->AddBalancerIgnoreTabletTypes(NKikimrTabletBase::TTabletTypes::SysViewProcessor);
+    Settings->AppConfig.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(!disableSources);
 
     Server = new Tests::TServer(*Settings);
     Server->EnableGRpc(grpcPort);

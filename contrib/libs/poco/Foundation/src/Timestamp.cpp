@@ -23,7 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 #if defined(POCO_VXWORKS)
-#error #include <timers.h>
+#include <timers.h>
 #else
 #include <sys/time.h>
 #include <sys/times.h>

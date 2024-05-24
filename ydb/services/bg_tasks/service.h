@@ -3,7 +3,7 @@
 #include <ydb/services/bg_tasks/abstract/common.h>
 #include <ydb/services/bg_tasks/abstract/task.h>
 
-#include <ydb/library/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_local.h>
 
 namespace NKikimr::NBackgroundTasks {
 
@@ -13,7 +13,7 @@ private:
 public:
     TEvAddTask(TTask&& task)
         : Task(std::move(task)) {
-        Y_ABORT_UNLESS(!!Task.GetActivity());
+        Y_VERIFY(!!Task.GetActivity());
     }
 };
 
@@ -29,7 +29,7 @@ public:
         , SuccessFlag(success)
         , Report(report)
     {
-        Y_ABORT_UNLESS(!!TaskId);
+        Y_VERIFY(!!TaskId);
     }
 
     TString GetDebugString() const {
@@ -59,7 +59,7 @@ public:
         : TaskId(taskId)
         , Enabled(enabled)
     {
-        Y_ABORT_UNLESS(!!TaskId);
+        Y_VERIFY(!!TaskId);
     }
 };
 

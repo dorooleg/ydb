@@ -48,7 +48,6 @@ NModifications::TOperationParsingResult TAccessManager::DoBuildPatchFromSettings
 
 NModifications::TOperationParsingResult TSecretManager::DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings,
     TInternalModificationContext& context) const {
-    static const TString ExtraPathSymbolsAllowed = "!\"#$%&'()*+,-.:;<=>?@[\\]^_`{|}~";
     NInternal::TTableRecord result;
     if (!context.GetExternalData().GetUserToken()) {
         auto fValue = settings.GetFeaturesExtractor().Extract(TSecret::TDecoder::OwnerUserId);
@@ -70,7 +69,7 @@ NModifications::TOperationParsingResult TSecretManager::DoBuildPatchFromSettings
         if (c >= 'A' && c <= 'Z') {
             continue;
         }
-        if (ExtraPathSymbolsAllowed.Contains(c)) {
+        if (c == '_') {
             continue;
         }
         return TConclusionStatus::Fail("incorrect character for secret id: '" + TString(c) + "'");

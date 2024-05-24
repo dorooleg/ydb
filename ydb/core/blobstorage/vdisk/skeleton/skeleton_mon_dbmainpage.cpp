@@ -3,9 +3,9 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_dbtype.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_private_events.h>
 #include <ydb/core/blobstorage/vdisk/defrag/defrag_actor.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
 namespace NKikimr {
@@ -33,7 +33,7 @@ namespace NKikimr {
             } else if (str == "Barriers") {
                 return TDbMon::DbMainPageBarriers;
             } else {
-                Y_ABORT("Unexpected value: %s", str.data());
+                Y_FAIL("Unexpected value: %s", str.data());
             }
         }
 
@@ -99,13 +99,13 @@ namespace NKikimr {
 
         void Handle(NMon::TEvHttpInfoRes::TPtr &ev, const TActorContext &ctx) {
             NMon::TEvHttpInfoRes *ptr = dynamic_cast<NMon::TEvHttpInfoRes*>(ev->Get());
-            Y_DEBUG_ABORT_UNLESS(ptr);
+            Y_VERIFY_DEBUG(ptr);
             if (ptr->SubRequestId == ConvertToSubRequestId(DbName)) {
                 HullCompactionAnswer = ptr->Answer;
             } else if (ptr->SubRequestId == TDbMon::Defrag) {
                 DefragAnswer = ptr->Answer;
             } else {
-                Y_ABORT("unexpected SubRequestId# %d", int(ptr->SubRequestId));
+                Y_FAIL("unexpected SubRequestId# %d", int(ptr->SubRequestId));
             }
 
             if (HullCompactionAnswer && DefragAnswer) {

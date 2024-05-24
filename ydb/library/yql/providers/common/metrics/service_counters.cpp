@@ -39,7 +39,7 @@ void TServiceCounters::InitUptimeCounter() {
 }
 
 void TServiceCounters::SetUptimePublicAndServiceCounter(i64 val) const {
-    Y_ABORT_UNLESS(UptimePublicCounter && UptimeRootCounter);
+    Y_VERIFY(UptimePublicCounter && UptimeRootCounter);
     UptimePublicCounter->Set(val);
     UptimeRootCounter->Set(val);
 }

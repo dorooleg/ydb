@@ -10,7 +10,6 @@
 #include <util/stream/str.h>
 #include <util/string/hex.h>
 #include <util/string/vector.h>
-#include <util/string/join.h>
 
 namespace NYdb::NConsoleClient {
     namespace {
@@ -87,7 +86,7 @@ namespace NYdb::NConsoleClient {
             NColorizer::TColors colors = NColorizer::AutoColors(Cout);
             for (const auto& codec : codecs) {
                 auto findResult = CodecsDescriptions.find(codec);
-                Y_ABORT_UNLESS(findResult != CodecsDescriptions.end(),
+                Y_VERIFY(findResult != CodecsDescriptions.end(),
                          "Couldn't find description for %s codec", (TStringBuilder() << codec).c_str());
                 description << "\n  " << colors.BoldColor() << codec << colors.OldColor()
                             << "\n    " << findResult->second;
@@ -95,7 +94,7 @@ namespace NYdb::NConsoleClient {
 
             return description.Str();
         }
-
+        
 namespace {
             NTopic::ECodec ParseCodec(const TString& codecStr, const TVector<NTopic::ECodec>& allowedCodecs) {
                 auto exists = ExistingCodecs.find(to_lower(codecStr));
@@ -120,6 +119,10 @@ namespace {
     }
 
     void TCommandWithSupportedCodecs::ParseCodecs() {
+        if (SupportedCodecsStr_.empty()) {
+            return;
+        }
+
         TVector<NTopic::ECodec> parsedCodecs;
         TVector<TString> split = SplitString(SupportedCodecsStr_, ",");
         for (const TString& codecStr : split) {
@@ -137,7 +140,7 @@ namespace {
         NColorizer::TColors colors = NColorizer::AutoColors(Cout);
         for (const auto& mode: ExistingMeteringModes) {
             auto findResult = MeteringModesDescriptions.find(mode.second);
-            Y_ABORT_UNLESS(findResult != MeteringModesDescriptions.end(),
+            Y_VERIFY(findResult != MeteringModesDescriptions.end(),
                      "Couldn't find description for %s metering mode", (TStringBuilder() << mode.second).c_str());
             description << "\n  " << colors.BoldColor() << mode.first << colors.OldColor()
                         << "\n    " << findResult->second;
@@ -224,12 +227,12 @@ namespace {
         settings.PartitioningSettings(PartitionsCount_, PartitionsCount_);
         settings.PartitionWriteBurstBytes(PartitionWriteSpeedKbps_ * 1_KB);
         settings.PartitionWriteSpeedBytesPerSecond(PartitionWriteSpeedKbps_ * 1_KB);
-
-        auto codecs = GetCodecs();
-        if (codecs.empty()) {
-            codecs.push_back(NTopic::ECodec::RAW);
+        const auto codecs = GetCodecs();
+        if (!codecs.empty()) {
+            settings.SetSupportedCodecs(codecs);
+        } else {
+            settings.SetSupportedCodecs(AllowedCodecs);
         }
-        settings.SetSupportedCodecs(codecs);
 
         if (GetMeteringMode() != NTopic::EMeteringMode::Unspecified) {
             settings.MeteringMode(GetMeteringMode());
@@ -399,13 +402,12 @@ namespace {
         if (StartingMessageTimestamp_.Defined()) {
             consumerSettings.ReadFrom(TInstant::Seconds(*StartingMessageTimestamp_));
         }
-
-        TVector<NTopic::ECodec> codecs = GetCodecs();
-        if (codecs.empty()) {
-            codecs.push_back(NTopic::ECodec::RAW);
+        const TVector<NTopic::ECodec> codecs = GetCodecs();
+        if (!codecs.empty()) {
+            consumerSettings.SetSupportedCodecs(codecs);
+        } else {
+            consumerSettings.SetSupportedCodecs(AllowedCodecs);
         }
-        consumerSettings.SetSupportedCodecs(codecs);
-
         readRuleSettings.AppendAddConsumers(consumerSettings);
 
         TStatus status = topicClient.AlterTopic(TopicName, readRuleSettings).GetValueSync();
@@ -592,9 +594,6 @@ namespace {
         config.Opts->AddLongOption("timestamp", "Timestamp from which messages will be read. If not specified, messages are read from the last commit point for the chosen consumer.")
             .Optional()
             .StoreResult(&Timestamp_);
-        config.Opts->AddLongOption("partition-ids", "Comma separated list of partition ids to read from. If not specified, messages are read from all partitions.")
-            .Optional()
-            .SplitHandler(&PartitionIds_, ',');
 
         AddAllowedMetadataFields(config);
         AddTransform(config);
@@ -655,10 +654,6 @@ namespace {
         // TODO(shmel1k@): partition can be added here.
         NTopic::TTopicReadSettings readSettings;
         readSettings.Path(TopicName);
-        for (ui64 id : PartitionIds_) {
-            readSettings.AppendPartitionIds(id);
-        }
-
         settings.AppendTopics(std::move(readSettings));
         return settings;
     }
@@ -677,6 +672,9 @@ namespace {
         auto driver =
             std::make_unique<TDriver>(CreateDriver(config, CreateLogBackend("cerr", TClientCommand::TConfig::VerbosityLevelToELogPriority(config.VerbosityLevel))));
         NTopic::TTopicClient topicClient(*driver);
+
+        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
+        ThrowOnError(topicDescription);
 
         auto readSession = topicClient.CreateReadSession(PrepareReadSessionSettings());
 
@@ -806,6 +804,9 @@ namespace {
         auto driver =
             std::make_unique<TDriver>(CreateDriver(config, CreateLogBackend("cerr", TClientCommand::TConfig::VerbosityLevelToELogPriority(config.VerbosityLevel))));
         NTopic::TTopicClient topicClient(*driver);
+
+        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
+        ThrowOnError(topicDescription);
 
         {
             auto writeSession = NTopic::TTopicClient(*driver).CreateWriteSession(std::move(PrepareWriteSessionSettings()));

@@ -1,31 +1,31 @@
-//
-//
-// Copyright 2017 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2017 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-#ifndef GRPC_SRC_CORE_LIB_GPRPP_REF_COUNTED_PTR_H
-#define GRPC_SRC_CORE_LIB_GPRPP_REF_COUNTED_PTR_H
+#ifndef GRPC_CORE_LIB_GPRPP_REF_COUNTED_PTR_H
+#define GRPC_CORE_LIB_GPRPP_REF_COUNTED_PTR_H
 
 #include <grpc/support/port_platform.h>
 
-#include <iosfwd>
 #include <type_traits>
 #include <utility>
 
 #include "src/core/lib/gprpp/debug_location.h"
+#include "src/core/lib/gprpp/memory.h"
 
 namespace grpc_core {
 
@@ -56,12 +56,14 @@ class RefCountedPtr {
 
   // Move assignment.
   RefCountedPtr& operator=(RefCountedPtr&& other) noexcept {
-    reset(std::exchange(other.value_, nullptr));
+    reset(other.value_);
+    other.value_ = nullptr;
     return *this;
   }
   template <typename Y>
   RefCountedPtr& operator=(RefCountedPtr<Y>&& other) noexcept {
-    reset(std::exchange(other.value_, nullptr));
+    reset(other.value_);
+    other.value_ = nullptr;
     return *this;
   }
 
@@ -107,32 +109,39 @@ class RefCountedPtr {
 
   // If value is non-null, we take ownership of a ref to it.
   void reset(T* value = nullptr) {
-    T* old_value = std::exchange(value_, value);
-    if (old_value != nullptr) old_value->Unref();
+    if (value_ != nullptr) value_->Unref();
+    value_ = value;
   }
   void reset(const DebugLocation& location, const char* reason,
              T* value = nullptr) {
-    T* old_value = std::exchange(value_, value);
-    if (old_value != nullptr) old_value->Unref(location, reason);
+    if (value_ != nullptr) value_->Unref(location, reason);
+    value_ = value;
   }
   template <typename Y>
   void reset(Y* value = nullptr) {
     static_assert(std::has_virtual_destructor<T>::value,
                   "T does not have a virtual dtor");
-    reset(static_cast<T*>(value));
+    if (value_ != nullptr) value_->Unref();
+    value_ = static_cast<T*>(value);
   }
   template <typename Y>
   void reset(const DebugLocation& location, const char* reason,
              Y* value = nullptr) {
     static_assert(std::has_virtual_destructor<T>::value,
                   "T does not have a virtual dtor");
-    reset(location, reason, static_cast<T*>(value));
+    if (value_ != nullptr) value_->Unref(location, reason);
+    value_ = static_cast<T*>(value);
   }
 
-  // This method is mostly useful for interoperating with C code.
-  // Eventually use within core should be banned, except at the surface API
-  // boundaries.
-  T* release() { return std::exchange(value_, nullptr); }
+  // TODO(roth): This method exists solely as a transition mechanism to allow
+  // us to pass a ref to idiomatic C code that does not use RefCountedPtr<>.
+  // Once all of our code has been converted to idiomatic C++, this
+  // method should go away.
+  T* release() {
+    T* value = value_;
+    value_ = nullptr;
+    return value;
+  }
 
   T* get() const { return value_; }
 
@@ -199,12 +208,14 @@ class WeakRefCountedPtr {
 
   // Move assignment.
   WeakRefCountedPtr& operator=(WeakRefCountedPtr&& other) noexcept {
-    reset(std::exchange(other.value_, nullptr));
+    reset(other.value_);
+    other.value_ = nullptr;
     return *this;
   }
   template <typename Y>
   WeakRefCountedPtr& operator=(WeakRefCountedPtr<Y>&& other) noexcept {
-    reset(std::exchange(other.value_, nullptr));
+    reset(other.value_);
+    other.value_ = nullptr;
     return *this;
   }
 
@@ -250,26 +261,28 @@ class WeakRefCountedPtr {
 
   // If value is non-null, we take ownership of a ref to it.
   void reset(T* value = nullptr) {
-    T* old_value = std::exchange(value_, value);
-    if (old_value != nullptr) old_value->WeakUnref();
+    if (value_ != nullptr) value_->WeakUnref();
+    value_ = value;
   }
   void reset(const DebugLocation& location, const char* reason,
              T* value = nullptr) {
-    T* old_value = std::exchange(value_, value);
-    if (old_value != nullptr) old_value->WeakUnref(location, reason);
+    if (value_ != nullptr) value_->WeakUnref(location, reason);
+    value_ = value;
   }
   template <typename Y>
   void reset(Y* value = nullptr) {
     static_assert(std::has_virtual_destructor<T>::value,
                   "T does not have a virtual dtor");
-    reset(static_cast<T*>(value));
+    if (value_ != nullptr) value_->WeakUnref();
+    value_ = static_cast<T*>(value);
   }
   template <typename Y>
   void reset(const DebugLocation& location, const char* reason,
              Y* value = nullptr) {
     static_assert(std::has_virtual_destructor<T>::value,
                   "T does not have a virtual dtor");
-    reset(location, reason, static_cast<T*>(value));
+    if (value_ != nullptr) value_->WeakUnref(location, reason);
+    value_ = static_cast<T*>(value);
   }
 
   // TODO(roth): This method exists solely as a transition mechanism to allow
@@ -335,4 +348,4 @@ bool operator<(const WeakRefCountedPtr<T>& p1, const WeakRefCountedPtr<T>& p2) {
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_GPRPP_REF_COUNTED_PTR_H
+#endif /* GRPC_CORE_LIB_GPRPP_REF_COUNTED_PTR_H */

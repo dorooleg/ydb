@@ -5,15 +5,15 @@ namespace NKikimr::NSsa {
 namespace {
 
 void ReplaceCountAll(TProgram& program) {
-    Y_ABORT_UNLESS(!program.SourceColumns.empty());
+    Y_VERIFY(!program.SourceColumns.empty());
 
     for (auto& step : program.Steps) {
-        Y_ABORT_UNLESS(step);
+        Y_VERIFY(step);
 
-        for (auto& groupBy : step->MutableGroupBy()) {
+        for (auto& groupBy : step->GroupBy) {
             if (groupBy.GetOperation() == EAggregate::Count && groupBy.GetArguments().empty()) {
-                if (step->GetGroupByKeys().size()) {
-                    groupBy.MutableArguments().push_back(step->GetGroupByKeys()[0]);
+                if (!step->GroupByKeys.empty()) {
+                    groupBy.MutableArguments().push_back(step->GroupByKeys[0]);
                 } else {
                     auto& anySourceColumn = program.SourceColumns.begin()->second;
                     groupBy.MutableArguments().push_back(anySourceColumn);

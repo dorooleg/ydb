@@ -120,7 +120,7 @@ namespace {
                 case EMode::FIND_AND_CONSUME:
                     return findAndconsume;
             }
-            Y_ABORT("Unexpected mode");
+            Y_FAIL("Unexpected mode");
         }
 
         TRe2Udf(
@@ -222,7 +222,7 @@ namespace {
                         return valueBuilder->NewList(matches.data(), matches.size());
                     }
                 }
-                Y_ABORT("Unexpected mode");
+                Y_FAIL("Unexpected mode");
             } else {
                 switch (Mode) {
                     case MATCH:
@@ -237,7 +237,7 @@ namespace {
                     case FIND_AND_CONSUME:
                         return valueBuilder->NewEmptyList();
                 }
-                Y_ABORT("Unexpected mode");
+                Y_FAIL("Unexpected mode");
             }
         } catch (const std::exception& e) {
             UdfTerminate((TStringBuilder() << Pos_ << " " << e.what()).data());
@@ -335,14 +335,14 @@ namespace {
         }
     };
 
-    SIMPLE_UDF_WITH_OPTIONAL_ARGS(TPatternFromLike, char*(char*, TOptional<char*>), 1) {
+    SIMPLE_UDF_OPTIONS(TPatternFromLike, char*(char*, TOptional<char*>), builder.OptionalArgs(1)) {
         const std::string_view input(args[0].AsStringRef());
         const bool hasEscape = bool(args[1]);
         char escape = 0;
         if (hasEscape) {
             const std::string_view escapeRef(args[1].AsStringRef());
             if (escapeRef.size() != 1U) {
-                UdfTerminate((TStringBuilder() << GetPos() << " Escape should be single character").data());
+                UdfTerminate((TStringBuilder() << Pos_ << " Escape should be single character").data());
             }
             escape = escapeRef.front();
         }
@@ -382,14 +382,13 @@ namespace {
                 default:
                     if (hasEscape && c == escape) {
                         if (escapeOn) {
-                            result << RE2::QuoteMeta(StringPiece(&c, 1));
+                            result << c;
                         }
                         escapeOn = !escapeOn;
                     } else {
                         if (slash)
                             result << '\\';
                         result << c;
-                        escapeOn = false;
                     }
                     slash = false;
                     break;
@@ -458,7 +457,6 @@ namespace {
                 const auto& groupNames = regexp.CapturingGroupNames();
                 int groupCount = regexp.NumberOfCapturingGroups();
                 if (groupCount >= 0) {
-                    std::unordered_set<std::string_view> groupNamesSet;
                     int unnamedCount = 0;
                     ++groupCount;
                     groups.Indexes.resize(groupCount);
@@ -467,11 +465,6 @@ namespace {
                         TString fieldName;
                         auto it = groupNames.find(i);
                         if (it != groupNames.end()) {
-                            if (!groupNamesSet.insert(it->second).second) {
-                                builder.SetError(
-                                    TStringBuilder() << "Regexp contains duplicate capturing group name: " << it->second);
-                                return;
-                            }
                             fieldName = it->second;
                         } else {
                             fieldName = "_" + ToString(unnamedCount);

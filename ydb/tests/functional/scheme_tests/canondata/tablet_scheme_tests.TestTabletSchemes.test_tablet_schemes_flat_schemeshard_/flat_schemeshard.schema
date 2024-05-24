@@ -346,16 +346,6 @@
                 "ColumnId": 10,
                 "ColumnName": "ReplicationConfig",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 11,
-                "ColumnName": "IsTemporary",
-                "ColumnType": "Bool"
-            },
-            {
-                "ColumnId": 12,
-                "ColumnName": "OwnerActorId",
-                "ColumnType": "String"
             }
         ],
         "ColumnsDropped": [],
@@ -371,9 +361,7 @@
                     7,
                     8,
                     9,
-                    10,
-                    11,
-                    12
+                    10
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -458,11 +446,6 @@
                 "ColumnId": 12,
                 "ColumnName": "ColTypeData",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 13,
-                "ColumnName": "IsBuildInProgress",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
@@ -480,8 +463,7 @@
                     9,
                     10,
                     11,
-                    12,
-                    13
+                    12
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -977,11 +959,6 @@
                 "ColumnId": 12,
                 "ColumnName": "ColTypeData",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 13,
-                "ColumnName": "IsBuildInProgress",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
@@ -999,8 +976,7 @@
                     9,
                     10,
                     11,
-                    12,
-                    13
+                    12
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -1289,6 +1265,11 @@
         ],
         "ColumnsAdded": [
             {
+                "ColumnId": 29,
+                "ColumnName": "ImportsLimit",
+                "ColumnType": "Uint64"
+            },
+            {
                 "ColumnId": 1,
                 "ColumnName": "PathId",
                 "ColumnType": "Uint64"
@@ -1427,27 +1408,13 @@
                 "ColumnId": 28,
                 "ColumnName": "ExportsLimit",
                 "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 29,
-                "ColumnName": "ImportsLimit",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 30,
-                "ColumnName": "AuditSettings",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 31,
-                "ColumnName": "ServerlessComputeResourcesMode",
-                "ColumnType": "Uint32"
             }
         ],
         "ColumnsDropped": [],
         "ColumnFamilies": {
             "0": {
                 "Columns": [
+                    29,
                     1,
                     2,
                     3,
@@ -1475,10 +1442,7 @@
                     25,
                     26,
                     27,
-                    28,
-                    29,
-                    30,
-                    31
+                    28
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -2189,16 +2153,6 @@
                 "ColumnId": 9,
                 "ColumnName": "DatabaseQuotas",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 10,
-                "ColumnName": "AuditSettings",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 11,
-                "ColumnName": "ServerlessComputeResourcesMode",
-                "ColumnType": "Uint32"
             }
         ],
         "ColumnsDropped": [],
@@ -2213,9 +2167,7 @@
                     6,
                     7,
                     8,
-                    9,
-                    10,
-                    11
+                    9
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -2631,11 +2583,6 @@
         ],
         "ColumnsAdded": [
             {
-                "ColumnId": 17,
-                "ColumnName": "NeedSyncHive",
-                "ColumnType": "Bool"
-            },
-            {
                 "ColumnId": 1,
                 "ColumnName": "TxId",
                 "ColumnType": "Uint64"
@@ -2709,18 +2656,12 @@
                 "ColumnId": 15,
                 "ColumnName": "PlanStep",
                 "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 16,
-                "ColumnName": "NeedUpdateObject",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
         "ColumnFamilies": {
             "0": {
                 "Columns": [
-                    17,
                     1,
                     2,
                     3,
@@ -2735,8 +2676,7 @@
                     12,
                     13,
                     14,
-                    15,
-                    16
+                    15
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -3557,16 +3497,6 @@
                 "ColumnId": 11,
                 "ColumnName": "ReplicationConfig",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 12,
-                "ColumnName": "IsTemporary",
-                "ColumnType": "Bool"
-            },
-            {
-                "ColumnId": 13,
-                "ColumnName": "OwnerActorId",
-                "ColumnType": "String"
             }
         ],
         "ColumnsDropped": [],
@@ -3583,9 +3513,7 @@
                     8,
                     9,
                     10,
-                    11,
-                    12,
-                    13
+                    11
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -3676,11 +3604,6 @@
                 "ColumnId": 13,
                 "ColumnName": "ColTypeData",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 14,
-                "ColumnName": "IsBuildInProgress",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
@@ -3699,8 +3622,7 @@
                     10,
                     11,
                     12,
-                    13,
-                    14
+                    13
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -4175,11 +4097,6 @@
                 "ColumnId": 13,
                 "ColumnName": "ColTypeData",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 14,
-                "ColumnName": "IsBuildInProgress",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
@@ -4198,8 +4115,7 @@
                     10,
                     11,
                     12,
-                    13,
-                    14
+                    13
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -4589,6 +4505,11 @@
         ],
         "ColumnsAdded": [
             {
+                "ColumnId": 29,
+                "ColumnName": "BytesBilled",
+                "ColumnType": "Uint64"
+            },
+            {
                 "ColumnId": 1,
                 "ColumnName": "Id",
                 "ColumnType": "Uint64"
@@ -4727,37 +4648,13 @@
                 "ColumnId": 28,
                 "ColumnName": "RowsBilled",
                 "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 29,
-                "ColumnName": "BytesBilled",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 30,
-                "ColumnName": "BuildKind",
-                "ColumnType": "Uint32"
-            },
-            {
-                "ColumnId": 31,
-                "ColumnName": "AlterMainTableTxId",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 32,
-                "ColumnName": "AlterMainTableTxStatus",
-                "ColumnType": "Uint32"
-            },
-            {
-                "ColumnId": 33,
-                "ColumnName": "AlterMainTableTxDone",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
         "ColumnFamilies": {
             "0": {
                 "Columns": [
+                    29,
                     1,
                     2,
                     3,
@@ -4785,12 +4682,7 @@
                     25,
                     26,
                     27,
-                    28,
-                    29,
-                    30,
-                    31,
-                    32,
-                    33
+                    28
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -6787,11 +6679,6 @@
                 "ColumnId": 32,
                 "ColumnName": "MemDataSize",
                 "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 33,
-                "ColumnName": "StoragePoolsStats",
-                "ColumnType": "String"
             }
         ],
         "ColumnsDropped": [],
@@ -6829,8 +6716,7 @@
                     29,
                     30,
                     31,
-                    32,
-                    33
+                    32
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -7076,11 +6962,6 @@
                 "ColumnId": 8,
                 "ColumnName": "ExternalTableReferences",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 9,
-                "ColumnName": "Properties",
-                "ColumnType": "String"
             }
         ],
         "ColumnsDropped": [],
@@ -7094,8 +6975,7 @@
                     5,
                     6,
                     7,
-                    8,
-                    9
+                    8
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -7155,185 +7035,6 @@
                     3,
                     4,
                     5
-                ],
-                "RoomID": 0,
-                "Codec": 0,
-                "InMemory": false,
-                "Cache": 0,
-                "Small": 4294967295,
-                "Large": 4294967295
-            }
-        },
-        "Rooms": {
-            "0": {
-                "Main": 1,
-                "Outer": 1,
-                "Blobs": 1
-            }
-        }
-    },
-    {
-        "TableId": 107,
-        "TableName": "BuildColumnOperationSettings",
-        "TableKey": [
-            1,
-            2
-        ],
-        "ColumnsAdded": [
-            {
-                "ColumnId": 1,
-                "ColumnName": "Id",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 2,
-                "ColumnName": "ColumnNo",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 3,
-                "ColumnName": "ColumnName",
-                "ColumnType": "Utf8"
-            },
-            {
-                "ColumnId": 4,
-                "ColumnName": "DefaultFromLiteral",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 5,
-                "ColumnName": "NotNull",
-                "ColumnType": "Bool"
-            },
-            {
-                "ColumnId": 6,
-                "ColumnName": "FamilyName",
-                "ColumnType": "String"
-            }
-        ],
-        "ColumnsDropped": [],
-        "ColumnFamilies": {
-            "0": {
-                "Columns": [
-                    1,
-                    2,
-                    3,
-                    4,
-                    5,
-                    6
-                ],
-                "RoomID": 0,
-                "Codec": 0,
-                "InMemory": false,
-                "Cache": 0,
-                "Small": 4294967295,
-                "Large": 4294967295
-            }
-        },
-        "Rooms": {
-            "0": {
-                "Main": 1,
-                "Outer": 1,
-                "Blobs": 1
-            }
-        }
-    },
-    {
-        "TableId": 108,
-        "TableName": "View",
-        "TableKey": [
-            1
-        ],
-        "ColumnsAdded": [
-            {
-                "ColumnId": 1,
-                "ColumnName": "PathId",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 2,
-                "ColumnName": "AlterVersion",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 3,
-                "ColumnName": "QueryText",
-                "ColumnType": "String"
-            }
-        ],
-        "ColumnsDropped": [],
-        "ColumnFamilies": {
-            "0": {
-                "Columns": [
-                    1,
-                    2,
-                    3
-                ],
-                "RoomID": 0,
-                "Codec": 0,
-                "InMemory": false,
-                "Cache": 0,
-                "Small": 4294967295,
-                "Large": 4294967295
-            }
-        },
-        "Rooms": {
-            "0": {
-                "Main": 1,
-                "Outer": 1,
-                "Blobs": 1
-            }
-        }
-    },
-    {
-        "TableId": 109,
-        "TableName": "BackgroundSessions",
-        "TableKey": [
-            1,
-            2
-        ],
-        "ColumnsAdded": [
-            {
-                "ColumnId": 1,
-                "ColumnName": "ClassName",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 2,
-                "ColumnName": "Identifier",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 3,
-                "ColumnName": "StatusChannel",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 4,
-                "ColumnName": "LogicDescription",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 5,
-                "ColumnName": "Progress",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 6,
-                "ColumnName": "State",
-                "ColumnType": "String"
-            }
-        ],
-        "ColumnsDropped": [],
-        "ColumnFamilies": {
-            "0": {
-                "Columns": [
-                    1,
-                    2,
-                    3,
-                    4,
-                    5,
-                    6
                 ],
                 "RoomID": 0,
                 "Codec": 0,

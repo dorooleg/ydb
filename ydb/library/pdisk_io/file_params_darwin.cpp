@@ -56,7 +56,7 @@ std::optional<NPDisk::TDriveData> FindDeviceBySerialNumber(const TString& /*seri
     return {};
 }
 
-TVector<NPDisk::TDriveData> ListDevicesWithPartlabel(TStringStream& /*details*/) {
+TVector<NPDisk::TDriveData> ListDevicesWithPartlabel() {
     return {};
 }
 

@@ -22,7 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 #elif defined(POCO_VXWORKS)
-#error #include <timers.h>
+#include <timers.h>
 #elif defined(POCO_OS_FAMILY_WINDOWS)
 #include "Poco/UnWindows.h"
 #endif

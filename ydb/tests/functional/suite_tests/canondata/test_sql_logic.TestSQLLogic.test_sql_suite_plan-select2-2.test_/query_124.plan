@@ -4,7 +4,7 @@
         "PlanNodeType": "Query",
         "Plans": [
             {
-                "Node Type": "ResultSet",
+                "Node Type": "ResultSet_1",
                 "PlanNodeId": 4,
                 "PlanNodeType": "ResultSet",
                 "Plans": [
@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 2
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -29,21 +24,15 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "Node Type": "TopSort-TableRangeScan",
+                                        "Node Type": "TopSort-TablePointLookup",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
                                                 "TopSortBy": ""
                                             },
                                             {
-                                                "Inputs": [],
-                                                "Name": "TableRangeScan",
+                                                "Name": "TablePointLookup",
                                                 "ReadColumns": [
                                                     "a",
                                                     "b",
@@ -51,7 +40,7 @@
                                                     "d"
                                                 ],
                                                 "ReadRange": [
-                                                    "a (null)",
+                                                    "a (0)",
                                                     "b (-\u221e, +\u221e)",
                                                     "c (-\u221e, +\u221e)",
                                                     "d (-\u221e, +\u221e)",
@@ -94,7 +83,7 @@
                         "d"
                     ],
                     "lookup_by": [
-                        "a (null)"
+                        "a (0)"
                     ],
                     "scan_by": [
                         "b (-\u221e, +\u221e)",
@@ -102,7 +91,7 @@
                         "d (-\u221e, +\u221e)",
                         "e (-\u221e, +\u221e)"
                     ],
-                    "type": "Scan"
+                    "type": "Lookup"
                 }
             ]
         }

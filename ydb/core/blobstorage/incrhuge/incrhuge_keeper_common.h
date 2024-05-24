@@ -58,7 +58,7 @@ namespace NKikimr {
                 case EChunkState::Deleting:    return "Deleting";
                 case EChunkState::Unknown:     return "Unknown";
             }
-            Y_ABORT("unexpected case");
+            Y_FAIL("unexpected case");
         }
 
         // per chunk information structure

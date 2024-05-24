@@ -5,7 +5,7 @@
 namespace NFq {
 
 template<typename T>
-NYql::TIssues ValidateTestConnection(T& ev, size_t maxSize, const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections, bool disableCurrentIam,  bool passwordRequired = true)
+NYql::TIssues ValidateTestConnection(T& ev, size_t maxSize, const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections, bool disableCurrentIam,  bool clickHousePasswordRequire = true)
 {
     const auto& request = ev->Get()->Request;
     NYql::TIssues issues = ValidateEvent(ev, maxSize);
@@ -15,7 +15,7 @@ NYql::TIssues ValidateTestConnection(T& ev, size_t maxSize, const TSet<Federated
     }
 
     const FederatedQuery::ConnectionSetting& setting = request.setting();
-    issues.AddIssues(ValidateConnectionSetting(setting, availableConnections, disableCurrentIam, passwordRequired));
+    issues.AddIssues(ValidateConnectionSetting(setting, availableConnections, disableCurrentIam, clickHousePasswordRequire));
     return issues;
 }
 

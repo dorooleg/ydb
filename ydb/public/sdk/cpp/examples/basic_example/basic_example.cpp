@@ -16,7 +16,7 @@ public:
 
 static void ThrowOnError(const TStatus& status) {
     if (!status.IsSuccess()) {
-        throw TYdbErrorException(status) << status;
+        throw TYdbErrorException(status);
     }
 }
 

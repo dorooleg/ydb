@@ -4,7 +4,6 @@
 #include "flat_page_gstat.h"
 
 #include <library/cpp/time_provider/time_provider.h>
-#include <ydb/core/tablet_flat/util_fmt_line.h>
 
 namespace NKikimr {
 namespace NTable {
@@ -27,7 +26,6 @@ namespace NCompGen {
             ICompactionBackend* backend,
             IResourceBroker* broker,
             ITimeProvider* time,
-            NUtil::ILogger* logger,
             TString taskNameSuffix);
 
         ~TGenCompactionStrategy();
@@ -256,7 +254,6 @@ namespace NCompGen {
         ICompactionBackend* const Backend;
         IResourceBroker* const Broker;
         ITimeProvider* const Time;
-        NUtil::ILogger* const Logger;
         const TString TaskNameSuffix;
 
         TIntrusiveConstPtr<TCompactionPolicy> Policy;

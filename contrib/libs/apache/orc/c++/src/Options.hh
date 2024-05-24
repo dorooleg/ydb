@@ -34,30 +34,31 @@ namespace orc {
     ColumnSelection_TYPE_IDS = 3,
   };
 
-  /**
-   * ReaderOptions Implementation
-   */
+/**
+ * ReaderOptions Implementation
+ */
   struct ReaderOptionsPrivate {
     uint64_t tailLocation;
     std::ostream* errorStream;
     MemoryPool* memoryPool;
     std::string serializedTail;
-    ReaderMetrics* metrics;
 
     ReaderOptionsPrivate() {
       tailLocation = std::numeric_limits<uint64_t>::max();
       errorStream = &std::cerr;
       memoryPool = getDefaultPool();
-      metrics = nullptr;
     }
   };
 
-  ReaderOptions::ReaderOptions() : privateBits(std::make_unique<ReaderOptionsPrivate>()) {
+  ReaderOptions::ReaderOptions():
+    privateBits(std::unique_ptr<ReaderOptionsPrivate>
+                (new ReaderOptionsPrivate())) {
     // PASS
   }
 
-  ReaderOptions::ReaderOptions(const ReaderOptions& rhs)
-      : privateBits(std::make_unique<ReaderOptionsPrivate>(*(rhs.privateBits.get()))) {
+  ReaderOptions::ReaderOptions(const ReaderOptions& rhs):
+    privateBits(std::unique_ptr<ReaderOptionsPrivate>
+                (new ReaderOptionsPrivate(*(rhs.privateBits.get())))) {
     // PASS
   }
 
@@ -82,17 +83,8 @@ namespace orc {
     return *this;
   }
 
-  MemoryPool* ReaderOptions::getMemoryPool() const {
+  MemoryPool* ReaderOptions::getMemoryPool() const{
     return privateBits->memoryPool;
-  }
-
-  ReaderOptions& ReaderOptions::setReaderMetrics(ReaderMetrics* metrics) {
-    privateBits->metrics = metrics;
-    return *this;
-  }
-
-  ReaderMetrics* ReaderOptions::getReaderMetrics() const {
-    return privateBits->metrics;
   }
 
   ReaderOptions& ReaderOptions::setTailLocation(uint64_t offset) {
@@ -104,7 +96,8 @@ namespace orc {
     return privateBits->tailLocation;
   }
 
-  ReaderOptions& ReaderOptions::setSerializedFileTail(const std::string& value) {
+  ReaderOptions& ReaderOptions::setSerializedFileTail(const std::string& value
+                                                      ) {
     privateBits->serializedTail = value;
     return *this;
   }
@@ -122,9 +115,9 @@ namespace orc {
     return privateBits->errorStream;
   }
 
-  /**
-   * RowReaderOptions Implementation
-   */
+/**
+ * RowReaderOptions Implementation
+ */
 
   struct RowReaderOptionsPrivate {
     ColumnSelection selection;
@@ -138,9 +131,6 @@ namespace orc {
     std::shared_ptr<SearchArgument> sargs;
     std::string readerTimezone;
     RowReaderOptions::IdReadIntentMap idReadIntentMap;
-    bool useTightNumericVector;
-    std::shared_ptr<Type> readType;
-    bool throwOnSchemaEvolutionOverflow;
 
     RowReaderOptionsPrivate() {
       selection = ColumnSelection_NONE;
@@ -150,17 +140,18 @@ namespace orc {
       forcedScaleOnHive11Decimal = 6;
       enableLazyDecoding = false;
       readerTimezone = "GMT";
-      useTightNumericVector = false;
-      throwOnSchemaEvolutionOverflow = false;
     }
   };
 
-  RowReaderOptions::RowReaderOptions() : privateBits(std::make_unique<RowReaderOptionsPrivate>()) {
+  RowReaderOptions::RowReaderOptions():
+    privateBits(std::unique_ptr<RowReaderOptionsPrivate>
+                (new RowReaderOptionsPrivate())) {
     // PASS
   }
 
-  RowReaderOptions::RowReaderOptions(const RowReaderOptions& rhs)
-      : privateBits(std::make_unique<RowReaderOptionsPrivate>(*(rhs.privateBits.get()))) {
+  RowReaderOptions::RowReaderOptions(const RowReaderOptions& rhs):
+    privateBits(std::unique_ptr<RowReaderOptionsPrivate>
+                (new RowReaderOptionsPrivate(*(rhs.privateBits.get())))) {
     // PASS
   }
 
@@ -204,8 +195,8 @@ namespace orc {
     return *this;
   }
 
-  RowReaderOptions& RowReaderOptions::includeTypesWithIntents(
-      const IdReadIntentMap& idReadIntentMap) {
+  RowReaderOptions&
+  RowReaderOptions::includeTypesWithIntents(const IdReadIntentMap& idReadIntentMap) {
     privateBits->selection = ColumnSelection_TYPE_IDS;
     privateBits->includedColumnIndexes.clear();
     privateBits->idReadIntentMap.clear();
@@ -251,7 +242,7 @@ namespace orc {
     return privateBits->dataLength;
   }
 
-  RowReaderOptions& RowReaderOptions::throwOnHive11DecimalOverflow(bool shouldThrow) {
+  RowReaderOptions& RowReaderOptions::throwOnHive11DecimalOverflow(bool shouldThrow){
     privateBits->throwOnHive11DecimalOverflow = shouldThrow;
     return *this;
   }
@@ -260,16 +251,8 @@ namespace orc {
     return privateBits->throwOnHive11DecimalOverflow;
   }
 
-  RowReaderOptions& RowReaderOptions::throwOnSchemaEvolutionOverflow(bool shouldThrow) {
-    privateBits->throwOnSchemaEvolutionOverflow = shouldThrow;
-    return *this;
-  }
-
-  bool RowReaderOptions::getThrowOnSchemaEvolutionOverflow() const {
-    return privateBits->throwOnSchemaEvolutionOverflow;
-  }
-
-  RowReaderOptions& RowReaderOptions::forcedScaleOnHive11Decimal(int32_t forcedScale) {
+  RowReaderOptions& RowReaderOptions::forcedScaleOnHive11Decimal(int32_t forcedScale
+                                                           ) {
     privateBits->forcedScaleOnHive11Decimal = forcedScale;
     return *this;
   }
@@ -305,27 +288,10 @@ namespace orc {
     return privateBits->readerTimezone;
   }
 
-  const RowReaderOptions::IdReadIntentMap RowReaderOptions::getIdReadIntentMap() const {
+  const RowReaderOptions::IdReadIntentMap
+  RowReaderOptions::getIdReadIntentMap() const {
     return privateBits->idReadIntentMap;
   }
-
-  RowReaderOptions& RowReaderOptions::setUseTightNumericVector(bool useTightNumericVector) {
-    privateBits->useTightNumericVector = useTightNumericVector;
-    return *this;
-  }
-
-  bool RowReaderOptions::getUseTightNumericVector() const {
-    return privateBits->useTightNumericVector;
-  }
-
-  RowReaderOptions& RowReaderOptions::setReadType(std::shared_ptr<Type> type) {
-    privateBits->readType = std::move(type);
-    return *this;
-  }
-
-  std::shared_ptr<Type>& RowReaderOptions::getReadType() const {
-    return privateBits->readType;
-  }
-}  // namespace orc
+}
 
 #endif

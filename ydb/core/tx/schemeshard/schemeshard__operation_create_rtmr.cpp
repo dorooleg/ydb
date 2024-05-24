@@ -79,12 +79,12 @@ public:
                      << " at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateRtmrVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateRtmrVolume);
 
         auto rtmrVol = context.SS->RtmrVolumes[txState->TargetPathId];
         Y_VERIFY_S(rtmrVol, "rtmr volume is null. PathId: " << txState->TargetPathId);
-        Y_ABORT_UNLESS(rtmrVol->Partitions.size() == txState->Shards.size(),
+        Y_VERIFY(rtmrVol->Partitions.size() == txState->Shards.size(),
                  "%" PRIu64 "rtmr shards expected, %" PRIu64 " created",
                  rtmrVol->Partitions.size(), txState->Shards.size());
 
@@ -128,8 +128,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateRtmrVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateRtmrVolume);
 
         auto pathId = txState->TargetPathId;
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
@@ -160,8 +160,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateRtmrVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateRtmrVolume);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -313,7 +313,7 @@ public:
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxCreateRtmrVolume, newRtmrVolume->PathId);
 
         TRtmrVolumeInfo::TPtr rtmrVolumeInfo = CreateRtmrVolume(rtmrVolumeDescription, txState, context.SS);
-        Y_ABORT_UNLESS(rtmrVolumeInfo);
+        Y_VERIFY(rtmrVolumeInfo);
 
         NIceDb::TNiceDb db(context.GetDB());
 
@@ -330,11 +330,12 @@ public:
         context.SS->TabletCounters->Simple()[COUNTER_RTMR_PARTITIONS_COUNT].Add(rtmrVolumeInfo->Partitions.size());
         context.SS->IncrementPathDbRefCount(newRtmrVolume->PathId);
 
-        if (!acl.empty()) {
-            newRtmrVolume->ApplyACL(acl);
-        }
         context.SS->PersistPath(db, newRtmrVolume->PathId);
 
+        if (!acl.empty()) {
+            newRtmrVolume->ApplyACL(acl);
+            context.SS->PersistACL(db, newRtmrVolume);
+        }
         context.SS->PersistRtmrVolume(db, newRtmrVolume->PathId, rtmrVolumeInfo);
         context.SS->PersistTxState(db, OperationId);
 
@@ -362,7 +363,7 @@ public:
         context.SS->ClearDescribePathCaches(newRtmrVolume);
         context.OnComplete.PublishToSchemeBoard(OperationId, newRtmrVolume->PathId);
 
-        Y_ABORT_UNLESS(shardsToCreate == txState.Shards.size(), "shardsToCreate=%ld != txStateShards=%ld",
+        Y_VERIFY(shardsToCreate == txState.Shards.size(), "shardsToCreate=%ld != txStateShards=%ld",
             shardsToCreate, txState.Shards.size());
 
         dstPath.DomainInfo()->IncPathsInside();
@@ -376,7 +377,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreateRTMR");
+        Y_FAIL("no AbortPropose for TCreateRTMR");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -399,7 +400,7 @@ ISubOperation::TPtr CreateNewRTMR(TOperationId id, const TTxTransaction& tx) {
 }
 
 ISubOperation::TPtr CreateNewRTMR(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TCreateRTMR>(id, state);
 }
 

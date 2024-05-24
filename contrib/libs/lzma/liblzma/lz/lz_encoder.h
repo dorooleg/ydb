@@ -153,13 +153,9 @@ typedef struct {
 	/// Maximum search depth
 	uint32_t depth;
 
-	/// Initial dictionary for the match finder to search.
+	/// TODO: Comment
 	const uint8_t *preset_dict;
 
-	/// If the preset dictionary is NULL, this value is ignored.
-	/// Otherwise this member must indicate the preset dictionary's
-	/// buffer size. If this size is larger than dict_size, then only
-	/// the dict_size sized tail of the preset_dict will be used.
 	uint32_t preset_dict_size;
 
 } lzma_lz_options;
@@ -188,7 +184,7 @@ typedef struct {
 //
 // Algorithms such as LZMA2 first try to compress a chunk, and then check
 // if the encoded result is smaller than the uncompressed one. If the chunk
-// was incompressible, it is better to store it in uncompressed form in
+// was uncompressible, it is better to store it in uncompressed form in
 // the output stream. To do this, the whole uncompressed chunk has to be
 // still available in the history buffer. before_size achieves that.
 

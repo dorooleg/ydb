@@ -14,17 +14,9 @@
 
 #include <grpc/support/port_platform.h>
 
-#include <stdint.h>
-#include <stdlib.h>
-
-#include <memory>
-#include <new>
-#include <utility>
-
 #include <grpc/event_engine/memory_allocator.h>
-#include <grpc/event_engine/memory_request.h>
-#include <grpc/slice.h>
 
+#include "src/core/lib/gprpp/ref_counted.h"
 #include "src/core/lib/slice/slice_refcount.h"
 
 namespace grpc_event_engine {
@@ -49,7 +41,7 @@ class SliceRefCount : public grpc_slice_refcount {
   static void Destroy(grpc_slice_refcount* p) {
     auto* rc = static_cast<SliceRefCount*>(p);
     rc->~SliceRefCount();
-    free(rc);
+    gpr_free(rc);
   }
 
   std::shared_ptr<internal::MemoryAllocatorImpl> allocator_;
@@ -60,7 +52,7 @@ class SliceRefCount : public grpc_slice_refcount {
 
 grpc_slice MemoryAllocator::MakeSlice(MemoryRequest request) {
   auto size = Reserve(request.Increase(sizeof(SliceRefCount)));
-  void* p = malloc(size);
+  void* p = gpr_malloc(size);
   new (p) SliceRefCount(allocator_, size);
   grpc_slice slice;
   slice.refcount = static_cast<SliceRefCount*>(p);

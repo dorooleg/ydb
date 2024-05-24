@@ -3,15 +3,15 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipecache.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/tx/tx.h>
 #include <ydb/library/aclib/aclib.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <ydb/library/yql/public/udf/udf_types.h>
 
@@ -265,13 +265,13 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
     }
 
     void AddTableInfo(const TNavigate::TEntry& entry, const TKeyMap& keyMap = {}) {
-        Y_DEBUG_ABORT_UNLESS(!TableInfos.contains(entry.TableId));
+        Y_VERIFY_DEBUG(!TableInfos.contains(entry.TableId));
         TableInfos.emplace(entry.TableId, TTableInfo(entry, keyMap));
     }
 
     static ui64 GetShardId(const TTableRange& range, const TKeyDesc* keyDesc) {
-        Y_ABORT_UNLESS(range.Point);
-        Y_ABORT_UNLESS(!keyDesc->GetPartitions().empty());
+        Y_VERIFY(range.Point);
+        Y_VERIFY(!keyDesc->GetPartitions().empty());
 
         TVector<TKeyDesc::TPartitionInfo>::const_iterator it = LowerBound(
             keyDesc->GetPartitions().begin(), keyDesc->GetPartitions().end(), true,
@@ -286,7 +286,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
             }
         );
 
-        Y_ABORT_UNLESS(it != keyDesc->GetPartitions().end());
+        Y_VERIFY(it != keyDesc->GetPartitions().end());
         return it->ShardId;
     }
 
@@ -479,7 +479,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
             }
         }
 
-        Y_ABORT_UNLESS(TxId);
+        Y_VERIFY(TxId);
         SelectedCoordinator = domainInfo->Coordinators.Select(TxId);
 
         ResolveKeys();
@@ -491,7 +491,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
         LOG_D("Resolve keys"
             << ": txId# " << TxId);
 
-        Y_ABORT_UNLESS(!TableInfos.empty());
+        Y_VERIFY(!TableInfos.empty());
 
         auto request = MakeHolder<TResolve>();
         for (auto& [_, info] : TableInfos) {
@@ -586,18 +586,18 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
 
         THashMap<ui32, ui32> keyColumnIdToIdx;
         for (ui32 i = 0; i < record.KeyColumnIdsSize(); ++i) {
-            Y_DEBUG_ABORT_UNLESS(!keyColumnIdToIdx.contains(record.GetKeyColumnIds(i)));
+            Y_VERIFY_DEBUG(!keyColumnIdToIdx.contains(record.GetKeyColumnIds(i)));
             keyColumnIdToIdx.emplace(record.GetKeyColumnIds(i), i);
         }
 
         TVector<ui32> indexColumnIds;
         {
-            Y_ABORT_UNLESS(TableInfos.contains(MainTableId));
+            Y_VERIFY(TableInfos.contains(MainTableId));
             const auto& mainTableInfo = TableInfos.at(MainTableId);
 
             THashSet<ui32> mainTableKeys;
             for (const auto& [_, id] : mainTableInfo.GetKeyMap()) {
-                Y_DEBUG_ABORT_UNLESS(!mainTableKeys.contains(id));
+                Y_VERIFY_DEBUG(!mainTableKeys.contains(id));
                 mainTableKeys.insert(id);
             }
 
@@ -648,15 +648,15 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
 
                 TVector<TCell> indexCells(Reserve(indexColumnIds.size()));
                 for (const auto& id : indexColumnIds) {
-                    Y_ABORT_UNLESS(keyColumnIdToIdx.contains(id));
+                    Y_VERIFY(keyColumnIdToIdx.contains(id));
                     indexCells.push_back(keyCells.GetCells()[keyColumnIdToIdx.at(id)]);
                 }
 
-                indexColumnValues.push_back(TSerializedCellVec::Serialize(indexCells));
+                indexColumnValues.push_back(std::move(TSerializedCellVec::Serialize(indexCells)));
             }
         }
 
-        Y_ABORT_UNLESS(keys.contains(MainTableId));
+        Y_VERIFY(keys.contains(MainTableId));
         if (keys.at(MainTableId).size() > 1) {
             return ExecError(TStringBuilder() << "Too many main table's shards"
                 << ": tableId# " << MainTableId
@@ -670,7 +670,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
             for (const auto& [tableId, shards] : keys) {
                 if (tableId != mainTableId) {
                     for (const auto& [shardId, _] : shards) {
-                        Y_DEBUG_ABORT_UNLESS(!dependents.contains(shardId));
+                        Y_VERIFY_DEBUG(!dependents.contains(shardId));
                         dependents.insert(shardId);
                     }
                 }
@@ -680,7 +680,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
         };
 
         for (auto& [tableId, data] : keys) {
-            Y_ABORT_UNLESS(TableInfos.contains(tableId));
+            Y_VERIFY(TableInfos.contains(tableId));
             const auto& keyMap = TableInfos.at(tableId).GetKeyMap();
 
             for (auto& kv : data) {
@@ -727,7 +727,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
                         tx.AddIndexColumns(std::move(value));
                     }
                 } else {
-                    Y_ABORT_UNLESS(keys.contains(MainTableId));
+                    Y_VERIFY(keys.contains(MainTableId));
 
                     auto& dependency = *tx.AddDependencies();
                     dependency.SetShardId(keys.at(MainTableId).begin()->first);
@@ -747,10 +747,10 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
 
                 Send(LeaderPipeCache, new TEvPipeCache::TEvForward(propose.Release(), shardId, true));
 
-                Y_DEBUG_ABORT_UNLESS(!Shards.contains(shardId));
+                Y_VERIFY_DEBUG(!Shards.contains(shardId));
                 Shards.insert(shardId);
 
-                Y_DEBUG_ABORT_UNLESS(!PendingPrepare.contains(shardId));
+                Y_VERIFY_DEBUG(!PendingPrepare.contains(shardId));
                 PendingPrepare.insert(shardId);
             }
         }
@@ -893,7 +893,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
     /// Plan
 
     void RegisterPlan() {
-        Y_ABORT_UNLESS(SelectedCoordinator);
+        Y_VERIFY(SelectedCoordinator);
 
         LOG_D("Register plan"
             << ": txId# " << TxId
@@ -911,7 +911,7 @@ class TDistEraser: public TActorBootstrapped<TDistEraser> {
             x.SetTabletId(shardId);
             x.SetFlags(1 << 1 /* AffectedWrite */);
 
-            Y_DEBUG_ABORT_UNLESS(!PendingResult.contains(shardId));
+            Y_VERIFY_DEBUG(!PendingResult.contains(shardId));
             PendingResult.insert(shardId);
         }
 

@@ -1,7 +1,6 @@
 #pragma once
 #include "predicate.h"
 #include <ydb/core/formats/arrow/arrow_filter.h>
-#include <ydb/core/formats/arrow/replace_key.h>
 #include <ydb/library/accessor/accessor.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/record_batch.h>
 #include <optional>
@@ -28,10 +27,6 @@ private:
     static std::partial_ordering ComparePredicatesSamePrefix(const NOlap::TPredicate& l, const NOlap::TPredicate& r);
 
 public:
-
-    bool IsEmpty() const {
-        return !Object;
-    }
 
     template <class TArrayColumn>
     std::optional<typename TArrayColumn::value_type> Get(const ui32 colIndex, const ui32 rowIndex,
@@ -67,9 +62,9 @@ public:
 
     static std::optional<TPredicateContainer> BuildPredicateTo(std::shared_ptr<NOlap::TPredicate> object, const TIndexInfo* indexInfo);
 
-    NKikimr::NArrow::TColumnFilter BuildFilter(const arrow::Datum& data) const {
+    NKikimr::NArrow::TColumnFilter BuildFilter(std::shared_ptr<arrow::RecordBatch> data) const {
         if (!Object) {
-            return NArrow::TColumnFilter::BuildAllowFilter();
+            return NArrow::TColumnFilter();
         }
         return NArrow::TColumnFilter::MakePredicateFilter(data, Object->Batch, CompareType);
     }
@@ -80,7 +75,7 @@ public:
             const auto& keyFields = key->fields();
             size_t minSize = std::min(batchFields.size(), keyFields.size());
             for (size_t i = 0; i < minSize; ++i) {
-                Y_DEBUG_ABORT_UNLESS(batchFields[i]->type()->Equals(*keyFields[i]->type()));
+                Y_VERIFY_DEBUG(batchFields[i]->Equals(*keyFields[i]));
             }
             if (batchFields.size() <= keyFields.size()) {
                 return NArrow::TReplaceKey::FromBatch(Object->Batch, Object->Batch->schema(), 0);

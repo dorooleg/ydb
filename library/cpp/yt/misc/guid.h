@@ -3,7 +3,7 @@
 #include <util/generic/string.h>
 #include <util/generic/typetraits.h>
 
-#include <array>
+#include <library/cpp/yt/exception/exception.h>
 
 namespace NYT {
 
@@ -79,27 +79,14 @@ struct TGuid
     static bool FromStringHex32(TStringBuf str, TGuid* guid);
 };
 
-bool operator == (TGuid lhs, TGuid rhs) noexcept;
-std::strong_ordering operator <=> (TGuid lhs, TGuid rhs) noexcept;
+bool operator == (TGuid lhs, TGuid rhs);
+bool operator != (TGuid lhs, TGuid rhs);
+bool operator <  (TGuid lhs, TGuid rhs);
 
 ////////////////////////////////////////////////////////////////////////////////
 
 constexpr int MaxGuidStringSize = 4 * 8 + 3;
 char* WriteGuidToBuffer(char* ptr, TGuid value);
-
-////////////////////////////////////////////////////////////////////////////////
-
-//! Enables TGuid-to-TStringBuf conversion without allocation.
-class TFormattableGuid
-{
-public:
-    explicit TFormattableGuid(TGuid guid);
-    TStringBuf ToStringBuf() const;
-
-private:
-    std::array<char, MaxGuidStringSize> Buffer_;
-    const char* const End_;
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -42,11 +42,6 @@ public:
         TBase::Append(s.data(), s.size());
         return *this;
     }
-
-    TPGStreamOutput& operator <<(const std::vector<uint8_t>& s) {
-        TBase::Append(reinterpret_cast<const char*>(s.data()), s.size());
-        return *this;
-    }
 };
 
 class TPGStreamInput {

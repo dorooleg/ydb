@@ -14,23 +14,21 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_LIB_RESOLVER_RESOLVER_FACTORY_H
-#define GRPC_SRC_CORE_LIB_RESOLVER_RESOLVER_FACTORY_H
+#ifndef GRPC_CORE_LIB_RESOLVER_RESOLVER_FACTORY_H
+#define GRPC_CORE_LIB_RESOLVER_RESOLVER_FACTORY_H
 
 #include <grpc/support/port_platform.h>
 
-#include <memory>
-#include <util/generic/string.h>
-#include <util/string/cast.h>
-
-#include "y_absl/strings/string_view.h"
 #include "y_absl/strings/strip.h"
 
-#include "src/core/lib/channel/channel_args.h"
+#include <grpc/support/string_util.h>
+
+#include "src/core/lib/gprpp/memory.h"
 #include "src/core/lib/gprpp/orphanable.h"
-#include "src/core/lib/iomgr/iomgr_fwd.h"
 #include "src/core/lib/resolver/resolver.h"
 #include "src/core/lib/uri/uri_parser.h"
+
+typedef struct grpc_pollset_set grpc_pollset_set;
 
 namespace grpc_core {
 
@@ -42,7 +40,7 @@ struct ResolverArgs {
   /// The parsed URI to resolve.
   URI uri;
   /// Channel args to be included in resolver results.
-  ChannelArgs args;
+  const grpc_channel_args* args = nullptr;
   /// Used to drive I/O in the name resolution process.
   grpc_pollset_set* pollset_set = nullptr;
   /// The work_serializer under which all resolver calls will be run.
@@ -56,7 +54,7 @@ class ResolverFactory {
   virtual ~ResolverFactory() {}
 
   /// Returns the URI scheme that this factory implements.
-  /// Must not include any upper-case characters.
+  /// Caller does NOT take ownership of result.
   virtual y_absl::string_view scheme() const = 0;
 
   /// Returns a bool indicating whether the input uri is valid to create a
@@ -75,4 +73,4 @@ class ResolverFactory {
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_RESOLVER_RESOLVER_FACTORY_H
+#endif  // GRPC_CORE_LIB_RESOLVER_RESOLVER_FACTORY_H

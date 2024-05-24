@@ -15,10 +15,8 @@ namespace NKikimr::NBsController {
                 bool Faulty;
                 bool Bad;
                 bool Decommitted;
-                bool IsSelfHealReasonDecommit;
                 bool OnlyPhantomsRemain;
                 bool IsReady;
-                TMonotonic ReadySince;
                 NKikimrBlobStorage::EVDiskStatus VDiskStatus;
             };
             ui32 Generation;
@@ -26,27 +24,13 @@ namespace NKikimr::NBsController {
             TMap<TVDiskID, TVDiskInfo> VDisks;
             std::shared_ptr<TGroupGeometryInfo> Geometry;
         };
-        struct TVDiskStatusUpdate {
-            TVDiskID VDiskId;
-            std::optional<bool> OnlyPhantomsRemain;
-            std::optional<bool> IsReady;
-            std::optional<TMonotonic> ReadySince;
-            std::optional<NKikimrBlobStorage::EVDiskStatus> VDiskStatus;
-        };
 
         THashMap<TGroupId, std::optional<TGroupContent>> GroupsToUpdate; // groups with faulty groups that are changed or got faulty PDisks for the first time
-        std::vector<TVDiskStatusUpdate> VDiskStatusUpdate;
+        TVector<std::tuple<TVDiskID, NKikimrBlobStorage::EVDiskStatus, bool>> VDiskStatusUpdate;
+        TVector<std::pair<TVDiskID, bool>> VDiskIsReadyUpdate;
         std::optional<bool> GroupLayoutSanitizerEnabled;
-        std::optional<bool> AllowMultipleRealmsOccupation;
-        std::optional<bool> DonorMode;
 
         ui64 ConfigTxSeqNo = 0;
-
-        TEvControllerUpdateSelfHealInfo() = default;
-
-        TEvControllerUpdateSelfHealInfo(std::vector<TVDiskStatusUpdate>&& updates)
-            : VDiskStatusUpdate(std::move(updates))
-        {}
     };
 
 } // NKikimr::NBsController

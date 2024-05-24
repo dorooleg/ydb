@@ -64,15 +64,15 @@ THazardPointer* THazardDomain::Acquire() {
     while (index < head->Offset) {
         // coverity[overwrite_var : FALSE]: false positive, reported to coverity
         head = head->Next;
-        Y_ABORT_UNLESS(head, "Unexpected failure to find index %" PRISZT " in chunk list", index);
+        Y_VERIFY(head, "Unexpected failure to find index %" PRISZT " in chunk list", index);
     }
-    Y_ABORT_UNLESS(head->Offset <= index && index < head->Offset + head->Count);
+    Y_VERIFY(head->Offset <= index && index < head->Offset + head->Count);
 
     return head->Pointers() + (index - head->Offset);
 }
 
 void THazardDomain::Release(THazardPointer* ptr) noexcept {
-    Y_DEBUG_ABORT_UNLESS(ptr->ProtectedPointer.load(std::memory_order_relaxed) == nullptr,
+    Y_VERIFY_DEBUG(ptr->ProtectedPointer.load(std::memory_order_relaxed) == nullptr,
         "Make sure pointer is cleared before it is released");
 
     auto& cache = LocalCache.Get();

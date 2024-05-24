@@ -126,8 +126,6 @@ public:
         Tenant->IsExternalSubdomain = Self->FeatureFlags.GetEnableExternalSubdomains();
         Tenant->IsExternalHive = Self->FeatureFlags.GetEnableExternalHive();
         Tenant->IsExternalSysViewProcessor = Self->FeatureFlags.GetEnableSystemViews();
-        Tenant->IsExternalStatisticsAggregator = Self->FeatureFlags.GetEnableStatistics();
-        Tenant->IsExternalBackupController = Self->FeatureFlags.GetEnableBackupService();
 
         if (rec.options().disable_external_subdomain()) {
             Tenant->IsExternalSubdomain = false;
@@ -145,14 +143,10 @@ public:
             Tenant->IsExternalSubdomain = false;
             Tenant->IsExternalHive = false;
             Tenant->IsExternalSysViewProcessor = false;
-            Tenant->IsExternalStatisticsAggregator = false;
-            Tenant->IsExternalBackupController = false;
         }
 
         Tenant->IsExternalHive &= Tenant->IsExternalSubdomain; // external hive without external sub domain is pointless
         Tenant->IsExternalSysViewProcessor &= Tenant->IsExternalSubdomain;
-        Tenant->IsExternalStatisticsAggregator &= Tenant->IsExternalSubdomain;
-        Tenant->IsExternalBackupController &= Tenant->IsExternalSubdomain;
 
         Tenant->StorageUnitsQuota = Self->Config.DefaultStorageUnitsQuota;
         Tenant->ComputationalUnitsQuota = Self->Config.DefaultComputationalUnitsQuota;
@@ -220,8 +214,6 @@ public:
             break;
 
         case Ydb::Cms::CreateDatabaseRequest::kServerlessResources:
-            Tenant->IsExternalStatisticsAggregator = false;
-
             if (!Tenant->IsExternalSubdomain) {
                 return Error(Ydb::StatusIds::PRECONDITION_FAILED,
                     "Cannot create serverless database unless external subdomain is enabled", ctx);
@@ -244,7 +236,7 @@ public:
                             TStringBuilder() << "Database is not running: " << sharedDbPath, ctx);
                     }
 
-                    Y_ABORT_UNLESS(tenant->DomainId);
+                    Y_VERIFY(tenant->DomainId);
                     Tenant->SharedDomainId = tenant->DomainId;
                     tenant->HostedTenants.emplace(Tenant);
 
@@ -273,26 +265,7 @@ public:
             auto hardQuota = quotas.data_size_hard_quota();
             auto softQuota = quotas.data_size_soft_quota();
             if (hardQuota && softQuota && hardQuota < softQuota) {
-                return Error(Ydb::StatusIds::BAD_REQUEST,
-                    TStringBuilder() << "Overall data size soft quota (" << softQuota << ")"
-                                     << " of the database " << path
-                                     << " must be smaller than the hard quota (" << hardQuota << ")",
-                    ctx
-                );
-            }
-            for (const auto& storageQuota : quotas.storage_quotas()) {
-                const auto unitHardQuota = storageQuota.data_size_hard_quota();
-                const auto unitSoftQuota = storageQuota.data_size_soft_quota();
-                if (unitHardQuota && unitSoftQuota && unitHardQuota < unitSoftQuota) {
-                    return Error(Ydb::StatusIds::BAD_REQUEST,
-                        TStringBuilder() << "Data size soft quota (" << unitSoftQuota << ")"
-                                         << " for a " << storageQuota.unit_kind() << " storage unit "
-                                         << " of the database " << path
-                                         << " must be smaller than the corresponding hard quota (" << unitHardQuota << ")",
-                        ctx
-                    );
-                }
-
+                return Error(Ydb::StatusIds::BAD_REQUEST, "Data size soft quota cannot be larger than hard quota", ctx);
             }
             Tenant->DatabaseQuotas.ConstructInPlace(quotas);
         }
@@ -317,7 +290,7 @@ public:
         auto ctx = executorCtx.MakeFor(Self->SelfId());
         LOG_DEBUG(ctx, NKikimrServices::CMS_TENANTS, "TTxCreateTenant Complete");
 
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
 
         if (Response->Record.GetResponse().operation().status())
             Self->Counters.Inc(Response->Record.GetResponse().operation().status(),

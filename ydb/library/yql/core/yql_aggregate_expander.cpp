@@ -25,7 +25,7 @@ TExprNode::TPtr TAggregateExpander::ExpandAggregate()
 
     HaveDistinct = AnyOf(AggregatedColumns->ChildrenList(),
         [](const auto& child) { return child->ChildrenSize() == 3; });
-    EffectiveCompact = (HaveDistinct && CompactForDistinct && !TypesCtx.IsBlockEngineEnabled()) || ForceCompact || HasSetting(*settings, "compact");
+    EffectiveCompact = (HaveDistinct && CompactForDistinct && !TypesCtx.UseBlocks) || ForceCompact || HasSetting(*settings, "compact");
     for (const auto& trait : Traits) {
         auto mergeLambda = trait->Child(5);
         if (mergeLambda->Tail().IsCallable("Void")) {
@@ -56,7 +56,7 @@ TExprNode::TPtr TAggregateExpander::ExpandAggregate()
         return GeneratePhases();
     }
 
-    if (TypesCtx.IsBlockEngineEnabled()) {
+    if (TypesCtx.UseBlocks) {
         if (Suffix == "Combine") {
             auto ret = TryGenerateBlockCombine();
             if (ret) {
@@ -273,7 +273,7 @@ bool TAggregateExpander::IsNeedPickle(const TVector<const TTypeAnnotationNode*>&
 {
     bool needPickle = false;
     for (auto type : keyItemTypes) {
-        needPickle |= !IsDataOrOptionalOfData(type);
+        needPickle = needPickle || AllowPickle && !IsDataOrOptionalOfData(type);
     }
     return needPickle;
 }
@@ -530,13 +530,9 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
     auto wideFlow = MakeExpandMap(Node->Pos(), inputColumns, flow, Ctx);
 
     TExprNode::TListType extractorArgs;
-    TExprNode::TListType newRowItems;
     for (ui32 i = 0; i < RowType->GetSize(); ++i) {
         extractorArgs.push_back(Ctx.NewArgument(Node->Pos(), "field" + ToString(i)));
-        newRowItems.push_back(Ctx.NewList(Node->Pos(), { Ctx.NewAtom(Node->Pos(), RowType->GetItems()[i]->GetName()), extractorArgs.back() }));
     }
-
-    const TExprNode::TPtr newRow = Ctx.NewCallable(Node->Pos(), "AsStruct", std::move(newRowItems));
 
     TExprNode::TListType extractorRoots;
     TVector<const TTypeAnnotationNode*> allKeyTypes;
@@ -554,9 +550,7 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
 
     if (many) {
         auto rowIndex = RowType->FindItem("_yql_group_stream_index");
-        if (!rowIndex) {
-            return nullptr;
-        }
+        YQL_ENSURE(rowIndex, "Unknown column: _yql_group_stream_index");
         if (streamIdxColumn) {
             *streamIdxColumn = extractorRoots.size();
         }
@@ -589,14 +583,21 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
         }
 
         auto rowArg = &trait->Child(2)->Head().Head();
-        const TNodeOnNodeOwnedMap remaps{ { rowArg, newRow } };
-
         TVector<TExprNode::TPtr> roots;
         for (ui32 i = 1; i < argsCount + 1; ++i) {
             auto root = trait->Child(2)->ChildPtr(i);
             allTypes.push_back(root->GetTypeAnn());            
 
-            auto status = RemapExpr(root, root, remaps, Ctx, TOptimizeExprSettings(&TypesCtx));
+            auto status = OptimizeExpr(root, root, [&](const TExprNode::TPtr& node, TExprContext& ctx) -> TExprNode::TPtr {
+                Y_UNUSED(ctx);
+                if (node->IsCallable("Member") && &node->Head() == rowArg) {
+                    auto i = RowType->FindItem(node->Tail().Content());
+                    YQL_ENSURE(i, "Missing member");
+                    return extractorArgs[*i];
+                }
+
+                return node;
+            }, Ctx, TOptimizeExprSettings(&TypesCtx));
 
             YQL_ENSURE(status.Level != IGraphTransformer::TStatus::Error);
             roots.push_back(root);
@@ -612,7 +613,7 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
                                 parent.Add(1, ExpandType(Node->Pos(), *originalType, Ctx));
                             } else {
                                 parent
-                                    .Callable(1, "NullType")
+                                    .Callable(1, "Null")
                                     .Seal();
                             }
                         }
@@ -2773,7 +2774,7 @@ TExprNode::TPtr TAggregateExpander::GeneratePhases() {
         streams.push_back(SerializeIdxSet(indicies));
     }
 
-    if (TypesCtx.IsBlockEngineEnabled()) {
+    if (TypesCtx.UseBlocks) {
         for (ui32 i = 0; i < unionAllInputs.size(); ++i) {
             unionAllInputs[i] = Ctx.Builder(Node->Pos())
                 .Callable("Map")
@@ -2794,7 +2795,7 @@ TExprNode::TPtr TAggregateExpander::GeneratePhases() {
     }
 
     auto settings = Node->ChildPtr(3);
-    if (TypesCtx.IsBlockEngineEnabled()) {
+    if (TypesCtx.UseBlocks) {
         settings = AddSetting(*settings, Node->Pos(), "many_streams", Ctx.NewList(Node->Pos(), std::move(streams)), Ctx);
     }
 
@@ -2827,7 +2828,7 @@ TExprNode::TPtr TAggregateExpander::TryGenerateBlockCombine() {
 }
 
 TExprNode::TPtr TAggregateExpander::TryGenerateBlockMergeFinalize() {
-    if (UsePartitionsByKeys || !TypesCtx.IsBlockEngineEnabled()) {
+    if (UsePartitionsByKeys || !TypesCtx.UseBlocks) {
         return nullptr;
     }
 
@@ -2899,16 +2900,7 @@ TExprNode::TPtr TAggregateExpander::TryGenerateBlockMergeFinalizeHashed() {
         .Callable("ShuffleByKeys")
             .Add(0, AggList)
             .Add(1, keySelector)
-            .Lambda(2)
-                .Param("stream")
-                .Apply(GetContextLambda())
-                    .With(0)
-                        .Apply(lambdaStream)
-                            .With(0, "stream")
-                        .Seal()
-                    .Done()
-                .Seal()
-            .Seal()
+            .Add(2, lambdaStream)
         .Seal()
         .Build();
 }
@@ -2916,13 +2908,13 @@ TExprNode::TPtr TAggregateExpander::TryGenerateBlockMergeFinalizeHashed() {
 TExprNode::TPtr ExpandAggregatePeephole(const TExprNode::TPtr& node, TExprContext& ctx, TTypeAnnotationContext& typesCtx) {
     if (NNodes::TCoAggregate::Match(node.Get())) {
         NNodes::TCoAggregate self(node);
-        auto ret = TAggregateExpander::CountAggregateRewrite(self, ctx, typesCtx.IsBlockEngineEnabled());
+        auto ret = TAggregateExpander::CountAggregateRewrite(self, ctx, typesCtx.UseBlocks);
         if (ret != node) {
             YQL_CLOG(DEBUG, Core) << "CountAggregateRewrite on peephole";
             return ret;
         }
     }
-    return ExpandAggregatePeepholeImpl(node, ctx, typesCtx, false, typesCtx.IsBlockEngineEnabled());
+    return ExpandAggregatePeepholeImpl(node, ctx, typesCtx, false, typesCtx.UseBlocks);
 }
 
 } // namespace NYql

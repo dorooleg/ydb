@@ -1,7 +1,6 @@
 #include "msgbus_servicereq.h"
 
 #include <ydb/core/ymq/actor/actor.h>
-#include <util/generic/guid.h>
 
 namespace NKikimr {
 namespace NMsgBusProxy {

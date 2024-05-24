@@ -40,8 +40,8 @@ public:
     // Initialization
     //
 
-    bool Reset(const TKeeperParams& params, const TColorLimits &limits, TString &outErrorReason) {
-        return ChunkTracker.Reset(params, limits, outErrorReason);
+    bool Reset(const TKeeperParams& params, TString &outErrorReason) {
+        return ChunkTracker.Reset(params, outErrorReason);
     }
 
     void InitialPushFree(TChunkIdx chunkIdx) {
@@ -119,7 +119,7 @@ public:
     }
 
     void PushFreeOwnerChunk(TOwner owner, TChunkIdx chunkIdx) {
-        Y_ABORT_UNLESS(chunkIdx != 0);
+        Y_VERIFY(chunkIdx != 0);
         UntrimmedFreeChunks.Push(chunkIdx);
         ChunkTracker.Release(owner, 1);
     }

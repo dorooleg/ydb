@@ -3,9 +3,8 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
@@ -46,17 +45,16 @@ private:
         const auto req = GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
-        AuditContextAppend(Request_.get(), *req);
-
         TString sessionId;
         auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
         SetAuthToken(ev, *Request_);
         SetDatabase(ev, *Request_);
 
-        if (CheckSession(req->session_id(), Request_.get())) {
+        NYql::TIssues issues;
+        if (CheckSession(req->session_id(), issues)) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         if (traceId) {
@@ -75,7 +73,7 @@ private:
         ev->Record.MutableRequest()->SetStatsMode(GetKqpStatsMode(req->collect_stats()));
         ev->Record.MutableRequest()->SetCollectStats(req->collect_stats());
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -92,8 +90,6 @@ private:
             if (kqpResponse.HasQueryStats()) {
                 FillQueryStats(*commitResult->mutable_query_stats(), kqpResponse);
             }
-
-            AuditContextAppend(Request_.get(), *GetProtoRequest(), *commitResult);
 
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, *commitResult, ctx);
         } else {

@@ -2,41 +2,52 @@
 
 namespace NKikimr::NTestShard {
 
-    void TLoadActor::IssueDelete() {
-        std::vector<TString> options;
-        options.reserve(ConfirmedKeys.size());
-        for (const TString& key : ConfirmedKeys) {
-            if (!KeysBeingRead.contains(key)) {
-                options.emplace_back(key);
+    std::optional<TString> TLoadActor::FindKeyToDelete() {
+        std::vector<std::tuple<ui64, TString>> options; // (accumLen, key)
+        options.reserve(Keys.size());
+        ui64 accumLen = 0;
+        for (const auto& [key, info] : Keys) {
+            if (info.ConfirmedState == info.PendingState && info.ConfirmedState == ::NTestShard::TStateServer::CONFIRMED) {
+                accumLen += info.Len;
+                options.emplace_back(accumLen, key);
             }
         }
+        if (options.empty()) {
+            return std::nullopt;
+        }
 
-        const ui64 barrier = Settings.GetMinDataBytes() + RandomNumber<ui64>(Settings.GetMaxDataBytes() - Settings.GetMinDataBytes() + 1);
-        while (!options.empty() && BytesOfData > barrier) {
-            const size_t index = RandomNumber(options.size());
-            std::swap(options[index], options.back());
-            TString key = std::move(options.back());
-            options.pop_back();
+        const size_t num = std::upper_bound(options.begin(), options.end(), std::make_tuple(
+            TAppData::RandomProvider->Uniform(accumLen), TString())) - options.begin();
+        Y_VERIFY(num < options.size());
+        return std::get<1>(options[num]);
+    }
+
+    void TLoadActor::IssueDelete() {
+        const ui64 barrier = TAppData::RandomProvider->Uniform(Settings.GetMinDataBytes(), Settings.GetMaxDataBytes());
+        while (BytesOfData > barrier) {
+            const auto& key = FindKeyToDelete();
+            if (!key) {
+                break;
+            }
 
             auto ev = CreateRequest();
             auto& record = ev->Record;
-            const ui64 cookie = record.GetCookie();
             auto *del = record.AddCmdDeleteRange();
             auto *r = del->MutableRange();
-            r->SetFrom(key);
+            r->SetFrom(*key);
             r->SetIncludeFrom(true);
-            r->SetTo(key);
+            r->SetTo(*key);
             r->SetIncludeTo(true);
 
             STLOG(PRI_INFO, TEST_SHARD, TS09, "deleting data", (TabletId, TabletId), (Key, key));
 
-            const auto it = Keys.find(key);
-            Y_ABORT_UNLESS(it != Keys.end());
-            RegisterTransition(*it, ::NTestShard::TStateServer::CONFIRMED, ::NTestShard::TStateServer::DELETE_PENDING, std::move(ev));
+            const auto [difIt, difInserted] = DeletesInFlight.try_emplace(record.GetCookie(), *key);
+            Y_VERIFY(difInserted);
+            Y_VERIFY(difIt->second.KeysInQuery.size() == 1);
 
-            const auto [difIt, difInserted] = DeletesInFlight.try_emplace(cookie, std::move(key));
-            Y_ABORT_UNLESS(difInserted);
-            Y_ABORT_UNLESS(difIt->second.KeysInQuery.size() == 1);
+            const auto it = Keys.find(*key);
+            Y_VERIFY(it != Keys.end());
+            RegisterTransition(*it, ::NTestShard::TStateServer::CONFIRMED, ::NTestShard::TStateServer::DELETE_PENDING, std::move(ev));
 
             BytesOfData -= it->second.Len;
             BytesProcessed += it->second.Len;
@@ -48,7 +59,7 @@ namespace NKikimr::NTestShard {
             const google::protobuf::RepeatedPtrField<NKikimrClient::TKeyValueResponse::TDeleteRangeResult>& results) {
         if (const auto difIt = DeletesInFlight.find(cookie); difIt != DeletesInFlight.end()) {
             TDeleteInfo& info = difIt->second;
-            Y_ABORT_UNLESS(info.KeysInQuery.size() == (size_t)results.size(), "%zu/%d", info.KeysInQuery.size(), results.size());
+            Y_VERIFY(info.KeysInQuery.size() == (size_t)results.size(), "%zu/%d", info.KeysInQuery.size(), results.size());
             for (size_t i = 0; i < info.KeysInQuery.size(); ++i) {
                 // validate that delete was successful
                 const auto& res = results[i];
@@ -56,7 +67,7 @@ namespace NKikimr::NTestShard {
                     << NKikimrProto::EReplyStatus_Name(NKikimrProto::EReplyStatus(res.GetStatus())));
 
                 const auto it = Keys.find(info.KeysInQuery[i]);
-                Y_ABORT_UNLESS(it != Keys.end());
+                Y_VERIFY(it != Keys.end());
                 RegisterTransition(*it, ::NTestShard::TStateServer::DELETE_PENDING, ::NTestShard::TStateServer::DELETED);
             }
             DeletesInFlight.erase(difIt);

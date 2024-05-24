@@ -28,7 +28,7 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         UNIT_ASSERT_C(eggs.Parts.size() > 3,
             "Compaction produced " << eggs.Parts.size() << " parts");
 
-        TCheckIter(eggs, { }).IsTheSame(mass.Saved);
+        TCheckIt(eggs, { }).IsTheSame(mass.Saved);
     }
 
     void RunMainEdgeTest(
@@ -55,10 +55,9 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
             UNIT_ASSERT_VALUES_EQUAL(fullPageSize, initialConf.Groups[0].PageSize);
 
             // Verify the last page contains a single row
-            TTestEnv env;
-            auto iter = CreateIndexIter(initialPart, &env, { });
-            Y_ABORT_UNLESS(iter->SeekLast() == EReady::Data, "Unexpected failure to find the last index page");
-            auto count = iter->GetEndRowId() - iter->GetRowId();
+            auto lastPage = initialPart->Index->End();
+            UNIT_ASSERT_C(--lastPage, "Unexpected failure to find the last index page");
+            auto count = initialPart->Index.GetEndRowId() - lastPage->GetRowId();
             UNIT_ASSERT_C(count == 1, "Unexpected " << count << " rows on the last page");
         }
 
@@ -74,7 +73,7 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
                 UNIT_ASSERT_VALUES_EQUAL(born.Parts.size(), attempt ? 2u : 1u);
                 UNIT_ASSERT_VALUES_EQUAL(born.At(0)->Store->PageCollectionBytes(0), lastPartSize);
 
-                TCheckIter(born, { }).IsTheSame(rows).Is(EReady::Gone);
+                TCheckIt(born, { }).IsTheSame(rows).Is(EReady::Gone);
             }
 
             --conf.MainPageCollectionEdge;
@@ -89,7 +88,7 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
                     "Produced part with size " << lastPartSize
                     << " expected no more than " << conf.MainPageCollectionEdge);
 
-                TCheckIter(born, { }).IsTheSame(rows).Is(EReady::Gone);
+                TCheckIt(born, { }).IsTheSame(rows).Is(EReady::Gone);
 
                 // The first part must gen one less row than the last time
                 auto size = rows.end() - rows.begin();
@@ -98,10 +97,10 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
                 // The first part must get one less row than the last time
                 TPartEggs egg1{ nullptr, born.Scheme, { born.At(0) } };
                 TPartEggs egg2{ nullptr, born.Scheme, { born.At(1) } };
-                TCheckIter(egg1, { })
+                TCheckIt(egg1, { })
                     .IsTheSame(rows.begin(), rows.begin() + split)
                     .Is(EReady::Gone);
-                TCheckIter(egg2, { })
+                TCheckIt(egg2, { })
                     .IsTheSame(rows.begin() + split, rows.end())
                     .Is(EReady::Gone);
 
@@ -128,8 +127,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         const TMass mass(new TModelStd(false), 32 * 1025);
 
         auto initialConf = NPage::TConf{ };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.SmallEdge = 19;
         initialConf.LargeEdge = 29;
         initialConf.ByKeyFilter = true;
@@ -143,8 +140,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         const TMass mass(new TModelStd(false), 32 * 1025);
 
         auto initialConf = NPage::TConf{ };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.SmallEdge = 19;
         initialConf.LargeEdge = 29;
         initialConf.ByKeyFilter = true;
@@ -173,7 +168,7 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
                 << " maximum of " << conf.MainPageCollectionEdge << " allowed");
         }
 
-        TCheckIter(born, { }).IsTheSame(mass.Saved).Is(EReady::Gone);
+        TCheckIt(born, { }).IsTheSame(mass.Saved).Is(EReady::Gone);
     }
 
     Y_UNIT_TEST(MainPageCollectionOverflow)
@@ -194,8 +189,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         }
 
         auto initialConf = NPage::TConf{ false, 2044 };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.ByKeyFilter = true;
         initialConf.MaxRows = rows.Size();
 
@@ -225,8 +218,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         }
 
         auto initialConf = NPage::TConf{ false, 2044 };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.ByKeyFilter = true;
         initialConf.MaxRows = rows.Size();
         initialConf.SmallEdge = 13;
@@ -257,8 +248,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         }
 
         auto initialConf = NPage::TConf{ false, 2044 };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.ByKeyFilter = true;
         initialConf.MaxRows = rows.Size();
         initialConf.LargeEdge = 13;

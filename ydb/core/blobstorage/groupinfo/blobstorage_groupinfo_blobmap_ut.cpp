@@ -27,10 +27,10 @@ namespace {
 
         bool PickSubgroup(ui32 hash, ui32 vdiskSz, TVDiskID *outVDisk, TActorId *outServiceIds) const {
             const ui32 subgroupSz = BlobSubgroupSize;
-            Y_ABORT_UNLESS(vdiskSz == subgroupSz);
+            Y_VERIFY(vdiskSz == subgroupSz);
 
             const TBlobStorageGroupInfo::TFailRealm& realm = Realms[0];
-            Y_DEBUG_ABORT_UNLESS(realm.FailDomains.size() >= subgroupSz);
+            Y_VERIFY_DEBUG(realm.FailDomains.size() >= subgroupSz);
 
             ui32 domainIdx = hash % realm.FailDomains.size();
             TReallyFastRng32 rng(hash);
@@ -57,8 +57,8 @@ namespace {
 
         // Returns either vdisk idx in the blob subgroup, or BlobSubgroupSize if the vdisk is not in the blob subgroup
         ui32 GetIdxInSubgroup(const TVDiskID &vdisk, ui32 hash) const {
-            Y_ABORT_UNLESS(vdisk.GroupID == GroupID && vdisk.GroupGeneration == GroupGeneration);
-            Y_ABORT_UNLESS(vdisk.FailRealm < Realms.size());
+            Y_VERIFY(vdisk.GroupID == GroupID && vdisk.GroupGeneration == GroupGeneration);
+            Y_VERIFY(vdisk.FailRealm < Realms.size());
 
             const TBlobStorageGroupInfo::TFailRealm &realm = Realms[vdisk.FailRealm];
             ui32 idx = (vdisk.FailDomain + realm.FailDomains.size() - hash % realm.FailDomains.size()) % realm.FailDomains.size();
@@ -77,7 +77,7 @@ namespace {
         }
 
         TVDiskID GetVDiskInSubgroup(ui32 idxInSubgroup, ui32 hash) const {
-            Y_ABORT_UNLESS(idxInSubgroup < BlobSubgroupSize);
+            Y_VERIFY(idxInSubgroup < BlobSubgroupSize);
 
             const TBlobStorageGroupInfo::TFailRealm &xrealm = Realms[0];
             ui32 domainIdx = hash % xrealm.FailDomains.size() + idxInSubgroup;

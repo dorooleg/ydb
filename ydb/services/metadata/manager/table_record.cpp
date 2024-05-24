@@ -1,9 +1,9 @@
 #include "table_record.h"
 #include "ydb_value_operator.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 #include <util/string/builder.h>
 #include <util/string/join.h>
 
@@ -108,7 +108,7 @@ std::vector<Ydb::Column> TTableRecord::SelectOwnedColumns(const std::vector<Ydb:
 }
 
 ui32 TTableRecords::AddRecordImpl(const TTableRecord& record) {
-    Y_ABORT_UNLESS(Columns.size());
+    Y_VERIFY(Columns.size());
     ui32 foundColumns = 0;
     Records.resize(Records.size() + 1);
     for (ui32 i = 0; i < Columns.size(); ++i) {
@@ -116,7 +116,7 @@ ui32 TTableRecords::AddRecordImpl(const TTableRecord& record) {
         if (v) {
             if (!TYDBValue::IsSameType(*v, Columns[i].type())) {
                 ALS_ERROR(NKikimrServices::METADATA_MANAGER);
-                Y_DEBUG_ABORT_UNLESS(false);
+                Y_VERIFY_DEBUG(false);
                 continue;
             }
             ++foundColumns;
@@ -261,7 +261,7 @@ Ydb::Table::ExecuteDataQueryRequest TTableRecords::BuildUpdateQuery(const TStrin
 
 void TTableRecords::AddColumn(const Ydb::Column& c, const Ydb::Value& v) {
     for (auto&& i : Columns) {
-        Y_ABORT_UNLESS(i.name() != c.name());
+        Y_VERIFY(i.name() != c.name());
     }
     Columns.emplace_back(c);
     for (auto&& i : Records) {

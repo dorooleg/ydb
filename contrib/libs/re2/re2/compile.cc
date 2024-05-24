@@ -10,10 +10,9 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <unordered_map>
 #include <utility>
 
-#include "absl/base/macros.h"
-#include "absl/container/flat_hash_map.h"
 #include "util/logging.h"
 #include "util/utf.h"
 #include "re2/pod_array.h"
@@ -212,7 +211,7 @@ class Compiler : public Regexp::Walker<Frag> {
 
   int64_t max_mem_;    // Total memory budget.
 
-  absl::flat_hash_map<uint64_t, int> rune_cache_;
+  std::unordered_map<uint64_t, int> rune_cache_;
   Frag rune_range_;
 
   RE2::Anchor anchor_;  // anchor mode for RE2::Set
@@ -479,7 +478,7 @@ static uint64_t MakeRuneCacheKey(uint8_t lo, uint8_t hi, bool foldcase,
 int Compiler::CachedRuneByteSuffix(uint8_t lo, uint8_t hi, bool foldcase,
                                    int next) {
   uint64_t key = MakeRuneCacheKey(lo, hi, foldcase, next);
-  absl::flat_hash_map<uint64_t, int>::const_iterator it = rune_cache_.find(key);
+  std::unordered_map<uint64_t, int>::const_iterator it = rune_cache_.find(key);
   if (it != rune_cache_.end())
     return it->second;
   int id = UncachedRuneByteSuffix(lo, hi, foldcase, next);
@@ -1244,7 +1243,7 @@ Prog* Compiler::CompileSet(Regexp* re, RE2::Anchor anchor, int64_t max_mem) {
   // Make sure DFA has enough memory to operate,
   // since we're not going to fall back to the NFA.
   bool dfa_failed = false;
-  absl::string_view sp = "hello, world";
+  StringPiece sp = "hello, world";
   prog->SearchDFA(sp, sp, Prog::kAnchored, Prog::kManyMatch,
                   NULL, &dfa_failed, NULL);
   if (dfa_failed) {

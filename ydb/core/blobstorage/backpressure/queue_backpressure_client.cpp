@@ -91,7 +91,7 @@ public:
         , Info(info)
         , GType(info->Type)
     {
-        Y_ABORT_UNLESS(Info);
+        Y_VERIFY(Info);
     }
 
     void Bootstrap(const TActorId& parent, const TActorContext& ctx) {
@@ -99,7 +99,7 @@ public:
         QLOG_INFO_S("BSQ01", "starting parent# " << parent);
         InitCounters();
         RegisteredInUniversalScheduler = RegisterActorInUniversalScheduler(SelfId(), FlowRecord, ctx.ExecutorThread.ActorSystem);
-        Y_ABORT_UNLESS(!BlobStorageProxy);
+        Y_VERIFY(!BlobStorageProxy);
         BlobStorageProxy = parent;
         RequestReadiness(nullptr, ctx);
         UpdateRequestTrackingStats(ctx);
@@ -108,7 +108,7 @@ public:
 
 private:
     void ApplyGroupInfo(const TBlobStorageGroupInfo& info) {
-        Y_ABORT_UNLESS(info.Type.GetErasure() == GType.GetErasure());
+        Y_VERIFY(info.Type.GetErasure() == GType.GetErasure());
         VDiskId = info.CreateVDiskID(VDiskIdShort);
         RemoteVDisk = info.GetActorId(VDiskIdShort);
         VDiskOrderNumber = info.GetOrderNumber(VDiskIdShort);
@@ -157,7 +157,7 @@ private:
     }
 
     void HandleWatchdog(const TActorContext& ctx) {
-        Y_ABORT_UNLESS(WatchdogTimerScheduled);
+        Y_VERIFY(WatchdogTimerScheduled);
         WatchdogTimerScheduled = false;
         const TInstant now = ctx.Now();
         if (now >= WatchdogBarrier) {
@@ -239,7 +239,7 @@ private:
                     break;
 
                 default:
-                    Y_ABORT("unexpected message type 0x%08" PRIx32, type);
+                    Y_FAIL("unexpected message type 0x%08" PRIx32, type);
             }
 
             if (ev->GetChannel() != expected) {
@@ -248,7 +248,7 @@ private:
                     << " reply channel mismatch"
                     << " received# " << ev->GetChannel()
                     << " expected# " << expected);
-                Y_DEBUG_ABORT_UNLESS(false);
+                Y_VERIFY_DEBUG(false);
             }
         }
 
@@ -365,11 +365,7 @@ private:
                         << " msgId# " << msgId << " sequenceId# " << sequenceId
                         << " expectedMsgId# " << expectedMsgId << " expectedSequenceId# " << expectedSequenceId
                         << " status# " << NKikimrProto::EReplyStatus_Name(status)
-                        << " ws# " << NKikimrBlobStorage::TWindowFeedback_EStatus_Name(ws)
-                        << " InFlightCost# " << Queue.GetInFlightCost()
-                        << " InFlightCount# " << Queue.InFlightCount()
-                        << " ItemsWaiting# " << Queue.GetItemsWaiting()
-                        << " BytesWaiting# " << Queue.GetBytesWaiting());
+                        << " ws# " << NKikimrBlobStorage::TWindowFeedback_EStatus_Name(ws));
 
                     switch (ws) {
                         case NKikimrBlobStorage::TWindowFeedback::IncorrectMsgId:
@@ -381,7 +377,7 @@ private:
                             break;
 
                         default:
-                            Y_ABORT();
+                            Y_FAIL();
                     }
 
                     Queue.Unwind(msgId, sequenceId, expectedMsgId, expectedSequenceId);
@@ -395,7 +391,7 @@ private:
         } catch (const TExFatal& ex) {
             const TString msg = TStringBuilder() << "fatal error: " << ex.what();
             QLOG_CRIT_S("BSQ38", msg);
-            Y_DEBUG_ABORT("%s %s", LogPrefix.data(), msg.data());
+            Y_VERIFY_DEBUG(false, "%s %s", LogPrefix.data(), msg.data());
             ResetConnection(ctx, NKikimrProto::ERROR, msg, TDuration::Zero());
             return;
         }
@@ -460,7 +456,7 @@ private:
             case EState::READY:
                 QLOG_NOTICE_S("BSQ96", "connection lost status# " << NKikimrProto::EReplyStatus_Name(status)
                     << " errorReason# " << errorReason << " timeout# " << timeout);
-                ctx.Send(BlobStorageProxy, new TEvProxyQueueState(VDiskId, QueueId, false, false, nullptr));
+                ctx.Send(BlobStorageProxy, new TEvProxyQueueState(VDiskId, QueueId, false, false));
                 Queue.DrainQueue(status, TStringBuilder() << "BS_QUEUE: " << errorReason, ctx);
                 DrainStatus(status, ctx);
                 DrainAssimilate(status, errorReason, ctx);
@@ -477,7 +473,7 @@ private:
 
     void HandleConnected(TEvInterconnect::TEvNodeConnected::TPtr ev, const TActorContext& ctx) {
         if (ev->Get()->NodeId == RemoteVDisk.NodeId()) {
-            Y_ABORT_UNLESS(!SessionId || SessionId == ev->Sender, "SessionId# %s Sender# %s", SessionId.ToString().data(),
+            Y_VERIFY(!SessionId || SessionId == ev->Sender, "SessionId# %s Sender# %s", SessionId.ToString().data(),
                 ev->Sender.ToString().data());
             SessionId = ev->Sender;
 
@@ -499,7 +495,7 @@ private:
             }
 
             ResetConnection(ctx, NKikimrProto::ERROR, "node disconnected", TDuration::Seconds(1));
-            Y_ABORT_UNLESS(!SessionId || SessionId == ev->Sender);
+            Y_VERIFY(!SessionId || SessionId == ev->Sender);
             SessionId = {};
         }
     }
@@ -560,14 +556,13 @@ private:
         const auto& record = ev->Get()->Record;
         if (record.GetStatus() != NKikimrProto::NOTREADY) {
             ExtraBlockChecksSupport = record.GetExtraBlockChecksSupport();
+            ctx.Send(BlobStorageProxy, new TEvProxyQueueState(VDiskId, QueueId, true, ExtraBlockChecksSupport));
             if (record.HasExpectedMsgId()) {
                 Queue.SetMessageId(NBackpressure::TMessageId(record.GetExpectedMsgId()));
             }
             if (record.HasCostSettings()) {
                 Queue.UpdateCostModel(ctx.Now(), record.GetCostSettings(), GType);
             }
-            ctx.Send(BlobStorageProxy, new TEvProxyQueueState(VDiskId, QueueId, true, ExtraBlockChecksSupport,
-                Queue.GetCostModel()));
             Queue.OnConnect();
             State = EState::READY;
         } else {
@@ -723,7 +718,7 @@ private:
     bool RegisteredInUniversalScheduler = false;
 
     void HandleUpdateRequestTrackingStats(const TActorContext& ctx) {
-        Y_ABORT_UNLESS(UpdateRequestTrackingStatsScheduled || RegisteredInUniversalScheduler);
+        Y_VERIFY(UpdateRequestTrackingStatsScheduled || RegisteredInUniversalScheduler);
         UpdateRequestTrackingStatsScheduled = false;
         UpdateRequestTrackingStats(ctx);
     }
@@ -802,8 +797,7 @@ private:
             << " RemoteVDisk# " << RemoteVDisk
             << " VDiskId# " << VDiskId
             << " IsConnected# " << isConnected);
-        ctx.Send(ev->Sender, new TEvProxyQueueState(VDiskId, QueueId, isConnected, isConnected && ExtraBlockChecksSupport,
-            Queue.GetCostModel()));
+        ctx.Send(ev->Sender, new TEvProxyQueueState(VDiskId, QueueId, isConnected, isConnected && ExtraBlockChecksSupport));
     }
 
 #define QueueRequestHFunc(TEvType) \
@@ -906,7 +900,7 @@ private:
             DEFINE_EVENTS(XX)
 #undef XX
             default:
-                Y_ABORT("unexpected event Type# 0x%08" PRIx32, type);
+                Y_FAIL("unexpected event Type# 0x%08" PRIx32, type);
         }
 #endif
         switch (type) {
@@ -959,7 +953,7 @@ private:
             CFunc(NActors::TEvents::TSystem::PoisonPill, Die)
 
             default:
-                Y_ABORT("unexpected event Type# 0x%08" PRIx32, type);
+                Y_FAIL("unexpected event Type# 0x%08" PRIx32, type);
         }
     }
 };

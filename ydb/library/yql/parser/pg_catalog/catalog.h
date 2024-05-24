@@ -1,22 +1,10 @@
 #pragma once
-#include <ydb/library/yql/public/issue/yql_issue.h>
 #include <util/generic/maybe.h>
 #include <util/generic/string.h>
 #include <util/generic/vector.h>
 #include <util/stream/output.h>
-#include <variant>
-#include <functional>
 
 namespace NYql::NPg {
-
-constexpr ui32 UnknownOid = 705;
-constexpr ui32 AnyOid = 2276;
-constexpr ui32 AnyArrayOid = 2277;
-constexpr ui32 AnyNonArrayOid = 2776;
-constexpr ui32 AnyElementOid = 2283;
-constexpr ui32 RecordOid = 2249;
-constexpr ui32 VarcharOid = 1043;
-constexpr ui32 TextOid = 25;
 
 // copied from pg_class.h
 enum class ERelPersistence : char
@@ -35,43 +23,28 @@ enum class EOperKind {
 struct TOperDesc {
     ui32 OperId = 0;
     TString Name;
-    TString Descr;
     EOperKind Kind = EOperKind::Binary;
     ui32 LeftType = 0;
     ui32 RightType = 0;
     ui32 ResultType = 0;
     ui32 ProcId = 0;
-    ui32 ComId = 0;
-    ui32 NegateId = 0;
 };
 
-enum class EProcKind : char {
-    Function = 'f',
-    Aggregate = 'a',
-    Window = 'w'
+enum EProcKind {
+    Function,
+    Aggregate,
+    Window
 };
-
-constexpr ui32 LangInternal = 12;
-constexpr ui32 LangC = 13;
-constexpr ui32 LangSQL = 14;
 
 struct TProcDesc {
     ui32 ProcId = 0;
     TString Name;
     TString Src;
-    TString Descr;
     TVector<ui32> ArgTypes;
-    TVector<TString> InputArgNames;
     ui32 ResultType = 0;
     bool IsStrict = true;
     EProcKind Kind = EProcKind::Function;
     bool ReturnSet = false;
-    TVector<TString> OutputArgNames;
-    TVector<ui32> OutputArgTypes;
-    ui32 Lang = LangInternal;
-    ui32 VariadicType = 0;
-    ui32 VariadicArgType = 0;
-    TString VariadicArgName;
 };
 
 // Copied from pg_collation_d.h
@@ -91,17 +64,13 @@ enum class ETypType : char {
     Range = 'r',
 };
 
-constexpr char InvalidCategory = '\0';
-
 struct TTypeDesc {
     ui32 TypeId = 0;
     ui32 ArrayTypeId = 0;
-    TString Descr;
     TString Name;
     ui32 ElementTypeId = 0;
     bool PassByValue = false;
-    char Category = InvalidCategory;
-    bool IsPreferred = false;
+    char Category = '\0';
     char TypeAlign = '\0';
     char TypeDelim = ',';
 
@@ -151,14 +120,14 @@ struct TCastDesc {
     ECoercionCode CoercionCode = ECoercionCode::Unknown;
 };
 
-enum class EAggKind : char {
-    Normal = 'n',
-    OrderedSet = 'o',
-    Hypothetical = 'h'
+enum class EAggKind {
+    Normal,
+    OrderedSet,
+    Hypothetical
 };
 
 struct TAggregateDesc {
-    ui32 AggId = 0;
+    ui32 InternalId = 0;
     TString Name;
     TVector<ui32> ArgTypes;
     EAggKind Kind = EAggKind::Normal;
@@ -169,25 +138,6 @@ struct TAggregateDesc {
     ui32 SerializeFuncId = 0;
     ui32 DeserializeFuncId = 0;
     TString InitValue;
-    bool FinalExtra = false;
-};
-
-enum class EAmType {
-    Table = 't',
-    Index = 'i'
-};
-
-struct TAmDesc {
-    ui32 Oid = 0;
-    TString Descr;
-    TString AmName;
-    EAmType AmType = EAmType::Index;
-};
-
-struct TNamespaceDesc {
-    ui32 Oid = 0;
-    TString Name;
-    TString Descr;
 };
 
 enum class EOpClassMethod {
@@ -237,44 +187,16 @@ enum class EHashAmProcNum {
     Hash = 1
 };
 
-struct TConversionDesc {
-    ui32 ConversionId = 0;
-    TString From;
-    TString To;
-    TString Descr;
-    ui32 ProcId = 0;
-};
-
-struct TLanguageDesc {
-    ui32 LangId = 0;
-    TString Name;
-    TString Descr;
-};
-
 const TProcDesc& LookupProc(const TString& name, const TVector<ui32>& argTypeIds);
 const TProcDesc& LookupProc(ui32 procId, const TVector<ui32>& argTypeIds);
 const TProcDesc& LookupProc(ui32 procId);
-std::variant<const TProcDesc*, const TTypeDesc*> LookupProcWithCasts(const TString& name, const TVector<ui32>& argTypeIds);
 bool HasReturnSetProc(const TString& name);
 void EnumProc(std::function<void(ui32, const TProcDesc&)> f);
 
 bool HasType(const TString& name);
-bool HasType(ui32 typeId);
 const TTypeDesc& LookupType(const TString& name);
 const TTypeDesc& LookupType(ui32 typeId);
-TMaybe<TIssue> LookupCommonType(const TVector<ui32>& typeIds, const std::function<TPosition(size_t i)>& GetPosition, const TTypeDesc*& typeDesc);
-TMaybe<TIssue> LookupCommonType(const TVector<ui32>& typeIds, const std::function<TPosition(size_t i)>& GetPosition, const TTypeDesc*& typeDesc, bool& castsNeeded);
 void EnumTypes(std::function<void(ui32, const TTypeDesc&)> f);
-
-const TAmDesc& LookupAm(ui32 oid);
-void EnumAm(std::function<void(ui32, const TAmDesc&)> f);
-
-void EnumConversions(std::function<void(const TConversionDesc&)> f);
-
-const TNamespaceDesc& LookupNamespace(ui32 oid);
-void EnumNamespace(std::function<void(ui32, const TNamespaceDesc&)> f);
-
-void EnumOperators(std::function<void(const TOperDesc&)> f);
 
 bool HasCast(ui32 sourceId, ui32 targetId);
 const TCastDesc& LookupCast(ui32 sourceId, ui32 targetId);
@@ -283,7 +205,7 @@ const TOperDesc& LookupOper(const TString& name, const TVector<ui32>& argTypeIds
 const TOperDesc& LookupOper(ui32 operId, const TVector<ui32>& argTypeIds);
 const TOperDesc& LookupOper(ui32 operId);
 
-bool HasAggregation(const TString& name, EAggKind kind);
+bool HasAggregation(const TString& name);
 const TAggregateDesc& LookupAggregation(const TString& name, const TVector<ui32>& argTypeIds);
 const TAggregateDesc& LookupAggregation(const TString& name, ui32 stateType, ui32 resultType);
 void EnumAggregation(std::function<void(ui32, const TAggregateDesc&)> f);
@@ -297,64 +219,12 @@ const TAmOpDesc& LookupAmOp(ui32 familyId, ui32 strategy, ui32 leftType, ui32 ri
 bool HasAmProc(ui32 familyId, ui32 num, ui32 leftType, ui32 rightType);
 const TAmProcDesc& LookupAmProc(ui32 familyId, ui32 num, ui32 leftType, ui32 rightType);
 
-bool HasConversion(const TString& from, const TString& to);
-const TConversionDesc& LookupConversion(const TString& from, const TString& to);
-
-const TLanguageDesc& LookupLanguage(ui32 langId);
-void EnumLanguages(std::function<void(ui32, const TLanguageDesc&)> f);
-
 bool IsCompatibleTo(ui32 actualType, ui32 expectedType);
-bool IsCoercible(ui32 fromTypeId, ui32 toTypeId, ECoercionCode coercionType);
 
 inline bool IsArrayType(const TTypeDesc& typeDesc) noexcept {
     return typeDesc.ArrayTypeId == typeDesc.TypeId;
 }
 
-enum class ERelKind : char {
-    Relation = 'r',
-    View = 'v'
-};
-struct TTableInfoKey {
-    TString Schema;
-    TString Name;
-
-    bool operator==(const TTableInfoKey& other) const {
-        return Schema == other.Schema && Name == other.Name;
-    }
-
-    size_t Hash() const {
-        auto stringHasher = THash<TString>();
-        return CombineHashes(stringHasher(Schema), stringHasher(Name));
-    }
-};
-
-constexpr ui32 TypeRelationOid = 1247;
-constexpr ui32 DatabaseRelationOid = 1262;
-constexpr ui32 TableSpaceRelationOid = 1213;
-constexpr ui32 SharedDescriptionRelationOid = 2396;
-constexpr ui32 TriggerRelationOid = 2620;
-constexpr ui32 InheritsRelationOid = 2611;
-constexpr ui32 DescriptionRelationOid = 2609;
-constexpr ui32 AccessMethodRelationOid = 2601;
-constexpr ui32 NamespaceRelationOid = 2615;
-constexpr ui32 AuthMemRelationOid = 1261;
-constexpr ui32 RelationRelationOid = 1259;
-
-struct TTableInfo : public TTableInfoKey {
-    ERelKind Kind;
-    ui32 Oid;
-};
-
-struct TColumnInfo {
-    TString Schema;
-    TString TableName;
-    TString Name;
-    TString UdtType;
-};
-
-const TVector<TTableInfo>& GetStaticTables();
-const TTableInfo& LookupStaticTable(const TTableInfoKey& tableKey);
-const THashMap<TTableInfoKey, TVector<TColumnInfo>>& GetStaticColumns();
 }
 
 template <>
@@ -366,10 +236,3 @@ template <>
 inline void Out<NYql::NPg::ECoercionCode>(IOutputStream& o, NYql::NPg::ECoercionCode coercionCode) {
     o.Write(static_cast<std::underlying_type<NYql::NPg::ECoercionCode>::type>(coercionCode));
 }
-
-template <>
-struct THash<NYql::NPg::TTableInfoKey> {
-    size_t operator ()(const NYql::NPg::TTableInfoKey& val) const {
-        return val.Hash();
-    }
-};

@@ -19,7 +19,7 @@ THistogramCounter::THistogramCounter(
         : Ranges(ranges)
         , Values(std::move(values))
         , Histogram(histogram) {
-    Y_ABORT_UNLESS(!Ranges.empty() && Ranges.size() == Values.size());
+    Y_VERIFY(!Ranges.empty() && Ranges.size() == Values.size());
 }
 
 void THistogramCounter::Clear() {
@@ -73,25 +73,25 @@ void TAggregatedSimpleCounters::AddSimpleCounter(
 }
 
 ui64 TAggregatedSimpleCounters::GetSum(ui32 counterIndex) const {
-    Y_ABORT_UNLESS(counterIndex < SumSimpleCounters.size(),
+    Y_VERIFY(counterIndex < SumSimpleCounters.size(),
              "inconsistent sum simple counters, %u >= %lu", counterIndex, SumSimpleCounters.size());
     return *SumSimpleCounters[counterIndex];
 }
 
 void TAggregatedSimpleCounters::SetSum(ui32 counterIndex, ui64 value) {
-    Y_ABORT_UNLESS(counterIndex < SumSimpleCounters.size(),
+    Y_VERIFY(counterIndex < SumSimpleCounters.size(),
              "inconsistent sum simple counters, %u >= %lu", counterIndex, SumSimpleCounters.size());
     *SumSimpleCounters[counterIndex] = value;
 }
 
 ui64 TAggregatedSimpleCounters::GetMax(ui32 counterIndex) const {
-    Y_ABORT_UNLESS(counterIndex < MaxSimpleCounters.size(),
+    Y_VERIFY(counterIndex < MaxSimpleCounters.size(),
              "inconsistent max simple counters, %u >= %lu", counterIndex, MaxSimpleCounters.size());
     return *MaxSimpleCounters[counterIndex];
 }
 
 void TAggregatedSimpleCounters::SetMax(ui32 counterIndex, ui64 value) {
-    Y_ABORT_UNLESS(counterIndex < MaxSimpleCounters.size(),
+    Y_VERIFY(counterIndex < MaxSimpleCounters.size(),
              "inconsistent max simple counters, %u >= %lu", counterIndex, MaxSimpleCounters.size());
     *MaxSimpleCounters[counterIndex] = value;
 }
@@ -100,13 +100,13 @@ void TAggregatedSimpleCounters::SetValues(
     ui64 tabletId, const TVector<ui64>& values, NKikimrTabletBase::TTabletTypes::EType tabletType)
 {
     size_t count = ChangedCounters.size();
-    Y_ABORT_UNLESS(count <= values.size(),
+    Y_VERIFY(count <= values.size(),
         "inconsistent simple counters for tablet type %s", TTabletTypes::TypeToStr(tabletType));
 
     auto it = CountersByTabletId.find(tabletId);
     if (it != CountersByTabletId.end()) {
         auto& current = it->second;
-        Y_ABORT_UNLESS(count == current.size(),
+        Y_VERIFY(count == current.size(),
             "inconsistent simple counters for tablet type %s", TTabletTypes::TypeToStr(tabletType));
         for (size_t i = 0; i < count; ++i) {
             if (current[i] != values[i]) {
@@ -142,9 +142,6 @@ void TAggregatedSimpleCounters::RecalcAll() {
     sumValues.resize(count, 0);
 
     for (size_t i = 0; i < count; ++i) {
-        if (!ChangedCounters[i]) {
-            continue;
-        }
         auto* histCounter = HistSimpleCounters[i].Get();
         if (histCounter) {
             histCounter->Clear();
@@ -207,13 +204,13 @@ void TAggregatedCumulativeCounters::AddCumulativeCounter(
 }
 
 ui64 TAggregatedCumulativeCounters::GetMax(ui32 counterIndex) const {
-    Y_ABORT_UNLESS(counterIndex < MaxCumulativeCounters.size(),
+    Y_VERIFY(counterIndex < MaxCumulativeCounters.size(),
              "inconsistent max cumulative counters, %u >= %lu", counterIndex, MaxCumulativeCounters.size());
     return *MaxCumulativeCounters[counterIndex];
 }
 
 void TAggregatedCumulativeCounters::SetMax(ui32 counterIndex, ui64 value) {
-    Y_ABORT_UNLESS(counterIndex < MaxCumulativeCounters.size(),
+    Y_VERIFY(counterIndex < MaxCumulativeCounters.size(),
              "inconsistent max cumulative counters, %u >= %lu", counterIndex, MaxCumulativeCounters.size());
     *MaxCumulativeCounters[counterIndex] = value;
 }
@@ -222,13 +219,13 @@ void TAggregatedCumulativeCounters::SetValues(
     ui64 tabletId, const TVector<ui64>& values, NKikimrTabletBase::TTabletTypes::EType tabletType)
 {
     size_t count = ChangedCounters.size();
-    Y_ABORT_UNLESS(count <= values.size(),
+    Y_VERIFY(count <= values.size(),
         "inconsistent cumulative counters for tablet type %s", TTabletTypes::TypeToStr(tabletType));
 
     auto it = CountersByTabletId.find(tabletId);
     if (it != CountersByTabletId.end()) {
         auto& current = it->second;
-        Y_ABORT_UNLESS(count == current.size(),
+        Y_VERIFY(count == current.size(),
             "inconsistent cumulative counters for tablet type %s", TTabletTypes::TypeToStr(tabletType));
         for (size_t i = 0; i < count; ++i) {
             if (current[i] != values[i]) {
@@ -262,9 +259,6 @@ void TAggregatedCumulativeCounters::RecalcAll() {
     maxValues.resize(count, 0);
 
     for (size_t i = 0; i < count; ++i) {
-        if (!ChangedCounters[i]) {
-            continue;
-        }
         auto* histCounter = HistCumulativeCounters[i].Get();
         if (histCounter) {
             histCounter->Clear();
@@ -325,7 +319,7 @@ void TAggregatedHistogramCounters::AddCounter(
     IsDerivative.push_back(isDerivative);
 
     auto rangeCount = percentileCounter.GetRangeCount();
-    Y_DEBUG_ABORT_UNLESS(rangeCount > 0);
+    Y_VERIFY_DEBUG(rangeCount > 0);
 
     for (ui32 r = 0; r < rangeCount; ++r) {
         const char* rangeName = percentileCounter.GetRangeName(r);
@@ -376,12 +370,12 @@ void TAggregatedHistogramCounters::SetValue(
     const NKikimr::TTabletPercentileCounter& percentileCounter,
     const char* name,
     NKikimrTabletBase::TTabletTypes::EType tabletType) {
-    Y_ABORT_UNLESS(counterIndex < CountersByTabletId.size(),
+    Y_VERIFY(counterIndex < CountersByTabletId.size(),
              "inconsistent counters for tablet type %s, counter %s",
              TTabletTypes::TypeToStr(tabletType),
              name);
 
-    Y_ABORT_UNLESS(counterIndex < PercentileCounters.size(),
+    Y_VERIFY(counterIndex < PercentileCounters.size(),
              "inconsistent counters for tablet type %s, counter %s",
              TTabletTypes::TypeToStr(tabletType),
              name);
@@ -397,7 +391,7 @@ void TAggregatedHistogramCounters::SetValue(
     if (rangeCount == 0)
         return;
 
-    Y_ABORT_UNLESS(rangeCount <= percentileRanges.size(),
+    Y_VERIFY(rangeCount <= percentileRanges.size(),
              "inconsistent counters for tablet type %s, counter %s",
              TTabletTypes::TypeToStr(tabletType),
              name);
@@ -447,7 +441,7 @@ void TAggregatedHistogramCounters::ForgetTablet(ui64 tabletId) {
 }
 
 NMonitoring::THistogramPtr TAggregatedHistogramCounters::GetHistogram(size_t i) {
-    Y_ABORT_UNLESS(i < Histograms.size());
+    Y_VERIFY(i < Histograms.size());
     return Histograms[i];
 }
 
@@ -458,7 +452,7 @@ void TAggregatedHistogramCounters::SubValues(
     auto snapshot = histogram->Snapshot();
     histogram->Reset();
     for (auto i: xrange(values.size())) {
-        Y_DEBUG_ABORT_UNLESS(static_cast<ui64>(*percentileRanges[i]) >= values[i]);
+        Y_VERIFY_DEBUG(static_cast<ui64>(*percentileRanges[i]) >= values[i]);
         *percentileRanges[i] -= values[i];
 
         ui64 oldValue = snapshot->Value(i);
@@ -545,14 +539,12 @@ void TAggregatedLabeledCounters::FillGetRequestV1(
         }
         Changed = false;
     }
-    Y_ABORT_UNLESS(end >= start);
-    Y_ABORT_UNLESS(end <= Size());
+    Y_VERIFY(end >= start);
+    Y_VERIFY(end <= Size());
     labeledCounters->SetGroupNames(GroupNames);
     labeledCounters->SetGroup(group);
     labeledCounters->SetDelimiter("/"); //TODO: change here to "|"
     for (ui32 i = start; i < end; ++i) {
-        if (strlen(Names[i]) == 0 || strcmp(Names[i], "PQ/") == 0)
-            continue;
         auto& labeledCounter = *labeledCounters->AddLabeledCounter();
         labeledCounter.SetValue(GetValue(i));
         labeledCounter.SetId(GetId(i));
@@ -578,7 +570,7 @@ void TAggregatedLabeledCounters::FillGetRequestV2(
         labeledCounter.SetValue(GetValue(i));
         labeledCounter.SetNameId(context->GetNameId(Names[i]));
         labeledCounter.SetAggregateFunc(NKikimr::TLabeledCounterOptions::EAggregateFunc(AggrFunc[i]));
-        labeledCounter.SetType(NKikimr::TLabeledCounterOptions::ECounterType(Types[i])); 
+        labeledCounter.SetType(NKikimr::TLabeledCounterOptions::ECounterType(Types[i]));
     }
 }
 
@@ -610,8 +602,7 @@ void TAggregatedLabeledCounters::FromProto(
     const NKikimrLabeledCounters::TTabletLabeledCounters& labeledCounters) const {
     for (const auto& counter : labeledCounters.GetLabeledCounter()) {
         const ui32 nameId{counter.GetNameId()};
-
-        if (nameId < Size() && strlen(Names[nameId]) != 0) {
+        if (strlen(Names[nameId]) != 0) {
             // TODO: ASDFGS if CT_TIMELAG -> ctx.Now() - counters.GetValue
             const bool derived = counter.GetType() == TLabeledCounterOptions::CT_DERIV;
             auto namedCounter = group->GetNamedCounter("name", Names[nameId], derived);
@@ -621,13 +612,13 @@ void TAggregatedLabeledCounters::FromProto(
 }
 
 void TAggregatedLabeledCounters::Recalc(ui32 idx) const {
-    Y_ABORT_UNLESS(idx < Ids.size());
+    Y_VERIFY(idx < Ids.size());
     auto &counters = CountersByTabletId[idx];
     TTabletLabeledCountersBase::EAggregateFunc aggrFunc{AggrFunc[idx]};
     std::pair<ui64, ui64> aggrVal{0,0};
     ui64 cntCount = counters.size();
 
-    // Y_ABORT_UNLESS(cntCount > 0);
+    // Y_VERIFY(cntCount > 0);
     if (cntCount == 0) {
         return;
     }
@@ -648,7 +639,7 @@ void TAggregatedLabeledCounters::Recalc(ui32 idx) const {
                 aggrVal.first += tValue.first;
                 break;
             default:
-                Y_ABORT("bad aggrFunc value");
+                Y_FAIL("bad aggrFunc value");
         };
     }
 

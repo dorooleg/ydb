@@ -5,12 +5,11 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/compile_time_flags.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <library/cpp/random_provider/random_provider.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <util/generic/algorithm.h>
 #include <util/generic/xrange.h>
@@ -91,7 +90,7 @@ class TReplicaGuardian : public TActorBootstrapped<TReplicaGuardian> {
             Send(TActivationContext::InterconnectProxy(Replica.NodeId()), new TEvents::TEvUnsubscribe);
 
         if (KIKIMR_ALLOW_SSREPLICA_PROBES) {
-            const TActorId ssProxyId = MakeStateStorageProxyID();
+            const TActorId ssProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(Info->TabletID));
             Send(ssProxyId, new TEvStateStorage::TEvReplicaProbeUnsubscribe(Replica));
         }
 
@@ -100,7 +99,7 @@ class TReplicaGuardian : public TActorBootstrapped<TReplicaGuardian> {
 
     void RequestInfo() {
         if (KIKIMR_ALLOW_SSREPLICA_PROBES) {
-            const TActorId ssProxyId = MakeStateStorageProxyID();
+            const TActorId ssProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(Info->TabletID));
             Send(ssProxyId, new TEvStateStorage::TEvReplicaProbeSubscribe(Replica));
             Become(&TThis::StateLookup);
         } else {
@@ -213,7 +212,7 @@ class TReplicaGuardian : public TActorBootstrapped<TReplicaGuardian> {
         } else if (status == NKikimrProto::ERROR) {
             return UpdateInfo();
         } else {
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -294,7 +293,7 @@ class TFollowerGuardian : public TActorBootstrapped<TFollowerGuardian> {
 
     void UpdateInfo() {
         if (KIKIMR_ALLOW_SSREPLICA_PROBES) {
-            const TActorId ssProxyId = MakeStateStorageProxyID();
+            const TActorId ssProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(Info->TabletID));
             Send(ssProxyId, new TEvStateStorage::TEvReplicaProbeSubscribe(Replica));
             Become(&TThis::StateCalm);
         } else {
@@ -348,7 +347,7 @@ class TFollowerGuardian : public TActorBootstrapped<TFollowerGuardian> {
             Send(TActivationContext::InterconnectProxy(Replica.NodeId()), new TEvents::TEvUnsubscribe());
 
         if (KIKIMR_ALLOW_SSREPLICA_PROBES) {
-            const TActorId ssProxyId = MakeStateStorageProxyID();
+            const TActorId ssProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(Info->TabletID));
             Send(ssProxyId, new TEvStateStorage::TEvReplicaProbeUnsubscribe(Replica));
         }
 
@@ -427,7 +426,7 @@ class TTabletGuardian : public TActorBootstrapped<TTabletGuardian> {
 
     void Handle(TEvStateStorage::TEvResolveReplicasList::TPtr &ev) {
         const TVector<TActorId> &replicasList = ev->Get()->Replicas;
-        Y_ABORT_UNLESS(!replicasList.empty(), "must not happens, guardian must be created over active tablet");
+        Y_VERIFY(!replicasList.empty(), "must not happens, guardian must be created over active tablet");
 
         const ui32 replicaSz = replicasList.size();
 
@@ -473,7 +472,7 @@ class TTabletGuardian : public TActorBootstrapped<TTabletGuardian> {
 
     void Handle(TEvents::TEvUndelivered::TPtr &ev) {
         Y_UNUSED(ev);
-        Y_ABORT("must not happens, guardian must be created over active tablet");
+        Y_FAIL("must not happens, guardian must be created over active tablet");
     }
 
     ui32 CountOnlineReplicas() const {
@@ -521,7 +520,8 @@ class TTabletGuardian : public TActorBootstrapped<TTabletGuardian> {
 
     void SendResolveRequest(TDuration delay) {
         const ui64 tabletId = Info ? Info->TabletID : FollowerInfo->TabletID;
-        const TActorId proxyActorID = MakeStateStorageProxyID();
+        const ui64 stateStorageGroup = StateStorageGroupFromTabletID(tabletId);
+        const TActorId proxyActorID = MakeStateStorageProxyID(stateStorageGroup);
 
         if (delay == TDuration::Zero()) {
             Send(proxyActorID, new TEvStateStorage::TEvResolveReplicas(tabletId), IEventHandle::FlagTrackDelivery);
@@ -559,7 +559,7 @@ class TTabletGuardian : public TActorBootstrapped<TTabletGuardian> {
     }
 
     void Handle(TEvStateStorage::TEvReplicaInfo::TPtr &ev) {
-        Y_ABORT_UNLESS(FollowerTracker);
+        Y_VERIFY(FollowerTracker);
 
         const NKikimrStateStorage::TEvInfo &record = ev->Get()->Record;
         const TActorId guardian = ev->Sender;
@@ -600,7 +600,7 @@ class TTabletGuardian : public TActorBootstrapped<TTabletGuardian> {
         const auto *msg = ev->Get();
         const ui64 tabletId = FollowerInfo->TabletID;
 
-        Y_ABORT_UNLESS(msg->FollowerActor == FollowerInfo->Follower);
+        Y_VERIFY(msg->FollowerActor == FollowerInfo->Follower);
 
         const bool hasChanges = msg->TabletActor != FollowerInfo->Tablet || msg->IsCandidate != FollowerInfo->IsCandidate;
         if (hasChanges) {

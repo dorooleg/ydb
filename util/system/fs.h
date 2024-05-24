@@ -21,14 +21,7 @@ namespace NFs {
         FP_NONSECRET_FILE = 0744,
     };
 
-    Y_DECLARE_FLAGS(EFilePermissions, EFilePermission);
-
-    /// Add executable bit
-    ///
-    /// @param[in] path  Path to mark as executable
-    /// @param[in] exec  New value of execution bit
-    /// @returns         true if bit has changed or false otherwise
-    bool SetExecutable(const TString& path, bool exec);
+    Y_DECLARE_FLAGS(EFilePermissions, EFilePermission)
 
     /// Remove a file or empty directory
     ///
@@ -161,4 +154,4 @@ namespace NFs {
     }
 }
 
-Y_DECLARE_OPERATORS_FOR_FLAGS(NFs::EFilePermissions);
+Y_DECLARE_OPERATORS_FOR_FLAGS(NFs::EFilePermissions)

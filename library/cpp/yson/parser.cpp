@@ -16,27 +16,22 @@ namespace NYson {
             IInputStream* stream,
             EYsonType type,
             bool enableLinePositionInfo,
-            ui64 bufferSizeLimit,
-            bool consumeUntilEof,
             TMaybe<ui64> memoryLimit = Nothing())
             : Consumer_(consumer)
             , Stream_(stream)
             , Type_(type)
             , EnableLinePositionInfo_(enableLinePositionInfo)
-            , BufferSizeLimit_(bufferSizeLimit)
-            , ConsumeUntilEof_(consumeUntilEof)
             , MemoryLimit_(memoryLimit)
         {
         }
 
         void Parse() {
-            TBuffer buffer(BufferSizeLimit_);
+            TBuffer buffer(64 << 10);
             ParseYsonStreamImpl<NYT::NYson::IYsonConsumer, TStreamReader>(
                 TStreamReader(Stream_, buffer.Data(), buffer.Capacity()),
                 Consumer_,
                 Type_,
                 EnableLinePositionInfo_,
-                ConsumeUntilEof_,
                 MemoryLimit_);
         }
 
@@ -45,8 +40,6 @@ namespace NYson {
         IInputStream* Stream_;
         EYsonType Type_;
         bool EnableLinePositionInfo_;
-        ui64 BufferSizeLimit_;
-        bool ConsumeUntilEof_;
         TMaybe<ui64> MemoryLimit_;
     };
 
@@ -57,10 +50,8 @@ namespace NYson {
         IInputStream* stream,
         EYsonType type,
         bool enableLinePositionInfo,
-        ui64 bufferSizeLimit,
-        bool consumeUntilEof,
         TMaybe<ui64> memoryLimit)
-        : Impl(new TImpl(consumer, stream, type, enableLinePositionInfo, bufferSizeLimit, consumeUntilEof, memoryLimit))
+        : Impl(new TImpl(consumer, stream, type, enableLinePositionInfo, memoryLimit))
     {
     }
 
@@ -124,7 +115,6 @@ namespace NYson {
             consumer,
             type,
             enableLinePositionInfo,
-            true,
             memoryLimit);
     }
 

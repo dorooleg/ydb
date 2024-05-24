@@ -55,11 +55,6 @@ namespace NKikimr {
                     "not implemented")), 0, ev->Cookie);
             }
 
-            void Handle(TEvBlobStorage::TEvPatch::TPtr& ev) {
-                STLOG(PRI_DEBUG, BS_PROXY, BSPM10, "TEvPatch", (Msg, ev->Get()->ToString()));
-                Send(ev->Sender, CopyExecutionRelay(ev->Get(), Model->Handle(ev->Get())), 0, ev->Cookie);
-            }
-
             template<typename TOut, typename TIn>
             TOut *CopyExecutionRelay(TIn *in, TOut *out) {
                 out->ExecutionRelay = std::move(in->ExecutionRelay);
@@ -72,10 +67,6 @@ namespace NKikimr {
                 PassAway();
             }
 
-            void Handle(TEvBlobStorage::TEvConfigureProxy::TPtr&/* ev*/) {
-                //  do nothing, Model has neither monitoring counters nor Topology
-            }
-
             STATEFN(StateFunc) {
                 switch (const ui32 type = ev->GetTypeRewrite()) {
                     hFunc(TEvBlobStorage::TEvPut, Handle);
@@ -85,13 +76,11 @@ namespace NKikimr {
                     hFunc(TEvBlobStorage::TEvRange, Handle);
                     hFunc(TEvBlobStorage::TEvCollectGarbage, Handle);
                     hFunc(TEvBlobStorage::TEvStatus, Handle);
-                    hFunc(TEvBlobStorage::TEvPatch, Handle);
 
                     hFunc(TEvents::TEvPoisonPill, HandlePoison);
-                    hFunc(TEvBlobStorage::TEvConfigureProxy, Handle);
 
                     default:
-                        Y_ABORT("unexpected event 0x%08" PRIx32, type);
+                        Y_FAIL("unexpected event 0x%08" PRIx32, type);
                 }
             }
 
@@ -104,12 +93,6 @@ namespace NKikimr {
                 : TActor(&TBlobStorageGroupProxyMockActor::StateFunc)
                 , Model(model ? std::move(model) : MakeIntrusive<NFake::TProxyDS>())
             {}
-
-
-            TBlobStorageGroupProxyMockActor(ui32 groupId)
-                : TActor(&TBlobStorageGroupProxyMockActor::StateFunc)
-                , Model(MakeIntrusive<NFake::TProxyDS>(groupId))
-            {}
         };
     } // anon
 
@@ -117,8 +100,8 @@ namespace NKikimr {
         return new TBlobStorageGroupProxyMockActor(std::move(model));
     }
 
-    IActor *CreateBlobStorageGroupProxyMockActor(ui32 groupId) {
-        return new TBlobStorageGroupProxyMockActor(groupId);
+    IActor *CreateBlobStorageGroupProxyMockActor() {
+        return new TBlobStorageGroupProxyMockActor(nullptr);
     }
 
 } // NKikimr

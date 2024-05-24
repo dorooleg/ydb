@@ -15,14 +15,10 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
 
         TListType::TItem x1(1, "ttt");
         list.Insert(&x1);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 1);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 1);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 1);
 
         TListType::TItem x2(2, "yyy");
         list.Insert(&x2);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 1);
 
         list.Promote(list.GetOldest());
@@ -30,8 +26,6 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
 
         TListType::TItem x3(3, "zzz");
         list.Insert(&x3);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 1);
     }
 
@@ -45,16 +39,12 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         list.Insert(&x1);
         while (list.RemoveIfOverflown()) {
         }
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 3);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 1);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 1);
 
         TListType::TItem x2(2, "yyy");
         list.Insert(&x2);
         while (list.RemoveIfOverflown()) {
         }
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 6);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 1);
 
         list.Promote(list.GetOldest());
@@ -66,25 +56,13 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         list.Insert(&x3);
         while (list.RemoveIfOverflown()) {
         }
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 6);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 1);
 
         TListType::TItem x4(4, "longlong");
         list.Insert(&x4);
         while (list.RemoveIfOverflown()) {
         }
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 8);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 1);
         UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 4);
-
-        TListType::TItem x5(5, "xxx");
-        list.Insert(&x5);
-        while (list.RemoveIfOverflown()) {
-        }
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 3);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 1);
-        UNIT_ASSERT_EQUAL(list.GetOldest()->Key, 5);
     }
 
     Y_UNIT_TEST(LFUListTest) {
@@ -93,14 +71,10 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
 
         TListType::TItem x1(1, "ttt");
         list.Insert(&x1);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 1);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 1);
         UNIT_ASSERT_EQUAL(list.GetLeastFrequentlyUsed()->Key, 1);
 
         TListType::TItem x2(2, "yyy");
         list.Insert(&x2);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetLeastFrequentlyUsed()->Key, 1);
 
         list.Promote(list.GetLeastFrequentlyUsed());
@@ -108,8 +82,6 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
 
         TListType::TItem x3(3, "zzz");
         list.Insert(&x3);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
-        UNIT_ASSERT_EQUAL(list.GetSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetLeastFrequentlyUsed()->Key, 1);
     }
 
@@ -120,30 +92,25 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         TListType::TItem x1(1, "tt");
         list.Insert(&x1);
         UNIT_ASSERT_EQUAL(list.GetLightest()->Key, 1);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 1);
         UNIT_ASSERT_EQUAL(list.GetSize(), 1);
 
         TListType::TItem x2(2, "yyyy");
         list.Insert(&x2);
         UNIT_ASSERT_EQUAL(list.GetLightest()->Key, 1);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetSize(), 2);
 
         TListType::TItem x3(3, "z");
         list.Insert(&x3);
         UNIT_ASSERT_EQUAL(list.GetLightest()->Key, 1);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetSize(), 2);
 
         TListType::TItem x4(4, "xxxxxx");
         list.Insert(&x4);
         UNIT_ASSERT_EQUAL(list.GetLightest()->Key, 2);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 2);
         UNIT_ASSERT_EQUAL(list.GetSize(), 2);
 
         list.Erase(&x2);
         UNIT_ASSERT_EQUAL(list.GetLightest()->Key, 4);
-        UNIT_ASSERT_EQUAL(list.GetTotalSize(), 1);
         UNIT_ASSERT_EQUAL(list.GetSize(), 1);
     }
 
@@ -151,17 +118,11 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         typedef TLRUCache<int, TString> TCache;
         TCache s(2); // size 2
         s.Insert(1, "abcd");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 1);
-        UNIT_ASSERT_EQUAL(s.Size(), 1);
         UNIT_ASSERT(s.Find(1) != s.End());
         UNIT_ASSERT_EQUAL(*s.Find(1), "abcd");
         s.Insert(2, "defg");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 2);
-        UNIT_ASSERT_EQUAL(s.Size(), 2);
         UNIT_ASSERT(s.GetOldest() == "abcd");
         s.Insert(3, "hjkl");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 2);
-        UNIT_ASSERT_EQUAL(s.Size(), 2);
         UNIT_ASSERT(s.GetOldest() == "defg");
         // key 1 will be deleted
         UNIT_ASSERT(s.Find(1) == s.End());
@@ -174,13 +135,9 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         UNIT_ASSERT(*s.Find(3) == "hjkl");
         s.Update(3, "abcd");
         UNIT_ASSERT(*s.Find(3) == "abcd");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 2);
-        UNIT_ASSERT_EQUAL(s.Size(), 2);
 
         TCache::TIterator it = s.Find(3);
         s.Erase(it);
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 1);
-        UNIT_ASSERT_EQUAL(s.Size(), 1);
         UNIT_ASSERT(s.Find(3) == s.End());
     }
 
@@ -188,21 +145,13 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         typedef TLRUCache<int, TString, TNoopDelete, size_t(*)(const TString&)> TCache;
         TCache s(10, false, [](auto& string) { return string.size(); }); // size 10
         s.Insert(1, "abcd");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 4);
-        UNIT_ASSERT_EQUAL(s.Size(), 1);
         UNIT_ASSERT(s.Find(1) != s.End());
         UNIT_ASSERT_EQUAL(*s.Find(1), "abcd");
         s.Insert(2, "defg");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 8);
-        UNIT_ASSERT_EQUAL(s.Size(), 2);
         UNIT_ASSERT(s.GetOldest() == "abcd");
         s.Insert(3, "2c");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 10);
-        UNIT_ASSERT_EQUAL(s.Size(), 3);
         UNIT_ASSERT(s.GetOldest() == "abcd");
         s.Insert(4, "hjkl");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 10);
-        UNIT_ASSERT_EQUAL(s.Size(), 3);
         UNIT_ASSERT(s.GetOldest() == "defg");
         // key 1 will be deleted
         UNIT_ASSERT(s.Find(1) == s.End());
@@ -216,14 +165,10 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         UNIT_ASSERT(!s.Insert(3, "abcd"));
         UNIT_ASSERT(*s.Find(3) == "2c");
         s.Update(3, "abcd");
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 8);
-        UNIT_ASSERT_EQUAL(s.Size(), 2);
         UNIT_ASSERT(*s.Find(3) == "abcd");
 
         TCache::TIterator it = s.Find(3);
         s.Erase(it);
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 4);
-        UNIT_ASSERT_EQUAL(s.Size(), 1);
         UNIT_ASSERT(s.Find(3) == s.End());
     }
 
@@ -372,14 +317,10 @@ Y_UNIT_TEST_SUITE(TCacheTest) {
         UNIT_ASSERT(s.Insert(1, "abcd"));
         UNIT_ASSERT(s.Insert(1, "bcde"));
         UNIT_ASSERT(s.Insert(2, "fghi"));
-        // (1, "abcd") will be deleted
         UNIT_ASSERT(s.Insert(2, "ghij"));
-
-        UNIT_ASSERT_EQUAL(s.TotalSize(), 3);
-        UNIT_ASSERT_EQUAL(s.Size(), 3);
-
-        // (1, "bcde") will be promoted
+        // (1, "abcd") will be deleted
         UNIT_ASSERT(*s.Find(1) == "bcde");
+        // (1, "bcde") will be promoted
         UNIT_ASSERT(*s.FindOldest() == "fghi");
     }
 
@@ -508,8 +449,6 @@ Y_UNIT_TEST_SUITE(TThreadSafeCacheTest) {
         cache.Update(2, MakeAtomicShared<TString>("hjk"));
         item = cache.Get(2);
 
-        UNIT_ASSERT_EQUAL(cache.TotalSize(), 1);
-        UNIT_ASSERT_EQUAL(cache.Size(), 1);
         UNIT_ASSERT(callbacks.Creations == 0);
         UNIT_ASSERT(*item == "hjk");
     }
@@ -545,8 +484,6 @@ Y_UNIT_TEST_SUITE(TThreadSafeCacheUnsafeTest) {
                 UNIT_ASSERT(*data == VALS[i]);
             }
         }
-        UNIT_ASSERT_EQUAL(cache.TotalSize(), Y_ARRAY_SIZE(VALS) - 1);
-        UNIT_ASSERT_EQUAL(cache.Size(), Y_ARRAY_SIZE(VALS) - 1);
     }
 }
 
@@ -595,8 +532,6 @@ Y_UNIT_TEST_SUITE(TThreadSafeLRUCacheTest) {
         cache.Update(2, MakeAtomicShared<TString>("hjk"));
         item = cache.Get(2);
 
-        UNIT_ASSERT_EQUAL(cache.TotalSize(), 1);
-        UNIT_ASSERT_EQUAL(cache.Size(), 1);
         UNIT_ASSERT(callbacks.Creations == 0);
         UNIT_ASSERT(*item == "hjk");
     }
@@ -695,23 +630,17 @@ Y_UNIT_TEST_SUITE(TThreadSafeLRUCacheTest) {
         UNIT_ASSERT_EQUAL(callbacks.Creations, expectedCreations);
         UNIT_ASSERT(*item == "one");
 
-        UNIT_ASSERT_EQUAL(cache.TotalSize(), 3);
-        UNIT_ASSERT_EQUAL(cache.Size(), 3);
         cache.SetMaxSize(4);
 
         item = cache.Get(0);
         expectedCreations++;
         UNIT_ASSERT_EQUAL(callbacks.Creations, expectedCreations);
         UNIT_ASSERT(*item == "zero");
-        UNIT_ASSERT_EQUAL(cache.TotalSize(), 4);
-        UNIT_ASSERT_EQUAL(cache.Size(), 4);
 
         item = cache.Get(4);
         expectedCreations++;
         UNIT_ASSERT_EQUAL(callbacks.Creations, expectedCreations);
         UNIT_ASSERT(*item == "four");
-        UNIT_ASSERT_EQUAL(cache.TotalSize(), 4);
-        UNIT_ASSERT_EQUAL(cache.Size(), 4);
 
         item = cache.Get(3);
         expectedCreations++;

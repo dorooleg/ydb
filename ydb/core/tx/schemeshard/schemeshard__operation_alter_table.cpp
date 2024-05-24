@@ -41,7 +41,7 @@ bool IsSuperUser(const NACLib::TUserToken* userToken) {
 }
 
 TTableInfo::TAlterDataPtr ParseParams(const TPath& path, TTableInfo::TPtr table, const NKikimrSchemeOp::TTableDescription& alter,
-                                      const bool shadowDataAllowed, const THashSet<TString>& localSequences,
+                                      const bool shadowDataAllowed,
                                       TString& errStr, NKikimrScheme::EStatus& status, TOperationContext& context) {
     const TAppData* appData = AppData(context.Ctx);
 
@@ -71,11 +71,7 @@ TTableInfo::TAlterDataPtr ParseParams(const TPath& path, TTableInfo::TPtr table,
         return nullptr;
     }
 
-    if (!hasSchemaChanges
-        && !copyAlter.HasPartitionConfig()
-        && !copyAlter.HasTTLSettings()
-        && !copyAlter.HasReplicationConfig())
-    {
+    if (!hasSchemaChanges && !copyAlter.HasPartitionConfig() && !copyAlter.HasTTLSettings()) {
         errStr = Sprintf("No changes specified");
         status = NKikimrScheme::StatusInvalidParameter;
         return nullptr;
@@ -91,19 +87,11 @@ TTableInfo::TAlterDataPtr ParseParams(const TPath& path, TTableInfo::TPtr table,
 
     // Ignore column ids if they were passed by user!
     for (auto& col : *copyAlter.MutableColumns()) {
-        bool hasDefault = col.HasDefaultFromLiteral();
-        if (hasDefault && !context.SS->EnableAddColumsWithDefaults) {
-            errStr = Sprintf("Column addition with default value is not supported now.");
+        if (col.GetNotNull()) {
+            errStr = Sprintf("Not null columns is not supported for alter command");
             status = NKikimrScheme::StatusInvalidParameter;
             return nullptr;
         }
-
-        if (col.GetNotNull() && !hasDefault) {
-            errStr = Sprintf("Not null columns without defaults are not supported.");
-            status = NKikimrScheme::StatusInvalidParameter;
-            return nullptr;
-        }
-
         col.ClearId();
     }
 
@@ -132,11 +120,7 @@ TTableInfo::TAlterDataPtr ParseParams(const TPath& path, TTableInfo::TPtr table,
 
     const TSubDomainInfo& subDomain = *path.DomainInfo();
     const TSchemeLimits& limits = subDomain.GetSchemeLimits();
-
-
-    TTableInfo::TAlterDataPtr alterData = TTableInfo::CreateAlterData(
-        table, copyAlter, *appData->TypeRegistry, limits, subDomain,
-        context.SS->EnableTablePgTypes, errStr, localSequences);
+    TTableInfo::TAlterDataPtr alterData = TTableInfo::CreateAlterData(table, copyAlter, *appData->TypeRegistry, limits, subDomain, errStr);
     if (!alterData) {
         status = NKikimrScheme::StatusInvalidParameter;
         return nullptr;
@@ -277,8 +261,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterTable);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterTable);
 
         txState->ClearShardsInProgress();
 
@@ -342,8 +326,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterTable);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterTable);
 
         TPathId pathId = txState->TargetPathId;
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
@@ -361,7 +345,7 @@ public:
             const auto now = context.Ctx.Now();
             for (auto& shard : table->GetPartitions()) {
                 auto& lag = shard.LastCondEraseLag;
-                Y_DEBUG_ABORT_UNLESS(!lag.Defined());
+                Y_VERIFY_DEBUG(!lag.Defined());
 
                 lag = now - shard.LastCondErase;
                 context.SS->TabletCounters->Percentile()[COUNTER_NUM_SHARDS_BY_TTL_LAG].IncrementFor(lag->Seconds());
@@ -375,7 +359,7 @@ public:
                     context.SS->TabletCounters->Percentile()[COUNTER_NUM_SHARDS_BY_TTL_LAG].DecrementFor(lag->Seconds());
                     lag.Clear();
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(false);
+                    Y_VERIFY_DEBUG(false);
                 }
             }
         }
@@ -397,8 +381,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterTable);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterTable);
 
         TSet<TTabletId> shardSet;
         for (const auto& shard : txState->Shards) {
@@ -505,11 +489,8 @@ public:
                 .IsResolved()
                 .NotDeleted()
                 .IsTable()
+                .NotAsyncReplicaTable()
                 .NotUnderOperation();
-
-            if (!Transaction.GetInternal()) {
-                checks.NotAsyncReplicaTable();
-            }
 
             if (!context.IsAllowedPrivateTables) {
                 checks.IsCommonSensePath(); //forbid alter impl index tables outside consistent operation
@@ -519,40 +500,6 @@ public:
                 result->SetError(checks.GetStatus(), checks.GetError());
                 return result;
             }
-        }
-
-        THashSet<TString> localSequences;
-
-        std::optional<TString> defaultFromSequence;
-        for (const auto& column: alter.GetColumns()) {
-            if (column.HasDefaultFromSequence()) {
-                defaultFromSequence = column.GetDefaultFromSequence();
-            }
-        }
-
-        if (defaultFromSequence.has_value()) {
-            Y_ABORT_UNLESS(alter.GetColumns().size() == 1);
-
-            const auto sequencePath = TPath::Resolve(*defaultFromSequence, context.SS);
-            {
-                const auto checks = sequencePath.Check();
-                checks
-                    .NotEmpty()
-                    .NotUnderDomainUpgrade()
-                    .IsAtLocalSchemeShard()
-                    .IsResolved()
-                    .NotDeleted()
-                    .IsSequence()
-                    .NotUnderDeleting()
-                    .NotUnderOperation();
-
-                if (!checks) {
-                    result->SetError(checks.GetStatus(), checks.GetError());
-                    return result;
-                }
-            }
-
-            localSequences.insert(sequencePath.PathString());
         }
 
         TString errStr;
@@ -567,7 +514,7 @@ public:
             return result;
         }
 
-        Y_ABORT_UNLESS(context.SS->Tables.contains(path.Base()->PathId));
+        Y_VERIFY(context.SS->Tables.contains(path.Base()->PathId));
         TTableInfo::TPtr table = context.SS->Tables.at(path.Base()->PathId);
 
         if (table->AlterVersion == 0) {
@@ -576,7 +523,7 @@ public:
         }
         if (table->AlterData) {
             auto lastOpId = TOperationId(path.Base()->LastTxId, 0);
-            Y_ABORT_UNLESS(context.SS->TxInFlight.contains(lastOpId), "AlterData without Alter tx");
+            Y_VERIFY(context.SS->TxInFlight.contains(lastOpId), "AlterData without Alter tx");
             result->SetError(NKikimrScheme::StatusMultipleModifications, "There's another Alter in flight");
             return result;
         }
@@ -584,7 +531,7 @@ public:
         bool isReplicated = false;
         if (path.Base()->GetAliveChildren()) {
             for (const auto& [_, childPathId] : path.Base()->GetChildren()) {
-                Y_ABORT_UNLESS(context.SS->PathsById.contains(childPathId));
+                Y_VERIFY(context.SS->PathsById.contains(childPathId));
                 auto childPath = context.SS->PathsById.at(childPathId);
 
                 if (!childPath->IsCdcStream() || childPath->Dropped()) {
@@ -598,14 +545,13 @@ public:
         }
 
         NKikimrScheme::EStatus status;
-        TTableInfo::TAlterDataPtr alterData = ParseParams(
-            path, table, alter, IsShadowDataAllowed(), localSequences, errStr, status, context);
+        TTableInfo::TAlterDataPtr alterData = ParseParams(path, table, alter, IsShadowDataAllowed(), errStr, status, context);
         if (!alterData) {
             result->SetError(status, errStr);
             return result;
         }
 
-        Y_ABORT_UNLESS(alterData->AlterVersion == table->AlterVersion + 1);
+        Y_VERIFY(alterData->AlterVersion == table->AlterVersion + 1);
 
         if (!CheckDroppingColumns(context.SS, alter, path, errStr)) {
             result->SetError(NKikimrScheme::StatusPreconditionFailed, errStr);
@@ -642,7 +588,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterTable");
+        Y_FAIL("no AbortPropose for TAlterTable");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -665,7 +611,7 @@ ISubOperation::TPtr CreateAlterTable(TOperationId id, const TTxTransaction& tx) 
 }
 
 ISubOperation::TPtr CreateAlterTable(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterTable>(id, state);
 }
 
@@ -676,14 +622,14 @@ ISubOperation::TPtr CreateFinalizeBuildIndexImplTable(TOperationId id, const TTx
 }
 
 ISubOperation::TPtr CreateFinalizeBuildIndexImplTable(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     auto obj = MakeHolder<TAlterTable>(id, state);
     obj->SetAllowShadowDataForBuildIndex();
     return obj.Release();
 }
 
 TVector<ISubOperation::TPtr> CreateConsistentAlterTable(TOperationId id, const TTxTransaction& tx, TOperationContext& context) {
-    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpAlterTable);
+    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpAlterTable);
 
     auto alter = tx.GetAlterTable();
 

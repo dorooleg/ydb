@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef GRPC_SRC_CORE_EXT_TRANSPORT_BINDER_CLIENT_CONNECTION_ID_GENERATOR_H
-#define GRPC_SRC_CORE_EXT_TRANSPORT_BINDER_CLIENT_CONNECTION_ID_GENERATOR_H
+#ifndef GRPC_CORE_EXT_TRANSPORT_BINDER_CLIENT_CONNECTION_ID_GENERATOR_H
+#define GRPC_CORE_EXT_TRANSPORT_BINDER_CLIENT_CONNECTION_ID_GENERATOR_H
 
 #include <grpc/support/port_platform.h>
 
@@ -31,7 +31,8 @@ namespace grpc_binder {
 // underscore, and tilde).
 class ConnectionIdGenerator {
  public:
-  TString Generate(y_absl::string_view uri);
+  TString Generate(y_absl::string_view package_name,
+                       y_absl::string_view class_name);
 
  private:
   // Our generated Id need to fit in unix socket path length limit. We use 100
@@ -48,4 +49,4 @@ ConnectionIdGenerator* GetConnectionIdGenerator();
 
 }  // namespace grpc_binder
 
-#endif  // GRPC_SRC_CORE_EXT_TRANSPORT_BINDER_CLIENT_CONNECTION_ID_GENERATOR_H
+#endif  // GRPC_CORE_EXT_TRANSPORT_BINDER_CLIENT_CONNECTION_ID_GENERATOR_H

@@ -31,41 +31,6 @@ class TProgramBuilder;
 
 namespace NYql::NDq {
 
-enum class EResumeSource : ui32 {
-    Default,
-    ChannelsHandleWork,
-    ChannelsHandleUndeliveredData,
-    ChannelsHandleUndeliveredAck,
-    AsyncPopFinished,
-    CheckpointRegister,
-    CheckpointInject,
-    CABootstrap,
-    CABootstrapWakeup,
-    CAPendingInput,
-    CATakeInput,
-    CASinkFinished,
-    CATransformFinished,
-    CAStart,
-    CAPollAsync,
-    CAPollAsyncNoSpace,
-    CANewAsyncInput,
-    CADataSent,
-    CAPendingOutput,
-    CATaskRunnerCreated,
-
-    Last,
-};
-
-struct IMemoryQuotaManager {
-    using TPtr = std::shared_ptr<IMemoryQuotaManager>;
-    using TWeakPtr = std::weak_ptr<IMemoryQuotaManager>;
-    virtual ~IMemoryQuotaManager() = default;
-    virtual bool AllocateQuota(ui64 memorySize) = 0;
-    virtual void FreeQuota(ui64 memorySize) = 0;
-    virtual ui64 GetCurrentQuota() const = 0;
-    virtual ui64 GetMaxMemorySize() const = 0;
-};
-
 // Source/transform.
 // Must be IActor.
 //
@@ -105,14 +70,12 @@ struct IDqComputeActorAsyncInput {
 
     virtual ui64 GetInputIndex() const = 0;
 
-    virtual const TDqAsyncStats& GetIngressStats() const = 0;
-
     // Gets data and returns space used by filled data batch.
     // Watermark will be returned if source watermark was moved forward. Watermark should be handled AFTER data.
     // Method should be called under bound mkql allocator.
     // Could throw YQL errors.
     virtual i64 GetAsyncInputData(
-        NKikimr::NMiniKQL::TUnboxedValueBatch& batch,
+        NKikimr::NMiniKQL::TUnboxedValueVector& batch,
         TMaybe<TInstant>& watermark,
         bool& finished,
         i64 freeSpace) = 0;
@@ -121,6 +84,10 @@ struct IDqComputeActorAsyncInput {
     virtual void SaveState(const NDqProto::TCheckpoint& checkpoint, NDqProto::TSourceState& state) = 0;
     virtual void CommitState(const NDqProto::TCheckpoint& checkpoint) = 0; // Apply side effects related to this checkpoint.
     virtual void LoadState(const NDqProto::TSourceState& state) = 0;
+
+    virtual ui64 GetIngressBytes() {
+        return 0;
+    }
 
     virtual TDuration GetCpuTime() {
         return TDuration::Zero();
@@ -161,7 +128,7 @@ struct IDqComputeActorAsyncInput {
 // 8. When checkpoint is written into database, checkpoints actor calls IDqComputeActorAsyncOutput::CommitState() to apply all side effects.
 struct IDqComputeActorAsyncOutput {
     struct ICallbacks { // Compute actor
-        virtual void ResumeExecution(EResumeSource source = EResumeSource::Default) = 0;
+        virtual void ResumeExecution() = 0;
         virtual void OnAsyncOutputError(ui64 outputIndex, const TIssues& issues, NYql::NDqProto::StatusIds::StatusCode fatalCode) = 0;
 
         // Checkpointing
@@ -177,50 +144,25 @@ struct IDqComputeActorAsyncOutput {
 
     virtual i64 GetFreeSpace() const = 0;
 
-    virtual const TDqAsyncStats& GetEgressStats() const = 0;
-
     // Sends data.
     // Method shoud be called under bound mkql allocator.
     // Could throw YQL errors.
     // Checkpoint (if any) is supposed to be ordered after batch,
     // and finished flag is supposed to be ordered after checkpoint.
-    virtual void SendData(NKikimr::NMiniKQL::TUnboxedValueBatch&& batch, i64 dataSize,
+    virtual void SendData(NKikimr::NMiniKQL::TUnboxedValueVector&& batch, i64 dataSize,
         const TMaybe<NDqProto::TCheckpoint>& checkpoint, bool finished) = 0;
 
     // Checkpointing.
     virtual void CommitState(const NDqProto::TCheckpoint& checkpoint) = 0; // Apply side effects related to this checkpoint.
     virtual void LoadState(const NDqProto::TSinkState& state) = 0;
 
-    virtual TMaybe<google::protobuf::Any> ExtraData() { return {}; }
+    virtual ui64 GetEgressBytes() {
+        return 0;
+    }
 
     virtual void PassAway() = 0; // The same signature as IActor::PassAway()
 
     virtual ~IDqComputeActorAsyncOutput() = default;
-};
-
-struct IDqAsyncLookupSource {
-    struct TEvLookupResult: NActors::TEventLocal<TEvLookupResult, TDqComputeEvents::EvLookupResult> {
-        TEvLookupResult(std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> alloc, NKikimr::NMiniKQL::TKeyPayloadPairVector&& data)
-            : Alloc(alloc)
-            , Data(std::move(data))
-        {
-        }
-        ~TEvLookupResult() {
-            auto guard = Guard(*Alloc.get());
-            Data = NKikimr::NMiniKQL::TKeyPayloadPairVector{};
-        }
-
-        std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> Alloc;
-        NKikimr::NMiniKQL::TKeyPayloadPairVector Data;
-    };
-
-    virtual size_t GetMaxSupportedKeysInRequest() const = 0;
-    //Initiate lookup for requested keys
-    //Only one request at a time is allowed. Request must contain no more than GetMaxSupportedKeysInRequest() keys
-    //Upon completion, results are sent in a TEvLookupResult to the preconfigured actor
-    virtual void AsyncLookup(const NKikimr::NMiniKQL::TUnboxedValueVector& keys) = 0;
-protected:
-    ~IDqAsyncLookupSource() {}
 };
 
 struct IDqAsyncIoFactory : public TThrRefBase {
@@ -230,38 +172,20 @@ public:
     struct TSourceArguments {
         const NDqProto::TTaskInput& InputDesc;
         ui64 InputIndex;
-        TCollectStatsLevel StatsLevel;
         TTxId TxId;
         ui64 TaskId;
         const THashMap<TString, TString>& SecureParams;
         const THashMap<TString, TString>& TaskParams;
-        const TVector<TString>& ReadRanges;
         const NActors::TActorId& ComputeActorId;
         const NKikimr::NMiniKQL::TTypeEnvironment& TypeEnv;
         const NKikimr::NMiniKQL::THolderFactory& HolderFactory;
         ::NMonitoring::TDynamicCounterPtr TaskCounters;
         std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> Alloc;
-        IMemoryQuotaManager::TPtr MemoryQuotaManager;
-        const google::protobuf::Message* SourceSettings = nullptr;  // used only in case if we execute compute actor locally
-        TIntrusivePtr<NActors::TProtoArenaHolder> Arena;  // Arena for SourceSettings
-        NWilson::TTraceId TraceId;
-    };
-
-    struct TLookupSourceArguments {
-        std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> Alloc;
-        NActors::TActorId ParentId;
-        google::protobuf::Any LookupSource; //provider specific data source
-        const NKikimr::NMiniKQL::TStructType* KeyType;
-        const NKikimr::NMiniKQL::TStructType* PayloadType;
-        const NKikimr::NMiniKQL::TTypeEnvironment& TypeEnv;
-        const NKikimr::NMiniKQL::THolderFactory& HolderFactory;
-        size_t MaxKeysInRequest;
     };
 
     struct TSinkArguments {
         const NDqProto::TTaskOutput& OutputDesc;
         ui64 OutputIndex;
-        TCollectStatsLevel StatsLevel;
         TTxId TxId;
         ui64 TaskId;
         IDqComputeActorAsyncOutput::ICallbacks* Callback;
@@ -275,7 +199,6 @@ public:
     struct TInputTransformArguments {
         const NDqProto::TTaskInput& InputDesc;
         const ui64 InputIndex;
-        TCollectStatsLevel StatsLevel;
         TTxId TxId;
         ui64 TaskId;
         const NUdf::TUnboxedValue TransformInput;
@@ -284,14 +207,13 @@ public:
         const NActors::TActorId& ComputeActorId;
         const NKikimr::NMiniKQL::TTypeEnvironment& TypeEnv;
         const NKikimr::NMiniKQL::THolderFactory& HolderFactory;
+        NKikimr::NMiniKQL::TProgramBuilder& ProgramBuilder;
         std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> Alloc;
-        NWilson::TTraceId TraceId;
     };
 
     struct TOutputTransformArguments {
         const NDqProto::TTaskOutput& OutputDesc;
         const ui64 OutputIndex;
-        TCollectStatsLevel StatsLevel;
         TTxId TxId;
         ui64 TaskId;
         const IDqOutputConsumer::TPtr TransformOutput;
@@ -300,17 +222,13 @@ public:
         const THashMap<TString, TString>& TaskParams;
         const NKikimr::NMiniKQL::TTypeEnvironment& TypeEnv;
         const NKikimr::NMiniKQL::THolderFactory& HolderFactory;
+        NKikimr::NMiniKQL::TProgramBuilder& ProgramBuilder;
     };
 
     // Creates source.
     // Could throw YQL errors.
     // IActor* and IDqComputeActorAsyncInput* returned by method must point to the objects with consistent lifetime.
     virtual std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqSource(TSourceArguments&& args) const = 0;
-
-    // Creates Lookup source.
-    // Could throw YQL errors.
-    // IActor* and IDqAsyncLookupSource* returned by method must point to the objects with consistent lifetime.
-    virtual std::pair<IDqAsyncLookupSource*, NActors::IActor*> CreateDqLookupSource(TStringBuf type, TLookupSourceArguments&& args) const = 0;
 
     // Creates sink.
     // Could throw YQL errors.

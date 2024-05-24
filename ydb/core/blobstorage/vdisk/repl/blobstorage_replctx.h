@@ -12,10 +12,8 @@ namespace NKikimr {
     class TReplCtx {
     public:
         TIntrusivePtr<TVDiskContext> VCtx;
-        TIntrusivePtr<THullCtx> HullCtx;
         TPDiskCtxPtr PDiskCtx;
         std::shared_ptr<THugeBlobCtx> HugeBlobCtx;
-        ui32 MinREALHugeBlobInBytes;
         TIntrusivePtr<THullDs> HullDs;
         TIntrusivePtr<TBlobStorageGroupInfo> GInfo;
         TActorId SkeletonId;
@@ -28,10 +26,8 @@ namespace NKikimr {
 
         TReplCtx(
                 TIntrusivePtr<TVDiskContext> vctx,
-                TIntrusivePtr<THullCtx> hullCtx,
                 TPDiskCtxPtr pdiskCtx,
                 std::shared_ptr<THugeBlobCtx> hugeBlobCtx,
-                ui32 minREALHugeBlobInBytes,
                 TIntrusivePtr<THullDs> hullDs,
                 TIntrusivePtr<TBlobStorageGroupInfo> info,
                 const TActorId &skeletonId,
@@ -39,10 +35,8 @@ namespace NKikimr {
                 std::shared_ptr<std::atomic_uint64_t> pdiskWriteBytes,
                 bool pausedAtStart = false)
             : VCtx(std::move(vctx))
-            , HullCtx(std::move(hullCtx))
             , PDiskCtx(std::move(pdiskCtx))
             , HugeBlobCtx(std::move(hugeBlobCtx))
-            , MinREALHugeBlobInBytes(minREALHugeBlobInBytes)
             , HullDs(std::move(hullDs))
             , GInfo(std::move(info))
             , SkeletonId(skeletonId)
@@ -50,11 +44,7 @@ namespace NKikimr {
             , VDiskCfg(std::move(vdiskCfg))
             , PDiskWriteBytes(std::move(pdiskWriteBytes))
             , PausedAtStart(pausedAtStart)
-        {
-            Y_ABORT_UNLESS(MinREALHugeBlobInBytes);
-        }
-
-        bool GetAddHeader() const { return !HullCtx || HullCtx->AddHeader; }
+        {}
     };
 
 } // NKikimr

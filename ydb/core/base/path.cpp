@@ -3,8 +3,6 @@
 #include <util/string/builder.h>
 #include <util/string/printf.h>
 
-#include <locale>
-
 namespace NKikimr {
 
 TVector<TString> SplitPath(TString path) {
@@ -208,7 +206,7 @@ bool IsPathPartContainsOnlyDots(const TString &part) {
 TString::const_iterator PathPartBrokenAt(const TString &part, const TStringBuf extraSymbols) {
     static constexpr TStringBuf basicSymbols = "-_.";
     for (auto it = part.begin(); it != part.end(); ++it) {
-        if (!std::isalnum(*it, std::locale::classic())
+        if (!isalnum(*it)
                 && !basicSymbols.Contains(*it)
                 && !extraSymbols.Contains(*it)) {
             return it;

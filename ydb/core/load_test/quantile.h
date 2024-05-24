@@ -21,7 +21,7 @@ namespace NKikimr {
         ::NMonitoring::TDynamicCounters::TCounterPtr Samples;
 
         struct TCompareTimestamp {
-            bool operator ()(const TItem& x, TMonotonic y) {
+            bool operator ()(const TItem& x, TInstant y) {
                 return x.Timestamp < y;
             }
         };
@@ -34,7 +34,7 @@ namespace NKikimr {
             : TTimeSeries<T>(lifetime)
             , Counters(counters)
         {
-            Y_ABORT_UNLESS(Counters);
+            Y_VERIFY(Counters);
             Samples = Counters->GetCounter("samples", false);
             for (auto perc : percentiles) {
                 auto subgroup = Counters->GetSubgroup("percentile", Sprintf("%.1f", perc * 100.f));
@@ -43,7 +43,7 @@ namespace NKikimr {
         }
 
         void CalculateQuantiles() const {
-            Y_ABORT_UNLESS(Counters);
+            Y_VERIFY(Counters);
 
             *Samples = Items.size();
 
@@ -97,7 +97,7 @@ namespace NKikimr {
             size_t maxIndex = values.size() - 1;
             while (count--) {
                 const size_t numerator = *numerators++;
-                Y_ABORT_UNLESS(numerator >= 0 && numerator <= denominator);
+                Y_VERIFY(numerator >= 0 && numerator <= denominator);
                 const size_t index = maxIndex * numerator / denominator;
                 *res++ = values[index];
             }

@@ -225,14 +225,22 @@ const TKikimrTableMetadata& TKqlCompileContext::GetTableMeta(const TKqpTable& ta
 TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext& ctx, TTypeAnnotationContext& typesCtx) {
     auto compiler = MakeIntrusive<NCommon::TMkqlCommonCallableCompiler>();
 
-    compiler->AddCallable({TDqSourceWideWrap::CallableName(), TDqSourceWideBlockWrap::CallableName(), TDqReadWideWrap::CallableName(), TDqReadBlockWideWrap::CallableName()},
+    compiler->AddCallable({TDqSourceWideWrap::CallableName(), TDqSourceWideBlockWrap::CallableName(), TDqReadWideWrap::CallableName()},
         [](const TExprNode& node, NCommon::TMkqlBuildContext&) {
             YQL_ENSURE(false, "Unsupported reader: " << node.Head().Content());
             return TRuntimeNode();
         });
 
-    for (auto* dqIntegration : GetUniqueIntegrations(typesCtx)) {
-        dqIntegration->RegisterMkqlCompiler(*compiler);
+    for (const auto& provider : typesCtx.DataSources) {
+        if (auto* dqIntegration = provider->GetDqIntegration()) {
+            dqIntegration->RegisterMkqlCompiler(*compiler);
+        }
+    }
+
+    for (const auto& provider : typesCtx.DataSinks) {
+        if (auto* dqIntegration = provider->GetDqIntegration()) {
+            dqIntegration->RegisterMkqlCompiler(*compiler);
+        }
     }
 
     compiler->AddCallable(TKqpWideReadTable::CallableName(),
@@ -348,8 +356,6 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
         [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
             TKqpUpsertRows upsertRows(&node);
 
-            auto settings = TKqpUpsertRowsSettings::Parse(upsertRows);
-
             const auto& tableMeta = ctx.GetTableMeta(upsertRows.Table());
 
             auto rows = MkqlBuildExpr(upsertRows.Input().Ref(), buildCtx);
@@ -375,7 +381,7 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
             TVector<TStringBuf> upsertColumns(upsertSet.begin(), upsertSet.end());
 
             auto result = ctx.PgmBuilder().KqpUpsertRows(MakeTableId(upsertRows.Table()), rows,
-                GetKqpColumns(tableMeta, upsertColumns, false), settings.IsUpdate);
+                GetKqpColumns(tableMeta, upsertColumns, false));
 
             return result;
         });
@@ -417,19 +423,6 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
             const auto message = MkqlBuildExpr(ensure.Message().Ref(), buildCtx);
 
             return ctx.PgmBuilder().KqpEnsure(value, predicate, issueCode, message);
-        });
-
-    compiler->AddCallable(TKqpIndexLookupJoin::CallableName(),
-        [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
-            TKqpIndexLookupJoin indexLookupJoin(&node);
-
-            const TString joinType(indexLookupJoin.JoinType().Value());
-            const TString leftLabel(indexLookupJoin.LeftLabel().Value());
-            const TString rightLabel(indexLookupJoin.RightLabel().Value());
-
-            auto input = MkqlBuildExpr(indexLookupJoin.Input().Ref(), buildCtx);
-
-            return ctx.PgmBuilder().KqpIndexLookupJoin(input, joinType, leftLabel, rightLabel);
         });
 
     return compiler;

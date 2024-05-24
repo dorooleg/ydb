@@ -22,7 +22,7 @@ void TNodeWarden::StartLocalProxy(ui32 groupId) {
 
     if (EnableProxyMock) {
         // create mock proxy
-        proxy.reset(CreateBlobStorageGroupProxyMockActor(groupId));
+        proxy.reset(CreateBlobStorageGroupProxyMockActor());
     } else if (auto info = NeedGroupInfo(groupId)) {
         if (info->BlobDepotId) {
             TActorId proxyActorId;
@@ -30,7 +30,7 @@ void TNodeWarden::StartLocalProxy(ui32 groupId) {
             switch (info->DecommitStatus) {
                 case NKikimrBlobStorage::TGroupDecommitStatus::NONE:
                 case NKikimrBlobStorage::TGroupDecommitStatus::PENDING:
-                    Y_ABORT("unexpected DecommitStatus for dynamic group with bound BlobDepotId");
+                    Y_FAIL("unexpected DecommitStatus for dynamic group with bound BlobDepotId");
 
                 case NKikimrBlobStorage::TGroupDecommitStatus::IN_PROGRESS:
                     // create proxy that will be used by blob depot agent to fetch underlying data
@@ -75,8 +75,7 @@ void TNodeWarden::StartVirtualGroupAgent(ui32 groupId) {
 }
 
 void TNodeWarden::StartStaticProxies() {
-    Y_ABORT_UNLESS(Cfg->BlobStorageConfig.HasServiceSet());
-    for (const auto& group : Cfg->BlobStorageConfig.GetServiceSet().GetGroups()) {
+    for (const auto& group : Cfg->ServiceSet.GetGroups()) {
         StartLocalProxy(group.GetGroupID());
     }
 }

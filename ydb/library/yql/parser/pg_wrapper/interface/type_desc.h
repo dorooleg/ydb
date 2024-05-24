@@ -42,9 +42,7 @@ struct TConvertResult {
     TMaybe<TString> Error;
 };
 
-TConvertResult PgNativeBinaryFromNativeText(const TString& str, void* typeDesc);
 TConvertResult PgNativeBinaryFromNativeText(const TString& str, ui32 pgTypeId);
-TConvertResult PgNativeTextFromNativeBinary(const TStringBuf binary, void* typeDesc);
-TConvertResult PgNativeTextFromNativeBinary(const TStringBuf binary, ui32 pgTypeId);
+TConvertResult PgNativeTextFromNativeBinary(const TString& binary, ui32 pgTypeId);
 
 } // namespace NKikimr::NPg

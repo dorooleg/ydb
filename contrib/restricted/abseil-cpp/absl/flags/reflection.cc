@@ -21,7 +21,6 @@
 #include <string>
 
 #include "absl/base/config.h"
-#include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/flags/commandlineflag.h"
@@ -170,7 +169,7 @@ void FlagRegistry::RegisterFlag(CommandLineFlag& flag, const char* filename) {
 }
 
 FlagRegistry& FlagRegistry::GlobalRegistry() {
-  static absl::NoDestructor<FlagRegistry> global_registry;
+  static FlagRegistry* global_registry = new FlagRegistry;
   return *global_registry;
 }
 

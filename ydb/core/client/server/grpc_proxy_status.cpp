@@ -1,10 +1,9 @@
 #include "grpc_proxy_status.h"
 #include "msgbus_servicereq.h"
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <library/cpp/random_provider/random_provider.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <ydb/core/base/tablet_resolver.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/appdata.h>
@@ -98,7 +97,7 @@ public:
 
     void HandleBrowse(TEvInterconnect::TEvNodesInfo::TPtr &ev, const TActorContext &ctx) {
         const TEvInterconnect::TEvNodesInfo* nodesInfo = ev->Get();
-        Y_ABORT_UNLESS(!nodesInfo->Nodes.empty());
+        Y_VERIFY(!nodesInfo->Nodes.empty());
         Nodes.reserve(nodesInfo->Nodes.size());
         for (const auto& ni : nodesInfo->Nodes) {
             if (ni.Port > AppData(ctx)->PQConfig.GetMaxStorageNodePort()) continue;
@@ -260,8 +259,8 @@ TGRpcProxyStatusActor::Handle(TEvGRpcProxyStatus::TEvSetup::TPtr &ev, const TAct
 void
 TGRpcProxyStatusActor::Handle(TEvGRpcProxyStatus::TEvUpdateStatus::TPtr &ev, const TActorContext&) {
 
-    Y_ABORT_UNLESS((i32)WriteSessions + ev->Get()->WriteSessions >= 0);
-    Y_ABORT_UNLESS((i32)ReadSessions + ev->Get()->ReadSessions >= 0);
+    Y_VERIFY((i32)WriteSessions + ev->Get()->WriteSessions >= 0);
+    Y_VERIFY((i32)ReadSessions + ev->Get()->ReadSessions >= 0);
     WriteSessions += ev->Get()->WriteSessions;
     ReadSessions += ev->Get()->ReadSessions;
     //TODO: count here write/read speed

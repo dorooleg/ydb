@@ -159,7 +159,7 @@ private:
     // coverity[var_deref_model]: false positive
     void DoAction() override {
         Become(&TThis::StateFunc);
-        Y_ABORT_UNLESS(QueueAttributes_.Defined());
+        Y_VERIFY(QueueAttributes_.Defined());
 
         const bool isFifo = IsFifoQueue();
         THolder<TSqsEvents::TEvSendMessageBatch> req;
@@ -242,7 +242,7 @@ private:
         const bool isFifo = IsFifoQueue();
         for (size_t i = 0, size = ev->Get()->Statuses.size(); i < size; ++i) {
             const auto& status = ev->Get()->Statuses[i];
-            Y_ABORT_UNLESS(!IsBatch_ || RequestToReplyIndexMapping_[i] < BatchRequest().EntriesSize());
+            Y_VERIFY(!IsBatch_ || RequestToReplyIndexMapping_[i] < BatchRequest().EntriesSize());
             auto* currentResponse = IsBatch_ ? Response_.MutableSendMessageBatch()->MutableEntries(RequestToReplyIndexMapping_[i]) : Response_.MutableSendMessage();
             auto* currentRequest = IsBatch_ ? &BatchRequest().GetEntries(RequestToReplyIndexMapping_[i]) : &Request();
             if (status.Status == TSqsEvents::TEvSendMessageBatchResponse::ESendMessageStatus::OK
@@ -256,6 +256,14 @@ private:
                     const TString md5 = CalcMD5OfMessageAttributes(currentRequest->GetMessageAttributes());
                     currentResponse->SetMD5OfMessageAttributes(md5);
                     RLOG_SQS_DEBUG("Calculating MD5 of message attributes. Request: " << *currentRequest << "\nMD5 of message attributes: " << md5);
+                }
+
+                // counters
+                if (status.Status == TSqsEvents::TEvSendMessageBatchResponse::ESendMessageStatus::AlreadySent) {
+                    INC_COUNTER_COUPLE(QueueCounters_, SendMessage_DeduplicationCount, deduplicated_count_per_second);
+                } else {
+                    INC_COUNTER_COUPLE(QueueCounters_, SendMessage_Count, sent_count_per_second);
+                    ADD_COUNTER_COUPLE(QueueCounters_, SendMessage_BytesWritten, sent_bytes_per_second, CalculateMessageSize(*currentRequest));
                 }
             } else {
                 MakeError(currentResponse, NErrors::INTERNAL_FAILURE);

@@ -18,15 +18,19 @@
 
 #include "src/core/lib/resolver/resolver_registry.h"
 
-#include <initializer_list>
+#include <string.h>
 
-#include "y_absl/status/status.h"
-#include "y_absl/status/statusor.h"
-#include "y_absl/strings/ascii.h"
+#include <vector>
+
+#include "y_absl/memory/memory.h"
 #include "y_absl/strings/str_cat.h"
 #include "y_absl/strings/str_format.h"
 
+#include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
+#include <grpc/support/string_util.h>
+
+#include "src/core/lib/resolver/resolver_registry.h"
 
 namespace grpc_core {
 
@@ -40,20 +44,8 @@ void ResolverRegistry::Builder::SetDefaultPrefix(TString default_prefix) {
   state_.default_prefix = std::move(default_prefix);
 }
 
-namespace {
-
-bool IsLowerCase(y_absl::string_view str) {
-  for (unsigned char c : str) {
-    if (y_absl::ascii_isalpha(c) && !y_absl::ascii_islower(c)) return false;
-  }
-  return true;
-}
-
-}  // namespace
-
 void ResolverRegistry::Builder::RegisterResolverFactory(
     std::unique_ptr<ResolverFactory> factory) {
-  GPR_ASSERT(IsLowerCase(factory->scheme()));
   auto p = state_.factories.emplace(factory->scheme(), std::move(factory));
   GPR_ASSERT(p.second);
 }
@@ -86,7 +78,7 @@ bool ResolverRegistry::IsValidTarget(y_absl::string_view target) const {
 }
 
 OrphanablePtr<Resolver> ResolverRegistry::CreateResolver(
-    y_absl::string_view target, const ChannelArgs& args,
+    y_absl::string_view target, const grpc_channel_args* args,
     grpc_pollset_set* pollset_set,
     std::shared_ptr<WorkSerializer> work_serializer,
     std::unique_ptr<Resolver::ResultHandler> result_handler) const {

@@ -89,7 +89,7 @@ bool TSchEmu::GenJob(double &outTimeToNextReqMs) {
     isOk = Scheduler->AddJob(job, ownerIdx, gateIdx, timeNs);
     TimeMs += 0.000001;
 
-    Y_ABORT_UNLESS(isOk);
+    Y_VERIFY(isOk);
     return true;
 }
 

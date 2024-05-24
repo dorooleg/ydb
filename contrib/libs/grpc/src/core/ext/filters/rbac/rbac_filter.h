@@ -14,21 +14,13 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_RBAC_RBAC_FILTER_H
-#define GRPC_SRC_CORE_EXT_FILTERS_RBAC_RBAC_FILTER_H
+#ifndef GRPC_CORE_EXT_FILTERS_RBAC_RBAC_FILTER_H
+#define GRPC_CORE_EXT_FILTERS_RBAC_RBAC_FILTER_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stddef.h>
-
-#include "src/core/lib/channel/channel_fwd.h"
 #include "src/core/lib/channel/channel_stack.h"
-#include "src/core/lib/channel/context.h"
-#include "src/core/lib/iomgr/closure.h"
-#include "src/core/lib/iomgr/error.h"
 #include "src/core/lib/security/authorization/evaluate_args.h"
-#include "src/core/lib/transport/metadata_batch.h"
-#include "src/core/lib/transport/transport.h"
 
 namespace grpc_core {
 
@@ -81,4 +73,4 @@ class RbacFilter {
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_RBAC_RBAC_FILTER_H
+#endif  // GRPC_CORE_EXT_FILTERS_RBAC_RBAC_FILTER_H

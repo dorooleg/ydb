@@ -2,7 +2,6 @@
 
 #include "defs.h"
 
-#include <ydb/core/base/subdomain.h>
 #include <ydb/core/scheme/scheme_types_defs.h>
 #include <ydb/core/tablet_flat/flat_cxx_database.h>
 
@@ -23,22 +22,9 @@ struct Schema : NIceDb::Schema {
         struct Lease : Column<10, NScheme::NTypeIds::Uint32> {};
         struct Expire : Column<11, NScheme::NTypeIds::Uint64> {};
         struct Location : Column<12, NScheme::NTypeIds::String> {};
-        struct ServicedSubDomain : Column<13, NScheme::NTypeIds::String> { using Type = NKikimrSubDomains::TDomainKey; };
-        struct SlotIndex : Column<14, NScheme::NTypeIds::Uint32> {};
 
         using TKey = TableKey<ID>;
-        using TColumns = TableColumns<
-            ID,
-            Host,
-            Port,
-            ResolveHost,
-            Address,
-            Lease,
-            Expire,
-            Location,
-            ServicedSubDomain,
-            SlotIndex
-        >;
+        using TColumns = TableColumns<ID, Host, Port, ResolveHost, Address, Lease, Expire, Location>;
     };
 
     struct Config : Table<2> {

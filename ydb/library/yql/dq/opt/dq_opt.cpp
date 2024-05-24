@@ -9,6 +9,74 @@ using namespace NYql::NNodes;
 
 namespace NYql::NDq {
 
+TDqStageSettings TDqStageSettings::Parse(const TDqStageBase& node) {
+    TDqStageSettings settings{};
+
+    for (const auto& tuple : node.Settings()) {
+        if (const auto name = tuple.Name().Value(); name == IdSettingName) {
+            YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
+            settings.Id = tuple.Value().Cast<TCoAtom>().Value();
+        } else if (name == LogicalIdSettingName) {
+            YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
+            settings.LogicalId = FromString<ui64>(tuple.Value().Cast<TCoAtom>().Value());
+        } else if (name == SinglePartitionSettingName) {
+            settings.SinglePartition = true;
+        } else if (name == WideChannelsSettingName) {
+            settings.WideChannels = true;
+            settings.OutputNarrowType = tuple.Value().Ref().GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TStructExprType>();
+        }
+    }
+
+    return settings;
+}
+
+TDqStageSettings TDqStageSettings::New(const NNodes::TDqStageBase& node) {
+    auto settings = Parse(node);
+
+    if (!settings.Id) {
+        settings.Id = CreateGuidAsString();
+    }
+
+    return settings;
+}
+
+NNodes::TCoNameValueTupleList TDqStageSettings::BuildNode(TExprContext& ctx, TPositionHandle pos) const {
+    TVector<TCoNameValueTuple> settings;
+    auto logicalId = LogicalId;
+    if (!logicalId) {
+        logicalId = ctx.NextUniqueId;
+    }
+
+    settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
+        .Name().Build(LogicalIdSettingName)
+        .Value<TCoAtom>().Build(logicalId)
+        .Done());
+
+    if (Id) {
+        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
+            .Name().Build(IdSettingName)
+            .Value<TCoAtom>().Build(Id)
+            .Done());
+    }
+
+    if (SinglePartition) {
+        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
+            .Name().Build(SinglePartitionSettingName)
+            .Done());
+    }
+
+    if (WideChannels) {
+        YQL_ENSURE(OutputNarrowType);
+        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
+            .Name().Build(WideChannelsSettingName)
+            .Value(ExpandType(pos, *OutputNarrowType, ctx))
+            .Done());
+    }
+
+    return Build<TCoNameValueTupleList>(ctx, pos)
+        .Add(settings)
+        .Done();
+}
 
 TCoAtom BuildAtom(TStringBuf value, TPositionHandle pos, TExprContext& ctx) {
     return Build<TCoAtom>(ctx, pos)
@@ -74,14 +142,6 @@ ui32 GetStageOutputsCount(const TDqStageBase& stage) {
     YQL_ENSURE(stageType);
     auto resultsTypeTuple = stageType->Cast<TTupleExprType>();
     return resultsTypeTuple->GetSize();
-}
-
-bool DqStageFirstInputIsBroadcast(const TDqStageBase& stage) {
-    if (stage.Inputs().Empty()) {
-        return false;
-    }
-
-    return TDqCnBroadcast::Match(stage.Inputs().Item(0).Raw());
 }
 
 bool IsDqPureNode(const TExprBase& node) {
@@ -176,19 +236,6 @@ bool IsDqSelfContainedExpr(const TExprBase& node) {
 bool IsDqDependsOnStage(const TExprBase& node, const TDqStageBase& stage) {
     return !!FindNode(node.Ptr(), [ptr = stage.Raw()](const TExprNode::TPtr& exprNode) {
         return exprNode.Get() == ptr;
-    });
-}
-
-bool IsDqDependsOnStageOutput(const TExprBase& node, const TDqStageBase& stage, ui32 outputIndex) {
-    return !!FindNode(node.Ptr(), [ptr = stage.Raw(), outputIndex](const TExprNode::TPtr& exprNode) {
-        if (TDqOutput::Match(exprNode.Get())) {
-            TDqOutput output(exprNode);
-            if (output.Stage().Ptr().Get() == ptr) {
-                return FromString<ui32>(output.Index().Value()) == outputIndex;
-            }
-        }
-
-        return false;
     });
 }
 

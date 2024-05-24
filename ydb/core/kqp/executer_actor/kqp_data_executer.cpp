@@ -3,20 +3,21 @@
 #include "kqp_locks_helper.h"
 #include "kqp_partition_helper.h"
 #include "kqp_planner.h"
+#include "kqp_result_channel.h"
 #include "kqp_table_resolver.h"
 #include "kqp_tasks_validate.h"
 #include "kqp_shards_resolver.h"
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipecache.h>
-#include <ydb/library/wilson_ids/wilson.h>
+#include <ydb/core/base/wilson.h>
 #include <ydb/core/client/minikql_compile/db_key_resolver.h>
 #include <ydb/core/kqp/common/kqp_yql.h>
 #include <ydb/core/kqp/compute_actor/kqp_compute_actor.h>
-#include <ydb/core/kqp/common/kqp_tx.h>
 #include <ydb/core/kqp/common/kqp.h>
 #include <ydb/core/kqp/runtime/kqp_transport.h>
 #include <ydb/core/kqp/opt/kqp_query_plan.h>
+#include <ydb/core/tx/coordinator/coordinator_impl.h>
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/tx/datashard/datashard.h>
 #include <ydb/core/tx/long_tx_service/public/events.h>
@@ -28,6 +29,7 @@
 #include <ydb/library/yql/dq/tasks/dq_connection_builder.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 
+#include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -125,25 +127,18 @@ public:
         const TIntrusiveConstPtr<NACLib::TUserToken>& userToken,
         TKqpRequestCounters::TPtr counters, bool streamResult,
         const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& executerRetriesConfig,
-        NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory,
-        const NKikimrConfig::TTableServiceConfig::EChannelTransportVersion chanTransportVersion,
-        const NKikimrConfig::TTableServiceConfig::TAggregationConfig& aggregation,
-        const TActorId& creator, TDuration maximalSecretsSnapshotWaitTime, const TIntrusivePtr<TUserRequestContext>& userRequestContext,
-        const bool enableOlapSink, const bool useEvWrite, ui32 statementResultIndex, const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup,
-        const TGUCSettings::TPtr& GUCSettings)
-        : TBase(std::move(request), database, userToken, counters, executerRetriesConfig, chanTransportVersion, aggregation,
-            maximalSecretsSnapshotWaitTime, userRequestContext, statementResultIndex, TWilsonKqp::DataExecuter, "DataExecuter", streamResult)
+        NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory)
+        : TBase(std::move(request), database, userToken, counters, executerRetriesConfig, TWilsonKqp::DataExecuter, "DataExecuter")
         , AsyncIoFactory(std::move(asyncIoFactory))
-        , EnableOlapSink(enableOlapSink)
-        , UseEvWrite(useEvWrite)
-        , FederatedQuerySetup(federatedQuerySetup)
-        , GUCSettings(GUCSettings)
+        , StreamResult(streamResult)
     {
-        Target = creator;
-
         YQL_ENSURE(Request.IsolationLevel != NKikimrKqp::ISOLATION_LEVEL_UNDEFINED);
 
-        if (Request.AcquireLocksTxId || Request.LocksOp == ELocksOp::Commit || Request.LocksOp == ELocksOp::Rollback) {
+        if (Request.AcquireLocksTxId || Request.ValidateLocks || Request.EraseLocks) {
+            YQL_ENSURE(Request.IsolationLevel == NKikimrKqp::ISOLATION_LEVEL_SERIALIZABLE);
+        }
+
+        if (GetSnapshot().IsValid()) {
             YQL_ENSURE(Request.IsolationLevel == NKikimrKqp::ISOLATION_LEVEL_SERIALIZABLE);
         }
 
@@ -165,12 +160,10 @@ public:
 
         if (IsDebugLogEnabled()) {
             auto sb = TStringBuilder() << "ActorState: " << CurrentStateFuncName()
-                << ", waiting for " << (Planner ? Planner->GetPendingComputeActors().size() : 0) << " compute actor(s) and "
+                << ", waiting for " << PendingComputeActors.size() << " compute actor(s) and "
                 << notFinished << " datashard(s): ";
-            if (Planner) {
-                for (const auto& shardId : Planner->GetPendingComputeActors()) {
-                    sb << "CA " << shardId.first << ", ";
-                }
+            for (const auto& shardId : PendingComputeActors) {
+                sb << "CA " << shardId.first << ", ";
             }
             for (const auto& [shardId, shardState] : ShardStates) {
                 if (shardState.State != TShardState::EState::Finished) {
@@ -178,65 +171,6 @@ public:
                 }
             }
             LOG_D(sb);
-        }
-    }
-
-    bool ForceAcquireSnapshot() const {
-        const bool forceSnapshot = (
-            ReadOnlyTx &&
-            !ImmediateTx &&
-            !HasPersistentChannels &&
-            !HasOlapTable &&
-            (!Database.empty() || AppData()->EnableMvccSnapshotWithLegacyDomainRoot)
-        );
-
-        return forceSnapshot;
-    }
-
-    bool GetUseFollowers() const {
-        return (
-            // first, we must specify read stale flag.
-            Request.IsolationLevel == NKikimrKqp::ISOLATION_LEVEL_READ_STALE &&
-            // next, if snapshot is already defined, so in this case followers are not allowed.
-            !GetSnapshot().IsValid() &&
-            // ensure that followers are allowed only for read only transactions.
-            ReadOnlyTx &&
-            // if we are forced to acquire snapshot by some reason, so we cannot use followers.
-            !ForceAcquireSnapshot()
-        );
-    }
-
-    bool LogStatsByLongTasks() const {
-        return Stats->CollectStatsByLongTasks && HasOlapTable;
-    }
-
-    void FillResponseStats(Ydb::StatusIds::StatusCode status) {
-        auto& response = *ResponseEv->Record.MutableResponse();
-
-        response.SetStatus(status);
-
-        if (Stats) {
-            ReportEventElapsedTime();
-
-            Stats->FinishTs = TInstant::Now();
-            Stats->Finish();
-
-            if (LogStatsByLongTasks() || CollectFullStats(Request.StatsMode)) {
-                for (ui32 txId = 0; txId < Request.Transactions.size(); ++txId) {
-                    const auto& tx = Request.Transactions[txId].Body;
-                    auto planWithStats = AddExecStatsToTxPlan(tx->GetPlan(), response.GetResult().GetStats());
-                    response.MutableResult()->MutableStats()->AddTxPlansWithStats(planWithStats);
-                }
-            }
-
-            if (LogStatsByLongTasks()) {
-                const auto& txPlansWithStats = response.GetResult().GetStats().GetTxPlansWithStats();
-                if (!txPlansWithStats.empty()) {
-                    LOG_N("Full stats: " << txPlansWithStats);
-                }
-            }
-
-            Stats.reset();
         }
     }
 
@@ -250,38 +184,26 @@ public:
 
         auto& response = *ResponseEv->Record.MutableResponse();
 
-        FillResponseStats(Ydb::StatusIds::SUCCESS);
+        response.SetStatus(Ydb::StatusIds::SUCCESS);
         Counters->TxProxyMon->ReportStatusOK->Inc();
 
-        auto addLocks = [this](const auto& data) {
-            if (data.GetData().template Is<NKikimrTxDataShard::TEvKqpInputActorResultInfo>()) {
+        auto addLocks = [&](const NYql::NDqProto::TExtraInputData& data) {
+            if (data.GetData().Is<NKikimrTxDataShard::TEvKqpInputActorResultInfo>()) {
                 NKikimrTxDataShard::TEvKqpInputActorResultInfo info;
-                YQL_ENSURE(data.GetData().UnpackTo(&info), "Failed to unpack settings");
-                for (auto& lock : info.GetLocks()) {
-                    Locks.push_back(lock);
-                }
-            } else if (data.GetData().template Is<NKikimrKqp::TEvKqpOutputActorResultInfo>()) {
-                NKikimrKqp::TEvKqpOutputActorResultInfo info;
                 YQL_ENSURE(data.GetData().UnpackTo(&info), "Failed to unpack settings");
                 for (auto& lock : info.GetLocks()) {
                     Locks.push_back(lock);
                 }
             }
         };
-
         for (auto& [_, data] : ExtraData) {
-            for (const auto& source : data.GetSourcesExtraData()) {
+            for (auto& source : data.GetSourcesExtraData()) {
                 addLocks(source);
             }
-            for (const auto& transform : data.GetInputTransformsData()) {
+            for (auto& transform : data.GetInputTransformsData()) {
                 addLocks(transform);
             }
-            for (const auto& sink : data.GetSinksExtraData()) {
-                addLocks(sink);
-            }
         }
-
-        ResponseEv->Snapshot = GetSnapshot();
 
         if (!Locks.empty()) {
             if (LockHandle) {
@@ -290,28 +212,43 @@ public:
             BuildLocks(*response.MutableResult()->MutableLocks(), Locks);
         }
 
+        if (Stats) {
+            ReportEventElapsedTime();
+
+            Stats->FinishTs = TInstant::Now();
+            Stats->Finish();
+
+            if (CollectFullStats(Request.StatsMode)) {
+                for (ui32 txId = 0; txId < Request.Transactions.size(); ++txId) {
+                    const auto& tx = Request.Transactions[txId].Body;
+                    auto planWithStats = AddExecStatsToTxPlan(tx->GetPlan(), response.GetResult().GetStats());
+                    response.MutableResult()->MutableStats()->AddTxPlansWithStats(planWithStats);
+                }
+            }
+
+            Stats.reset();
+        }
+
         auto resultSize = ResponseEv->GetByteSize();
         if (resultSize > (int)ReplySizeLimit) {
-            TString message;
-            if (ResponseEv->TxResults.size() == 1 && !ResponseEv->TxResults[0].QueryResultIndex.Defined()) {
-                message = TStringBuilder() << "Intermediate data materialization exceeded size limit"
-                    << " (" << resultSize << " > " << ReplySizeLimit << ")."
-                    << " This usually happens when trying to write large amounts of data or to perform lookup"
-                    << " by big collection of keys in single query. Consider using smaller batches of data.";
-            } else {
-                message = TStringBuilder() << "Query result size limit exceeded. ("
-                    << resultSize << " > " << ReplySizeLimit << ")";
-            }
+            TString message = TStringBuilder() << "Query result size limit exceeded. ("
+                << resultSize << " > " << ReplySizeLimit << ")";
 
             auto issue = YqlIssue({}, TIssuesIds::KIKIMR_RESULT_UNAVAILABLE, message);
             ReplyErrorAndDie(Ydb::StatusIds::PRECONDITION_FAILED, issue);
-            Counters->Counters->TxReplySizeExceededError->Inc();
             return;
         }
 
         LWTRACK(KqpDataExecuterFinalize, ResponseEv->Orbit, TxId, LastShard, ResponseEv->ResultsSize(), ResponseEv->GetByteSize());
 
-        ExecuterSpan.EndOk();
+        if (ExecuterStateSpan) {
+            ExecuterStateSpan.End();
+            ExecuterStateSpan = {};
+        }
+
+        if (ExecuterSpan) {
+            ExecuterSpan.EndOk();
+        }
 
         Request.Transactions.crop(0);
         LOG_D("Sending response to: " << Target << ", results: " << ResponseEv->ResultsSize());
@@ -324,9 +261,6 @@ public:
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvKqpExecuter::TEvTableResolveStatus, HandleResolve);
                 hFunc(TEvKqpExecuter::TEvShardsResolveStatus, HandleResolve);
-                hFunc(TEvPrivate::TEvResourcesSnapshot, HandleResolve);
-                hFunc(TEvSaveScriptExternalEffectResponse, HandleResolve);
-                hFunc(TEvDescribeSecretsResponse, HandleResolve);
                 hFunc(TEvKqp::TEvAbortExecution, HandleAbortExecution);
                 default:
                     UnexpectedEvent("WaitResolveState", ev->GetTypeRewrite());
@@ -334,17 +268,11 @@ public:
 
         } catch (const yexception& e) {
             InternalError(e.what());
-        } catch (const TMemoryLimitExceededException&) {
-            RuntimeError(Ydb::StatusIds::PRECONDITION_FAILED, NYql::TIssues({NYql::TIssue(BuildMemoryLimitExceptionMessage())}));
         }
         ReportEventElapsedTime();
     }
 
 private:
-    bool IsCancelAfterAllowed(const TEvKqp::TEvAbortExecution::TPtr& ev) const {
-        return ReadOnlyTx || ev->Get()->Record.GetStatusCode() != NYql::NDqProto::StatusIds::CANCELLED;
-    }
-
     TString CurrentStateFuncName() const override {
         const auto& func = CurrentStateFunc();
         if (func == &TThis::PrepareState) {
@@ -368,11 +296,9 @@ private:
                 hFunc(TEvDataShard::TEvProposeTransactionRestart, HandleExecute);
                 hFunc(TEvDataShard::TEvProposeTransactionAttachResult, HandlePrepare);
                 hFunc(TEvPersQueue::TEvProposeTransactionResult, HandlePrepare);
-                hFunc(NKikimr::NEvents::TDataEvents::TEvWriteResult, HandlePrepare);
                 hFunc(TEvPrivate::TEvReattachToShard, HandleExecute);
                 hFunc(TEvDqCompute::TEvState, HandlePrepare); // from CA
-                hFunc(TEvDqCompute::TEvChannelData, HandleChannelData); // from CA
-                hFunc(TEvKqpExecuter::TEvStreamDataAck, HandleStreamAck);
+                hFunc(TEvDqCompute::TEvChannelData, HandleExecute); // from CA
                 hFunc(TEvPipeCache::TEvDeliveryProblem, HandlePrepare);
                 hFunc(TEvKqp::TEvAbortExecution, HandlePrepare);
                 hFunc(TEvents::TEvUndelivered, HandleUndelivered);
@@ -387,11 +313,7 @@ private:
         } catch (const yexception& e) {
             CancelProposal(0);
             InternalError(e.what());
-        } catch (const TMemoryLimitExceededException& e) {
-            CancelProposal(0);
-            RuntimeError(Ydb::StatusIds::PRECONDITION_FAILED, NYql::TIssues({NYql::TIssue(BuildMemoryLimitExceptionMessage())}));
         }
-
         ReportEventElapsedTime();
     }
 
@@ -481,43 +403,6 @@ private:
             default:
             {
                 CancelProposal(shardId);
-                return ShardError(res->Record);
-            }
-        }
-    }
-
-    void HandlePrepare(NKikimr::NEvents::TDataEvents::TEvWriteResult::TPtr& ev) {
-        auto* res = ev->Get();
-
-        const ui64 shardId = res->Record.GetOrigin();
-        TShardState* shardState = ShardStates.FindPtr(shardId);
-        YQL_ENSURE(shardState, "Unexpected propose result from unknown tabletId " << shardId);
-
-        NYql::TIssues issues;
-        NYql::IssuesFromMessage(res->Record.GetIssues(), issues);
-        LOG_D("Got evWrite result, shard: " << shardId << ", status: "
-            << NKikimrDataEvents::TEvWriteResult::EStatus_Name(res->Record.GetStatus())
-            << ", error: " << issues.ToString());
-
-        if (Stats) {
-            Stats->AddDatashardPrepareStats(std::move(*res->Record.MutableTxStats()));
-        }
-
-        switch (ev->Get()->GetStatus()) {
-            case NKikimrDataEvents::TEvWriteResult::STATUS_UNSPECIFIED: {
-                YQL_ENSURE(false);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_PREPARED: {
-                if (!ShardPrepared(*shardState, res->Record)) {
-                    return;
-                }
-                return CheckPrepareCompleted();
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_COMPLETED: {
-                YQL_ENSURE(false);
-            }
-            default:
-            {
                 return ShardError(res->Record);
             }
         }
@@ -629,12 +514,8 @@ private:
     }
 
     void HandlePrepare(TEvKqp::TEvAbortExecution::TPtr& ev) {
-        if (IsCancelAfterAllowed(ev)) {
-            CancelProposal(0);
-            TBase::HandleAbortExecution(ev);
-        } else {
-            LOG_D("Got TEvAbortExecution from : " << ev->Sender << " but cancelation is not alowed");
-        }
+        CancelProposal(0);
+        TBase::HandleAbortExecution(ev);
     }
 
     void CancelProposal(ui64 exceptShardId) {
@@ -707,12 +588,8 @@ private:
     bool ShardPrepared(TShardState& state, const NKikimrTxColumnShard::TEvProposeTransactionResult& result) {
         return ShardPreparedImpl(state, result);
     }
-
+ 
     bool ShardPrepared(TShardState& state, const NKikimrPQ::TEvProposeTransactionResult& result) {
-        return ShardPreparedImpl(state, result);
-    }
-
-    bool ShardPrepared(TShardState& state, const NKikimrDataEvents::TEvWriteResult& result) {
         return ShardPreparedImpl(state, result);
     }
 
@@ -721,10 +598,7 @@ private:
             TStringBuilder message;
             message << NKikimrTxDataShard::TEvProposeTransactionResult_EStatus_Name(result.GetStatus()) << ": ";
             for (const auto &err : result.GetError()) {
-                if (err.GetKind() == NKikimrTxDataShard::TError::REPLY_SIZE_EXCEEDED) {
-                    Counters->Counters->DataShardTxReplySizeExceededError->Inc();
-                }
-                message << "[" << err.GetKind() << "] " << err.GetReason() << "; ";
+                message << "[" << NKikimrTxDataShard::TError_EKind_Name(err.GetKind()) << "] " << err.GetReason() << "; ";
             }
             LOG_E(message);
         }
@@ -792,12 +666,7 @@ private:
                         case NKikimrTxDataShard::TError::SCHEME_ERROR:
                             return ReplyErrorAndDie(Ydb::StatusIds::SCHEME_ERROR, YqlIssue({},
                                 TIssuesIds::KIKIMR_SCHEME_MISMATCH, er.GetReason()));
-                        case NKikimrTxDataShard::TError::OUT_OF_SPACE:
-                        case NKikimrTxDataShard::TError::DISK_SPACE_EXHAUSTED: {
-                            auto issue = YqlIssue({}, TIssuesIds::KIKIMR_TEMPORARILY_UNAVAILABLE);
-                            AddDataShardErrors(result, issue);
-                            return ReplyErrorAndDie(Ydb::StatusIds::UNAVAILABLE, issue);
-                        }
+
                         default:
                             break;
                     }
@@ -862,40 +731,6 @@ private:
         }
     }
 
-    void ShardError(const NKikimrDataEvents::TEvWriteResult& result) {
-        NYql::TIssues issues;
-        NYql::IssuesFromMessage(result.GetIssues(), issues);
-
-        switch (result.GetStatus()) {
-            case NKikimrDataEvents::TEvWriteResult::STATUS_UNSPECIFIED:
-            case NKikimrDataEvents::TEvWriteResult::STATUS_PREPARED:
-            case NKikimrDataEvents::TEvWriteResult::STATUS_COMPLETED: {
-                YQL_ENSURE(false);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_ABORTED: {
-                return ReplyErrorAndDie(Ydb::StatusIds::ABORTED, issues);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_INTERNAL_ERROR: {
-                return ReplyErrorAndDie(Ydb::StatusIds::INTERNAL_ERROR, issues);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_OVERLOADED: {
-                return ReplyErrorAndDie(Ydb::StatusIds::OVERLOADED, issues);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_CANCELLED: {
-                return ReplyErrorAndDie(Ydb::StatusIds::CANCELLED, issues);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_BAD_REQUEST: {
-                return ReplyErrorAndDie(Ydb::StatusIds::BAD_REQUEST, issues);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_SCHEME_CHANGED: {
-                return ReplyErrorAndDie(Ydb::StatusIds::SCHEME_ERROR, issues);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_LOCKS_BROKEN: {
-                return ReplyErrorAndDie(Ydb::StatusIds::ABORTED, issues);
-            }
-        }
-    }
-
     void PQTabletError(const NKikimrPQ::TEvProposeTransactionResult& result) {
         NYql::TIssuesIds::EIssueCode issueCode;
         Ydb::StatusIds::StatusCode statusCode;
@@ -928,11 +763,8 @@ private:
         }
         }
 
-        if (result.ErrorsSize()) {
-            ReplyErrorAndDie(statusCode, YqlIssue({}, issueCode, result.GetErrors(0).GetReason()));
-        } else {
-            ReplyErrorAndDie(statusCode, YqlIssue({}, issueCode));
-        }
+        auto issue = YqlIssue({}, issueCode);
+        ReplyErrorAndDie(statusCode, issue);
     }
 
     void CheckPrepareCompleted() {
@@ -947,11 +779,17 @@ private:
 
         LOG_D("All shards prepared, become ExecuteState.");
         Become(&TKqpDataExecuter::ExecuteState);
+        if (ExecuterStateSpan) {
+            ExecuterStateSpan.End();
+            ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::DataExecuterExecuteState, ExecuterSpan.GetTraceId(), "ExecuteState", NWilson::EFlags::AUTO_END);
+        }
+
         ExecutePlanned();
     }
 
     void ExecutePlanned() {
         YQL_ENSURE(TxCoordinator);
+
         auto ev = MakeHolder<TEvTxProxy::TEvProposeTransaction>();
         ev->Record.SetCoordinatorID(TxCoordinator);
 
@@ -979,7 +817,7 @@ private:
 
             ui32 affectedFlags = 0;
             if (state.DatashardState->ShardReadLocks) {
-                affectedFlags |= TEvTxProxy::TEvProposeTransaction::AffectedRead;
+                affectedFlags |= NFlatTxCoordinator::TTransactionProposal::TAffectedEntry::AffectedRead;
             }
 
             for (auto taskId : state.TaskIds) {
@@ -987,10 +825,10 @@ private:
                 auto& stageInfo = TasksGraph.GetStageInfo(task.StageId);
 
                 if (stageInfo.Meta.HasReads()) {
-                    affectedFlags |= TEvTxProxy::TEvProposeTransaction::AffectedRead;
+                    affectedFlags |= NFlatTxCoordinator::TTransactionProposal::TAffectedEntry::AffectedRead;
                 }
                 if (stageInfo.Meta.HasWrites()) {
-                    affectedFlags |= TEvTxProxy::TEvProposeTransaction::AffectedWrite;
+                    affectedFlags |= NFlatTxCoordinator::TTransactionProposal::TAffectedEntry::AffectedWrite;
                 }
             }
 
@@ -1016,10 +854,6 @@ private:
         transaction.SetMinStep(aggrMinStep);
         transaction.SetMaxStep(aggrMaxStep);
 
-        if (VolatileTx) {
-            transaction.SetFlags(TEvTxProxy::TEvProposeTransaction::FlagVolatile);
-        }
-
         LOG_T("Execute planned transaction, coordinator: " << TxCoordinator);
         Send(MakePipePeNodeCacheID(false), new TEvPipeCache::TEvForward(ev.Release(), TxCoordinator, /* subscribe */ true));
     }
@@ -1033,7 +867,6 @@ private:
                 hFunc(TEvDataShard::TEvProposeTransactionRestart, HandleExecute);
                 hFunc(TEvDataShard::TEvProposeTransactionAttachResult, HandleExecute);
                 hFunc(TEvPersQueue::TEvProposeTransactionResult, HandleExecute);
-                hFunc(NKikimr::NEvents::TDataEvents::TEvWriteResult, HandleExecute);
                 hFunc(TEvPrivate::TEvReattachToShard, HandleExecute);
                 hFunc(TEvPipeCache::TEvDeliveryProblem, HandleExecute);
                 hFunc(TEvents::TEvUndelivered, HandleUndelivered);
@@ -1042,8 +875,7 @@ private:
                 hFunc(TEvKqpNode::TEvStartKqpTasksResponse, HandleStartKqpTasksResponse);
                 hFunc(TEvTxProxy::TEvProposeTransactionStatus, HandleExecute);
                 hFunc(TEvDqCompute::TEvState, HandleComputeStats);
-                hFunc(NYql::NDq::TEvDqCompute::TEvChannelData, HandleChannelData);
-                hFunc(TEvKqpExecuter::TEvStreamDataAck, HandleStreamAck);
+                hFunc(TEvDqCompute::TEvChannelData, HandleExecute);
                 hFunc(TEvKqp::TEvAbortExecution, HandleExecute);
                 IgnoreFunc(TEvInterconnect::TEvNodeConnected);
                 default:
@@ -1051,12 +883,6 @@ private:
             }
         } catch (const yexception& e) {
             InternalError(e.what());
-        } catch (const TMemoryLimitExceededException) {
-            if (ReadOnlyTx) {
-                RuntimeError(Ydb::StatusIds::PRECONDITION_FAILED, NYql::TIssues({NYql::TIssue(BuildMemoryLimitExceptionMessage())}));
-            } else {
-                RuntimeError(Ydb::StatusIds::UNDETERMINED, NYql::TIssues({NYql::TIssue(BuildMemoryLimitExceptionMessage())}));
-            }
         }
         ReportEventElapsedTime();
     }
@@ -1091,14 +917,10 @@ private:
     }
 
     void HandleExecute(TEvKqp::TEvAbortExecution::TPtr& ev) {
-        if (IsCancelAfterAllowed(ev)) {
-            if (ImmediateTx) {
-                CancelProposal(0);
-            }
-            TBase::HandleAbortExecution(ev);
-        } else {
-            LOG_D("Got TEvAbortExecution from : " << ev->Sender << " but cancelation is not alowed");
+        if (ImmediateTx) {
+            CancelProposal(0);
         }
+        TBase::HandleAbortExecution(ev);
     }
 
     void HandleExecute(TEvColumnShard::TEvProposeTransactionResult::TPtr& ev) {
@@ -1148,48 +970,6 @@ private:
         }
     }
 
-    void HandleExecute(NKikimr::NEvents::TDataEvents::TEvWriteResult::TPtr& ev) {
-        auto* res = ev->Get();
-        const ui64 shardId = res->Record.GetOrigin();
-        LastShard = shardId;
-
-        TShardState* shardState = ShardStates.FindPtr(shardId);
-        YQL_ENSURE(shardState);
-
-        NYql::TIssues issues;
-        NYql::IssuesFromMessage(res->Record.GetIssues(), issues);
-        LOG_D("Got evWrite result, shard: " << shardId << ", status: "
-            << NKikimrDataEvents::TEvWriteResult::EStatus_Name(res->Record.GetStatus())
-            << ", error: " << issues.ToString());
-
-        if (Stats) {
-            Stats->AddDatashardStats(std::move(*res->Record.MutableTxStats()));
-        }
-
-        switch (ev->Get()->GetStatus()) {
-            case NKikimrDataEvents::TEvWriteResult::STATUS_UNSPECIFIED: {
-                YQL_ENSURE(false);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_PREPARED: {
-                YQL_ENSURE(false);
-            }
-            case NKikimrDataEvents::TEvWriteResult::STATUS_COMPLETED: {
-                YQL_ENSURE(shardState->State == TShardState::EState::Executing);
-                shardState->State = TShardState::EState::Finished;
-
-                Counters->TxProxyMon->ResultsReceivedCount->Inc();
-                Counters->TxProxyMon->TxResultComplete->Inc();
-
-                CheckExecutionComplete();
-                return;
-            }
-            default:
-            {
-                return ShardError(res->Record);
-            }
-        }
-    }
-
     void HandleExecute(TEvDataShard::TEvProposeTransactionResult::TPtr& ev) {
         TEvDataShard::TEvProposeTransactionResult* res = ev->Get();
         ResponseEv->Orbit.Join(res->Orbit);
@@ -1204,10 +984,8 @@ private:
             << ", error: " << res->GetError());
 
         if (Stats) {
-            Stats->AddDatashardStats(
-                std::move(*res->Record.MutableComputeActorStats()),
-                std::move(*res->Record.MutableTxStats()),
-                TDuration::MilliSeconds(AggregationSettings.GetCollectLongTasksStatsTimeoutMs()));
+            Stats->AddDatashardStats(std::move(*res->Record.MutableComputeActorStats()),
+                std::move(*res->Record.MutableTxStats()));
         }
 
         switch (res->GetStatus()) {
@@ -1242,9 +1020,9 @@ private:
                 if (!res->Record.GetTxLocks().empty()) {
                     auto& lock = res->Record.GetTxLocks(0);
                     auto tableId = TTableId(lock.GetSchemeShard(), lock.GetPathId());
-                    auto it = FindIf(TasksGraph.GetStagesInfo(), [tableId](const auto& x){ return x.second.Meta.TableId.HasSamePath(tableId); });
-                    if (it != TasksGraph.GetStagesInfo().end()) {
-                        tableName = it->second.Meta.TableConstInfo->Path;
+                    auto it = FindIf(GetTableKeys().Get(), [tableId](const auto& x){ return x.first.HasSamePath(tableId); });
+                    if (it != GetTableKeys().Get().end()) {
+                        tableName = it->second.Path;
                     }
                 }
 
@@ -1338,7 +1116,7 @@ private:
 
         LOG_I("Reattach to shard " << tabletId);
 
-        Send(MakePipePeNodeCacheID(false), new TEvPipeCache::TEvForward(
+        Send(MakePipePeNodeCacheID(UseFollowers), new TEvPipeCache::TEvForward(
             new TEvDataShard::TEvProposeTransactionAttach(tabletId, TxId),
             tabletId, /* subscribe */ true), 0, ++shardState->ReattachState.Cookie);
     }
@@ -1411,7 +1189,7 @@ private:
             case TShardState::EState::Prepared: // is it correct?
                 LOG_E("DeliveryProblem to shard " << msg->TabletId << ", notDelivered: " << msg->NotDelivered
                     << ", txPlanned: " << TxPlanned << ", coordinator: " << TxCoordinator);
-                Y_DEBUG_ABORT_UNLESS(false);
+                Y_VERIFY_DEBUG(false);
                 // Proceed with query processing
                 [[fallthrough]];
             case TShardState::EState::Executing: {
@@ -1442,6 +1220,35 @@ private:
         }
     }
 
+    void HandleExecute(TEvDqCompute::TEvChannelData::TPtr& ev) {
+        auto& record = ev->Get()->Record;
+        auto& channelData = record.GetChannelData();
+
+        auto& channel = TasksGraph.GetChannel(channelData.GetChannelId());
+        YQL_ENSURE(channel.DstTask == 0);
+        auto shardId = TasksGraph.GetTask(channel.SrcTask).Meta.ShardId;
+
+        if (Stats) {
+            Stats->ResultBytes += channelData.GetData().GetRaw().size();
+            Stats->ResultRows += channelData.GetData().GetRows();
+        }
+
+        LOG_T("Got result, channelId: " << channel.Id << ", shardId: " << shardId
+            << ", inputIndex: " << channel.DstInputIndex << ", from: " << ev->Sender
+            << ", finished: " << channelData.GetFinished());
+
+        ResponseEv->TakeResult(channel.DstInputIndex, std::move(*record.MutableChannelData()->MutableData()));
+        {
+            LOG_T("Send ack to channelId: " << channel.Id << ", seqNo: " << record.GetSeqNo() << ", to: " << ev->Sender);
+
+            auto ackEv = MakeHolder<TEvDqCompute::TEvChannelDataAck>();
+            ackEv->Record.SetSeqNo(record.GetSeqNo());
+            ackEv->Record.SetChannelId(channel.Id);
+            ackEv->Record.SetFreeSpace(50_MB);
+            Send(ev->Sender, ackEv.Release(), /* TODO: undelivery */ 0, /* cookie */ channel.Id);
+        }
+    }
+
 private:
     bool IsReadOnlyTx() const {
         if (Request.TopicOperations.HasOperations()) {
@@ -1449,7 +1256,7 @@ private:
             return false;
         }
 
-        if (Request.LocksOp == ELocksOp::Commit) {
+        if (Request.ValidateLocks && Request.EraseLocks) {
             YQL_ENSURE(!Request.UseImmediateEffects);
             return false;
         }
@@ -1465,52 +1272,62 @@ private:
         return true;
     }
 
+    void FillGeneralReadInfo(TTaskMeta& taskMeta, ui64 itemsLimit, bool reverse) {
+        if (taskMeta.Reads && !taskMeta.Reads.GetRef().empty()) {
+            // Validate parameters
+            YQL_ENSURE(taskMeta.ReadInfo.ItemsLimit == itemsLimit);
+            YQL_ENSURE(taskMeta.ReadInfo.Reverse == reverse);
+            return;
+        }
+
+        taskMeta.ReadInfo.ItemsLimit = itemsLimit;
+        taskMeta.ReadInfo.Reverse = reverse;
+    };
+
     void BuildDatashardTasks(TStageInfo& stageInfo) {
         THashMap<ui64, ui64> shardTasks; // shardId -> taskId
-        auto& stage = stageInfo.Meta.GetStage(stageInfo.Id);
 
         auto getShardTask = [&](ui64 shardId) -> TTask& {
-            YQL_ENSURE(!UseEvWrite);
             auto it  = shardTasks.find(shardId);
             if (it != shardTasks.end()) {
                 return TasksGraph.GetTask(it->second);
             }
             auto& task = TasksGraph.AddTask(stageInfo);
-            task.Meta.Type = TTaskMeta::TTaskType::DataShard;
             task.Meta.ExecuterId = SelfId();
             task.Meta.ShardId = shardId;
             shardTasks.emplace(shardId, task.Id);
-
-            FillSecureParamsFromStage(task.Meta.SecureParams, stage);
-            BuildSinks(stage, task);
-
             return task;
         };
 
-        const auto& tableInfo = stageInfo.Meta.TableConstInfo;
-        const auto& keyTypes = tableInfo->KeyColumnTypes;
+        auto& stage = stageInfo.Meta.GetStage(stageInfo.Id);
+
+        const auto& table = GetTableKeys().GetTable(stageInfo.Meta.TableId);
+        const auto& keyTypes = table.KeyColumnTypes;;
 
         for (auto& op : stage.GetTableOps()) {
-            Y_DEBUG_ABORT_UNLESS(stageInfo.Meta.TablePath == op.GetTable().GetPath());
-            auto columns = BuildKqpColumns(op, tableInfo);
+            Y_VERIFY_DEBUG(stageInfo.Meta.TablePath == op.GetTable().GetPath());
+            auto columns = BuildKqpColumns(op, table);
             switch (op.GetTypeCase()) {
                 case NKqpProto::TKqpPhyTableOperation::kReadRanges:
                 case NKqpProto::TKqpPhyTableOperation::kReadRange:
                 case NKqpProto::TKqpPhyTableOperation::kLookup: {
-                    bool isFullScan = false;
-                    auto partitions = PrunePartitions(op, stageInfo, HolderFactory(), TypeEnv(), isFullScan);
+                    auto partitions = PrunePartitions(GetTableKeys(), op, stageInfo, HolderFactory(), TypeEnv());
                     auto readSettings = ExtractReadSettings(op, stageInfo, HolderFactory(), TypeEnv());
-
-                    if (!readSettings.ItemsLimit && isFullScan) {
-                        Counters->Counters->FullScansExecuted->Inc();
-                    }
 
                     for (auto& [shardId, shardInfo] : partitions) {
                         YQL_ENSURE(!shardInfo.KeyWriteRanges);
 
                         auto& task = getShardTask(shardId);
-                        MergeReadInfoToTaskMeta(task.Meta, shardId, shardInfo.KeyReadRanges, readSettings,
-                            columns, op, /*isPersistentScan*/ false);
+                        FillGeneralReadInfo(task.Meta, readSettings.ItemsLimit, readSettings.Reverse);
+
+                        TTaskMeta::TShardReadInfo readInfo;
+                        readInfo.Ranges = std::move(*shardInfo.KeyReadRanges);
+                        readInfo.Columns = columns;
+
+                        if (!task.Meta.Reads) {
+                            task.Meta.Reads.ConstructInPlace();
+                        }
+                        task.Meta.Reads->emplace_back(std::move(readInfo));
                     }
 
                     break;
@@ -1548,7 +1365,7 @@ private:
                             ShardsWithEffects.insert(task.Meta.ShardId);
                         }
                     } else {
-                        auto result = PruneEffectPartitions(op, stageInfo, HolderFactory(), TypeEnv());
+                        auto result = PruneEffectPartitions(GetTableKeys(), op, stageInfo, HolderFactory(), TypeEnv());
                         for (auto& [shardId, shardInfo] : result) {
                             YQL_ENSURE(!shardInfo.KeyReadRanges);
                             YQL_ENSURE(shardInfo.KeyWriteRanges);
@@ -1569,7 +1386,7 @@ private:
                             }
 
                             for (const auto& [name, info] : shardInfo.ColumnWrites) {
-                                auto& column = tableInfo->Columns.at(name);
+                                auto& column = table.Columns.at(name);
 
                                 auto& taskColumnWrite = task.Meta.Writes->ColumnWrites[column.Id];
                                 taskColumnWrite.Column.Id = column.Id;
@@ -1608,13 +1425,69 @@ private:
         }
     }
 
-    void ExecuteDatashardTransaction(ui64 shardId, NKikimrTxDataShard::TKqpTransaction& kqpTx, const bool isOlap)
+    void BuildComputeTasks(TStageInfo& stageInfo) {
+        auto& stage = stageInfo.Meta.GetStage(stageInfo.Id);
+
+        ui32 partitionsCount = 1;
+        for (ui32 inputIndex = 0; inputIndex < stage.InputsSize(); ++inputIndex) {
+            const auto& input = stage.GetInputs(inputIndex);
+
+            // Current assumptions:
+            // 1. `Broadcast` can not be the 1st stage input unless it's a single input
+            // 2. All stage's inputs, except 1st one, must be a `Broadcast` or `UnionAll`
+            if (inputIndex == 0) {
+                if (stage.InputsSize() > 1) {
+                    YQL_ENSURE(input.GetTypeCase() != NKqpProto::TKqpPhyConnection::kBroadcast);
+                }
+            } else {
+                switch (input.GetTypeCase()) {
+                    case NKqpProto::TKqpPhyConnection::kBroadcast:
+                    case NKqpProto::TKqpPhyConnection::kHashShuffle:
+                    case NKqpProto::TKqpPhyConnection::kUnionAll:
+                    case NKqpProto::TKqpPhyConnection::kMerge:
+                        break;
+                    default:
+                        YQL_ENSURE(false, "Unexpected connection type: " << (ui32)input.GetTypeCase() << Endl
+                            << this->DebugString());
+                }
+            }
+
+            auto& originStageInfo = TasksGraph.GetStageInfo(TStageId(stageInfo.Id.TxId, input.GetStageIndex()));
+
+            switch (input.GetTypeCase()) {
+                case NKqpProto::TKqpPhyConnection::kHashShuffle: {
+                    partitionsCount = std::max(partitionsCount, (ui32)originStageInfo.Tasks.size() / 2);
+                    partitionsCount = std::min(partitionsCount, 24u);
+                    break;
+                }
+
+                case NKqpProto::TKqpPhyConnection::kStreamLookup:
+                    UnknownAffectedShardCount = true;
+                case NKqpProto::TKqpPhyConnection::kMap: {
+                    partitionsCount = originStageInfo.Tasks.size();
+                    break;
+                }
+
+                default: {
+                    break;
+                }
+            }
+        }
+
+        for (ui32 i = 0; i < partitionsCount; ++i) {
+            auto& task = TasksGraph.AddTask(stageInfo);
+            task.Meta.ExecuterId = SelfId();
+            LOG_D("Stage " << stageInfo.Id << " create compute task: " << task.Id);
+        }
+    }
+
+    void ExecuteDatashardTransaction(ui64 shardId, NKikimrTxDataShard::TKqpTransaction& kqpTx,
+        const TMaybe<ui64> lockTxId, const bool isOlap)
     {
-        YQL_ENSURE(!UseEvWrite);
         TShardState shardState;
         shardState.State = ImmediateTx ? TShardState::EState::Executing : TShardState::EState::Preparing;
         shardState.DatashardState.ConstructInPlace();
-        shardState.DatashardState->Follower = GetUseFollowers();
+        shardState.DatashardState->Follower = UseFollowers;
 
         if (Deadline) {
             TDuration timeout = *Deadline - TAppData::TimeProvider->Now();
@@ -1637,7 +1510,6 @@ private:
             dataTransaction.SetPerShardKeysSizeLimitBytes(Request.PerShardKeysSizeLimitBytes);
         }
 
-        auto& lockTxId = TasksGraph.GetMeta().LockTxId;
         if (lockTxId) {
             dataTransaction.SetLockTxId(*lockTxId);
             dataTransaction.SetLockNodeId(SelfId().NodeId());
@@ -1695,152 +1567,63 @@ private:
 
         LOG_D("ExecuteDatashardTransaction traceId.verbosity: " << std::to_string(traceId.GetVerbosity()));
 
-        Send(MakePipePeNodeCacheID(GetUseFollowers()), new TEvPipeCache::TEvForward(ev.release(), shardId, true), 0, 0, std::move(traceId));
+        Send(MakePipePeNodeCacheID(UseFollowers), new TEvPipeCache::TEvForward(ev.release(), shardId, true), 0, 0, std::move(traceId));
 
         auto result = ShardStates.emplace(shardId, std::move(shardState));
         YQL_ENSURE(result.second);
     }
 
-    void ExecuteEvWriteTransaction(ui64 shardId, NKikimrDataEvents::TEvWrite& evWrite) {
-        YQL_ENSURE(!ImmediateTx);
-        TShardState shardState;
-        shardState.State = TShardState::EState::Preparing;
-        shardState.DatashardState.ConstructInPlace();
+    void ExecuteDataComputeTask(ui64 taskId, bool shareMailbox) {
+        auto& task = TasksGraph.GetTask(taskId);
+        auto taskDesc = SerializeTaskToProto(TasksGraph, task);
 
-        auto evWriteTransaction = std::make_unique<NKikimr::NEvents::TDataEvents::TEvWrite>();
-        evWriteTransaction->Record = evWrite;
-        evWriteTransaction->Record.SetTxMode(NKikimrDataEvents::TEvWrite::MODE_PREPARE);
-        evWriteTransaction->Record.SetTxId(TxId);
+        TComputeRuntimeSettings settings;
+        if (Deadline) {
+            settings.Timeout = *Deadline - TAppData::TimeProvider->Now();
+        }
+        //settings.ExtraMemoryAllocationPool = NRm::EKqpMemoryPool::DataQuery;
+        settings.ExtraMemoryAllocationPool = NRm::EKqpMemoryPool::Unspecified;
+        settings.FailOnUndelivery = true;
+        settings.StatsMode = GetDqStatsMode(Request.StatsMode);
+        settings.UseSpilling = false;
 
-        evWriteTransaction->Record.MutableLocks()->SetOp(NKikimrDataEvents::TKqpLocks::Commit);
+        TComputeMemoryLimits limits;
+        limits.ChannelBufferSize = 50_MB;
+        limits.MkqlLightProgramMemoryLimit = Request.MkqlMemoryLimit > 0 ? std::min(500_MB, Request.MkqlMemoryLimit) : 500_MB;
+        limits.MkqlHeavyProgramMemoryLimit = Request.MkqlMemoryLimit > 0 ? std::min(2_GB, Request.MkqlMemoryLimit) : 2_GB;
 
-        auto locksCount = evWriteTransaction->Record.GetLocks().LocksSize();
-        shardState.DatashardState->ShardReadLocks = locksCount > 0;
+        auto& taskOpts = taskDesc.GetProgram().GetSettings();
+        auto limit = taskOpts.GetHasMapJoin() /* || opts.GetHasSort()*/
+            ? limits.MkqlHeavyProgramMemoryLimit
+            : limits.MkqlLightProgramMemoryLimit;
 
-        LOG_D("State: " << CurrentStateFuncName()
-            << ", Executing EvWrite (PREPARE) on shard: " << shardId
-            << ", TxId: " << TxId
-            << ", locks: " << evWriteTransaction->Record.GetLocks().ShortDebugString());
+        limits.MemoryQuotaManager = std::make_shared<TGuaranteeQuotaManager>(limit, limit);
 
-        auto traceId = ExecuterSpan.GetTraceId();
+        auto computeActor = CreateKqpComputeActor(SelfId(), TxId, std::move(taskDesc), AsyncIoFactory,
+            AppData()->FunctionRegistry, settings, limits);
 
-        LOG_D("ExecuteEvWriteTransaction traceId.verbosity: " << std::to_string(traceId.GetVerbosity()));
+        auto computeActorId = shareMailbox ? RegisterWithSameMailbox(computeActor) : Register(computeActor);
+        task.ComputeActorId = computeActorId;
 
-        Send(MakePipePeNodeCacheID(false), new TEvPipeCache::TEvForward(evWriteTransaction.release(), shardId, true), 0, 0, std::move(traceId));
+        LOG_D("Executing task: " << taskId << " on compute actor: " << task.ComputeActorId);
 
-        auto result = ShardStates.emplace(shardId, std::move(shardState));
+        auto result = PendingComputeActors.emplace(task.ComputeActorId, TProgressStat());
         YQL_ENSURE(result.second);
-    }
-
-    bool WaitRequired() const {
-        return SecretSnapshotRequired || ResourceSnapshotRequired || SaveScriptExternalEffectRequired;
-    }
-
-    void HandleResolve(TEvDescribeSecretsResponse::TPtr& ev) {
-        YQL_ENSURE(ev->Get()->Description.Status == Ydb::StatusIds::SUCCESS, "failed to get secrets snapshot with issues: " << ev->Get()->Description.Issues.ToOneLineString());
-
-        for (size_t i = 0; i < SecretNames.size(); ++i) {
-            SecureParams.emplace(SecretNames[i], ev->Get()->Description.SecretValues[i]);
-        }
-
-        SecretSnapshotRequired = false;
-        if (!WaitRequired()) {
-            Execute();
-        }
-    }
-
-    void HandleResolve(TEvPrivate::TEvResourcesSnapshot::TPtr& ev) {
-        if (ev->Get()->Snapshot.empty()) {
-            LOG_E("Can not find default state storage group for database " << Database);
-        }
-        ResourceSnapshot = std::move(ev->Get()->Snapshot);
-        ResourceSnapshotRequired = false;
-        if (!WaitRequired()) {
-            Execute();
-        }
-    }
-
-    void HandleResolve(TEvSaveScriptExternalEffectResponse::TPtr& ev) {
-        YQL_ENSURE(ev->Get()->Status == Ydb::StatusIds::SUCCESS, "failed to save script external effect with issues: " << ev->Get()->Issues.ToOneLineString());
-
-        SaveScriptExternalEffectRequired = false;
-        if (!WaitRequired()) {
-            Execute();
-        }
-    }
-
-    void DoExecute() {
-        const auto& requestContext = GetUserRequestContext();
-        auto scriptExternalEffect = std::make_unique<TEvSaveScriptExternalEffectRequest>(
-            requestContext->CurrentExecutionId, requestContext->Database,
-            requestContext->CustomerSuppliedId, UserToken ? UserToken->GetUserSID() : ""
-        );
-        for (const auto& transaction : Request.Transactions) {
-            for (const auto& secretName : transaction.Body->GetSecretNames()) {
-                SecretSnapshotRequired = true;
-                SecretNames.push_back(secretName);
-            }
-            for (const auto& stage : transaction.Body->GetStages()) {
-                if (stage.SourcesSize() > 0 && stage.GetSources(0).GetTypeCase() == NKqpProto::TKqpSource::kExternalSource) {
-                    ResourceSnapshotRequired = true;
-                    HasExternalSources = true;
-                }
-                if (requestContext->CurrentExecutionId) {
-                    for (const auto& sink : stage.GetSinks()) {
-                        if (sink.GetTypeCase() == NKqpProto::TKqpSink::kExternalSink) {
-                            SaveScriptExternalEffectRequired = true;
-                            scriptExternalEffect->Description.Sinks.push_back(sink.GetExternalSink());
-                        }
-                    }
-                }
-            }
-        }
-        scriptExternalEffect->Description.SecretNames = SecretNames;
-
-        if (!WaitRequired()) {
-            return Execute();
-        }
-        if (SecretSnapshotRequired) {
-            GetSecretsSnapshot();
-        }
-        if (ResourceSnapshotRequired) {
-            GetResourcesSnapshot();
-        }
-        if (SaveScriptExternalEffectRequired) {
-            SaveScriptExternalEffect(std::move(scriptExternalEffect));
-        }
-    }
-
-    bool HasDmlOperationOnOlap(NKqpProto::TKqpPhyTx_EType queryType, const NKqpProto::TKqpPhyStage& stage) {
-        if (queryType == NKqpProto::TKqpPhyTx::TYPE_DATA) {
-            return true;
-        }
-
-        for (const auto& input : stage.GetInputs()) {
-            if (input.GetTypeCase() == NKqpProto::TKqpPhyConnection::kStreamLookup) {
-                return true;
-            }
-        }
-
-        for (const auto &tableOp : stage.GetTableOps()) {
-            if (tableOp.GetTypeCase() != NKqpProto::TKqpPhyTableOperation::kReadOlapRange) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    bool HasOlapSink(const NKqpProto::TKqpPhyStage& stage, const google::protobuf::RepeatedPtrField< ::NKqpProto::TKqpPhyTable>& tables) {
-        return NKqp::HasOlapTableWriteInStage(stage, tables);
     }
 
     void Execute() {
+        LockTxId = Request.AcquireLocksTxId;
+        if (LockTxId.Defined() && *LockTxId == 0) {
+            LockTxId = TxId;
+        }
+
+        NWilson::TSpan prepareTasksSpan(TWilsonKqp::DataExecuterPrepateTasks, ExecuterStateSpan.GetTraceId(), "PrepateTasks", NWilson::EFlags::AUTO_END);
         LWTRACK(KqpDataExecuterStartExecute, ResponseEv->Orbit, TxId);
 
-        size_t sourceScanPartitionsCount = 0;
+        size_t readActors = 0;
         for (ui32 txIdx = 0; txIdx < Request.Transactions.size(); ++txIdx) {
             auto& tx = Request.Transactions[txIdx];
+
             for (ui32 stageIdx = 0; stageIdx < tx.Body->StagesSize(); ++stageIdx) {
                 auto& stage = tx.Body->GetStages(stageIdx);
                 auto& stageInfo = TasksGraph.GetStageInfo(TStageId(txIdx, stageIdx));
@@ -1864,9 +1647,7 @@ private:
                     }
                 }
 
-                const bool hasOlapSink = HasOlapSink(stage, tx.Body->GetTables());
-                if ((stageInfo.Meta.IsOlap() && HasDmlOperationOnOlap(tx.Body->GetType(), stage))
-                    || (!EnableOlapSink && hasOlapSink)) {
+                if (stageInfo.Meta.IsOlap() && tx.Body->GetType() == NKqpProto::TKqpPhyTx::TYPE_DATA) {
                     auto error = TStringBuilder() << "Data manipulation queries do not support column shard tables.";
                     LOG_E(error);
                     ReplyErrorAndDie(Ydb::StatusIds::PRECONDITION_FAILED,
@@ -1879,27 +1660,22 @@ private:
                 if (stage.SourcesSize() > 0) {
                     switch (stage.GetSources(0).GetTypeCase()) {
                         case NKqpProto::TKqpSource::kReadRangesSource:
-                            if (auto partitionsCount = BuildScanTasksFromSource(
-                                    stageInfo,
-                                    /* shardsResolved */ StreamResult,
-                                    /* limitTasksPerNode */ StreamResult)) {
-                                sourceScanPartitionsCount += *partitionsCount;
+                            if (auto actors = BuildScanTasksFromSource(stageInfo, LockTxId)) {
+                                readActors += *actors;
                             } else {
                                 UnknownAffectedShardCount = true;
                             }
                             break;
                         case NKqpProto::TKqpSource::kExternalSource:
-                            BuildReadTasksFromSource(stageInfo, ResourceSnapshot);
+                            BuildReadTasksFromSource(stageInfo);
                             break;
                         default:
                             YQL_ENSURE(false, "unknown source type");
                     }
-                } else if (StreamResult && stageInfo.Meta.IsOlap() && stage.SinksSize() == 0) {
-                    BuildScanTasksFromShards(stageInfo);
+                } else if (stageInfo.Meta.ShardOperations.empty()) {
+                    BuildComputeTasks(stageInfo);
                 } else if (stageInfo.Meta.IsSysView()) {
                     BuildSysViewScanTasks(stageInfo);
-                } else if (stageInfo.Meta.ShardOperations.empty() || stage.SinksSize() > 0) {
-                    BuildComputeTasks(stageInfo, std::max<ui32>(ShardsOnNode.size(), ResourceSnapshot.size()));
                 } else {
                     BuildDatashardTasks(stageInfo);
                 }
@@ -1908,7 +1684,7 @@ private:
                     YQL_ENSURE(stageInfo.Tasks.size() == 1, "Unexpected multiple tasks in single-partition stage");
                 }
 
-                BuildKqpStageChannels(TasksGraph, stageInfo, TxId, /* enableSpilling */ false);
+                BuildKqpStageChannels(TasksGraph, GetTableKeys(), stageInfo, TxId, /* enableSpilling */ false);
             }
 
             ResponseEv->InitTxResult(tx.Body);
@@ -1921,7 +1697,7 @@ private:
             return;
         }
 
-        THashMap<ui64, TVector<NDqProto::TDqTask*>> datashardTasks;  // shardId -> [task]
+        THashMap<ui64, TVector<NDqProto::TDqTask>> datashardTasks;  // shardId -> [task]
         THashMap<ui64, TVector<ui64>> remoteComputeTasks;  // shardId -> [task]
         TVector<ui64> computeTasks;
 
@@ -1932,8 +1708,8 @@ private:
         for (auto& task : TasksGraph.GetTasks()) {
             auto& stageInfo = TasksGraph.GetStageInfo(task.StageId);
             if (task.Meta.ShardId && (task.Meta.Reads || task.Meta.Writes)) {
-                NYql::NDqProto::TDqTask* protoTask = ArenaSerializeTaskToProto(TasksGraph, task, true);
-                datashardTasks[task.Meta.ShardId].emplace_back(protoTask);
+                auto protoTask = SerializeTaskToProto(TasksGraph, task);
+                datashardTasks[task.Meta.ShardId].emplace_back(std::move(protoTask));
             } else if (stageInfo.Meta.IsSysView()) {
                 computeTasks.emplace_back(task.Id);
             } else {
@@ -1944,9 +1720,6 @@ private:
                 }
             }
         }
-
-        // For generic query all shards are already resolved
-        YQL_ENSURE(!StreamResult || remoteComputeTasks.empty());
 
         for(const auto& channel: TasksGraph.GetChannels()) {
             if (IsCrossShardChannel(TasksGraph, channel)) {
@@ -1967,7 +1740,7 @@ private:
         if (i64 msc = (i64) Request.MaxShardCount; msc > 0) {
             shardsLimit = std::min(shardsLimit, (ui32) msc);
         }
-        size_t shards = datashardTasks.size() + sourceScanPartitionsCount;
+        size_t shards = datashardTasks.size() + remoteComputeTasks.size();
         if (shardsLimit > 0 && shards > shardsLimit) {
             LOG_W("Too many affected shards: datashardTasks=" << shards << ", limit: " << shardsLimit);
             Counters->TxProxyMon->TxResultError->Inc();
@@ -1984,33 +1757,29 @@ private:
         }
 
         TTopicTabletTxs topicTxs;
-        TDatashardTxs datashardTxs;
-        TEvWriteTxs evWriteTxs;
-        BuildDatashardTxs(datashardTasks, datashardTxs, evWriteTxs, topicTxs);
-        YQL_ENSURE(evWriteTxs.empty() || datashardTxs.empty());
+        auto datashardTxs = BuildDatashardTxs(datashardTasks, topicTxs);
 
-        // Single-shard datashard transactions are always immediate
-        ImmediateTx = (datashardTxs.size() + evWriteTxs.size() + Request.TopicOperations.GetSize() + sourceScanPartitionsCount) <= 1
-                    && !UnknownAffectedShardCount
-                    && evWriteTxs.empty()
-                    && !HasOlapTable;
+        // Single-shard transactions are always immediate
+        ImmediateTx = (datashardTxs.size() + Request.TopicOperations.GetSize() + readActors) <= 1 && !UnknownAffectedShardCount;
+
+        if (ImmediateTx) {
+            // Transaction cannot be both immediate and volatile
+            YQL_ENSURE(!VolatileTx);
+        }
 
         switch (Request.IsolationLevel) {
             // OnlineRO with AllowInconsistentReads = true
             case NKikimrKqp::ISOLATION_LEVEL_READ_UNCOMMITTED:
+            // StaleRO transactions always execute as immediate
+            // (legacy behavior, for compatibility with current execution engine)
+            case NKikimrKqp::ISOLATION_LEVEL_READ_STALE:
                 YQL_ENSURE(ReadOnlyTx);
                 YQL_ENSURE(!VolatileTx);
-                TasksGraph.GetMeta().AllowInconsistentReads = true;
                 ImmediateTx = true;
                 break;
 
             default:
                 break;
-        }
-
-        if (ImmediateTx) {
-            // Transaction cannot be both immediate and volatile
-            YQL_ENSURE(!VolatileTx);
         }
 
         if ((ReadOnlyTx || Request.UseImmediateEffects) && GetSnapshot().IsValid()) {
@@ -2021,23 +1790,21 @@ private:
         }
 
         ComputeTasks = std::move(computeTasks);
-        TopicTxs = std::move(topicTxs);
         DatashardTxs = std::move(datashardTxs);
-        EvWriteTxs = std::move(evWriteTxs);
+        TopicTxs = std::move(topicTxs);
         RemoteComputeTasks = std::move(remoteComputeTasks);
 
-        TasksGraph.GetMeta().UseFollowers = GetUseFollowers();
+        if (prepareTasksSpan) {
+            prepareTasksSpan.End();
+        }
 
         if (RemoteComputeTasks) {
-            YQL_ENSURE(!StreamResult);
             TSet<ui64> shardIds;
             for (const auto& [shardId, _] : RemoteComputeTasks) {
                 shardIds.insert(shardId);
             }
 
-            ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::ExecuterShardsResolve, ExecuterSpan.GetTraceId(), "WaitForShardsResolve", NWilson::EFlags::AUTO_END);
-            auto kqpShardsResolver = CreateKqpShardsResolver(
-                SelfId(), TxId, TasksGraph.GetMeta().UseFollowers, std::move(shardIds));
+            auto kqpShardsResolver = CreateKqpShardsResolver(SelfId(), TxId, std::move(shardIds));
             RegisterWithSameMailbox(kqpShardsResolver);
             Become(&TKqpDataExecuter::WaitResolveState);
         } else {
@@ -2047,82 +1814,33 @@ private:
 
     void HandleResolve(TEvKqpExecuter::TEvTableResolveStatus::TPtr& ev) {
         if (!TBase::HandleResolve(ev)) return;
-
-        if (StreamResult) {
-            TSet<ui64> shardIds;
-            for (auto& [stageId, stageInfo] : TasksGraph.GetStagesInfo()) {
-                if (stageInfo.Meta.IsOlap()) {
-                    HasOlapTable = true;
-                }
-                const auto& stage = stageInfo.Meta.GetStage(stageInfo.Id);
-                if (stage.SourcesSize() > 0 && stage.GetSources(0).GetTypeCase() == NKqpProto::TKqpSource::kReadRangesSource) {
-                    YQL_ENSURE(stage.SourcesSize() == 1, "multiple sources in one task are not supported");
-                    HasDatashardSourceScan = true;
-                }
-            }
-            if (HasOlapTable) {
-                for (auto& [stageId, stageInfo] : TasksGraph.GetStagesInfo()) {
-                    if (stageInfo.Meta.ShardKey) {
-                        for (auto& partition : stageInfo.Meta.ShardKey->GetPartitions()) {
-                            shardIds.insert(partition.ShardId);
-                        }
-                    }
-                }
-            }
-            if (HasDatashardSourceScan) {
-                for (auto& [stageId, stageInfo] : TasksGraph.GetStagesInfo()) {
-                    YQL_ENSURE(stageId == stageInfo.Id);
-                    const auto& stage = stageInfo.Meta.GetStage(stageInfo.Id);
-                    if (stage.SourcesSize() > 0 && stage.GetSources(0).GetTypeCase() == NKqpProto::TKqpSource::kReadRangesSource) {
-                        const auto& source = stage.GetSources(0).GetReadRangesSource();
-                        bool isFullScan;
-                        SourceScanStageIdToParititions[stageInfo.Id] = PrunePartitions(source, stageInfo, HolderFactory(), TypeEnv(), isFullScan);
-                        if (isFullScan && !source.HasItemsLimit()) {
-                            Counters->Counters->FullScansExecuted->Inc();
-                        }
-                        for (const auto& [shardId, _] : SourceScanStageIdToParititions.at(stageId)) {
-                            shardIds.insert(shardId);
-                        }
-                    }
-                }
-            }
-
-            if ((HasOlapTable || HasDatashardSourceScan) && shardIds) {
-                LOG_D("Start resolving tablets nodes... (" << shardIds.size() << ")");
-                ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::ExecuterShardsResolve, ExecuterSpan.GetTraceId(), "WaitForShardsResolve", NWilson::EFlags::AUTO_END);
-                auto kqpShardsResolver = CreateKqpShardsResolver(
-                    this->SelfId(), TxId, false, std::move(shardIds));
-                KqpShardsResolverId = this->RegisterWithSameMailbox(kqpShardsResolver);
-                return;
-            } else if (HasOlapTable) {
-                ResourceSnapshotRequired = true;
-            }
-        }
-        DoExecute();
+        Execute();
     }
 
     void HandleResolve(TEvKqpExecuter::TEvShardsResolveStatus::TPtr& ev) {
-        if (!TBase::HandleResolve(ev)) {
-            return;
-        }
-        if (HasOlapTable || HasDatashardSourceScan) {
-            ResourceSnapshotRequired = ResourceSnapshotRequired || HasOlapTable;
-            DoExecute();
-            return;
-        }
-
+        if (!TBase::HandleResolve(ev)) return;
         OnShardsResolve();
     }
 
     void OnShardsResolve() {
-        if (ForceAcquireSnapshot()) {
+        const bool forceSnapshot = (
+                ReadOnlyTx &&
+                !ImmediateTx &&
+                !HasPersistentChannels &&
+                (!Database.empty() || AppData()->EnableMvccSnapshotWithLegacyDomainRoot) &&
+                AppData()->FeatureFlags.GetEnableMvccSnapshotReads());
+
+        if (forceSnapshot) {
             YQL_ENSURE(!VolatileTx);
             auto longTxService = NLongTxService::MakeLongTxServiceID(SelfId().NodeId());
             Send(longTxService, new NLongTxService::TEvLongTxService::TEvAcquireReadSnapshot(Database));
 
-            LOG_T("Create temporary mvcc snapshot, become WaitSnapshotState");
+            LOG_T("Create temporary mvcc snapshot, ebcome WaitSnapshotState");
             Become(&TKqpDataExecuter::WaitSnapshotState);
-            ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::DataExecuterAcquireSnapshot, ExecuterSpan.GetTraceId(), "WaitForSnapshot");
+            if (ExecuterStateSpan) {
+                ExecuterStateSpan.End();
+                ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::DataExecuterWaitSnapshotState, ExecuterSpan.GetTraceId(), "WaitSnapshotState", NWilson::EFlags::AUTO_END);
+            }
 
             return;
         }
@@ -2148,15 +1866,10 @@ private:
     void Handle(NLongTxService::TEvLongTxService::TEvAcquireReadSnapshotResult::TPtr& ev) {
         auto& record = ev->Get()->Record;
 
-        LOG_T("read snapshot result: " << record.GetStatus() << ", step: " << record.GetSnapshotStep()
-            << ", tx id: " << record.GetSnapshotTxId());
-
         if (record.GetStatus() != Ydb::StatusIds::SUCCESS) {
-            ExecuterStateSpan.EndError(TStringBuilder() << Ydb::StatusIds::StatusCode_Name(record.GetStatus()));
             ReplyErrorAndDie(record.GetStatus(), record.MutableIssues());
             return;
         }
-        ExecuterStateSpan.EndOk();
 
         SetSnapshot(record.GetSnapshotStep(), record.GetSnapshotTxId());
         ImmediateTx = true;
@@ -2164,11 +1877,25 @@ private:
         ContinueExecute();
     }
 
-    using TDatashardTxs = THashMap<ui64, NKikimrTxDataShard::TKqpTransaction*>;
-    using TEvWriteTxs = THashMap<ui64, NKikimrDataEvents::TEvWrite*>;
+    using TDatashardTxs = THashMap<ui64, NKikimrTxDataShard::TKqpTransaction>;
     using TTopicTabletTxs = THashMap<ui64, NKikimrPQ::TDataTransaction>;
 
     void ContinueExecute() {
+        UseFollowers = Request.IsolationLevel == NKikimrKqp::ISOLATION_LEVEL_READ_STALE;
+
+        if (!ImmediateTx) {
+            // Followers only allowed for single shard transactions.
+            // (legacy behaviour, for compatibility with current execution engine)
+            UseFollowers = false;
+        }
+        if (GetSnapshot().IsValid()) {
+            // TODO: KIKIMR-11912
+            UseFollowers = false;
+        }
+        if (UseFollowers) {
+            YQL_ENSURE(ReadOnlyTx);
+        }
+
         if (Stats) {
             //Stats->AffectedShards = datashardTxs.size();
             Stats->DatashardStats.reserve(DatashardTxs.size());
@@ -2177,98 +1904,39 @@ private:
 
         ExecuteTasks();
 
-        ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::DataExecuterRunTasks, ExecuterSpan.GetTraceId(), "RunTasks", NWilson::EFlags::AUTO_END);
         if (ImmediateTx) {
             LOG_D("ActorState: " << CurrentStateFuncName()
                 << ", immediate tx, become ExecuteState");
             Become(&TKqpDataExecuter::ExecuteState);
+            if (ExecuterStateSpan) {
+                ExecuterStateSpan.End();
+                ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::DataExecuterExecuteState, ExecuterSpan.GetTraceId(), "ExecuteState", NWilson::EFlags::AUTO_END);
+            }
         } else {
             LOG_D("ActorState: " << CurrentStateFuncName()
                 << ", not immediate tx, become PrepareState");
             Become(&TKqpDataExecuter::PrepareState);
+            if (ExecuterStateSpan) {
+                ExecuterStateSpan.End();
+                ExecuterStateSpan = NWilson::TSpan(TWilsonKqp::DataExecuterPrepareState, ExecuterSpan.GetTraceId(), "PrepareState", NWilson::EFlags::AUTO_END);
+            }
         }
     }
 
-    void BuildDatashardTxs(
-            THashMap<ui64, TVector<NDqProto::TDqTask*>>& datashardTasks,
-            TDatashardTxs& datashardTxs,
-            TEvWriteTxs& evWriteTxs,
-            TTopicTabletTxs& topicTxs) {
+    TDatashardTxs BuildDatashardTxs(const THashMap<ui64, TVector<NDqProto::TDqTask>>& datashardTasks,
+                                    TTopicTabletTxs& topicTxs) {
+        TDatashardTxs datashardTxs;
+
         for (auto& [shardId, tasks]: datashardTasks) {
-            auto [it, success] = datashardTxs.emplace(
-                shardId,
-                TasksGraph.GetMeta().Allocate<NKikimrTxDataShard::TKqpTransaction>());
-
-            YQL_ENSURE(success, "unexpected duplicates in datashard transactions");
-            NKikimrTxDataShard::TKqpTransaction* dsTxs = it->second;
-            dsTxs->MutableTasks()->Reserve(tasks.size());
+            auto& dsTxs = datashardTxs[shardId];
             for (auto& task: tasks) {
-                dsTxs->AddTasks()->Swap(task);
-            }
-        }
-
-        // Note: when locks map is present it will be mutated to avoid copying data
-        auto& locksMap = Request.DataShardLocks;
-        if (!locksMap.empty()) {
-            YQL_ENSURE(Request.LocksOp == ELocksOp::Commit || Request.LocksOp == ELocksOp::Rollback);
-        }
-
-        // Materialize (possibly empty) txs for all shards with locks (either commit or rollback)
-        for (auto& [shardId, locksList] : locksMap) {
-            YQL_ENSURE(!locksList.empty(), "unexpected empty locks list in DataShardLocks");
-            NKikimrDataEvents::TKqpLocks* locks = nullptr;
-
-            if (UseEvWrite) {
-                if (auto it = evWriteTxs.find(shardId); it != evWriteTxs.end()) {
-                    locks = it->second->MutableLocks();
-                } else {
-                    auto [eIt, success] = evWriteTxs.emplace(
-                        shardId,
-                        TasksGraph.GetMeta().Allocate<NKikimrDataEvents::TEvWrite>());
-                    locks = eIt->second->MutableLocks();
-                }
-            } else {
-                if (auto it = datashardTxs.find(shardId); it != datashardTxs.end()) {
-                    locks = it->second->MutableLocks();
-                } else {
-                    auto [eIt, success] = datashardTxs.emplace(
-                        shardId,
-                        TasksGraph.GetMeta().Allocate<NKikimrTxDataShard::TKqpTransaction>());
-                    locks = eIt->second->MutableLocks();
-                }
-            }
-
-            switch (Request.LocksOp) {
-                case ELocksOp::Commit:
-                    locks->SetOp(NKikimrDataEvents::TKqpLocks::Commit);
-                    break;
-                case ELocksOp::Rollback:
-                    locks->SetOp(NKikimrDataEvents::TKqpLocks::Rollback);
-                    break;
-                case ELocksOp::Unspecified:
-                    break;
-            }
-
-            // Move lock descriptions to the datashard tx
-            auto* protoLocks = locks->MutableLocks();
-            protoLocks->Reserve(locksList.size());
-            bool hasWrites = false;
-            for (auto& lock : locksList) {
-                hasWrites = hasWrites || lock.GetHasWrites();
-                protoLocks->Add(std::move(lock));
-            }
-            locksList.clear();
-
-            // When locks with writes are committed this commits accumulated effects
-            if (Request.LocksOp == ELocksOp::Commit && hasWrites) {
-                ShardsWithEffects.insert(shardId);
-                YQL_ENSURE(!ReadOnlyTx);
+                dsTxs.AddTasks()->CopyFrom(task);
             }
         }
 
         Request.TopicOperations.BuildTopicTxs(topicTxs);
 
-        const bool needRollback = Request.LocksOp == ELocksOp::Rollback;
+        const bool needRollback = Request.EraseLocks && !Request.ValidateLocks;
 
         VolatileTx = (
             // We want to use volatile transactions only when the feature is enabled
@@ -2285,12 +1953,10 @@ private:
             // TODO: add support in the future
             topicTxs.empty() &&
             // We only want to use volatile transactions for multiple shards
-            (datashardTxs.size() + topicTxs.size()) > 1 &&
+            (datashardTasks.size() + topicTxs.size()) > 1 &&
             // We cannot use volatile transactions with persistent channels
             // Note: currently persistent channels are never used
-            !HasPersistentChannels &&
-            // Can't use volatile transactions for EvWrite at current time
-            !UseEvWrite);
+            !HasPersistentChannels);
 
         const bool useGenericReadSets = (
             // Use generic readsets when feature is explicitly enabled
@@ -2300,45 +1966,32 @@ private:
             // Transactions with topics must always use generic readsets
             !topicTxs.empty());
 
-        if (!locksMap.empty() || VolatileTx ||
+        if (auto locksMap = Request.DataShardLocks;
+            !locksMap.empty() ||
+            VolatileTx ||
             Request.TopicOperations.HasReadOperations())
         {
-            YQL_ENSURE(Request.LocksOp == ELocksOp::Commit || Request.LocksOp == ELocksOp::Rollback || VolatileTx);
+            YQL_ENSURE(Request.ValidateLocks || Request.EraseLocks || VolatileTx);
 
-            bool needCommit = Request.LocksOp == ELocksOp::Commit || VolatileTx;
+            bool needCommit = (
+                (Request.ValidateLocks && Request.EraseLocks) ||
+                VolatileTx);
+
+            auto locksOp = needCommit
+                ? NKikimrTxDataShard::TKqpLocks::Commit
+                : NKikimrTxDataShard::TKqpLocks::Rollback;
 
             absl::flat_hash_set<ui64> sendingShardsSet;
             absl::flat_hash_set<ui64> receivingShardsSet;
-            ui64 arbiter = 0;
 
             // Gather shards that need to send/receive readsets (shards with effects)
             if (needCommit) {
-                for (auto& [shardId, tx] : datashardTxs) {
-                    if (tx->HasLocks()) {
-                        // Locks may be broken so shards with locks need to send readsets
-                        sendingShardsSet.insert(shardId);
-                    }
+                for (auto& [shardId, _] : datashardTasks) {
                     if (ShardsWithEffects.contains(shardId)) {
                         // Volatile transactions may abort effects, so they send readsets
                         if (VolatileTx) {
                             sendingShardsSet.insert(shardId);
                         }
-                        // Effects are only applied when all locks are valid
-                        receivingShardsSet.insert(shardId);
-                    }
-                }
-
-                for (auto& [shardId, tx] : evWriteTxs) {
-                    if (tx->HasLocks()) {
-                        // Locks may be broken so shards with locks need to send readsets
-                        sendingShardsSet.insert(shardId);
-                    }
-                    if (ShardsWithEffects.contains(shardId)) {
-                        // Volatile transactions may abort effects, so they send readsets
-                        if (VolatileTx) {
-                            sendingShardsSet.insert(shardId);
-                        }
-                        // Effects are only applied when all locks are valid
                         receivingShardsSet.insert(shardId);
                     }
                 }
@@ -2351,52 +2004,37 @@ private:
                 if (auto tabletIds = Request.TopicOperations.GetReceivingTabletIds()) {
                     receivingShardsSet.insert(tabletIds.begin(), tabletIds.end());
                 }
+            }
 
-                // The current value of 5 is arbitrary. Writing to 5 shards in
-                // a single transaction is unusual enough, and having latency
-                // regressions is unlikely. Full mesh readset count grows like
-                // 2n(n-1), and arbiter reduces it to 4(n-1). Here's a readset
-                // count table for various small `n`:
-                //
-                // n = 2: 4 -> 4
-                // n = 3: 12 -> 8
-                // n = 4: 24 -> 12
-                // n = 5: 40 -> 16
-                // n = 6: 60 -> 20
-                // n = 7: 84 -> 24
-                //
-                // The ideal crossover is at n = 4, since the readset count
-                // doesn't change when going from 3 to 4 shards, but the
-                // increase in latency may not really be worth it. With n = 5
-                // the readset count lowers from 24 to 16 readsets when going
-                // from 4 to 5 shards. This makes 5 shards potentially cheaper
-                // than 4 shards when readsets dominate the workload, but at
-                // the price of possible increase in latency. Too many readsets
-                // cause interconnect overload and reduce throughput however,
-                // so we don't want to use a crossover value that is too high.
-                const size_t minArbiterMeshSize = 5; // TODO: make configurable?
-                if (VolatileTx &&
-                    receivingShardsSet.size() >= minArbiterMeshSize &&
-                    AppData()->FeatureFlags.GetEnableVolatileTransactionArbiters())
-                {
-                    std::vector<ui64> candidates;
-                    candidates.reserve(receivingShardsSet.size());
-                    for (ui64 candidate : receivingShardsSet) {
-                        // Note: all receivers are also senders in volatile transactions
-                        if (Y_LIKELY(sendingShardsSet.contains(candidate))) {
-                            candidates.push_back(candidate);
-                        }
+            // Gather locks that need to be committed or erased
+            for (auto& [shardId, locksList] : locksMap) {
+                auto& tx = datashardTxs[shardId];
+                tx.MutableLocks()->SetOp(locksOp);
+
+                if (!locksList.empty()) {
+                    auto* protoLocks = tx.MutableLocks()->MutableLocks();
+                    protoLocks->Reserve(locksList.size());
+                    bool hasWrites = false;
+                    for (auto& lock : locksList) {
+                        hasWrites = hasWrites || lock.GetHasWrites();
+                        protoLocks->Add()->Swap(&lock);
                     }
-                    if (candidates.size() >= minArbiterMeshSize) {
-                        // Select a random arbiter
-                        ui32 index = RandomNumber<ui32>(candidates.size());
-                        arbiter = candidates.at(index);
+
+                    if (needCommit) {
+                        // We also send the result on commit
+                        sendingShardsSet.insert(shardId);
+
+                        if (hasWrites) {
+                            // Tx with uncommitted changes can be aborted due to conflicts,
+                            // so shards with write locks should receive readsets
+                            receivingShardsSet.insert(shardId);
+                            YQL_ENSURE(!ReadOnlyTx);
+                        }
                     }
                 }
             }
 
-            // Encode sending/receiving shards in tx bodies
-            if (needCommit) {
+            if (Request.ValidateLocks || needCommit) {
                 NProtoBuf::RepeatedField<ui64> sendingShards(sendingShardsSet.begin(), sendingShardsSet.end());
                 NProtoBuf::RepeatedField<ui64> receivingShards(receivingShardsSet.begin(), receivingShardsSet.end());
 
@@ -2404,28 +2042,25 @@ private:
                 std::sort(receivingShards.begin(), receivingShards.end());
 
                 for (auto& [shardId, shardTx] : datashardTxs) {
-                    shardTx->MutableLocks()->SetOp(NKikimrDataEvents::TKqpLocks::Commit);
-                    *shardTx->MutableLocks()->MutableSendingShards() = sendingShards;
-                    *shardTx->MutableLocks()->MutableReceivingShards() = receivingShards;
-                    if (arbiter) {
-                        shardTx->MutableLocks()->SetArbiterShard(arbiter);
-                    }
-                }
-
-                for (auto& [_, tx] : evWriteTxs) {
-                    tx->MutableLocks()->SetOp(NKikimrDataEvents::TKqpLocks::Commit);
-                    *tx->MutableLocks()->MutableSendingShards() = sendingShards;
-                    *tx->MutableLocks()->MutableReceivingShards() = receivingShards;
-                    if (arbiter) {
-                        tx->MutableLocks()->SetArbiterShard(arbiter);
-                    }
+                    shardTx.MutableLocks()->SetOp(locksOp);
+                    *shardTx.MutableLocks()->MutableSendingShards() = sendingShards;
+                    *shardTx.MutableLocks()->MutableReceivingShards() = receivingShards;
                 }
 
                 for (auto& [_, tx] : topicTxs) {
-                    tx.SetOp(NKikimrPQ::TDataTransaction::Commit);
+                    switch (locksOp) {
+                    case NKikimrTxDataShard::TKqpLocks::Commit:
+                        tx.SetOp(NKikimrPQ::TDataTransaction::Commit);
+                        break;
+                    case NKikimrTxDataShard::TKqpLocks::Rollback:
+                        tx.SetOp(NKikimrPQ::TDataTransaction::Rollback);
+                        break;
+                    case NKikimrTxDataShard::TKqpLocks::Unspecified:
+                        break;
+                    }
+
                     *tx.MutableSendingShards() = sendingShards;
                     *tx.MutableReceivingShards() = receivingShards;
-                    YQL_ENSURE(!arbiter);
                 }
             }
         }
@@ -2433,9 +2068,11 @@ private:
         if (useGenericReadSets) {
             // Make sure datashards use generic readsets
             for (auto& pr : datashardTxs) {
-                pr.second->SetUseGenericReadSets(true);
+                pr.second.SetUseGenericReadSets(true);
             }
         }
+
+        return datashardTxs;
     }
 
     void ExecuteTasks() {
@@ -2447,59 +2084,51 @@ private:
             }
         }
 
-        LWTRACK(KqpDataExecuterStartTasksAndTxs, ResponseEv->Orbit, TxId, ComputeTasks.size(), DatashardTxs.size() + EvWriteTxs.size());
+        NWilson::TSpan sendTasksSpan(TWilsonKqp::DataExecuterSendTasksAndTxs, ExecuterStateSpan.GetTraceId(), "SendTasksAndTxs", NWilson::EFlags::AUTO_END);
+        LWTRACK(KqpDataExecuterStartTasksAndTxs, ResponseEv->Orbit, TxId, ComputeTasks.size(), DatashardTxs.size());
 
-        for (auto& [shardId, tasks] : RemoteComputeTasks) {
-            auto it = ShardIdToNodeId.find(shardId);
-            YQL_ENSURE(it != ShardIdToNodeId.end());
-            for (ui64 taskId : tasks) {
-                auto& task = TasksGraph.GetTask(taskId);
-                task.Meta.NodeId = it->second;
+        // first, start compute tasks
+        bool shareMailbox = (ComputeTasks.size() <= 1);
+        for (ui64 taskId : ComputeTasks) {
+            ExecuteDataComputeTask(taskId, shareMailbox);
+        }
+
+        if (ComputeTasks.size() == 0 && RemoteComputeTasks.size() == 1) {
+            // query affects a single key or shard, so it might be more effective
+            // to execute this task locally so we can avoid useless overhead for remote task launching.
+            for(auto& [shardId, tasks]: RemoteComputeTasks) {
+                for(ui64 taskId: tasks) {
+                    ExecuteDataComputeTask(taskId, true);
+                }
             }
+
+        } else {
+            THashMap<ui64, TVector<ui64>> tasksPerNode;
+            for (auto& [shardId, tasks] : RemoteComputeTasks) {
+                auto it = ShardIdToNodeId.find(shardId);
+                YQL_ENSURE(it != ShardIdToNodeId.end());
+                for (ui64 taskId : tasks) {
+                    PendingComputeTasks.insert(taskId);
+                    tasksPerNode[it->second].emplace_back(taskId);
+                }
+            }
+
+            Planner = CreateKqpPlanner(TasksGraph, TxId, SelfId(), {}, std::move(tasksPerNode), GetSnapshot(),
+                Database, UserToken, Deadline.GetOrElse(TInstant::Zero()), Request.StatsMode, false, Nothing(),
+                ExecuterSpan, {}, ExecuterRetriesConfig, true /* isDataQuery */);
+            auto err = Planner->PlanExecution();
+            if (err) {
+                TlsActivationContext->Send(err.release());
+                return;
+            }
+            Planner->Submit();
         }
-
-        const bool singlePartitionOptAllowed = !HasOlapTable && !UnknownAffectedShardCount && !HasExternalSources && DatashardTxs.empty() && EvWriteTxs.empty();
-        const bool useDataQueryPool = !(HasExternalSources && DatashardTxs.empty() && EvWriteTxs.empty());
-        const bool localComputeTasks = !DatashardTxs.empty();
-
-        Planner = CreateKqpPlanner({
-            .TasksGraph = TasksGraph,
-            .TxId = TxId,
-            .Executer = SelfId(),
-            .Snapshot = GetSnapshot(),
-            .Database = Database,
-            .UserToken = UserToken,
-            .Deadline = Deadline.GetOrElse(TInstant::Zero()),
-            .StatsMode = Request.StatsMode,
-            .WithSpilling = false,
-            .RlPath = Nothing(),
-            .ExecuterSpan =  ExecuterSpan,
-            .ResourcesSnapshot = std::move(ResourceSnapshot),
-            .ExecuterRetriesConfig = ExecuterRetriesConfig,
-            .UseDataQueryPool = useDataQueryPool,
-            .LocalComputeTasks = localComputeTasks,
-            .MkqlMemoryLimit = Request.MkqlMemoryLimit,
-            .AsyncIoFactory = AsyncIoFactory,
-            .AllowSinglePartitionOpt = singlePartitionOptAllowed,
-            .UserRequestContext = GetUserRequestContext(),
-            .FederatedQuerySetup = FederatedQuerySetup,
-            .OutputChunkMaxSize = Request.OutputChunkMaxSize,
-            .GUCSettings = GUCSettings
-        });
-
-        auto err = Planner->PlanExecution();
-        if (err) {
-            TlsActivationContext->Send(err.release());
-            return;
-        }
-
-        Planner->Submit();
 
         // then start data tasks with known actor ids of compute tasks
         for (auto& [shardId, shardTx] : DatashardTxs) {
-            shardTx->SetType(NKikimrTxDataShard::KQP_TX_TYPE_DATA);
+            shardTx.SetType(NKikimrTxDataShard::KQP_TX_TYPE_DATA);
             std::optional<bool> isOlap;
-            for (auto& protoTask : *shardTx->MutableTasks()) {
+            for (auto& protoTask : *shardTx.MutableTasks()) {
                 ui64 taskId = protoTask.GetId();
                 auto& task = TasksGraph.GetTask(taskId);
                 auto& stageInfo = TasksGraph.GetStageInfo(task.StageId);
@@ -2544,32 +2173,29 @@ private:
                 LOG_D("datashard task: " << taskId << ", proto: " << protoTask.ShortDebugString());
             }
 
-            ExecuteDatashardTransaction(shardId, *shardTx, isOlap.value_or(false));
-        }
-
-        for (auto& [shardId, shardTx] : EvWriteTxs) {
-            ExecuteEvWriteTransaction(shardId, *shardTx);
+            ExecuteDatashardTransaction(shardId, shardTx, LockTxId, isOlap.value_or(false));
         }
 
         ExecuteTopicTabletTransactions(TopicTxs);
 
+        if (sendTasksSpan) {
+            sendTasksSpan.End();
+        }
+
         LOG_I("Total tasks: " << TasksGraph.GetTasks().size()
             << ", readonly: " << ReadOnlyTx
             << ", datashardTxs: " << DatashardTxs.size()
-            << ", evWriteTxs: " << EvWriteTxs.size()
             << ", topicTxs: " << Request.TopicOperations.GetSize()
             << ", volatile: " << VolatileTx
             << ", immediate: " << ImmediateTx
-            << ", pending compute tasks" << (Planner ? Planner->GetPendingComputeTasks().size() : 0)
-            << ", useFollowers: " << GetUseFollowers());
+            << ", pending compute tasks" << PendingComputeTasks.size()
+            << ", useFollowers: " << UseFollowers);
 
-        // error
         LOG_T("Updating channels after the creation of compute actors");
         THashMap<TActorId, THashSet<ui64>> updates;
         for (ui64 taskId : ComputeTasks) {
             auto& task = TasksGraph.GetTask(taskId);
-            if (task.ComputeActorId)
-                CollectTaskChannelsUpdates(task, updates);
+            CollectTaskChannelsUpdates(task, updates);
         }
         PropagateChannelsUpdates(updates);
 
@@ -2577,9 +2203,10 @@ private:
     }
 
     void ExecuteTopicTabletTransactions(TTopicTabletTxs& topicTxs) {
-        TMaybe<ui64> writeId;
-        if (Request.TopicOperations.HasWriteId()) {
-            writeId = Request.TopicOperations.GetWriteId();
+        auto lockTxId = Request.AcquireLocksTxId;
+        if (lockTxId.Defined() && *lockTxId == 0) {
+            lockTxId = TxId;
+            LockHandle = TLockHandle(TxId, TActivationContext::ActorSystem());
         }
 
         for (auto& tx : topicTxs) {
@@ -2588,8 +2215,8 @@ private:
 
             auto ev = std::make_unique<TEvPersQueue::TEvProposeTransaction>();
 
-            if (writeId.Defined()) {
-                transaction.SetWriteId(*writeId);
+            if (lockTxId) {
+                transaction.SetLockTxId(*lockTxId);
             }
             transaction.SetImmediate(ImmediateTx);
 
@@ -2601,9 +2228,9 @@ private:
             LOG_D("ExecuteTopicTabletTransaction traceId.verbosity: " << std::to_string(traceId.GetVerbosity()));
 
             LOG_D("Executing KQP transaction on topic tablet: " << tabletId
-                  << ", writeId: " << writeId);
+                  << ", lockTxId: " << lockTxId);
 
-            Send(MakePipePeNodeCacheID(false),
+            Send(MakePipePeNodeCacheID(UseFollowers),
                  new TEvPipeCache::TEvForward(ev.release(), tabletId, true),
                  0,
                  0,
@@ -2613,7 +2240,7 @@ private:
             state.State =
                 ImmediateTx ? TShardState::EState::Executing : TShardState::EState::Preparing;
             state.DatashardState.ConstructInPlace();
-            state.DatashardState->Follower = false;
+            state.DatashardState->Follower = UseFollowers;
 
             state.DatashardState->ShardReadLocks = Request.TopicOperations.TabletHasReadOperations(tabletId);
 
@@ -2632,7 +2259,7 @@ private:
 
         Send(MakePipePeNodeCacheID(false), new TEvPipeCache::TEvUnlink(0));
 
-        if (GetUseFollowers()) {
+        if (UseFollowers) {
             Send(MakePipePeNodeCacheID(true), new TEvPipeCache::TEvUnlink(0));
         }
 
@@ -2667,7 +2294,7 @@ private:
     static void AddDataShardErrors(const NKikimrTxDataShard::TEvProposeTransactionResult& result, TIssue& issue) {
         for (const auto& err : result.GetError()) {
             issue.AddSubIssue(new TIssue(TStringBuilder()
-                << "[" << err.GetKind() << "] " << err.GetReason()));
+                << "[" << NKikimrTxDataShard::TError_EKind_Name(err.GetKind()) << "] " << err.GetReason()));
         }
     }
 
@@ -2687,23 +2314,17 @@ private:
 
 private:
     NYql::NDq::IDqAsyncIoFactory::TPtr AsyncIoFactory;
-    bool EnableOlapSink = false;
-    bool UseEvWrite = false;
-    const std::optional<TKqpFederatedQuerySetup> FederatedQuerySetup;
-    const TGUCSettings::TPtr GUCSettings;
+    bool StreamResult = false;
 
-    bool HasExternalSources = false;
-    bool SecretSnapshotRequired = false;
-    bool ResourceSnapshotRequired = false;
-    bool SaveScriptExternalEffectRequired = false;
-    TVector<NKikimrKqp::TKqpNodeResources> ResourceSnapshot;
+    bool UnknownAffectedShardCount = false;
 
     ui64 TxCoordinator = 0;
     THashMap<ui64, TShardState> ShardStates;
-    TVector<NKikimrDataEvents::TLock> Locks;
+    TVector<NKikimrTxDataShard::TLock> Locks;
     bool ReadOnlyTx = true;
     bool VolatileTx = false;
     bool ImmediateTx = false;
+    bool UseFollowers = false;
     bool TxPlanned = false;
     bool LocksBroken = false;
 
@@ -2719,9 +2340,9 @@ private:
 
     TVector<ui64> ComputeTasks;
     TDatashardTxs DatashardTxs;
-    TEvWriteTxs EvWriteTxs;
     TTopicTabletTxs TopicTxs;
 
+    TMaybe<ui64> LockTxId;
     // Lock handle for a newly acquired lock
     TLockHandle LockHandle;
     ui64 LastShard = 0;
@@ -2730,16 +2351,9 @@ private:
 } // namespace
 
 IActor* CreateKqpDataExecuter(IKqpGateway::TExecPhysicalRequest&& request, const TString& database, const TIntrusiveConstPtr<NACLib::TUserToken>& userToken,
-    TKqpRequestCounters::TPtr counters, bool streamResult, const NKikimrConfig::TTableServiceConfig::TAggregationConfig& aggregation,
-    const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& executerRetriesConfig,
-    NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory, const NKikimrConfig::TTableServiceConfig::EChannelTransportVersion chanTransportVersion, const TActorId& creator,
-    TDuration maximalSecretsSnapshotWaitTime, const TIntrusivePtr<TUserRequestContext>& userRequestContext,
-    const bool enableOlapSink, const bool useEvWrite, ui32 statementResultIndex,
-    const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup, const TGUCSettings::TPtr& GUCSettings)
+    TKqpRequestCounters::TPtr counters, bool streamResult, const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& executerRetriesConfig, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory)
 {
-    return new TKqpDataExecuter(std::move(request), database, userToken, counters, streamResult, executerRetriesConfig,
-        std::move(asyncIoFactory), chanTransportVersion, aggregation, creator, maximalSecretsSnapshotWaitTime, userRequestContext,
-        enableOlapSink, useEvWrite, statementResultIndex, federatedQuerySetup, GUCSettings);
+    return new TKqpDataExecuter(std::move(request), database, userToken, counters, streamResult, executerRetriesConfig, std::move(asyncIoFactory));
 }
 
 } // namespace NKqp

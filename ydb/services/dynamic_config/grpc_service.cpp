@@ -7,7 +7,7 @@
 namespace NKikimr {
 namespace NGRpcService {
 
-void TGRpcDynamicConfigService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcDynamicConfigService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
     using namespace Ydb;
 
@@ -17,7 +17,7 @@ void TGRpcDynamicConfigService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logge
 #define ADD_REQUEST(NAME, CB)                                                                         \
     MakeIntrusive<TGRpcRequest<DynamicConfig::NAME##Request, DynamicConfig::NAME##Response, TGRpcDynamicConfigService>> \
         (this, &Service_, CQ_,                                                                        \
-            [this](NYdbGrpc::IRequestContextBase *ctx) {                                                 \
+            [this](NGrpc::IRequestContextBase *ctx) {                                                 \
                 NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer());                      \
                 ActorSystem_->Send(GRpcRequestProxyId_,                                               \
                     new TGrpcRequestOperationCall<DynamicConfig::NAME##Request, DynamicConfig::NAME##Response>    \
@@ -25,14 +25,11 @@ void TGRpcDynamicConfigService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logge
             }, &DynamicConfig::V1::DynamicConfigService::AsyncService::Request ## NAME,                           \
             #NAME, logger, getCounterBlock("console", #NAME))->Run();
 
-    ADD_REQUEST(SetConfig, DoSetConfigRequest)
-    ADD_REQUEST(ReplaceConfig, DoReplaceConfigRequest)
+    ADD_REQUEST(ApplyConfig, DoApplyConfigRequest)
     ADD_REQUEST(DropConfig, DoDropConfigRequest)
     ADD_REQUEST(AddVolatileConfig, DoAddVolatileConfigRequest)
     ADD_REQUEST(RemoveVolatileConfig, DoRemoveVolatileConfigRequest)
     ADD_REQUEST(GetConfig, DoGetConfigRequest)
-    ADD_REQUEST(GetMetadata, DoGetMetadataRequest)
-    ADD_REQUEST(GetNodeLabels, DoGetNodeLabelsRequest)
     ADD_REQUEST(ResolveConfig, DoResolveConfigRequest)
     ADD_REQUEST(ResolveAllConfig, DoResolveAllConfigRequest)
 

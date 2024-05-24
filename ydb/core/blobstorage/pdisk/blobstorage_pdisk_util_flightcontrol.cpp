@@ -14,7 +14,7 @@ TFlightControl::TFlightControl(ui64 bits)
     , Mask(~((~0ull) << bits))
     , IsCompleteLoop(1ull << bits)
 {
-    Y_ABORT_UNLESS(bits > 0 && bits < 16);
+    Y_VERIFY(bits > 0 && bits < 16);
 }
 
 // Returns 0 in case of scheduling error
@@ -39,8 +39,7 @@ ui64 TFlightControl::TrySchedule() {
 }
 
 // Blocking Schedule method
-ui64 TFlightControl::Schedule(double& blockedMs) {
-    NHPTimer::STime beginTime = 0;
+ui64 TFlightControl::Schedule() {
     while (true) {
         ui64 idx = TrySchedule();
         if (idx) {
@@ -51,11 +50,7 @@ ui64 TFlightControl::Schedule(double& blockedMs) {
             if (idx) {
                 return idx;
             }
-            if (beginTime == 0) {
-                beginTime = HPNow();
-            }
             ScheduleCondVar.WaitI(ScheduleMutex);
-            blockedMs = HPMilliSecondsFloat(HPNow() - beginTime);
         }
     }
 }
@@ -67,8 +62,8 @@ void TFlightControl::WakeUp() {
 
 void TFlightControl::MarkComplete(ui64 idx) {
     ui64 beginIdx = AtomicGet(BeginIdx);
-    Y_ABORT_UNLESS(idx >= beginIdx);
-    Y_ABORT_UNLESS(idx < beginIdx + MaxSize);
+    Y_VERIFY(idx >= beginIdx);
+    Y_VERIFY(idx < beginIdx + MaxSize);
     if (idx == beginIdx) {
         // It's the first item we are waiting for
         if (beginIdx == EndIdx) {

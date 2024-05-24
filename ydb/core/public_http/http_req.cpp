@@ -1,6 +1,6 @@
 #include "http_req.h"
 
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/http/http_proxy.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/status_codes.h>
 #include <ydb/core/http_proxy/http_req.h>
 
@@ -121,8 +121,8 @@ namespace NKikimr::NPublicHttp {
         , StartedAt(startedAt)
         , Counters(counters)
     {
-        Y_ABORT_UNLESS(ActorSystem);
-        Y_ABORT_UNLESS(Request);
+        Y_VERIFY(ActorSystem);
+        Y_VERIFY(Request);
         ParseHeaders(Request->Headers);
     }
 
@@ -168,10 +168,6 @@ namespace NKikimr::NPublicHttp {
 
     TString THttpRequestContext::GetIdempotencyKey() const {
         return IdempotencyKey;
-    }
-
-    TString THttpRequestContext::GetPeer() const {
-        return !ForwardedFor.empty() ? TString(ForwardedFor) : TString(Request->Host);
     }
 
     void THttpRequestContext::ResponseBadRequest(Ydb::StatusIds::StatusCode status, const TString& errorText) const {

@@ -55,10 +55,10 @@ public:
             , HopTime(hopTime)
             , IntervalHopCount(intervalHopCount)
             , DelayHopCount(delayHopCount)
-            , Watermark(watermark)
-            , WatermarkMode(watermarkMode)
             , StatesMap(0, hash, equal)
             , Ctx(ctx)
+            , Watermark(watermark)
+            , WatermarkMode(watermarkMode)
         {
             if (!watermarkMode && dataWatermarks) {
                 DataWatermarkTracker.emplace(TWatermarkTracker(delayHopCount * hopTime, hopTime));
@@ -101,60 +101,63 @@ public:
 
         NUdf::TUnboxedValue Save() const override {
             MKQL_ENSURE(Ready.empty(), "Inconsistent state to save, not all elements are fetched");
-            TOutputSerializer out(EMkqlStateType::SIMPLE_BLOB, StateVersion);
 
-            out.Write<ui32>(StatesMap.size());
+            TString out;
+            WriteUi32(out, StateVersion);
+            WriteUi32(out, StatesMap.size());
             for (const auto& [key, state] : StatesMap) {
-                out.WriteUnboxedValue(Self->KeyPacker.RefMutableObject(Ctx, false, Self->KeyType), key);
-                out(state.HopIndex);
-                out.Write<ui32>(state.Buckets.size());
+                WriteUnboxedValue(out, Self->KeyPacker.RefMutableObject(Ctx, false, Self->KeyType), key);
+                WriteUi64(out, state.HopIndex);
+                WriteUi32(out, state.Buckets.size());
                 for (const auto& bucket : state.Buckets) {
-                    out(bucket.HasValue);
+                    WriteBool(out, bucket.HasValue);
                     if (bucket.HasValue) {
                         Self->InSave->SetValue(Ctx, NUdf::TUnboxedValue(bucket.Value));
                         if (Self->StateType) {
-                            out.WriteUnboxedValue(Self->StatePacker.RefMutableObject(Ctx, false, Self->StateType),
+                            WriteUnboxedValue(out, Self->StatePacker.RefMutableObject(Ctx, false, Self->StateType),
                                           Self->OutSave->GetValue(Ctx));
                         }
                     }
                 }
             }
 
-            out(Finished);
-            return out.MakeState();
+            WriteBool(out, Finished);
+
+            auto strRef = NUdf::TStringRef(out.data(), out.size());
+            return MakeString(strRef);
         }
 
         void Load(const NUdf::TStringRef& state) override {
-            TInputSerializer in(state, EMkqlStateType::SIMPLE_BLOB);
+            TStringBuf in(state.Data(), state.Size());
 
-            const auto loadStateVersion = in.GetStateVersion();
-            if (loadStateVersion != StateVersion) {
-                THROW yexception() << "Invalid state version " << loadStateVersion;
-            }
+            const auto stateVersion = ReadUi32(in);
+            if (stateVersion == 1) {
+                const auto statesMapSize = ReadUi32(in);
+                ClearState();
+                StatesMap.reserve(statesMapSize);
+                for (int i = 0; i < statesMapSize; i++) {
+                    auto key = ReadUnboxedValue(in, Self->KeyPacker.RefMutableObject(Ctx, false, Self->KeyType), Ctx);
+                    const auto hopIndex = ReadUi64(in);
+                    const auto bucketsSize = ReadUi32(in);
 
-            const auto statesMapSize = in.Read<ui32>();
-            ClearState();
-            StatesMap.reserve(statesMapSize);
-            for (auto i = 0U; i < statesMapSize; ++i) {
-                auto key = in.ReadUnboxedValue(Self->KeyPacker.RefMutableObject(Ctx, false, Self->KeyType), Ctx);
-                const auto hopIndex = in.Read<ui64>();
-                const auto bucketsSize = in.Read<ui32>();
-
-                TKeyState keyState(bucketsSize, hopIndex);
-                for (auto& bucket : keyState.Buckets) {
-                    in(bucket.HasValue);
-                    if (bucket.HasValue) {
-                        if (Self->StateType) {
-                            Self->InLoad->SetValue(Ctx, in.ReadUnboxedValue(Self->StatePacker.RefMutableObject(Ctx, false, Self->StateType), Ctx));
+                    TKeyState keyState(bucketsSize, hopIndex);
+                    for (auto& bucket : keyState.Buckets) {
+                        bucket.HasValue = ReadBool(in);
+                        if (bucket.HasValue) {
+                            if (Self->StateType) {
+                                Self->InLoad->SetValue(Ctx, ReadUnboxedValue(in, Self->StatePacker.RefMutableObject(Ctx, false, Self->StateType), Ctx));
+                            }
+                            bucket.Value = Self->OutLoad->GetValue(Ctx);
                         }
-                        bucket.Value = Self->OutLoad->GetValue(Ctx);
                     }
+                    StatesMap.emplace(key, std::move(keyState));
+                    key.Ref();
                 }
-                StatesMap.emplace(key, std::move(keyState));
-                key.Ref();
-            }
 
-            in(Finished);
+                Finished = ReadBool(in);
+            } else {
+                THROW yexception() << "Invalid state version " << stateVersion;
+            }
         }
 
         TInstant GetWatermark() {
@@ -294,7 +297,7 @@ public:
             auto& bucketsForKey = keyState.Buckets;
 
             bool becameEmpty = false;
-            for (auto i = 0U; i < bucketsForKey.size(); ++i) {
+            for (auto i = 0; i < bucketsForKey.size(); i++) {
                 const auto curHopIndex = keyState.HopIndex;
                 if (curHopIndex >= closeBeforeIndex) {
                     break;
@@ -464,9 +467,7 @@ public:
         Stateless = false;
         bool encoded;
         GetDictionaryKeyTypes(keyType, KeyTypes, IsTuple, encoded, UseIHash);
-        Y_ABORT_UNLESS(!encoded, "TODO");
-        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
+        Y_VERIFY(!encoded, "TODO");
     }
 
     NUdf::TUnboxedValuePod CreateStream(TComputationContext& ctx) const {
@@ -490,8 +491,8 @@ public:
         return ctx.HolderFactory.Create<TStreamValue>(Stream->GetValue(ctx), this, (ui64)hopTime,
                                                       (ui64)intervalHopCount, (ui64)delayHopCount,
                                                       dataWatermarks, watermarkMode, ctx,
-                                                      TValueHasher(KeyTypes, IsTuple, Hash.Get()),
-                                                      TValueEqual(KeyTypes, IsTuple, Equate.Get()),
+                                                      TValueHasher(KeyTypes, IsTuple, UseIHash ? MakeHashImpl(KeyType) : nullptr),
+                                                      TValueEqual(KeyTypes, IsTuple, UseIHash ? MakeEquateImpl(KeyType) : nullptr),
                                                       Watermark);
     }
 
@@ -569,9 +570,6 @@ private:
     bool IsTuple;
     bool UseIHash;
     TWatermark& Watermark;
-
-    NUdf::IEquate::TPtr Equate;
-    NUdf::IHash::TPtr Hash;
 };
 
 }

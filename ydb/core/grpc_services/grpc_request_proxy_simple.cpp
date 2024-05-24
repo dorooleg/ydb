@@ -4,7 +4,6 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/grpc_services/counters/proxy_counters.h>
-#include <ydb/core/protos/table_service_config.pb.h>
 
 #include <util/system/hostname.h>
 
@@ -47,8 +46,7 @@ class TGRpcRequestProxySimple
     using TBase = TActorBootstrapped<TGRpcRequestProxySimple>;
 public:
     explicit TGRpcRequestProxySimple(const NKikimrConfig::TAppConfig& appConfig)
-        : AppConfig(appConfig)
-        , ChannelBufferSize(appConfig.GetTableServiceConfig().GetResourceManager().GetChannelBufferSize())
+        : AppConfig(MakeIntrusiveConst<TAppConfig>(appConfig))
     {
     }
 
@@ -76,7 +74,7 @@ private:
 
         THolder<TEvListEndpointsRequest> request(event->Release().Release());
         auto *result = TEvListEndpointsRequest::AllocateResult<Ydb::Discovery::ListEndpointsResult>(request);
-        const auto& grpcConfig = AppConfig.GetGRpcConfig();
+        const auto& grpcConfig = AppConfig->GetGRpcConfig();
         AddEndpointsForGrpcConfig(grpcConfig, *result);
 
         for (const auto& externalEndpoint : grpcConfig.GetExtEndpoints()) {
@@ -111,17 +109,17 @@ private:
 
         auto state = requestBaseCtx->GetAuthState();
 
-        if (state.State == NYdbGrpc::TAuthState::AS_FAIL) {
+        if (state.State == NGrpc::TAuthState::AS_FAIL) {
             requestBaseCtx->ReplyUnauthenticated();
             return;
         }
 
-        if (state.State == NYdbGrpc::TAuthState::AS_UNAVAILABLE) {
+        if (state.State == NGrpc::TAuthState::AS_UNAVAILABLE) {
             Counters->IncDatabaseUnavailableCounter();
             const TString error = "Unable to resolve token";
             const auto issue = MakeIssue(NKikimrIssues::TIssuesIds::YDB_AUTH_UNAVAILABLE, error);
             requestBaseCtx->RaiseIssue(issue);
-            requestBaseCtx->ReplyWithYdbStatus(Ydb::StatusIds::UNAVAILABLE);
+            requestBaseCtx->ReplyUnavaliable();
             return;
         }
 
@@ -137,16 +135,15 @@ private:
         requestBaseCtx->ReplyWithYdbStatus(Ydb::StatusIds::BAD_REQUEST);
     }
 
-    ui64 GetChannelBufferSize() const override {
-        return ChannelBufferSize.load();
+    TIntrusiveConstPtr<TAppConfig> GetAppConfig() const override {
+        return AppConfig;
     }
 
     TActorId RegisterActor(IActor* actor) const override {
         return TActivationContext::AsActorContext().Register(actor);
     }
 
-    const NKikimrConfig::TAppConfig AppConfig;
-    std::atomic<ui64> ChannelBufferSize;
+    TIntrusiveConstPtr<TAppConfig> AppConfig;
     IGRpcProxyCounters::TPtr Counters;
 };
 
@@ -172,8 +169,8 @@ void TGRpcRequestProxySimple::HandleUndelivery(TEvents::TEvUndelivered::TPtr& ev
 
 bool TGRpcRequestProxySimple::IsAuthStateOK(const IRequestProxyCtx& ctx) {
     const auto& state = ctx.GetAuthState();
-    return state.State == NYdbGrpc::TAuthState::AS_OK ||
-           state.State == NYdbGrpc::TAuthState::AS_FAIL && state.NeedAuth == false ||
+    return state.State == NGrpc::TAuthState::AS_OK ||
+           state.State == NGrpc::TAuthState::AS_FAIL && state.NeedAuth == false ||
            state.NeedAuth == false && !ctx.GetYdbToken();
 }
 
@@ -209,7 +206,7 @@ void TGRpcRequestProxySimple::StateFunc(TAutoPtr<IEventHandle>& ev) {
         HFunc(TEvListEndpointsRequest, PreHandle);
         HFunc(TEvProxyRuntimeEvent, PreHandle);
         default:
-            Y_ABORT("Unknown request: %u\n", ev->GetTypeRewrite());
+            Y_FAIL("Unknown request: %u\n", ev->GetTypeRewrite());
         break;
     }
 }

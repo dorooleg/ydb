@@ -8,36 +8,68 @@ namespace NKikimr {
 
 namespace {
 
-    class TMonVDiskStreamActor
-        : public TActor<TMonVDiskStreamActor>
+    class TMonVDiskPage
+        : public NMonitoring::IMonPage
     {
-        ui64 LastCookie = 0;
-        THashMap<ui64, std::tuple<TActorId, ui64, int>> RequestsInFlight;
+        class TRequestActor
+            : public TActorBootstrapped<TRequestActor>
+        {
+            const ui32 PDiskId;
+            const ui32 VDiskSlotId;
+            const TString SessionId;
+            NThreading::TPromise<TString> Promise;
+
+        public:
+            static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+                return NKikimrServices::TActivity::BS_GET_ACTOR;
+            }
+
+            TRequestActor(ui32 pdiskId, ui32 vdiskSlotId, TString sessionId, NThreading::TPromise<TString> promise)
+                : PDiskId(pdiskId)
+                , VDiskSlotId(vdiskSlotId)
+                , SessionId(sessionId)
+                , Promise(promise)
+            {}
+
+            void Bootstrap(const TActorContext& ctx) {
+                ctx.Send(MakeBlobStorageVDiskID(ctx.SelfID.NodeId(), PDiskId, VDiskSlotId),
+                    new TEvBlobStorage::TEvMonStreamQuery(SessionId, {}, {}));
+                Become(&TRequestActor::StateFunc);
+            }
+
+            void Handle(NMon::TEvHttpInfoRes::TPtr& ev, const TActorContext& ctx) {
+                TStringStream s;
+                ev->Get()->Output(s);
+                Promise.SetValue(s.Str());
+                Die(ctx);
+            }
+
+            STRICT_STFUNC(StateFunc,
+                HFunc(NMon::TEvHttpInfoRes, Handle)
+            )
+        };
+
+    private:
+        TActorSystem *ActorSystem;
 
     public:
-        static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
-            return NKikimrServices::TActivity::BS_GET_ACTOR;
-        }
-
-        TMonVDiskStreamActor()
-            : TActor(&TThis::StateFunc)
+        TMonVDiskPage(const TString& path, TActorSystem *actorSystem)
+            : IMonPage(path)
+            , ActorSystem(actorSystem)
         {}
 
-        void Handle(NMon::TEvHttpInfo::TPtr ev) {
+        void Output(NMonitoring::IMonHttpRequest& request) override {
+            IOutputStream& out = request.Output();
+
             // parse HTTP request
-            const TCgiParameters& params = ev->Get()->Request.GetParams();
+            const TCgiParameters& params = request.GetParams();
 
             auto generateError = [&](const TString& msg) {
-                TStringStream out;
-
                 out << "HTTP/1.1 400 Bad Request\r\n"
                     << "Content-Type: text/plain\r\n"
                     << "Connection: close\r\n"
                     << "\r\n"
                     << msg << "\r\n";
-
-                Send(ev->Sender, new NMon::TEvHttpInfoRes(out.Str(), ev->Get()->SubRequestId, NMon::TEvHttpInfoRes::Custom),
-                    0, ev->Cookie);
             };
 
             ui32 pdiskId = 0;
@@ -61,55 +93,31 @@ namespace {
                 sessionId = params.Get("sessionId");
             }
 
-            const ui64 cookie = ++LastCookie;
-            Send(MakeBlobStorageVDiskID(SelfId().NodeId(), pdiskId, vdiskSlotId),
-                new TEvBlobStorage::TEvMonStreamQuery(sessionId, {}, {}),
-                IEventHandle::FlagTrackDelivery, cookie);
-            RequestsInFlight[cookie] = std::make_tuple(ev->Sender, ev->Cookie, ev->Get()->SubRequestId);
-        }
+            // create promise & future to obtain query result
+            auto promise = NThreading::NewPromise<TString>();
+            auto future = promise.GetFuture();
 
-        template<typename TCallback>
-        void Reply(ui64 cookie, TCallback&& callback) {
-            const auto it = RequestsInFlight.find(cookie);
-            Y_ABORT_UNLESS(it != RequestsInFlight.end());
-            const auto& [sender, senderCookie, subRequestId] = it->second;
-            TStringStream out;
-            callback(out);
-            Send(sender, new NMon::TEvHttpInfoRes(out.Str(), subRequestId, NMon::TEvHttpInfoRes::Custom), 0, senderCookie);
-            RequestsInFlight.erase(it);
-        }
+            // register and start actor
+            ActorSystem->Register(new TRequestActor(pdiskId, vdiskSlotId, sessionId, promise));
 
-        void Handle(NMon::TEvHttpInfoRes::TPtr ev) {
-            Reply(ev->Cookie, [&](IOutputStream& out) {
-                out << "HTTP/1.1 200 OK\r\n"
-                    << "Content-Type: application/octet-stream\r\n"
-                    << "Connection: close\r\n"
-                    << "\r\n";
-                ev->Get()->Output(out);
-            });
-        }
+            // wait for query to complete
+            future.Wait();
 
-        void Handle(TEvents::TEvUndelivered::TPtr ev) {
-            Reply(ev->Cookie, [&](IOutputStream& out) {
-                out << "HTTP/1.1 400 Bad Request\r\n"
-                    << "Content-Type: text/plain\r\n"
-                    << "Connection: close\r\n"
-                    << "\r\n"
-                    << "VDisk actor not found\r\n";
-            });
-        }
+            // obtain result
+            const TString& result = future.GetValue();
 
-        STRICT_STFUNC(StateFunc,
-            hFunc(NMon::TEvHttpInfo, Handle);
-            hFunc(NMon::TEvHttpInfoRes, Handle);
-            hFunc(TEvents::TEvUndelivered, Handle);
-        )
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/octet-stream\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << result;
+        }
     };
 
 } // anon
 
-IActor *CreateMonVDiskStreamActor() {
-    return new TMonVDiskStreamActor();
+NMonitoring::IMonPage *CreateMonVDiskStreamPage(const TString& path, TActorSystem *actorSystem) {
+    return new TMonVDiskPage(path, actorSystem);
 }
 
 } // NKikimr

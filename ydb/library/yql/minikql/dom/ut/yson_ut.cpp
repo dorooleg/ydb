@@ -1,7 +1,5 @@
 #include <ydb/library/yql/minikql/dom/yson.h>
 
-#include <ydb/library/yql/minikql/dom/json.h>
-
 #include <library/cpp/testing/unittest/registar.h>
 #include <ydb/library/yql/minikql/mkql_alloc.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
@@ -2060,28 +2058,5 @@ Y_UNIT_TEST_SUITE(TYsonTests) {
         }
         const auto time = TInstant::Now() - t;
         Cerr << "Time is " << time << Endl;
-    }
-
-    Y_UNIT_TEST(TestSerializeJsonNanInf) {
-        NMiniKQL::TScopedAlloc alloc(__LOCATION__);
-        NMiniKQL::TMemoryUsageInfo memInfo("Memory");
-        NMiniKQL::THolderFactory holderFactory(alloc.Ref(), memInfo, nullptr);
-        NMiniKQL::TDefaultValueBuilder builder(holderFactory);
-
-        constexpr char yson[] =
-        R"(
-        {
-            "Nan" = %nan;
-            "Inf" = %inf;
-            "NegInf" = %-inf
-        }
-        )";
-
-        TString expected(R"({"Inf":"inf","Nan":"nan","NegInf":"-inf"})");
-
-        const auto dom =  TryParseYsonDom(yson, &builder);
-        TString res = SerializeJsonDom(dom, false, true, true);
-
-        UNIT_ASSERT_EQUAL(expected, res);
     }
 }

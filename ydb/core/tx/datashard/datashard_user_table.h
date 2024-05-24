@@ -1,5 +1,7 @@
 #pragma once
 
+#include "datashard.h"
+
 #include <ydb/core/base/storage_pools.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/tablet_flat/flat_database.h>
@@ -20,7 +22,6 @@ namespace NDataShard {
 struct TUserTable : public TThrRefBase {
     using TPtr = TIntrusivePtr<TUserTable>;
     using TCPtr = TIntrusiveConstPtr<TUserTable>;
-    using TTableInfos = THashMap<ui64, TUserTable::TCPtr>;
 
     struct TUserFamily {
         using ECodec = NTable::NPage::ECodec;
@@ -207,7 +208,7 @@ struct TUserTable : public TThrRefBase {
                     return ECodec::LZ4;
                 // keep no default
             }
-            Y_ABORT("unexpected");
+            Y_FAIL("unexpected");
         }
 
         static ECache ExtractDbCache(const NKikimrSchemeOp::TFamilyDescription& family) {
@@ -226,7 +227,7 @@ struct TUserTable : public TThrRefBase {
                     return ECache::Ever;
                 // keep no default
             }
-            Y_ABORT("unexpected");
+            Y_FAIL("unexpected");
         }
     };
 
@@ -266,7 +267,7 @@ struct TUserTable : public TThrRefBase {
         {
             THashMap<TStringBuf, ui32> nameToId;
             for (const auto& [id, column] : columns) {
-                Y_DEBUG_ABORT_UNLESS(!nameToId.contains(column.Name));
+                Y_VERIFY_DEBUG(!nameToId.contains(column.Name));
                 nameToId.emplace(column.Name, id);
             }
 
@@ -274,7 +275,7 @@ struct TUserTable : public TThrRefBase {
                 columnIds.reserve(columnNames.size());
                 for (const auto& columnName : columnNames) {
                     auto it = nameToId.find(columnName);
-                    Y_ABORT_UNLESS(it != nameToId.end());
+                    Y_VERIFY(it != nameToId.end());
                     columnIds.push_back(it->second);
                 }
             };
@@ -294,7 +295,6 @@ struct TUserTable : public TThrRefBase {
         EFormat Format;
         EState State;
         bool VirtualTimestamps = false;
-        TDuration ResolvedTimestampsInterval;
         TMaybe<TString> AwsRegion;
 
         TCdcStream() = default;
@@ -305,7 +305,6 @@ struct TUserTable : public TThrRefBase {
             , Format(streamDesc.GetFormat())
             , State(streamDesc.GetState())
             , VirtualTimestamps(streamDesc.GetVirtualTimestamps())
-            , ResolvedTimestampsInterval(TDuration::MilliSeconds(streamDesc.GetResolvedTimestampsIntervalMs()))
         {
             if (const auto& awsRegion = streamDesc.GetAwsRegion()) {
                 AwsRegion = awsRegion;
@@ -400,7 +399,7 @@ struct TUserTable : public TThrRefBase {
     mutable TStats Stats;
     mutable bool StatsUpdateInProgress = false;
     mutable bool StatsNeedUpdate = true;
-    mutable NTable::TDatabase::TChangeCounter LastTableChange;
+    mutable NTable::TDatabase::TChg LastTableChange{ 0, NTable::TEpoch::Zero() };
     mutable TMonotonic LastTableChangeTimestamp;
 
     ui32 SpecialColTablet = Max<ui32>();
@@ -427,7 +426,7 @@ struct TUserTable : public TThrRefBase {
 
     void GetSchema(NKikimrSchemeOp::TTableDescription& description) const {
         bool ok = description.ParseFromArray(Schema.data(), Schema.size());
-        Y_ABORT_UNLESS(ok);
+        Y_VERIFY(ok);
     }
 
     void SetSchema(const NKikimrSchemeOp::TTableDescription& description) {

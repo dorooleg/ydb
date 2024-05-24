@@ -3,19 +3,18 @@
 
 namespace NKikimr {
 
-struct THttpRequestMock : NMonitoring::IHttpRequest {
+struct THttpRequest : NMonitoring::IHttpRequest {
     TCgiParameters CgiParameters;
     THttpHeaders HttpHeaders;
-    TString Path;
 
-    ~THttpRequestMock() {}
+    ~THttpRequest() {}
 
     const char* GetURI() const override {
         return "";
     }
 
     const char* GetPath() const override {
-        return Path.c_str();
+        return "";
     }
 
     const TCgiParameters& GetParams() const override {

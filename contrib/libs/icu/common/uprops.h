@@ -224,79 +224,21 @@ enum {
 /*
  * Properties in vector word 2
  * Bits
- * 31..26   ICU 75: Identifier_Type bit set
- *          ICU 70..74: unused
- *          ICU 57..69: emoji properties; moved to uemoji.icu in ICU 70
+ * 31..26   http://www.unicode.org/reports/tr51/#Emoji_Properties
  * 25..20   Line Break
  * 19..15   Sentence Break
  * 14..10   Word Break
  *  9.. 5   Grapheme Cluster Break
  *  4.. 0   Decomposition Type
  */
-
-#ifdef __cplusplus
-
-// https://www.unicode.org/reports/tr39/#Identifier_Status_and_Type
-// The Identifier_Type maps each code point to a *set* of one or more values.
-// Some can be combined with others, some can only occur alone.
-// Exclusion & Limited_Use are combinable bits, but cannot occur together.
-// We use this forbidden combination for enumerated values.
-// We use 6 bits for all possible combinations.
-// If more combinable values are added, then we need to use more bits.
-//
-// We do not store separate data for Identifier_Status:
-// We can derive that from the encoded Identifier_Type via a simple range check.
-
-inline constexpr uint32_t UPROPS_2_ID_TYPE_MASK = 0xfc000000;
-inline constexpr int32_t UPROPS_2_ID_TYPE_SHIFT = 26;
-
 enum {
-    // A high bit for use in idTypeToEncoded[] but not used in the data
-    UPROPS_ID_TYPE_BIT = 0x80,
-
-    // Combinable bits
-    UPROPS_ID_TYPE_EXCLUSION = 0x20,
-    UPROPS_ID_TYPE_LIMITED_USE = 0x10,
-    UPROPS_ID_TYPE_UNCOMMON_USE = 8,
-    UPROPS_ID_TYPE_TECHNICAL = 4,
-    UPROPS_ID_TYPE_OBSOLETE = 2,
-    UPROPS_ID_TYPE_NOT_XID = 1,
-
-    // Exclusive values
-    UPROPS_ID_TYPE_NOT_CHARACTER = 0,
-
-    // Forbidden bit combination used for enumerating other exclusive values
-    UPROPS_ID_TYPE_FORBIDDEN = UPROPS_ID_TYPE_EXCLUSION | UPROPS_ID_TYPE_LIMITED_USE, // 0x30
-    UPROPS_ID_TYPE_DEPRECATED = UPROPS_ID_TYPE_FORBIDDEN, // 0x30
-    UPROPS_ID_TYPE_DEFAULT_IGNORABLE, // 0x31
-    UPROPS_ID_TYPE_NOT_NFKC, // 0x32
-
-    UPROPS_ID_TYPE_ALLOWED_MIN = UPROPS_ID_TYPE_FORBIDDEN + 0xc, // 0x3c
-    UPROPS_ID_TYPE_INCLUSION = UPROPS_ID_TYPE_FORBIDDEN + 0xe, // 0x3e
-    UPROPS_ID_TYPE_RECOMMENDED = UPROPS_ID_TYPE_FORBIDDEN + 0xf, // 0x3f
+    UPROPS_2_EXTENDED_PICTOGRAPHIC=26,
+    UPROPS_2_EMOJI_COMPONENT,
+    UPROPS_2_EMOJI,
+    UPROPS_2_EMOJI_PRESENTATION,
+    UPROPS_2_EMOJI_MODIFIER,
+    UPROPS_2_EMOJI_MODIFIER_BASE
 };
-
-/**
- * Maps UIdentifierType to encoded bits.
- * When UPROPS_ID_TYPE_BIT is set, then use "&" to test whether the value bit is set.
- * When UPROPS_ID_TYPE_BIT is not set, then compare ("==") the array value with the data value.
- */
-inline constexpr uint8_t uprops_idTypeToEncoded[] = {
-    UPROPS_ID_TYPE_NOT_CHARACTER,
-    UPROPS_ID_TYPE_DEPRECATED,
-    UPROPS_ID_TYPE_DEFAULT_IGNORABLE,
-    UPROPS_ID_TYPE_NOT_NFKC,
-    UPROPS_ID_TYPE_BIT | UPROPS_ID_TYPE_NOT_XID,
-    UPROPS_ID_TYPE_BIT | UPROPS_ID_TYPE_EXCLUSION,
-    UPROPS_ID_TYPE_BIT | UPROPS_ID_TYPE_OBSOLETE,
-    UPROPS_ID_TYPE_BIT | UPROPS_ID_TYPE_TECHNICAL,
-    UPROPS_ID_TYPE_BIT | UPROPS_ID_TYPE_UNCOMMON_USE,
-    UPROPS_ID_TYPE_BIT | UPROPS_ID_TYPE_LIMITED_USE,
-    UPROPS_ID_TYPE_INCLUSION,
-    UPROPS_ID_TYPE_RECOMMENDED
-};
-
-#endif  // __cplusplus
 
 #define UPROPS_LB_MASK          0x03f00000
 #define UPROPS_LB_SHIFT         20
@@ -368,12 +310,55 @@ u_isgraphPOSIX(UChar32 c);
 U_CFUNC UBool
 u_isprintPOSIX(UChar32 c);
 
+/** Turn a bit index into a bit flag. @internal */
+#define FLAG(n) ((uint32_t)1<<(n))
+
+/** Flags for general categories in the order of UCharCategory. @internal */
+#define _Cn     FLAG(U_GENERAL_OTHER_TYPES)
+#define _Lu     FLAG(U_UPPERCASE_LETTER)
+#define _Ll     FLAG(U_LOWERCASE_LETTER)
+#define _Lt     FLAG(U_TITLECASE_LETTER)
+#define _Lm     FLAG(U_MODIFIER_LETTER)
+/* #define _Lo     FLAG(U_OTHER_LETTER) -- conflicts with MS Visual Studio 9.0 xiosbase */
+#define _Mn     FLAG(U_NON_SPACING_MARK)
+#define _Me     FLAG(U_ENCLOSING_MARK)
+#define _Mc     FLAG(U_COMBINING_SPACING_MARK)
+#define _Nd     FLAG(U_DECIMAL_DIGIT_NUMBER)
+#define _Nl     FLAG(U_LETTER_NUMBER)
+#define _No     FLAG(U_OTHER_NUMBER)
+#define _Zs     FLAG(U_SPACE_SEPARATOR)
+#define _Zl     FLAG(U_LINE_SEPARATOR)
+#define _Zp     FLAG(U_PARAGRAPH_SEPARATOR)
+#define _Cc     FLAG(U_CONTROL_CHAR)
+#define _Cf     FLAG(U_FORMAT_CHAR)
+#define _Co     FLAG(U_PRIVATE_USE_CHAR)
+#define _Cs     FLAG(U_SURROGATE)
+#define _Pd     FLAG(U_DASH_PUNCTUATION)
+#define _Ps     FLAG(U_START_PUNCTUATION)
+/* #define _Pe     FLAG(U_END_PUNCTUATION) -- conflicts with MS Visual Studio 9.0 xlocnum */
+/* #define _Pc     FLAG(U_CONNECTOR_PUNCTUATION) -- conflicts with MS Visual Studio 9.0 streambuf */
+#define _Po     FLAG(U_OTHER_PUNCTUATION)
+#define _Sm     FLAG(U_MATH_SYMBOL)
+#define _Sc     FLAG(U_CURRENCY_SYMBOL)
+#define _Sk     FLAG(U_MODIFIER_SYMBOL)
+#define _So     FLAG(U_OTHER_SYMBOL)
+#define _Pi     FLAG(U_INITIAL_PUNCTUATION)
+/* #define _Pf     FLAG(U_FINAL_PUNCTUATION) -- conflicts with MS Visual Studio 9.0 streambuf */
+
 /** Some code points. @internal */
 enum {
     TAB     =0x0009,
     LF      =0x000a,
     FF      =0x000c,
     CR      =0x000d,
+    U_A     =0x0041,
+    U_F     =0x0046,
+    U_Z     =0x005a,
+    U_a     =0x0061,
+    U_f     =0x0066,
+    U_z     =0x007a,
+    DEL     =0x007f,
+    NL      =0x0085,
     NBSP    =0x00a0,
     CGJ     =0x034f,
     FIGURESP=0x2007,
@@ -382,6 +367,15 @@ enum {
     ZWJ     =0x200d,
     RLM     =0x200f,
     NNBSP   =0x202f,
+    WJ      =0x2060,
+    INHSWAP =0x206a,
+    NOMDIG  =0x206f,
+    U_FW_A  =0xff21,
+    U_FW_F  =0xff26,
+    U_FW_Z  =0xff3a,
+    U_FW_a  =0xff41,
+    U_FW_f  =0xff46,
+    U_FW_z  =0xff5a,
     ZWNBSP  =0xfeff
 };
 
@@ -435,9 +429,6 @@ enum UPropertySource {
     UPROPS_SRC_INPC,
     UPROPS_SRC_INSC,
     UPROPS_SRC_VO,
-    UPROPS_SRC_EMOJI,
-    UPROPS_SRC_IDSU,
-    UPROPS_SRC_ID_COMPAT_MATH,
     /** One more than the highest UPropertySource (UPROPS_SRC_) constant. */
     UPROPS_SRC_COUNT
 };
@@ -500,7 +491,6 @@ class CharacterProperties {
 public:
     CharacterProperties() = delete;
     static const UnicodeSet *getInclusionsForProperty(UProperty prop, UErrorCode &errorCode);
-    static const UnicodeSet *getBinaryPropertySet(UProperty property, UErrorCode &errorCode);
 };
 
 // implemented in uniset_props.cpp

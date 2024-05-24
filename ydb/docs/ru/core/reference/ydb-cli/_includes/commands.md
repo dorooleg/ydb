@@ -22,7 +22,6 @@
 
 Команда / подкоманда | Краткое описание
 --- | ---
-[config info](../commands/config-info.md) | Просмотр [параметров соединения](../connect.md)
 [config profile activate](../profile/activate.md) | Активация [профиля](../profile/index.md)
 [config profile create](../profile/create.md) | Создание [профиля](../profile/index.md)
 [config profile delete](../profile/create.md) | Удаление [профиля](../profile/index.md)
@@ -31,10 +30,10 @@
 [config profile set](../profile/activate.md) | Активация [профиля](../profile/index.md)
 [discovery list](../commands/discovery-list.md) | Список эндпоинтов
 [discovery whoami](../commands/discovery-whoami.md) | Проверка аутентификации
-[export s3](../export-import/export-s3.md) | Экспорт данных в хранилище S3
-[import file csv](../export-import/import-file.md) | Импорт данных из CSV-файла
-[import file tsv](../export-import/import-file.md) | Импорт данных из TSV-файла
-[import s3](../export-import/import-s3.md) | Импорт данных из хранилища S3
+[export s3](../export_import/s3_export.md) | Экспорт данных в хранилище S3
+[import file csv](../export_import/import-file.md) | Импорт данных из CSV-файла
+[import file tsv](../export_import/import-file.md) | Импорт данных из TSV-файла
+[import s3](../export_import/s3_import.md) | Импорт данных из хранилища S3
 [init](../profile/create.md) | Инициализация CLI, создание [профиля](../profile/index.md)
 [operation cancel](../operation-cancel.md) | Прерывание исполнения фоновой операции
 [operation forget](../operation-forget.md) | Удаление фоновой операции из списка
@@ -64,12 +63,9 @@ table attribute drop | Удаление атрибута таблицы
 [table ttl set](../table-ttl-set.md) | Установка параметров TTL
 [table ttl reset](../table-ttl-reset.md) | Сброс параметров TTL
 [tools copy](../tools-copy.md) | Копирование таблиц
-[tools dump](../export-import/tools-dump.md) | Выгрузка директории или таблицы в файловую систему
-{% if ydb-cli == "ydb" %}
-[tools pg-convert](../../../postgresql/pg-dump.md#pg-convert) | Конвертация дампа PostgreSQL, полученного утилитой pg_dump, в формат, понятный YDB
-{% endif %}
+[tools dump](../export_import/tools_dump.md) | Выгрузка директории или таблицы в файловую систему
 [tools rename](../commands/tools/rename.md) | Переименование таблиц
-[tools restore](../export-import/tools-restore.md) | Восстановление из файловой системы
+[tools restore](../export_import/tools_restore.md) | Восстановление из файловой системы
 [topic create](../topic-create.md) | Создание топика
 [topic alter](../topic-alter.md) | Модификация параметров топика и перечня читателей
 [topic drop](../topic-drop.md) | Удаление топика

@@ -51,19 +51,12 @@ struct TSchemeShard::TExport::TTxCreate: public TSchemeShard::TXxport::TTxBase {
         }
 
         const TString& uid = GetUid(request.GetRequest().GetOperationParams().labels());
-        if (uid) {
-            if (auto it = Self->ExportsByUid.find(uid); it != Self->ExportsByUid.end()) {
-                if (IsSameDomain(it->second, request.GetDatabaseName())) {
-                    Self->FromXxportInfo(*response->Record.MutableResponse()->MutableEntry(), it->second);
-                    return Reply(std::move(response));
-                } else {
-                    return Reply(
-                        std::move(response),
-                        Ydb::StatusIds::ALREADY_EXISTS,
-                        TStringBuilder() << "Export with uid '" << uid << "' already exists"
-                    );
-                }
-            }
+        if (uid && Self->ExportsByUid.contains(uid)) {
+            return Reply(
+                std::move(response),
+                Ydb::StatusIds::ALREADY_EXISTS,
+                TStringBuilder() << "Export with uid '" << uid << "' already exists"
+            );
         }
 
         const TPath domainPath = TPath::Resolve(request.GetDatabaseName(), Self);
@@ -129,10 +122,10 @@ struct TSchemeShard::TExport::TTxCreate: public TSchemeShard::TXxport::TTxBase {
             break;
 
         default:
-            Y_DEBUG_ABORT("Unknown export kind");
+            Y_VERIFY_DEBUG(false, "Unknown export kind");
         }
 
-        Y_ABORT_UNLESS(exportInfo != nullptr);
+        Y_VERIFY(exportInfo != nullptr);
 
         if (request.HasUserSID()) {
             exportInfo->UserSID = request.GetUserSID();
@@ -233,7 +226,7 @@ struct TSchemeShard::TExport::TTxProgress: public TSchemeShard::TXxport::TTxBase
     ui64 Id;
     TEvTxAllocatorClient::TEvAllocateResult::TPtr AllocateResult = nullptr;
     TEvSchemeShard::TEvModifySchemeTransactionResult::TPtr ModifyResult = nullptr;
-    TTxId CompletedTxId = InvalidTxId;
+    TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr NotifyResult = nullptr;
 
     explicit TTxProgress(TSelf* self, ui64 id)
         : TXxport::TTxBase(self)
@@ -253,9 +246,9 @@ struct TSchemeShard::TExport::TTxProgress: public TSchemeShard::TXxport::TTxBase
     {
     }
 
-    explicit TTxProgress(TSelf* self, TTxId completedTxId)
+    explicit TTxProgress(TSelf* self, TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr& ev)
         : TXxport::TTxBase(self)
-        , CompletedTxId(completedTxId)
+        , NotifyResult(ev)
     {
     }
 
@@ -270,7 +263,7 @@ struct TSchemeShard::TExport::TTxProgress: public TSchemeShard::TXxport::TTxBase
             OnAllocateResult(txc, ctx);
         } else if (ModifyResult) {
             OnModifyResult(txc, ctx);
-        } else if (CompletedTxId) {
+        } else if (NotifyResult) {
             OnNotifyResult(txc, ctx);
         } else {
             Resume(txc, ctx);
@@ -289,7 +282,7 @@ private:
             << ": info# " << exportInfo->ToString()
             << ", txId# " << txId);
 
-        Y_ABORT_UNLESS(exportInfo->WaitTxId == InvalidTxId);
+        Y_VERIFY(exportInfo->WaitTxId == InvalidTxId);
         Send(Self->SelfId(), MkDirPropose(Self, txId, exportInfo));
     }
 
@@ -298,12 +291,12 @@ private:
             << ": info# " << exportInfo->ToString()
             << ", txId# " << txId);
 
-        Y_ABORT_UNLESS(exportInfo->WaitTxId == InvalidTxId);
+        Y_VERIFY(exportInfo->WaitTxId == InvalidTxId);
         Send(Self->SelfId(), CopyTablesPropose(Self, txId, exportInfo));
     }
 
     void TransferData(TExportInfo::TPtr exportInfo, ui32 itemIdx, TTxId txId) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         auto& item = exportInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::Proposed;
@@ -313,12 +306,12 @@ private:
             << ", item# " << item.ToString(itemIdx)
             << ", txId# " << txId);
 
-        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
+        Y_VERIFY(item.WaitTxId == InvalidTxId);
         Send(Self->SelfId(), BackupPropose(Self, txId, exportInfo, itemIdx));
     }
 
     bool CancelTransferring(TExportInfo::TPtr exportInfo, ui32 itemIdx) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         const auto& item = exportInfo->Items.at(itemIdx);
 
         if (item.WaitTxId == InvalidTxId) {
@@ -340,7 +333,7 @@ private:
     }
 
     void DropTable(TExportInfo::TPtr exportInfo, ui32 itemIdx, TTxId txId) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         const auto& item = exportInfo->Items.at(itemIdx);
 
         LOG_I("TExport::TTxProgress: Drop propose"
@@ -348,7 +341,7 @@ private:
             << ", item# " << item.ToString(itemIdx)
             << ", txId# " << txId);
 
-        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
+        Y_VERIFY(item.WaitTxId == InvalidTxId);
         Send(Self->SelfId(), DropPropose(Self, txId, exportInfo, itemIdx));
     }
 
@@ -357,7 +350,7 @@ private:
             << ": info# " << exportInfo->ToString()
             << ", txId# " << txId);
 
-        Y_ABORT_UNLESS(exportInfo->WaitTxId == InvalidTxId);
+        Y_VERIFY(exportInfo->WaitTxId == InvalidTxId);
         Send(Self->SelfId(), DropPropose(Self, txId, exportInfo));
     }
 
@@ -365,12 +358,12 @@ private:
         LOG_I("TExport::TTxProgress: Allocate txId"
             << ": info# " << exportInfo->ToString());
 
-        Y_ABORT_UNLESS(exportInfo->WaitTxId == InvalidTxId);
+        Y_VERIFY(exportInfo->WaitTxId == InvalidTxId);
         Send(Self->TxAllocatorClient, new TEvTxAllocatorClient::TEvAllocate(), 0, exportInfo->Id);
     }
 
     void AllocateTxId(TExportInfo::TPtr exportInfo, ui32 itemIdx) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         auto& item = exportInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::AllocateTxId;
@@ -379,7 +372,7 @@ private:
             << ": info# " << exportInfo->ToString()
             << ", item# " << item.ToString(itemIdx));
 
-        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
+        Y_VERIFY(item.WaitTxId == InvalidTxId);
         Send(Self->TxAllocatorClient, new TEvTxAllocatorClient::TEvAllocate(), 0, exportInfo->Id);
     }
 
@@ -391,12 +384,12 @@ private:
         LOG_I("TExport::TTxProgress: Wait for completion"
             << ": info# " << exportInfo->ToString());
 
-        Y_ABORT_UNLESS(exportInfo->WaitTxId != InvalidTxId);
+        Y_VERIFY(exportInfo->WaitTxId != InvalidTxId);
         SubscribeTx(exportInfo->WaitTxId);
     }
 
     void SubscribeTx(TExportInfo::TPtr exportInfo, ui32 itemIdx) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         auto& item = exportInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::Subscribed;
@@ -405,7 +398,7 @@ private:
             << ": info# " << exportInfo->ToString()
             << ", item# " << item.ToString(itemIdx));
 
-        Y_ABORT_UNLESS(item.WaitTxId != InvalidTxId);
+        Y_VERIFY(item.WaitTxId != InvalidTxId);
         SubscribeTx(item.WaitTxId);
     }
 
@@ -434,18 +427,14 @@ private:
             return InvalidTxId;
         }
 
-        if (!ItemPathId(Self, exportInfo, 0)) {
-            return InvalidTxId;
-        }
-
         return path->LastTxId;
     }
 
     TTxId GetActiveBackupTxId(TExportInfo::TPtr exportInfo, ui32 itemIdx) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         const auto& item = exportInfo->Items.at(itemIdx);
 
-        Y_ABORT_UNLESS(item.State == EState::Transferring);
+        Y_VERIFY(item.State == EState::Transferring);
 
         const auto itemPathId = ItemPathId(Self, exportInfo, itemIdx);
         if (!itemPathId) {
@@ -465,7 +454,7 @@ private:
     }
 
     void Cancel(TExportInfo::TPtr exportInfo, ui32 itemIdx, TStringBuf marker) {
-        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+        Y_VERIFY(itemIdx < exportInfo->Items.size());
         const auto& item = exportInfo->Items.at(itemIdx);
 
         LOG_N("TExport::TTxProgress: " << marker << ", cancelling"
@@ -527,7 +516,7 @@ private:
     }
 
     void Resume(TTransactionContext& txc, const TActorContext&) {
-        Y_ABORT_UNLESS(Self->Exports.contains(Id));
+        Y_VERIFY(Self->Exports.contains(Id));
         TExportInfo::TPtr exportInfo = Self->Exports.at(Id);
 
         LOG_D("TExport::TTxProgress: Resume"
@@ -616,7 +605,7 @@ private:
     }
 
     void OnAllocateResult(TTransactionContext&, const TActorContext&) {
-        Y_ABORT_UNLESS(AllocateResult);
+        Y_VERIFY(AllocateResult);
 
         const auto txId = TTxId(AllocateResult->Get()->TxIds.front());
         const ui64 id = AllocateResult->Cookie;
@@ -671,12 +660,12 @@ private:
             return;
         }
 
-        Y_ABORT_UNLESS(!Self->TxIdToExport.contains(txId));
+        Y_VERIFY(!Self->TxIdToExport.contains(txId));
         Self->TxIdToExport[txId] = {exportInfo->Id, itemIdx};
     }
 
     void OnModifyResult(TTransactionContext& txc, const TActorContext& ctx) {
-        Y_ABORT_UNLESS(ModifyResult);
+        Y_VERIFY(ModifyResult);
         const auto& record = ModifyResult->Get()->Record;
 
         LOG_D("TExport::TTxProgress: OnModifyResult"
@@ -792,8 +781,8 @@ private:
                                 exportInfo->DependencyTxIds.insert(path->LastTxId);
                                 SubscribeTx(path->LastTxId);
 
-                                Y_DEBUG_ABORT_UNLESS(itemIdx == Max<ui32>());
-                                Self->TxIdToDependentExport[path->LastTxId].insert(exportInfo->Id);
+                                Y_VERIFY_DEBUG(itemIdx == Max<ui32>());
+                                Self->TxIdToExport[path->LastTxId] = {exportInfo->Id, itemIdx};
                             }
                         }
 
@@ -828,14 +817,14 @@ private:
             break;
 
         case EState::Transferring:
-            Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+            Y_VERIFY(itemIdx < exportInfo->Items.size());
             exportInfo->Items.at(itemIdx).WaitTxId = txId;
             Self->PersistExportItemState(db, exportInfo, itemIdx);
             break;
 
         case EState::Dropping:
             if (!exportInfo->AllItemsAreDropped()) {
-                Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+                Y_VERIFY(itemIdx < exportInfo->Items.size());
                 exportInfo->Items.at(itemIdx).WaitTxId = txId;
                 Self->PersistExportItemState(db, exportInfo, itemIdx);
             } else {
@@ -865,46 +854,29 @@ private:
     }
 
     void OnNotifyResult(TTransactionContext& txc, const TActorContext&) {
-        Y_ABORT_UNLESS(CompletedTxId);
-        LOG_D("TExport::TTxProgress: OnNotifyResult"
-            << ": txId# " << CompletedTxId);
+        Y_VERIFY(NotifyResult);
+        const auto& record = NotifyResult->Get()->Record;
 
-        const auto txId = CompletedTxId;
-        if (!Self->TxIdToExport.contains(txId) && !Self->TxIdToDependentExport.contains(txId)) {
+        LOG_D("TExport::TTxProgress: OnNotifyResult"
+            << ": txId# " << record.GetTxId());
+
+        const auto txId = TTxId(record.GetTxId());
+        if (!Self->TxIdToExport.contains(txId)) {
             LOG_E("TExport::TTxProgress: OnNotifyResult received unknown txId"
                 << ": txId# " << txId);
             return;
         }
 
-        if (Self->TxIdToExport.contains(txId)) {
-            ui64 id;
-            ui32 itemIdx;
-            std::tie(id, itemIdx) = Self->TxIdToExport.at(txId);
-
-            OnNotifyResult(txId, id, itemIdx, txc);
-            Self->TxIdToExport.erase(txId);
-        }
-        
-        if (Self->TxIdToDependentExport.contains(txId)) {
-            for (const auto id : Self->TxIdToDependentExport.at(txId)) {
-                OnNotifyResult(txId, id, Max<ui32>(), txc);
-            }
-
-            Self->TxIdToDependentExport.erase(txId);
-        }
-    }
-
-    void OnNotifyResult(TTxId txId, ui64 id, ui32 itemIdx, TTransactionContext& txc) {
-        LOG_D("TExport::TTxProgress: OnNotifyResult"
-            << ": txId# " << txId
-            << ", id# " << id
-            << ", itemIdx# " << itemIdx);
-
+        ui64 id;
+        ui32 itemIdx;
+        std::tie(id, itemIdx) = Self->TxIdToExport.at(txId);
         if (!Self->Exports.contains(id)) {
             LOG_E("TExport::TTxProgress: OnNotifyResult received unknown id"
                 << ": id# " << id);
             return;
         }
+
+        Self->TxIdToExport.erase(txId);
 
         TExportInfo::TPtr exportInfo = Self->Exports.at(id);
         NIceDb::TNiceDb db(txc.DB);
@@ -936,7 +908,7 @@ private:
             break;
 
         case EState::Transferring: {
-            Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+            Y_VERIFY(itemIdx < exportInfo->Items.size());
             auto& item = exportInfo->Items.at(itemIdx);
 
             item.State = EState::Done;
@@ -957,7 +929,7 @@ private:
 
         case EState::Dropping:
             if (!exportInfo->AllItemsAreDropped()) {
-                Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+                Y_VERIFY(itemIdx < exportInfo->Items.size());
                 auto& item = exportInfo->Items.at(itemIdx);
 
                 item.State = EState::Dropped;
@@ -1005,8 +977,8 @@ ITransaction* TSchemeShard::CreateTxProgressExport(TEvSchemeShard::TEvModifySche
     return new TExport::TTxProgress(this, ev);
 }
 
-ITransaction* TSchemeShard::CreateTxProgressExport(TTxId completedTxId) {
-    return new TExport::TTxProgress(this, completedTxId);
+ITransaction* TSchemeShard::CreateTxProgressExport(TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr& ev) {
+    return new TExport::TTxProgress(this, ev);
 }
 
 } // NSchemeShard

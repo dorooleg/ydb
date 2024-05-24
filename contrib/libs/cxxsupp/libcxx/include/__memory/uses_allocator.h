@@ -11,8 +11,8 @@
 #define _LIBCPP___MEMORY_USES_ALLOCATOR_H
 
 #include <__config>
-#include <__type_traits/is_convertible.h>
 #include <cstddef>
+#include <type_traits>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -24,10 +24,12 @@ template <class _Tp>
 struct __has_allocator_type
 {
 private:
-    template <class _Up> static false_type __test(...);
-    template <class _Up> static true_type __test(typename _Up::allocator_type* = 0);
+    struct __two {char __lx; char __lxx;};
+    template <class _Up> static __two __test(...);
+    // Fix for MSVC which allows to reference private types. Wrap into declval to prevent that.
+    template <class _Up> static char __test(decltype(_VSTD::declval<typename _Up::allocator_type*>()) = 0);
 public:
-    static const bool value = decltype(__test<_Tp>(0))::value;
+    static const bool value = sizeof(__test<_Tp>(0)) == 1;
 };
 
 template <class _Tp, class _Alloc, bool = __has_allocator_type<_Tp>::value>
@@ -49,9 +51,9 @@ struct _LIBCPP_TEMPLATE_VIS uses_allocator
 {
 };
 
-#if _LIBCPP_STD_VER >= 17
+#if _LIBCPP_STD_VER > 14
 template <class _Tp, class _Alloc>
-inline constexpr bool uses_allocator_v = uses_allocator<_Tp, _Alloc>::value;
+inline constexpr size_t uses_allocator_v = uses_allocator<_Tp, _Alloc>::value;
 #endif
 
 _LIBCPP_END_NAMESPACE_STD

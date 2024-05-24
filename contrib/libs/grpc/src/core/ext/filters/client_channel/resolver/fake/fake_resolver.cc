@@ -21,25 +21,28 @@
 
 #include "src/core/ext/filters/client_channel/resolver/fake/fake_resolver.h"
 
-#include <memory>
-#include <utility>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "y_absl/status/status.h"
-#include "y_absl/status/statusor.h"
-#include "y_absl/strings/string_view.h"
+#include <grpc/support/alloc.h>
+#include <grpc/support/string_util.h>
 
-#include <grpc/support/log.h>
-
+#include "src/core/lib/address_utils/parse_address.h"
 #include "src/core/lib/channel/channel_args.h"
 #include "src/core/lib/config/core_configuration.h"
+#include "src/core/lib/gpr/string.h"
 #include "src/core/lib/gpr/useful.h"
-#include "src/core/lib/gprpp/debug_location.h"
-#include "src/core/lib/gprpp/orphanable.h"
-#include "src/core/lib/gprpp/work_serializer.h"
-#include "src/core/lib/resolver/resolver_factory.h"
+#include "src/core/lib/iomgr/closure.h"
+#include "src/core/lib/iomgr/resolve_address.h"
+#include "src/core/lib/iomgr/unix_sockets_posix.h"
+#include "src/core/lib/iomgr/work_serializer.h"
+#include "src/core/lib/resolver/resolver_registry.h"
 #include "src/core/lib/resolver/server_address.h"
-#include "src/core/lib/service_config/service_config.h"
-#include "src/core/lib/uri/uri_parser.h"
+#include "src/core/lib/slice/slice_internal.h"
+#include "src/core/lib/slice/slice_string_helpers.h"
 
 namespace grpc_core {
 
@@ -57,6 +60,8 @@ class FakeResolver : public Resolver {
   friend class FakeResolverResponseGenerator;
   friend class FakeResolverResponseSetter;
 
+  ~FakeResolver() override;
+
   void ShutdownLocked() override;
 
   void MaybeSendResultLocked();
@@ -64,7 +69,7 @@ class FakeResolver : public Resolver {
   void ReturnReresolutionResult();
 
   // passed-in parameters
-  ChannelArgs channel_args_;
+  grpc_channel_args* channel_args_ = nullptr;
   std::shared_ptr<WorkSerializer> work_serializer_;
   std::unique_ptr<ResultHandler> result_handler_;
   RefCountedPtr<FakeResolverResponseGenerator> response_generator_;
@@ -90,16 +95,20 @@ FakeResolver::FakeResolver(ResolverArgs args)
     : work_serializer_(std::move(args.work_serializer)),
       result_handler_(std::move(args.result_handler)),
       response_generator_(
-          args.args.GetObjectRef<FakeResolverResponseGenerator>()) {
+          FakeResolverResponseGenerator::GetFromArgs(args.args)) {
   // Channels sharing the same subchannels may have different resolver response
   // generators. If we don't remove this arg, subchannel pool will create new
   // subchannels for the same address instead of reusing existing ones because
   // of different values of this channel arg.
-  channel_args_ = args.args.Remove(GRPC_ARG_FAKE_RESOLVER_RESPONSE_GENERATOR);
+  const char* args_to_remove[] = {GRPC_ARG_FAKE_RESOLVER_RESPONSE_GENERATOR};
+  channel_args_ = grpc_channel_args_copy_and_remove(
+      args.args, args_to_remove, GPR_ARRAY_SIZE(args_to_remove));
   if (response_generator_ != nullptr) {
     response_generator_->SetFakeResolver(Ref());
   }
 }
+
+FakeResolver::~FakeResolver() { grpc_channel_args_destroy(channel_args_); }
 
 void FakeResolver::StartLocked() {
   started_ = true;
@@ -139,14 +148,18 @@ void FakeResolver::MaybeSendResultLocked() {
     Result result;
     result.addresses = y_absl::UnavailableError("Resolver transient failure");
     result.service_config = result.addresses.status();
-    result.args = channel_args_;
+    result.args = grpc_channel_args_copy(channel_args_);
     result_handler_->ReportResult(std::move(result));
     return_failure_ = false;
   } else if (has_next_result_) {
+    Result result;
+    result.addresses = std::move(next_result_.addresses);
+    result.service_config = std::move(next_result_.service_config);
     // When both next_results_ and channel_args_ contain an arg with the same
-    // name, only the one in next_results_.
-    next_result_.args = next_result_.args.UnionWith(channel_args_);
-    result_handler_->ReportResult(std::move(next_result_));
+    // name, only the one in next_results_ will be kept since next_results_ is
+    // before channel_args_.
+    result.args = grpc_channel_args_union(next_result_.args, channel_args_);
+    result_handler_->ReportResult(std::move(result));
     has_next_result_ = false;
   }
 }
@@ -360,7 +373,7 @@ class FakeResolverFactory : public ResolverFactory {
 
 void RegisterFakeResolver(CoreConfiguration::Builder* builder) {
   builder->resolver_registry()->RegisterResolverFactory(
-      std::make_unique<FakeResolverFactory>());
+      y_absl::make_unique<FakeResolverFactory>());
 }
 
 }  // namespace grpc_core

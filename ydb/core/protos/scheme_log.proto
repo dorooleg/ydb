@@ -1,5 +1,5 @@
 import "ydb/core/protos/flat_scheme_op.proto";
-import "ydb/core/scheme/protos/type_info.proto";
+import "ydb/core/protos/type_info.proto";
 
 package NTabletFlatScheme;
 option java_package = "ru.yandex.kikimr.proto";
@@ -73,7 +73,4 @@ message TAlterRecord {
 
 message TSchemeChanges {
     repeated TAlterRecord Delta = 1;
-    // If the flag bellow is set, delete all scheme blobs before this
-    // Note that an old version will ignore the flag and will not delete anything
-    optional bool Rewrite = 2 [default = false];
 };

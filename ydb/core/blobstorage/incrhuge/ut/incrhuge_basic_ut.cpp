@@ -1,11 +1,11 @@
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 #include <ydb/core/blobstorage/incrhuge/incrhuge.h>
 #include <ydb/core/blobstorage/incrhuge/incrhuge_keeper.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_tools.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <util/random/fast.h>
 #include <util/folder/tempdir.h>
@@ -58,8 +58,8 @@ public:
             DiskSize = (ui64)ChunkSize * numChunks;
             PDiskGuid = Now().GetValue();
             PDiskKey = 1;
-            MainKey = NPDisk::TMainKey{ .Keys = { 1 }, .IsInitialized = true };
-            FormatPDisk(Path, DiskSize, 4096, ChunkSize, PDiskGuid, PDiskKey, PDiskKey, PDiskKey, MainKey.Keys.back(), "incrhuge",
+            MainKey = {1};
+            FormatPDisk(Path, DiskSize, 4096, ChunkSize, PDiskGuid, PDiskKey, PDiskKey, PDiskKey, MainKey.back(), "incrhuge",
                 false, false, nullptr, false);
         }
 
@@ -67,7 +67,7 @@ public:
         ui64 pDiskCategory = 0;
         TIntrusivePtr<TPDiskConfig> pDiskConfig = new TPDiskConfig(Path, PDiskGuid, 1, pDiskCategory);
         TActorSetupCmd pDiskSetup(CreatePDisk(pDiskConfig.Get(), MainKey, Counters), TMailboxType::Revolving, 0);
-        setup->LocalServices.emplace_back(PDiskId, std::move(pDiskSetup));
+        setup->LocalServices.emplace_back(PDiskId, pDiskSetup);
 
         TActorId pdiskActorId;
         if (counter) {
@@ -92,13 +92,13 @@ public:
 
         KeeperId = MakeIncrHugeKeeperId(1);
         TActorSetupCmd keeperSetup(CreateIncrHugeKeeper(settings), TMailboxType::Revolving, 0);
-        setup->LocalServices.emplace_back(KeeperId, std::move(keeperSetup));
+        setup->LocalServices.emplace_back(KeeperId, keeperSetup);
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         // LOGGER
         NActors::TActorId loggerActorId{1, "logger"};
         TIntrusivePtr<NActors::NLog::TSettings> logSettings{new NActors::NLog::TSettings{loggerActorId,
-            NActorsServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, 0}};
+            NKikimrServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, 0}};
         logSettings->Append(
             NActorsServices::EServiceCommon_MIN,
             NActorsServices::EServiceCommon_MAX,
@@ -116,7 +116,7 @@ public:
         NActors::TLoggerActor *loggerActor = new NActors::TLoggerActor{logSettings, NActors::CreateStderrBackend(),
             Counters};
         NActors::TActorSetupCmd loggerActorCmd{loggerActor, NActors::TMailboxType::Simple, 2};
-        setup->LocalServices.emplace_back(loggerActorId, std::move(loggerActorCmd));
+        setup->LocalServices.emplace_back(loggerActorId, loggerActorCmd);
         AppData.reset(new TAppData(0, 1, 2, 1, TMap<TString, ui32>(), nullptr, nullptr, nullptr, nullptr));
         IoContext = std::make_shared<NPDisk::TIoContextFactoryOSS>();
         AppData->IoContextFactory = IoContext.get();

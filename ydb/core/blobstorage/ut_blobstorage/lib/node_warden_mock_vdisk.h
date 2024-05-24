@@ -123,7 +123,7 @@ public:
                 break;
 
             case EState::READY:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 

@@ -7,7 +7,7 @@
 namespace NKikimr {
 namespace NGRpcService {
 
-void TGRpcCmsService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcCmsService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
     using namespace Ydb;
 
@@ -17,7 +17,7 @@ void TGRpcCmsService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
 #define ADD_REQUEST(NAME, CB) \
     MakeIntrusive<TGRpcRequest<Cms::NAME##Request, Cms::NAME##Response, TGRpcCmsService>>          \
         (this, &Service_, CQ_,                                                                     \
-            [this](NYdbGrpc::IRequestContextBase *ctx) {                                              \
+            [this](NGrpc::IRequestContextBase *ctx) {                                              \
                 NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer());                   \
                 ActorSystem_->Send(GRpcRequestProxyId_,                                            \
                     new TGrpcRequestOperationCall<Cms::NAME##Request, Cms::NAME##Response>         \

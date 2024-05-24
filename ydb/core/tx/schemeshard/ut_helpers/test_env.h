@@ -9,10 +9,6 @@
 #include <ydb/core/tx/schemeshard/schemeshard_export.h>
 #include <ydb/core/tx/schemeshard/schemeshard_identificators.h>
 #include <ydb/core/tx/schemeshard/schemeshard_import.h>
-#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
-#include <ydb/core/protos/follower_group.pb.h>
-#include <ydb/core/protos/msgbus_kv.pb.h>
 
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 
@@ -45,6 +41,7 @@ namespace NSchemeShardUT_Private {
         OPTION(std::optional<bool>, EnablePersistentPartitionStats, std::nullopt);
         OPTION(std::optional<bool>, AllowUpdateChannelsBindingOfSolomonPartitions, std::nullopt);
         OPTION(std::optional<bool>, EnableNotNullColumns, std::nullopt);
+        OPTION(std::optional<bool>, EnableOlapSchemaOperations, true);
         OPTION(std::optional<bool>, EnableProtoSourceIdInfo, std::nullopt);
         OPTION(std::optional<bool>, EnablePqBilling, std::nullopt);
         OPTION(std::optional<bool>, EnableBackgroundCompaction, std::nullopt);
@@ -59,12 +56,6 @@ namespace NSchemeShardUT_Private {
         OPTION(std::optional<bool>, EnablePQConfigTransactionsAtSchemeShard, std::nullopt);
         OPTION(std::optional<bool>, EnableTopicSplitMerge, std::nullopt);
         OPTION(std::optional<bool>, EnableChangefeedDynamoDBStreamsFormat, std::nullopt);
-        OPTION(std::optional<bool>, EnableChangefeedDebeziumJsonFormat, std::nullopt);
-        OPTION(std::optional<bool>, EnableTablePgTypes, std::nullopt);
-        OPTION(std::optional<bool>, EnableServerlessExclusiveDynamicNodes, std::nullopt);
-        OPTION(std::optional<bool>, EnableAddColumsWithDefaults, std::nullopt);
-        OPTION(std::optional<bool>, EnableReplaceIfExistsForExternalEntities, std::nullopt);
-        OPTION(std::optional<TString>, GraphBackendType, std::nullopt);
 
         #undef OPTION
     };
@@ -85,8 +76,6 @@ namespace NSchemeShardUT_Private {
         THolder<NYdb::TDriver> YdbDriver;
 
     public:
-        static bool ENABLE_SCHEMESHARD_LOG;
-
         TTestEnv(TTestActorRuntime& runtime, ui32 nchannels = 4, bool enablePipeRetries = true,
             TSchemeShardFactory ssFactory = &CreateFlatTxSchemeShard, bool enableSystemViews = false);
         TTestEnv(TTestActorRuntime& runtime, const TTestEnvOptions& opts,
@@ -109,22 +98,18 @@ namespace NSchemeShardUT_Private {
         void TestWaitNotification(TTestActorRuntime& runtime, ui64 txId, ui64 schemeshardId = TTestTxConfig::SchemeShard);
 
         template <class TContainer>
-        void TestWaitTabletDeletion(TTestActorRuntime& runtime, const TContainer& tabletIds, ui64 hive = TTestTxConfig::Hive) {
+        void TestWaitTabletDeletion(TTestActorRuntime& runtime, TContainer tabletIds) {
             TSet<ui64> set(tabletIds.begin(), tabletIds.end());
-            TestWaitTabletDeletion(runtime, std::move(set), hive);
+            TestWaitTabletDeletion(runtime, std::move(set));
         }
-        void TestWaitTabletDeletion(TTestActorRuntime& runtime, TSet<ui64> tabletIds, ui64 hive = TTestTxConfig::Hive);
-        void TestWaitTabletDeletion(TTestActorRuntime& runtime, ui64 tabletId, ui64 hive = TTestTxConfig::Hive);
+        void TestWaitTabletDeletion(TTestActorRuntime& runtime, TSet<ui64> tabletIds);
+        void TestWaitTabletDeletion(TTestActorRuntime& runtime, ui64 tabletId);
 
         void TestWaitShardDeletion(TTestActorRuntime& runtime, TSet<ui64> localIds);
         void TestWaitShardDeletion(TTestActorRuntime& runtime, ui64 schemeShard, TSet<ui64> localIds);
         void TestWaitShardDeletion(TTestActorRuntime& runtime, ui64 schemeShard, TSet<TShardIdx> shardIds);
 
         void SimulateSleep(TTestActorRuntime& runtime, TDuration duration);
-
-        void TestServerlessComputeResourcesModeInHive(TTestActorRuntime& runtime, const TString& path,
-                                                      NKikimrSubDomains::EServerlessComputeResourcesMode serverlessComputeResourcesMode,
-                                                      ui64 hive = TTestTxConfig::Hive);
 
         TEvSchemeShard::TEvInitRootShardResult::EStatus InitRoot(TTestActorRuntime& runtime, ui64 schemeRoot, const TActorId& sender, const TString& domainName, const TDomainsInfo::TDomain::TStoragePoolKinds& StoragePoolTypes = {}, const TString& owner = {});
         void InitRootStoragePools(TTestActorRuntime& runtime, ui64 schemeRoot, const TActorId& sender, ui64 domainUid);
@@ -133,7 +118,7 @@ namespace NSchemeShardUT_Private {
 
     private:
         static std::function<IActor*(const TActorId&, TTabletStorageInfo*)> GetTabletCreationFunc(ui32 type);
-        void AddDomain(TTestActorRuntime& runtime, TAppPrepare& app, ui32 domainUid, ui64 hive, ui64 schemeRoot);
+        void AddDomain(TTestActorRuntime& runtime, TAppPrepare& app, ui32 domainUid, ui32 ssId, ui64 hive, ui64 schemeRoot);
 
         void BootSchemeShard(TTestActorRuntime& runtime, ui64 schemeRoot);
         void BootTxAllocator(TTestActorRuntime& runtime, ui64 tabletId);
@@ -142,14 +127,6 @@ namespace NSchemeShardUT_Private {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // A wrapper to run test scenarios with reboots of schemeshard, hive and coordinator
     class TTestWithReboots {
-    protected:
-        struct TDatashardLogBatchingSwitch {
-            explicit TDatashardLogBatchingSwitch(bool newVal);
-            ~TDatashardLogBatchingSwitch();
-        private:
-            bool PrevVal;
-        };
-
     public:
         TVector<ui64> TabletIds;
         THolder<TTestActorRuntime> Runtime;

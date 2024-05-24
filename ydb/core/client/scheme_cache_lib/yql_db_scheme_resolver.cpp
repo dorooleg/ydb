@@ -4,7 +4,7 @@
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/client/minikql_compile/yql_expr_minikql.h>
 
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actorsystem.h>
 
 namespace NKikimr {
 namespace NSchCache {
@@ -25,7 +25,7 @@ class TTableProxyActor : public TActorBootstrapped<TTableProxyActor> {
 
     void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &ev, const TActorContext &ctx) {
         const NSchemeCache::TSchemeCacheNavigate &request = *ev->Get()->Request;
-        Y_ABORT_UNLESS(request.ResultSet.size() == Tables.size());
+        Y_VERIFY(request.ResultSet.size() == Tables.size());
 
         TVector<TTableResult> results;
         results.reserve(Tables.size());

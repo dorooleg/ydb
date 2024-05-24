@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstring>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_util_space_color.h>
 
@@ -56,38 +55,32 @@ namespace NFake {
         TMap<TLogoBlobID, TBlob> Blobs;
         // By default only NKikimrBlobStorage::StatusIsValid is set
         TStorageStatusFlags StorageStatusFlags = TStorageStatusFlags(NKikimrBlobStorage::StatusIsValid);
-        const ui32 GroupId;
-
-    public:
-        TProxyDS(ui32 groupId = 0)
-            : GroupId(groupId)
-        {}
 
     public: // BS events interface : Handle(event) -> event
         TEvBlobStorage::TEvPutResult* Handle(TEvBlobStorage::TEvPut *msg) {
             // ensure we have full blob id, with PartId set to zero
             const TLogoBlobID& id = msg->Id;
-            Y_ABORT_UNLESS(id == id.FullID());
+            Y_VERIFY(id == id.FullID());
 
             // validate put against set blocks
             if (IsBlocked(id.TabletID(), id.Generation())) {
-                return new TEvBlobStorage::TEvPutResult(NKikimrProto::BLOCKED, id, GetStorageStatusFlags(), GroupId, 0.f);
+                return new TEvBlobStorage::TEvPutResult(NKikimrProto::BLOCKED, id, GetStorageStatusFlags(), 0, 0.f);
             }
             for (const auto& [tabletId, generation] : msg->ExtraBlockChecks) {
                 if (IsBlocked(tabletId, generation)) {
-                    return new TEvBlobStorage::TEvPutResult(NKikimrProto::BLOCKED, id, GetStorageStatusFlags(), GroupId, 0.f);
+                    return new TEvBlobStorage::TEvPutResult(NKikimrProto::BLOCKED, id, GetStorageStatusFlags(), 0, 0.f);
                 }
             }
 
             // check if this blob is not being collected -- writing such blob is a violation of BS contract
-            Y_ABORT_UNLESS(!IsCollectedByBarrier(id), "Id# %s", id.ToString().data());
+            Y_VERIFY(!IsCollectedByBarrier(id), "Id# %s", id.ToString().data());
 
             // validate that there are no blobs with the same gen/step, channel, cookie, but with different size
             const TLogoBlobID base(id.TabletID(), id.Generation(), id.Step(), id.Channel(), 0, id.Cookie());
             auto iter = Blobs.lower_bound(base);
             if (iter != Blobs.end()) {
                 const TLogoBlobID& existing = iter->first;
-                Y_ABORT_UNLESS(
+                Y_VERIFY(
                     id.TabletID() != existing.TabletID() ||
                     id.Generation() != existing.Generation() ||
                     id.Step() != existing.Step() ||
@@ -96,25 +89,25 @@ namespace NFake {
                     id == existing,
                     "id# %s existing# %s", id.ToString().data(), existing.ToString().data());
                 if (id == existing) {
-                    Y_ABORT_UNLESS(iter->second.Buffer == msg->Buffer);
+                    Y_VERIFY(iter->second.Buffer == msg->Buffer);
                 }
             }
 
             // put an entry into logo blobs database and reply with success
             Blobs.emplace(id, std::move(msg->Buffer));
-            return new TEvBlobStorage::TEvPutResult(NKikimrProto::OK, id, GetStorageStatusFlags(), GroupId, 0.f);
+            return new TEvBlobStorage::TEvPutResult(NKikimrProto::OK, id, GetStorageStatusFlags(), 0, 0.f);
         }
 
         TEvBlobStorage::TEvGetResult* Handle(TEvBlobStorage::TEvGet *msg) {
             // prepare result structure holding the returned data
-            auto result = std::make_unique<TEvBlobStorage::TEvGetResult>(NKikimrProto::OK, msg->QuerySize, GroupId);
+            auto result = std::make_unique<TEvBlobStorage::TEvGetResult>(NKikimrProto::OK, msg->QuerySize, 0u);
 
             // traverse against requested blobs and process them
             for (ui32 i = 0; i < msg->QuerySize; ++i) {
                 const TEvBlobStorage::TEvGet::TQuery& query = msg->Queries[i];
 
                 const TLogoBlobID& id = query.Id;
-                Y_ABORT_UNLESS(id == id.FullID());
+                Y_VERIFY(id == id.FullID());
 
                 TEvBlobStorage::TEvGetResult::TResponse& response = result->Responses[i];
                 response.Id = id;
@@ -136,11 +129,10 @@ namespace NFake {
                     const ui32 size = Min<ui32>(maxSize, !query.Size ? Max<ui32>() : query.Size);
 
                     // calculate substring; use 0 instead of query.Shift because it may exceed the buffer
-                    const ui32 offset = size ? query.Shift : 0;
-                    response.Buffer = TRope(data.Buffer.Position(offset), data.Buffer.Position(offset + size));
+                    response.Buffer = data.Buffer.ConvertToString().substr(size ? query.Shift : 0, size);
                 } else {
                     // ensure this blob is not under GC
-                    Y_ABORT_UNLESS(!IsCollectedByBarrier(id), "Id# %s", id.ToString().data());
+                    Y_VERIFY(!IsCollectedByBarrier(id), "Id# %s", id.ToString().data());
 
                     // reply with NODATA -- we haven't got this blob
                     response.Status = NKikimrProto::NODATA;
@@ -148,64 +140,6 @@ namespace NFake {
             }
 
             return result.release();
-        }
-
-        TEvBlobStorage::TEvPatchResult* Handle(TEvBlobStorage::TEvPatch *msg) {
-            // ensure we have full blob id, with PartId set to zero
-            const TLogoBlobID& id = msg->PatchedId;
-            Y_ABORT_UNLESS(id == id.FullID());
-
-            // validate put against set blocks
-            if (IsBlocked(id.TabletID(), id.Generation())) {
-                return new TEvBlobStorage::TEvPatchResult(NKikimrProto::BLOCKED, id, GetStorageStatusFlags(), GroupId, 0.f);
-            }
-
-            // check if this blob is not being collected -- writing such blob is a violation of BS contract
-            Y_ABORT_UNLESS(!IsCollectedByBarrier(id), "Id# %s", id.ToString().data());
-
-
-            const TLogoBlobID& originalId = msg->OriginalId;
-            auto it = Blobs.find(originalId);
-            if (it == Blobs.end()) {
-                // ensure this blob is not under GC
-                Y_ABORT_UNLESS(!IsCollectedByBarrier(id), "Id# %s", id.ToString().data());
-                return new TEvBlobStorage::TEvPatchResult(NKikimrProto::ERROR, id, GetStorageStatusFlags(), GroupId, 0.f);
-            }
-
-            auto& data = it->second;
-            // TODO(kruall): check bad diffs
-            TString buffer = TString::Uninitialized(data.Buffer.GetSize());
-            auto originalBuffer = data.Buffer.GetContiguousSpan();
-            memcpy(buffer.Detach(), originalBuffer.data(), buffer.size());
-            for (ui32 diffIdx = 0; diffIdx < msg->DiffCount; ++diffIdx) {
-                auto &diff = msg->Diffs[diffIdx];
-                auto diffBuffer = diff.Buffer.GetContiguousSpan();
-                memcpy(buffer.Detach() + diff.Offset, diffBuffer.data(), diffBuffer.size());
-            }
-
-
-            // validate that there are no blobs with the same gen/step, channel, cookie, but with different size
-            const TLogoBlobID base(id.TabletID(), id.Generation(), id.Step(), id.Channel(), 0, id.Cookie());
-            auto iter = Blobs.lower_bound(base);
-            if (iter != Blobs.end()) {
-                const TLogoBlobID& existing = iter->first;
-                Y_ABORT_UNLESS(
-                    id.TabletID() != existing.TabletID() ||
-                    id.Generation() != existing.Generation() ||
-                    id.Step() != existing.Step() ||
-                    id.Cookie() != existing.Cookie() ||
-                    id.Channel() != existing.Channel() ||
-                    id == existing,
-                    "id# %s existing# %s", id.ToString().data(), existing.ToString().data());
-                if (id == existing) {
-                    Y_ABORT_UNLESS(iter->second.Buffer == buffer);
-                }
-            }
-
-            // put an entry into logo blobs database and reply with success
-            Blobs.emplace(id, TRope(buffer));
-    
-            return new TEvBlobStorage::TEvPatchResult(NKikimrProto::OK, id, GetStorageStatusFlags(), GroupId, 0.f);
         }
 
         TEvBlobStorage::TEvBlockResult* Handle(TEvBlobStorage::TEvBlock *msg) {
@@ -263,11 +197,11 @@ namespace NFake {
             const TLogoBlobID& from = msg->From;
             const TLogoBlobID& to = msg->To;
 
-            Y_ABORT_UNLESS(from.TabletID() == to.TabletID());
-            Y_ABORT_UNLESS(from.Channel() == to.Channel());
-            Y_ABORT_UNLESS(from.TabletID() == msg->TabletId);
+            Y_VERIFY(from.TabletID() == to.TabletID());
+            Y_VERIFY(from.Channel() == to.Channel());
+            Y_VERIFY(from.TabletID() == msg->TabletId);
 
-            auto result = std::make_unique<TEvBlobStorage::TEvRangeResult>(NKikimrProto::OK, from, to, GroupId);
+            auto result = std::make_unique<TEvBlobStorage::TEvRangeResult>(NKikimrProto::OK, from, to, 0u);
 
             auto process = [&](const TLogoBlobID& id, const TString& buffer) {
                 result->Responses.emplace_back(id, buffer);
@@ -301,9 +235,9 @@ namespace NFake {
             }
 
             if (msg->Hard) {
-                Y_ABORT_UNLESS(!msg->Keep, "Unexpected Keep in HARD collect, msg# %s", msg->ToString().c_str());
-                Y_ABORT_UNLESS(!msg->DoNotKeep, "Unexpected DoNotKeep in HARD collect, msg# %s", msg->ToString().c_str());
-                Y_ABORT_UNLESS(msg->Collect, "Missing Collect in HARD collect, msg# %s", msg->ToString().c_str());
+                Y_VERIFY(!msg->Keep, "Unexpected Keep in HARD collect, msg# %s", msg->ToString().c_str());
+                Y_VERIFY(!msg->DoNotKeep, "Unexpected DoNotKeep in HARD collect, msg# %s", msg->ToString().c_str());
+                Y_VERIFY(msg->Collect, "Missing Collect in HARD collect, msg# %s", msg->ToString().c_str());
 
                 std::pair<TTabletId, TChannel> key(msg->TabletId, msg->Channel);
                 auto it = HardBarriers.find(key);
@@ -313,12 +247,12 @@ namespace NFake {
                     if (msg->RecordGeneration == barrier.RecordGeneration &&
                             msg->PerGenerationCounter == barrier.PerGenerationCounter) {
                         // we already have this record; ensure that the data is the same
-                        Y_ABORT_UNLESS(msg->CollectGeneration == barrier.CollectGeneration &&
+                        Y_VERIFY(msg->CollectGeneration == barrier.CollectGeneration &&
                                 msg->CollectStep == barrier.CollectStep);
                     } else {
-                        Y_ABORT_UNLESS(std::make_pair(msg->RecordGeneration, msg->PerGenerationCounter) >
+                        Y_VERIFY(std::make_pair(msg->RecordGeneration, msg->PerGenerationCounter) >
                                 std::make_pair(barrier.RecordGeneration, barrier.PerGenerationCounter));
-                        Y_ABORT_UNLESS(std::make_pair(msg->CollectGeneration, msg->CollectStep) >=
+                        Y_VERIFY(std::make_pair(msg->CollectGeneration, msg->CollectStep) >=
                                 barrier.MakeCollectPair(),
                                 "tabletId %" PRIu64 " requested hard collect %" PRIu32 ":%" PRIu32
                                 " existing barrier %" PRIu32 ":%" PRIu32 " msg# %s",
@@ -336,12 +270,12 @@ namespace NFake {
                 if (msg->Keep) {
                     for (const TLogoBlobID& id : *msg->Keep) {
                         auto it = Blobs.find(id);
-                        Y_ABORT_UNLESS(it != Blobs.end(), "Id# %s", id.ToString().data());
-                        Y_ABORT_UNLESS(!IsCollectedByBarrier(id) || (it->second.Keep && !it->second.DoNotKeep),
+                        Y_VERIFY(it != Blobs.end(), "Id# %s", id.ToString().data());
+                        Y_VERIFY(!IsCollectedByBarrier(id) || (it->second.Keep && !it->second.DoNotKeep),
                             "Id# %s Keep# %s DoNotKeep# %s", id.ToString().data(),
                             it->second.Keep ? "true" : "false",
                             it->second.DoNotKeep ? "true" : "false");
-                        Y_ABORT_UNLESS(!it->second.DoNotKeep);
+                        Y_VERIFY(!it->second.DoNotKeep);
                         it->second.Keep = true;
                     }
                 }
@@ -364,12 +298,12 @@ namespace NFake {
                         if (msg->RecordGeneration == barrier.RecordGeneration &&
                                 msg->PerGenerationCounter == barrier.PerGenerationCounter) {
                             // we already have this record; ensure that the data is the same
-                            Y_ABORT_UNLESS(msg->CollectGeneration == barrier.CollectGeneration &&
+                            Y_VERIFY(msg->CollectGeneration == barrier.CollectGeneration &&
                                     msg->CollectStep == barrier.CollectStep);
                         } else {
-                            Y_ABORT_UNLESS(std::make_pair(msg->RecordGeneration, msg->PerGenerationCounter) >
+                            Y_VERIFY(std::make_pair(msg->RecordGeneration, msg->PerGenerationCounter) >
                                     std::make_pair(barrier.RecordGeneration, barrier.PerGenerationCounter));
-                            Y_ABORT_UNLESS(std::make_pair(msg->CollectGeneration, msg->CollectStep) >=
+                            Y_VERIFY(std::make_pair(msg->CollectGeneration, msg->CollectStep) >=
                                     barrier.MakeCollectPair(),
                                     "tabletId %" PRIu64 " requested collect %" PRIu32 ":%" PRIu32
                                     " existing barrier %" PRIu32 ":%" PRIu32 " msg# %s",
@@ -398,7 +332,7 @@ namespace NFake {
         void SetStorageStatusFlagsByColor(NKikimrBlobStorage::TPDiskSpaceColor::E color) {
             StorageStatusFlags = TStorageStatusFlags(SpaceColorToStatusFlag(color));
         }
-
+        
         void SetStorageStatusFlags(TStorageStatusFlags flags) {
             StorageStatusFlags = flags;
         }
@@ -427,7 +361,7 @@ namespace NFake {
                 std::make_pair(id.Generation(), id.Step()) <= it->second.MakeCollectPair();
         }
 
-        void DoCollection(ui64 tablet, ui32 channel, bool force, ui32 Gen, ui32 Step) {
+        void DoCollection(ui32 tablet, ui32 channel, bool force, ui32 Gen, ui32 Step) {
             TLogoBlobID id(tablet, 0, 0, channel, 0, 0);
             auto it = Blobs.lower_bound(id);
             while (it != Blobs.end() && it->first.TabletID() == tablet &&

@@ -186,14 +186,14 @@ struct TSchemeShard::TTxRunConditionalErase: public TSchemeShard::TRwTxBase {
 
             auto [tableInfo, shardIdx] = ResolveInfo(Self, tabletId);
             if (!tableInfo || shardIdx == InvalidShardIdx) {
-                Y_DEBUG_ABORT("Unreachable");
+                Y_VERIFY_DEBUG(false, "Unreachable");
                 continue;
             }
 
             auto& inFlight = tableInfo->GetInFlightCondErase();
             auto it = inFlight.find(shardIdx);
             if (it == inFlight.end()) {
-                Y_DEBUG_ABORT("Unreachable");
+                Y_VERIFY_DEBUG(false, "Unreachable");
                 continue;
             }
 
@@ -216,14 +216,14 @@ private:
     THashMap<TTableId, TVector<std::pair<ui32, ui32>>> MakeIndexes(const TPathId& mainPathId) const {
         THashMap<TTableId, TVector<std::pair<ui32, ui32>>> result;
 
-        Y_ABORT_UNLESS(Self->PathsById.contains(mainPathId));
+        Y_VERIFY(Self->PathsById.contains(mainPathId));
         auto mainPath = Self->PathsById.at(mainPathId);
 
-        Y_ABORT_UNLESS(Self->Tables.contains(mainPathId));
+        Y_VERIFY(Self->Tables.contains(mainPathId));
         auto mainTable = Self->Tables.at(mainPathId);
 
         for (const auto& [_, childPathId] : mainPath->GetChildren()) {
-            Y_ABORT_UNLESS(Self->PathsById.contains(childPathId));
+            Y_VERIFY(Self->PathsById.contains(childPathId));
             auto childPath = Self->PathsById.at(childPathId);
 
             if (!childPath->IsTableIndex() || childPath->Dropped()) {
@@ -241,30 +241,30 @@ private:
                 TTableId(indexImplTableId, indexImplTable->AlterVersion),
                 MakeColumnIds(mainTable, index, indexImplTable)
             );
-            Y_ABORT_UNLESS(ret.second);
+            Y_VERIFY(ret.second);
         }
 
         return result;
     }
 
     TTableIndexInfo::TPtr GetIndex(TPathElement::TPtr indexPath) const {
-        Y_ABORT_UNLESS(Self->Indexes.contains(indexPath->PathId));
+        Y_VERIFY(Self->Indexes.contains(indexPath->PathId));
         return Self->Indexes.at(indexPath->PathId);
     }
 
     std::pair<TPathId, TTableInfo::TPtr> GetIndexImplTable(TPathElement::TPtr indexPath) const {
-        Y_ABORT_UNLESS(indexPath->GetChildren().size() == 1);
+        Y_VERIFY(indexPath->GetChildren().size() == 1);
 
         for (const auto& [_, indexImplPathId] : indexPath->GetChildren()) {
             auto childPath = Self->PathsById.at(indexImplPathId);
 
-            Y_ABORT_UNLESS(!childPath->Dropped());
+            Y_VERIFY(!childPath->Dropped());
 
-            Y_ABORT_UNLESS(Self->Tables.contains(indexImplPathId));
+            Y_VERIFY(Self->Tables.contains(indexImplPathId));
             return std::make_pair(indexImplPathId, Self->Tables.at(indexImplPathId));
         }
 
-        Y_ABORT("Unreachable");
+        Y_FAIL("Unreachable");
     }
 
     static TVector<std::pair<ui32, ui32>> MakeColumnIds(TTableInfo::TPtr mainTable, TTableIndexInfo::TPtr index, TTableInfo::TPtr indexImplTable) {
@@ -275,22 +275,22 @@ private:
         const auto indexImplColumns = MakeColumnNameToId(indexImplTable->Columns);
 
         for (const TString& indexKey : index->IndexKeys) {
-            Y_ABORT_UNLESS(mainColumns.contains(indexKey));
-            Y_ABORT_UNLESS(indexImplColumns.contains(indexKey));
+            Y_VERIFY(mainColumns.contains(indexKey));
+            Y_VERIFY(indexImplColumns.contains(indexKey));
 
             result.emplace_back(std::make_pair(indexImplColumns.at(indexKey), mainColumns.at(indexKey)));
             keys.insert(indexKey);
         }
 
         for (const ui32 mainColumnId : mainTable->KeyColumnIds) {
-            Y_ABORT_UNLESS(mainTable->Columns.contains(mainColumnId));
+            Y_VERIFY(mainTable->Columns.contains(mainColumnId));
             const TString& mainKey = mainTable->Columns.at(mainColumnId).Name;
 
             if (keys.contains(mainKey)) {
                 continue;
             }
 
-            Y_ABORT_UNLESS(indexImplColumns.contains(mainKey));
+            Y_VERIFY(indexImplColumns.contains(mainKey));
             result.emplace_back(std::make_pair(indexImplColumns.at(mainKey), mainColumnId));
         }
 
@@ -306,7 +306,7 @@ private:
             }
 
             auto ret = result.emplace(column.Name, id);
-            Y_ABORT_UNLESS(ret.second);
+            Y_VERIFY(ret.second);
         }
 
         return result;
@@ -397,17 +397,17 @@ struct TSchemeShard::TTxScheduleConditionalErase : public TTransactionBase<TSche
         }
 
         const auto& shardToPartition = tableInfo->GetShard2PartitionIdx();
-        Y_ABORT_UNLESS(shardToPartition.contains(shardIdx));
+        Y_VERIFY(shardToPartition.contains(shardIdx));
         const ui64 partitionIdx = shardToPartition.at(shardIdx);
 
         const auto& partitions = tableInfo->GetPartitions();
-        Y_ABORT_UNLESS(partitionIdx < partitions.size());
+        Y_VERIFY(partitionIdx < partitions.size());
         const auto& lag = partitions.at(partitionIdx).LastCondEraseLag;
 
         if (lag) {
             Self->TabletCounters->Percentile()[COUNTER_NUM_SHARDS_BY_TTL_LAG].DecrementFor(lag->Seconds());
         } else {
-            Y_DEBUG_ABORT_UNLESS(false);
+            Y_VERIFY_DEBUG(false);
         }
 
         const auto now = ctx.Now();
@@ -415,7 +415,7 @@ struct TSchemeShard::TTxScheduleConditionalErase : public TTransactionBase<TSche
         NIceDb::TNiceDb db(txc.DB);
         tableInfo->ScheduleNextCondErase(shardIdx, now, next);
 
-        Y_ABORT_UNLESS(Self->ShardInfos.contains(shardIdx));
+        Y_VERIFY(Self->ShardInfos.contains(shardIdx));
         const TPathId& tableId = Self->ShardInfos.at(shardIdx).PathId;
 
         Self->PersistTablePartitionCondErase(db, tableId, partitionIdx, tableInfo);
@@ -431,7 +431,7 @@ struct TSchemeShard::TTxScheduleConditionalErase : public TTransactionBase<TSche
             stats.SetLastRowsErased(record.GetStats().GetRowsErased());
         }
 
-        Y_ABORT_UNLESS(lag.Defined());
+        Y_VERIFY(lag.Defined());
         Self->TabletCounters->Percentile()[COUNTER_NUM_SHARDS_BY_TTL_LAG].IncrementFor(lag->Seconds());
 
         TableInfo = tableInfo;

@@ -7,12 +7,13 @@
 
 #include <ydb/services/metadata/service.h>
 #include <ydb/services/metadata/initializer/common.h>
+#include <ydb/services/metadata/initializer/events.h>
 #include <ydb/services/metadata/initializer/manager.h>
 #include <ydb/services/metadata/initializer/snapshot.h>
 #include <ydb/services/metadata/initializer/fetcher.h>
 #include <ydb/services/metadata/manager/abstract.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NMetadata::NProvider {
 
@@ -57,7 +58,7 @@ public:
             hFunc(TEvUnsubscribeExternal, Handle);
 
             default:
-                Y_ABORT_UNLESS(false);
+                Y_VERIFY(false);
         }
     }
 

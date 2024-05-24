@@ -1,9 +1,8 @@
 #pragma once
 
 #include "kqp_tasks_graph.h"
-#include <util/generic/vector.h>
 #include <ydb/library/yql/dq/actors/protos/dq_stats.pb.h>
-#include <ydb/core/protos/query_stats.pb.h>
+#include <util/generic/vector.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -14,102 +13,10 @@ NYql::NDqProto::EDqStatsMode GetDqStatsModeShard(Ydb::Table::QueryStatsCollectio
 bool CollectFullStats(Ydb::Table::QueryStatsCollection::Mode statsMode);
 bool CollectProfileStats(Ydb::Table::QueryStatsCollection::Mode statsMode);
 
-struct TAsyncStats {
-    // Data
-    std::vector<ui64> Bytes;
-    std::vector<ui64> Rows;
-    std::vector<ui64> Chunks;
-    std::vector<ui64> Splits;
-    // Time
-    std::vector<ui64> FirstMessageMs;
-    std::vector<ui64> PauseMessageMs;
-    std::vector<ui64> ResumeMessageMs;
-    std::vector<ui64> LastMessageMs;
-    std::vector<ui64> WaitTimeUs;
-    std::vector<ui64> WaitPeriods;
-    std::vector<ui64> ActiveTimeUs;
-
-    void Resize(ui32 taskCount);
-};
-
-struct TAsyncBufferStats {
-
-    TAsyncBufferStats() = default;
-    TAsyncBufferStats(ui32 taskCount) {
-        Resize(taskCount);
-    }
-
-    TAsyncStats Ingress;
-    TAsyncStats Push;
-    TAsyncStats Pop;
-    TAsyncStats Egress;
-
-    void Resize(ui32 taskCount);
-};
-
-struct TTableStats {
-
-    TTableStats() = default;
-    TTableStats(ui32 taskCount) {
-        Resize(taskCount);
-    }
-
-    std::vector<ui64> ReadRows;
-    std::vector<ui64> ReadBytes;
-    std::vector<ui64> WriteRows;
-    std::vector<ui64> WriteBytes;
-    std::vector<ui64> EraseRows;
-    std::vector<ui64> EraseBytes;
-
-    std::vector<ui64> AffectedPartitions;
-
-    void Resize(ui32 taskCount);
-};
-
-struct TStageExecutionStats {
-
-    NYql::NDq::TStageId StageId;
-
-    std::map<ui32, ui32> Task2Index;
-
-    std::vector<ui64> CpuTimeUs;
-    std::vector<ui64> SourceCpuTimeUs;
-
-    std::vector<ui64> InputRows;
-    std::vector<ui64> InputBytes;
-    std::vector<ui64> OutputRows;
-    std::vector<ui64> OutputBytes;
-    std::vector<ui64> ResultRows;
-    std::vector<ui64> ResultBytes;
-    std::vector<ui64> IngressRows;
-    std::vector<ui64> IngressBytes;
-    std::vector<ui64> EgressRows;
-    std::vector<ui64> EgressBytes;
-
-    std::vector<ui64> FinishTimeMs;
-    std::vector<ui64> StartTimeMs;
-    std::vector<ui64> DurationUs;
-    std::vector<ui64> WaitInputTimeUs;
-    std::vector<ui64> WaitOutputTimeUs;
-
-    std::map<TString, TTableStats> Tables;
-    std::map<TString, TAsyncBufferStats> Ingress;
-    std::map<TString, TAsyncBufferStats> Egress;
-    std::map<ui32, TAsyncBufferStats> Input;
-    std::map<ui32, TAsyncBufferStats> Output;
-
-    std::vector<ui64> MaxMemoryUsage;
-
-    void Resize(ui32 taskCount);
-    void UpdateAsyncStats(i32 index, TAsyncStats& aggrAsyncStats, const NYql::NDqProto::TDqAsyncBufferStats& asyncStats);
-    void UpdateStats(const NYql::NDqProto::TDqTaskStats& taskStats, ui64 maxMemoryUsage, ui64 durationUs);
-};
-
 struct TQueryExecutionStats {
 private:
     std::map<ui32, std::map<ui32, ui32>> ShardsCountByNode;
     std::map<ui32, bool> UseLlvmByStageId;
-    std::map<ui32, TStageExecutionStats> StageStats;
 public:
     const Ydb::Table::QueryStatsCollection::Mode StatsMode;
     const TKqpTasksGraph* const TasksGraph = nullptr;
@@ -135,8 +42,6 @@ public:
     TDuration ResolveWallTime;
     TVector<NKikimrQueryStats::TTxStats> DatashardStats;
 
-    bool CollectStatsByLongTasks = false;
-
     TQueryExecutionStats(Ydb::Table::QueryStatsCollection::Mode statsMode, const TKqpTasksGraph* const tasksGraph,
         NYql::NDqProto::TDqExecutionStats* const result)
         : StatsMode(statsMode)
@@ -145,42 +50,18 @@ public:
     {
     }
 
-    void AddComputeActorStats(
-        ui32 nodeId,
-        NYql::NDqProto::TDqComputeActorStats&& stats,
-        TDuration collectLongTaskStatsTimeout = TDuration::Max()
-    );
+    void AddComputeActorStats(ui32 nodeId, NYql::NDqProto::TDqComputeActorStats&& stats);
     void AddNodeShardsCount(const ui32 stageId, const ui32 nodeId, const ui32 shardsCount) {
-        Y_ABORT_UNLESS(ShardsCountByNode[stageId].emplace(nodeId, shardsCount).second);
+        Y_VERIFY(ShardsCountByNode[stageId].emplace(nodeId, shardsCount).second);
     }
     void SetUseLlvm(const ui32 stageId, const bool value) {
-        Y_ABORT_UNLESS(UseLlvmByStageId.emplace(stageId, value).second);
+        Y_VERIFY(UseLlvmByStageId.emplace(stageId, value).second);
     }
 
     void AddDatashardPrepareStats(NKikimrQueryStats::TTxStats&& txStats);
-    void AddDatashardStats(
-        NYql::NDqProto::TDqComputeActorStats&& stats,
-        NKikimrQueryStats::TTxStats&& txStats,
-        TDuration collectLongTaskStatsTimeout = TDuration::Max()
-    );
-    void AddDatashardStats(NKikimrQueryStats::TTxStats&& txStats);
-
-    void UpdateTaskStats(ui64 taskId, const NYql::NDqProto::TDqComputeActorStats& stats);
-    void ExportExecStats(NYql::NDqProto::TDqExecutionStats& stats);
-    void FillStageDurationUs(NYql::NDqProto::TDqStageStats& stats);
+    void AddDatashardStats(NYql::NDqProto::TDqComputeActorStats&& stats, NKikimrQueryStats::TTxStats&& txStats);
 
     void Finish();
-
-private:
-    void AddComputeActorFullStatsByTask(
-        const NYql::NDqProto::TDqTaskStats& task,
-        const NYql::NDqProto::TDqComputeActorStats& stats);
-    void AddComputeActorProfileStatsByTask(
-        const NYql::NDqProto::TDqTaskStats& task,
-        const NYql::NDqProto::TDqComputeActorStats& stats);
-    void AddDatashardFullStatsByTask(
-        const NYql::NDqProto::TDqTaskStats& task,
-        ui64 datashardCpuTimeUs);
 };
 
 struct TTableStat {
@@ -194,7 +75,6 @@ struct TTableStat {
 struct TProgressStatEntry {
     TDuration ComputeTime;
     TTableStat ReadIOStat;
-    bool Defined = false;
 
     TProgressStatEntry& operator+=(const TProgressStatEntry& rhs);
 

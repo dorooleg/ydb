@@ -1,6 +1,6 @@
 #include "tablet_impl.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include <util/generic/hash_set.h>
 
@@ -84,7 +84,8 @@ class TTabletReqDelete : public TActorBootstrapped<TTabletReqDelete> {
             ++FinishedRequests;
             if (FinishedRequests >= Requests.size()) {
                 if (Generation == std::numeric_limits<ui32>::max()) {
-                    const TActorId proxyActorID = MakeStateStorageProxyID();
+                    ui64 StateStorageId = StateStorageGroupFromTabletID(TabletId);
+                    const TActorId proxyActorID = MakeStateStorageProxyID(StateStorageId);
                     ctx.Send(proxyActorID, new TEvStateStorage::TEvDelete(TabletId));
                 }
 

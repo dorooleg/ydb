@@ -8,20 +8,10 @@
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include "health_check.cpp"
 
-#include <util/stream/null.h>
-
 namespace NKikimr {
 
 using namespace NSchemeShard;
 using namespace Tests;
-using namespace NSchemeCache;
-using namespace NNodeWhiteboard;
-
-#ifdef NDEBUG
-#define Ctest Cnull
-#else
-#define Ctest Cerr
-#endif
 
 Y_UNIT_TEST_SUITE(THealthCheckTest) {
     void BasicTest(IEventBase* ev) {
@@ -56,12 +46,8 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         BasicTest(new NHealthCheck::TEvNodeCheckRequest());
     }
 
-    const int GROUP_START_ID = 0x80000000;
-    const int VCARD_START_ID = 55;
-
-    const TPathId SERVERLESS_DOMAIN_KEY = {7000000000, 2};
-    const TPathId SHARED_DOMAIN_KEY = {7000000000, 1};
-    const TString STORAGE_POOL_NAME = "/Root:test";
+    int const GROUP_START_ID = 1200;
+    int const VCARD_START_ID = 124;
 
     void ChangeDescribeSchemeResult(TEvSchemeShard::TEvDescribeSchemeResult::TPtr* ev, ui64 size = 20000000, ui64 quota = 90000000) {
         auto record = (*ev)->Get()->MutableRecord();
@@ -93,7 +79,7 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         }
     };
 
-    void AddGroupVSlotInControllerConfigResponse(TEvBlobStorage::TEvControllerConfigResponse::TPtr* ev, const int groupCount, const int vslotCount) {
+    void AddGroupVSlotInControllerConfigResponse(TEvBlobStorage::TEvControllerConfigResponse::TPtr* ev, int groupCount, int vslotCount, TString erasurespecies = NHealthCheck::TSelfCheckRequest::BLOCK_4_2) {
         auto& pbRecord = (*ev)->Get()->Record;
         auto pbConfig = pbRecord.mutable_response()->mutable_status(0)->mutable_baseconfig();
 
@@ -102,28 +88,23 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         auto vslotIdSample = pbConfig->group(0).vslotid(0);
         pbConfig->clear_group();
         pbConfig->clear_vslot();
-        for (auto& pdisk: *pbConfig->mutable_pdisk()) {
-            pdisk.mutable_pdiskmetrics()->set_state(NKikimrBlobStorage::TPDiskState::Normal);
-        }
+        pbConfig->clear_pdisk();
 
         auto groupId = GROUP_START_ID;
+        auto vslotId = VCARD_START_ID;
         for (int i = 0; i < groupCount; i++) {
 
             auto group = pbConfig->add_group();
             group->CopyFrom(groupSample);
             group->set_groupid(groupId);
-            group->set_erasurespecies(NHealthCheck::TSelfCheckRequest::BLOCK_4_2);
-            group->set_operatingstatus(NKikimrBlobStorage::TGroupStatus::DEGRADED);
+            group->set_erasurespecies(erasurespecies);
 
             group->clear_vslotid();
-            auto vslotId = VCARD_START_ID;
             for (int j = 0; j < vslotCount; j++) {
                 auto vslot = pbConfig->add_vslot();
                 vslot->CopyFrom(vslotSample);
                 vslot->set_vdiskidx(vslotId);
                 vslot->set_groupid(groupId);
-                vslot->set_failrealmidx(vslotId);
-                vslot->set_status("ERROR");
                 vslot->mutable_vslotid()->set_vslotid(vslotId);
 
                 auto slotId = group->add_vslotid();
@@ -136,94 +117,71 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         }
     };
 
-    void AddGroupVSlotInControllerConfigResponseWithStaticGroup(TEvBlobStorage::TEvControllerConfigResponse::TPtr* ev,
-        const NKikimrBlobStorage::TGroupStatus::E groupStatus, const TVector<NKikimrBlobStorage::EVDiskStatus>& vdiskStatuses)
-    {
-        auto& pbRecord = (*ev)->Get()->Record;
-        auto pbConfig = pbRecord.mutable_response()->mutable_status(0)->mutable_baseconfig();
-
-        auto groupSample = pbConfig->group(0);
-        auto vslotSample = pbConfig->vslot(0);
-        auto vslotIdSample = pbConfig->group(0).vslotid(0);
-
-        for (auto& pdisk: *pbConfig->mutable_pdisk()) {
-            pdisk.mutable_pdiskmetrics()->set_state(NKikimrBlobStorage::TPDiskState::Normal);
-        }
-
-        pbConfig->clear_group();
-
-        auto staticGroup = pbConfig->add_group();
-        staticGroup->CopyFrom(groupSample);
-        staticGroup->set_groupid(0);
-        staticGroup->set_storagepoolid(0);
-        staticGroup->set_operatingstatus(groupStatus);
-        staticGroup->set_erasurespecies(NHealthCheck::TSelfCheckRequest::BLOCK_4_2);
-
-        auto group = pbConfig->add_group();
-        group->CopyFrom(groupSample);
-        group->set_groupid(GROUP_START_ID);
-        group->set_storagepoolid(1);
-        group->set_operatingstatus(groupStatus);
-        group->set_erasurespecies(NHealthCheck::TSelfCheckRequest::BLOCK_4_2);
-
-        group->clear_vslotid();
-        auto vslotId = VCARD_START_ID;
-
-        for (auto status: vdiskStatuses) {
-            auto vslot = pbConfig->add_vslot();
-            vslot->CopyFrom(vslotSample);
-            vslot->set_vdiskidx(vslotId);
-            vslot->set_groupid(GROUP_START_ID);
-            vslot->set_failrealmidx(vslotId);
-            vslot->mutable_vslotid()->set_vslotid(vslotId);
-
-            auto slotId = group->add_vslotid();
-            slotId->CopyFrom(vslotIdSample);
-            slotId->set_vslotid(vslotId);
-
-            const auto *descriptor = NKikimrBlobStorage::EVDiskStatus_descriptor();
-            vslot->set_status(descriptor->FindValueByNumber(status)->name());
-
-            vslotId++;
-        }
-
-        auto spStatus = pbRecord.mutable_response()->mutable_status(1);
-        spStatus->clear_storagepool();
-        auto sPool = spStatus->add_storagepool();
-        sPool->set_storagepoolid(1);
-        sPool->set_name(STORAGE_POOL_NAME);
-    };
-
-    void AddVSlotInVDiskStateResponse(TEvWhiteboard::TEvVDiskStateResponse::TPtr* ev, int groupCount, int vslotCount) {
+    void AddVSlotInVDiskStateResponse(NNodeWhiteboard::TEvWhiteboard::TEvVDiskStateResponse::TPtr* ev, int groupCount, int vslotCount) {
         auto& pbRecord = (*ev)->Get()->Record;
 
         auto sample = pbRecord.vdiskstateinfo(0);
         pbRecord.clear_vdiskstateinfo();
 
         auto groupId = GROUP_START_ID;
+        auto slotId = VCARD_START_ID;
         for (int i = 0; i < groupCount; i++) {
-            auto slotId = VCARD_START_ID;
             for (int j = 0; j < vslotCount; j++) {
                 auto state = pbRecord.add_vdiskstateinfo();
                 state->CopyFrom(sample);
                 state->mutable_vdiskid()->set_vdisk(slotId++);
                 state->mutable_vdiskid()->set_groupid(groupId);
-                state->set_vdiskstate(NKikimrWhiteboard::EVDiskState::SyncGuidRecovery);
-                state->set_nodeid(1);
             }
             groupId++;
         }
     }
 
-    void SetLongHostValue(TEvInterconnect::TEvNodesInfo::TPtr* ev) {
-        TString host(1000000, 'a');
-        auto& pbRecord = (*ev)->Get()->Nodes;
-        for (auto itIssue = pbRecord.begin(); itIssue != pbRecord.end(); ++itIssue) {
-            itIssue->Host = host;
+    void AddVSlotInVDiskStateResponse(NNodeWhiteboard::TEvWhiteboard::TEvVDiskStateResponse::TPtr* ev, const TVector<Ydb::Monitoring::StatusFlag::Status>& vdiskStatuses) {
+        auto& pbRecord = (*ev)->Get()->Record;
+
+        auto sample = pbRecord.vdiskstateinfo(0);
+        pbRecord.clear_vdiskstateinfo();
+
+        auto groupId = GROUP_START_ID;
+        auto vslotId = VCARD_START_ID;
+
+        for (auto status: vdiskStatuses) {
+            switch (status) {
+            case Ydb::Monitoring::StatusFlag::RED: {
+                auto state = pbRecord.add_vdiskstateinfo();
+                state->CopyFrom(sample);
+                state->mutable_vdiskid()->set_vdisk(vslotId++);
+                state->mutable_vdiskid()->set_groupid(groupId); 
+                state->set_pdiskid(100);
+                state->set_vdiskstate(NKikimrWhiteboard::EVDiskState::PDiskError);
+                break;
+            }
+            case Ydb::Monitoring::StatusFlag::BLUE: {
+                auto state = pbRecord.add_vdiskstateinfo();
+                state->CopyFrom(sample);
+                state->mutable_vdiskid()->set_vdisk(vslotId++);
+                state->mutable_vdiskid()->set_groupid(groupId); 
+                state->set_pdiskid(100);
+                state->set_vdiskstate(NKikimrWhiteboard::EVDiskState::OK);
+                state->set_replicated(false);
+                break;
+            }
+            case Ydb::Monitoring::StatusFlag::YELLOW: {
+                auto state = pbRecord.add_vdiskstateinfo();
+                state->CopyFrom(sample);
+                state->mutable_vdiskid()->set_vdisk(vslotId++);
+                state->mutable_vdiskid()->set_groupid(groupId); 
+                state->set_pdiskid(100);
+                state->set_vdiskstate(NKikimrWhiteboard::EVDiskState::SyncGuidRecovery);
+                break;
+            }
+            default:
+                break;
+            }
         }
     }
 
-    Ydb::Monitoring::SelfCheckResult RequestHc(int const groupNumber, int const vdiscPerGroupNumber, bool const isMergeRecords = false, bool const largeSizeVdisksIssues = false) {
+    void ListingTest(int const groupNumber, int const vdiscPerGroupNumber) {
         TPortManager tp;
         ui16 port = tp.GetPort(2134);
         ui16 grpcPort = tp.GetPort(2135);
@@ -239,7 +197,7 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         TActorId sender = runtime.AllocateEdgeActor();
         TAutoPtr<IEventHandle> handle;
 
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
+        auto observerFunc = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvSchemeShard::EvDescribeSchemeResult: {
                     auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
@@ -256,11 +214,9 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
                     AddGroupVSlotInControllerConfigResponse(x, groupNumber, vdiscPerGroupNumber);
                     break;
                 }
-                case TEvInterconnect::EvNodesInfo: {
-                    if (largeSizeVdisksIssues) {
-                        auto *x = reinterpret_cast<TEvInterconnect::TEvNodesInfo::TPtr*>(&ev);
-                        SetLongHostValue(x);
-                    }
+                case NNodeWhiteboard::TEvWhiteboard::EvVDiskStateResponse: {
+                    auto *x = reinterpret_cast<NNodeWhiteboard::TEvWhiteboard::TEvVDiskStateResponse::TPtr*>(&ev);
+                    AddVSlotInVDiskStateResponse(x, groupNumber, vdiscPerGroupNumber);
                     break;
                 }
             }
@@ -270,23 +226,21 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         runtime.SetObserverFunc(observerFunc);
 
         auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_merge_records(isMergeRecords);
         runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        return runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-    }
+        NHealthCheck::TEvSelfCheckResult* result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle);
 
-    void CheckHcResult(Ydb::Monitoring::SelfCheckResult& result, int const groupNumber, int const vdiscPerGroupNumber, bool const isMergeRecords = false) {
         int groupIssuesCount = 0;
-        int groupIssuesNumber = !isMergeRecords ? groupNumber : 1;
-        for (const auto& issue_log : result.Getissue_log()) {
+        int groupIssuesNumber = groupNumber <= NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE ? groupNumber : 1;
+        for (const auto& issue_log : result->Result.Getissue_log()) {
             if (issue_log.type() == "STORAGE_GROUP" && issue_log.location().storage().pool().name() == "/Root:test") {
-                if (!isMergeRecords || groupNumber == 1) {
+                if (groupNumber <= NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE) {
                     UNIT_ASSERT_VALUES_EQUAL(issue_log.location().storage().pool().group().id_size(), 1);
                     UNIT_ASSERT_VALUES_EQUAL(issue_log.listed(), 0);
                     UNIT_ASSERT_VALUES_EQUAL(issue_log.count(), 0);
                 } else {
-                    UNIT_ASSERT_VALUES_EQUAL(issue_log.location().storage().pool().group().id_size(), groupNumber);
-                    UNIT_ASSERT_VALUES_EQUAL(issue_log.listed(), groupNumber);
+                    int groupListed = std::min<int>(groupNumber, (int)NHealthCheck::TSelfCheckRequest::MERGER_ISSUE_LIMIT);
+                    UNIT_ASSERT_VALUES_EQUAL(issue_log.location().storage().pool().group().id_size(), groupListed);
+                    UNIT_ASSERT_VALUES_EQUAL(issue_log.listed(), groupListed);
                     UNIT_ASSERT_VALUES_EQUAL(issue_log.count(), groupNumber);
                 }
                 groupIssuesCount++;
@@ -294,10 +248,12 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         }
         UNIT_ASSERT_VALUES_EQUAL(groupIssuesCount, groupIssuesNumber);
 
-        int issueVdiscNumber = !isMergeRecords ? vdiscPerGroupNumber : 1;
+        int vdiscCountField = groupNumber <= NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE ? vdiscPerGroupNumber : groupNumber * vdiscPerGroupNumber;
+        int issueVdiscPerGroupNumber = vdiscCountField <= NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE ? vdiscCountField : 1;
+        int issueVdiscNumber = groupIssuesNumber * issueVdiscPerGroupNumber;
 
         int issueVdiscCount = 0;
-        for (const auto& issue_log : result.issue_log()) {
+        for (const auto& issue_log : result->Result.issue_log()) {
             if (issue_log.type() == "VDISK" && issue_log.location().storage().pool().name() == "/Root:test") {
                 issueVdiscCount++;
             }
@@ -305,12 +261,7 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         UNIT_ASSERT_VALUES_EQUAL(issueVdiscCount, issueVdiscNumber);
     }
 
-    void ListingTest(int const groupNumber, int const vdiscPerGroupNumber, bool const isMergeRecords = false) {
-        auto result = RequestHc(groupNumber, vdiscPerGroupNumber, isMergeRecords);
-        CheckHcResult(result, groupNumber, vdiscPerGroupNumber, isMergeRecords);
-    }
-
-    Ydb::Monitoring::SelfCheckResult RequestHcWithVdisks(const NKikimrBlobStorage::TGroupStatus::E groupStatus, const TVector<NKikimrBlobStorage::EVDiskStatus>& vdiskStatuses) {
+    void CheckGroupStatusDependsOnVdisks(TString erasurespecies, const Ydb::Monitoring::StatusFlag::Status expectiongGroupStatus, const TVector<Ydb::Monitoring::StatusFlag::Status>& vdiskStatuses) {
         TPortManager tp;
         ui16 port = tp.GetPort(2134);
         ui16 grpcPort = tp.GetPort(2135);
@@ -326,7 +277,7 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         TActorId sender = runtime.AllocateEdgeActor();
         TAutoPtr<IEventHandle> handle;
 
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
+        auto observerFunc = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvSchemeShard::EvDescribeSchemeResult: {
                     auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
@@ -340,7 +291,17 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
                 }
                 case TEvBlobStorage::EvControllerConfigResponse: {
                     auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, groupStatus, vdiskStatuses);
+                    AddGroupVSlotInControllerConfigResponse(x, 1, vdiskStatuses.size(), erasurespecies);
+                    break;
+                }
+                case NNodeWhiteboard::TEvWhiteboard::EvVDiskStateResponse: {
+                    auto *x = reinterpret_cast<NNodeWhiteboard::TEvWhiteboard::TEvVDiskStateResponse::TPtr*>(&ev);
+                    AddVSlotInVDiskStateResponse(x, vdiskStatuses);
+                    break;
+                }
+                case NNodeWhiteboard::TEvWhiteboard::EvPDiskStateResponse: {
+                    auto *x = reinterpret_cast<NNodeWhiteboard::TEvWhiteboard::TEvPDiskStateResponse::TPtr*>(&ev);
+                    (*x)->Get()->Record.clear_pdiskstateinfo();
                     break;
                 }
             }
@@ -350,20 +311,27 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         runtime.SetObserverFunc(observerFunc);
 
         auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_merge_records(true);
-
         runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        return runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-    }
-
-    void CheckHcResultHasIssuesWithStatus(Ydb::Monitoring::SelfCheckResult& result, const TString& type, const Ydb::Monitoring::StatusFlag::Status expectingStatus, ui32 total) {
-        int issuesCount = 0;
-        for (const auto& issue_log : result.Getissue_log()) {
-            if (issue_log.type() == type && issue_log.location().storage().pool().name() == "/Root:test" && issue_log.status() == expectingStatus) {
-                issuesCount++;
+        NHealthCheck::TEvSelfCheckResult* result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle);
+        int groupIssuesCount = 0;
+        for (const auto& issue_log : result->Result.Getissue_log()) {
+            if (issue_log.type() == "STORAGE_GROUP" && issue_log.location().storage().pool().name() == "/Root:test") {
+                UNIT_ASSERT_VALUES_EQUAL((int)issue_log.status(), (int)expectiongGroupStatus);
+                groupIssuesCount++;
             }
         }
-        UNIT_ASSERT_VALUES_EQUAL(issuesCount, total);
+        UNIT_ASSERT_VALUES_EQUAL(groupIssuesCount, 1);
+    }
+
+    void ChangeUsageDescribeSchemeResult(TEvSchemeShard::TEvDescribeSchemeResult::TPtr* ev, ui64 size, ui64 quota) {
+        auto record = (*ev)->Get()->MutableRecord();
+        auto pool = record->mutable_pathdescription()->mutable_domaindescription()->add_storagepools();
+        pool->set_name("/Root:test");
+        pool->set_kind("kind");
+
+        auto domain = record->mutable_pathdescription()->mutable_domaindescription();
+        domain->mutable_diskspaceusage()->mutable_tables()->set_totalsize(size);
+        domain->mutable_databasequotas()->set_data_stream_reserved_storage_quota(quota);
     }
 
      void StorageTest(ui64 usage, ui64 quota, ui64 storageIssuesNumber, Ydb::Monitoring::StatusFlag::Status status = Ydb::Monitoring::StatusFlag::GREEN) {
@@ -382,7 +350,7 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         TActorId sender = runtime.AllocateEdgeActor();
         TAutoPtr<IEventHandle> handle;
 
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
+        auto observerFunc = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvSchemeShard::EvDescribeSchemeResult: {
                     auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
@@ -409,57 +377,116 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
         UNIT_ASSERT_VALUES_EQUAL(storageIssuesCount, storageIssuesNumber);
     }
 
-    Y_UNIT_TEST(OneIssueListing) {
-        ListingTest(1, 1);
+    Y_UNIT_TEST(IssuesGroupsListing) {
+        int groupNumber = NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE;
+        ListingTest(groupNumber, 1);
     }
 
-    Y_UNIT_TEST(Issues100GroupsListing) {
+    Y_UNIT_TEST(IssuesVCardListing) {
+        int vcardNumber = NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE;
+        ListingTest(1, vcardNumber);
+    }
+
+    Y_UNIT_TEST(IssuesGroupsVCardListing) {
+        int groupNumber = NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE;
+        int vcardNumber = NHealthCheck::TSelfCheckRequest::MERGING_IGNORE_SIZE;
+        ListingTest(groupNumber, vcardNumber);
+    }
+
+    Y_UNIT_TEST(IssuesGroupsMerging) {
+        int groupNumber = NHealthCheck::TSelfCheckRequest::MERGER_ISSUE_LIMIT;
+        ListingTest(groupNumber, 1);
+    }
+
+    Y_UNIT_TEST(IssuesVCardMerging) {
+        int vcardNumber = NHealthCheck::TSelfCheckRequest::MERGER_ISSUE_LIMIT;
+        ListingTest(1, vcardNumber);
+    }
+
+    Y_UNIT_TEST(IssuesGroupsVCardMerging) {
+        int groupNumber = NHealthCheck::TSelfCheckRequest::MERGER_ISSUE_LIMIT;
+        int vcardNumber = NHealthCheck::TSelfCheckRequest::MERGER_ISSUE_LIMIT;
+        ListingTest(groupNumber, vcardNumber);
+    }
+
+    Y_UNIT_TEST(IssuesGroupsDeleting) {
         ListingTest(100, 1);
     }
 
-    Y_UNIT_TEST(Issues100VCardListing) {
+    Y_UNIT_TEST(IssuesVCardDeleting) {
         ListingTest(1, 100);
     }
 
-    Y_UNIT_TEST(Issues100Groups100VCardListing) {
-        ListingTest(5, 5);
+    Y_UNIT_TEST(IssuesGroupsVCardDeleting) {
+        ListingTest(100, 100);
     }
-
-    Y_UNIT_TEST(Issues100GroupsMerging) {
-        ListingTest(100, 1, true);
+    
+    Y_UNIT_TEST(NoneRedGroupWhenRedVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::NONE, Ydb::Monitoring::StatusFlag::RED, {Ydb::Monitoring::StatusFlag::RED});
     }
-
-    Y_UNIT_TEST(Issues100VCardMerging) {
-        ListingTest(1, 100, true);
+    
+    Y_UNIT_TEST(NoneRedGroupWhenBlueVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::NONE, Ydb::Monitoring::StatusFlag::RED, {Ydb::Monitoring::StatusFlag::BLUE});
     }
-
-    Y_UNIT_TEST(Issues100Groups100VCardMerging) {
-        ListingTest(100, 100, true);
+    
+    Y_UNIT_TEST(NoneYellowGroupWhenYellowVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::NONE, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::YELLOW});
     }
-
-    Y_UNIT_TEST(YellowroupIssueWhenPartialGroupStatus) {
-        auto result = RequestHcWithVdisks(NKikimrBlobStorage::TGroupStatus::PARTIAL, {NKikimrBlobStorage::ERROR});
-        CheckHcResultHasIssuesWithStatus(result, "STORAGE_GROUP", Ydb::Monitoring::StatusFlag::YELLOW, 1);
+    
+    Y_UNIT_TEST(Block42RedGroupWhen3RedVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::RED, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED});
     }
-
-    Y_UNIT_TEST(BlueGroupIssueWhenPartialGroupStatusAndReplicationDisks) {
-        auto result = RequestHcWithVdisks(NKikimrBlobStorage::TGroupStatus::PARTIAL, {NKikimrBlobStorage::REPLICATING});
-        CheckHcResultHasIssuesWithStatus(result, "STORAGE_GROUP", Ydb::Monitoring::StatusFlag::BLUE, 1);
+    
+    Y_UNIT_TEST(Block42RedGroupWhen2RedBlueVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::RED, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::BLUE});
     }
-
-    Y_UNIT_TEST(OrangeGroupIssueWhenDegradedGroupStatus) {
-        auto result = RequestHcWithVdisks(NKikimrBlobStorage::TGroupStatus::DEGRADED, {});
-        CheckHcResultHasIssuesWithStatus(result, "STORAGE_GROUP", Ydb::Monitoring::StatusFlag::ORANGE, 1);
+    
+    Y_UNIT_TEST(Block42OrangeGroupWhen2RedVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::ORANGE, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED});
     }
-
-    Y_UNIT_TEST(RedGroupIssueWhenDisintegratedGroupStatus) {
-        auto result = RequestHcWithVdisks(NKikimrBlobStorage::TGroupStatus::DISINTEGRATED, {});
-        CheckHcResultHasIssuesWithStatus(result, "STORAGE_GROUP", Ydb::Monitoring::StatusFlag::RED, 1);
+    
+    Y_UNIT_TEST(Block42OrangeGroupWhenRedBlueVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::ORANGE, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::BLUE});
     }
-
-    Y_UNIT_TEST(RedGroupIssueWhenUnknownGroupStatus) {
-        auto result = RequestHcWithVdisks(NKikimrBlobStorage::TGroupStatus::UNKNOWN, {});
-        CheckHcResultHasIssuesWithStatus(result, "STORAGE_GROUP", Ydb::Monitoring::StatusFlag::RED, 1);
+    
+    Y_UNIT_TEST(Block42YellowGroupWhenRedVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::RED});
+    }
+    
+    Y_UNIT_TEST(Block42BlueGroupWhenBlueVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::BLUE, {Ydb::Monitoring::StatusFlag::BLUE});
+    }
+    
+    Y_UNIT_TEST(Block42YellowGroupWhenYellowVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::BLOCK_4_2, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::YELLOW});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcYellowGroupWhen3RedVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcYellowGroupWhen2RedBlueVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::BLUE});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcYellowGroupWhen2RedVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::RED});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcYellowGroupWhenRedBlueVdisks) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::RED, Ydb::Monitoring::StatusFlag::BLUE});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcYellowGroupWhenRedVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::RED});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcBlueGroupWhenBlueVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::BLUE, {Ydb::Monitoring::StatusFlag::BLUE});
+    }
+    
+    Y_UNIT_TEST(Mirrot3dcYellowGroupWhenYellowVdisk) {
+        CheckGroupStatusDependsOnVdisks(NHealthCheck::TSelfCheckRequest::MIRROR_3_DC, Ydb::Monitoring::StatusFlag::YELLOW, {Ydb::Monitoring::StatusFlag::YELLOW});
     }
 
     Y_UNIT_TEST(StorageLimit95) {
@@ -481,975 +508,6 @@ Y_UNIT_TEST_SUITE(THealthCheckTest) {
     Y_UNIT_TEST(StorageNoQuota) {
         StorageTest(100, 0, 0, Ydb::Monitoring::StatusFlag::GREEN);
     }
-
-    void CheckHcProtobufSizeIssue(Ydb::Monitoring::SelfCheckResult& result, const Ydb::Monitoring::StatusFlag::Status expectingStatus, ui32 total) {
-        int issuesCount = 0;
-        for (const auto& issue_log : result.Getissue_log()) {
-            if (issue_log.type() == "HEALTHCHECK_STATUS" && issue_log.status() == expectingStatus) {
-                issuesCount++;
-            }
-        }
-        UNIT_ASSERT_VALUES_EQUAL(issuesCount, total);
-        UNIT_ASSERT_LT(result.ByteSizeLong(), 50_MB);
-    }
-
-    Y_UNIT_TEST(ProtobufBelowLimitFor10VdisksIssues) {
-        auto result = RequestHc(1, 100);
-        CheckHcProtobufSizeIssue(result, Ydb::Monitoring::StatusFlag::YELLOW, 0);
-        CheckHcProtobufSizeIssue(result, Ydb::Monitoring::StatusFlag::ORANGE, 0);
-        CheckHcProtobufSizeIssue(result, Ydb::Monitoring::StatusFlag::RED, 0);
-    }
-
-    Y_UNIT_TEST(ProtobufUnderLimitFor70LargeVdisksIssues) {
-        auto result = RequestHc(1, 70, false, true);
-        CheckHcProtobufSizeIssue(result, Ydb::Monitoring::StatusFlag::RED, 1);
-    }
-
-    Y_UNIT_TEST(ProtobufUnderLimitFor100LargeVdisksIssues) {
-        auto result = RequestHc(1, 100, false, true);
-        CheckHcProtobufSizeIssue(result, Ydb::Monitoring::StatusFlag::RED, 1);
-    }
-
-    void ClearLoadAverage(TEvWhiteboard::TEvSystemStateResponse::TPtr* ev) {
-        auto *systemStateInfo = (*ev)->Get()->Record.MutableSystemStateInfo();
-        for (NKikimrWhiteboard::TSystemStateInfo &state : *systemStateInfo) {
-            auto &loadAverage = *state.MutableLoadAverage();
-            for (int i = 0; i < loadAverage.size(); ++i) {
-                loadAverage[i] = 0;
-            }
-        }
-    }
-
-    void ChangeNavigateKeyResultServerless(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr* ev,
-        NKikimrSubDomains::EServerlessComputeResourcesMode serverlessComputeResourcesMode,
-        TTestActorRuntime& runtime)
-    {
-        TSchemeCacheNavigate::TEntry& entry((*ev)->Get()->Request->ResultSet.front());
-        TString path = CanonizePath(entry.Path);
-        if (path == "/Root/serverless" || entry.TableId.PathId == SERVERLESS_DOMAIN_KEY) {
-            entry.Status = TSchemeCacheNavigate::EStatus::Ok;
-            entry.Kind = TSchemeCacheNavigate::EKind::KindExtSubdomain;
-            entry.Path = {"Root", "serverless"};
-            entry.DomainInfo = MakeIntrusive<TDomainInfo>(SERVERLESS_DOMAIN_KEY, SHARED_DOMAIN_KEY);
-            entry.DomainInfo->ServerlessComputeResourcesMode = serverlessComputeResourcesMode;
-        } else if (path == "/Root/shared" || entry.TableId.PathId == SHARED_DOMAIN_KEY) {
-            entry.Status = TSchemeCacheNavigate::EStatus::Ok;
-            entry.Kind = TSchemeCacheNavigate::EKind::KindExtSubdomain;
-            entry.Path = {"Root", "shared"};
-            entry.DomainInfo = MakeIntrusive<TDomainInfo>(SHARED_DOMAIN_KEY, SHARED_DOMAIN_KEY);
-            auto domains = runtime.GetAppData().DomainsInfo;
-            ui64 hiveId = domains->GetHive();
-            entry.DomainInfo->Params.SetHive(hiveId);
-        }
-    }
-
-    void ChangeDescribeSchemeResultServerless(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr* ev) {
-        auto record = (*ev)->Get()->MutableRecord();
-        if (record->path() == "/Root/serverless" || record->path() == "/Root/shared") {
-            record->set_status(NKikimrScheme::StatusSuccess);
-            auto pool = record->mutable_pathdescription()->mutable_domaindescription()->add_storagepools();
-            pool->set_name(STORAGE_POOL_NAME);
-            pool->set_kind("kind");
-        }
-    }
-
-    void ChangeGetTenantStatusResponse(NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr* ev, const TString &path) {
-        auto *operation = (*ev)->Get()->Record.MutableResponse()->mutable_operation();
-        Ydb::Cms::GetDatabaseStatusResult getTenantStatusResult;
-        getTenantStatusResult.set_path(path);
-        operation->mutable_result()->PackFrom(getTenantStatusResult);
-        operation->set_status(Ydb::StatusIds::SUCCESS);
-    }
-
-    void AddPathsToListTenantsResponse(NConsole::TEvConsole::TEvListTenantsResponse::TPtr* ev, const TVector<TString> &paths) {
-        Ydb::Cms::ListDatabasesResult listTenantsResult;
-        (*ev)->Get()->Record.GetResponse().operation().result().UnpackTo(&listTenantsResult);
-        for (const auto &path : paths) {
-            listTenantsResult.Addpaths(path);
-        }
-        (*ev)->Get()->Record.MutableResponse()->mutable_operation()->mutable_result()->PackFrom(listTenantsResult);
-    }
-
-    void ChangeResponseHiveNodeStats(TEvHive::TEvResponseHiveNodeStats::TPtr* ev, ui32 sharedDynNodeId = 0,
-        ui32 exclusiveDynNodeId = 0)
-    {
-        auto &record = (*ev)->Get()->Record;
-        if (sharedDynNodeId) {
-            auto *sharedNodeStats = record.MutableNodeStats()->Add();
-            sharedNodeStats->SetNodeId(sharedDynNodeId);
-            sharedNodeStats->MutableNodeDomain()->SetSchemeShard(SHARED_DOMAIN_KEY.OwnerId);
-            sharedNodeStats->MutableNodeDomain()->SetPathId(SHARED_DOMAIN_KEY.LocalPathId);
-        }
-
-        if (exclusiveDynNodeId) {
-            auto *exclusiveNodeStats = record.MutableNodeStats()->Add();
-            exclusiveNodeStats->SetNodeId(exclusiveDynNodeId);
-            exclusiveNodeStats->MutableNodeDomain()->SetSchemeShard(SERVERLESS_DOMAIN_KEY.OwnerId);
-            exclusiveNodeStats->MutableNodeDomain()->SetPathId(SERVERLESS_DOMAIN_KEY.LocalPathId);
-        }
-    }
-
-    Y_UNIT_TEST(SpecificServerless) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 sharedDynNodeId = runtime.GetNodeId(1);
-
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeShared, runtime);
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    ChangeResponseHiveNodeStats(x, sharedDynNodeId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        request->Database = "/Root/serverless";
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-        Ctest << result.ShortDebugString();
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::GOOD);
-
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 1);
-        const auto &database_status = result.database_status(0);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.name(), "/Root/serverless");
-        UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(sharedDynNodeId));
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-    }
-
-    Y_UNIT_TEST(SpecificServerlessWithExclusiveNodes) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(2)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 sharedDynNodeId = runtime.GetNodeId(1);
-        ui32 exclusiveDynNodeId = runtime.GetNodeId(2);
-
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeExclusive, runtime);
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    ChangeResponseHiveNodeStats(x, sharedDynNodeId, exclusiveDynNodeId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        request->Database = "/Root/serverless";
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        Ctest << result.ShortDebugString();
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::GOOD);
-
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 1);
-        const auto &database_status = result.database_status(0);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.name(), "/Root/serverless");
-        UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(exclusiveDynNodeId));
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-    }
-
-    Y_UNIT_TEST(IgnoreServerlessWhenNotSpecific) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 sharedDynNodeId = runtime.GetNodeId(1);
-
-        bool firstConsoleResponse = true;
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                 case NConsole::TEvConsole::EvListTenantsResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvListTenantsResponse::TPtr*>(&ev);
-                    AddPathsToListTenantsResponse(x, { "/Root/serverless", "/Root/shared" });
-                    break;
-                }
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    if (firstConsoleResponse) {
-                        firstConsoleResponse = false;
-                        ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    } else {
-                        ChangeGetTenantStatusResponse(x, "/Root/shared");
-                    }
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeShared, runtime);
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    ChangeResponseHiveNodeStats(x, sharedDynNodeId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-        Ctest << result.ShortDebugString();
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::GOOD);
-
-        bool databaseFoundInResult = false;
-        for (const auto &database_status : result.database_status()) {
-            if (database_status.name() == "/Root/serverless") {
-                databaseFoundInResult = true;
-            }
-        }
-        UNIT_ASSERT(!databaseFoundInResult);
-    }
-
-    Y_UNIT_TEST(DontIgnoreServerlessWithExclusiveNodesWhenNotSpecific) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(2)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 sharedDynNodeId = runtime.GetNodeId(1);
-        ui32 exclusiveDynNodeId = runtime.GetNodeId(2);
-
-        bool firstConsoleResponse = true;
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvListTenantsResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvListTenantsResponse::TPtr*>(&ev);
-                    AddPathsToListTenantsResponse(x, { "/Root/serverless", "/Root/shared" });
-                    break;
-                }
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    if (firstConsoleResponse) {
-                        firstConsoleResponse = false;
-                        ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    } else {
-                        ChangeGetTenantStatusResponse(x, "/Root/shared");
-                    }
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeExclusive, runtime);
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    ChangeResponseHiveNodeStats(x, sharedDynNodeId, exclusiveDynNodeId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        Ctest << result.ShortDebugString();
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::GOOD);
-
-        bool databaseFoundInResult = false;
-        for (const auto &database_status : result.database_status()) {
-            if (database_status.name() == "/Root/serverless") {
-                databaseFoundInResult = true;
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(exclusiveDynNodeId));
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-            }
-        }
-        UNIT_ASSERT(databaseFoundInResult);
-    }
-
-    Y_UNIT_TEST(ServerlessWhenTroublesWithSharedNodes) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeShared, runtime);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        request->Database = "/Root/serverless";
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        Ctest << result.ShortDebugString();
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::EMERGENCY);
-
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 1);
-        const auto &database_status = result.database_status(0);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.name(), "/Root/serverless");
-        UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::RED);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::RED);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 0);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-    }
-
-    Y_UNIT_TEST(ServerlessWithExclusiveNodesWhenTroublesWithSharedNodes) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 staticNode = runtime.GetNodeId(0);
-        ui32 exclusiveDynNodeId = runtime.GetNodeId(1);
-
-        bool firstConsoleResponse = true;
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvListTenantsResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvListTenantsResponse::TPtr*>(&ev);
-                    AddPathsToListTenantsResponse(x, { "/Root/serverless", "/Root/shared" });
-                    break;
-                }
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    if (firstConsoleResponse) {
-                        firstConsoleResponse = false;
-                        ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    } else {
-                        ChangeGetTenantStatusResponse(x, "/Root/shared");
-                    }
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeExclusive, runtime);
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    ChangeResponseHiveNodeStats(x, 0, exclusiveDynNodeId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::EMERGENCY);
-
-        bool serverlessDatabaseFoundInResult = false;
-        bool sharedDatabaseFoundInResult = false;
-        bool rootDatabaseFoundInResult = false;
-
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 3);
-        for (const auto &database_status : result.database_status()) {
-            if (database_status.name() == "/Root/serverless") {
-                serverlessDatabaseFoundInResult = true;
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(exclusiveDynNodeId));
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-            } else if (database_status.name() == "/Root/shared") {
-                sharedDatabaseFoundInResult = true;
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::RED);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::RED);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 0);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-            } else if (database_status.name() == "/Root") {
-                rootDatabaseFoundInResult = true;
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(staticNode));
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), "static");
-            }
-        }
-        UNIT_ASSERT(serverlessDatabaseFoundInResult);
-        UNIT_ASSERT(sharedDatabaseFoundInResult);
-        UNIT_ASSERT(rootDatabaseFoundInResult);
-    }
-
-    Y_UNIT_TEST(SharedWhenTroublesWithExclusiveNodes) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 staticNode = runtime.GetNodeId(0);
-        ui32 sharedDynNodeId = runtime.GetNodeId(1);
-
-        bool firstConsoleResponse = true;
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvListTenantsResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvListTenantsResponse::TPtr*>(&ev);
-                    AddPathsToListTenantsResponse(x, { "/Root/serverless", "/Root/shared" });
-                    break;
-                }
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    if (firstConsoleResponse) {
-                        firstConsoleResponse = false;
-                        ChangeGetTenantStatusResponse(x, "/Root/serverless");
-                    } else {
-                        ChangeGetTenantStatusResponse(x, "/Root/shared");
-                    }
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    ChangeNavigateKeyResultServerless(x, NKikimrSubDomains::EServerlessComputeResourcesModeExclusive, runtime);
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    ChangeResponseHiveNodeStats(x, sharedDynNodeId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    ChangeDescribeSchemeResultServerless(x);
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        Ctest << result.ShortDebugString();
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::EMERGENCY);
-
-        bool serverlessDatabaseFoundInResult = false;
-        bool sharedDatabaseFoundInResult = false;
-        bool rootDatabaseFoundInResult = false;
-
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 3);
-        for (const auto &database_status : result.database_status()) {
-            if (database_status.name() == "/Root/serverless") {
-                serverlessDatabaseFoundInResult = true;
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::RED);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::RED);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 0);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-            } else if (database_status.name() == "/Root/shared") {
-                sharedDatabaseFoundInResult = true;
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(sharedDynNodeId));
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), STORAGE_POOL_NAME);
-            } else if (database_status.name() == "/Root") {
-                rootDatabaseFoundInResult = true;
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::GREEN);
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(staticNode));
-
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), "static");
-            }
-        }
-        UNIT_ASSERT(serverlessDatabaseFoundInResult);
-        UNIT_ASSERT(sharedDatabaseFoundInResult);
-        UNIT_ASSERT(rootDatabaseFoundInResult);
-    }
-
-    Y_UNIT_TEST(NoStoragePools) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        ui32 dynNodeId = runtime.GetNodeId(1);
-
-        const TPathId SUBDOMAIN_KEY = {7000000000, 1};
-
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NConsole::TEvConsole::EvGetTenantStatusResponse: {
-                    auto *x = reinterpret_cast<NConsole::TEvConsole::TEvGetTenantStatusResponse::TPtr*>(&ev);
-                    ChangeGetTenantStatusResponse(x, "/Root/database");
-                    break;
-                }
-                case TEvTxProxySchemeCache::EvNavigateKeySetResult: {
-                    auto *x = reinterpret_cast<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr*>(&ev);
-                    TSchemeCacheNavigate::TEntry& entry((*x)->Get()->Request->ResultSet.front());
-                    TString path = CanonizePath(entry.Path);
-                    if (path == "/Root/database" || entry.TableId.PathId == SUBDOMAIN_KEY) {
-                        entry.Status = TSchemeCacheNavigate::EStatus::Ok;
-                        entry.Kind = TSchemeCacheNavigate::EKind::KindExtSubdomain;
-                        entry.Path = {"Root", "database"};
-                        entry.DomainInfo = MakeIntrusive<TDomainInfo>(SUBDOMAIN_KEY, SUBDOMAIN_KEY);
-                        auto domains = runtime.GetAppData().DomainsInfo;
-                        ui64 hiveId = domains->GetHive();
-                        entry.DomainInfo->Params.SetHive(hiveId);
-                    }
-                    break;
-                }
-                case TEvHive::EvResponseHiveNodeStats: {
-                    auto *x = reinterpret_cast<TEvHive::TEvResponseHiveNodeStats::TPtr*>(&ev);
-                    auto &record = (*x)->Get()->Record;
-                    auto *nodeStats = record.MutableNodeStats()->Add();
-                    nodeStats->SetNodeId(dynNodeId);
-                    nodeStats->MutableNodeDomain()->SetSchemeShard(SUBDOMAIN_KEY.OwnerId);
-                    nodeStats->MutableNodeDomain()->SetPathId(SUBDOMAIN_KEY.LocalPathId);
-                    break;
-                }
-                case TEvSchemeShard::EvDescribeSchemeResult: {
-                    auto *x = reinterpret_cast<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr*>(&ev);
-                    auto record = (*x)->Get()->MutableRecord();
-                    if (record->path() == "/Root/database") {
-                        record->set_status(NKikimrScheme::StatusSuccess);
-                        // no pools
-                    }
-                    break;
-                }
-                case TEvBlobStorage::EvControllerConfigResponse: {
-                    auto *x = reinterpret_cast<TEvBlobStorage::TEvControllerConfigResponse::TPtr*>(&ev);
-                    TVector<NKikimrBlobStorage::EVDiskStatus> vdiskStatuses = { NKikimrBlobStorage::EVDiskStatus::READY };
-                    AddGroupVSlotInControllerConfigResponseWithStaticGroup(x, NKikimrBlobStorage::TGroupStatus::FULL, vdiskStatuses);
-                    break;
-                }
-                case TEvWhiteboard::EvSystemStateResponse: {
-                    auto *x = reinterpret_cast<TEvWhiteboard::TEvSystemStateResponse::TPtr*>(&ev);
-                    ClearLoadAverage(x);
-                    break;
-                }
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        request->Database = "/Root/database";
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        Ctest << result.ShortDebugString();
-
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::EMERGENCY);
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 1);
-        const auto &database_status = result.database_status(0);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.name(),  "/Root/database");
-        UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::RED);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::GREEN);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().nodes()[0].id(), ToString(dynNodeId));
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::RED);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 0);
-    }
-
-    Y_UNIT_TEST(NoBscConfigResponse) {
-        TPortManager tp;
-        ui16 port = tp.GetPort(2134);
-        ui16 grpcPort = tp.GetPort(2135);
-        auto settings = TServerSettings(port)
-                .SetNodeCount(1)
-                .SetDynamicNodeCount(1)
-                .SetUseRealThreads(false)
-                .SetDomainName("Root");
-        TServer server(settings);
-        server.EnableGRpc(grpcPort);
-        TClient client(settings);
-        TTestActorRuntime& runtime = *server.GetRuntime();
-
-        auto &dynamicNameserviceConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dynamicNameserviceConfig->MaxStaticNodeId = runtime.GetNodeId(server.StaticNodes() - 1);
-        dynamicNameserviceConfig->MinDynamicNodeId = runtime.GetNodeId(server.StaticNodes());
-        dynamicNameserviceConfig->MaxDynamicNodeId = runtime.GetNodeId(server.StaticNodes() + server.DynamicNodes() - 1);
-
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
-            if (ev->GetTypeRewrite() == TEvBlobStorage::EvControllerConfigResponse) {
-                return TTestActorRuntime::EEventAction::DROP;
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        runtime.SetObserverFunc(observerFunc);
-
-        TActorId sender = runtime.AllocateEdgeActor();
-        TAutoPtr<IEventHandle> handle;
-
-        auto *request = new NHealthCheck::TEvSelfCheckRequest;
-        request->Request.set_return_verbose_status(true);
-        request->Database = "/Root";
-        runtime.Send(new IEventHandle(NHealthCheck::MakeHealthCheckID(), sender, request, 0));
-        const auto result = runtime.GrabEdgeEvent<NHealthCheck::TEvSelfCheckResult>(handle)->Result;
-
-        Ctest << result.ShortDebugString() << Endl;
-
-        UNIT_ASSERT_VALUES_EQUAL(result.self_check_result(), Ydb::Monitoring::SelfCheck::EMERGENCY);
-
-        bool bscTabletIssueFoundInResult = false;
-        for (const auto &issue_log : result.issue_log()) {
-            if (issue_log.level() == 3 && issue_log.type() == "SYSTEM_TABLET") {
-                UNIT_ASSERT_VALUES_EQUAL(issue_log.location().compute().tablet().id().size(), 1);
-                UNIT_ASSERT_VALUES_EQUAL(issue_log.location().compute().tablet().id()[0], ToString(MakeBSControllerID()));
-                UNIT_ASSERT_VALUES_EQUAL(issue_log.location().compute().tablet().type(), "BSController");
-                bscTabletIssueFoundInResult = true;
-            }
-        }
-        UNIT_ASSERT(bscTabletIssueFoundInResult);
-
-        UNIT_ASSERT_VALUES_EQUAL(result.database_status_size(), 1);
-        const auto &database_status = result.database_status(0);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.name(), "/Root");
-        UNIT_ASSERT_VALUES_EQUAL(database_status.overall(), Ydb::Monitoring::StatusFlag::RED);
-
-        UNIT_ASSERT_VALUES_EQUAL(database_status.compute().overall(), Ydb::Monitoring::StatusFlag::RED);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().overall(), Ydb::Monitoring::StatusFlag::RED);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(database_status.storage().pools()[0].id(), "static");
-    }
 }
+
 }

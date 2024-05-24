@@ -74,17 +74,17 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor<TBlob
         CountEvent(*ev->Get());
 
         const auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
         NKikimrProto::EReplyStatus status = record.GetStatus();
 
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
         const TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
 
         A_LOG_DEBUG_S("DSR01", "received"
             << " VDiskId# " << vdisk
             << " TEvVGetResult# " << ev->Get()->ToString());
 
-        Y_ABORT_UNLESS(NumVGetsPending > 0);
+        Y_VERIFY(NumVGetsPending > 0);
         --NumVGetsPending;
 
         bool isOk = status == NKikimrProto::OK;
@@ -112,18 +112,18 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor<TBlob
                 break;
 
             default:
-                Y_ABORT("unexpected queryStatus# %s", NKikimrProto::EReplyStatus_Name(status).data());
+                Y_FAIL("unexpected queryStatus# %s", NKikimrProto::EReplyStatus_Name(status).data());
         }
 
         if (isOk) {
             TLogoBlobID lastBlobId = From;
             for (const NKikimrBlobStorage::TQueryResult& blob : record.GetResult()) {
-                Y_ABORT_UNLESS(blob.HasBlobID());
+                Y_VERIFY(blob.HasBlobID());
                 const TLogoBlobID blobId(LogoBlobIDFromLogoBlobID(blob.GetBlobID()));
                 const TLogoBlobID fullId(blobId.FullID());
 
                 // as this is index only query, we operate only with full blob ids, not using parts
-                Y_ABORT_UNLESS(blobId == fullId);
+                Y_VERIFY(blobId == fullId);
 
                 auto it = BlobStatus.find(fullId);
                 if (it == BlobStatus.end()) {
@@ -131,7 +131,7 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor<TBlob
                 }
                 it->second.UpdateFromResponseData(blob, vdisk, Info.Get());
 
-                Y_ABORT_UNLESS(From <= To ? lastBlobId <= fullId : lastBlobId >= fullId,
+                Y_VERIFY(From <= To ? lastBlobId <= fullId : lastBlobId >= fullId,
                         "Blob IDs are out of order in TEvVGetResult");
                 // remember last processed blob id to resume query
                 lastBlobId = fullId;
@@ -239,15 +239,12 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor<TBlob
             query->Set(item.BlobId, 0, 0);
             ++query;
         }
-        Y_ABORT_UNLESS(query == queries.Get() + queryCount);
+        Y_VERIFY(query == queries.Get() + queryCount);
 
-        // register query in wilson and send it to DS proxy; issue non-index query when MustRestoreFirst is false to
-        // prevent IndexRestoreGet invocation
+        // register query in wilson and send it to DS proxy
         auto get = std::make_unique<TEvBlobStorage::TEvGet>(queries, queryCount, Deadline,
-                NKikimrBlobStorage::EGetHandleClass::FastRead, MustRestoreFirst, MustRestoreFirst ? IsIndexOnly : false,
-                TEvBlobStorage::TEvGet::TForceBlockTabletData(TabletId, ForceBlockedGeneration));
+                NKikimrBlobStorage::EGetHandleClass::FastRead, MustRestoreFirst, IsIndexOnly, TEvBlobStorage::TEvGet::TForceBlockTabletData(TabletId, ForceBlockedGeneration));
         get->IsInternal = true;
-        get->Decommission = Decommission;
 
         A_LOG_DEBUG_S("DSR08", "sending TEvGet# " << get->ToString());
 
@@ -280,14 +277,13 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor<TBlob
 
         std::unique_ptr<TEvBlobStorage::TEvRangeResult> result(new TEvBlobStorage::TEvRangeResult(status, From, To, Info->GroupID));
         result->Responses.reserve(getResult.ResponseSz);
-        Y_ABORT_UNLESS(getResult.ResponseSz == BlobsToGet.size());
+        Y_VERIFY(getResult.ResponseSz == BlobsToGet.size());
         for (ui32 i = 0; i < getResult.ResponseSz; ++i) {
             TEvBlobStorage::TEvGetResult::TResponse &response = getResult.Responses[i];
-            Y_ABORT_UNLESS(response.Id == BlobsToGet[i].BlobId);
+            Y_VERIFY(response.Id == BlobsToGet[i].BlobId);
 
             if (getResult.Responses[i].Status == NKikimrProto::OK) {
-                result->Responses.emplace_back(response.Id, IsIndexOnly ? TString() : response.Buffer.ConvertToString(),
-                    response.Keep, response.DoNotKeep);
+                result->Responses.emplace_back(response.Id, std::move(response.Buffer), response.Keep, response.DoNotKeep);
             } else if (getResult.Responses[i].Status != NKikimrProto::NODATA || BlobsToGet[i].RequiredToBePresent) {
                 // it's okay to get NODATA if blob wasn't confirmed -- this blob is simply thrown out of resulting
                 // set; otherwise we return error about lost data
@@ -342,11 +338,11 @@ public:
     TBlobStorageGroupRangeRequest(const TIntrusivePtr<TBlobStorageGroupInfo> &info,
             const TIntrusivePtr<TGroupQueues> &state, const TActorId &source,
             const TIntrusivePtr<TBlobStorageGroupProxyMon> &mon, TEvBlobStorage::TEvRange *ev,
-            ui64 cookie, NWilson::TSpan&& span, TInstant now,
+            ui64 cookie, NWilson::TTraceId traceId, TInstant now,
             TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters)
-        : TBlobStorageGroupRequestActor(info, state, mon, source, cookie,
+        : TBlobStorageGroupRequestActor(info, state, mon, source, cookie, std::move(traceId),
                 NKikimrServices::BS_PROXY_RANGE, false, {}, now, storagePoolCounters,
-                ev->RestartCounter, std::move(span), std::move(ev->ExecutionRelay))
+                ev->RestartCounter, "DSProxy.Range", std::move(ev->ExecutionRelay))
         , TabletId(ev->TabletId)
         , From(ev->From)
         , To(ev->To)
@@ -372,8 +368,8 @@ public:
             << " RestartCounter# " << RestartCounter);
 
         // ensure we are querying ranges for the same tablet
-        Y_ABORT_UNLESS(TabletId == From.TabletID());
-        Y_ABORT_UNLESS(TabletId == To.TabletID());
+        Y_VERIFY(TabletId == From.TabletID());
+        Y_VERIFY(TabletId == To.TabletID());
 
         // issue queries to all VDisks
         for (const auto& vdisk : Info->GetVDisks()) {
@@ -407,8 +403,7 @@ IActor* CreateBlobStorageGroupRangeRequest(const TIntrusivePtr<TBlobStorageGroup
         const TIntrusivePtr<TBlobStorageGroupProxyMon> &mon, TEvBlobStorage::TEvRange *ev,
         ui64 cookie, NWilson::TTraceId traceId, TInstant now,
         TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters) {
-    NWilson::TSpan span(TWilson::BlobStorage, std::move(traceId), "DSProxy.Range");
-    return new TBlobStorageGroupRangeRequest(info, state, source, mon, ev, cookie, std::move(span), now,
+    return new TBlobStorageGroupRangeRequest(info, state, source, mon, ev, cookie, std::move(traceId), now,
             storagePoolCounters);
 }
 

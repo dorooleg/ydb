@@ -14,8 +14,8 @@
 #include <ydb/core/tablet_flat/flat_executor_counters.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/scheduler_cookie.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/scheduler_cookie.h>
 
 #include <util/generic/hash.h>
 
@@ -147,7 +147,7 @@ private:
         }
 
         void AttachProxy(TProxyInfo* proxy, ui64 cookie, ui64 seqNo) {
-            Y_ABORT_UNLESS(proxy);
+            Y_VERIFY(proxy);
             if (OwnerProxy != proxy) {
                 if (OwnerProxy) {
                     OwnerProxy->AttachedSessions.erase(Id);
@@ -176,7 +176,7 @@ private:
 
         ui64 RemoveSemaphoreWatchCookie(TSemaphoreInfo* semaphore) {
             auto it = SemaphoreWatchCookie.find(semaphore);
-            Y_ABORT_UNLESS(it != SemaphoreWatchCookie.end());
+            Y_VERIFY(it != SemaphoreWatchCookie.end());
             ui64 cookie = it->second;
             SemaphoreWatchCookie.erase(it);
             return cookie;
@@ -209,7 +209,7 @@ private:
         }
 
         bool CanAcquire(ui64 count) const {
-            Y_ABORT_UNLESS(count <= Limit);
+            Y_VERIFY(count <= Limit);
             return count <= (Limit - Count);
         }
 
@@ -218,7 +218,6 @@ private:
 
     struct TQuoterResourceSessionsAccumulator {
         void Accumulate(const TActorId& recipient, ui64 resourceId, double amount, const NKikimrKesus::TStreamingQuoterResource* props);
-        void Sync(const TActorId& recipient, ui64 resourceId, ui32 lastReportId, double amount);
         void SendAll(const TActorContext& ctx, ui64 tabletId);
 
         struct TSendInfo {
@@ -226,13 +225,7 @@ private:
             THashMap<ui64, size_t> ResIdIndex;
         };
 
-        struct TSendSyncInfo {
-            THolder<TEvKesus::TEvSyncResources> Event;
-            THashMap<ui64, size_t> ResIdIndex;
-        };
-
         THashMap<TActorId, TSendInfo> SendInfos;
-        THashMap<TActorId, TSendSyncInfo> SendSyncInfos;
     };
 
     struct TEvPrivate {
@@ -383,6 +376,7 @@ private:
 private:
     void VerifyKesusPath(const TString& kesusPath);
 
+    void Handle(TEvents::TEvPoisonPill::TPtr& ev);
     void Handle(TEvents::TEvUndelivered::TPtr& ev);
     void Handle(TEvInterconnect::TEvNodeConnected::TPtr& ev);
     void Handle(TEvInterconnect::TEvNodeDisconnected::TPtr& ev);
@@ -414,7 +408,6 @@ private:
     void Handle(TEvKesus::TEvSubscribeOnResources::TPtr& ev);
     void Handle(TEvKesus::TEvUpdateConsumptionState::TPtr& ev);
     void Handle(TEvKesus::TEvAccountResources::TPtr& ev);
-    void Handle(TEvKesus::TEvReportResources::TPtr& ev);
     void Handle(TEvKesus::TEvResourcesAllocatedAck::TPtr& ev);
     void Handle(TEvKesus::TEvGetQuoterResourceCounters::TPtr& ev);
     void Handle(TEvTabletPipe::TEvServerDisconnected::TPtr& ev);
@@ -431,6 +424,7 @@ private:
 private:
     STFUNC(StateInit);
     STFUNC(StateWork);
+    STFUNC(StateZombie);
 
 private:
     void AddSessionTx(ui64 sessionId) {
@@ -443,7 +437,7 @@ private:
 
     void RemoveSessionTx(ui64 sessionId) {
         auto it = SessionsTxCount.find(sessionId);
-        Y_ABORT_UNLESS(it != SessionsTxCount.end());
+        Y_VERIFY(it != SessionsTxCount.end());
         if (!--it->second) {
             SessionsTxCount.erase(it);
         }

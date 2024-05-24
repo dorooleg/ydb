@@ -4,16 +4,16 @@
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
-#include <string>
+
 #include <ydb/public/sdk/cpp/client/impl/ydb_stats/stats.h>
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/common/type_switcher.h>
 
 namespace NYdb {
 
 struct TEndpointRecord {
-    std::string Endpoint;
+    TStringType Endpoint;
     i32 Priority;
-    std::string SslTargetNameOverride;
+    TStringType SslTargetNameOverride;
     ui64 NodeId = 0;
 
     TEndpointRecord()
@@ -24,7 +24,7 @@ struct TEndpointRecord {
     {
     }
 
-    TEndpointRecord(std::string endpoint, i32 priority, std::string sslTargetNameOverride = std::string(), ui64 nodeId = 0)
+    TEndpointRecord(TStringType endpoint, i32 priority, TStringType sslTargetNameOverride = TStringType(), ui64 nodeId = 0)
         : Endpoint(std::move(endpoint))
         , Priority(priority)
         , SslTargetNameOverride(std::move(sslTargetNameOverride))
@@ -42,7 +42,7 @@ struct TEndpointRecord {
 };
 
 struct TEndpointKey {
-    std::string Endpoint;
+    TStringType Endpoint;
     ui64 NodeId = 0;
 
     TEndpointKey()
@@ -50,28 +50,17 @@ struct TEndpointKey {
         , NodeId(0)
     {}
 
-    TEndpointKey(std::string endpoint, ui64 nodeId)
+    TEndpointKey(TStringType endpoint, ui64 nodeId)
         : Endpoint(std::move(endpoint))
         , NodeId(nodeId)
     {}
 
-    TEndpointKey(ui64 nodeId)
-        : Endpoint()
-        , NodeId(nodeId)
-    {}
-
-    const std::string& GetEndpoint() const {
+    const TStringType& GetEndpoint() const {
         return Endpoint;
     }
 
     const ui64& GetNodeId() const {
         return NodeId;
-    }
-
-    friend IOutputStream& operator<<(IOutputStream& out, const TEndpointKey& value)
-    {
-        out << "{ Endpoint: " << value.Endpoint << ", NodeId: " << value.NodeId << "}";
-        return out;
     }
 };
 
@@ -87,16 +76,16 @@ public:
     TEndpointElectorSafe() = default;
 
     // Sets new endpoints, returns removed
-    std::vector<std::string> SetNewState(std::vector<TEndpointRecord>&& records);
+    std::vector<TStringType> SetNewState(std::vector<TEndpointRecord>&& records);
 
     // Allows to get stats
     void SetStatCollector(const NSdkStats::TStatCollector::TEndpointElectorStatCollector& endpointStatCollector);
 
-    // Returns preferred (if presents) or best endpoint
-    TEndpointRecord GetEndpoint(const TEndpointKey& preferredEndpoint, bool onlyPreferred = false) const;
+    // Returns prefered (if presents) or best endpoint
+    TEndpointRecord GetEndpoint(const TEndpointKey& preferredEndpoint) const;
 
     // Move endpoint to the end
-    void PessimizeEndpoint(const std::string& endpoint);
+    void PessimizeEndpoint(const TStringType& endpoint);
 
     // Returns % of pessimized endpoints
     int GetPessimizationRatio() const;
@@ -121,7 +110,7 @@ private:
 private:
     mutable std::shared_mutex Mutex_;
     std::vector<TEndpointRecord> Records_;
-    std::unordered_map<std::string, TEndpointRecord> KnownEndpoints_;
+    std::unordered_map<TStringType, TEndpointRecord> KnownEndpoints_;
     std::unordered_map<ui64, TKnownEndpoint> KnownEndpointsByNodeId_;
     i32 BestK_ = -1;
     std::atomic_int PessimizationRatio_ = 0;

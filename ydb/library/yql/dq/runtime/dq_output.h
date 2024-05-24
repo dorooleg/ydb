@@ -6,8 +6,6 @@
 #include <util/datetime/base.h>
 #include <util/generic/ptr.h>
 
-#include "dq_async_stats.h" 
-
 namespace NYql {
 namespace NDqProto {
 
@@ -21,7 +19,14 @@ class TUnboxedValue;
 
 namespace NDq {
 
-struct TDqOutputStats : public TDqAsyncStats {
+struct TDqOutputStats {
+    // basic stats
+    ui64 Chunks = 0;
+    ui64 Bytes = 0;
+    ui64 RowsIn = 0;
+    ui64 RowsOut = 0;
+    TInstant FirstRowIn;
+
     // profile stats
     ui64 MaxMemoryUsage = 0;
     ui64 MaxRowsInMemory = 0;
@@ -33,14 +38,11 @@ public:
 
     virtual ~IDqOutput() = default;
 
-    virtual const TDqOutputStats& GetPushStats() const = 0;
-
     // <| producer methods
     [[nodiscard]]
     virtual bool IsFull() const = 0;
     // can throw TDqChannelStorageException
     virtual void Push(NUdf::TUnboxedValue&& value) = 0;
-    virtual void WidePush(NUdf::TUnboxedValue* values, ui32 count) = 0;
     virtual void Push(NDqProto::TWatermark&& watermark) = 0;
     // Push checkpoint. Checkpoints may be pushed to channel even after it is finished.
     virtual void Push(NDqProto::TCheckpoint&& checkpoint) = 0;
@@ -52,6 +54,8 @@ public:
     virtual bool IsFinished() const = 0;
 
     virtual NKikimr::NMiniKQL::TType* GetOutputType() const = 0;
+
+    virtual const TDqOutputStats* GetStats() const = 0;
 };
 
 } // namespace NDq

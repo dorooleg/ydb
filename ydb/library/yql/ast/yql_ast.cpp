@@ -56,7 +56,7 @@ namespace {
         }
 
         inline char Peek() const {
-            Y_ABORT_UNLESS(!AtEnd());
+            Y_VERIFY(!AtEnd());
             return Str_[Offset_];
         }
 
@@ -65,7 +65,7 @@ namespace {
         }
 
         inline char Next() {
-            Y_ABORT_UNLESS(!AtEnd());
+            Y_VERIFY(!AtEnd());
             char ch = Str_[Offset_];
             if (ch == '\n') {
                 ++Position_.Row;
@@ -86,7 +86,7 @@ namespace {
         }
 
         inline TStringBuf GetToken(ui32 begin, ui32 end) {
-            Y_ABORT_UNLESS(end >= begin);
+            Y_VERIFY(end >= begin);
             return Str_.SubString(begin, end - begin);
         }
 
@@ -607,8 +607,6 @@ TAstParseResult::TAstParseResult(TAstParseResult&& other)
     : Pool(std::move(other.Pool))
     , Root(other.Root)
     , Issues(std::move(other.Issues))
-    , PgAutoParamValues(std::move(other.PgAutoParamValues))
-    , ActualSyntaxType(other.ActualSyntaxType)
 {
     other.Root = nullptr;
 }
@@ -619,8 +617,6 @@ TAstParseResult& TAstParseResult::operator=(TAstParseResult&& other) {
     Root = other.Root;
     other.Root = nullptr;
     Issues = std::move(other.Issues);
-    PgAutoParamValues = std::move(other.PgAutoParamValues);
-    ActualSyntaxType = other.ActualSyntaxType;
     return *this;
 }
 

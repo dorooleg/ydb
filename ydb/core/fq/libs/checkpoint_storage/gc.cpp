@@ -4,8 +4,8 @@
 #include <ydb/core/fq/libs/checkpoint_storage/events/events.h>
 #include <ydb/core/fq/libs/actors/logging/log.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NFq {
 
@@ -91,11 +91,6 @@ void TActorGC::Handle(TEvCheckpointStorage::TEvNewCheckpointSucceeded::TPtr& ev)
 
     LOG_STREAMS_STORAGE_SERVICE_DEBUG("GC received upperbound checkpoint " << checkpointUpperBound
         << " for graph '" << graphId << "'");
-
-    if (event->Type != NYql::NDqProto::CHECKPOINT_TYPE_SNAPSHOT) {
-        LOG_STREAMS_STORAGE_SERVICE_DEBUG("GC skip increment checkpoint for graph '" << graphId << "'");
-        return;
-    }
 
     // we need to:
     // 1. Mark checkpoints as GC and continue only if succeeded

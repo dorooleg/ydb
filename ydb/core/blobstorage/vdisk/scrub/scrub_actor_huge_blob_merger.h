@@ -10,8 +10,9 @@ namespace NKikimr {
         NMatrix::TVectorType Local;
         NMatrix::TVectorType ReadableLocal;
         std::vector<TDiskPart> CorruptedParts;
-        std::function<std::optional<TRcBuf>(const TDiskPart&)> Read;
+        std::function<std::optional<TString>(const TDiskPart&)> Read;
         const TBlobStorageGroupType GType;
+        TDataPartSet PartSet;
         TScrubCoroImpl *Impl;
 
     public:
@@ -23,11 +24,17 @@ namespace NKikimr {
             , Read(std::move(read))
             , GType(gtype)
             , Impl(impl)
-        {}
+        {
+            PartSet.FullDataSize = 0;
+            PartSet.PartsMask = 0;
+            PartSet.Parts.resize(gtype.TotalPartCount());
+        }
 
         static bool HaveToMergeData() { return true; }
 
-        void Begin(const TLogoBlobID& /*id*/) {}
+        void Begin(const TLogoBlobID& id) {
+            PartSet.FullDataSize = id.BlobSize();
+        }
 
         // process on-disk data
         void AddFromSegment(const TMemRecLogoBlob& memRec, const TDiskPart *outbound, const TKeyLogoBlob& key, ui64 /*sstId*/) {
@@ -42,17 +49,23 @@ namespace NKikimr {
                     TDiskDataExtractor extr;
                     memRec.GetDiskData(&extr, outbound);
                     const NMatrix::TVectorType local = memRec.GetLocalParts(GType);
-                    Y_ABORT_UNLESS(extr.End - extr.Begin == local.CountBits());
+                    Y_VERIFY(extr.End - extr.Begin == local.CountBits());
                     const TDiskPart *part = extr.Begin;
                     for (ui32 i = local.FirstPosition(); i != local.GetSize(); i = local.NextPosition(i), ++part) {
                         if (part->ChunkIdx && part->Size) {
-                            std::optional<TRcBuf> data = Read(*part);
+                            std::optional<TString> data = Read(*part);
                             STLOGX(Impl->GetActorContext(), data ? PRI_DEBUG : PRI_ERROR, BS_VDISK_SCRUB, VDS21,
                                 VDISKP(LogPrefix, "huge blob read"), (Id, key.LogoBlobID()), (Local, local),
                                 (Location, *part), (IsReadable, data.has_value()));
                             Local.Set(i);
                             if (data) {
                                 ReadableLocal.Set(i);
+                                TRope rope(*data);
+                                TDiskBlob blob(&rope, NMatrix::TVectorType::MakeOneHot(i, local.GetSize()), GType,
+                                    key.LogoBlobID());
+                                TRope holder;
+                                TRope part = blob.GetPart(i, &holder);
+                                PartSet.Parts[i].ReferenceTo(part);
                             } else {
                                 CorruptedParts.push_back(*part);
                             }
@@ -71,6 +84,9 @@ namespace NKikimr {
             Local.Clear();
             ReadableLocal.Clear();
             CorruptedParts.clear();
+            PartSet.FullDataSize = 0;
+            PartSet.PartsMask = 0;
+            std::fill(PartSet.Parts.begin(), PartSet.Parts.end(), TPartFragment());
         }
 
         NMatrix::TVectorType GetPartsToRestore() const {
@@ -79,6 +95,10 @@ namespace NKikimr {
 
         TDiskPart GetCorruptedPart() const {
             return CorruptedParts.empty() ? TDiskPart() : CorruptedParts.front();
+        }
+
+        TDataPartSet GetPartSet() {
+            return std::move(PartSet);
         }
     };
 

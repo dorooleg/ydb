@@ -1,13 +1,10 @@
 option cc_enable_arenas = true;
 
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/core/protos/base.proto";
-import "ydb/core/scheme/protos/type_info.proto";
-import "ydb/core/scheme/protos/key_range.proto";
-import "ydb/core/scheme/protos/pathid.proto";
-import "ydb/core/protos/data_events.proto";
+import "ydb/core/protos/type_info.proto";
 import "ydb/core/protos/kqp.proto";
-import "ydb/core/formats/arrow/protos/ssa.proto";
+import "ydb/core/protos/ssa.proto";
 import "ydb/core/protos/tablet.proto";
 import "ydb/core/protos/tx.proto";
 import "ydb/core/protos/flat_scheme_op.proto";
@@ -20,7 +17,6 @@ import "ydb/library/yql/dq/actors/protos/dq_events.proto";
 import "ydb/library/yql/dq/actors/protos/dq_stats.proto";
 import "ydb/library/yql/dq/proto/dq_tasks.proto";
 import "google/protobuf/empty.proto";
-import "ydb/core/protos/index_builder.proto";
 
 package NKikimrTxDataShard;
 option java_package = "ru.yandex.kikimr.proto";
@@ -95,6 +91,12 @@ message TRWTransaction {
 message TROTransaction {
 }
 
+message TTableId {
+    optional uint64 OwnerId = 1;
+    optional uint64 TableId = 2;
+    optional uint64 SchemaVersion = 3;
+}
+
 message TReadTableTransaction {
     message TColumn {
         optional uint32 Id = 1;
@@ -103,7 +105,7 @@ message TReadTableTransaction {
         optional NKikimrProto.TTypeInfo TypeInfo = 4;
     }
 
-    optional NKikimrDataEvents.TTableId TableId = 1;
+    optional TTableId TableId = 1;
     repeated TColumn Columns = 2;
     optional NKikimrTx.TKeyRange Range = 3;
     optional uint32 ApiVersion = 4;
@@ -111,9 +113,23 @@ message TReadTableTransaction {
     optional uint64 SnapshotTxId = 6;
 }
 
+message TKqpLocks {
+    repeated TLock Locks = 1;
+    repeated uint64 SendingShards = 2;   // empty on Rollback
+    repeated uint64 ReceivingShards = 3; // empty on Rollback
+
+    enum ELocksOp {
+        Unspecified = 0;
+        reserved 1; // Validate op is deprecated
+        Commit = 2; // Validate locks, commit buffered changes and erase locks
+        Rollback = 3; // Rollback buffered changes and erase locks
+    }
+    optional ELocksOp Op = 4;
+}
+
 message TKqpValidateLocksResult {
     optional bool Success = 1;
-    repeated NKikimrDataEvents.TLock BrokenLocks = 2;
+    repeated TLock BrokenLocks = 2;
 };
 
 enum EKqpTransactionType {
@@ -122,13 +138,18 @@ enum EKqpTransactionType {
     KQP_TX_TYPE_SCAN = 2;
 }
 
+enum EScanDataFormat {
+    UNSPECIFIED = 0;
+    CELLVEC = 1;
+    ARROW = 2;
+}
+
 message TKqpTransaction {
     message TColumnMeta {
         optional uint32 Id = 1;
         optional string Name = 2;
         optional uint32 Type = 3;
         optional NKikimrProto.TTypeInfo TypeInfo = 4;
-        optional bool NotNull = 5;
     }
 
     message TColumnWriteMeta {
@@ -143,7 +164,7 @@ message TKqpTransaction {
     }
 
     message TTableMeta {
-        optional NKikimrDataEvents.TTableId TableId = 1;
+        optional TTableId TableId = 1;
         optional string TablePath = 2;
         optional uint64 SchemaVersion = 3;
         // reserved 4
@@ -205,18 +226,17 @@ message TKqpTransaction {
         optional uint64 ItemsLimit = 6;
         optional bool Reverse = 7;
         reserved 8; // optional bytes ProcessProgram = 8;
-        optional NKikimrDataEvents.EDataFormat DataFormat = 9;
+        optional EScanDataFormat DataFormat = 9;
         optional NKikimrSSA.TOlapProgram OlapProgram = 10; // Currently only for OLAP tables
         optional bool EnableShardsSequentialScan = 11;
         repeated TColumnMeta ResultColumns = 12;
         // Type of read result: unboxed values or Arrow blocks of data
         optional EReadType ReadType = 14;
-        repeated string GroupByColumnNames = 15;
     }
 
     optional EKqpTransactionType Type = 1;
     repeated NYql.NDqProto.TDqTask Tasks = 2;
-    optional NKikimrDataEvents.TKqpLocks Locks = 3;
+    optional TKqpLocks Locks = 3;
 
     optional NYql.NDqProto.TComputeRuntimeSettings RuntimeSettings = 4;
     reserved 5;
@@ -228,7 +248,7 @@ message TKqpTransaction {
 }
 
 message TEvKqpInputActorResultInfo {
-    repeated NKikimrDataEvents.TLock Locks = 1;
+    repeated TLock Locks = 1;
 }
 
 message TKqpReadRangesSourceSettings {
@@ -246,7 +266,7 @@ message TKqpReadRangesSourceSettings {
     repeated uint32 KeyColumnTypes = 8;
     repeated NKikimrProto.TTypeInfo KeyColumnTypeInfos = 15;
 
-    optional NKikimrDataEvents.EDataFormat DataFormat = 9;
+    optional EScanDataFormat DataFormat = 9;
     optional NKikimrProto.TRowVersion Snapshot = 10;
     optional uint64 ShardIdHint = 11;
     optional bool Sorted = 12;
@@ -255,8 +275,6 @@ message TKqpReadRangesSourceSettings {
     optional uint32 LockNodeId = 14;
 
     optional uint64 MaxInFlightShards = 16;
-    optional bool UseFollowers = 17 [default = false];
-    optional bool AllowInconsistentReads = 18 [default = false];
 }
 
 message TKqpTaskInfo {
@@ -337,13 +355,13 @@ message TSnapshotTransferInfo {
 message TReceiveSnapshot {
     optional uint64 TableId_Deprecated = 1;
     repeated TSnapshotTransferInfo ReceiveFrom = 2;
-    optional NKikimrDataEvents.TTableId TableId = 3;
+    optional TTableId TableId = 3;
 }
 
 message TSendSnapshot {
     optional uint64 TableId_Deprecated = 1;
     repeated TSnapshotTransferInfo SendTo = 2;
-    optional NKikimrDataEvents.TTableId TableId = 3;
+    optional TTableId TableId = 3;
 }
 
 message TSchemeOpSeqNo {
@@ -505,7 +523,7 @@ message TDistributedEraseRS {
 message TCommitWritesTransaction {
     // TODO: add lock checking in the future
 
-    optional NKikimrDataEvents.TTableId TableId = 1;
+    optional TTableId TableId = 1;
     optional uint64 WriteTxId = 2;
 }
 
@@ -524,9 +542,14 @@ enum ETransactionKind {
     // kinds. See NKikimr::NDataShard::EOperationKind.
 }
 
+message TMvccSnapshot {
+    optional uint64 Step = 10;
+    optional uint64 TxId = 11;
+}
+
 message TEvProposeTransaction {
     optional ETransactionKind TxKind = 1;
-    optional NActorsProto.TActorId SourceDeprecated = 2 [deprecated = true]; // for compatibility with old tx engine
+    optional NActorsProto.TActorId Source = 2;
     optional bytes TxBody = 3;
     optional uint64 TxId = 4;
     optional uint32 ExecLevel = 5;
@@ -534,8 +557,7 @@ message TEvProposeTransaction {
     optional uint64 SchemeShardId = 7;
     optional NKikimrSubDomains.TProcessingParams ProcessingParams = 8;
     optional uint64 SubDomainPathId = 9; // LocalPathId (SchemeShardId is the OwnerId)
-    optional NKikimrDataEvents.TMvccSnapshot MvccSnapshot = 10;
-    optional bool MvccSnapshotRepeatable = 11 [default = true];
+    optional TMvccSnapshot MvccSnapshot = 10;
 }
 
 message TEvCancelTransactionProposal {
@@ -564,14 +586,29 @@ message TError {
         UNKNOWN = 17;
         REPLY_SIZE_EXCEEDED = 18;
         EXECUTION_CANCELLED = 19;
-        // This enum value is not supported in versions 23-2 and below and would be interpreted as OK due to how proto2 enums work.
-        // Version 23-3 can handle the value, so it is safe to use only in the next major release after 23-3.
-        DISK_SPACE_EXHAUSTED = 20;
     }
 
     optional EKind Kind = 1;
     optional bytes Key = 2;
     optional bytes Reason = 3;
+}
+
+message TLock {
+    optional fixed64 LockId = 1;
+    optional fixed64 DataShard = 2;
+    optional uint32 Generation = 3;
+    optional uint64 Counter = 4;
+    optional fixed64 SchemeShard = 5;
+    optional uint64 PathId = 6;
+    optional bool HasWrites = 7;
+}
+
+message TTabletInfo {
+    optional fixed64 TabletId = 1;
+    optional uint32 Generation = 2;
+    optional uint64 Step = 3;
+    optional NActorsProto.TActorId ActorId = 4;
+    optional bool IsFollower = 5;
 }
 
 message TEvProposeTransactionResult {
@@ -609,11 +646,11 @@ message TEvProposeTransactionResult {
     optional uint64 PrepareArriveTime = 12;
     optional uint64 ExecLatency = 13;
     optional uint64 ProposeLatency = 14;
-    repeated NKikimrDataEvents.TLock TxLocks = 15;
+    repeated TLock TxLocks = 15;
     optional uint64 ReadSize = 16;
     optional uint64 ReplySize = 17;
     repeated TReadSetInfo OutgoingReadSetInfo = 18;
-    optional NKikimrDataEvents.TTabletInfo TabletInfo = 19;
+    optional TTabletInfo TabletInfo = 19;
     // For read table tx result holds offsets in TxResult to cut response
     repeated uint32 RowOffsets = 20;
     repeated fixed64 DomainCoordinators = 21;
@@ -802,50 +839,6 @@ message TEvPeriodicTableStats {
     optional uint64 TableOwnerId = 12;
 
     optional bool IsDstSplit = 13;
-
-    repeated TEvPeriodicTableStats Tables = 14;
-}
-
-message TObjectStorageListingFilter {
-    enum EMatchType {
-        EQUAL = 0;
-        NOT_EQUAL = 1;
-    }
-    optional bytes Values = 1;
-    repeated uint32 Columns = 2;
-    repeated EMatchType MatchTypes = 3; 
-}
-
-message TEvObjectStorageListingRequest {
-    optional uint64 TableId = 1;
-    optional bytes SerializedKeyPrefix = 2;
-
-    optional string PathColumnPrefix = 3;
-    optional string PathColumnDelimiter = 4;
-
-    optional bytes SerializedStartAfterKeySuffix = 5;
-
-    repeated uint32 ColumnsToReturn = 6;
-    optional uint32 MaxKeys = 7;
-
-    optional string LastCommonPrefix = 8;
-    optional string LastPath = 9;
-
-    optional TObjectStorageListingFilter Filter = 10;
-}
-
-message TEvObjectStorageListingResponse {
-    optional uint64 TabletID = 1;
-    optional uint32 Status = 2;
-    optional string ErrorDescription = 3;
-    repeated string CommonPrefixesRows = 4;
-    repeated bytes ContentsRows = 5;        // TSerializedCellVec
-    optional bool MoreRows = 6;
-}
-
-message TObjectStorageListingContinuationToken {
-    optional string last_path = 1;
-    optional bool is_folder = 2;
 }
 
 message TSerializedRowColumnsScheme {
@@ -866,16 +859,12 @@ message TEvUploadRowsRequest {
     repeated TSerializedRowToLoad Rows = 3;
     optional uint64 CancelDeadlineMs = 4; // Wallclock timestamp (not duration)
     optional bool WriteToTableShadow = 5;
-    optional uint64 OverloadSubscribe = 7;
-    optional bool UpsertIfExists = 8 [ default = false ];
-    optional uint64 SchemaVersion = 9;
 }
 
 message TEvUploadRowsResponse {
     optional uint64 TabletID = 1;
     optional uint32 Status = 2;
     optional string ErrorDescription = 3;
-    optional uint64 OverloadSubscribed = 4;
 }
 
 message TEvReadColumnsRequest {
@@ -1302,7 +1291,6 @@ message TEvEraseRowsRequest {
     repeated uint32 KeyColumnIds = 2;
     repeated bytes KeyColumns = 3; // SerilializedCellVector
     optional uint64 SchemaVersion = 5;
-    optional uint64 OverloadSubscribe = 6;
 
     oneof Condition {
         TExpirationCondition Expiration = 4;
@@ -1334,7 +1322,6 @@ message TEvEraseRowsResponse {
     optional uint64 TabletID = 1;
     optional EStatus Status = 2;
     optional string ErrorDescription = 3;
-    optional uint64 OverloadSubscribed = 4;
 }
 
 message TEvConditionalEraseRowsRequest {
@@ -1413,8 +1400,6 @@ message TEvBuildIndexCreateRequest {
     optional uint64 MaxRetries = 14;
 
     repeated string DataColumns = 15;
-
-    optional NKikimrIndexBuilder.TColumnBuildSettings ColumnBuildSettings = 16;
 }
 
 message TEvBuildIndexProgressResponse {
@@ -1490,38 +1475,6 @@ message TEvCdcStreamScanResponse {
     optional TStats Stats = 6;
 }
 
-message TEvStatisticsScanRequest {
-    optional NKikimrDataEvents.TTableId TableId = 1;
-    optional bytes StartKey = 2;
-}
-
-message TEvStatisticsScanResponse {
-    message TStatistic {
-        optional uint32 Type = 1;
-        optional bytes Data = 2;
-    }
-    message TColumn {
-        optional uint32 Tag = 1;
-        repeated TStatistic Statistics = 2;
-    }
-    repeated TColumn Columns = 1;
-
-    enum EStatus {
-        SUCCESS = 1;
-        ABORTED = 2;
-        ERROR = 3;
-    }
-    optional EStatus Status = 2;
-
-    optional fixed64 ShardTabletId = 3;
-}
-
-message TComputeShardingPolicy {
-    repeated string ColumnNames = 1;
-    optional uint32 ShardsCount = 2 [default = 0];
-
-}
-
 message TEvKqpScan {
     optional uint64 TxId = 1;
     optional uint64 ScanId = 2;
@@ -1541,12 +1494,11 @@ message TEvKqpScan {
     reserved 14;
     optional uint64 ItemsLimit = 15;
     optional bool Reverse = 16;
-    optional NKikimrDataEvents.EDataFormat DataFormat = 17;
+    optional EScanDataFormat DataFormat = 17;
     optional NYql.NDqProto.EDqStatsMode StatsMode = 18;
     optional bytes OlapProgram = 19;
     optional NKikimrSchemeOp.EOlapProgramType OlapProgramType = 20;
     optional bool CostDataOnly = 21[default = false];
-    optional TComputeShardingPolicy ComputeShardingPolicy = 23;
 }
 
 message TEvCompactTable {
@@ -1658,7 +1610,7 @@ message TEvRead {
     // Only for internal usage we support reading shard system tables:
     // in this case owner is shard itself, TableId is LocalTid, SchemaVersion
     // must not be set
-    optional NKikimrDataEvents.TTableId TableId = 2;
+    optional TTableId TableId = 2;
 
     // A list of column ids that are returned in the result set. Empty columns can be used to Count(*) rows.
     // * In case of CellVec and empty columns: result will
@@ -1680,7 +1632,7 @@ message TEvRead {
     optional uint32 LockNodeId = 11;
 
     // Specifies the format for result data in TEvReadResult
-    optional NKikimrDataEvents.EDataFormat ResultFormat = 6;
+    optional EScanDataFormat ResultFormat = 6;
 
     // Limits the total number of rows or bytes client currently can handle
     // MaxRows is hard limit: shard must never violate it
@@ -1697,9 +1649,6 @@ message TEvRead {
 
     // When specified requests are handled in reverse order as well as range reads
     optional bool Reverse = 10;
-
-    // Limits total number of rows which iterator can read.
-    optional uint64 TotalRowsLimit = 12;
 
     // Request must contain either keys, queries or program
     // mixed requests are not supported
@@ -1751,7 +1700,7 @@ message TEvReadResult {
     optional uint64 SeqNo = 2;
 
     optional TStatus Status = 3;
-    optional NKikimrDataEvents.EDataFormat ResultFormat = 4;
+    optional EScanDataFormat ResultFormat = 4;
     optional NKikimrProto.TRowVersion Snapshot = 5;
 
     optional bytes ContinuationToken = 6;
@@ -1766,12 +1715,10 @@ message TEvReadResult {
 
     optional bool Finished = 9;
 
-    repeated NKikimrDataEvents.TLock TxLocks = 10;
-    repeated NKikimrDataEvents.TLock BrokenTxLocks = 11;
+    repeated TLock TxLocks = 10;
+    repeated TLock BrokenTxLocks = 11;
 
     optional uint64 RowCount = 12;
-
-    optional uint32 NodeId = 13;
 
     // Data for the possibly partial result
     oneof ReadResult {
@@ -1829,7 +1776,7 @@ message TEvApplyReplicationChanges {
     }
 
     // Table these changes are applied to
-    optional NKikimrDataEvents.TTableId TableId = 1;
+    optional TTableId TableId = 1;
 
     // Source of changes for deduplication and exactly-once processing. This
     // should be a source which guarantees monotonically increasing offsets,
@@ -1864,7 +1811,7 @@ message TEvGetReplicationSourceOffsets {
     // Each read must have a unique (Sender, ReadId) pair for identification
     optional uint64 ReadId = 1;
 
-    optional NKikimrDataEvents.TTableId TableId = 2;
+    optional TTableId TableId = 2;
 
     // The tuple (SourceId, SplitKeyId) where the read should start, inclusive
     optional uint64 FromSourceId = 3;
@@ -1946,27 +1893,4 @@ message TTxVolatileDetails {
 
     // When true all preceding transactions are dependencies
     optional bool CommitOrdered = 8;
-
-    // When true marks an arbiter for other participants
-    // Arbiters hold outgoing readsets until the transaction is decided
-    optional bool IsArbiter = 9;
-}
-
-// Sent by datashard when some overload reason stopped being relevant
-message TEvOverloadReady {
-    optional uint64 TabletID = 1;
-    optional uint64 SeqNo = 2;
-}
-
-// Sent by overload subscribers to unsubscribe and free memory
-message TEvOverloadUnsubscribe {
-    optional uint64 SeqNo = 1;
-}
-
-// Used for events serialization/deserialization
-message TSerializedEvent {
-    // Serialized TEventPBBase event
-    optional bytes EventData = 1;
-    // TEventSerializationInfo::IsExtendedFormat flag
-    optional bool IsExtendedFormat = 2;
 }

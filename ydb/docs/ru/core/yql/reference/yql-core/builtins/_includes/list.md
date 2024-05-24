@@ -443,24 +443,23 @@ ListFlatten(List<List<T>?>)->List<T>
 ListFlatten(List<List<T>?>?)->List<T>?
 ```
 
-## ListUniq и ListUniqStable {#listuniq}
+## ListUniq {#listuniq}
 
-Возвращает копию списка, в котором оставлен только уникальный набор элементов. В случае ListUniq порядок элементов результирующего набора не определен, в случае ListUniqStable элементы находятся в порядке вхождения в исходный список.
+Возвращает копию списка, в котором оставлен только уникальный набор элементов.
 
+{% if feature_column_container_type %}
 **Примеры**
 ``` yql
-SELECT ListUniq([1, 2, 3, 2, 4, 5, 1]) -- [5, 4, 2, 1, 3]
-SELECT ListUniqStable([1, 2, 3, 2, 4, 5, 1]) -- [1, 2, 3, 4, 5]
-SELECT ListUniqStable([1, 2, null, 7, 2, 8, null]) -- [1, 2, null, 7, 8]
+SELECT
+    ListUniq(list_column)
+FROM my_table;
 ```
+{% endif %}
 
 **Сигнатура**
 ```
 ListUniq(List<T>)->List<T>
 ListUniq(List<T>?)->List<T>?
-
-ListUniqStable(List<T>)->List<T>
-ListUniqStable(List<T>?)->List<T>?
 ```
 
 ## ListAny и ListAll {#listany}
@@ -857,38 +856,3 @@ SELECT ToSet($l);  -- {1,2,3}
 ToSet(List<T>)->Set<T>
 ToSet(List<T>?)->Set<T>?
 ```
-
-## ListFromTuple
-Строит список из кортежа, в котором типы элементов совместимы друг с другом. Для опционального кортежа на выходе получается опциональный список. Для NULL аргумента - NULL. Для пустого кортежа - EmptyList.
-
-**Примеры**
-```yql
-$t = (1,2,3);
-SELECT ListFromTuple($t);  -- [1,2,3]
-```
-
-**Сигнатура**
-```
-ListFromTuple(Null)->Null
-ListFromTuple(Tuple<>)->EmptyList
-ListFromTuple(Tuple<T1,T2,...>)->List<T>
-ListFromTuple(Tuple<T1,T2,...>?)->List<T>?
-```
-
-## ListToTuple
-Строит кортеж из списка и явно указанной ширины кортежа. Все элементы кортежа будут иметь тот же тип, что и тип элемента списка. Если длина списка не соотвествует указанной ширине кортежа, будет возвращена ошибка. Для опционального списка на выходе получается опциональный кортеж. Для NULL аргумента - NULL.
-
-**Примеры**
-```yql
-$l = [1,2,3];
-SELECT ListToTuple($l, 3);  -- (1,2,3)
-```
-
-**Сигнатура**
-```
-ListToTuple(Null,N)->Null
-ListToTuple(EmptyList,N)->()) -- N должен быть 0
-ListToTuple(List<T>, N)->Tuple<T,T,...T> -- ширина кортежа N
-ListToTuple(List<T>?, N)->Tuple<T,T,...T>? -- ширина кортежа N
-```
-

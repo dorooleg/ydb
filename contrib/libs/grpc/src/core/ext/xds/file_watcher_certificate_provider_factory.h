@@ -16,21 +16,12 @@
 //
 //
 
-#ifndef GRPC_SRC_CORE_EXT_XDS_FILE_WATCHER_CERTIFICATE_PROVIDER_FACTORY_H
-#define GRPC_SRC_CORE_EXT_XDS_FILE_WATCHER_CERTIFICATE_PROVIDER_FACTORY_H
+#ifndef GRPC_CORE_EXT_XDS_FILE_WATCHER_CERTIFICATE_PROVIDER_FACTORY_H
+#define GRPC_CORE_EXT_XDS_FILE_WATCHER_CERTIFICATE_PROVIDER_FACTORY_H
 
 #include <grpc/support/port_platform.h>
 
-#include <util/generic/string.h>
-#include <util/string/cast.h>
-
-#include <grpc/grpc_security.h>
-
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/iomgr/error.h"
-#include "src/core/lib/json/json.h"
-#include "src/core/lib/security/certificate_provider/certificate_provider_factory.h"
+#include "src/core/ext/xds/certificate_provider_factory.h"
 
 namespace grpc_core {
 
@@ -75,4 +66,4 @@ class FileWatcherCertificateProviderFactory
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_XDS_FILE_WATCHER_CERTIFICATE_PROVIDER_FACTORY_H
+#endif  // GRPC_CORE_EXT_XDS_FILE_WATCHER_CERTIFICATE_PROVIDER_FACTORY_H

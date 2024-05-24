@@ -107,10 +107,7 @@ public:
 
             FederatedQuery::Internal::QueryInternal internal;
             if (!internal.ParseFromString(*parser.ColumnParser(INTERNAL_COLUMN_NAME).GetOptionalString())) {
-                this->RequestCounters.Common->ParseProtobufError->Inc();
-                const TString error{"Error parsing proto message for query internal. Please contact internal support"};
-                CPS_LOG_E(error);
-                ReplyWithError(error);
+                ReplyWithError(TStringBuilder() << "Error parsing proto message for query internal. Please contact internal support");
                 return;
             }
             CloudId = internal.cloud_id();
@@ -118,10 +115,7 @@ public:
             if constexpr (TDerived::IsCreateRequest) {
                 FederatedQuery::Query query;
                 if (!query.ParseFromString(*parser.ColumnParser(QUERY_COLUMN_NAME).GetOptionalString())) {
-                    this->RequestCounters.Common->ParseProtobufError->Inc();
-                    const TString error{"Error parsing proto message for query. Please contact internal support"};
-                    CPS_LOG_E(error);
-                    ReplyWithError(error);
+                    ReplyWithError(TStringBuilder() << "Error parsing proto message for query. Please contact internal support");
                     return;
                 }
                 if (i64 limit = query.content().limits().vcpu_rate_limit()) {

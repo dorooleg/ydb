@@ -40,7 +40,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             TCompactionPolicy policy;
 
             // almost randome values except forceCountToCompact = 1 and forceSizeToCompact = 100 GB
-            TCompactionPolicy::TGenerationPolicy genPolicy(1, 1, 1, 10ULL*1024*1024*1024, "whoknows", true);
+            TCompactionPolicy::TGenerationPolicy genPolicy(1, 1, 1, 10*1024*1024*1024, "whoknows", true);
 
             for (size_t i = 0; i < 5; ++i) {
                 policy.Generations.push_back(genPolicy);
@@ -51,7 +51,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         const ui64 rowsPerTx = 16 * 1024;
@@ -110,7 +110,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Insert some rows
@@ -200,7 +200,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Don't expect any tasks or change requests
@@ -321,7 +321,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Insert some rows
@@ -436,7 +436,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Insert some rows
@@ -513,7 +513,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Insert some rows at v1
@@ -634,7 +634,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Insert some rows at v1
@@ -672,7 +672,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
         }
 
         // Start a new strategy
-        TGenCompactionStrategy strategy2(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy2(Table, &backend, &broker, &time, "suffix");
         strategy2.Start({ });
 
         // We expect a forced compaction to be pending right now
@@ -725,7 +725,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
             backend.Commit();
         }
 
-        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy(Table, &backend, &broker, &time, "suffix");
         strategy.Start({ });
 
         // Insert some rows at v1
@@ -766,7 +766,7 @@ Y_UNIT_TEST_SUITE(TGenCompaction) {
         backend.TabletId++;
 
         // Start a new strategy
-        TGenCompactionStrategy strategy2(Table, &backend, &broker, &time, &logger, "suffix");
+        TGenCompactionStrategy strategy2(Table, &backend, &broker, &time, "suffix");
         strategy2.Start({ });
 
         // We expect nothing to be pending right now

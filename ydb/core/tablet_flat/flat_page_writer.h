@@ -3,7 +3,7 @@
 #include "flat_page_conf.h"
 #include "flat_page_label.h"
 #include "flat_page_data.h"
-#include "flat_page_flat_index.h"
+#include "flat_page_index.h"
 #include "flat_part_iface.h"
 #include "flat_part_pinout.h"
 #include "flat_row_state.h"
@@ -23,9 +23,9 @@ namespace NPage {
             , Version(version)
             , V2Label(label)
             , Extra(extra)
-            , Prefix(sizeof(TLabel) + (label ? sizeof(TLabelExt) : 0) + sizeof(TRecordsHeader) + Extra)
+            , Prefix(sizeof(TLabel) + (label ? 8 : 0) + sizeof(TRecordsHeader) + Extra)
         {
-            Y_ABORT_UNLESS((version & 0x8000) == 0, "Invalid version value");
+            Y_VERIFY((version & 0x8000) == 0, "Invalid version value");
         }
 
         explicit operator bool() const noexcept
@@ -36,7 +36,7 @@ namespace NPage {
         template<typename T>
         T* ExtraAs() noexcept
         {
-            Y_ABORT_UNLESS(sizeof(T) == Extra, "Cannot cast extra block to T");
+            Y_VERIFY(sizeof(T) == Extra, "Cannot cast extra block to T");
 
             return TDeref<T>::At(Blob.mutable_data(), Prefix - Extra);
         }
@@ -57,7 +57,7 @@ namespace NPage {
 
         void Open(size_t more, size_t least, ui32 rows = 0) noexcept
         {
-            Y_ABORT_UNLESS(!Blob, "TDataPageBuilder is already has live page");
+            Y_VERIFY(!Blob, "TDataPageBuilder is already has live page");
 
             PageBytes = Max(least, BytesUsed() + more);
             PageRows = rows ? rows : Max<ui32>();
@@ -71,29 +71,30 @@ namespace NPage {
 
         TSharedData Close() noexcept
         {
-            Y_ABORT_UNLESS(Deltas.empty());
+            Y_VERIFY(Deltas.empty());
 
             if (!Blob)
                 return { };
 
-            Y_DEBUG_ABORT_UNLESS(BytesUsed() <= PageBytes);
+            Y_VERIFY_DEBUG(BytesUsed() <= PageBytes);
 
             Blob.TrimBack(BytesUsed());
 
             char *ptr = Blob.mutable_begin();
 
-            if (V2Label) {
-                WriteUnaligned<NPage::TLabel>(ptr, TLabel::Encode(Type, Version | 0x8000, Blob.size()));
-                ptr += sizeof(TLabel);
-                WriteUnaligned<NPage::TLabelExt>(ptr, TLabelExt::Encode(ECodec::Plain));
-                ptr += sizeof(TLabelExt);
-            } else {
-                WriteUnaligned<NPage::TLabel>(ptr, TLabel::Encode(Type, Version, Blob.size()));
-                ptr += sizeof(TLabel);
+            if (auto *label = TDeref<NPage::TLabel>::At(ptr, 0)) {
+                label->Init(Type, Version, Blob.size());
+
+                if (V2Label) {
+                    label->Format |= 0x8000;
+                    *TDeref<ui8>::At(label + 1, 0) = 0; /* page as-is */
+                }
+
+                ptr += sizeof(NPage::TLabel) + (V2Label ? 8 : 0);
             }
 
             if (auto *hdr = TDeref<TRecordsHeader>::At(ptr, 0)) {
-                hdr->Count = Offsets.size();
+                hdr->Records = Offsets.size();
             }
 
             { /* Place on the end reconds offsets */
@@ -156,11 +157,11 @@ namespace NPage {
 
         void PushDelta(TPgSize recordSize) noexcept
         {
-            Y_DEBUG_ABORT_UNLESS(recordSize > 0);
+            Y_VERIFY_DEBUG(recordSize > 0);
 
             if (Deltas.empty()) {
-                Y_DEBUG_ABORT_UNLESS(recordSize <= Left());
-                Y_DEBUG_ABORT_UNLESS(BytesUsed() + recordSize <= PageBytes);
+                Y_VERIFY_DEBUG(recordSize <= Left());
+                Y_VERIFY_DEBUG(BytesUsed() + recordSize <= PageBytes);
                 Offsets.push_back(Max<ui32>());
             } else {
                 Grow(recordSize, 0, 1.5);
@@ -173,11 +174,11 @@ namespace NPage {
         void PushOffset(TPgSize recordSize) noexcept
         {
             if (Deltas.empty()) {
-                Y_DEBUG_ABORT_UNLESS(recordSize > 0);
-                Y_DEBUG_ABORT_UNLESS(recordSize <= Left());
-                Y_DEBUG_ABORT_UNLESS(BytesUsed() + recordSize <= PageBytes);
+                Y_VERIFY_DEBUG(recordSize > 0);
+                Y_VERIFY_DEBUG(recordSize <= Left());
+                Y_VERIFY_DEBUG(BytesUsed() + recordSize <= PageBytes);
                 size_t offset = Offset();
-                Y_ABORT_UNLESS(offset < Max<ui32>(), "Record offset is out of bounds");
+                Y_VERIFY(offset < Max<ui32>(), "Record offset is out of bounds");
                 Offsets.push_back(offset);
             } else {
                 if (recordSize) {
@@ -211,11 +212,11 @@ namespace NPage {
                 Deltas.pop_back();
 
                 // Chain start must be within the first 4GB or the offset would be corrupted
-                Y_ABORT_UNLESS(start < Max<ui32>(), "Record offset is out of bounds");
-                Y_ABORT_UNLESS(Offsets.back() == Max<ui32>());
+                Y_VERIFY(start < Max<ui32>(), "Record offset is out of bounds");
+                Y_VERIFY(Offsets.back() == Max<ui32>());
                 Offsets.back() = start;
 
-                Y_ABORT_UNLESS(Deltas.empty());
+                Y_VERIFY(Deltas.empty());
             }
         }
 
@@ -224,7 +225,7 @@ namespace NPage {
         {
             auto* item = rec.GetItem(info);
             if (info.IsFixed) {
-                Y_ABORT_UNLESS(value.Size() == info.FixedSize, "invalid fixed cell size)");
+                Y_VERIFY(value.Size() == info.FixedSize, "invalid fixed cell size)");
                 memcpy(rec.template GetFixed<void>(item), value.Data(), value.Size());
             } else {
                 auto *ref = rec.template GetFixed<TDataRef>(item);
@@ -238,7 +239,7 @@ namespace NPage {
     private:
         void Resize(size_t bytes) noexcept
         {
-            Y_ABORT_UNLESS(bytes > Prefix, "Too few bytes for page");
+            Y_VERIFY(bytes > Prefix, "Too few bytes for page");
 
             if (auto was = std::exchange(Blob, TSharedData::Uninitialized(bytes))) {
                 char *end = Blob.mutable_data();
@@ -267,8 +268,8 @@ namespace NPage {
         {
             size_t offset = Tail - Blob.mutable_begin();
             size_t available = Blob.size() - offset;
-            Y_ABORT_UNLESS(size <= available, "Requested %" PRISZT " bytes, have %" PRISZT " available", size, available);
-            Y_DEBUG_ABORT_UNLESS(offset + size <= PageBytes, "Requested bytes are out of current page limits");
+            Y_VERIFY(size <= available, "Requested %" PRISZT " bytes, have %" PRISZT " available", size, available);
+            Y_VERIFY_DEBUG(offset + size <= PageBytes, "Requested bytes are out of current page limits");
             return std::exchange(Tail, Tail + size);
         }
 
@@ -316,7 +317,7 @@ namespace NPage {
         {
             size_t expected = GroupInfo.Columns.size() - GroupInfo.ColsKeyData.size();
 
-            Y_ABORT_UNLESS(Pinout.size() == expected, "TDataPageWriter got an invalid pinout");
+            Y_VERIFY(Pinout.size() == expected, "TDataPageWriter got an invalid pinout");
         }
 
         ui32 PrefixSize() const noexcept
@@ -331,7 +332,7 @@ namespace NPage {
 
         TSizeInfo CalcSize(TCellsRef key, const TRowState& row, bool finalRow, TRowVersion minVersion, TRowVersion maxVersion, ui64 txId) const
         {
-            Y_ABORT_UNLESS(key.size() == GroupInfo.KeyTypes.size());
+            Y_VERIFY(key.size() == GroupInfo.KeyTypes.size());
 
             const bool isErased = GroupId.Index == 0 && maxVersion < TRowVersion::Max();
             const bool isVersioned = GroupId.Index == 0 && minVersion > TRowVersion::Min();
@@ -424,7 +425,7 @@ namespace NPage {
 
         NPage::TDataPage::TRecord& GetLastRecord() const noexcept
         {
-            Y_ABORT_UNLESS(LastRecord != nullptr);
+            Y_VERIFY(LastRecord != nullptr);
             return *LastRecord;
         }
 
@@ -436,7 +437,7 @@ namespace NPage {
             const bool isDelta = txId != 0;
 
             if (isDelta) {
-                Y_ABORT_UNLESS(!isErased && !isVersioned);
+                Y_VERIFY(!isErased && !isVersioned);
                 DataPageBuilder.PushDelta(recordSize);
             } else {
                 DataPageBuilder.PushOffset(recordSize);
@@ -490,7 +491,7 @@ namespace NPage {
                     auto cellOp = row.GetCellOp(pin.To);
 
                     if (info.IsFixed /* may place only as ELargeObj::Inline */) {
-                        Y_ABORT_UNLESS(cellOp == ELargeObj::Inline, "Got fixed non-inlined");
+                        Y_VERIFY(cellOp == ELargeObj::Inline, "Got fixed non-inlined");
 
                         DataPageBuilder.AddValue(info, cell, rec)->Flg = *cellOp;
                     } else if (auto lob = SaveBlob(cellOp, pin.To, cell, saver, isDelta)) {
@@ -552,14 +553,14 @@ namespace NPage {
     };
 
 
-    class TFlatIndexWriter {
+    class TIndexWriter {
     public:
-        TFlatIndexWriter(TIntrusiveConstPtr<TPartScheme> scheme, const TConf &conf, TGroupId groupId)
+        TIndexWriter(TIntrusiveConstPtr<TPartScheme> scheme, const TConf &conf, TGroupId groupId)
             : Scheme(std::move(scheme))
             , MinSize(conf.Groups[groupId.Index].IndexMin)
             , GroupId(groupId)
             , GroupInfo(Scheme->GetLayout(groupId))
-            , DataPageBuilder(EPage::FlatIndex, groupId.IsMain() ? 3 : 2, false, 0 /* no extra data before block */)
+            , DataPageBuilder(EPage::Index, groupId.IsMain() ? 3 : 2, false, 0 /* no extra data before block */)
         {
 
         }
@@ -571,9 +572,9 @@ namespace NPage {
 
         TPgSize CalcSize(TCellsRef key) const noexcept
         {
-            Y_ABORT_UNLESS(key.size() == GroupInfo.KeyTypes.size());
+            Y_VERIFY(key.size() == GroupInfo.KeyTypes.size());
 
-            TPgSize ret = TPgSizeOf<NPage::TFlatIndex::TRecord>::Value;
+            TPgSize ret = TPgSizeOf<NPage::TIndex::TRecord>::Value;
             ret += sizeof(TPgSize);
 
             ret += GroupInfo.IdxRecFixedSize;
@@ -611,12 +612,12 @@ namespace NPage {
         {
             DataPageBuilder.PushOffset(recordSize);
 
-            auto &rec = DataPageBuilder.Place<NPage::TFlatIndex::TRecord>();
+            auto &rec = DataPageBuilder.Place<NPage::TIndex::TRecord>();
             rec.SetRowId(row);
             rec.SetPageId(page);
 
             for (const auto &info: GroupInfo.ColsKeyIdx) {
-                DataPageBuilder.Place<NPage::TFlatIndex::TItem>().Null = true;
+                DataPageBuilder.Place<NPage::TIndex::TItem>().Null = true;
                 DataPageBuilder.Zero(info.FixedSize);
             }
 

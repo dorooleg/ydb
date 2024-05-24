@@ -19,7 +19,6 @@ public:
                   const TActorContext &ctx) override;
 
 private:
-    TVector<THolder<TEvChangeExchange::TEvRemoveSender>> RemoveSenders;
 };
 
 TDropTableUnit::TDropTableUnit(TDataShard &dataShard,
@@ -52,7 +51,7 @@ bool TDropTableUnit::IsReadyToExecute(TOperation::TPtr op) const
     }
 
     // We shouldn't have any normal dependencies
-    Y_ABORT_UNLESS(op->GetDependencies().empty());
+    Y_VERIFY(op->GetDependencies().empty());
 
     return op->GetSpecialDependencies().empty();
 }
@@ -73,23 +72,9 @@ EExecutionStatus TDropTableUnit::Execute(TOperation::TPtr op,
 
     ui64 tableId = schemeTx.GetDropTable().GetId_Deprecated();
     if (schemeTx.GetDropTable().HasPathId()) {
-        Y_ABORT_UNLESS(DataShard.GetPathOwnerId() == schemeTx.GetDropTable().GetPathId().GetOwnerId());
+        Y_VERIFY(DataShard.GetPathOwnerId() == schemeTx.GetDropTable().GetPathId().GetOwnerId());
         tableId = schemeTx.GetDropTable().GetPathId().GetLocalId();
     }
-
-    auto it = DataShard.GetUserTables().find(tableId);
-    Y_ABORT_UNLESS(it != DataShard.GetUserTables().end());
-    {
-        for (const auto& [indexPathId, indexInfo] : it->second->Indexes) {
-            if (indexInfo.Type == TUserTable::TTableIndex::EIndexType::EIndexTypeGlobalAsync) {
-                RemoveSenders.emplace_back(new TEvChangeExchange::TEvRemoveSender(indexPathId));
-            }
-        }
-        for (const auto& [streamPathId, _] : it->second->CdcStreams) {
-            RemoveSenders.emplace_back(new TEvChangeExchange::TEvRemoveSender(streamPathId));
-        }
-    }
-
     DataShard.DropUserTable(txc, tableId);
 
     // FIXME: transactions need to specify ownerId
@@ -106,20 +91,16 @@ EExecutionStatus TDropTableUnit::Execute(TOperation::TPtr op,
 
     txc.DB.NoMoreReadsForTx();
     DataShard.SetPersistState(TShardState::PreOffline, txc);
-    DataShard.NotifyAllOverloadSubscribers();
 
     BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::COMPLETE);
     op->Result()->SetStepOrderId(op->GetStepOrder().ToPair());
 
-    return EExecutionStatus::DelayCompleteNoMoreRestarts;
+    return EExecutionStatus::ExecutedNoMoreRestarts;
 }
 
 void TDropTableUnit::Complete(TOperation::TPtr,
-                              const TActorContext &ctx)
+                              const TActorContext &)
 {
-    for (auto& ev : RemoveSenders) {
-        ctx.Send(DataShard.GetChangeSender(), ev.Release());
-    }
 }
 
 THolder<TExecutionUnit> CreateDropTableUnit(TDataShard &dataShard,

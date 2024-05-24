@@ -2,7 +2,7 @@
 
 #include <contrib/libs/tcmalloc/tcmalloc/malloc_extension.h>
 
-#include <ydb/library/actors/prof/tag.h>
+#include <library/cpp/actors/prof/tag.h>
 #include <library/cpp/cache/cache.h>
 #include <library/cpp/html/pcdata/pcdata.h>
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -60,6 +60,11 @@ static ui64 GetProperty(
 {
     auto found = properties.find(name);
     return found != properties.end() ? found->second.value : 0;
+}
+
+static ui64 GetProperty(const char* name) {
+    const auto properties = tcmalloc::MallocExtension::GetProperties();
+    return GetProperty(properties, name);
 }
 
 static ui64 GetCachesSize(
@@ -306,7 +311,7 @@ public:
     {}
 
     void Prepare(TAllocationStats* allocationStats) {
-        Y_ABORT_UNLESS(!Prepared);
+        Y_VERIFY(!Prepared);
 
         TAllocationStats allocations;
 
@@ -341,7 +346,7 @@ public:
     void Dump(IOutputStream& out, size_t stackCountLimit, size_t sampleCountLimit,
         bool isHeap, bool forLog)
     {
-        Y_ABORT_UNLESS(Prepared);
+        Y_VERIFY(Prepared);
 
         const char* marker = forLog ?
             (isHeap ? "HEAP" : "PROFILE") : "--------------------------------";
@@ -447,12 +452,7 @@ public:
 class TTcMallocState : public IAllocState {
 public:
     ui64 GetAllocatedMemoryEstimate() const override {
-        const auto properties = tcmalloc::MallocExtension::GetProperties();
-
-        ui64 used = GetProperty(properties, "generic.physical_memory_used");
-        ui64 caches = GetCachesSize(properties);
-
-        return used > caches ? used - caches : 0;
+        return GetProperty("generic.physical_memory_used");
     }
 };
 

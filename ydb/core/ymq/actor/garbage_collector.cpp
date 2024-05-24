@@ -9,10 +9,10 @@
 #include <ydb/core/base/path.h>
 #include <ydb/core/mon/mon.h>
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -86,7 +86,7 @@ private:
     void SendListChildrenRequest(const TVector<TSchemePath>& paths) {
         const size_t elementsCount = paths.size();
 
-        Y_ABORT_UNLESS(elementsCount);
+        Y_VERIFY(elementsCount);
 
         auto schemeCacheRequest = MakeHolder<TSchemeCacheNavigate>();
 
@@ -178,9 +178,9 @@ public:
         , QueuesListReaderId(queuesListReaderId)
         , MinimumItemAge(TDuration::Seconds(minimumItemAgeSeconds))
     {
-        Y_ABORT_UNLESS(parentId);
-        Y_ABORT_UNLESS(schemeCacheId);
-        Y_ABORT_UNLESS(queuesListReaderId);
+        Y_VERIFY(parentId);
+        Y_VERIFY(schemeCacheId);
+        Y_VERIFY(queuesListReaderId);
     }
 
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -215,7 +215,7 @@ private:
         if (ev->Get()->Success) {
             auto& node = FindOrAllocateSchemeNode(&*ev->Get()->RootHolder, RootPath);
 
-            Y_ABORT_UNLESS(node.Kind = TSchemeCacheNavigate::EKind::KindPath);
+            Y_VERIFY(node.Kind = TSchemeCacheNavigate::EKind::KindPath);
 
             for (const auto& [name, child] : node.Children) {
                 if (child.Kind == TSchemeCacheNavigate::EKind::KindPath && !name.StartsWith(".")) {
@@ -230,7 +230,7 @@ private:
     }
 
     void CompleteListing() {
-        Y_ABORT_UNLESS(RequiredResponses);
+        Y_VERIFY(RequiredResponses);
 
         if (!--RequiredResponses) {
             Become(&TThis::ProcessingAccounts);
@@ -276,7 +276,7 @@ private:
             auto& node = FindOrAllocateSchemeNode(&*ev->Get()->RootHolder, CurrentAccountPath);
 
             // an account is always a directory
-            Y_ABORT_UNLESS(node.Kind = TSchemeCacheNavigate::EKind::KindPath);
+            Y_VERIFY(node.Kind = TSchemeCacheNavigate::EKind::KindPath);
 
             for (auto& [queueName, queueNode] : node.Children) {
                 // ignore tables (e. g. local "Queues" table)
@@ -368,10 +368,10 @@ public:
         , SchemeCacheId(schemeCacheId)
         , GarbageHint(std::move(garbageHint))
     {
-        Y_ABORT_UNLESS(parentId);
-        Y_ABORT_UNLESS(schemeCacheId);
-        Y_ABORT_UNLESS(GarbageHint.Reason != TGarbageHint::EReason::Unknown);
-        Y_ABORT_UNLESS(GarbageHint.SchemeNode.Path.size());
+        Y_VERIFY(parentId);
+        Y_VERIFY(schemeCacheId);
+        Y_VERIFY(GarbageHint.Reason != TGarbageHint::EReason::Unknown);
+        Y_VERIFY(GarbageHint.SchemeNode.Path.size());
     }
 
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -406,7 +406,7 @@ private:
         if (ev->Get()->Success) {
             auto& node = FindOrAllocateSchemeNode(&*ev->Get()->RootHolder, GarbageHint.SchemeNode.Path);
 
-            Y_ABORT_UNLESS(node.Kind = TSchemeCacheNavigate::EKind::KindPath);
+            Y_VERIFY(node.Kind = TSchemeCacheNavigate::EKind::KindPath);
 
             DFS(node);
 
@@ -450,7 +450,7 @@ private:
         // All path components except "Version" are required
         // The code guarantees scheme modifications locality
 
-        Y_ABORT_UNLESS(CanonizePath(path).StartsWith(CanonizePath(GarbageHint.SchemeNode.Path)));
+        Y_VERIFY(CanonizePath(path).StartsWith(CanonizePath(GarbageHint.SchemeNode.Path)));
 
         auto rootPath = SplitPath(Cfg().GetRoot());
 
@@ -458,19 +458,19 @@ private:
         auto pathIt = path.begin();
 
         while (rootPathIt != rootPath.end()) {
-            Y_ABORT_UNLESS(*rootPathIt++ == *pathIt++);
+            Y_VERIFY(*rootPathIt++ == *pathIt++);
         }
 
         TQueuePath result;
         result.Root = Cfg().GetRoot();
 
-        Y_ABORT_UNLESS(pathIt != path.end());
+        Y_VERIFY(pathIt != path.end());
 
         result.UserName = *pathIt++;
 
-        Y_ABORT_UNLESS(result.UserName == GarbageHint.Account);
+        Y_VERIFY(result.UserName == GarbageHint.Account);
 
-        Y_ABORT_UNLESS(pathIt != path.end());
+        Y_VERIFY(pathIt != path.end());
 
         result.QueueName = *pathIt++;
 
@@ -487,7 +487,7 @@ private:
 
         auto path = CurrentNode.Path;
 
-        Y_ABORT_UNLESS(path.size() > 1);
+        Y_VERIFY(path.size() > 1);
 
         const auto name = path.back();
 
@@ -502,7 +502,7 @@ private:
         } else if (CurrentNode.Kind == TSchemeCacheNavigate::EKind::KindTable) {
             trans->SetOperationType(NKikimrSchemeOp::ESchemeOpDropTable);
         } else {
-            Y_ABORT_UNLESS("Unexpected node kind");
+            Y_VERIFY("Unexpected node kind");
         }
 
         LOG_SQS_INFO(GARBAGE_CLEANER_LABEL << " attempts to remove the node " << CanonizePath(CurrentNode.Path));
@@ -547,8 +547,8 @@ public:
         : SchemeCacheId(schemeCacheId)
         , QueuesListReaderId(queuesListReaderId)
     {
-        Y_ABORT_UNLESS(schemeCacheId);
-        Y_ABORT_UNLESS(queuesListReaderId);
+        Y_VERIFY(schemeCacheId);
+        Y_VERIFY(queuesListReaderId);
         Y_UNUSED(PrintAllPaths);
     }
 

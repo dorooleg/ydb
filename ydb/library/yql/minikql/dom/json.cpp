@@ -115,9 +115,9 @@ public:
     }
 
     bool OnCloseMap() override {
-        Y_DEBUG_ABORT_UNLESS(!Result.empty());
+        Y_VERIFY_DEBUG(!Result.empty());
         auto& items = Result.top();
-        Y_DEBUG_ABORT_UNLESS(items.size() % 2 == 0);
+        Y_VERIFY_DEBUG(items.size() % 2 == 0);
 
         TSmallVec<TPair, TStdAllocatorForUdf<TPair>> pairs;
         for (size_t i = 0; i < items.size(); i += 2) {
@@ -133,7 +133,7 @@ public:
     }
 
     bool OnCloseArray() override {
-        Y_DEBUG_ABORT_UNLESS(!Result.empty());
+        Y_VERIFY_DEBUG(!Result.empty());
         auto& items = Result.top();
         TUnboxedValue list = MakeList(items.data(), items.size(), ValueBuilder);
         Result.pop();
@@ -145,7 +145,7 @@ public:
     }
 
     TUnboxedValue GetResult() && {
-        Y_DEBUG_ABORT_UNLESS(IsResultSingle());
+        Y_VERIFY_DEBUG(IsResultSingle());
         return std::move(Result.top()[0]);
     }
 
@@ -156,7 +156,7 @@ private:
     }
 
     bool PushToCurrentCollection(TUnboxedValue&& value) {
-        Y_DEBUG_ABORT_UNLESS(!Result.empty());
+        Y_VERIFY_DEBUG(!Result.empty());
         Result.top().emplace_back(std::move(value));
         return true;
     }
@@ -323,13 +323,10 @@ TUnboxedValue TryParseJsonDom(const TStringBuf json, const IValueBuilder* valueB
     }
 }
 
-TString SerializeJsonDom(const NUdf::TUnboxedValuePod dom, bool skipMapEntity, bool encodeUtf8, bool writeNanAsString) {
+TString SerializeJsonDom(const NUdf::TUnboxedValuePod dom, bool skipMapEntity, bool encodeUtf8) {
     TStringStream output;
     TJsonWriterConfig config;
-
     config.SetFormatOutput(false);
-    config.WriteNanAsString = writeNanAsString;
-    
     config.FloatToStringMode = EFloatToStringMode::PREC_AUTO;
     TJsonWriter writer(&output, config);
     if (skipMapEntity)

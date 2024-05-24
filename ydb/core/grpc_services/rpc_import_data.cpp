@@ -1,6 +1,6 @@
 #include "grpc_request_proxy.h"
 #include "rpc_calls.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_request_base.h"
 
 #include <ydb/public/api/protos/ydb_import.pb.h>
@@ -11,9 +11,9 @@
 #include <ydb/core/tx/datashard/datashard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
-#include <ydb/core/io_formats/ydb_dump/csv_ydb_dump.h>
+#include <ydb/core/io_formats/csv.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <ydb/library/yql/public/udf/udf_types.h>
 
@@ -78,8 +78,8 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
     }
 
     static ui64 GetShardId(const TTableRange& range, const TKeyDesc* keyDesc) {
-        Y_ABORT_UNLESS(range.Point);
-        Y_ABORT_UNLESS(!keyDesc->GetPartitions().empty());
+        Y_VERIFY(range.Point);
+        Y_VERIFY(!keyDesc->GetPartitions().empty());
 
         TVector<TKeyDesc::TPartitionInfo>::const_iterator it = LowerBound(
             keyDesc->GetPartitions().begin(), keyDesc->GetPartitions().end(), true,
@@ -94,7 +94,7 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
             }
         );
 
-        Y_ABORT_UNLESS(it != keyDesc->GetPartitions().end());
+        Y_VERIFY(it != keyDesc->GetPartitions().end());
         return it->ShardId;
     }
 
@@ -168,7 +168,7 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
         }
 
         for (const auto& [_, column] : entry.Columns) {
-            Y_ABORT_UNLESS(Columns.emplace(column.Name, column).second);
+            Y_VERIFY(Columns.emplace(column.Name, column).second);
         }
 
         KeyDesc = MakeKeyDesc(entry);
@@ -228,10 +228,6 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
     void ProcessData() {
         const auto& request = *GetProtoRequest();
 
-        if (request.data().empty()) {
-            return Reply(StatusIds::BAD_REQUEST, TIssuesIds::DEFAULT_ERROR, "Empty data");
-        }
-
         auto ev = MakeHolder<TEvDataShard::TEvUploadRowsRequest>();
         ev->Record.SetTableId(KeyDesc->TableId.PathId.LocalPathId);
 
@@ -249,7 +245,7 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
             shardId = ProcessData(request.ydb_dump(), request.data(), ev->Record);
             break;
         default:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
 
         if (!shardId) {
@@ -331,7 +327,7 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
                 return Nothing();
             }
 
-            Y_ABORT_UNLESS(!keys.empty());
+            Y_VERIFY(!keys.empty());
 
             // sorting constraint
             if (!CheckSorted(prevKey, keys)) {
@@ -353,10 +349,6 @@ class TImportDataRPC: public TRpcRequestActor<TImportDataRPC, TEvImportDataReque
             auto& row = *request.AddRows();
             row.SetKeyColumns(TSerializedCellVec::Serialize(keys));
             row.SetValueColumns(TSerializedCellVec::Serialize(values));
-        }
-
-        if (!shardId) {
-            Reply(StatusIds::INTERNAL_ERROR, TIssuesIds::DEFAULT_ERROR, "Empty shard id");
         }
 
         return shardId;

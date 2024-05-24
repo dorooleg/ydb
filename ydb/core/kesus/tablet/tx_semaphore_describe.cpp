@@ -138,7 +138,7 @@ struct TKesusTablet::TTxSemaphoreDescribe : public TTxBase {
             ctx.Send(Sender, Notification.Release(), 0, NotificationCookie);
         }
 
-        Y_ABORT_UNLESS(Reply);
+        Y_VERIFY(Reply);
         ctx.Send(Sender, Reply.Release(), 0, Cookie);
     }
 };

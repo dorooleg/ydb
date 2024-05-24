@@ -8,7 +8,7 @@ namespace NKikimr::NBlobDepot {
         , SubrangeBegin(link.GetSubrangeBegin())
         , SubrangeEnd(link.HasSubrangeEnd() ? link.GetSubrangeEnd() : BlobId.BlobSize())
     {
-        Y_DEBUG_ABORT_UNLESS(link.HasBlobId() && link.HasGroupId());
+        Y_VERIFY_DEBUG(link.HasBlobId() && link.HasGroupId());
     }
 
     void TResolvedValue::TLink::Output(IOutputStream& s) const {
@@ -29,17 +29,17 @@ namespace NKikimr::NBlobDepot {
     {}
 
     bool TResolvedValue::Supersedes(const TResolvedValue& old) const {
-        Y_ABORT_UNLESS(Defined);
+        Y_VERIFY(Defined);
         if (!old.Defined) {
             return true;
         } else if (Version < old.Version) {
             return false;
         } else if (Version == old.Version) {
-            Y_ABORT_UNLESS(Chain == old.Chain);
-            Y_ABORT_UNLESS(old.ReliablyWritten <= ReliablyWritten); // value may not become 'unreliably written'
+            Y_VERIFY(Chain == old.Chain);
+            Y_VERIFY(old.ReliablyWritten <= ReliablyWritten); // value may not become 'unreliably written'
             return old.ReliablyWritten < ReliablyWritten;
         } else {
-            Y_ABORT_UNLESS(old.ReliablyWritten <= ReliablyWritten); // item can't suddenly become unreliably written
+            Y_VERIFY(old.ReliablyWritten <= ReliablyWritten); // item can't suddenly become unreliably written
             return true;
         }
     }

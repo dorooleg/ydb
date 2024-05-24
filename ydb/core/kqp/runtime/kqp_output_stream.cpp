@@ -45,14 +45,8 @@ public:
         Outputs[partitionIndex]->Push(std::move(value));
     }
 
-    void WideConsume(TUnboxedValue* values, ui32 count) final {
-        Y_UNUSED(values);
-        Y_UNUSED(count);
-        Y_ABORT("WideConsume not supported yet");
-    }
-
     void Consume(NDqProto::TCheckpoint&&) final {
-        Y_ABORT("Shouldn't be called");
+        Y_FAIL("Shouldn't be called");
     }
 
     void Finish() final {

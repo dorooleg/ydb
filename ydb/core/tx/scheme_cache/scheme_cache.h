@@ -1,15 +1,15 @@
 #pragma once
 
+#include <ydb/core/base/appdata.h>
 #include <ydb/core/base/events.h>
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 #include <ydb/core/base/tx_processing.h>
-#include <ydb/core/base/subdomain.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/protos/subdomains.pb.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/scheme_types/scheme_type_registry.h>
-#include <ydb/core/tx/locks/sys_tables.h>
+#include <ydb/core/tx/datashard/sys_tables.h>
 #include <ydb/library/aclib/aclib.h>
 
 #include <util/datetime/base.h>
@@ -18,9 +18,6 @@
 #include <util/generic/ptr.h>
 
 namespace NKikimr {
-
-struct TAppData;
-
 namespace NSchemeCache {
 
 struct TSchemeCacheConfig : public TThrRefBase {
@@ -62,10 +59,6 @@ struct TDomainInfo : public TAtomicRefCount<TDomainInfo> {
         } else {
             ResourcesDomainKey = DomainKey;
         }
-
-        if (descr.HasServerlessComputeResourcesMode()) {
-            ServerlessComputeResourcesMode = descr.GetServerlessComputeResourcesMode();
-        }
     }
 
     inline ui64 GetVersion() const {
@@ -88,7 +81,6 @@ struct TDomainInfo : public TAtomicRefCount<TDomainInfo> {
     TPathId ResourcesDomainKey;
     NKikimrSubDomains::TProcessingParams Params;
     TCoordinators Coordinators;
-    TMaybeServerlessComputeResourcesMode ServerlessComputeResourcesMode;
 
     TString ToString() const;
 
@@ -109,7 +101,6 @@ struct TSchemeCacheNavigate {
         TableCreationNotComplete = 5,
         LookupError = 6,
         RedirectLookupError = 7,
-        AccessDenied = 8,
         Ok = 128,
     };
 
@@ -142,7 +133,6 @@ struct TSchemeCacheNavigate {
         KindExternalDataSource = 18,
         KindBlockStoreVolume = 19,
         KindFileStore = 20,
-        KindView = 21,
     };
 
     struct TListNodeEntry : public TAtomicRefCount<TListNodeEntry> {
@@ -245,11 +235,6 @@ struct TSchemeCacheNavigate {
         NKikimrSchemeOp::TFileStoreDescription Description;
     };
 
-    struct TViewInfo : public TAtomicRefCount<TViewInfo> {
-        EKind Kind = KindUnknown;
-        NKikimrSchemeOp::TViewDescription Description;
-    };
-
     struct TEntry {
         enum class ERequestType : ui8 {
             ByPath,
@@ -258,7 +243,6 @@ struct TSchemeCacheNavigate {
 
         // in
         TVector<TString> Path;
-        ui32 Access = NACLib::DescribeSchema;
         TTableId TableId;
         ERequestType RequestType = ERequestType::ByPath;
         EOp Operation = OpUnknown;
@@ -300,7 +284,6 @@ struct TSchemeCacheNavigate {
         TIntrusiveConstPtr<TExternalDataSourceInfo> ExternalDataSourceInfo;
         TIntrusiveConstPtr<TBlockStoreVolumeInfo> BlockStoreVolumeInfo;
         TIntrusiveConstPtr<TFileStoreInfo> FileStoreInfo;
-        TIntrusiveConstPtr<TViewInfo> ViewInfo;
 
         TString ToString() const;
         TString ToString(const NScheme::TTypeRegistry& typeRegistry) const;
@@ -336,7 +319,6 @@ struct TSchemeCacheRequest {
         PathErrorUnknown = 3,
         PathErrorNotExist = 4,
         LookupError = 5,
-        AccessDenied = 6,
         OkScheme = 128,
         OkData = 129,
     };
@@ -366,12 +348,11 @@ struct TSchemeCacheRequest {
         EStatus Status = EStatus::Unknown;
         EKind Kind = EKind::KindUnknown;
         TIntrusivePtr<TDomainInfo> DomainInfo;
-        ui64 GeneralVersion = 0;
 
         explicit TEntry(THolder<TKeyDesc> keyDesc)
             : KeyDescription(std::move(keyDesc))
         {
-            Y_DEBUG_ABORT_UNLESS(KeyDescription);
+            Y_VERIFY_DEBUG(KeyDescription);
         }
 
         TEntry(TKeyDesc* keyDesc) = delete;
@@ -394,15 +375,13 @@ struct TSchemeCacheRequest {
 
 struct TSchemeCacheRequestContext : TAtomicRefCount<TSchemeCacheRequestContext>, TNonCopyable {
     TActorId Sender;
-    ui64 Cookie;
     ui64 WaitCounter;
     TAutoPtr<TSchemeCacheRequest> Request;
     const TInstant CreatedAt;
     TIntrusivePtr<TDomainInfo> ResolvedDomainInfo; // resolved from DatabaseName
 
-    TSchemeCacheRequestContext(const TActorId& sender, ui64 cookie, TAutoPtr<TSchemeCacheRequest> request, const TInstant& now = TInstant::Now())
+    TSchemeCacheRequestContext(const TActorId& sender, TAutoPtr<TSchemeCacheRequest> request, const TInstant& now = TInstant::Now())
         : Sender(sender)
-        , Cookie(cookie)
         , WaitCounter(0)
         , Request(request)
         , CreatedAt(now)
@@ -411,15 +390,13 @@ struct TSchemeCacheRequestContext : TAtomicRefCount<TSchemeCacheRequestContext>,
 
 struct TSchemeCacheNavigateContext : TAtomicRefCount<TSchemeCacheNavigateContext>, TNonCopyable {
     TActorId Sender;
-    ui64 Cookie;
     ui64 WaitCounter;
     TAutoPtr<TSchemeCacheNavigate> Request;
     const TInstant CreatedAt;
     TIntrusivePtr<TDomainInfo> ResolvedDomainInfo; // resolved from DatabaseName
 
-    TSchemeCacheNavigateContext(const TActorId& sender, ui64 cookie, TAutoPtr<TSchemeCacheNavigate> request, const TInstant& now = TInstant::Now())
+    TSchemeCacheNavigateContext(const TActorId& sender, TAutoPtr<TSchemeCacheNavigate> request, const TInstant& now = TInstant::Now())
         : Sender(sender)
-        , Cookie(cookie)
         , WaitCounter(0)
         , Request(request)
         , CreatedAt(now)

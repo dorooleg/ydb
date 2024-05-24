@@ -17,24 +17,28 @@
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/utils/yql_panic.h>
 
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/persqueue.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/credentials/credentials.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/log_backend/actor_log_backend.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 
 #include <util/generic/algorithm.h>
 #include <util/generic/hash.h>
 #include <util/generic/utility.h>
-#include <util/string/join.h>
 
 #include <queue>
 #include <variant>
+
+namespace NKikimrServices {
+    // using constant value from ydb/core/protos/services.proto
+    // but to avoid peerdir on ydb/core/protos we introduce this constant
+    constexpr ui32 KQP_COMPUTE = 535;
+};
 
 #define SRC_LOG_T(s) \
     LOG_TRACE_S(*NActors::TlsActivationContext, NKikimrServices::KQP_COMPUTE, LogPrefix << s)
@@ -87,11 +91,9 @@ struct TEvPrivate {
 class TDqPqReadActor : public NActors::TActor<TDqPqReadActor>, public IDqComputeActorAsyncInput {
 public:
     using TPartitionKey = std::pair<TString, ui64>; // Cluster, partition id.
-    using TDebugOffsets = TMaybe<std::pair<ui64, ui64>>;
 
     TDqPqReadActor(
         ui64 inputIndex,
-        TCollectStatsLevel statsLevel,
         const TTxId& txId,
         ui64 taskId,
         const THolderFactory& holderFactory,
@@ -100,11 +102,13 @@ public:
         NYdb::TDriver driver,
         std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProviderFactory,
         const NActors::TActorId& computeActorId,
-        i64 bufferSize)
+        i64 bufferSize,
+        bool rangesMode)
         : TActor<TDqPqReadActor>(&TDqPqReadActor::StateFunc)
         , InputIndex(inputIndex)
         , TxId(txId)
         , BufferSize(bufferSize)
+        , RangesMode(rangesMode)
         , HolderFactory(holderFactory)
         , LogPrefix(TStringBuilder() << "SelfId: " << this->SelfId() << ", TxId: " << TxId << ", task: " << taskId << ". PQ source. ")
         , Driver(std::move(driver))
@@ -121,11 +125,10 @@ public:
         }
 
         InitWatermarkTracker();
-        IngressStats.Level = statsLevel;
     }
 
-    NYdb::NTopic::TTopicClientSettings GetTopicClientSettings() const {
-        NYdb::NTopic::TTopicClientSettings opts;
+    NYdb::NPersQueue::TPersQueueClientSettings GetPersQueueClientSettings() const {
+        NYdb::NPersQueue::TPersQueueClientSettings opts;
         opts.Database(SourceParams.GetDatabase())
             .DiscoveryEndpoint(SourceParams.GetEndpoint())
             .SslCredentials(NYdb::TSslCredentials(SourceParams.GetUseSsl()))
@@ -156,7 +159,7 @@ public:
         }
 
         stateProto.SetStartingMessageTimestampMs(StartingMessageTimestamp.MilliSeconds());
-        stateProto.SetIngressBytes(IngressStats.Bytes);
+        stateProto.SetIngressBytes(IngressBytes);
 
         TString stateBlob;
         YQL_ENSURE(stateProto.SerializeToString(&stateBlob));
@@ -166,7 +169,7 @@ public:
         data->SetBlob(stateBlob);
 
         DeferredCommits.emplace(checkpoint.GetId(), std::move(CurrentDeferredCommit));
-        CurrentDeferredCommit = NYdb::NTopic::TDeferredCommit();
+        CurrentDeferredCommit = NYdb::NPersQueue::TDeferredCommit();
     }
 
     void LoadState(const NDqProto::TSourceState& state) override {
@@ -193,12 +196,8 @@ public:
                 ythrow yexception() << "Invalid state version " << data.GetVersion();
             }
         }
-        for (const auto& [key, value] : PartitionToOffset) {
-            SRC_LOG_D("SessionId: " << GetSessionId() << " Restoring offset: cluster " << key.first << ", partition id " << key.second << ", offset: " << value);
-        }
         StartingMessageTimestamp = minStartingMessageTs;
-        IngressStats.Bytes += ingressBytes;
-        IngressStats.Chunks++;
+        IngressBytes = ingressBytes;
         InitWatermarkTracker();
 
         if (ReadSession) {
@@ -210,37 +209,31 @@ public:
     void CommitState(const NDqProto::TCheckpoint& checkpoint) override {
         const auto checkpointId = checkpoint.GetId();
         while (!DeferredCommits.empty() && DeferredCommits.front().first <= checkpointId) {
-            auto& deferredCommit = DeferredCommits.front().second;
-            deferredCommit.Commit();
+            DeferredCommits.front().second.Commit();
             DeferredCommits.pop();
         }
     }
 
+    ui64 GetIngressBytes() override {
+        return IngressBytes;
+    }
+
     ui64 GetInputIndex() const override {
         return InputIndex;
-    }
+    };
 
-    const TDqAsyncStats& GetIngressStats() const override {
-        return IngressStats;
-    }
-
-    NYdb::NTopic::TTopicClient& GetTopicClient() {
-        if (!TopicClient) {
-            TopicClient = std::make_unique<NYdb::NTopic::TTopicClient>(Driver, GetTopicClientSettings());
+    NYdb::NPersQueue::TPersQueueClient& GetPersQueueClient() {
+        if (!PersQueueClient) {
+            PersQueueClient = std::make_unique<NYdb::NPersQueue::TPersQueueClient>(Driver, GetPersQueueClientSettings());
         }
-        return *TopicClient;
+        return *PersQueueClient;
     }
 
-    NYdb::NTopic::IReadSession& GetReadSession() {
+    NYdb::NPersQueue::IReadSession& GetReadSession() {
         if (!ReadSession) {
-            ReadSession = GetTopicClient().CreateReadSession(GetReadSessionSettings());
-            SRC_LOG_I("SessionId: " << GetSessionId() << " CreateReadSession");
+            ReadSession = GetPersQueueClient().CreateReadSession(GetReadSessionSettings());
         }
         return *ReadSession;
-    }
-
-    TString GetSessionId() const {
-        return ReadSession ? ReadSession->GetSessionId() : TString{"empty"};
     }
 
 private:
@@ -249,7 +242,7 @@ private:
     )
 
     void Handle(TEvPrivate::TEvSourceDataReady::TPtr&) {
-        SRC_LOG_T("SessionId: " << GetSessionId() << " Source data ready");
+        SRC_LOG_T("Source data ready");
         SubscribedOnEvent = false;
         Send(ComputeActorId, new TEvNewAsyncInputDataArrived(InputIndex));
     }
@@ -263,7 +256,7 @@ private:
             ReadSession->Close(TDuration::Zero());
             ReadSession.reset();
         }
-        TopicClient.reset();
+        PersQueueClient.reset();
         TActor<TDqPqReadActor>::PassAway();
     }
 
@@ -279,13 +272,13 @@ private:
 
         if (!NextIdlenesCheckAt.Defined() || nextIdleCheckAt != *NextIdlenesCheckAt) {
             NextIdlenesCheckAt = *nextIdleCheckAt;
-            SRC_LOG_T("SessionId: " << GetSessionId() << " Next idleness check scheduled at " << *nextIdleCheckAt);
+            SRC_LOG_T("Next idleness check scheduled at " << *nextIdleCheckAt);
             Schedule(*nextIdleCheckAt, new TEvPrivate::TEvSourceDataReady());
         }
     }
 
-    i64 GetAsyncInputData(NKikimr::NMiniKQL::TUnboxedValueBatch& buffer, TMaybe<TInstant>& watermark, bool&, i64 freeSpace) override {
-        SRC_LOG_T("SessionId: " << GetSessionId() << " GetAsyncInputData freeSpace = " << freeSpace);
+    i64 GetAsyncInputData(NKikimr::NMiniKQL::TUnboxedValueVector& buffer, TMaybe<TInstant>& watermark, bool&, i64 freeSpace) override {
+        SRC_LOG_T("GetAsyncInputData freeSpace = " << freeSpace);
 
         const auto now = TInstant::Now();
         MaybeScheduleNextIdleCheck(now);
@@ -295,22 +288,17 @@ private:
             return usedSpace;
         }
 
-        bool recheckBatch = false;
+        auto events = GetReadSession().GetEvents(false, TMaybe<size_t>(), static_cast<size_t>(Max<i64>(freeSpace, 0)));
 
-        if (freeSpace > 0) {
-            auto events = GetReadSession().GetEvents(false, TMaybe<size_t>(), static_cast<size_t>(freeSpace));
-            recheckBatch = !events.empty();
-
-            ui32 batchItemsEstimatedCount = 0;
-            for (auto& event : events) {
-                if (const auto* val = std::get_if<NYdb::NTopic::TReadSessionEvent::TDataReceivedEvent>(&event)) {
-                    batchItemsEstimatedCount += val->GetMessages().size();
-                }
+        ui32 batchItemsEstimatedCount = 0;
+        for (auto& event : events) {
+            if (const auto* val = std::get_if<NYdb::NPersQueue::TReadSessionEvent::TDataReceivedEvent>(&event)) {
+                batchItemsEstimatedCount += val->GetMessages().size();
             }
+        }
 
-            for (auto& event : events) {
-                std::visit(TTopicEventProcessor{*this, batchItemsEstimatedCount, LogPrefix}, event);
-            }
+        for (auto& event : events) {
+            std::visit(TPQEventProcessor{*this, batchItemsEstimatedCount, LogPrefix}, event);
         }
 
         if (WatermarkTracker) {
@@ -318,17 +306,13 @@ private:
 
             if (watermark) {
                 const auto t = watermark;
-                SRC_LOG_T("SessionId: " << GetSessionId() << " Fake watermark " << t << " was produced");
+                SRC_LOG_T("Fake watermark " << t << " was produced");
                 PushWatermarkToReady(*watermark);
-                recheckBatch = true;
             }
         }
 
-        if (recheckBatch) {
-            usedSpace = 0;
-            if (MaybeReturnReadyBatch(buffer, watermark, usedSpace)) {
-                return usedSpace;
-            }
+        if (MaybeReturnReadyBatch(buffer, watermark, usedSpace)) {
+            return usedSpace;
         }
 
         watermark = Nothing();
@@ -342,7 +326,7 @@ private:
 
         ui64 currentPartition = ReadParams.GetPartitioningParams().GetEachTopicPartitionGroupId();
         do {
-            res.emplace_back(currentPartition); // 0-based in topic API
+            res.emplace_back(currentPartition + 1); // 1-based.
             currentPartition += ReadParams.GetPartitioningParams().GetDqPartitionsCount();
         } while (currentPartition < ReadParams.GetPartitioningParams().GetTopicPartitionsCount());
 
@@ -350,7 +334,7 @@ private:
     }
 
     void InitWatermarkTracker() {
-        SRC_LOG_D("SessionId: " << GetSessionId() << " Watermarks enabled: " << SourceParams.GetWatermarks().GetEnabled() << " granularity: "
+        SRC_LOG_D("Watermarks enabled: " << SourceParams.GetWatermarks().GetEnabled() << " granularity: "
             << SourceParams.GetWatermarks().GetGranularityUs() << " microseconds");
 
         if (!SourceParams.GetWatermarks().GetEnabled()) {
@@ -365,26 +349,24 @@ private:
             TInstant::Now());
     }
 
-    NYdb::NTopic::TReadSessionSettings GetReadSessionSettings() const {
-        NYdb::NTopic::TTopicReadSettings topicReadSettings;
+    NYdb::NPersQueue::TReadSessionSettings GetReadSessionSettings() const {
+        NYdb::NPersQueue::TTopicReadSettings topicReadSettings;
         topicReadSettings.Path(SourceParams.GetTopicPath());
-        auto partitionsToRead = GetPartitionsToRead();
-        SRC_LOG_D("SessionId: " << GetSessionId() << " PartitionsToRead: " << JoinSeq(", ", partitionsToRead));
-        for (const auto partitionId : partitionsToRead) {
-            topicReadSettings.AppendPartitionIds(partitionId);
+        for (const auto partitionId : GetPartitionsToRead()) {
+            topicReadSettings.AppendPartitionGroupIds(partitionId);
         }
 
-        return NYdb::NTopic::TReadSessionSettings()
+        return NYdb::NPersQueue::TReadSessionSettings()
+            .DisableClusterDiscovery(SourceParams.GetClusterType() == NPq::NProto::DataStreams)
             .AppendTopics(topicReadSettings)
             .ConsumerName(SourceParams.GetConsumerName())
             .MaxMemoryUsageBytes(BufferSize)
-            .ReadFromTimestamp(StartingMessageTimestamp);
+            .StartingMessageTimestamp(StartingMessageTimestamp)
+            .RangesMode(RangesMode);
     }
 
-    static TPartitionKey MakePartitionKey(const NYdb::NTopic::TPartitionSession::TPtr& partitionSession) {
-        // auto cluster = partitionSession->GetDatabaseName() // todo: switch to federatedfTopicApi to support lb federation
-        const TString cluster; // empty value is used in YDS
-        return std::make_pair(cluster, partitionSession->GetPartitionId());
+    static TPartitionKey MakePartitionKey(const NYdb::NPersQueue::TPartitionStream::TPtr& partitionStreamPtr) {
+        return std::make_pair(partitionStreamPtr->GetCluster(), partitionStreamPtr->GetPartitionId());
     }
 
     void SubscribeOnNextEvent() {
@@ -399,8 +381,7 @@ private:
 
     struct TReadyBatch {
     public:
-        TReadyBatch(TMaybe<TInstant> watermark, ui32 dataCapacity)
-          : Watermark(watermark) {
+        TReadyBatch(TMaybe<TInstant> watermark, ui32 dataCapacity) : Watermark(watermark){
             Data.reserve(dataCapacity);
         }
 
@@ -408,26 +389,25 @@ private:
         TMaybe<TInstant> Watermark;
         TUnboxedValueVector Data;
         i64 UsedSpace = 0;
-        THashMap<NYdb::NTopic::TPartitionSession::TPtr, TList<std::pair<ui64, ui64>>> OffsetRanges; // [start, end)
+        THashMap<NYdb::NPersQueue::TPartitionStream::TPtr, TList<std::pair<ui64, ui64>>> OffsetRanges; // [start, end)
     };
 
-    bool MaybeReturnReadyBatch(NKikimr::NMiniKQL::TUnboxedValueBatch& buffer, TMaybe<TInstant>& watermark, i64& usedSpace) {
+    bool MaybeReturnReadyBatch(NKikimr::NMiniKQL::TUnboxedValueVector& buffer, TMaybe<TInstant>& watermark, i64& usedSpace) {
         if (ReadyBuffer.empty()) {
             SubscribeOnNextEvent();
             return false;
         }
 
         auto& readyBatch = ReadyBuffer.front();
-        buffer.clear();
-        std::move(readyBatch.Data.begin(), readyBatch.Data.end(), std::back_inserter(buffer));
+        buffer.swap(readyBatch.Data);
         watermark = readyBatch.Watermark;
         usedSpace = readyBatch.UsedSpace;
 
-        for (const auto& [PartitionSession, ranges] : readyBatch.OffsetRanges) {
+        for (const auto& [partitionStream, ranges] : readyBatch.OffsetRanges) {
             for (const auto& [start, end] : ranges) {
-                CurrentDeferredCommit.Add(PartitionSession, start, end);
+                CurrentDeferredCommit.Add(partitionStream, start, end);
             }
-            PartitionToOffset[MakePartitionKey(PartitionSession)] = ranges.back().second;
+            PartitionToOffset[MakePartitionKey(partitionStream)] = ranges.back().second;
         }
 
         ReadyBuffer.pop();
@@ -438,15 +418,15 @@ private:
             Send(SelfId(), new TEvPrivate::TEvSourceDataReady());
         }
 
-        SRC_LOG_T("SessionId: " << GetSessionId() << " Return ready batch."
-            << " DataCount = " << buffer.RowCount()
+        SRC_LOG_T("Return ready batch."
+            << " DataCount = " << buffer.size()
             << " Watermark = " << (watermark ? ToString(*watermark) : "none")
             << " Used space = " << usedSpace);
         return true;
     }
 
     void PushWatermarkToReady(TInstant watermark) {
-        SRC_LOG_D("SessionId: " << GetSessionId() << " New watermark " << watermark << " was generated");
+        SRC_LOG_D("New watermark " << watermark << " was generated");
 
         if (Y_UNLIKELY(ReadyBuffer.empty() || ReadyBuffer.back().Watermark.Defined())) {
             ReadyBuffer.emplace(watermark, 0);
@@ -456,22 +436,17 @@ private:
         ReadyBuffer.back().Watermark = watermark;
     }
 
-    struct TTopicEventProcessor {
-        static TString ToString(const TPartitionKey& key) {
-            return TStringBuilder{} << "[" << key.first << ", " << key.second << "]";
-        }
-
-        void operator()(NYdb::NTopic::TReadSessionEvent::TDataReceivedEvent& event) {
-            const auto partitionKey = MakePartitionKey(event.GetPartitionSession());
-            const auto partitionKeyStr = ToString(partitionKey);
+    struct TPQEventProcessor {
+        void operator()(NYdb::NPersQueue::TReadSessionEvent::TDataReceivedEvent& event) {
+            const auto partitionKey = MakePartitionKey(event.GetPartitionStream());
             for (const auto& message : event.GetMessages()) {
                 const TString& data = message.GetData();
-                Self.IngressStats.Bytes += data.size();
+                Self.IngressBytes += data.size();
                 LWPROBE(PqReadDataReceived, TString(TStringBuilder() << Self.TxId), Self.SourceParams.GetTopicPath(), data);
-                SRC_LOG_T("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " Data received: " << message.DebugString(true));
+                SRC_LOG_T("Data received: " << message.DebugString(true));
 
                 if (message.GetWriteTime() < Self.StartingMessageTimestamp) {
-                    SRC_LOG_D("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " Skip data. StartingMessageTimestamp: " << Self.StartingMessageTimestamp << ". Write time: " << message.GetWriteTime());
+                    SRC_LOG_D("Skip data. StartingMessageTimestamp: " << Self.StartingMessageTimestamp << ". Write time: " << message.GetWriteTime());
                     continue;
                 }
 
@@ -481,7 +456,7 @@ private:
                 curBatch.Data.emplace_back(std::move(item));
                 curBatch.UsedSpace += size;
 
-                auto& offsets = curBatch.OffsetRanges[message.GetPartitionSession()];
+                auto& offsets = curBatch.OffsetRanges[message.GetPartitionStream()];
                 if (!offsets.empty() && offsets.back().second == message.GetOffset()) {
                     offsets.back().second = message.GetOffset() + 1;
                 } else {
@@ -490,55 +465,29 @@ private:
             }
         }
 
-        void operator()(NYdb::NTopic::TSessionClosedEvent& ev) {
-            const auto& LogPrefix = Self.LogPrefix;
-            TString message = (TStringBuilder() << "Read session to topic \"" << Self.SourceParams.GetTopicPath() << "\" was closed");
-            SRC_LOG_E("SessionId: " << Self.GetSessionId() << " " << message << ": " << ev.DebugString());
-            TIssue issue(message);
-            for (const auto& subIssue : ev.GetIssues()) {
-                TIssuePtr newIssue(new TIssue(subIssue));
-                issue.AddSubIssue(newIssue);
-            }
-            Self.Send(Self.ComputeActorId, new TEvAsyncInputError(Self.InputIndex, TIssues({issue}), NYql::NDqProto::StatusIds::BAD_REQUEST));
+        void operator()(NYdb::NPersQueue::TSessionClosedEvent& ev) {
+            ythrow yexception() << "Read session to topic \"" << Self.SourceParams.GetTopicPath()
+                << "\" was closed: " << ev.DebugString();
         }
 
-        void operator()(NYdb::NTopic::TReadSessionEvent::TCommitOffsetAcknowledgementEvent&) { }
+        void operator()(NYdb::NPersQueue::TReadSessionEvent::TCommitAcknowledgementEvent&) { }
 
-        void operator()(NYdb::NTopic::TReadSessionEvent::TStartPartitionSessionEvent& event) {
-            const auto partitionKey = MakePartitionKey(event.GetPartitionSession());
-            const auto partitionKeyStr = ToString(partitionKey);
-
-            SRC_LOG_D("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " StartPartitionSessionEvent received");
-
+        void operator()(NYdb::NPersQueue::TReadSessionEvent::TCreatePartitionStreamEvent& event) {
             TMaybe<ui64> readOffset;
-            const auto offsetIt = Self.PartitionToOffset.find(partitionKey);
+            const auto offsetIt = Self.PartitionToOffset.find(MakePartitionKey(event.GetPartitionStream()));
             if (offsetIt != Self.PartitionToOffset.end()) {
                 readOffset = offsetIt->second;
             }
-            SRC_LOG_D("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " Confirm StartPartitionSession with offset " << readOffset);
             event.Confirm(readOffset);
         }
 
-        void operator()(NYdb::NTopic::TReadSessionEvent::TStopPartitionSessionEvent& event) {
-            const auto partitionKey = MakePartitionKey(event.GetPartitionSession());
-            const auto partitionKeyStr = ToString(partitionKey);
-            SRC_LOG_D("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " StopPartitionSessionEvent received");
+        void operator()(NYdb::NPersQueue::TReadSessionEvent::TDestroyPartitionStreamEvent& event) {
             event.Confirm();
         }
 
-        void operator()(NYdb::NTopic::TReadSessionEvent::TEndPartitionSessionEvent& event) {
-            const auto partitionKey = MakePartitionKey(event.GetPartitionSession());
-            const auto partitionKeyStr = ToString(partitionKey);
-            SRC_LOG_D("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " EndPartitionSessionEvent received");
-        }
+        void operator()(NYdb::NPersQueue::TReadSessionEvent::TPartitionStreamStatusEvent&) { }
 
-        void operator()(NYdb::NTopic::TReadSessionEvent::TPartitionSessionStatusEvent&) { }
-
-        void operator()(NYdb::NTopic::TReadSessionEvent::TPartitionSessionClosedEvent& event) {
-            const auto partitionKey = MakePartitionKey(event.GetPartitionSession());
-            const auto partitionKeyStr = ToString(partitionKey);
-            SRC_LOG_D("SessionId: " << Self.GetSessionId() << " Key: " << partitionKeyStr << " PartitionSessionClosedEvent received");
-        }
+        void operator()(NYdb::NPersQueue::TReadSessionEvent::TPartitionStreamClosedEvent&) { }
 
         TReadyBatch& GetActiveBatch(const TPartitionKey& partitionKey, TInstant time) {
             if (Y_UNLIKELY(Self.ReadyBuffer.empty() || Self.ReadyBuffer.back().Watermark.Defined())) {
@@ -565,7 +514,7 @@ private:
             return Self.ReadyBuffer.emplace(Nothing(), BatchCapacity); // And open new batch
         }
 
-        std::pair<NUdf::TUnboxedValuePod, i64> CreateItem(const NYdb::NTopic::TReadSessionEvent::TDataReceivedEvent::TMessage& message) {
+        std::pair<NUdf::TUnboxedValuePod, i64> CreateItem(const NYdb::NPersQueue::TReadSessionEvent::TDataReceivedEvent::TMessage& message) {
             const TString& data = message.GetData();
 
             i64 usedSpace = 0;
@@ -596,23 +545,24 @@ private:
 
 private:
     const ui64 InputIndex;
-    TDqAsyncStats IngressStats;
     const TTxId TxId;
     const i64 BufferSize;
+    const bool RangesMode;
     const THolderFactory& HolderFactory;
     const TString LogPrefix;
     NYdb::TDriver Driver;
     std::shared_ptr<NYdb::ICredentialsProviderFactory> CredentialsProviderFactory;
     const NPq::NProto::TDqPqTopicSource SourceParams;
     const NPq::NProto::TDqReadTaskParams ReadParams;
-    std::unique_ptr<NYdb::NTopic::TTopicClient> TopicClient;
-    std::shared_ptr<NYdb::NTopic::IReadSession> ReadSession;
+    std::unique_ptr<NYdb::NPersQueue::TPersQueueClient> PersQueueClient;
+    std::shared_ptr<NYdb::NPersQueue::IReadSession> ReadSession;
     NThreading::TFuture<void> EventFuture;
     THashMap<TPartitionKey, ui64> PartitionToOffset; // {cluster, partition} -> offset of next event.
     TInstant StartingMessageTimestamp;
+    ui64 IngressBytes = 0;
     const NActors::TActorId ComputeActorId;
-    std::queue<std::pair<ui64, NYdb::NTopic::TDeferredCommit>> DeferredCommits;
-    NYdb::NTopic::TDeferredCommit CurrentDeferredCommit;
+    std::queue<std::pair<ui64, NYdb::NPersQueue::TDeferredCommit>> DeferredCommits;
+    NYdb::NPersQueue::TDeferredCommit CurrentDeferredCommit;
     bool SubscribedOnEvent = false;
     std::vector<std::tuple<TString, TPqMetaExtractor::TPqMetaExtractorLambda>> MetadataFields;
     std::queue<TReadyBatch> ReadyBuffer;
@@ -623,7 +573,6 @@ private:
 std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
     NPq::NProto::TDqPqTopicSource&& settings,
     ui64 inputIndex,
-    TCollectStatsLevel statsLevel,
     TTxId txId,
     ui64 taskId,
     const THashMap<TString, TString>& secureParams,
@@ -632,7 +581,8 @@ std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
     ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory,
     const NActors::TActorId& computeActorId,
     const NKikimr::NMiniKQL::THolderFactory& holderFactory,
-    i64 bufferSize
+    i64 bufferSize,
+    bool rangesMode
     )
 {
     auto taskParamsIt = taskParams.find("pq");
@@ -647,7 +597,6 @@ std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
 
     TDqPqReadActor* actor = new TDqPqReadActor(
         inputIndex,
-        statsLevel,
         txId,
         taskId,
         holderFactory,
@@ -656,15 +605,16 @@ std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
         std::move(driver),
         CreateCredentialsProviderFactoryForStructuredToken(credentialsFactory, token, addBearerToToken),
         computeActorId,
-        bufferSize
+        bufferSize,
+        rangesMode
     );
 
     return {actor, actor};
 }
 
-void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driver, ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory) {
+void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driver, ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory, bool rangesMode) {
     factory.RegisterSource<NPq::NProto::TDqPqTopicSource>("PqSource",
-        [driver = std::move(driver), credentialsFactory = std::move(credentialsFactory)](
+        [driver = std::move(driver), credentialsFactory = std::move(credentialsFactory), rangesMode](
             NPq::NProto::TDqPqTopicSource&& settings,
             IDqAsyncIoFactory::TSourceArguments&& args)
     {
@@ -672,7 +622,6 @@ void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driv
         return CreateDqPqReadActor(
             std::move(settings),
             args.InputIndex,
-            args.StatsLevel,
             args.TxId,
             args.TaskId,
             args.SecureParams,
@@ -681,7 +630,8 @@ void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driv
             credentialsFactory,
             args.ComputeActorId,
             args.HolderFactory,
-            PQReadDefaultFreeSpace);
+            PQReadDefaultFreeSpace,
+            rangesMode);
     });
 
 }

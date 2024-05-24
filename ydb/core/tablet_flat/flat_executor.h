@@ -29,7 +29,6 @@
 #include <ydb/core/tablet/tablet_counters_protobuf.h>
 #include <ydb/core/tablet/tablet_metrics.h>
 #include <ydb/core/util/queue_oneone_inplace.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
@@ -294,12 +293,9 @@ struct TExecutorStatsImpl : public TExecutorStats {
 
 struct TTransactionWaitPad : public TPrivatePageCacheWaitPad {
     THolder<TSeat> Seat;
-    NWilson::TSpan WaitingSpan;
 
     TTransactionWaitPad(THolder<TSeat> seat);
     ~TTransactionWaitPad();
-
-    NWilson::TTraceId GetWaitingTraceId() const noexcept;
 };
 
 struct TCompactionReadWaitPad : public TPrivatePageCacheWaitPad {
@@ -413,8 +409,6 @@ class TExecutor
     THashMap<ui64, THolder<TScanSnapshot>> ScanSnapshots;
     ui64 ScanSnapshotId = 1;
 
-    class TActiveTransactionZone;
-
     bool ActiveTransaction = false;
     bool BrokenTransaction = false;
     ui32 ActivateTransactionWaiting = 0;
@@ -463,10 +457,12 @@ class TExecutor
     ui64 CompactionReadUniqCounter = 0;
 
     bool LogBatchFlushScheduled = false;
+    bool HadFollowerAttached = false;
     bool NeedFollowerSnapshot = false;
 
-    mutable bool HadRejectProbabilityByTxInFly = false;
-    mutable bool HadRejectProbabilityByOverload = false;
+    TCacheCacheConfig::TCounterPtr CounterCacheFresh;
+    TCacheCacheConfig::TCounterPtr CounterCacheWarm;
+    TCacheCacheConfig::TCounterPtr CounterCacheStaging;
 
     THashMap<ui32, TIntrusivePtr<TBarrier>> InFlyCompactionGcBarriers;
     TDeque<THolder<TEvTablet::TFUpdateBody>> PostponedFollowerUpdates;
@@ -527,8 +523,7 @@ class TExecutor
 
     void TranslateCacheTouchesToSharedCache();
     void RequestInMemPagesForDatabase();
-    void RequestInMemPagesForPartStore(ui32 tableId, const NTable::TPartView &partView, const THashSet<NTable::TTag> &stickyColumns);
-    THashSet<NTable::TTag> GetStickyColumns(ui32 tableId);
+    void RequestInMemPagesForPartStore(ui32 tableId, const NTable::TPartView &partView);
     void RequestFromSharedCache(TAutoPtr<NPageCollection::TFetch> fetch,
         NBlockIO::EPriority way, EPageCollectionRequest requestCategory);
     THolder<TScanSnapshot> PrepareScanSnapshot(ui32 table,
@@ -603,7 +598,7 @@ class TExecutor
 
     // Compaction read support
 
-    void PostponeCompactionRead(TCompactionReadState* state);
+    void PostponeCompactionRead(TCompactionReadState* state, TPageCollectionReadEnv* env);
     size_t UnpinCompactionReadPages(TCompactionReadState* state);
     void PlanCompactionReadActivation();
     void Handle(TEvPrivate::TEvActivateCompactionRead::TPtr& ev, const TActorContext& ctx);
@@ -654,13 +649,9 @@ public:
     ui64 CompactTable(ui32 tableId) override;
     bool CompactTables() override;
 
-    void Handle(NSharedCache::TEvMemTableRegistered::TPtr &ev);
-    void Handle(NSharedCache::TEvMemTableCompact::TPtr &ev);
-
     void AllowBorrowedGarbageCompaction(ui32 tableId) override;
 
-    void FollowerAttached(ui32 totalFollowers) override;
-    void FollowerDetached(ui32 totalFollowers) override;
+    void FollowerAttached() override;
     void FollowerSyncComplete() override;
     void FollowerGcApplied(ui32 step, TDuration followerSyncDelay) override;
     void FollowerBoot(TEvTablet::TEvFBoot::TPtr &ev, const TActorContext &ctx) override;
@@ -704,7 +695,6 @@ public:
     ui64 TabletId() const { return Owner->TabletID(); }
 
     float GetRejectProbability() const override;
-    void MaybeRelaxRejectProbability();
 
     TActorId GetLauncher() const { return Launcher; }
 };

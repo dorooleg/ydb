@@ -5,8 +5,6 @@
 #include <util/generic/xrange.h>
 #include <util/string/cast.h>
 
-#include <ydb/library/mkql_proto/protos/minikql.pb.h>
-
 namespace NKikimr {
 
 IOutputStream& operator<<(IOutputStream& output, const TAggregatedStats& stats) {
@@ -100,7 +98,7 @@ NKikimrMiniKQL::TValue GetOptional(const NKikimrMiniKQL::TValue& listItem, ui32 
 template<typename T>
 T ExtractValue(const NKikimrMiniKQL::TValue& listItem, ui32 pos) {
     Y_UNUSED(listItem, pos);
-    Y_ABORT("unimplemented");
+    Y_FAIL("unimplemented");
 }
 
 template<>

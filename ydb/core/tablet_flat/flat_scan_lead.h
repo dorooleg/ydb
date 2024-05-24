@@ -1,6 +1,7 @@
 #pragma once
 
 #include "flat_row_eggs.h"
+#include "flat_row_nulls.h"
 #include <ydb/core/scheme/scheme_tablecell.h>
 #include <util/generic/xrange.h>
 
@@ -13,14 +14,14 @@ namespace NTable {
             Valid = true;
             Tags.assign(tags.begin(), tags.end());
             Relation = seek;
-            Key = TSerializedCellVec(key);
+            Key = TSerializedCellVec(TSerializedCellVec::Serialize(key));
             StopKey = { };
         }
 
         void Until(TArrayRef<const TCell> key, bool inclusive)
         {
-            Y_ABORT_UNLESS(Valid, "Until must be called after To");
-            StopKey = TSerializedCellVec(key);
+            Y_VERIFY(Valid, "Until must be called after To");
+            StopKey = TSerializedCellVec(TSerializedCellVec::Serialize(key));
             StopKeyInclusive = inclusive;
         }
 

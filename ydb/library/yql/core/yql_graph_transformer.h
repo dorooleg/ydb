@@ -233,9 +233,6 @@ NThreading::TFuture<IGraphTransformer::TStatus> AsyncTransform(IGraphTransformer
 void AsyncTransform(IGraphTransformer& transformer, TExprNode::TPtr& root, TExprContext& ctx, bool applyAsyncChanges,
                     std::function<void(const IGraphTransformer::TStatus&)> asyncCallback);
 
-IGraphTransformer::TStatus AsyncTransformStep(IGraphTransformer& transformer, TExprNode::TPtr& root,
-                                            TExprContext& ctx, bool applyAsyncChanges);
-
 class TSyncTransformerBase : public TGraphTransformerBase {
 public:
     NThreading::TFuture<void> DoGetAsyncFuture(const TExprNode& input) final {
@@ -264,19 +261,19 @@ public:
 };
 
 template <typename TFunctor>
-class TFunctorTransformer: public TSyncTransformerBase {
+class TFunctorTransformer final: public TSyncTransformerBase {
 public:
     TFunctorTransformer(TFunctor functor)
         : Functor_(std::move(functor)) {}
 
-    TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) override {
+    TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
         TStatus status = Functor_(input, output, ctx);
         YQL_ENSURE(status.Level != IGraphTransformer::TStatus::Async);
 
         return status;
     }
 
-    void Rewind() override {
+    void Rewind() final {
     }
 
 private:
@@ -284,41 +281,8 @@ private:
 };
 
 template <typename TFunctor>
-class TSinglePassFunctorTransformer final: public TFunctorTransformer<TFunctor> {
-    using TBase = TFunctorTransformer<TFunctor>;
-public:
-    TSinglePassFunctorTransformer(TFunctor functor)
-        : TFunctorTransformer<TFunctor>(std::move(functor))
-    {}
-
-    IGraphTransformer::TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
-        if (Pass_) {
-            output = input;
-            return IGraphTransformer::TStatus::Ok;
-        }
-        IGraphTransformer::TStatus status = TBase::DoTransform(input, output, ctx);
-        if (IGraphTransformer::TStatus::Ok == status.Level) {
-            Pass_ = true;
-        }
-        return status;
-    }
-
-    void Rewind() final {
-        Pass_ = false;
-    }
-
-private:
-    bool Pass_ = false;
-};
-
-template <typename TFunctor>
 THolder<IGraphTransformer> CreateFunctorTransformer(TFunctor functor) {
     return MakeHolder<TFunctorTransformer<TFunctor>>(std::move(functor));
-}
-
-template <typename TFunctor>
-THolder<IGraphTransformer> CreateSinglePassFunctorTransformer(TFunctor functor) {
-    return MakeHolder<TSinglePassFunctorTransformer<TFunctor>>(std::move(functor));
 }
 
 typedef std::function<IGraphTransformer::TStatus(const TExprNode::TPtr&, TExprNode::TPtr&, TExprContext&)> TAsyncTransformCallback;

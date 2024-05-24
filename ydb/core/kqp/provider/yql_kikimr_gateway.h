@@ -15,15 +15,10 @@
 #include <ydb/services/metadata/abstract/kqp_common.h>
 #include <ydb/services/metadata/manager/abstract.h>
 
-#include <ydb/core/kqp/query_data/kqp_query_data.h>
-#include <ydb/core/kqp/query_data/kqp_prepared_query.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/protos/kqp.pb.h>
-#include <ydb/core/protos/kqp_stats.pb.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
 
-#include <library/cpp/json/json_reader.h>
-#include <library/cpp/protobuf/json/proto2json.h>
 #include <library/cpp/threading/future/future.h>
 
 #include <util/string/join.h>
@@ -32,15 +27,6 @@ namespace NKikimr {
     namespace NMiniKQL {
         class IFunctionRegistry;
     }
-
-    namespace NKqp {
-        class TKqpPhyTxHolder;
-    }
-}
-
-namespace NKikimrReplication {
-    class TOAuthToken;
-    class TStaticCredentials;
 }
 
 namespace NYql {
@@ -62,7 +48,7 @@ struct TIndexDescription {
     enum class EType : ui32 {
         GlobalSync = 0,
         GlobalAsync = 1,
-        GlobalSyncUnique = 2,
+
     };
 
     // Index states here must be in sync with NKikimrSchemeOp::EIndexState protobuf
@@ -120,8 +106,6 @@ struct TIndexDescription {
         auto type = NYql::TIndexDescription::EType::GlobalSync;
         if (index.GetType() == NKikimrSchemeOp::EIndexType::EIndexTypeGlobalAsync) {
             type = NYql::TIndexDescription::EType::GlobalAsync;
-        } else if (index.GetType() == NKikimrSchemeOp::EIndexType::EIndexTypeGlobalUnique) {
-            type = NYql::TIndexDescription::EType::GlobalSyncUnique;
         }
 
         return type;
@@ -155,8 +139,6 @@ struct TIndexDescription {
         switch (Type) {
             case EType::GlobalSync:
                 return true;
-            case EType::GlobalSyncUnique:
-                return true;
             case EType::GlobalAsync:
                 return false;
         }
@@ -170,16 +152,8 @@ struct TColumnFamily {
 };
 
 struct TTtlSettings {
-    enum class EUnit: ui32 {
-        Seconds = 1,
-        Milliseconds = 2,
-        Microseconds = 3,
-        Nanoseconds = 4,
-    };
-
     TString ColumnName;
     TDuration ExpireAfter;
-    TMaybe<EUnit> ColumnUnit;
 
     static bool TryParse(const NNodes::TCoNameValueTupleList& node, TTtlSettings& settings, TString& error);
 };
@@ -199,7 +173,6 @@ struct TTableSettings {
     TResetableSetting<TTtlSettings, void> TtlSettings;
     TResetableSetting<TString, void> Tiering;
     TMaybe<TString> PartitionByHashFunction;
-    TMaybe<TString> StoreExternalBlobs;
 
     // These parameters are only used for external sources
     TMaybe<TString> DataSourcePath;
@@ -210,7 +183,6 @@ struct TTableSettings {
 };
 
 struct TKikimrColumnMetadata {
-
     TString Name;
     ui32 Id = 0;
     TString Type;
@@ -218,27 +190,17 @@ struct TKikimrColumnMetadata {
     NKikimr::NScheme::TTypeInfo TypeInfo;
     TString TypeMod;
     TVector<TString> Families;
-    NKikimrKqp::TKqpColumnMetadataProto::EDefaultKind DefaultKind = NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_UNSPECIFIED;
-    TString DefaultFromSequence;
-    Ydb::TypedValue DefaultFromLiteral;
-    bool IsBuildInProgress = false;
 
     TKikimrColumnMetadata() = default;
 
     TKikimrColumnMetadata(const TString& name, ui32 id, const TString& type, bool notNull,
-        NKikimr::NScheme::TTypeInfo typeInfo = {}, const TString& typeMod = {}, const TString& defaultFromSequence = {},
-        NKikimrKqp::TKqpColumnMetadataProto::EDefaultKind defaultKind = NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_UNSPECIFIED,
-        const Ydb::TypedValue& defaultFromLiteral = {}, bool isBuildInProgress = false)
+        NKikimr::NScheme::TTypeInfo typeInfo = {}, const TString& typeMod = {})
         : Name(name)
         , Id(id)
         , Type(type)
         , NotNull(notNull)
         , TypeInfo(typeInfo)
         , TypeMod(typeMod)
-        , DefaultKind(defaultKind)
-        , DefaultFromSequence(defaultFromSequence)
-        , DefaultFromLiteral(defaultFromLiteral)
-        , IsBuildInProgress(isBuildInProgress)
     {}
 
     explicit TKikimrColumnMetadata(const NKikimrKqp::TKqpColumnMetadataProto* message)
@@ -247,35 +209,11 @@ struct TKikimrColumnMetadata {
         , Type(message->GetType())
         , NotNull(message->GetNotNull())
         , Families(message->GetFamily().begin(), message->GetFamily().end())
-        , DefaultKind(message->GetDefaultKind())
-        , DefaultFromSequence(message->GetDefaultFromSequence())
-        , DefaultFromLiteral(message->GetDefaultFromLiteral())
-        , IsBuildInProgress(message->GetIsBuildInProgress())
     {
         auto typeInfoMod = NKikimr::NScheme::TypeInfoModFromProtoColumnType(message->GetTypeId(),
             message->HasTypeInfo() ? &message->GetTypeInfo() : nullptr);
         TypeInfo = typeInfoMod.TypeInfo;
         TypeMod = typeInfoMod.TypeMod;
-    }
-
-    void SetDefaultFromSequence() {
-        DefaultKind = NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_SEQUENCE;
-    }
-
-    void SetDefaultFromLiteral() {
-        DefaultKind = NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_LITERAL;
-    }
-
-    bool IsDefaultFromSequence() const {
-        return DefaultKind == NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_SEQUENCE;
-    }
-
-    bool IsDefaultFromLiteral() const {
-        return DefaultKind == NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_LITERAL;
-    }
-
-    bool IsDefaultKindDefined() const {
-        return DefaultKind != NKikimrKqp::TKqpColumnMetadataProto::DEFAULT_KIND_UNSPECIFIED;
     }
 
     void ToMessage(NKikimrKqp::TKqpColumnMetadataProto* message) const {
@@ -285,10 +223,6 @@ struct TKikimrColumnMetadata {
         message->SetNotNull(NotNull);
         auto columnType = NKikimr::NScheme::ProtoColumnTypeFromTypeInfoMod(TypeInfo, TypeMod);
         message->SetTypeId(columnType.TypeId);
-        message->SetDefaultFromSequence(DefaultFromSequence);
-        message->SetDefaultKind(DefaultKind);
-        message->MutableDefaultFromLiteral()->CopyFrom(DefaultFromLiteral);
-        message->SetIsBuildInProgress(IsBuildInProgress);
         if (columnType.TypeInfo) {
             *message->MutableTypeInfo() = *columnType.TypeInfo;
         }
@@ -350,8 +284,7 @@ enum class EKikimrTableKind : ui32 {
     Datashard = 1,
     SysView = 2,
     Olap = 3,
-    External = 4,
-    View = 5,
+    External = 4
 };
 
 enum class ETableType : ui32 {
@@ -387,30 +320,13 @@ struct TExternalSource {
     TString DataSourcePath;
     TString DataSourceLocation;
     TString DataSourceInstallation;
-    TString ServiceAccountIdSignature;
-    TString Password;
-    TString AwsAccessKeyId;
-    TString AwsSecretAccessKey;
-    TString Token;
     NKikimrSchemeOp::TAuth DataSourceAuth;
-    NKikimrSchemeOp::TExternalDataSourceProperties Properties;
-};
-
-enum EMetaSerializationType : ui64 {
-    EncodedProto = 1,
-    Json = 2
-};
-
-struct TViewPersistedData {
-    TString QueryText;
 };
 
 struct TKikimrTableMetadata : public TThrRefBase {
     bool DoesExist = false;
     TString Cluster;
     TString Name;
-    std::optional<TString> QueryName = std::nullopt;
-    bool Temporary = false;
     TKikimrPathId PathId;
     TString SysView;
     ui64 SchemaVersion = 0;
@@ -439,7 +355,6 @@ struct TKikimrTableMetadata : public TThrRefBase {
     TTableSettings TableSettings;
 
     TExternalSource ExternalSource;
-    TViewPersistedData ViewPersistedData;
 
     TKikimrTableMetadata(const TString& cluster, const TString& table)
         : Cluster(cluster)
@@ -457,10 +372,7 @@ struct TKikimrTableMetadata : public TThrRefBase {
         , SysView(message->GetSysView())
         , SchemaVersion(message->GetSchemaVersion())
         , Kind(static_cast<EKikimrTableKind>(message->GetKind()))
-        , RecordsCount(message->GetRecordsCount())
-        , DataSize(message->GetDataSize())
         , KeyColumnNames(message->GetKeyColunmNames().begin(), message->GetKeyColunmNames().end())
-
     {
         for(auto& attr: message->GetAttributes()) {
             Attributes.emplace(attr.GetKey(), attr.GetValue());
@@ -524,8 +436,6 @@ struct TKikimrTableMetadata : public TThrRefBase {
         PathId.ToMessage(message->MutablePathId());
         message->SetSchemaVersion(SchemaVersion);
         message->SetKind(static_cast<ui32>(Kind));
-        message->SetRecordsCount(RecordsCount);
-        message->SetDataSize(DataSize);
         for(auto& [key, value] : Attributes) {
             message->AddAttributes()->SetKey(key);
             message->AddAttributes()->SetValue(value);
@@ -578,19 +488,6 @@ struct TCreateUserSettings {
     bool PasswordEncrypted = false;
 };
 
-struct TModifyPermissionsSettings {
-    enum class EAction : ui32 {
-        Grant,
-        Revoke
-    };
-
-    EAction Action = EAction::Grant;
-    THashSet<TString> Permissions;
-    THashSet<TString> Paths;
-    THashSet<TString> Roles;
-    bool IsPermissionsClear = false;
-};
-
 struct TAlterUserSettings {
     TString UserName;
     TString Password;
@@ -599,12 +496,11 @@ struct TAlterUserSettings {
 
 struct TDropUserSettings {
     TString UserName;
-    bool MissingOk = false;
+    bool Force = false;
 };
 
 struct TCreateGroupSettings {
     TString GroupName;
-    std::vector<TString> Roles;
 };
 
 struct TAlterGroupSettings {
@@ -618,14 +514,9 @@ struct TAlterGroupSettings {
     std::vector<TString> Roles;
 };
 
-struct TRenameGroupSettings {
-    TString GroupName;
-    TString NewName;
-};
-
 struct TDropGroupSettings {
     TString GroupName;
-    bool MissingOk = false;
+    bool Force = false;
 };
 
 struct TAlterColumnTableSettings {
@@ -645,11 +536,6 @@ struct TAlterTableStoreSettings {
     TString TableStore;
 };
 
-struct TDropTableSettings {
-    TString Table;
-    bool SuccessOnNotExist;
-};
-
 struct TDropTableStoreSettings {
     TString TableStore;
 };
@@ -663,31 +549,6 @@ struct TCreateExternalTableSettings {
     TVector<std::pair<TString, TString>> SourceTypeParameters;
 };
 
-struct TSequenceSettings {
-    TMaybe<i64> MinValue;
-    TMaybe<i64> MaxValue;
-    TMaybe<i64> StartValue;
-    TMaybe<ui64> Cache;
-    TMaybe<i64> Increment;
-    TMaybe<bool> Cycle;
-    TMaybe<TString> OwnedBy;
-};
-
-struct TCreateSequenceSettings {
-    TString Name;
-    bool Temporary = false;
-    TSequenceSettings SequenceSettings;
-};
-
-struct TDropSequenceSettings {
-    TString Name;
-};
-
-struct TAlterSequenceSettings {
-    TString Name;
-    TSequenceSettings SequenceSettings;
-};
-
 struct TAlterExternalTableSettings {
     TString ExternalTable;
 };
@@ -696,80 +557,20 @@ struct TDropExternalTableSettings {
     TString ExternalTable;
 };
 
-struct TReplicationSettings {
-    struct TStateDone {
-        enum class EFailoverMode: ui32 {
-            Consistent = 1,
-            Force = 2,
-        };
-
-        EFailoverMode FailoverMode;
-    };
-
-    struct TOAuthToken {
-        TString Token;
-        TString TokenSecretName;
-
-        void Serialize(NKikimrReplication::TOAuthToken& proto) const;
-    };
-
-    struct TStaticCredentials {
-        TString UserName;
-        TString Password;
-        TString PasswordSecretName;
-
-        void Serialize(NKikimrReplication::TStaticCredentials& proto) const;
-    };
-
-    TMaybe<TString> ConnectionString;
-    TMaybe<TString> Endpoint;
-    TMaybe<TString> Database;
-    TMaybe<TOAuthToken> OAuthToken;
-    TMaybe<TStaticCredentials> StaticCredentials;
-    TMaybe<TStateDone> StateDone;
-
-    TOAuthToken& EnsureOAuthToken() {
-        if (!OAuthToken) {
-            OAuthToken = TOAuthToken();
-        }
-
-        return *OAuthToken;
-    }
-
-    TStaticCredentials& EnsureStaticCredentials() {
-        if (!StaticCredentials) {
-            StaticCredentials = TStaticCredentials();
-        }
-
-        return *StaticCredentials;
-    }
-
-    using EFailoverMode = TStateDone::EFailoverMode;
-    TStateDone& EnsureStateDone(EFailoverMode mode = EFailoverMode::Consistent) {
-        if (!StateDone) {
-            StateDone = TStateDone{
-                .FailoverMode = mode,
-            };
-        }
-
-        return *StateDone;
-    }
+struct TCreateExternalDataSourceSettings {
+    TString ExternalDataSource;
+    TString SourceType;
+    TString Location;
+    TString Installation;
+    TString AuthMethod;
 };
 
-struct TCreateReplicationSettings {
-    TString Name;
-    TVector<std::pair<TString, TString>> Targets;
-    TReplicationSettings Settings;
+struct TAlterExternalDataSourceSettings {
+    TString ExternalDataSource;
 };
 
-struct TAlterReplicationSettings {
-    TString Name;
-    TReplicationSettings Settings;
-};
-
-struct TDropReplicationSettings {
-    TString Name;
-    bool Cascade = false;
+struct TDropExternalDataSourceSettings {
+    TString ExternalDataSource;
 };
 
 struct TKikimrListPathItem {
@@ -850,14 +651,6 @@ public:
         TString QueryPlan;
         std::shared_ptr<google::protobuf::Arena> ProtobufArenaPtr;
         TMaybe<ui16> SqlVersion;
-        google::protobuf::RepeatedPtrField<NKqpProto::TResultSetMeta> ResultSetsMeta;
-        bool NeedToSplit = false;
-        bool AllowCache = true;
-        TMaybe<TString> CommandTagName = {};
-    };
-
-    struct TExecuteLiteralResult : public TGenericResult {
-        NKikimrMiniKQL::TResult Result;
     };
 
     struct TLoadTableMetadataSettings {
@@ -876,15 +669,9 @@ public:
             return *this;
         }
 
-        TLoadTableMetadataSettings& WithAuthInfo(bool enable) {
-            RequestAuthInfo_ = enable;
-            return *this;
-        }
-
         bool RequestStats_ = false;
         bool WithPrivateTables_ = false;
         bool WithExternalDatasources_ = false;
-        bool RequestAuthInfo_ = true;
     };
 
     class IKqpTableMetadataLoader : public std::enable_shared_from_this<IKqpTableMetadataLoader> {
@@ -893,7 +680,7 @@ public:
             const TString& cluster, const TString& table, const TLoadTableMetadataSettings& settings, const TString& database,
             const TIntrusiveConstPtr<NACLib::TUserToken>& userToken) = 0;
 
-        virtual TVector<NKikimrKqp::TKqpTableMetadataProto> GetCollectedSchemeData() = 0;
+        virtual TVector<TString> GetCollectedSchemeData() = 0;
 
         virtual ~IKqpTableMetadataLoader() = default;
     };
@@ -911,18 +698,13 @@ public:
     virtual NThreading::TFuture<TTableMetadataResult> LoadTableMetadata(
         const TString& cluster, const TString& table, TLoadTableMetadataSettings settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> CreateTable(TKikimrTableMetadataPtr metadata, bool createDir, bool existingOk = false, bool replaceIfExists = false) = 0;
+    virtual NThreading::TFuture<TGenericResult> CreateTable(TKikimrTableMetadataPtr metadata, bool createDir) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> SendSchemeExecuterRequest(const TString& cluster,
-        const TMaybe<TString>& requestType,
-        const std::shared_ptr<const NKikimr::NKqp::TKqpPhyTxHolder> &phyTx) = 0;
-
-    virtual NThreading::TFuture<TGenericResult> AlterTable(const TString& cluster, Ydb::Table::AlterTableRequest&& req,
-        const TMaybe<TString>& requestType, ui64 flags, NKikimrIndexBuilder::TIndexBuildSettings&& buildSettings) = 0;
+    virtual NThreading::TFuture<TGenericResult> AlterTable(const TString& cluster, Ydb::Table::AlterTableRequest&& req, const TMaybe<TString>& requestType) = 0;
 
     virtual NThreading::TFuture<TGenericResult> RenameTable(const TString& src, const TString& dst, const TString& cluster) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> DropTable(const TString& cluster, const TDropTableSettings& settings) = 0;
+    virtual NThreading::TFuture<TGenericResult> DropTable(const TString& cluster, const TString& table) = 0;
 
     virtual NThreading::TFuture<TGenericResult> CreateTopic(const TString& cluster, Ydb::Topic::CreateTopicRequest&& request) = 0;
 
@@ -930,21 +712,11 @@ public:
 
     virtual NThreading::TFuture<TGenericResult> DropTopic(const TString& cluster, const TString& topic) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> CreateReplication(const TString& cluster, const TCreateReplicationSettings& settings) = 0;
-
-    virtual NThreading::TFuture<TGenericResult> AlterReplication(const TString& cluster, const TAlterReplicationSettings& settings) = 0;
-
-    virtual NThreading::TFuture<TGenericResult> DropReplication(const TString& cluster, const TDropReplicationSettings& settings) = 0;
-
-    virtual NThreading::TFuture<TGenericResult> ModifyPermissions(const TString& cluster, const TModifyPermissionsSettings& settings) = 0;
-
     virtual NThreading::TFuture<TGenericResult> CreateUser(const TString& cluster, const TCreateUserSettings& settings) = 0;
 
     virtual NThreading::TFuture<TGenericResult> AlterUser(const TString& cluster, const TAlterUserSettings& settings) = 0;
 
     virtual NThreading::TFuture<TGenericResult> DropUser(const TString& cluster, const TDropUserSettings& settings) = 0;
-
-    virtual NThreading::TFuture<TGenericResult> UpsertObject(const TString& cluster, const TUpsertObjectSettings& settings) = 0;
 
     virtual NThreading::TFuture<TGenericResult> CreateObject(const TString& cluster, const TCreateObjectSettings& settings) = 0;
 
@@ -956,44 +728,52 @@ public:
 
     virtual NThreading::TFuture<TGenericResult> AlterGroup(const TString& cluster, TAlterGroupSettings& settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> RenameGroup(const TString& cluster, TRenameGroupSettings& settings) = 0;
-
     virtual NThreading::TFuture<TGenericResult> DropGroup(const TString& cluster, const TDropGroupSettings& settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> CreateSequence(const TString& cluster,
-        const TCreateSequenceSettings& settings, bool existingOk) = 0;
-    virtual NThreading::TFuture<TGenericResult> DropSequence(const TString& cluster,
-        const TDropSequenceSettings& settings, bool missingOk) = 0;
-    virtual NThreading::TFuture<TGenericResult> AlterSequence(const TString& cluster,
-        const TAlterSequenceSettings& settings, bool missingOk) = 0;
-
-    virtual NThreading::TFuture<TGenericResult> CreateColumnTable(
-        TKikimrTableMetadataPtr metadata, bool createDir, bool existingOk = false) = 0;
+    virtual NThreading::TFuture<TGenericResult> CreateColumnTable(TKikimrTableMetadataPtr metadata, bool createDir) = 0;
 
     virtual NThreading::TFuture<TGenericResult> AlterColumnTable(const TString& cluster, const TAlterColumnTableSettings& settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> CreateTableStore(const TString& cluster,
-        const TCreateTableStoreSettings& settings, bool existingOk = false) = 0;
+    virtual NThreading::TFuture<TGenericResult> CreateTableStore(const TString& cluster, const TCreateTableStoreSettings& settings) = 0;
 
     virtual NThreading::TFuture<TGenericResult> AlterTableStore(const TString& cluster, const TAlterTableStoreSettings& settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> DropTableStore(const TString& cluster,
-        const TDropTableStoreSettings& settings, bool missingOk) = 0;
+    virtual NThreading::TFuture<TGenericResult> DropTableStore(const TString& cluster, const TDropTableStoreSettings& settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> CreateExternalTable(const TString& cluster, const TCreateExternalTableSettings& settings, bool createDir, bool existingOk, bool replaceIfExists) = 0;
+    virtual NThreading::TFuture<TGenericResult> CreateExternalTable(const TString& cluster, const TCreateExternalTableSettings& settings, bool createDir) = 0;
 
     virtual NThreading::TFuture<TGenericResult> AlterExternalTable(const TString& cluster, const TAlterExternalTableSettings& settings) = 0;
 
-    virtual NThreading::TFuture<TGenericResult> DropExternalTable(const TString& cluster, const TDropExternalTableSettings& settings, bool missingOk) = 0;
+    virtual NThreading::TFuture<TGenericResult> DropExternalTable(const TString& cluster, const TDropExternalTableSettings& settings) = 0;
 
-    virtual TVector<NKikimrKqp::TKqpTableMetadataProto> GetCollectedSchemeData() = 0;
+    virtual NThreading::TFuture<TGenericResult> CreateExternalDataSource(const TString& cluster, const TCreateExternalDataSourceSettings& settings, bool createDir) = 0;
 
-    virtual NThreading::TFuture<TExecuteLiteralResult> ExecuteLiteral(const TString& program, const NKikimrMiniKQL::TType& resultType, NKikimr::NKqp::TTxAllocatorState::TPtr txAlloc) = 0;
+    virtual NThreading::TFuture<TGenericResult> AlterExternalDataSource(const TString& cluster, const TAlterExternalDataSourceSettings& settings) = 0;
+
+    virtual NThreading::TFuture<TGenericResult> DropExternalDataSource(const TString& cluster, const TDropExternalDataSourceSettings& settings) = 0;
+
+    virtual TVector<TString> GetCollectedSchemeData() = 0;
 
 public:
     using TCreateDirFunc = std::function<void(const TString&, const TString&, NThreading::TPromise<TGenericResult>)>;
 
+    static TString CanonizePath(const TString& path);
+
+    template <typename TIter>
+    static TString CombinePath(TIter begin, TIter end, bool canonize = true) {
+        auto path = JoinRange("/", begin, end);
+        return canonize
+            ? CanonizePath(path)
+            : path;
+    }
+
+    static TVector<TString> SplitPath(const TString& path);
+
+    static bool TrySplitTablePath(const TString& path, std::pair<TString, TString>& result, TString& error);
+
     static NThreading::TFuture<TGenericResult> CreatePath(const TString& path, TCreateDirFunc createDir);
+
+    static TString CreateIndexTablePath(const TString& tableName, const TString& indexName);
 
     static void BuildIndexMetadata(TTableMetadataResult& loadTableMetadataResult);
 };

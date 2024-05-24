@@ -1,7 +1,7 @@
 #pragma once
 #include "defs.h"
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <library/cpp/logger/file.h>
 
@@ -10,12 +10,12 @@
 namespace NKikimr::NSQS {
 
 inline TActorId MakeSqsServiceID(ui32 nodeId) {
-    Y_ABORT_UNLESS(nodeId != 0);
+    Y_VERIFY(nodeId != 0);
     return TActorId(nodeId, TStringBuf("SQS_SERVICE"));
 }
 
 inline TActorId MakeSqsProxyServiceID(ui32 nodeId) {
-    Y_ABORT_UNLESS(nodeId != 0);
+    Y_VERIFY(nodeId != 0);
     return TActorId(nodeId, TStringBuf("SQS_PROXY"));
 }
 

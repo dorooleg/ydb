@@ -2,12 +2,12 @@
 
 #include "datashard_active_transaction.h"
 #include "datashard_kqp.h"
+#include "datashard_locks.h"
 #include "datashard_impl.h"
 #include "datashard_failpoints.h"
 #include "key_conflicts.h"
 
-#include <ydb/core/tx/locks/locks.h>
-#include <ydb/library/actors/util/memory_track.h>
+#include <library/cpp/actors/util/memory_track.h>
 
 namespace NKikimr {
 namespace NDataShard {
@@ -20,10 +20,12 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
                                    const TString &txBody,
                                    bool usesMvccSnapshot)
     : StepTxId_(stepTxId)
+    , TabletId_(self->TabletID())
     , TxBody(txBody)
-    , EngineBay(self, txc, ctx, stepTxId)
+    , EngineBay(self, txc, ctx, stepTxId.ToPair())
     , ErrCode(NKikimrTxDataShard::TError::OK)
     , TxSize(0)
+    , TxCacheUsage(0)
     , IsReleased(false)
     , BuiltTaskRunner(false)
     , IsReadOnly(true)
@@ -31,8 +33,6 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
     , Cancelled(false)
     , ReceivedAt_(receivedAt)
 {
-    const ui64 tabletId = self->TabletID();
-
     bool success = Tx.ParseFromArray(TxBody.data(), TxBody.size());
     if (!success) {
         ErrCode = NKikimrTxDataShard::TError::BAD_ARGUMENT;
@@ -40,12 +40,10 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
         return;
     }
 
-    auto& typeRegistry = *AppData()->TypeRegistry;
-
     ComputeTxSize();
     NActors::NMemory::TLabel<MemoryLabelValidatedDataTx>::Add(TxSize);
 
-    Y_ABORT_UNLESS(Tx.HasMiniKQL() || Tx.HasReadTableTransaction() || Tx.HasKqpTransaction(),
+    Y_VERIFY(Tx.HasMiniKQL() || Tx.HasReadTableTransaction() || Tx.HasKqpTransaction(),
              "One of the fields should be set: MiniKQL, ReadTableTransaction, KqpTransaction");
 
     if (Tx.GetLockTxId())
@@ -55,15 +53,15 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
         EngineBay.SetIsImmediateTx();
 
     if (usesMvccSnapshot)
-        EngineBay.SetUsesMvccSnapshot();
+        EngineBay.SetIsRepeatableSnapshot();
 
     if (Tx.HasReadTableTransaction()) {
         auto &tx = Tx.GetReadTableTransaction();
         if (self->TableInfos.contains(tx.GetTableId().GetTableId())) {
             auto* info = self->TableInfos[tx.GetTableId().GetTableId()].Get();
-            Y_ABORT_UNLESS(info, "Unexpected missing table info");
+            Y_VERIFY(info, "Unexpected missing table info");
             TSerializedTableRange range(tx.GetRange());
-            EngineBay.GetKeyValidator().AddReadRange(TTableId(tx.GetTableId().GetOwnerId(),
+            EngineBay.AddReadRange(TTableId(tx.GetTableId().GetOwnerId(),
                                             tx.GetTableId().GetTableId()),
                                    {}, range.ToTableRange(), info->KeyColumnTypes);
         } else {
@@ -72,7 +70,7 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
         }
     } else if (IsKqpTx()) {
         if (Y_UNLIKELY(!IsKqpDataTx())) {
-            LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "Unexpected KQP transaction type, shard: " << tabletId
+            LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "Unexpected KQP transaction type, shard: " << TabletId()
                 << ", txid: " << StepTxId_.TxId << ", tx: " << Tx.DebugString());
             ErrCode = NKikimrTxDataShard::TError::BAD_TX_KIND;
             ErrStr = TStringBuilder() << "Unexpected KQP transaction type: "
@@ -80,13 +78,14 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
             return;
         }
 
+        auto& typeRegistry = *AppData()->TypeRegistry;
         auto& computeCtx = EngineBay.GetKqpComputeCtx();
 
         try {
             bool hasPersistentChannels = false;
             if (!KqpValidateTransaction(GetTasks(), Immediate(), StepTxId_.TxId, ctx, hasPersistentChannels)) {
                 LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "KQP transaction validation failed, datashard: "
-                    << tabletId << ", txid: " << StepTxId_.TxId);
+                    << TabletId() << ", txid: " << StepTxId_.TxId);
                 ErrCode = NKikimrTxDataShard::TError::PROGRAM_ERROR;
                 ErrStr = "Transaction validation failed.";
                 return;
@@ -97,7 +96,7 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
                 NKikimrTxDataShard::TKqpTransaction::TDataTaskMeta meta;
                 if (!task.GetMeta().UnpackTo(&meta)) {
                     LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "KQP transaction validation failed"
-                        << ", datashard: " << tabletId
+                        << ", datashard: " << TabletId()
                         << ", txid: " << StepTxId_.TxId
                         << ", failed to load task meta: " << task.GetMeta().value());
                     ErrCode = NKikimrTxDataShard::TError::PROGRAM_ERROR;
@@ -105,7 +104,7 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
                     return;
                 }
 
-                LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, "TxId: " << StepTxId_.TxId << ", shard " << tabletId
+                LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, "TxId: " << StepTxId_.TxId << ", shard " << TabletId()
                     << ", task: " << task.GetId() << ", meta: " << meta.ShortDebugString());
 
                 auto& tableMeta = meta.GetTable();
@@ -140,7 +139,7 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
                     }
                 }
 
-                KqpSetTxKeys(tabletId, task.GetId(), tableInfo, meta, typeRegistry, ctx, EngineBay.GetKeyValidator());
+                KqpSetTxKeys(TabletId(), task.GetId(), tableInfo, meta, typeRegistry, ctx, EngineBay);
 
                 for (auto& output : task.GetOutputs()) {
                     for (auto& channel : output.GetChannels()) {
@@ -156,7 +155,7 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
 
             IsReadOnly = IsReadOnly && Tx.GetReadOnly();
 
-            KqpSetTxLocksKeys(GetKqpLocks(), self->SysLocksTable(), EngineBay.GetKeyValidator());
+            KqpSetTxLocksKeys(GetKqpLocks(), self->SysLocksTable(), EngineBay);
             EngineBay.MarkTxLoaded();
 
             auto& tasksRunner = GetKqpTasksRunner(); // create tasks runner, can throw TMemoryLimitExceededException
@@ -167,19 +166,19 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
             tasksRunner.Prepare(DefaultKqpDataReqMemoryLimits(), *execCtx);
         } catch (const TMemoryLimitExceededException&) {
             LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "Not enough memory to create tasks runner, datashard: "
-                << tabletId << ", txid: " << StepTxId_.TxId);
+                << TabletId() << ", txid: " << StepTxId_.TxId);
             ErrCode = NKikimrTxDataShard::TError::PROGRAM_ERROR;
             ErrStr = TStringBuilder() << "Transaction validation failed: not enough memory.";
             return;
         } catch (const yexception& e) {
             LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "Exception while validating KQP transaction, datashard: "
-                << tabletId << ", txid: " << StepTxId_.TxId << ", error: " << e.what());
+                << TabletId() << ", txid: " << StepTxId_.TxId << ", error: " << e.what());
             ErrCode = NKikimrTxDataShard::TError::PROGRAM_ERROR;
             ErrStr = TStringBuilder() << "Transaction validation failed: " << e.what() << ".";
             return;
         }
     } else {
-        Y_ABORT_UNLESS(Tx.HasMiniKQL());
+        Y_VERIFY(Tx.HasMiniKQL());
         if (Tx.GetLlvmRuntime()) {
             LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD,
                         "Using LLVM runtime to execute transaction: " << StepTxId_.TxId);
@@ -192,7 +191,7 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
         IsReadOnly = IsReadOnly && Tx.GetReadOnly();
 
         auto engine = EngineBay.GetEngine();
-        auto result = engine->AddProgram(tabletId, Tx.GetMiniKQL(), Tx.GetReadOnly());
+        auto result = engine->AddProgram(TabletId_, Tx.GetMiniKQL(), Tx.GetReadOnly());
 
         ErrStr = engine->GetErrors();
         ErrCode = ConvertErrCode(result);
@@ -203,13 +202,6 @@ TValidatedDataTx::TValidatedDataTx(TDataShard *self,
 
 TValidatedDataTx::~TValidatedDataTx() {
     NActors::NMemory::TLabel<MemoryLabelValidatedDataTx>::Sub(TxSize);
-}
-
-TDataShardUserDb& TValidatedDataTx::GetUserDb() {
-    return EngineBay.GetUserDb();
-}
-const TDataShardUserDb& TValidatedDataTx::GetUserDb() const {
-    return EngineBay.GetUserDb();
 }
 
 ui32 TValidatedDataTx::ExtractKeys(bool allowErrors)
@@ -224,19 +216,17 @@ ui32 TValidatedDataTx::ExtractKeys(bool allowErrors)
             return 0;
         }
     } else {
-        Y_ABORT_UNLESS(result == EResult::Ok, "Engine errors: %s", EngineBay.GetEngine()->GetErrors().data());
+        Y_VERIFY(result == EResult::Ok, "Engine errors: %s", EngineBay.GetEngine()->GetErrors().data());
     }
     return KeysCount();
 }
 
-bool TValidatedDataTx::ReValidateKeys(const NTable::TScheme& scheme)
+bool TValidatedDataTx::ReValidateKeys()
 {
     using EResult = NMiniKQL::IEngineFlat::EResult;
 
     if (IsKqpTx()) {
-        const auto& userDb = EngineBay.GetUserDb();
-        TKeyValidator::TValidateOptions options(userDb.GetLockTxId(), userDb.GetLockNodeId(), userDb.GetUsesMvccSnapshot(), userDb.GetIsImmediateTx(), userDb.GetIsWriteTx(), scheme);
-        auto [result, error] = EngineBay.GetKeyValidator().ValidateKeys(options);
+        auto [result, error] = EngineBay.GetKqpComputeCtx().ValidateKeys(EngineBay.TxInfo());
         if (result != EResult::Ok) {
             ErrStr = std::move(error);
             ErrCode = ConvertErrCode(result);
@@ -268,7 +258,7 @@ bool TValidatedDataTx::CanCancel() {
     return true;
 }
 
-bool TValidatedDataTx::CheckCancelled(ui64 tabletId) {
+bool TValidatedDataTx::CheckCancelled() {
     if (Cancelled) {
         return true;
     }
@@ -280,10 +270,11 @@ bool TValidatedDataTx::CheckCancelled(ui64 tabletId) {
     TInstant now = AppData()->TimeProvider->Now();
     Cancelled = (now >= Deadline());
 
-    Cancelled = Cancelled || gCancelTxFailPoint.Check(tabletId, GetTxId());
+    Cancelled = Cancelled || gCancelTxFailPoint.Check(TabletId(), TxId());
 
     if (Cancelled) {
-        LOG_NOTICE_S(*TlsActivationContext->ExecutorThread.ActorSystem, NKikimrServices::TX_DATASHARD, "CANCELLED TxId " << GetTxId() << " at " << tabletId);
+        LOG_NOTICE_S(*TlsActivationContext->ExecutorThread.ActorSystem, NKikimrServices::TX_DATASHARD,
+            "CANCELLED TxId " << TxId() << " at " << TabletId());
     }
     return Cancelled;
 }
@@ -321,6 +312,30 @@ void TValidatedDataTx::ComputeDeadline() {
     }
 }
 
+//
+
+TActiveTransaction::TActiveTransaction(const TBasicOpInfo &op,
+                                       TValidatedDataTx::TPtr dataTx)
+    : TActiveTransaction(op)
+{
+    TrackMemory();
+    FillTxData(dataTx);
+}
+
+TActiveTransaction::TActiveTransaction(TDataShard *self,
+                                       TTransactionContext &txc,
+                                       const TActorContext &ctx,
+                                       const TBasicOpInfo &op,
+                                       const TActorId &target,
+                                       const TString &txBody,
+                                       const TVector<TSysTables::TLocksTable::TLock> &locks,
+                                       ui64 artifactFlags)
+    : TActiveTransaction(op)
+{
+    TrackMemory();
+    FillTxData(self, txc, ctx, target, txBody, locks, artifactFlags);
+}
+
 TActiveTransaction::~TActiveTransaction()
 {
     UntrackMemory();
@@ -328,10 +343,10 @@ TActiveTransaction::~TActiveTransaction()
 
 void TActiveTransaction::FillTxData(TValidatedDataTx::TPtr dataTx)
 {
-    Y_ABORT_UNLESS(!DataTx);
-    Y_ABORT_UNLESS(TxBody.empty() || HasVolatilePrepareFlag());
+    Y_VERIFY(!DataTx);
+    Y_VERIFY(TxBody.empty() || HasVolatilePrepareFlag());
 
-    Target = dataTx->GetSource();
+    Target = dataTx->Source();
     DataTx = dataTx;
 
     if (DataTx->HasStreamResponse())
@@ -348,8 +363,8 @@ void TActiveTransaction::FillTxData(TDataShard *self,
 {
     UntrackMemory();
 
-    Y_ABORT_UNLESS(!DataTx);
-    Y_ABORT_UNLESS(TxBody.empty());
+    Y_VERIFY(!DataTx);
+    Y_VERIFY(TxBody.empty());
 
     Target = target;
     TxBody = txBody;
@@ -359,9 +374,9 @@ void TActiveTransaction::FillTxData(TDataShard *self,
     }
     ArtifactFlags = artifactFlags;
     if (IsDataTx() || IsReadTable()) {
-        Y_ABORT_UNLESS(!DataTx);
+        Y_VERIFY(!DataTx);
         BuildDataTx(self, txc, ctx);
-        Y_ABORT_UNLESS(DataTx->Ready());
+        Y_VERIFY(DataTx->Ready());
 
         if (DataTx->HasStreamResponse())
             SetStreamSink(DataTx->GetSink());
@@ -384,19 +399,19 @@ void TActiveTransaction::FillVolatileTxData(TDataShard *self,
 {
     UntrackMemory();
 
-    Y_ABORT_UNLESS(!DataTx);
-    Y_ABORT_UNLESS(!TxBody.empty());
+    Y_VERIFY(!DataTx);
+    Y_VERIFY(!TxBody.empty());
 
     if (IsDataTx() || IsReadTable()) {
         BuildDataTx(self, txc, ctx);
-        Y_ABORT_UNLESS(DataTx->Ready());
+        Y_VERIFY(DataTx->Ready());
 
         if (DataTx->HasStreamResponse())
             SetStreamSink(DataTx->GetSink());
     } else if (IsSnapshotTx()) {
         BuildSnapshotTx();
     } else {
-        Y_ABORT("Unexpected FillVolatileTxData call");
+        Y_FAIL("Unexpected FillVolatileTxData call");
     }
 
     TrackMemory();
@@ -406,11 +421,11 @@ TValidatedDataTx::TPtr TActiveTransaction::BuildDataTx(TDataShard *self,
                                                        TTransactionContext &txc,
                                                        const TActorContext &ctx)
 {
-    Y_ABORT_UNLESS(IsDataTx() || IsReadTable());
+    Y_VERIFY(IsDataTx() || IsReadTable());
     if (!DataTx) {
-        Y_ABORT_UNLESS(TxBody);
+        Y_VERIFY(TxBody);
         DataTx = std::make_shared<TValidatedDataTx>(self, txc, ctx, GetStepOrder(),
-                                                    GetReceivedAt(), TxBody, IsMvccSnapshotRead());
+                                                    GetReceivedAt(), TxBody, MvccSnapshotRepeatable);
         if (DataTx->HasStreamResponse())
             SetStreamSink(DataTx->GetSink());
     }
@@ -419,7 +434,7 @@ TValidatedDataTx::TPtr TActiveTransaction::BuildDataTx(TDataShard *self,
 
 bool TActiveTransaction::BuildSchemeTx()
 {
-    Y_ABORT_UNLESS(TxBody);
+    Y_VERIFY(TxBody);
     SchemeTx.Reset(new NKikimrTxDataShard::TFlatSchemeTransaction);
     bool res = SchemeTx->ParseFromArray(TxBody.data(), TxBody.size());
     if (!res)
@@ -484,7 +499,7 @@ bool TActiveTransaction::BuildSchemeTx()
 
 bool TActiveTransaction::BuildSnapshotTx()
 {
-    Y_ABORT_UNLESS(TxBody);
+    Y_VERIFY(TxBody);
     SnapshotTx.Reset(new NKikimrTxDataShard::TSnapshotTransaction);
     if (!SnapshotTx->ParseFromArray(TxBody.data(), TxBody.size())) {
         return false;
@@ -509,7 +524,7 @@ bool TDistributedEraseTx::TryParse(const TString& serialized) {
 }
 
 bool TActiveTransaction::BuildDistributedEraseTx() {
-    Y_ABORT_UNLESS(TxBody);
+    Y_VERIFY(TxBody);
     DistributedEraseTx.Reset(new TDistributedEraseTx);
     return DistributedEraseTx->TryParse(TxBody);
 }
@@ -525,7 +540,7 @@ bool TCommitWritesTx::TryParse(const TString& serialized) {
 }
 
 bool TActiveTransaction::BuildCommitWritesTx() {
-    Y_ABORT_UNLESS(TxBody);
+    Y_VERIFY(TxBody);
     CommitWritesTx.Reset(new TCommitWritesTx);
     return CommitWritesTx->TryParse(TxBody);
 }
@@ -542,7 +557,9 @@ void TActiveTransaction::ReleaseTxData(NTabletFlatExecutor::TTxMemoryProviderBas
     DataTx->ReleaseTxData();
     // Immediate transactions have no body stored.
     if (!IsImmediate() && !HasVolatilePrepareFlag()) {
-        ClearTxBody();
+        UntrackMemory();
+        TxBody.clear();
+        TrackMemory();
     }
 
     //InReadSets.clear();
@@ -554,7 +571,7 @@ void TActiveTransaction::ReleaseTxData(NTabletFlatExecutor::TTxMemoryProviderBas
     LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "tx " << GetTxId() << " released its data");
 }
 
-void TActiveTransaction::DbStoreLocksAccessLog(ui64 tabletId,
+void TActiveTransaction::DbStoreLocksAccessLog(TDataShard * self,
                                                TTransactionContext &txc,
                                                const TActorContext &ctx)
 {
@@ -577,10 +594,10 @@ void TActiveTransaction::DbStoreLocksAccessLog(ui64 tabletId,
 
     LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD,
                 "Storing " << vec.size() << " locks for txid=" << GetTxId()
-                << " in " << tabletId);
+                << " in " << self->TabletID());
 }
 
-void TActiveTransaction::DbStoreArtifactFlags(ui64 tabletId,
+void TActiveTransaction::DbStoreArtifactFlags(TDataShard * self,
                                               TTransactionContext &txc,
                                               const TActorContext &ctx)
 {
@@ -592,7 +609,7 @@ void TActiveTransaction::DbStoreArtifactFlags(ui64 tabletId,
 
     LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD,
                 "Storing artifactflags=" << ArtifactFlags << " for txid=" << GetTxId()
-                << " in " << tabletId);
+                << " in " << self->TabletID());
 }
 
 ui64 TActiveTransaction::GetMemoryConsumption() const {
@@ -629,7 +646,7 @@ ERestoreDataStatus TActiveTransaction::RestoreTxData(
             return ERestoreDataStatus::Restart;
         }
     } else {
-        Y_ABORT_UNLESS(TxBody);
+        Y_VERIFY(TxBody);
     }
 
     TrackMemory();
@@ -639,7 +656,7 @@ ERestoreDataStatus TActiveTransaction::RestoreTxData(
 
     bool extractKeys = DataTx->IsTxInfoLoaded();
     DataTx = std::make_shared<TValidatedDataTx>(self, txc, ctx, GetStepOrder(),
-                                                GetReceivedAt(), TxBody, IsMvccSnapshotRead());
+                                                GetReceivedAt(), TxBody, MvccSnapshotRepeatable);
     if (DataTx->Ready() && extractKeys) {
         DataTx->ExtractKeys(true);
     }
@@ -658,9 +675,9 @@ ERestoreDataStatus TActiveTransaction::RestoreTxData(
 
 void TActiveTransaction::FinalizeDataTxPlan()
 {
-    Y_ABORT_UNLESS(IsDataTx());
-    Y_ABORT_UNLESS(!IsImmediate());
-    Y_ABORT_UNLESS(!IsKqpScanTransaction());
+    Y_VERIFY(IsDataTx());
+    Y_VERIFY(!IsImmediate());
+    Y_VERIFY(!IsKqpScanTransaction());
 
     TVector<EExecutionUnitKind> plan;
 
@@ -684,16 +701,60 @@ void TActiveTransaction::FinalizeDataTxPlan()
     RewriteExecutionPlan(plan);
 }
 
+class TFinalizeDataTxPlanUnit : public TExecutionUnit {
+public:
+    TFinalizeDataTxPlanUnit(TDataShard &dataShard, TPipeline &pipeline)
+        : TExecutionUnit(EExecutionUnitKind::FinalizeDataTxPlan, false, dataShard, pipeline)
+    { }
+
+    bool IsReadyToExecute(TOperation::TPtr) const override {
+        return true;
+    }
+
+    EExecutionStatus Execute(TOperation::TPtr op,
+                             TTransactionContext &txc,
+                             const TActorContext &ctx) override
+    {
+        Y_UNUSED(txc);
+        Y_UNUSED(ctx);
+
+        TActiveTransaction *tx = dynamic_cast<TActiveTransaction*>(op.Get());
+        Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
+        Y_VERIFY_S(tx->IsDataTx(), "unexpected non-data tx");
+
+        if (auto dataTx = tx->GetDataTx()) {
+            // Restore transaction type flags
+            if (dataTx->IsKqpDataTx() && !tx->IsKqpDataTransaction())
+                tx->SetKqpDataTransactionFlag();
+            Y_VERIFY_S(!dataTx->IsKqpScanTx(), "unexpected kqp scan tx");
+        }
+
+        tx->FinalizeDataTxPlan();
+
+        return EExecutionStatus::Executed;
+    }
+
+    void Complete(TOperation::TPtr op,
+                  const TActorContext &ctx) override
+    {
+        Y_UNUSED(op);
+        Y_UNUSED(ctx);
+    }
+};
+
+THolder<TExecutionUnit> CreateFinalizeDataTxPlanUnit(TDataShard &dataShard, TPipeline &pipeline) {
+    return THolder(new TFinalizeDataTxPlanUnit(dataShard, pipeline));
+}
 
 void TActiveTransaction::BuildExecutionPlan(bool loaded)
 {
-    Y_ABORT_UNLESS(GetExecutionPlan().empty());
-    Y_ABORT_UNLESS(!IsKqpScanTransaction());
+    Y_VERIFY(GetExecutionPlan().empty());
+    Y_VERIFY(!IsKqpScanTransaction());
 
     TVector<EExecutionUnitKind> plan;
     if (IsDataTx()) {
         if (IsImmediate()) {
-            Y_ABORT_UNLESS(!loaded);
+            Y_VERIFY(!loaded);
             plan.push_back(EExecutionUnitKind::CheckDataTx);
             plan.push_back(EExecutionUnitKind::BuildAndWaitDependencies);
             if (IsKqpDataTransaction()) {
@@ -704,16 +765,16 @@ void TActiveTransaction::BuildExecutionPlan(bool loaded)
             plan.push_back(EExecutionUnitKind::FinishPropose);
             plan.push_back(EExecutionUnitKind::CompletedOperations);
         } else if (HasVolatilePrepareFlag()) {
-            Y_ABORT_UNLESS(!loaded);
+            Y_VERIFY(!loaded);
             plan.push_back(EExecutionUnitKind::CheckDataTx);
             plan.push_back(EExecutionUnitKind::StoreDataTx); // note: stores in memory
             plan.push_back(EExecutionUnitKind::FinishPropose);
-            Y_ABORT_UNLESS(!GetStep());
+            Y_VERIFY(!GetStep());
             plan.push_back(EExecutionUnitKind::WaitForPlan);
             plan.push_back(EExecutionUnitKind::PlanQueue);
             plan.push_back(EExecutionUnitKind::LoadTxDetails); // note: reloads from memory
             plan.push_back(EExecutionUnitKind::BuildAndWaitDependencies);
-            Y_ABORT_UNLESS(IsKqpDataTransaction());
+            Y_VERIFY(IsKqpDataTransaction());
             // Note: execute will also prepare and send readsets
             plan.push_back(EExecutionUnitKind::ExecuteKqpDataTx);
             // Note: it is important that plan here is the same as regular
@@ -802,7 +863,7 @@ void TActiveTransaction::BuildExecutionPlan(bool loaded)
         plan.push_back(EExecutionUnitKind::CompletedOperations);
     } else if (IsCommitWritesTx()) {
         if (IsImmediate()) {
-            Y_ABORT_UNLESS(!loaded);
+            Y_VERIFY(!loaded);
             plan.push_back(EExecutionUnitKind::CheckCommitWritesTx);
             plan.push_back(EExecutionUnitKind::BuildAndWaitDependencies);
             plan.push_back(EExecutionUnitKind::ExecuteCommitWritesTx);
@@ -895,68 +956,6 @@ void TActiveTransaction::TrackMemory() const {
 
 void TActiveTransaction::UntrackMemory() const {
     NActors::NMemory::TLabel<MemoryLabelActiveTransactionBody>::Sub(TxBody.size());
-}
-
-bool TActiveTransaction::OnStopping(TDataShard& self, const TActorContext& ctx) {
-    if (IsImmediate()) {
-        // Send reject result immediately, because we cannot control when
-        // a new datashard tablet may start and block us from commiting
-        // anything new. The usual progress queue is too slow for that.
-        if (!HasResultSentFlag() && !Result()) {
-            auto kind = static_cast<NKikimrTxDataShard::ETransactionKind>(GetKind());
-            auto rejectStatus = NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED;
-            TString rejectReason = TStringBuilder()
-                    << "Rejecting immediate tx "
-                    << GetTxId()
-                    << " because datashard "
-                    << self.TabletID()
-                    << " is restarting";
-            auto result = MakeHolder<TEvDataShard::TEvProposeTransactionResult>(
-                    kind, self.TabletID(), GetTxId(), rejectStatus);
-            result->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, rejectReason);
-            LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, rejectReason);
-
-            ctx.Send(GetTarget(), result.Release(), 0, GetCookie());
-
-            self.IncCounter(COUNTER_PREPARE_OVERLOADED);
-            self.IncCounter(COUNTER_PREPARE_COMPLETE);
-            SetResultSentFlag();
-        }
-
-        // Immediate ops become ready when stopping flag is set
-        return true;
-    } else {
-        // Distributed operations send notification when proposed
-        if (GetTarget() && !HasCompletedFlag()) {
-            auto notify = MakeHolder<TEvDataShard::TEvProposeTransactionRestart>(
-                self.TabletID(), GetTxId());
-            ctx.Send(GetTarget(), notify.Release(), 0, GetCookie());
-        }
-
-        // Distributed ops avoid doing new work when stopping
-        return false;
-    }
-}
-
-void TActiveTransaction::OnCleanup(TDataShard& self, std::vector<std::unique_ptr<IEventHandle>>& replies) {
-    if (!IsImmediate() && GetTarget() && !HasCompletedFlag()) {
-        auto kind = static_cast<NKikimrTxDataShard::ETransactionKind>(GetKind());
-        auto status = NKikimrTxDataShard::TEvProposeTransactionResult::ABORTED;
-        auto result = std::make_unique<TEvDataShard::TEvProposeTransactionResult>(
-            kind, self.TabletID(), GetTxId(), status);
-
-        if (self.State == TShardState::SplitSrcWaitForNoTxInFlight) {
-            result->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, TStringBuilder()
-                << "DataShard " << self.TabletID() << " is splitting");
-        } else if (self.Pipeline.HasWaitingSchemeOps()) {
-            result->AddError(NKikimrTxDataShard::TError::SHARD_IS_BLOCKED, TStringBuilder()
-                << "DataShard " << self.TabletID() << " is blocked by a schema operation");
-        } else {
-            result->AddError(NKikimrTxDataShard::TError::EXECUTION_CANCELLED, "Transaction was cleaned up");
-        }
-
-        replies.push_back(std::make_unique<IEventHandle>(GetTarget(), self.SelfId(), result.release(), 0, GetCookie()));
-    }
 }
 
 }}

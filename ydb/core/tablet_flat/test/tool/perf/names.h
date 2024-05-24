@@ -23,7 +23,7 @@ namespace NFmt {
             if (sponge == ESponge::Fnv)   return "fnv";
             if (sponge == ESponge::Xor)   return "xor";
 
-            Y_ABORT("Unreachable code");
+            Y_FAIL("Unreachable code");
         }
     };
 }

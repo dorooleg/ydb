@@ -1,15 +1,15 @@
 #include <ydb/core/pgproxy/pg_listener.h>
 #include <ydb/core/pgproxy/pg_log.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <util/system/mlock.h>
 #include <util/stream/file.h>
 #include <library/cpp/getopt/last_getopt.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/core/process_stats.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
-#include <ydb/library/actors/interconnect/poller_actor.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/process_stats.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/interconnect/poller_actor.h>
 #include "pgwire.h"
 #include "log_impl.h"
 #include "pg_ydb_proxy.h"
@@ -112,7 +112,7 @@ TPgWire::TPgWire(int argc, char** argv) {
 
 TIntrusivePtr<NActors::NLog::TSettings> TPgWire::BuildLoggerSettings() {
     const NActors::TActorId loggerActorId = NActors::TActorId(1, "logger");
-    TIntrusivePtr<NActors::NLog::TSettings> loggerSettings = new NActors::NLog::TSettings(loggerActorId, NActorsServices::LOGGER, NActors::NLog::PRI_WARN);
+    TIntrusivePtr<NActors::NLog::TSettings> loggerSettings = new NActors::NLog::TSettings(loggerActorId, NKikimrServices::LOGGER, NActors::NLog::PRI_WARN);
     loggerSettings->Append(
         NActorsServices::EServiceCommon_MIN,
         NActorsServices::EServiceCommon_MAX,

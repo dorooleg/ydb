@@ -246,14 +246,12 @@ std::enable_if_t<std::is_invocable_v<TWhitespaceFunc, typename TStringType::valu
     return CollapseImpl(from, to, maxLen, isWhitespace);
 }
 
-template <class TStringType>
-inline bool Collapse(const TStringType& from, TStringType& to, size_t maxLen = 0) {
-    return Collapse(from, to, IsAsciiSpace<typename TStringType::value_type>, maxLen);
+inline bool Collapse(const TString& from, TString& to, size_t maxLen = 0) {
+    return Collapse(from, to, IsAsciiSpace<typename TString::value_type>, maxLen);
 }
 
 /// Replaces several consequtive space symbols with one (processing is limited to maxLen bytes)
-template <class TStringType>
-inline TStringType& CollapseInPlace(TStringType& s, size_t maxLen = 0) {
+inline TString& CollapseInPlace(TString& s, size_t maxLen = 0) {
     Collapse(s, s, maxLen);
     return s;
 }
@@ -264,9 +262,8 @@ inline TStringType& CollapseInPlace(TStringType& s, TWhitespaceFunc isWhitespace
 }
 
 /// Replaces several consequtive space symbols with one (processing is limited to maxLen bytes)
-template <class TStringType>
-[[nodiscard]] inline TStringType Collapse(const TStringType& s, size_t maxLen = 0) {
-    TStringType ret;
+[[nodiscard]] inline TString Collapse(const TString& s, size_t maxLen = 0) {
+    TString ret;
     Collapse(s, ret, maxLen);
     return ret;
 }

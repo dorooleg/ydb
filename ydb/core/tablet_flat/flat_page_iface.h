@@ -1,7 +1,6 @@
 #pragma once
 
 #include <util/system/types.h>
-#include <util/stream/output.h>
 
 namespace NKikimr {
 namespace NTable {
@@ -52,26 +51,21 @@ namespace NPage {
         explicit operator size_t() const noexcept {
             return Historic * 31 + Index;
         }
-
-        friend inline IOutputStream& operator<<(IOutputStream& out, const TGroupId& groupId) {
-            return out << "{" << groupId.Index << "," << groupId.IsHistoric() << "}";
-        }
     };
 
     enum class EPage : ui16 {
         Undef = 0,
         Scheme = 2,
-        FlatIndex = 3,
+        Index = 3,
         DataPage = 4,
         Frames = 5, /* Tagged entities to TRowId relation index     */
-        Globs = 6,  /* Just enumeration of NPageCollection::TGlobId refs    */
+        Globs = 6,  /* Just enumartion of NPageCollection::TGlobId refs    */
         Schem2 = 7, /* New version of EPage::Scheme with TLabel     */
         Opaque = 8, /* User defined content, cell value as blob     */
         Bloom = 9,  /* Bloom filter for some app. defined cells set */
         GarbageStats = 10, /* Stats on garbage in historic data */
         TxIdStats = 11, /* Stats for uncommitted TxIds at compaction time */
         TxStatus = 12, /* Status of committed/removed transactions */
-        BTreeIndex = 13,
     };
 
     enum class ECodec : ui8 {

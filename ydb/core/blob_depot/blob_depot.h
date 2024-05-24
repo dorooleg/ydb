@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/core/base/blobstorage.h>
+#include "defs.h"
 
 namespace NKikimr::NBlobDepot {
 

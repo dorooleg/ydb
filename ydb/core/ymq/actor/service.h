@@ -11,7 +11,7 @@
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <util/generic/hash.h>
 #include <util/generic/hash_multi_map.h>
 #include <util/generic/ptr.h>
@@ -38,8 +38,6 @@ private:
 
     using TQueueInfoPtr = TIntrusivePtr<TQueueInfo>;
 
-    class TLocalLeaderManager;
-
     STATEFN(StateFunc);
 
     void InitSchemeCache();
@@ -59,8 +57,6 @@ private:
     void HandleInsertQueueCounters(TSqsEvents::TEvInsertQueueCounters::TPtr& ev);
     void HandleUserSettingsChanged(TSqsEvents::TEvUserSettingsChanged::TPtr& ev);
     void HandleQueuesList(TSqsEvents::TEvQueuesList::TPtr& ev);
-    void HandleReloadStateRequest(TSqsEvents::TEvReloadStateRequest::TPtr& ev);
-    void HandleLeaderStarted(TSqsEvents::TEvLeaderStarted::TPtr& ev);
     void HandleNodeTrackingSubscriptionStatus(TSqsEvents::TEvNodeTrackerSubscriptionStatus::TPtr& ev);
     void CreateNodeTrackingSubscription(TQueueInfoPtr queueInfo);
     void CancleNodeTrackingSubscription(TQueueInfoPtr queueInfo);
@@ -83,7 +79,6 @@ private:
 
     void AnswerNoUserToRequests();
     void AnswerNoQueueToRequests(const TUserInfoPtr& user);
-    void AnswerThrottledToRequests(const TUserInfoPtr& user);
 
     void AnswerErrorToRequests();
     void AnswerErrorToRequests(const TUserInfoPtr& user);
@@ -117,8 +112,6 @@ private:
     void AnswerNoQueueToRequests(const TUserInfoPtr& user, TMultimap& map);
     template <class TMultimap>
     void AnswerErrorToRequests(const TUserInfoPtr& user, TMultimap& map);
-    template <class TMultimap>
-    void AnswerThrottledToRequests(TMultimap& map);
 
     void AnswerNotExists(TSqsEvents::TEvGetLeaderNodeForQueueRequest::TPtr& ev, const TUserInfoPtr& userInfo);
     void AnswerNotExists(TSqsEvents::TEvGetConfiguration::TPtr& ev, const TUserInfoPtr& userInfo);
@@ -131,11 +124,6 @@ private:
     void AnswerFailed(TSqsEvents::TEvGetQueueId::TPtr& ev, const TUserInfoPtr& userInfo);
     void AnswerFailed(TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev, const TUserInfoPtr& userInfo);
     void AnswerFailed(TSqsEvents::TEvCountQueues::TPtr& ev, const TUserInfoPtr& userInfo);
-
-    void AnswerThrottled(TSqsEvents::TEvGetLeaderNodeForQueueRequest::TPtr& ev);
-    void AnswerThrottled(TSqsEvents::TEvGetConfiguration::TPtr& ev);
-    void AnswerThrottled(TSqsEvents::TEvGetQueueId::TPtr& ev);
-    void AnswerThrottled(TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev);
 
     void Answer(TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev, const TQueueInfoPtr& queueInfo);
 
@@ -187,7 +175,6 @@ private:
         TDuration RescanInterval = TDuration::Minutes(1);
     };
     TYcSearchEventsConfig YcSearchEventsConfig;
-    THolder<TLocalLeaderManager> LocalLeaderManager;
 };
 
 } // namespace NKikimr::NSQS

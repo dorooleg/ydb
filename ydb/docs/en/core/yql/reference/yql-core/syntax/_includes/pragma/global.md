@@ -112,6 +112,7 @@ This pragma brings the behavior of the `IN` operator in accordance with the stan
 `1 IN (2, 3, NULL) = NULL (was Just(False))`
 `NULL IN () = Just(False) (was NULL)`
 `(1, null) IN ((2, 2), (3, 3)) = Just(False) (was NULL)`
+`2147483648u IN (1, 2147483648u) = True (was False)`
 
 For more information about the `IN` behavior when operands include `NULL`s, see [here](../../expressions.md#in). You can explicitly select the old behavior by specifying the pragma `DisableAnsiInForEmptyOrNullableItemsCollections`. If no pragma is set, then a warning is issued and the old version works.
 
@@ -182,28 +183,6 @@ Use Re2 UDF instead of Pcre to execute SQL the `REGEX`,`MATCH`,`RLIKE` statement
 In the classical version, the result of integer division remains integer (by default).
 If disabled, the result is always Double.
 ClassicDivision is a [scoped](#pragmascope) setting.
-
-### UnicodeLiterals
-
-`UnicodeLiterals`/`DisableUnicodeLiterals`
-
-| Value type | Default |
-| --- | --- |
-| Flag | false |
-
-When this mode is enabled, string literals without suffixes like "foo"/'bar'/@@multiline@@ will be of type `Utf8`, when disabled - `String`.
-UnicodeLiterals is a [scoped](#pragmascope) setting.
-
-### WarnUntypedStringLiterals
-
-`WarnUntypedStringLiterals`/`DisableWarnUntypedStringLiterals`
-
-| Value type | Default |
-| --- | --- |
-| Flag | false |
-
-When this mode is enabled, a warning will be generated for string literals without suffixes like "foo"/'bar'/@@multiline@@. It can be suppressed by explicitly choosing the suffix `s` for the `String` type, or `u` for the `Utf8` type.
-WarnUntypedStringLiterals is a [scoped](#pragmascope) setting.
 
 ### AllowDotInAlias
 

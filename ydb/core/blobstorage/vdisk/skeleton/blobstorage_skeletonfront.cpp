@@ -8,25 +8,23 @@
 
 #include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_costmodel.h>
-#include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_hugeblobctx.h>
-#include <ydb/core/blobstorage/vdisk/common/vdisk_mongroups.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdisk_error.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdiskctx.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/core/blobstorage/vdisk/skeleton/skeleton_events.h>
 #include <ydb/core/blobstorage/vdisk/scrub/scrub_actor.h>
-#include <ydb/core/blobstorage/vdisk/repl/blobstorage_repl.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo.h>
 #include <ydb/core/blobstorage/backpressure/queue_backpressure_server.h>
 
 #include <ydb/core/util/queue_inplace.h>
 #include <ydb/core/util/stlog.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/library/wilson_ids/wilson.h>
+#include <ydb/core/base/wilson.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
+#include <library/cpp/actors/wilson/wilson_span.h>
 
 #include <util/generic/set.h>
 #include <util/generic/maybe.h>
@@ -41,12 +39,12 @@ namespace NKikimr {
     TEvFrontRecoveryStatus::TEvFrontRecoveryStatus(EPhase phase,
             NKikimrProto::EReplyStatus status,
             const TIntrusivePtr<TPDiskParams> &dsk,
-            ui32 minREALHugeBlobInBytes,
+            std::shared_ptr<THugeBlobCtx> hugeBlobCtx,
             TVDiskIncarnationGuid vdiskIncarnationGuid)
         : Phase(phase)
         , Status(status)
         , Dsk(dsk)
-        , MinREALHugeBlobInBytes(minREALHugeBlobInBytes)
+        , HugeBlobCtx(std::move(hugeBlobCtx))
         , VDiskIncarnationGuid(vdiskIncarnationGuid)
     {}
 
@@ -72,7 +70,7 @@ namespace NKikimr {
                 EVENT_TYPE(TEvVGetBarrier)
 #undef EVENT_TYPE
             }
-            Y_ABORT("unsupported event type");
+            Y_FAIL("unsupported event type");
         }
 
         struct TUpdateInQueueTime {
@@ -104,15 +102,15 @@ namespace NKikimr {
             NBackpressure::TQueueClientId ClientId;
             TActorId ActorId;
             NWilson::TSpan Span;
-            std::shared_ptr<TVDiskSkeletonTrace> Trace;
-            ui64 InternalMessageId;
+            std::unique_ptr<TVDiskSkeletonTrace> Trace;
+            ui64 Cookie;
 
             TRecord() = default;
 
             TRecord(std::unique_ptr<IEventHandle> ev, TInstant now, ui32 recByteSize, const NBackpressure::TMessageId &msgId,
                     ui64 cost, TInstant deadline, NKikimrBlobStorage::EVDiskQueueId extQueueId,
-                    const NBackpressure::TQueueClientId& clientId, TString name, std::shared_ptr<TVDiskSkeletonTrace> &&trace,
-                    ui64 internalMessageId)
+                    const NBackpressure::TQueueClientId& clientId, TString name, std::unique_ptr<TVDiskSkeletonTrace> &&trace,
+                    ui64 cookie)
                 : Ev(std::move(ev))
                 , ReceivedTime(now)
                 , Deadline(deadline)
@@ -124,7 +122,7 @@ namespace NKikimr {
                 , ActorId(Ev->Sender)
                 , Span(TWilson::VDiskTopLevel, std::move(Ev->TraceId), "VDisk.SkeletonFront.Queue")
                 , Trace(std::move(trace))
-                , InternalMessageId(internalMessageId)
+                , Cookie(cookie)
             {
                 Span.Attribute("QueueName", std::move(name));
                 Ev->TraceId = Span.GetTraceId();
@@ -145,13 +143,14 @@ namespace NKikimr {
         ////////////////////////////////////////////////////////////////////////////
         class TIntQueueClass {
             using TQueueType = TQueueInplace<TRecord, 4096>;
+            using TFreeTraceObjectsQueue = TQueueInplace<std::unique_ptr<TVDiskSkeletonTrace>, 4096>;
 
             struct TMsgInfo {
                 ui64 MsgId;
                 TInstant ReceivedTime;
-                std::shared_ptr<TVDiskSkeletonTrace> VDiskSkeletonTrace;
+                std::unique_ptr<TVDiskSkeletonTrace> VDiskSkeletonTrace;
 
-                TMsgInfo(ui64 msgId, TInstant receivedTime, std::shared_ptr<TVDiskSkeletonTrace> &&trace)
+                TMsgInfo(ui64 msgId, TInstant receivedTime, std::unique_ptr<TVDiskSkeletonTrace> &&trace)
                     : MsgId(msgId)
                     , ReceivedTime(receivedTime)
                     , VDiskSkeletonTrace(std::move(trace))
@@ -169,6 +168,7 @@ namespace NKikimr {
             const ui64 MaxInFlightCount;
             const ui64 MaxInFlightCost;
             THashMap<ui64, TMsgInfo> Msgs;
+            std::unique_ptr<TFreeTraceObjectsQueue, TFreeTraceObjectsQueue::TCleanDestructor> FreeTraceObjects;
         public:
             const NKikimrBlobStorage::EVDiskInternalQueueId IntQueueId;
             const TString Name;
@@ -204,33 +204,38 @@ namespace NKikimr {
                 , Deadlines(0)
                 , MaxInFlightCount(maxInFlightCount)
                 , MaxInFlightCost(maxInFlightCost)
+                , FreeTraceObjects(new TFreeTraceObjectsQueue())
                 , IntQueueId(intQueueId)
                 , Name(name)
-                , SkeletonFrontInFlightCount(MakeCounter(skeletonFrontGroup, "InFlightCount", false, false))
-                , SkeletonFrontInFlightCost(MakeCounter(skeletonFrontGroup, "InFlightCost", false, true))
-                , SkeletonFrontInFlightBytes(MakeCounter(skeletonFrontGroup, "InFlightBytes", false, true))
-                , SkeletonFrontDelayedCount(MakeCounter(skeletonFrontGroup, "DelayedCount", false, true))
-                , SkeletonFrontDelayedBytes(MakeCounter(skeletonFrontGroup, "DelayedBytes", false, true))
-                , SkeletonFrontCostProcessed(MakeCounter(skeletonFrontGroup, "CostProcessed", true, true))
+                , SkeletonFrontInFlightCount(skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/InFlightCount", false))
+                , SkeletonFrontInFlightCost(skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/InFlightCost", false))
+                , SkeletonFrontInFlightBytes(skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/InFlightBytes", false))
+                , SkeletonFrontDelayedCount(skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/DelayedCount", false))
+                , SkeletonFrontDelayedBytes(skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/DelayedBytes", false))
+                , SkeletonFrontCostProcessed(skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/CostProcessed", true))
             {}
-
-            ::NMonitoring::TDynamicCounters::TCounterPtr MakeCounter(TIntrusivePtr<::NMonitoring::TDynamicCounters> skeletonFrontGroup, const TString& sensorType, bool derivative, bool reportOnlyIfExtendedSensors) {
-                if (reportOnlyIfExtendedSensors && !NMonGroup::IsExtendedVDiskCounters()) {
-                    return skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/" + sensorType, derivative, NMonitoring::TCountableBase::EVisibility::Private);
-                }
-                return skeletonFrontGroup->GetCounter("SkeletonFront/" + Name + "/" + sensorType, derivative);
-            }
 
             ui64 GetSize() const {
                 return Queue->GetSize();
             }
 
+            std::unique_ptr<TVDiskSkeletonTrace> GetFreeTrace() {
+                if (std::unique_ptr<TVDiskSkeletonTrace> *ptr = FreeTraceObjects->Head()) {
+                    std::unique_ptr<TVDiskSkeletonTrace> tmp = std::move(*ptr);
+                    FreeTraceObjects->Pop();
+                    return tmp;
+                } else {
+                    return std::make_unique<TVDiskSkeletonTrace>();
+                }
+            }
+
             template<typename TFront>
             void Enqueue(const TActorContext &ctx, ui32 recByteSize, std::unique_ptr<IEventHandle> converted,
                          const NBackpressure::TMessageId &msgId, ui64 cost, const TInstant &deadline,
-                         NKikimrBlobStorage::EVDiskQueueId extQueueId, TFront& /*front*/,
-                         const NBackpressure::TQueueClientId& clientId, std::shared_ptr<TVDiskSkeletonTrace> &&trace,
-                         ui64 internalMessageId) {
+                         NKikimrBlobStorage::EVDiskQueueId extQueueId, TFront& front,
+                         const NBackpressure::TQueueClientId& clientId, std::unique_ptr<TVDiskSkeletonTrace> &&trace) {
+                Y_UNUSED(front);
+                ui64 cookie = converted->Cookie;
                 if (!Queue->Head() && CanSendToSkeleton(cost)) {
                     // send to Skeleton for further processing
                     ctx.ExecutorThread.Send(converted.release());
@@ -242,7 +247,7 @@ namespace NKikimr {
                     *SkeletonFrontInFlightCost += cost;
                     *SkeletonFrontInFlightBytes += recByteSize;
 
-                    Msgs.emplace(internalMessageId, TMsgInfo(msgId.MsgId, ctx.Now(), std::move(trace)));
+                    Msgs.emplace(cookie, TMsgInfo(msgId.MsgId, ctx.Now(), std::move(trace)));
                 } else {
                     // enqueue
                     ++DelayedCount;
@@ -253,7 +258,7 @@ namespace NKikimr {
 
                     TInstant now = TAppData::TimeProvider->Now();
                     Queue->Push(TRecord(std::move(converted), now, recByteSize, msgId, cost, deadline, extQueueId,
-                        clientId, Name, std::move(trace), internalMessageId));
+                        clientId, Name, std::move(trace), cookie));
                 }
             }
 
@@ -270,7 +275,7 @@ namespace NKikimr {
                     const ui64 cost = rec->Cost;
                     if (CanSendToSkeleton(cost) || forceError) {
                         ui32 recByteSize = rec->ByteSize;
-                        Y_DEBUG_ABORT_UNLESS(DelayedCount > 0 && DelayedBytes >= recByteSize);
+                        Y_VERIFY_DEBUG(DelayedCount > 0 && DelayedBytes >= recByteSize);
 
                         --DelayedCount;
                         DelayedBytes -= recByteSize;
@@ -301,7 +306,7 @@ namespace NKikimr {
                             *SkeletonFrontInFlightCost += cost;
                             *SkeletonFrontInFlightBytes += recByteSize;
 
-                            Msgs.emplace(rec->InternalMessageId, TMsgInfo(rec->MsgId.MsgId, ctx.Now(), std::move(rec->Trace)));
+                            Msgs.emplace(rec->Cookie, TMsgInfo(rec->MsgId.MsgId, ctx.Now(), std::move(rec->Trace)));
                         }
                         Queue->Pop();
                     } else {
@@ -312,8 +317,8 @@ namespace NKikimr {
 
         public:
             template <class TFront>
-            void Completed(const TActorContext &ctx, const TVMsgContext &msgCtx, TFront &front) {
-                Y_ABORT_UNLESS(InFlightCount >= 1 && InFlightBytes >= msgCtx.RecByteSize && InFlightCost >= msgCtx.Cost,
+            void Completed(const TActorContext &ctx, const TVMsgContext &msgCtx, TFront &front, ui64 cookie) {
+                Y_VERIFY(InFlightCount >= 1 && InFlightBytes >= msgCtx.RecByteSize && InFlightCost >= msgCtx.Cost,
                          "IntQueueId# %s InFlightCount# %" PRIu64 " InFlightBytes# %" PRIu64
                          " InFlightCost# %" PRIu64 " msgCtx# %s Deadlines# %" PRIu64,
                          NKikimrBlobStorage::EVDiskInternalQueueId_Name(IntQueueId).data(),
@@ -328,8 +333,17 @@ namespace NKikimr {
                 *SkeletonFrontInFlightBytes -= msgCtx.RecByteSize;
                 *SkeletonFrontCostProcessed += msgCtx.Cost;
 
-                const size_t numErased = Msgs.erase(msgCtx.InternalMessageId);
-                Y_ABORT_UNLESS(numErased == 1);
+                // TODO(kruall): fix it, cookie always must be found
+                auto it = Msgs.find(cookie);
+                if (it != Msgs.end()) {
+                    Y_VERIFY_S(it!= Msgs.end(), "cookie# " << cookie);
+                    if (it->second.VDiskSkeletonTrace) {
+                        it->second.VDiskSkeletonTrace->AdditionalTrace = nullptr;
+                        it->second.VDiskSkeletonTrace->MarkCount = 0;
+                        FreeTraceObjects->Push(std::move(it->second.VDiskSkeletonTrace));
+                    }
+                    Msgs.erase(it);
+                }
 
                 ProcessNext(ctx, front, false);
             }
@@ -337,17 +351,17 @@ namespace NKikimr {
             bool Sanitize(const TActorContext &ctx, const TString &vDiskLogPrefix) {
                 bool hasError = false;
                 TInstant now = ctx.Now();
-                for (const auto& [internalMessageId, msgInfo] : Msgs) {
+                for (auto &pair : Msgs) {
+                    const TMsgInfo &msgInfo = pair.second;
                     TDuration passedTime = now - msgInfo.ReceivedTime;
                     if (passedTime > TDuration::Minutes(5)) {
                         hasError = true;
                         STLOG(PRI_ERROR, NKikimrServices::BS_SKELETON, BSVSF04,
                                 vDiskLogPrefix << " passed more than 5 munites for message in the internal queue",
-                                (MsgId, msgInfo.MsgId),
+                                (MsgId, msgInfo.MsgId),,
                                 (QueueName, Name),
                                 (PassedTimeSeconds, passedTime.Seconds()),
-                                (Trace, (msgInfo.VDiskSkeletonTrace ? msgInfo.VDiskSkeletonTrace->ToString() : "None"))
-                                );
+                                (Trace, (msgInfo.VDiskSkeletonTrace && msgInfo.VDiskSkeletonTrace->ToString() ? msgInfo.VDiskSkeletonTrace->ToString() : "None")));
                     }
                 }
                 return hasError;
@@ -386,7 +400,7 @@ namespace NKikimr {
                     case EInFlightBytes: return CalculateSignalLight(InFlightBytes, Max<ui64>(), yellow);
                     case EDelayedCount:  return CalculateSignalLight(DelayedCount, 0, red);
                     case EDelayedBytes:  return CalculateSignalLight(DelayedBytes, 0, red);
-                    default: Y_ABORT("Unexpected param");
+                    default: Y_FAIL("Unexpected param");
                 }
             }
 
@@ -460,6 +474,9 @@ namespace NKikimr {
             ::NMonitoring::TDynamicCounters::TCounterPtr SkeletonFrontOverflow;
             ::NMonitoring::TDynamicCounters::TCounterPtr SkeletonFrontIncorrectMsgId;
 
+            ui64 NextInternalId = 0;
+            THashMap<ui64, ui64> InternalIdToCookie;
+
             void NotifyOtherClients(const TActorContext &ctx, const TFeedback &feedback) {
                 for (const auto &x : feedback.second) {
                     SendWindowChange(ctx, x, ExtQueueId);
@@ -531,6 +548,11 @@ namespace NKikimr {
                     }
                     front.ReplyFunc(std::exchange(converted, nullptr), ctx, status, errorReason, now, feedback.first);
                 }
+
+                if (converted) {
+                    ui64 id = ++NextInternalId;
+                    InternalIdToCookie[id] = std::exchange(const_cast<ui64&>(converted->Cookie), id);
+                }
                 return converted;
             }
 
@@ -538,6 +560,7 @@ namespace NKikimr {
             void DeadlineHappened(const TActorContext &ctx, TRecord *rec, TInstant now, TFront &front) {
                 ++*SkeletonFrontDeadline;
                 auto feedback = QueueBackpressure->Processed(rec->ActorId, rec->MsgId, rec->Cost, now);
+                ReturnCookie(rec->Ev, false);
                 front.ReplyFunc(std::move(rec->Ev), ctx, NKikimrProto::DEADLINE, "deadline exceeded", now, feedback.first);
                 NotifyOtherClients(ctx, feedback);
             }
@@ -545,6 +568,7 @@ namespace NKikimr {
             template <class TFront>
             void DroppedWithError(const TActorContext &ctx, TRecord *rec, TInstant now, TFront &front) {
                 auto feedback = QueueBackpressure->Processed(rec->ActorId, rec->MsgId, rec->Cost, now);
+                ReturnCookie(rec->Ev, false);
                 front.ReplyFunc(std::move(rec->Ev), ctx, NKikimrProto::ERROR, "error state", now, feedback.first);
             }
 
@@ -560,9 +584,20 @@ namespace NKikimr {
                 QueueBackpressure->ForEachWindow(callback);
             }
 
+            void ReturnCookie(std::unique_ptr<IEventHandle> &evHandle, bool required) {
+                if (auto it = InternalIdToCookie.find(evHandle->Cookie); it != InternalIdToCookie.end()) {
+                    const_cast<ui64&>(evHandle->Cookie) = it->second;
+                    InternalIdToCookie.erase(it);
+                } else {
+                    Y_VERIFY(!required, "Internal error, it can't find internal id");
+                }
+            }
+
             void Completed(const TActorContext &ctx, const TVMsgContext &msgCtx, std::unique_ptr<IEventHandle> &evHandle) {
+                ReturnCookie(evHandle, true);
+
                 TInstant now = TAppData::TimeProvider->Now();
-                Y_ABORT_UNLESS(msgCtx.ActorId);
+                Y_VERIFY(msgCtx.ActorId);
                 auto feedback = QueueBackpressure->Processed(msgCtx.ActorId, msgCtx.MsgId, msgCtx.Cost, now);
                 NKikimrBlobStorage::TMsgQoS *msgQoS = nullptr;
                 switch (evHandle->Type) {
@@ -581,7 +616,7 @@ namespace NKikimr {
                     UPDATE_WINDOW_STATUS(TEvBlobStorage::TEvVGetBarrierResult)
 #undef UPDATE_WINDOW_STATUS
                 }
-                Y_ABORT_UNLESS(msgQoS);
+                Y_VERIFY(msgQoS);
                 feedback.first.Serialize(*msgQoS->MutableWindow());
                 NotifyOtherClients(ctx, feedback);
             }
@@ -663,20 +698,15 @@ namespace NKikimr {
         TExtQueueClass ExtQueueTabletLogPuts;
         TExtQueueClass ExtQueueAsyncBlobPuts;
         TExtQueueClass ExtQueueUserDataPuts;
+        std::unique_ptr<TCostModel> CostModel;
         TActiveActors ActiveActors;
         NMonGroup::TReplGroup ReplMonGroup;
         NMonGroup::TSyncerGroup SyncerMonGroup;
         NMonGroup::TVDiskStateGroup VDiskMonGroup;
-        NMonGroup::TCostGroup CostGroup;
         TVDiskIncarnationGuid VDiskIncarnationGuid;
         bool HasUnreadableBlobs = false;
         TInstant LastSanitizeTime = TInstant::Zero();
         TInstant LastSanitizeWithErrorTime = TInstant::Zero();
-        ui64 NextUniqueMessageId = 1;
-
-        ui64 AllocateMessageId() {
-            return NextUniqueMessageId++;
-        }
 
         ////////////////////////////////////////////////////////////////////////
         // NOTIFICATIONS
@@ -705,7 +735,7 @@ namespace NKikimr {
 
         void SetupMonitoring(const TActorContext &ctx) {
             TAppData *appData = AppData(ctx);
-            Y_ABORT_UNLESS(appData);
+            Y_VERIFY(appData);
             auto mon = appData->Mon;
             if (mon) {
                 NMonitoring::TIndexMonPage *actorsMonPage = mon->RegisterIndexPage("actors", "Actors");
@@ -713,8 +743,8 @@ namespace NKikimr {
 
                 const auto &bi = Config->BaseInfo;
                 TString path = Sprintf("vdisk%09" PRIu32 "_%09" PRIu32, bi.PDiskId, bi.VDiskSlotId);
-                TString name = Sprintf("%s VDisk%09" PRIu32 "_%09" PRIu32 " (%" PRIu32 ")",
-                                      VCtx->VDiskLogPrefix.data(), bi.PDiskId, bi.VDiskSlotId, GInfo->GroupID);
+                TString name = Sprintf("%s VDisk%09" PRIu32 "_%09" PRIu32,
+                                      VCtx->VDiskLogPrefix.data(), bi.PDiskId, bi.VDiskSlotId);
                 mon->RegisterActorPage(vdisksMonPage, path, name, false, ctx.ExecutorThread.ActorSystem, ctx.SelfID);
             }
         }
@@ -724,7 +754,7 @@ namespace NKikimr {
             VCtx = MakeIntrusive<TVDiskContext>(ctx.SelfID, GInfo->PickTopology(), VDiskCounters, SelfVDiskId,
                         ctx.ExecutorThread.ActorSystem, baseInfo.DeviceType, baseInfo.DonorMode,
                         baseInfo.ReplPDiskReadQuoter, baseInfo.ReplPDiskWriteQuoter, baseInfo.ReplNodeRequestQuoter,
-                        baseInfo.ReplNodeResponseQuoter, Config->BurstThresholdNs, Config->DiskTimeAvailableScale);
+                        baseInfo.ReplNodeResponseQuoter);
 
             // create IntQueues
             IntQueueAsyncGets = std::make_unique<TIntQueueClass>(
@@ -774,7 +804,7 @@ namespace NKikimr {
 
             // create and run skeleton
             SkeletonId = ctx.Register(CreateVDiskSkeleton(Config, GInfo, ctx.SelfID, VCtx));
-            ActiveActors.Insert(SkeletonId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(SkeletonId);
 
             SetupMonitoring(ctx);
             Become(&TThis::StateLocalRecoveryInProgress);
@@ -817,24 +847,18 @@ namespace NKikimr {
                     {
                         Become(&TThis::StateSyncGuidRecoveryInProgress);
                         TBlobStorageGroupType type = (GInfo ? GInfo->Type : TErasureType::ErasureNone);
-                        VCtx->UpdateCostModel(std::make_unique<TCostModel>(msg->Dsk->SeekTimeUs, msg->Dsk->ReadSpeedBps,
+                        CostModel = std::make_unique<TCostModel>(msg->Dsk->SeekTimeUs, msg->Dsk->ReadSpeedBps,
                             msg->Dsk->WriteSpeedBps, msg->Dsk->ReadBlockSize, msg->Dsk->WriteBlockSize,
-                            msg->MinREALHugeBlobInBytes, type));
+                            msg->HugeBlobCtx->MinREALHugeBlobInBytes, type);
                         break;
                     }
                     case TEvFrontRecoveryStatus::SyncGuidRecoveryDone:
                         Become(&TThis::StateFunc);
                         SendNotifications(ctx);
                         break;
-                    default: Y_ABORT("Unexpected case");
+                    default: Y_FAIL("Unexpected case");
                 }
             }
-        }
-
-        void Handle(TEvMinHugeBlobSizeUpdate::TPtr &ev) {
-            VCtx->UpdateCostModel(std::make_unique<TCostModel>(VCtx->CostModel->SeekTimeUs, VCtx->CostModel->ReadSpeedBps,
-                VCtx->CostModel->WriteSpeedBps, VCtx->CostModel->ReadBlockSize, VCtx->CostModel->WriteBlockSize,
-                ev->Get()->MinREALHugeBlobInBytes, VCtx->CostModel->GType));
         }
 
         static NKikimrWhiteboard::EFlag ToLightSignal(NKikimrWhiteboard::EVDiskState st) {
@@ -878,61 +902,6 @@ namespace NKikimr {
                                     TABLED() {str << "VDisk LocalDb Recovery";}
                                     TABLED() {THtmlLightSignalRenderer(light, s).Output(str);}
                                 }
-                                TABLER() {
-                                    TABLED() {str << "Read only";}
-                                    TABLED() {str << (Config->BaseInfo.ReadOnly ? "True" : "False");}
-                                }
-                                std::vector<std::pair<TString, TString>> rows;
-                                TABLER() {
-                                    TABLED() { str << "Replication"; };
-                                    TABLED() {
-                                        if (ReplMonGroup.ReplUnreplicatedVDisks()) {
-                                            THtmlLightSignalRenderer(NKikimrWhiteboard::Yellow, "Ongoing").Output(str);
-                                            str << "&emsp;<a href=\"?repl=1&maxRows=1000\">inspect problem blobs</a>";
-
-                                            ui64 n = ReplMonGroup.ReplSecondsRemaining();
-                                            TString time;
-                                            time = TStringBuilder() << n % 60 << "s";
-                                            n /= 60;
-                                            if (n) {
-                                                time = TStringBuilder() << n % 60 << "m" << time;
-                                                n /= 60;
-                                                if (n) {
-                                                    time = TStringBuilder() << n << "h" << time;
-                                                }
-                                            }
-
-                                            rows.emplace_back("&emsp;Replication time remaining", time);
-                                            rows.emplace_back("&emsp;Blobs", TStringBuilder()
-                                                << ReplMonGroup.ReplItemsDone() << " processed after VDisk start<br/>"
-                                                << ReplMonGroup.ReplItemsRemaining() << " to go");
-                                            const ui64 blobsWithProblems = ReplMonGroup.ReplTotalBlobsWithProblems();
-                                            const ui64 phantoms = ReplMonGroup.ReplPhantomBlobsWithProblems();
-                                            rows.emplace_back("&emsp;Blobs with problems", TStringBuilder()
-                                                << blobsWithProblems);
-                                            rows.emplace_back("&emsp;Phantom-like blobs among them", TStringBuilder()
-                                                << phantoms);
-
-                                            TStringStream s;
-                                            if (blobsWithProblems == 0) {
-                                                THtmlLightSignalRenderer(NKikimrWhiteboard::Green, "ongoing normally").Output(s);
-                                            } else if (blobsWithProblems == phantoms) {
-                                                THtmlLightSignalRenderer(NKikimrWhiteboard::Yellow, "phantoms only").Output(s);
-                                            } else {
-                                                THtmlLightSignalRenderer(NKikimrWhiteboard::Yellow, "problems were encountered").Output(s);
-                                            }
-                                            rows.emplace_back("&emsp;Conclusion", s.Str());
-                                        } else {
-                                            THtmlLightSignalRenderer(NKikimrWhiteboard::Green, "Finished").Output(str);
-                                        }
-                                    }
-                                }
-                                for (const auto& [key, value] : rows) {
-                                    TABLER() {
-                                        TABLED() { str << key; }
-                                        TABLED() { str << value; }
-                                    }
-                                }
                                 if (VDiskMonGroup.VDiskState() == NKikimrWhiteboard::PDiskError) {
                                     TABLER() {
                                         TABLED() {str << "Error Details";}
@@ -941,25 +910,8 @@ namespace NKikimr {
                                                 << TPDiskErrorState::StateToString(VCtx->GetPDiskErrorState());
                                         }
                                     }
-                                } else if (VCtx->LocalRecoveryErrorStr) {
-                                    TABLER() {
-                                        TABLED() {str << "Error Details";}
-                                        TABLED() {
-                                            str << "LocalRecovery reported error: "
-                                                << VCtx->LocalRecoveryErrorStr;
-                                        }
-                                    }
                                 }
                             }
-                        }
-                        {
-                            str << "<a class=\"btn btn-default\" href=\"?type=restart\" "
-                                << (
-                                    IsVDiskRestartAllowed(VDiskMonGroup.VDiskState())
-                                    ? "style='background:Tomato' "
-                                    : "disabled style='background:LightGray' "
-                                )
-                                << ">Restart</a>";
                         }
                     }
                 }
@@ -1105,8 +1057,8 @@ namespace NKikimr {
 
         template <class TEventPtr>
         inline void CheckEvent(TEventPtr &ev, const char *msgName) {
-            Y_DEBUG_ABORT_UNLESS(VCtx->CostModel);
-            Y_ABORT_UNLESS(ev->Get(), "Incoming message of type %s is null at the VDisk border. This MUST never happens, "
+            Y_VERIFY_DEBUG(CostModel);
+            Y_VERIFY(ev->Get(), "Incoming message of type %s is null at the VDisk border. This MUST never happens, "
                    "check VDisk clients: bufSize# %u", msgName, unsigned(ev->GetSize()));
         }
 
@@ -1153,15 +1105,6 @@ namespace NKikimr {
             ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes("NOT_READY"));
         }
 
-        template <class TEventPtr>
-        void DatabaseReadOnlyHandle(TEventPtr &ev, const TActorContext &ctx) {
-            LOG_ERROR_S(ctx, NKikimrServices::BS_SKELETON, VCtx->VDiskLogPrefix
-                << "Unavailable in read-only"
-                << " Sender# " << ev->Sender.ToString());
-           TInstant now = TAppData::TimeProvider->Now();
-           Reply(ev, ctx, NKikimrProto::ERROR, "VDisk is in read-only mode", now);
-        }
-
         ////////////////////////////////////////////////////////////////////////////
         // HANDLE SECTOR
         ////////////////////////////////////////////////////////////////////////////
@@ -1193,8 +1136,8 @@ namespace NKikimr {
 
         void FillInCostSettingsAndTimestampIfRequired(NKikimrBlobStorage::TMsgQoS *qos, TInstant now) const {
             qos->MutableExecTimeStats()->SetReceivedTimestamp(now.GetValue());
-            if (qos->GetSendMeCostSettings() && VCtx->CostModel) {
-                VCtx->CostModel->FillInSettings(*qos->MutableCostSettings());
+            if (qos->GetSendMeCostSettings() && CostModel) {
+                CostModel->FillInSettings(*qos->MutableCostSettings());
             }
         }
 
@@ -1204,11 +1147,10 @@ namespace NKikimr {
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVPatchDiff>
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVPatchXorDiff>;
 
-        template <class TEvent>
-        void HandleRequestWithQoS(const TActorContext &ctx, TAutoPtr<TEventHandle<TEvent>> &ev, const char *msgName, ui64 cost,
+        template <class TEventPtr>
+        void HandleRequestWithQoS(const TActorContext &ctx, TEventPtr &ev, const char *msgName, ui64 cost,
                                   TIntQueueClass &intQueue) {
             CheckEvent(ev, msgName);
-            const ui64 advancedCost = VCtx->CostTracker->GetCost(*ev->Get());
             const ui32 recByteSize = ev->Get()->GetCachedByteSize();
             auto &record = ev->Get()->Record;
             auto &msgQoS = *record.MutableMsgQoS();
@@ -1223,48 +1165,29 @@ namespace NKikimr {
             msgQoS.SetCost(cost);
             msgQoS.SetIntQueueId(intQueueId);
             ActorIdToProto(ev->Sender, msgQoS.MutableSenderActorId());
-            const ui64 internalMessageId = AllocateMessageId();
-            msgQoS.SetInternalMessageId(internalMessageId);
             FillInCostSettingsAndTimestampIfRequired(&msgQoS, now);
 
             // check queue compatibility: it's a contract between BlobStorage Proxy and VDisk,
             // we don't work if queues are incompatible
 
             bool compatible = Compatible(extQueueId, intQueueId);
-            Y_ABORT_UNLESS(compatible, "%s: %s: extQueue is incompatible with intQueue; intQueue# %s extQueue# %s",
+            Y_VERIFY(compatible, "%s: %s: extQueue is incompatible with intQueue; intQueue# %s extQueue# %s",
                    VCtx->VDiskLogPrefix.data(), msgName, NKikimrBlobStorage::EVDiskInternalQueueId_Name(intQueueId).data(),
                    NKikimrBlobStorage::EVDiskQueueId_Name(extQueueId).data());
-
-            LOG_TRACE_S(TActivationContext::AsActorContext(), NKikimrServices::BS_REQUEST_COST,
-                        "SkeletonFront Request Type# " << TypeName(*ev) << " Cost# " << cost <<
-                        " Sender# " << ev->Sender.ToString());
 
             TExtQueueClass &extQueue = GetExtQueue(extQueueId);
             NBackpressure::TQueueClientId clientId(msgQoS);
             std::unique_ptr<IEventHandle> event = extQueue.Enqueue(ctx, std::unique_ptr<IEventHandle>(
                 ev->Forward(SkeletonId).Release()), msgId, cost, *this, clientId);
             if (event) {
-                std::shared_ptr<TVDiskSkeletonTrace> trace;
-#if VDISK_SKELETON_TRACE
-                if constexpr (IsPatchEvent<TEvent>) {
-                    event->Get<TEvent>()->VDiskSkeletonTrace = trace = std::make_shared<TVDiskSkeletonTrace>();
+                std::unique_ptr<TVDiskSkeletonTrace> trace;
+                if constexpr (IsPatchEvent<std::decay_t<decltype(*ev->Get())>>) {
+                    trace = intQueue.GetFreeTrace();
+                    event->Get<std::decay_t<decltype(*ev->Get())>>()->VDiskSkeletonTrace = trace.get();
                 }
-#endif
                 // good, enqueue it in intQueue
-                intQueue.Enqueue(ctx, recByteSize, std::move(event), msgId, cost, deadline, extQueueId, *this, clientId,
-                    std::move(trace), internalMessageId);
-
-                if constexpr (std::is_same_v<TEvent, TEvBlobStorage::TEvVPatchXorDiff>) {
-                    // TEvVPatchXorDiff's cost is included in cost of other Patch operations
-                } else {
-                    if (clientId.GetType() == NBackpressure::EQueueClientType::DSProxy) {
-                        CostGroup.SkeletonFrontUserCostNs() += cost;
-                        VCtx->CostTracker->CountUserCost(advancedCost);
-                    } else {
-                        CostGroup.SkeletonFrontInternalCostNs() += cost;
-                        VCtx->CostTracker->CountInternalCost(advancedCost);
-                    }
-                }
+                intQueue.Enqueue(ctx, recByteSize, std::move(event), msgId, cost,
+                        deadline, extQueueId, *this, clientId, std::move(trace));
             }
 
             Sanitize(ctx);
@@ -1292,13 +1215,13 @@ namespace NKikimr {
                 /*GetLowRead*/   {false, false, false, false, false,  false, false, true}
             };
 
-            Y_DEBUG_ABORT_UNLESS(int(extId) >= 0 && int(extId) <= 7 && int(intId) >= 0 && int(intId) <= 7);
+            Y_VERIFY_DEBUG(int(extId) >= 0 && int(extId) <= 7 && int(intId) >= 0 && int(intId) <= 7);
             return compatibilityMatrix[extId][intId];
         }
 
         template <typename TEvPtr>
         void HandlePatchEvent(TEvPtr &ev) {
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
+            const ui64 cost = CostModel->GetCost(*ev->Get());
 
             auto &record = ev->Get()->Record;
 
@@ -1342,7 +1265,7 @@ namespace NKikimr {
 
         void Handle(TEvBlobStorage::TEvVPut::TPtr &ev, const TActorContext &ctx) {
             bool logPutInternalQueue = true;
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get(), &logPutInternalQueue);
+            const ui64 cost = CostModel->GetCost(*ev->Get(), &logPutInternalQueue);
 
             const NKikimrBlobStorage::TEvVPut &record = ev->Get()->Record;
             const TLogoBlobID blob = LogoBlobIDFromLogoBlobID(record.GetBlobID());
@@ -1362,14 +1285,14 @@ namespace NKikimr {
                         HandleRequestWithQoS(ctx, ev, "TEvVPut", cost, *IntQueueHugePutsBackground);
                         break;
                     default:
-                        Y_ABORT("Unexpected case");
+                        Y_FAIL("Unexpected case");
                 }
             }
         }
 
         void Handle(TEvBlobStorage::TEvVMultiPut::TPtr &ev, const TActorContext &ctx) {
             bool logPutInternalQueue = true;
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get(), &logPutInternalQueue);
+            const ui64 cost = CostModel->GetCost(*ev->Get(), &logPutInternalQueue);
 
             const NKikimrBlobStorage::TEvVMultiPut &record = ev->Get()->Record;
             LWTRACK(VDiskSkeletonFrontVMultiPutRecieved, ev->Get()->Orbit, VCtx->NodeId, VCtx->GroupId,
@@ -1389,15 +1312,15 @@ namespace NKikimr {
                         HandleRequestWithQoS(ctx, ev, "TEvVMultiPut", cost, *IntQueueHugePutsBackground);
                         break;
                     default:
-                        Y_ABORT("Unexpected case");
+                        Y_FAIL("Unexpected case");
                 }
             }
         }
 
         void Handle(TEvBlobStorage::TEvVGet::TPtr &ev, const TActorContext &ctx) {
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
+            const ui64 cost = CostModel->GetCost(*ev->Get());
             // select correct internal queue
-            Y_ABORT_UNLESS(ev->Get()->Record.HasHandleClass());
+            Y_VERIFY(ev->Get()->Record.HasHandleClass());
             auto cls = ev->Get()->Record.GetHandleClass();
             NKikimrBlobStorage::EVDiskInternalQueueId intQueueId;
             switch (cls) {
@@ -1414,29 +1337,29 @@ namespace NKikimr {
                     intQueueId = NKikimrBlobStorage::EVDiskInternalQueueId::IntLowRead;
                     break;
                 default:
-                    Y_ABORT("Unexpected case");
+                    Y_FAIL("Unexpected case");
             }
             TIntQueueClass &queue = GetIntQueue(intQueueId);
             HandleRequestWithQoS(ctx, ev, "TEvVGet", cost, queue);
         }
 
         void Handle(TEvBlobStorage::TEvVBlock::TPtr &ev, const TActorContext &ctx) {
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
+            const ui64 cost = CostModel->GetCost(*ev->Get());
             HandleRequestWithQoS(ctx, ev, "TEvVBlock", cost, *IntQueueLogPuts);
         }
 
         void Handle(TEvBlobStorage::TEvVGetBlock::TPtr &ev, const TActorContext &ctx) {
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
+            const ui64 cost = CostModel->GetCost(*ev->Get());
             HandleRequestWithQoS(ctx, ev, "TEvVGetBlock", cost, *IntQueueFastGets);
         }
 
         void Handle(TEvBlobStorage::TEvVCollectGarbage::TPtr &ev, const TActorContext &ctx) {
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
+            const ui64 cost = CostModel->GetCost(*ev->Get());
             HandleRequestWithQoS(ctx, ev, "TEvVCollectGarbage", cost, *IntQueueLogPuts);
         }
 
         void Handle(TEvBlobStorage::TEvVGetBarrier::TPtr &ev, const TActorContext &ctx) {
-            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
+            const ui64 cost = CostModel->GetCost(*ev->Get());
             HandleRequestWithQoS(ctx, ev, "TEvVGetBarrier", cost, *IntQueueFastGets);
         }
 
@@ -1451,18 +1374,13 @@ namespace NKikimr {
                 const auto& record = ev->Get()->Record;
                 if (record.HasVDiskID()) {
                     const TVDiskID& vdiskId = VDiskIDFromVDiskID(record.GetVDiskID());
-                    if (!SelfVDiskId.SameExceptGeneration(vdiskId)) {
-                        LOG_CRIT_S(ctx, NKikimrServices::BS_SKELETON, VCtx->VDiskLogPrefix
-                            << "VDiskId mismatch expected# " << SelfVDiskId << " provided# " << vdiskId
-                            << " Marker# BSVSF05");
-                        Y_DEBUG_ABORT("VDiskId mismatch");
-                        return Reply(ev, ctx, NKikimrProto::ERROR, "VDiskId mismatch", TAppData::TimeProvider->Now());
-                    }
+                    Y_VERIFY(vdiskId.GroupID == SelfVDiskId.GroupID);
+                    Y_VERIFY(TVDiskIdShort(vdiskId) == TVDiskIdShort(SelfVDiskId));
                     if (vdiskId != SelfVDiskId) {
                         if (SelfVDiskId.GroupGeneration < vdiskId.GroupGeneration && record.HasRecentGroup()) {
                             auto newInfo = TBlobStorageGroupInfo::Parse(record.GetRecentGroup(), nullptr, nullptr);
                             ChangeGeneration(vdiskId, newInfo, ctx);
-                            Y_ABORT_UNLESS(vdiskId == SelfVDiskId);
+                            Y_VERIFY(vdiskId == SelfVDiskId);
                             const ui32 groupId = newInfo->GroupID;
                             const ui32 generation = newInfo->GroupGeneration;
                             auto ev = std::make_unique<TEvBlobStorage::TEvUpdateGroupInfo>(groupId, generation, *newInfo->Group);
@@ -1475,7 +1393,7 @@ namespace NKikimr {
                 std::optional<NBackpressure::TMessageId> expectedMsgId;
                 if (record.HasQoS()) {
                     const auto& qos = record.GetQoS();
-                    Y_DEBUG_ABORT_UNLESS(qos.HasExtQueueId());
+                    Y_VERIFY_DEBUG(qos.HasExtQueueId());
                     if (qos.HasExtQueueId()) {
                         auto& queue = GetExtQueue(qos.GetExtQueueId());
                         expectedMsgId = queue.GetExpectedMsgId(ev->Sender);
@@ -1522,7 +1440,7 @@ namespace NKikimr {
                 TInstant now) {
             using namespace NErrBuilder;
             auto res = ErroneousResult(VCtx, status, errorReason, ev, now, nullptr, SelfVDiskId, VDiskIncarnationGuid, GInfo);
-            SendVDiskResponse(ctx, ev->Sender, res.release(), ev->Cookie, VCtx);
+            SendVDiskResponse(ctx, ev->Sender, res.release(), ev->Cookie);
         }
 
         void Reply(TEvBlobStorage::TEvVCheckReadiness::TPtr &ev, const TActorContext &ctx,
@@ -1535,8 +1453,8 @@ namespace NKikimr {
             if (expectedMsgId) {
                 expectedMsgId->Serialize(*record.MutableExpectedMsgId());
             }
-            if (VCtx->CostModel && status == NKikimrProto::OK) {
-                VCtx->CostModel->FillInSettings(*record.MutableCostSettings());
+            if (CostModel && status == NKikimrProto::OK) {
+                CostModel->FillInSettings(*record.MutableCostSettings());
             }
             ctx.Send(ev->Sender, res.release(), flags, ev->Cookie);
         }
@@ -1580,14 +1498,9 @@ namespace NKikimr {
             const TString& type = cgi.Get("type");
             TString html = (type == TString()) ? GenerateHtmlState(ctx) : TString();
 
-            if (cgi.Has("repl")) {
-                ActiveActors.Insert(ctx.Register(CreateReplMonRequestHandler(SkeletonId, SelfVDiskId, Top, ev)),
-                    __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
-            } else {
-                auto aid = ctx.Register(CreateFrontSkeletonMonRequestHandler(SelfVDiskId, ctx.SelfID, SkeletonId,
-                    ctx.SelfID, Config, Top, ev, html, VDiskMonGroup));
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
-            }
+            auto aid = ctx.Register(CreateFrontSkeletonMonRequestHandler(SelfVDiskId, ctx.SelfID, SkeletonId,
+                ctx.SelfID, Config, Top, ev, html));
+            ActiveActors.Insert(aid);
         }
 
         void Handle(TEvVDiskStatRequest::TPtr &ev) {
@@ -1598,38 +1511,36 @@ namespace NKikimr {
         void Handle(TEvGetLogoBlobRequest::TPtr &ev) {
             auto aid = Register(CreateFrontSkeletonGetLogoBlobRequestHandler(SelfVDiskId, SelfId(), SkeletonId,
                 Config, Top, ev));
-            ActiveActors.Insert(aid, __FILE__, __LINE__, TActivationContext::AsActorContext(), NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
 
         void Handle(TEvVDiskRequestCompleted::TPtr &ev, const TActorContext &ctx) {
             const TVMsgContext &msgCtx = ev->Get()->Ctx;
             std::unique_ptr<IEventHandle> event = std::move(ev->Get()->Event);
+            ui64 id = event->Cookie;
             TExtQueueClass &extQueue = GetExtQueue(msgCtx.ExtQueueId);
             extQueue.Completed(ctx, msgCtx, event);
             TIntQueueClass &intQueue = GetIntQueue(msgCtx.IntQueueId);
-            intQueue.Completed(ctx, msgCtx, *this);
-            VCtx->CostTracker->CountPDiskResponse();
-            if (!ev->Get()->DoNotResend) {
-                TActivationContext::Send(event.release());
-            }
+            intQueue.Completed(ctx, msgCtx, *this, id);
+            TActivationContext::Send(event.release());
         }
 
         void ChangeGeneration(const TVDiskID& vdiskId, const TIntrusivePtr<TBlobStorageGroupInfo>& info,
                 const TActorContext& ctx) {
             // check group id
-            Y_ABORT_UNLESS(info->GroupID == GInfo->GroupID, "GroupId# %" PRIu32 " new GroupId# %" PRIu32,
+            Y_VERIFY(info->GroupID == GInfo->GroupID, "GroupId# %" PRIu32 " new GroupId# %" PRIu32,
                 GInfo->GroupID, info->GroupID);
 
             // check target disk id
-            Y_ABORT_UNLESS(TVDiskIdShort(SelfVDiskId) == TVDiskIdShort(vdiskId), "Incorrect target VDiskId"
+            Y_VERIFY(TVDiskIdShort(SelfVDiskId) == TVDiskIdShort(vdiskId), "Incorrect target VDiskId"
                     " SelfVDiskId# %s new VDiskId# %s", SelfVDiskId.ToString().data(), vdiskId.ToString().data());
 
             // check the disk location inside group
-            Y_ABORT_UNLESS(info->GetVDiskId(TVDiskIdShort(vdiskId)) == vdiskId);
+            Y_VERIFY(info->GetVDiskId(TVDiskIdShort(vdiskId)) == vdiskId);
 
             // check that NewInfo has the same topology as the one VDisk started with
-            Y_ABORT_UNLESS(VCtx->Top->EqualityCheck(info->GetTopology()));
+            Y_VERIFY(VCtx->Top->EqualityCheck(info->GetTopology()));
 
             // check generation for possible race
             if (info->GroupGeneration <= GInfo->GroupGeneration) {
@@ -1723,7 +1634,7 @@ namespace NKikimr {
                 case NKikimrBlobStorage::EVDiskQueueId::GetLowRead:
                     extQueue = &ExtQueueLowGets;
                     break;
-                default: Y_ABORT("Unexpected case extQueueId# %" PRIu32, static_cast<ui32>(extQueueId));
+                default: Y_FAIL("Unexpected case extQueueId# %" PRIu32, static_cast<ui32>(extQueueId));
             }
             return *extQueue;
         }
@@ -1752,7 +1663,7 @@ namespace NKikimr {
                 case NKikimrBlobStorage::EVDiskInternalQueueId::IntPutHugeBackground:
                     intQueue = IntQueueHugePutsBackground.get();
                     break;
-                default: Y_ABORT("Unexpected case");
+                default: Y_FAIL("Unexpected case");
             }
             return *intQueue;
         }
@@ -1943,20 +1854,6 @@ namespace NKikimr {
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVGet>
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVPut>;
 
-        template <typename TEv>
-        static constexpr bool IsReadOnlyCompatible = (
-            std::is_same_v<TEv, TEvBlobStorage::TEvVCheckReadiness> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVDbStat> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVGet> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVGetBarrier> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVGetBlock> ||
-            std::is_same_v<TEv, TEvGetLogoBlobIndexStatRequest> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVStatus> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVAssimilate> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVSync> ||
-            std::is_same_v<TEv, TEvBlobStorage::TEvVSyncFull>
-        );
-
         template<typename TEventType>
         void CheckExecute(TAutoPtr<TEventHandle<TEventType>>& ev, const TActorContext& ctx) {
             if constexpr (IsPatchEvent<TEventType>) {
@@ -1976,29 +1873,20 @@ namespace NKikimr {
             return true;
         }
 
-        template<typename TEv>
-        static constexpr bool IsWithoutVDiskId = std::is_same_v<TEv, TEvGetLogoBlobIndexStatRequest>;
+        template <class TEv, class Decayed = std::decay_t<TEv>>
+        static constexpr bool IsWithoutVDiskId = std::is_same_v<TEv, Decayed>;
 
         template <typename TEventType>
         void Check(TAutoPtr<TEventHandle<TEventType>>& ev, const TActorContext& ctx) {
             const auto& record = ev->Get()->Record;
+            bool isSameVDisk = true;
             if constexpr (!IsWithoutVDiskId<TEventType>) {
-                const auto& vdiskId = VDiskIDFromVDiskID(record.GetVDiskID());
-                if (!vdiskId.SameExceptGeneration(SelfVDiskId)) {
-                    LOG_CRIT_S(ctx, NKikimrServices::BS_SKELETON, VCtx->VDiskLogPrefix
-                        << "VDiskId mismatch expected# " << SelfVDiskId << " provided# " << vdiskId
-                        << " Type# " << TypeName<TEventType>() << " Marker# BSVSF06");
-                    Y_DEBUG_ABORT("VDiskId mismatch");
-                    return Reply(ev, ctx, NKikimrProto::ERROR, "VDiskId mismatch", TAppData::TimeProvider->Now());
-                } else if (!vdiskId.SameDisk(SelfVDiskId)) {
-                    return Reply(ev, ctx, NKikimrProto::RACE, "group generation mismatch", TAppData::TimeProvider->Now());
-                }
+                isSameVDisk = SelfVDiskId.SameDisk(record.GetVDiskID());
             }
-            if (!GInfo->CheckScope(TKikimrScopeId(ev->OriginScopeId), ctx, true)) {
+            if (!isSameVDisk) {
+                return Reply(ev, ctx, NKikimrProto::RACE, "group generation mismatch", TAppData::TimeProvider->Now());
+            } else if (!GInfo->CheckScope(TKikimrScopeId(ev->OriginScopeId), ctx, true)) {
                 DatabaseAccessDeniedHandle(ev, ctx);
-            } else if (Config->BaseInfo.ReadOnly && !IsReadOnlyCompatible<TEventType>) {
-                LOG_INFO_S(ctx, BS_SKELETON, VCtx->VDiskLogPrefix << "Blocking request incompatible with read-only: " << TypeName<TEventType>());
-                DatabaseReadOnlyHandle(ev, ctx);
             } else {
                 SetReceivedTime(ev);
                 CheckExecute(ev, ctx);
@@ -2069,7 +1957,6 @@ namespace NKikimr {
             HFunc(TEvReportScrubStatus, Handle)
             HFunc(NNodeWhiteboard::TEvWhiteboard::TEvVDiskStateUpdate, Handle)
             fFunc(TEvBlobStorage::EvForwardToSkeleton, HandleForwardToSkeleton)
-            hFunc(TEvMinHugeBlobSizeUpdate, Handle)
         )
 
 #define HFuncStatus(TEvType, status, errorReason, now, wstatus) \
@@ -2096,7 +1983,7 @@ namespace NKikimr {
                 HFuncStatus(TEvBlobStorage::TEvVGetBlock, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVCollectGarbage, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVGetBarrier, status, errorReason, now, wstatus);
-                default: Y_DEBUG_ABORT("Unsupported message %d", ev->GetTypeRewrite());
+                default: Y_VERIFY_DEBUG(false, "Unsupported message %d", ev->GetTypeRewrite());
             }
         }
 
@@ -2192,10 +2079,10 @@ namespace NKikimr {
                                    Config->SkeletonFrontQueueBackpressureCheckMsgId,
                                    SkeletonFrontGroup,
                                    cfg)
+            , CostModel()
             , ReplMonGroup(VDiskCounters, "subsystem", "repl")
             , SyncerMonGroup(VDiskCounters, "subsystem", "syncer")
             , VDiskMonGroup(VDiskCounters, "subsystem", "state")
-            , CostGroup(VDiskCounters, "subsystem", "cost")
         {
             ReplMonGroup.ReplUnreplicatedVDisks() = 1;
             VDiskMonGroup.VDiskState(NKikimrWhiteboard::EVDiskState::Initial);

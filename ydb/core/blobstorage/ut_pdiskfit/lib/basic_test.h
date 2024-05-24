@@ -1,8 +1,8 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 #include <ydb/core/protos/pdiskfit.pb.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
@@ -81,12 +81,11 @@ public:
     }
 
     void CreatePDiskActor(const TActorContext& ctx) {
-        Y_ABORT_UNLESS(Counters);
-        Y_ABORT_UNLESS(ctx.ExecutorThread.ActorSystem);
-        Y_ABORT_UNLESS(PDiskConfig);
-        Y_ABORT_UNLESS(AppData(ctx));
-        std::unique_ptr<IActor> pdiskActor(CreatePDisk(PDiskConfig, NPDisk::TMainKey{ .Keys = { 1 }, .IsInitialized = true },
-                Counters->GetSubgroup("subsystem", "pdisk")));
+        Y_VERIFY(Counters);
+        Y_VERIFY(ctx.ExecutorThread.ActorSystem);
+        Y_VERIFY(PDiskConfig);
+        Y_VERIFY(AppData(ctx));
+        std::unique_ptr<IActor> pdiskActor(CreatePDisk(PDiskConfig, {1}, Counters->GetSubgroup("subsystem", "pdisk")));
         const TActorId actorId = ctx.ExecutorThread.ActorSystem->Register(pdiskActor.release(), TMailboxType::Simple,
                 AppData(ctx)->SystemPoolId);
         PDiskServiceId = MakeBlobStoragePDiskID(ctx.ExecutorThread.ActorSystem->NodeId, PDiskConfig->PDiskId);
@@ -96,13 +95,13 @@ public:
     void Finish(const TActorContext& ctx) {
         LOG_NOTICE(ctx, NActorsServices::TEST, "TBasicTest::Finish called");
         Die(ctx);
-        Y_ABORT_UNLESS(StopEvent);
+        Y_VERIFY(StopEvent);
         StopEvent->Signal();
     }
 
     STFUNC(StateFunc) {
         switch (const ui32 type = ev->GetTypeRewrite()) {
-            default: Y_ABORT("unexpected message 0x%08" PRIx32, type);
+            default: Y_FAIL("unexpected message 0x%08" PRIx32, type);
         }
     }
 };

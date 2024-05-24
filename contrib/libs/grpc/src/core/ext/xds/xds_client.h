@@ -14,40 +14,29 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_XDS_XDS_CLIENT_H
-#define GRPC_SRC_CORE_EXT_XDS_XDS_CLIENT_H
+#ifndef GRPC_CORE_EXT_XDS_XDS_CLIENT_H
+#define GRPC_CORE_EXT_XDS_XDS_CLIENT_H
 
 #include <grpc/support/port_platform.h>
 
-#include <map>
-#include <memory>
 #include <set>
-#include <util/generic/string.h>
-#include <util/string/cast.h>
-#include <utility>
 #include <vector>
 
-#include "y_absl/base/thread_annotations.h"
-#include "y_absl/status/status.h"
-#include "y_absl/status/statusor.h"
 #include "y_absl/strings/string_view.h"
-#include "upb/def.hpp"
-
-#include <grpc/event_engine/event_engine.h>
+#include "y_absl/types/optional.h"
 
 #include "src/core/ext/xds/xds_api.h"
 #include "src/core/ext/xds/xds_bootstrap.h"
 #include "src/core/ext/xds/xds_client_stats.h"
 #include "src/core/ext/xds/xds_resource_type.h"
-#include "src/core/ext/xds/xds_transport.h"
-#include "src/core/lib/debug/trace.h"
+#include "src/core/lib/channel/channelz.h"
 #include "src/core/lib/gprpp/dual_ref_counted.h"
+#include "src/core/lib/gprpp/memory.h"
 #include "src/core/lib/gprpp/orphanable.h"
 #include "src/core/lib/gprpp/ref_counted.h"
 #include "src/core/lib/gprpp/ref_counted_ptr.h"
 #include "src/core/lib/gprpp/sync.h"
-#include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/gprpp/work_serializer.h"
+#include "src/core/lib/iomgr/work_serializer.h"
 #include "src/core/lib/uri/uri_parser.h"
 
 namespace grpc_core {
@@ -66,27 +55,34 @@ class XdsClient : public DualRefCounted<XdsClient> {
     virtual void OnGenericResourceChanged(
         const XdsResourceType::ResourceData* resource)
         Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&work_serializer_) = 0;
-    virtual void OnError(y_absl::Status status)
+    virtual void OnError(grpc_error_handle error)
         Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&work_serializer_) = 0;
     virtual void OnResourceDoesNotExist()
         Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&work_serializer_) = 0;
   };
 
-  XdsClient(
-      std::unique_ptr<XdsBootstrap> bootstrap,
-      OrphanablePtr<XdsTransportFactory> transport_factory,
-      std::shared_ptr<grpc_event_engine::experimental::EventEngine> engine,
-      TString user_agent_name, TString user_agent_version,
-      Duration resource_request_timeout = Duration::Seconds(15));
+  // Factory function to get or create the global XdsClient instance.
+  // If *error is not GRPC_ERROR_NONE upon return, then there was
+  // an error initializing the client.
+  static RefCountedPtr<XdsClient> GetOrCreate(const grpc_channel_args* args,
+                                              grpc_error_handle* error);
+
+  // Most callers should not instantiate directly.  Use GetOrCreate() instead.
+  XdsClient(std::unique_ptr<XdsBootstrap> bootstrap,
+            const grpc_channel_args* args);
   ~XdsClient() override;
 
   const XdsBootstrap& bootstrap() const {
-    return *bootstrap_;  // ctor asserts that it is non-null
+    // bootstrap_ is guaranteed to be non-null since XdsClient::GetOrCreate()
+    // would return a null object if bootstrap_ was null.
+    return *bootstrap_;
   }
 
-  XdsTransportFactory* transport_factory() const {
-    return transport_factory_.get();
+  CertificateProviderStore& certificate_provider_store() {
+    return *certificate_provider_store_;
   }
+
+  grpc_pollset_set* interested_parties() const { return interested_parties_; }
 
   void Orphan() override;
 
@@ -149,9 +145,10 @@ class XdsClient : public DualRefCounted<XdsClient> {
   // implementation.
   TString DumpClientConfigBinary();
 
-  grpc_event_engine::experimental::EventEngine* engine() {
-    return engine_.get();
-  }
+  // Helpers for encoding the XdsClient object in channel args.
+  grpc_arg MakeChannelArg() const;
+  static RefCountedPtr<XdsClient> GetFromChannelArgs(
+      const grpc_channel_args& args);
 
  private:
   struct XdsResourceKey {
@@ -186,18 +183,20 @@ class XdsClient : public DualRefCounted<XdsClient> {
 
     void Orphan() override;
 
+    grpc_channel* channel() const { return channel_; }
     XdsClient* xds_client() const { return xds_client_.get(); }
     AdsCallState* ads_calld() const;
     LrsCallState* lrs_calld() const;
 
-    void ResetBackoff();
-
     void MaybeStartLrsCall();
     void StopLrsCallLocked() Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&XdsClient::mu_);
 
-    // Returns non-OK if there has been an error since the last time the
-    // ADS stream saw a response.
-    const y_absl::Status& status() const { return status_; }
+    bool HasAdsCall() const;
+    bool HasActiveAdsCall() const;
+
+    void StartConnectivityWatchLocked()
+        Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&XdsClient::mu_);
+    void CancelConnectivityWatchLocked();
 
     void SubscribeLocked(const XdsResourceType* type,
                          const XdsResourceName& name)
@@ -208,21 +207,17 @@ class XdsClient : public DualRefCounted<XdsClient> {
         Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&XdsClient::mu_);
 
    private:
-    void OnConnectivityFailure(y_absl::Status status);
-
-    // Enqueues error notifications to watchers.  Caller must drain
-    // XdsClient::work_serializer_ after releasing the lock.
-    void SetChannelStatusLocked(y_absl::Status status)
-        Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(&XdsClient::mu_);
+    class StateWatcher;
 
     // The owning xds client.
     WeakRefCountedPtr<XdsClient> xds_client_;
 
-    const XdsBootstrap::XdsServer& server_;  // Owned by bootstrap.
+    const XdsBootstrap::XdsServer& server_;
 
-    OrphanablePtr<XdsTransportFactory::XdsTransport> transport_;
-
+    // The channel and its status.
+    grpc_channel* channel_;
     bool shutting_down_ = false;
+    StateWatcher* watcher_;
 
     // The retryable XDS calls.
     OrphanablePtr<RetryableCall<AdsCallState>> ads_calld_;
@@ -231,8 +226,6 @@ class XdsClient : public DualRefCounted<XdsClient> {
     // Stores the most recent accepted resource version for each resource type.
     std::map<const XdsResourceType*, TString /*version*/>
         resource_type_version_map_;
-
-    y_absl::Status status_;
   };
 
   struct ResourceState {
@@ -241,7 +234,6 @@ class XdsClient : public DualRefCounted<XdsClient> {
     // The latest data seen for the resource.
     std::unique_ptr<XdsResourceType::ResourceData> resource;
     XdsApi::ResourceMetadata meta;
-    bool ignored_deletion = false;
   };
 
   struct AuthorityState {
@@ -261,7 +253,7 @@ class XdsClient : public DualRefCounted<XdsClient> {
     std::map<RefCountedPtr<XdsLocalityName>, LocalityState,
              XdsLocalityName::Less>
         locality_stats;
-    Timestamp last_report_time = Timestamp::Now();
+    Timestamp last_report_time = ExecCtx::Get()->Now();
   };
 
   // Load report data.
@@ -274,15 +266,11 @@ class XdsClient : public DualRefCounted<XdsClient> {
     LoadReportMap load_report_map;
   };
 
-  // Sends an error notification to a specific set of watchers.
-  void NotifyWatchersOnErrorLocked(
-      const std::map<ResourceWatcherInterface*,
-                     RefCountedPtr<ResourceWatcherInterface>>& watchers,
-      y_absl::Status status);
-  // Sends a resource-does-not-exist notification to a specific set of watchers.
-  void NotifyWatchersOnResourceDoesNotExist(
-      const std::map<ResourceWatcherInterface*,
-                     RefCountedPtr<ResourceWatcherInterface>>& watchers);
+  class Notifier;
+
+  // Sends an error notification to all watchers.
+  void NotifyOnErrorLocked(grpc_error_handle error)
+      Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   void MaybeRegisterResourceTypeLocked(const XdsResourceType* resource_type)
       Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
@@ -291,7 +279,7 @@ class XdsClient : public DualRefCounted<XdsClient> {
   const XdsResourceType* GetResourceTypeLocked(y_absl::string_view resource_type)
       Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  y_absl::StatusOr<XdsResourceName> ParseXdsResourceName(
+  static y_absl::StatusOr<XdsResourceName> ParseXdsResourceName(
       y_absl::string_view name, const XdsResourceType* type);
   static TString ConstructFullXdsResourceName(
       y_absl::string_view authority, y_absl::string_view resource_type,
@@ -302,34 +290,33 @@ class XdsClient : public DualRefCounted<XdsClient> {
       const std::set<TString>& clusters) Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   RefCountedPtr<ChannelState> GetOrCreateChannelStateLocked(
-      const XdsBootstrap::XdsServer& server, const char* reason)
-      Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      const XdsBootstrap::XdsServer& server) Y_ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   std::unique_ptr<XdsBootstrap> bootstrap_;
-  OrphanablePtr<XdsTransportFactory> transport_factory_;
+  grpc_channel_args* args_;
   const Duration request_timeout_;
-  const bool xds_federation_enabled_;
+  grpc_pollset_set* interested_parties_;
+  OrphanablePtr<CertificateProviderStore> certificate_provider_store_;
   XdsApi api_;
   WorkSerializer work_serializer_;
-  std::shared_ptr<grpc_event_engine::experimental::EventEngine> engine_;
 
   Mutex mu_;
 
   // Stores resource type objects seen by type URL.
   std::map<y_absl::string_view /*resource_type*/, const XdsResourceType*>
       resource_types_ Y_ABSL_GUARDED_BY(mu_);
+  std::map<y_absl::string_view /*v2_resource_type*/, const XdsResourceType*>
+      v2_resource_types_ Y_ABSL_GUARDED_BY(mu_);
   upb::SymbolTable symtab_ Y_ABSL_GUARDED_BY(mu_);
 
-  // Map of existing xDS server channels.
-  // Key is owned by the bootstrap config.
-  std::map<const XdsBootstrap::XdsServer*, ChannelState*>
-      xds_server_channel_map_ Y_ABSL_GUARDED_BY(mu_);
+  //  Map of existing xDS server channels.
+  std::map<XdsBootstrap::XdsServer, ChannelState*> xds_server_channel_map_
+      Y_ABSL_GUARDED_BY(mu_);
 
   std::map<TString /*authority*/, AuthorityState> authority_state_map_
       Y_ABSL_GUARDED_BY(mu_);
 
-  // Key is owned by the bootstrap config.
-  std::map<const XdsBootstrap::XdsServer*, LoadReportServer>
+  std::map<XdsBootstrap::XdsServer, LoadReportServer>
       xds_load_report_server_map_ Y_ABSL_GUARDED_BY(mu_);
 
   // Stores started watchers whose resource name was not parsed successfully,
@@ -340,6 +327,14 @@ class XdsClient : public DualRefCounted<XdsClient> {
   bool shutting_down_ Y_ABSL_GUARDED_BY(mu_) = false;
 };
 
+namespace internal {
+void SetXdsChannelArgsForTest(grpc_channel_args* args);
+void UnsetGlobalXdsClientForTest();
+// Sets bootstrap config to be used when no env var is set.
+// Does not take ownership of config.
+void SetXdsFallbackBootstrapConfig(const char* config);
+}  // namespace internal
+
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_XDS_XDS_CLIENT_H
+#endif  // GRPC_CORE_EXT_XDS_XDS_CLIENT_H

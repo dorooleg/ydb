@@ -14,31 +14,26 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONFIG_SELECTOR_H
-#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONFIG_SELECTOR_H
+#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONFIG_SELECTOR_H
+#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONFIG_SELECTOR_H
 
 #include <grpc/support/port_platform.h>
 
-#include <string.h>
-
-#include <utility>
+#include <functional>
+#include <map>
 #include <vector>
 
-#include "y_absl/status/statusor.h"
 #include "y_absl/strings/string_view.h"
 
 #include <grpc/grpc.h>
-#include <grpc/support/log.h>
 
-#include "src/core/lib/channel/channel_fwd.h"
-#include "src/core/lib/gpr/useful.h"
+#include "src/core/lib/channel/channel_stack.h"
 #include "src/core/lib/gprpp/ref_counted.h"
 #include "src/core/lib/gprpp/ref_counted_ptr.h"
 #include "src/core/lib/resource_quota/arena.h"
 #include "src/core/lib/service_config/service_config.h"
 #include "src/core/lib/service_config/service_config_call_data.h"
 #include "src/core/lib/service_config/service_config_parser.h"
-#include "src/core/lib/slice/slice.h"
 #include "src/core/lib/transport/metadata_batch.h"
 
 // Channel arg key for ConfigSelector.
@@ -65,11 +60,14 @@ class ConfigSelector : public RefCounted<ConfigSelector> {
   };
 
   struct GetCallConfigArgs {
+    grpc_slice* path;
     grpc_metadata_batch* initial_metadata;
     Arena* arena;
   };
 
   struct CallConfig {
+    // Can be set to indicate the call should be failed.
+    grpc_error_handle error = GRPC_ERROR_NONE;
     // The per-method parsed configs that will be passed to
     // ServiceConfigCallData.
     const ServiceConfigParser::ParsedConfigVector* method_configs = nullptr;
@@ -86,6 +84,10 @@ class ConfigSelector : public RefCounted<ConfigSelector> {
 
   virtual const char* name() const = 0;
 
+  // Will be called only if the two objects have the same name, so
+  // subclasses can be free to safely down-cast the argument.
+  virtual bool Equals(const ConfigSelector* other) const = 0;
+
   static bool Equals(const ConfigSelector* cs1, const ConfigSelector* cs2) {
     if (cs1 == nullptr) return cs2 == nullptr;
     if (cs2 == nullptr) return false;
@@ -96,24 +98,17 @@ class ConfigSelector : public RefCounted<ConfigSelector> {
   // The channel will call this when the resolver returns a new ConfigSelector
   // to determine what set of dynamic filters will be configured.
   virtual std::vector<const grpc_channel_filter*> GetFilters() { return {}; }
+  // Modifies channel args to be passed to the dynamic filter stack.
+  // Takes ownership of argument.  Caller takes ownership of result.
+  virtual grpc_channel_args* ModifyChannelArgs(grpc_channel_args* args) {
+    return args;
+  }
 
-  // Returns the call config to use for the call, or a status to fail
-  // the call with.
-  virtual y_absl::StatusOr<CallConfig> GetCallConfig(GetCallConfigArgs args) = 0;
+  virtual CallConfig GetCallConfig(GetCallConfigArgs args) = 0;
 
   grpc_arg MakeChannelArg() const;
   static RefCountedPtr<ConfigSelector> GetFromChannelArgs(
       const grpc_channel_args& args);
-  static y_absl::string_view ChannelArgName() { return GRPC_ARG_CONFIG_SELECTOR; }
-  static int ChannelArgsCompare(const ConfigSelector* a,
-                                const ConfigSelector* b) {
-    return QsortCompare(a, b);
-  }
-
- private:
-  // Will be called only if the two objects have the same name, so
-  // subclasses can be free to safely down-cast the argument.
-  virtual bool Equals(const ConfigSelector* other) const = 0;
 };
 
 // Default ConfigSelector that gets the MethodConfig from the service config.
@@ -129,19 +124,17 @@ class DefaultConfigSelector : public ConfigSelector {
 
   const char* name() const override { return "default"; }
 
-  y_absl::StatusOr<CallConfig> GetCallConfig(GetCallConfigArgs args) override {
-    CallConfig call_config;
-    Slice* path = args.initial_metadata->get_pointer(HttpPathMetadata());
-    GPR_ASSERT(path != nullptr);
-    call_config.method_configs =
-        service_config_->GetMethodParsedConfigVector(path->c_slice());
-    call_config.service_config = service_config_;
-    return call_config;
-  }
-
   // Only comparing the ConfigSelector itself, not the underlying
   // service config, so we always return true.
   bool Equals(const ConfigSelector* /*other*/) const override { return true; }
+
+  CallConfig GetCallConfig(GetCallConfigArgs args) override {
+    CallConfig call_config;
+    call_config.method_configs =
+        service_config_->GetMethodParsedConfigVector(*args.path);
+    call_config.service_config = service_config_;
+    return call_config;
+  }
 
  private:
   RefCountedPtr<ServiceConfig> service_config_;
@@ -149,4 +142,4 @@ class DefaultConfigSelector : public ConfigSelector {
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONFIG_SELECTOR_H
+#endif /* GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONFIG_SELECTOR_H */

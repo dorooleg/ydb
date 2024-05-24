@@ -3,7 +3,7 @@
 #include "datashard.h"
 #include "datashard_user_table.h"
 #include "datashard_active_transaction.h"
-#include <ydb/core/tx/locks/range_treap.h>
+#include "range_treap.h"
 
 #include <library/cpp/containers/absl_flat_hash/flat_hash_map.h>
 
@@ -81,17 +81,11 @@ private:
         void RemoveOperation(const TOperation::TPtr& op) const noexcept override;
     };
 
-    struct TFollowerDependencyTrackingLogic : public TDependencyTrackingLogic {
-        explicit TFollowerDependencyTrackingLogic(TDependencyTracker& parent)
-            : TDependencyTrackingLogic(parent) {}
-
-        void AddOperation(const TOperation::TPtr& op) const noexcept override;
-        void RemoveOperation(const TOperation::TPtr& op) const noexcept override;
-    };
-
 public:
     TDependencyTracker(TDataShard* self)
         : Self(self)
+        , DefaultLogic(*this)
+        , MvccLogic(*this)
     { }
 
 public:
@@ -136,7 +130,7 @@ private:
     const TDependencyTrackingLogic& GetTrackingLogic() const noexcept;
 
 private:
-    TDataShard* const Self;
+    TDataShard* Self;
     // Temporary vectors for building dependencies
     TKeys TmpRead;
     TKeys TmpWrite;
@@ -164,9 +158,8 @@ private:
     TIntrusiveList<TOperation, TOperationDelayedWriteListTag> DelayedPlannedWrites;
     TIntrusiveList<TOperation, TOperationDelayedWriteListTag> DelayedImmediateWrites;
 
-    const TDefaultDependencyTrackingLogic DefaultLogic{ *this };
-    const TMvccDependencyTrackingLogic MvccLogic{ *this };
-    const TFollowerDependencyTrackingLogic FollowerLogic{ *this };
+    const TDefaultDependencyTrackingLogic DefaultLogic;
+    const TMvccDependencyTrackingLogic MvccLogic;
 };
 
 } // namespace NDataShard

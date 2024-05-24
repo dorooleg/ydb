@@ -7,7 +7,7 @@ Y_UNIT_TEST_SUITE(SpaceCheckForDiskReassign) {
         using TVSlotId = TNodeWardenMockActor::TVSlotId;
 
         TNodeWardenMockActor::TSetup::TPtr setup = MakeIntrusive<TNodeWardenMockActor::TSetup>();
-        setup->TabletId = MakeBSControllerID();
+        setup->TabletId = MakeBSControllerID(1);
 
         std::vector<std::vector<ui32>> driveSize = {
             // 8 nodes
@@ -131,7 +131,6 @@ Y_UNIT_TEST_SUITE(SpaceCheckForDiskReassign) {
         ui32 numIterations = 0;
         ui32 numCyclesWithoutProgress = 0;
         constexpr ui32 maxCyclesWithoutProgress = 1; // mins after full replication
-        constexpr ui32 targetIterations = 50;
 
         for (;;) {
             request.Clear();
@@ -160,10 +159,9 @@ Y_UNIT_TEST_SUITE(SpaceCheckForDiskReassign) {
                 }
             }
             if (notReady) {
-                env.Sim(TDuration::Seconds(30));
+                env.Sim(TDuration::Seconds(15));
                 continue;
             }
-
             if (faultyVSlots && numCyclesWithoutProgress < maxCyclesWithoutProgress) {
                 env.Sim(TDuration::Minutes(1));
                 ++numCyclesWithoutProgress;
@@ -196,7 +194,7 @@ Y_UNIT_TEST_SUITE(SpaceCheckForDiskReassign) {
             Cerr << "numIterations# " << numIterations << " numFaulty# " << faultyPDiskIds.size()
                 << " numCyclesWithoutProgress# " << numCyclesWithoutProgress << Endl;
             numCyclesWithoutProgress = 0;
-            if (numIterations == targetIterations) {
+            if (numIterations == 2000) {
                 break;
             }
         }

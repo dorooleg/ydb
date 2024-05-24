@@ -2,21 +2,20 @@
 
 #include "flat_scan_iface.h"
 #include "flat_scan_spent.h"
+#include "flat_bio_events.h"
 #include "flat_writer_bundle.h"
 #include "flat_sausage_chop.h"
 #include "flat_row_misc.h"
 #include "flat_part_writer.h"
 #include "flat_part_loader.h"
+#include "flat_part_slice.h"
 #include "util_fmt_logger.h"
 #include "util_fmt_desc.h"
 #include "util_basics.h"
-#include "flat_comp.h"
-#include "flat_executor_misc.h"
-#include "flat_bio_stats.h"
 
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <bitset>
 
@@ -56,7 +55,7 @@ namespace NTabletFlatExecutor {
         using TEvPut = TEvBlobStorage::TEvPut;
         using TEvPutResult = TEvBlobStorage::TEvPutResult;
         using TScheme = NTable::TRowScheme;
-        using TPartWriter = NTable::TPartWriter;
+        using TWriter = NTable::TPartWriter;
         using TBundle = NWriter::TBundle;
         using TStorage = TIntrusivePtr<TTabletStorageInfo>;
         using TEventHandlePtr = TAutoPtr<::NActors::IEventHandle>;
@@ -76,7 +75,7 @@ namespace NTabletFlatExecutor {
 
         ~TOpsCompact()
         {
-            // Y_ABORT_UNLESS(!Driver, "TOpsCompact is still running under scan");
+            // Y_VERIFY(!Driver, "TOpsCompact is still running under scan");
         }
 
         void Describe(IOutputStream &out) const noexcept override
@@ -115,7 +114,7 @@ namespace NTabletFlatExecutor {
         EScan Seek(TLead &lead, ui64 seq) noexcept override
         {
             if (seq == 0) /* on first Seek() init compaction */ {
-                Y_ABORT_UNLESS(!Writer, "Initial IScan::Seek(...) called twice");
+                Y_VERIFY(!Writer, "Initial IScan::Seek(...) called twice");
 
                 const auto tags = Scheme->Tags();
 
@@ -123,7 +122,7 @@ namespace NTabletFlatExecutor {
 
                 auto *scheme = new NTable::TPartScheme(Scheme->Cols);
 
-                Writer = new TPartWriter(scheme, tags, *Bundle, Conf->Layout, Conf->Epoch);
+                Writer = new TWriter(scheme, tags, *Bundle, Conf->Layout, Conf->Epoch);
 
                 return EScan::Feed;
 
@@ -131,14 +130,14 @@ namespace NTabletFlatExecutor {
                 if (!Finished) {
                     WriteStats = Writer->Finish();
                     Results = Bundle->Results();
-                    Y_ABORT_UNLESS(WriteStats.Parts == Results.size());
+                    Y_VERIFY(WriteStats.Parts == Results.size());
                     WriteTxStatus();
                     Finished = true;
                 }
 
                 return Flush(true /* final flush, sleep or finish */);
             } else {
-                Y_ABORT("Compaction scan op should get only two Seeks()");
+                Y_FAIL("Compaction scan op should get only two Seeks()");
             }
         }
 
@@ -203,7 +202,7 @@ namespace NTabletFlatExecutor {
 
                 for (ui64 txId : DeltasOrder) {
                     auto it = Deltas.find(txId);
-                    Y_ABORT_UNLESS(it != Deltas.end(), "Unexpected failure to find txId %" PRIu64, txId);
+                    Y_VERIFY(it != Deltas.end(), "Unexpected failure to find txId %" PRIu64, txId);
                     Writer->AddKeyDelta(it->second, txId);
                 }
 
@@ -308,7 +307,7 @@ namespace NTabletFlatExecutor {
                     std::move(YellowMoveChannels), std::move(YellowStopChannels));
 
             for (auto &result : Results) {
-                Y_ABORT_UNLESS(result.PageCollections, "Compaction produced a part without page collections");
+                Y_VERIFY(result.PageCollections, "Compaction produced a part without page collections");
 
                 NTable::TLoader loader(
                     std::move(result.PageCollections),
@@ -317,12 +316,12 @@ namespace NTabletFlatExecutor {
 
                 auto fetch = loader.Run();
 
-                Y_ABORT_UNLESS(!fetch, "Just compacted part needs to load some pages");
+                Y_VERIFY(!fetch, "Just compacted part needs to load some pages");
 
                 auto& res = prod->Results.emplace_back();
                 res.Part = loader.Result();
                 res.Growth = std::move(result.Growth);
-                Y_ABORT_UNLESS(res.Part, "Unexpected result without a part after compaction");
+                Y_VERIFY(res.Part, "Unexpected result without a part after compaction");
             }
 
             prod->TxStatus = std::move(TxStatus);
@@ -364,9 +363,9 @@ namespace NTabletFlatExecutor {
             if (fail) {
                 prod->Results.clear(); /* shouldn't sent w/o fixation in bs */
             } else if (bool(prod->Results) != bool(WriteStats.Rows > 0)) {
-                Y_ABORT("Unexpexced rows production result after compaction");
+                Y_FAIL("Unexpexced rows production result after compaction");
             } else if ((bool(prod->Results) || bool(prod->TxStatus)) != bool(Blobs > 0)) {
-                Y_ABORT("Unexpexced blobs production result after compaction");
+                Y_FAIL("Unexpexced blobs production result after compaction");
             }
 
             Driver = nullptr;
@@ -407,18 +406,18 @@ namespace NTabletFlatExecutor {
                 if (!std::exchange(Failed, true))
                     Driver->Touch(EScan::Final);
             } else {
-                Y_ABORT("Compaction actor got an unexpected event");
+                Y_FAIL("Compaction actor got an unexpected event");
             }
         }
 
         void Handle(TEvPutResult &msg) noexcept
         {
             if (!NPageCollection::TGroupBlobsByCookie::IsInPlane(msg.Id, Mask)) {
-                Y_ABORT("TEvPutResult Id mask is differ from used");
+                Y_FAIL("TEvPutResult Id mask is differ from used");
             } else if (Writing < msg.Id.BlobSize()) {
-                Y_ABORT("Compaction writing bytes counter is out of sync");
+                Y_FAIL("Compaction writing bytes counter is out of sync");
             } else if (Flushing < msg.Id.BlobSize()) {
-                Y_ABORT("Compaction flushing bytes counter is out of sync");
+                Y_FAIL("Compaction flushing bytes counter is out of sync");
             }
 
             Writing -= msg.Id.BlobSize();
@@ -427,7 +426,7 @@ namespace NTabletFlatExecutor {
 
             if (msg.StatusFlags.Check(NKikimrBlobStorage::StatusDiskSpaceLightYellowMove)) {
                 const ui32 channel = msg.Id.Channel();
-                Y_DEBUG_ABORT_UNLESS(channel < 256);
+                Y_VERIFY_DEBUG(channel < 256);
                 if (!SeenYellowMoveChannels[channel]) {
                     SeenYellowMoveChannels[channel] = true;
                     YellowMoveChannels.push_back(channel);
@@ -435,7 +434,7 @@ namespace NTabletFlatExecutor {
             }
             if (msg.StatusFlags.Check(NKikimrBlobStorage::StatusDiskSpaceYellowStop)) {
                 const ui32 channel = msg.Id.Channel();
-                Y_DEBUG_ABORT_UNLESS(channel < 256);
+                Y_VERIFY_DEBUG(channel < 256);
                 if (!SeenYellowStopChannels[channel]) {
                     SeenYellowStopChannels[channel] = true;
                     YellowStopChannels.push_back(channel);
@@ -461,7 +460,7 @@ namespace NTabletFlatExecutor {
                     WriteQueue.pop_front();
                 }
 
-                Y_DEBUG_ABORT_UNLESS(Flushing == 0 || Writing > 0, "Unexpected: Flushing > 0 and Writing == 0");
+                Y_VERIFY_DEBUG(Flushing == 0 || Writing > 0, "Unexpected: Flushing > 0 and Writing == 0");
 
                 if (Flushing == 0) {
                     Spent->Alter(true /* resource available again */);
@@ -474,7 +473,7 @@ namespace NTabletFlatExecutor {
 
         void FlushToBs(NPageCollection::TGlob&& glob) noexcept
         {
-            Y_ABORT_UNLESS(glob.GId.Logo.BlobSize() == glob.Data.size(),
+            Y_VERIFY(glob.GId.Logo.BlobSize() == glob.Data.size(),
                 "Written LogoBlob size doesn't match id");
 
             Flushing += glob.GId.Logo.BlobSize();
@@ -483,7 +482,7 @@ namespace NTabletFlatExecutor {
             if (Writing < MaxFlight && WriteQueue.empty()) {
                 SendToBs(std::move(glob));
             } else {
-                Y_DEBUG_ABORT_UNLESS(Failed || Writing > 0, "Unexpected: enqueued blob when Writing == 0");
+                Y_VERIFY_DEBUG(Failed || Writing > 0, "Unexpected: enqueued blob when Writing == 0");
                 WriteQueue.emplace_back(std::move(glob));
             }
         }
@@ -493,7 +492,7 @@ namespace NTabletFlatExecutor {
             auto id = glob.GId;
 
             Writing += id.Logo.BlobSize();
-            Y_DEBUG_ABORT_UNLESS(Writing <= Flushing, "Unexpected: Writing > Flushing");
+            Y_VERIFY_DEBUG(Writing <= Flushing, "Unexpected: Writing > Flushing");
 
             if (auto logl = Logger->Log(ELnLev::Debug)) {
                 logl
@@ -518,7 +517,7 @@ namespace NTabletFlatExecutor {
         THolder<TCompactCfg> Conf;
         TIntrusiveConstPtr<TScheme> Scheme;
         TAutoPtr<TBundle> Bundle;
-        TAutoPtr<TPartWriter> Writer;
+        TAutoPtr<TWriter> Writer;
         NTable::TWriteStats WriteStats;
         TVector<TBundle::TResult> Results;
         TVector<TIntrusiveConstPtr<NTable::TTxStatusPart>> TxStatus;

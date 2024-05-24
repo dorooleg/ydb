@@ -20,8 +20,6 @@
 
 #include <grpc/support/log.h>
 
-#include "src/core/lib/gprpp/crash.h"
-
 #if defined(ANDROID) || defined(__ANDROID__)
 
 namespace grpc_binder {
@@ -88,28 +86,6 @@ void TryEstablishConnection(JNIEnv* env, jobject application,
                             env->NewStringUTF(TString(pkg).c_str()),
                             env->NewStringUTF(TString(cls).c_str()),
                             env->NewStringUTF(TString(action_name).c_str()),
-                            env->NewStringUTF(TString(conn_id).c_str()));
-}
-
-void TryEstablishConnectionWithUri(JNIEnv* env, jobject application,
-                                   y_absl::string_view uri,
-                                   y_absl::string_view conn_id) {
-  TString method = "tryEstablishConnectionWithUri";
-  TString type =
-      "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V";
-
-  jclass cl = FindNativeConnectionHelper(env);
-  if (cl == nullptr) {
-    return;
-  }
-
-  jmethodID mid = env->GetStaticMethodID(cl, method.c_str(), type.c_str());
-  if (mid == nullptr) {
-    gpr_log(GPR_ERROR, "No method id %s", method.c_str());
-  }
-
-  env->CallStaticVoidMethod(cl, mid, application,
-                            env->NewStringUTF(TString(uri).c_str()),
                             env->NewStringUTF(TString(conn_id).c_str()));
 }
 

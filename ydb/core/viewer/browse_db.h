@@ -1,10 +1,9 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
-#include <ydb/core/protos/table_stats.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/viewer/protos/viewer.pb.h>
@@ -71,7 +70,8 @@ public:
             NTabletPipe::SendData(ctx, pipeClient, new TEvTablet::TEvGetCounters(), tabletId);
             ++Requests;
             ctx.Send(BrowseContext.Owner, new NViewerEvents::TEvBrowseRequestSent(TxProxy, tabletId, TEvTablet::EvGetCounters));
-            ui64 hiveTabletId = domainsInfo->GetHive();
+            auto hiveUid = HiveUidFromTabletID(tabletId);
+            auto hiveTabletId = domainsInfo->GetHive(hiveUid);
             pipeClient = GetTabletPipe(hiveTabletId, ctx);
             NTabletPipe::SendData(ctx, pipeClient, new TEvHive::TEvLookupChannelInfo(tabletId), tabletId);
             ++Requests;
@@ -121,7 +121,7 @@ public:
         request->Record.SetUserToken(BrowseContext.UserToken);
         ctx.Send(TxProxy, request.Release());
         ++Requests;
-        UnsafeBecome(&TThis::StateWork);
+        Become(&TThis::StateWork);
     }
 
     virtual void ReplyAndDie(const TActorContext &ctx) override {

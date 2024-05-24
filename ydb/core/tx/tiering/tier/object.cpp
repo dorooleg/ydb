@@ -34,7 +34,7 @@ bool TTierConfig::DeserializeFromRecord(const TDecoder& decoder, const Ydb::Valu
     if (!decoder.ReadDebugProto(decoder.GetTierConfigIdx(), ProtoConfig, r)) {
         return false;
     }
-    return ProtoConfig.HasObjectStorage();
+    return true;
 }
 
 NMetadata::NInternal::TTableRecord TTierConfig::SerializeToRecord() const {

@@ -30,8 +30,6 @@
     action(TEvHive::TEvAdoptTabletReply,         NSchemeShard::TXTYPE_CREATE_TABLET_REPLY)               \
     action(TEvHive::TEvDeleteTabletReply,        NSchemeShard::TXTYPE_FREE_TABLET_RESULT)                \
     action(TEvHive::TEvDeleteOwnerTabletsReply,           NSchemeShard::TXTYPE_FREE_OWNER_TABLETS_RESULT)\
-    action(TEvHive::TEvUpdateTabletsObjectReply, NSchemeShard::TXTYPE_CREATE_TABLET_REPLY)               \
-    action(TEvHive::TEvUpdateDomainReply,        NSchemeShard::TXTYPE_UPDATE_DOMAIN_REPLY)               \
 \
     action(TEvDataShard::TEvProposeTransactionResult,     NSchemeShard::TXTYPE_DATASHARD_PROPOSE_RESULT) \
     action(TEvDataShard::TEvSchemaChanged,       NSchemeShard::TXTYPE_DATASHARD_SCHEMA_CHANGED)          \
@@ -50,10 +48,8 @@
     action(NSequenceShard::TEvSequenceShard::TEvFreezeSequenceResult,   NSchemeShard::TXTYPE_SEQUENCESHARD_FREEZE_SEQUENCE_RESULT)   \
     action(NSequenceShard::TEvSequenceShard::TEvRestoreSequenceResult,  NSchemeShard::TXTYPE_SEQUENCESHARD_RESTORE_SEQUENCE_RESULT)  \
     action(NSequenceShard::TEvSequenceShard::TEvRedirectSequenceResult, NSchemeShard::TXTYPE_SEQUENCESHARD_REDIRECT_SEQUENCE_RESULT) \
-    action(NSequenceShard::TEvSequenceShard::TEvGetSequenceResult, NSchemeShard::TXTYPE_SEQUENCESHARD_GET_SEQUENCE_RESULT) \
 \
     action(NReplication::TEvController::TEvCreateReplicationResult, NSchemeShard::TXTYPE_CREATE_REPLICATION_RESULT) \
-    action(NReplication::TEvController::TEvAlterReplicationResult,  NSchemeShard::TXTYPE_ALTER_REPLICATION_RESULT)  \
     action(NReplication::TEvController::TEvDropReplicationResult,   NSchemeShard::TXTYPE_DROP_REPLICATION_RESULT)   \
 \
     action(TEvSubDomain::TEvConfigureStatus,     NSchemeShard::TXTYPE_SUBDOMAIN_CONFIGURE_RESULT)        \
@@ -294,7 +290,7 @@ private:
 
     template <typename... Args>
     bool Progress(TOperationContext& context, TFunc<Args...> func, Args&&... args) {
-        Y_ABORT_UNLESS(StateFunc);
+        Y_VERIFY(StateFunc);
         const bool isDone = std::invoke(func, StateFunc.Get(), std::forward<Args>(args)...);
         if (isDone) {
             StateDone(context);
@@ -342,8 +338,7 @@ ISubOperation::TPtr CreateForceDropUnsafe(TOperationId id, TTxState::ETxState st
 ISubOperation::TPtr CreateNewTable(TOperationId id, const TTxTransaction& tx, const THashSet<TString>& localSequences = { });
 ISubOperation::TPtr CreateNewTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateCopyTable(TOperationId id, const TTxTransaction& tx,
-    const THashSet<TString>& localSequences = { });
+ISubOperation::TPtr CreateCopyTable(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateCopyTable(TOperationId id, TTxState::ETxState state);
 TVector<ISubOperation::TPtr> CreateCopyTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
 
@@ -356,8 +351,6 @@ ISubOperation::TPtr CreateSplitMerge(TOperationId id, TTxState::ETxState state);
 
 ISubOperation::TPtr CreateDropTable(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateDropTable(TOperationId id, TTxState::ETxState state);
-
-TVector<ISubOperation::TPtr> CreateBuildColumn(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
 
 TVector<ISubOperation::TPtr> CreateBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
 TVector<ISubOperation::TPtr> ApplyBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
@@ -372,33 +365,19 @@ ISubOperation::TPtr CreateUpdateMainTableOnIndexMove(TOperationId id, TTxState::
 
 // External Table
 // Create
-TVector<ISubOperation::TPtr> CreateNewExternalTable(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperation::TPtr CreateNewExternalTable(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateNewExternalTable(TOperationId id, TTxState::ETxState state);
-// Alter
-ISubOperation::TPtr CreateAlterExternalTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterExternalTable(TOperationId id, TTxState::ETxState state);
 // Drop
 ISubOperation::TPtr CreateDropExternalTable(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateDropExternalTable(TOperationId id, TTxState::ETxState state);
 
 // External Data Source
 // Create
-TVector<ISubOperation::TPtr> CreateNewExternalDataSource(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperation::TPtr CreateNewExternalDataSource(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateNewExternalDataSource(TOperationId id, TTxState::ETxState state);
-// Alter
-ISubOperation::TPtr CreateAlterExternalDataSource(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterExternalDataSource(TOperationId id, TTxState::ETxState state);
 // Drop
 ISubOperation::TPtr CreateDropExternalDataSource(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateDropExternalDataSource(TOperationId id, TTxState::ETxState state);
-
-// View
-// Create
-ISubOperation::TPtr CreateNewView(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewView(TOperationId id, TTxState::ETxState state);
-// Drop
-ISubOperation::TPtr CreateDropView(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropView(TOperationId id, TTxState::ETxState state);
 
 /// CDC
 // Create
@@ -586,17 +565,11 @@ ISubOperation::TPtr CreateNewSequence(TOperationId id, const TTxTransaction& tx)
 ISubOperation::TPtr CreateNewSequence(TOperationId id, TTxState::ETxState state);
 ISubOperation::TPtr CreateDropSequence(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateDropSequence(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateCopySequence(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateCopySequence(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterSequence(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterSequence(TOperationId id, TTxState::ETxState state);
 
 ISubOperation::TPtr CreateNewReplication(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateNewReplication(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterReplication(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterReplication(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropReplication(TOperationId id, const TTxTransaction& tx, bool cascade);
-ISubOperation::TPtr CreateDropReplication(TOperationId id, TTxState::ETxState state, bool cascade);
+ISubOperation::TPtr CreateDropReplication(TOperationId id, const TTxTransaction& tx);
+ISubOperation::TPtr CreateDropReplication(TOperationId id, TTxState::ETxState state);
 
 ISubOperation::TPtr CreateNewBlobDepot(TOperationId id, const TTxTransaction& tx);
 ISubOperation::TPtr CreateNewBlobDepot(TOperationId id, TTxState::ETxState state);

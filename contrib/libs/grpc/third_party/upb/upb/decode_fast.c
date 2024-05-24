@@ -37,7 +37,7 @@
 
 #include "upb/decode_fast.h"
 
-#include "upb/internal/decode.h"
+#include "upb/decode_internal.h"
 
 /* Must be last. */
 #include "upb/port_def.inc"

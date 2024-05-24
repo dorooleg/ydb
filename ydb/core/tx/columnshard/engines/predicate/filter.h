@@ -12,16 +12,12 @@ private:
 public:
     TPKRangesFilter(const bool reverse);
 
-    bool IsEmpty() const {
-        return SortedRanges.empty() || FakeRanges;
-    }
-
     bool IsReverse() const {
         return ReverseFlag;
     }
 
     const TPKRangeFilter& Front() const {
-        Y_ABORT_UNLESS(Size());
+        Y_VERIFY(Size());
         return SortedRanges.front();
     }
 
@@ -38,9 +34,8 @@ public:
     }
 
     bool IsPortionInUsage(const TPortionInfo& info, const TIndexInfo& indexInfo) const;
-    bool IsPortionInPartialUsage(const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& end, const TIndexInfo& indexInfo) const;
 
-    NArrow::TColumnFilter BuildFilter(const arrow::Datum& data) const;
+    NArrow::TColumnFilter BuildFilter(std::shared_ptr<arrow::RecordBatch> data) const;
 
     bool Add(std::shared_ptr<NOlap::TPredicate> f, std::shared_ptr<NOlap::TPredicate> t, const TIndexInfo* indexInfo) Y_WARN_UNUSED_RESULT;
 

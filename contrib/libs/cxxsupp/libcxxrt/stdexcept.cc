@@ -31,66 +31,66 @@
 
 namespace std {
 
-exception::exception() _LIBCXXRT_NOEXCEPT {}
-exception::~exception() _LIBCXXRT_NOEXCEPT {}
-exception::exception(const exception&) _LIBCXXRT_NOEXCEPT {}
-exception& exception::operator=(const exception&) _LIBCXXRT_NOEXCEPT
+exception::exception() noexcept {}
+exception::~exception() {}
+exception::exception(const exception&) noexcept {}
+exception& exception::operator=(const exception&) noexcept
 {
 	return *this;
 }
-const char* exception::what() const _LIBCXXRT_NOEXCEPT
+const char* exception::what() const noexcept
 {
 	return "std::exception";
 }
 
-bad_alloc::bad_alloc() _LIBCXXRT_NOEXCEPT {}
-bad_alloc::~bad_alloc() _LIBCXXRT_NOEXCEPT {}
-bad_alloc::bad_alloc(const bad_alloc&) _LIBCXXRT_NOEXCEPT {}
-bad_alloc& bad_alloc::operator=(const bad_alloc&) _LIBCXXRT_NOEXCEPT
+bad_alloc::bad_alloc() noexcept {}
+bad_alloc::~bad_alloc() {}
+bad_alloc::bad_alloc(const bad_alloc&) noexcept {}
+bad_alloc& bad_alloc::operator=(const bad_alloc&) noexcept
 {
 	return *this;
 }
-const char* bad_alloc::what() const _LIBCXXRT_NOEXCEPT
+const char* bad_alloc::what() const noexcept
 {
 	return "cxxrt::bad_alloc";
 }
 
 
 
-bad_cast::bad_cast() _LIBCXXRT_NOEXCEPT {}
-bad_cast::~bad_cast() _LIBCXXRT_NOEXCEPT {}
-bad_cast::bad_cast(const bad_cast&) _LIBCXXRT_NOEXCEPT {}
-bad_cast& bad_cast::operator=(const bad_cast&) _LIBCXXRT_NOEXCEPT
+bad_cast::bad_cast() noexcept {}
+bad_cast::~bad_cast() {}
+bad_cast::bad_cast(const bad_cast&) noexcept {}
+bad_cast& bad_cast::operator=(const bad_cast&) noexcept
 {
 	return *this;
 }
-const char* bad_cast::what() const _LIBCXXRT_NOEXCEPT
+const char* bad_cast::what() const noexcept
 {
 	return "std::bad_cast";
 }
 
-bad_typeid::bad_typeid() _LIBCXXRT_NOEXCEPT {}
-bad_typeid::~bad_typeid() _LIBCXXRT_NOEXCEPT {}
-bad_typeid::bad_typeid(const bad_typeid &__rhs) _LIBCXXRT_NOEXCEPT {}
-bad_typeid& bad_typeid::operator=(const bad_typeid &__rhs) _LIBCXXRT_NOEXCEPT
+bad_typeid::bad_typeid() noexcept {}
+bad_typeid::~bad_typeid() {}
+bad_typeid::bad_typeid(const bad_typeid &__rhs) noexcept {}
+bad_typeid& bad_typeid::operator=(const bad_typeid &__rhs) noexcept
 {
 	return *this;
 }
 
-const char* bad_typeid::what() const _LIBCXXRT_NOEXCEPT
+const char* bad_typeid::what() const noexcept
 {
 	return "std::bad_typeid";
 }
 
-bad_array_new_length::bad_array_new_length() _LIBCXXRT_NOEXCEPT {}
+bad_array_new_length::bad_array_new_length() noexcept {}
 bad_array_new_length::~bad_array_new_length() {}
-bad_array_new_length::bad_array_new_length(const bad_array_new_length&) _LIBCXXRT_NOEXCEPT {}
-bad_array_new_length& bad_array_new_length::operator=(const bad_array_new_length&) _LIBCXXRT_NOEXCEPT
+bad_array_new_length::bad_array_new_length(const bad_array_new_length&) noexcept {}
+bad_array_new_length& bad_array_new_length::operator=(const bad_array_new_length&) noexcept
 {
 	return *this;
 }
 
-const char* bad_array_new_length::what() const _LIBCXXRT_NOEXCEPT
+const char* bad_array_new_length::what() const noexcept
 {
 	return "std::bad_array_new_length";
 }

@@ -34,7 +34,7 @@ namespace orc {
    * (<a href="http://en.wikipedia.org/wiki/Conjunctive_normal_form">CNF</a>).
    */
   class SearchArgument {
-   public:
+  public:
     virtual ~SearchArgument();
 
     /**
@@ -52,7 +52,7 @@ namespace orc {
    * must call startOr, startAnd, or startNot before adding any leaves.
    */
   class SearchArgumentBuilder {
-   public:
+  public:
     virtual ~SearchArgumentBuilder();
 
     /**
@@ -87,7 +87,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& lessThan(const std::string& column, PredicateDataType type,
+    virtual SearchArgumentBuilder& lessThan(const std::string& column,
+                                            PredicateDataType type,
                                             Literal literal) = 0;
 
     /**
@@ -97,7 +98,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& lessThan(uint64_t columnId, PredicateDataType type,
+    virtual SearchArgumentBuilder& lessThan(uint64_t columnId,
+                                            PredicateDataType type,
                                             Literal literal) = 0;
 
     /**
@@ -107,7 +109,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& lessThanEquals(const std::string& column, PredicateDataType type,
+    virtual SearchArgumentBuilder& lessThanEquals(const std::string& column,
+                                                  PredicateDataType type,
                                                   Literal literal) = 0;
 
     /**
@@ -117,7 +120,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& lessThanEquals(uint64_t columnId, PredicateDataType type,
+    virtual SearchArgumentBuilder& lessThanEquals(uint64_t columnId,
+                                                  PredicateDataType type,
                                                   Literal literal) = 0;
 
     /**
@@ -127,7 +131,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& equals(const std::string& column, PredicateDataType type,
+    virtual SearchArgumentBuilder& equals(const std::string& column,
+                                          PredicateDataType type,
                                           Literal literal) = 0;
 
     /**
@@ -137,7 +142,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& equals(uint64_t columnId, PredicateDataType type,
+    virtual SearchArgumentBuilder& equals(uint64_t columnId,
+                                          PredicateDataType type,
                                           Literal literal) = 0;
 
     /**
@@ -147,7 +153,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& nullSafeEquals(const std::string& column, PredicateDataType type,
+    virtual SearchArgumentBuilder& nullSafeEquals(const std::string& column,
+                                                  PredicateDataType type,
                                                   Literal literal) = 0;
 
     /**
@@ -157,7 +164,8 @@ namespace orc {
      * @param literal the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& nullSafeEquals(uint64_t columnId, PredicateDataType type,
+    virtual SearchArgumentBuilder& nullSafeEquals(uint64_t columnId,
+                                                  PredicateDataType type,
                                                   Literal literal) = 0;
 
     /**
@@ -167,7 +175,8 @@ namespace orc {
      * @param literals the literals
      * @return this
      */
-    virtual SearchArgumentBuilder& in(const std::string& column, PredicateDataType type,
+    virtual SearchArgumentBuilder& in(const std::string& column,
+                                      PredicateDataType type,
                                       const std::initializer_list<Literal>& literals) = 0;
 
     /**
@@ -177,7 +186,8 @@ namespace orc {
      * @param literals the literals
      * @return this
      */
-    virtual SearchArgumentBuilder& in(uint64_t columnId, PredicateDataType type,
+    virtual SearchArgumentBuilder& in(uint64_t columnId,
+                                      PredicateDataType type,
                                       const std::initializer_list<Literal>& literals) = 0;
 
     /**
@@ -187,7 +197,8 @@ namespace orc {
      * @param literals the literals
      * @return this
      */
-    virtual SearchArgumentBuilder& in(const std::string& column, PredicateDataType type,
+    virtual SearchArgumentBuilder& in(const std::string& column,
+                                      PredicateDataType type,
                                       const std::vector<Literal>& literals) = 0;
 
     /**
@@ -197,7 +208,8 @@ namespace orc {
      * @param literals the literals
      * @return this
      */
-    virtual SearchArgumentBuilder& in(uint64_t columnId, PredicateDataType type,
+    virtual SearchArgumentBuilder& in(uint64_t columnId,
+                                      PredicateDataType type,
                                       const std::vector<Literal>& literals) = 0;
 
     /**
@@ -206,7 +218,8 @@ namespace orc {
      * @param type the type of the expression
      * @return this
      */
-    virtual SearchArgumentBuilder& isNull(const std::string& column, PredicateDataType type) = 0;
+    virtual SearchArgumentBuilder& isNull(const std::string& column,
+                                          PredicateDataType type) = 0;
 
     /**
      * Add an is null leaf to the current item on the stack.
@@ -214,7 +227,8 @@ namespace orc {
      * @param type the type of the expression
      * @return this
      */
-    virtual SearchArgumentBuilder& isNull(uint64_t columnId, PredicateDataType type) = 0;
+    virtual SearchArgumentBuilder& isNull(uint64_t columnId,
+                                          PredicateDataType type) = 0;
 
     /**
      * Add a between leaf to the current item on the stack.
@@ -224,8 +238,10 @@ namespace orc {
      * @param upper the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& between(const std::string& column, PredicateDataType type,
-                                           Literal lower, Literal upper) = 0;
+    virtual SearchArgumentBuilder& between(const std::string& column,
+                                           PredicateDataType type,
+                                           Literal lower,
+                                           Literal upper) = 0;
 
     /**
      * Add a between leaf to the current item on the stack.
@@ -235,7 +251,9 @@ namespace orc {
      * @param upper the literal
      * @return this
      */
-    virtual SearchArgumentBuilder& between(uint64_t columnId, PredicateDataType type, Literal lower,
+    virtual SearchArgumentBuilder& between(uint64_t columnId,
+                                           PredicateDataType type,
+                                           Literal lower,
                                            Literal upper) = 0;
 
     /**
@@ -257,10 +275,10 @@ namespace orc {
    * Factory to create SearchArgumentBuilder which builds SearchArgument
    */
   class SearchArgumentFactory {
-   public:
+  public:
     static std::unique_ptr<SearchArgumentBuilder> newBuilder();
   };
 
-}  // namespace orc
+} // namespace orc
 
-#endif  // ORC_SEARCHARGUMENT_HH
+#endif //ORC_SEARCHARGUMENT_HH

@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 10
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -32,27 +27,11 @@
                                         "Node Type": "TopSort-FullJoin (JoinDict)",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 8
-                                                    },
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
                                                 "TopSortBy": ""
                                             },
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 8
-                                                    },
-                                                    {
-                                                        "ExternalPlanNodeId": 4
-                                                    }
-                                                ],
                                                 "Name": "FullJoin (JoinDict)"
                                             }
                                         ],
@@ -79,7 +58,6 @@
                                                                         "Node Type": "TableFullScan",
                                                                         "Operators": [
                                                                             {
-                                                                                "Inputs": [],
                                                                                 "Name": "TableFullScan",
                                                                                 "ReadColumns": [
                                                                                     "i",
@@ -124,7 +102,6 @@
                                                                         "Node Type": "TableFullScan",
                                                                         "Operators": [
                                                                             {
-                                                                                "Inputs": [],
                                                                                 "Name": "TableFullScan",
                                                                                 "ReadColumns": [
                                                                                     "i",
@@ -154,9 +131,9 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "J1_TBL.i (Asc)",
-                                    "J2_TBL.k (Asc)",
-                                    "J1_TBL.t (Asc)"
+                                    "i (Asc)",
+                                    "k (Asc)",
+                                    "t (Asc)"
                                 ]
                             }
                         ]

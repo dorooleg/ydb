@@ -5,74 +5,54 @@ namespace NKikimr {
 namespace NBsController {
 
 bool CheckLayoutByGroupDefinition(const TGroupMapper::TGroupDefinition& group,
-        std::unordered_map<TPDiskId, NLayoutChecker::TPDiskLayoutPosition>& pdisks, const TGroupGeometryInfo& geom,
-        bool allowMultipleRealmsOccupation, TString& error) {
-    std::unordered_map<ui32, std::vector<TVDiskIdShort>> pRealmOccupants;
-    std::unordered_map<ui32, TVDiskIdShort> usedPDomains;
-    std::unordered_map<TPDiskId, TVDiskIdShort> usedPDisks;
-
-    if (group.size() != geom.GetNumFailRealms()) {
-        error = "Wrong fail realms number";
-        return false;
-    }
+        std::unordered_map<TPDiskId, NLayoutChecker::TPDiskLayoutPosition>& pdisks, 
+        const TGroupGeometryInfo& geom, TString& error) {
+    std::unordered_set<ui32> usedPRealms;
+    std::set<TPDiskId> usedPDisks;
     for (ui32 failRealm = 0; failRealm < geom.GetNumFailRealms(); ++failRealm) {
-        if (group[failRealm].size() != geom.GetNumFailDomainsPerFailRealm()) {
-            error = TStringBuilder() << "Wrong fail domains number in failRealm# " << failRealm;
+        ui32 pRealm = pdisks[group[failRealm][0][0]].Realm.Index();
+        if (usedPRealms.count(pRealm)) {
+            error = TStringBuilder() << "PRealm intersection, PRealm index# " << pRealm;
             return false;
         }
+        usedPRealms.insert(pRealm);
+        std::unordered_set<ui32> usedPDomains;
         for (ui32 failDomain = 0; failDomain < geom.GetNumFailDomainsPerFailRealm(); ++failDomain) {
-            if (group[failRealm][failDomain].size() != geom.GetNumVDisksPerFailDomain()) {
-                error = TStringBuilder() << "Wrong vdisks number in failRealm# " << failRealm << ", failDomain# " << failDomain;
+            ui32 pDomain = pdisks[group[failRealm][failDomain][0]].Domain.Index();
+            if (usedPDomains.count(pDomain)) {
+                error = TStringBuilder() << "PDomain intersection, PDomain index# " << pDomain;
                 return false;
             }
+            usedPDomains.insert(pDomain);
             for (ui32 vdisk = 0; vdisk < geom.GetNumVDisksPerFailDomain(); ++vdisk) {
-                const TVDiskIdShort vdiskId(failRealm, failDomain, vdisk);
                 const auto& pdiskId = group[failRealm][failDomain][vdisk];
                 if (pdiskId == TPDiskId()) {
-                    error = TStringBuilder() << "Empty slot, VDisk Id# " << vdiskId.ToString();
+                    error = TStringBuilder() << "empty slot, VSlotId# {FailRealm# " << failRealm <<
+                            ", FailDomain# " << failDomain << ", VDisk# " << vdisk << "}";
                     return false;
                 }
 
-                ui32 pRealm = pdisks[pdiskId].Realm.Index();
-                auto& occupants = pRealmOccupants[pRealm];
-                for (auto occupant : occupants) {
-                    if (occupant.FailRealm != failRealm) {
-                        error = TStringBuilder() << "Disks from different fail realms occupy the same Realm, "
-                                "first VDisk Id# " << occupant.ToString() << " second VDisk Id# " << vdiskId.ToString();
-                        return false;
-                    }
-                }
-                occupants.push_back(vdiskId);
-
-                ui32 pDomain = pdisks[pdiskId].Domain.Index();
-                if (const auto it = usedPDomains.find(pDomain); it != usedPDomains.end()) {
-                    error = TStringBuilder() << "Disks from different fail domains occupy the same Domain, "
-                            "first VDisk Id# " << it->second.ToString() << " second VDisk Id# " << vdiskId.ToString();
+                Y_VERIFY(pdisks.find(pdiskId) != pdisks.end());
+                if (pdisks[pdiskId].RealmGroup != pdisks[group[0][0][0]].RealmGroup || 
+                    pdisks[pdiskId].Realm != pdisks[group[failRealm][0][0]].Realm || 
+                    pdisks[pdiskId].Domain != pdisks[group[failRealm][failDomain][0]].Domain) {
+                    error = TStringBuilder() << "bad pdisk placement, VSlotId# {FailRealm# " << failRealm <<
+                            ", FailDomain# " << failDomain << ", VDisk# " << vdisk << "}, PDiskId# " << pdiskId.ToString();
+                    return false;
+                } 
+                if (usedPDisks.find(pdiskId) != usedPDisks.end()) {
+                    error = TStringBuilder() << "PDisk intersection, #id " << pdiskId.ToString();
                     return false;
                 }
-                usedPDomains[pDomain] = vdiskId;
-
-                Y_ABORT_UNLESS(pdisks.find(pdiskId) != pdisks.end());
-                
-                if (const auto it = usedPDisks.find(pdiskId); it != usedPDisks.end()) {
-                    error = TStringBuilder() << "Two VDisks occupy the same PDisk, PDiskId# " << pdiskId.ToString() << 
-                            " first VDisk Id# " << it->second.ToString() << " second VDisk Id# " << vdiskId.ToString();
-                    return false;
-                }
-                usedPDisks[pdiskId] = vdiskId;
+                usedPDisks.insert(pdiskId);
             }
         }
-    }
-
-    if (!allowMultipleRealmsOccupation && pRealmOccupants.size() > geom.GetNumFailRealms()) {
-        error = TStringBuilder() << "VDisks from one fail realm occupy different Realms";
     }
 
     return true;
 }
 
-bool CheckBaseConfigLayout(const TGroupGeometryInfo& geom, const NKikimrBlobStorage::TBaseConfig& cfg,
-        bool allowMultipleRealmsOccupation, TString& error) {
+bool CheckBaseConfigLayout(const TGroupGeometryInfo& geom, const NKikimrBlobStorage::TBaseConfig& cfg, TString& error) {
     NLayoutChecker::TDomainMapper domainMapper;
 
     std::unordered_map<ui32, TNodeLocation> nodes;
@@ -94,8 +74,8 @@ bool CheckBaseConfigLayout(const TGroupGeometryInfo& geom, const NKikimrBlobStor
     for (ui32 i = 0; i < cfg.VSlotSize(); ++i) {
         auto vslot = cfg.GetVSlot(i);
         TPDiskId pdiskId(vslot.GetVSlotId().GetNodeId(), vslot.GetVSlotId().GetPDiskId());
-        Y_ABORT_UNLESS(pdiskId != TPDiskId());
-        Y_ABORT_UNLESS(pdisks.find(pdiskId) != pdisks.end());
+        Y_VERIFY(pdiskId != TPDiskId());
+        Y_VERIFY(pdisks.find(pdiskId) != pdisks.end());
         ui32 groupId = vslot.GetGroupId();
         geom.ResizeGroup(groups[groupId]);
         groups[groupId][vslot.GetFailRealmIdx()][vslot.GetFailDomainIdx()][vslot.GetVDiskIdx()] = pdiskId;
@@ -103,7 +83,7 @@ bool CheckBaseConfigLayout(const TGroupGeometryInfo& geom, const NKikimrBlobStor
 
     for (auto& [groupId, group] : groups) {
         TString layoutError;
-        if (!CheckLayoutByGroupDefinition(group, pdisks, geom, allowMultipleRealmsOccupation, layoutError)) {
+        if (!CheckLayoutByGroupDefinition(group, pdisks, geom, layoutError)) {
             error = TStringBuilder() << "GroupId# " << groupId << " " << layoutError;
             return false;
         }

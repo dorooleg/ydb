@@ -16,22 +16,6 @@
 
 namespace NKikimr::NPersQueueTests {
 
-static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TVector<std::pair<TString, TVector<TString>>>& acl) {
-
-    NYdb::NScheme::TSchemeClient schemeClient(*driver);
-    auto modifyPermissionsSettings = NYdb::NScheme::TModifyPermissionsSettings();
-
-    for (const auto& user: acl) {
-        NYdb::NScheme::TPermissions permissions(user.first, user.second);
-        modifyPermissionsSettings.AddSetPermissions(permissions);
-    }
-
-    Cerr << "BEFORE MODIFY PERMISSIONS\n";
-
-    auto result = schemeClient.ModifyPermissions(topic, modifyPermissionsSettings).ExtractValueSync();
-    UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-}
-
 
 
 
@@ -60,28 +44,23 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
             Y_UNUSED(settings);
         }
 
-        virtual NKikimr::Tests::TServerSettings GetServerSettings() {
-            return NKikimr::NPersQueueTests::PQSettings();
-        }
 
         void InitializePQ() {
-            Y_ABORT_UNLESS(Server == nullptr);
-            Server = MakeHolder<NPersQueue::TTestServer>(GetServerSettings(), false);
+            Y_VERIFY(Server == nullptr);
+            PortManager = new TPortManager();
+            Server = MakeHolder<NPersQueue::TTestServer>(false, PortManager);
             Server->ServerSettings.PQConfig.SetTopicsAreFirstClassCitizen(TenantModeEnabled());
             Server->ServerSettings.PQConfig.MutablePQDiscoveryConfig()->SetLBFrontEnabled(true);
             Server->ServerSettings.PQConfig.SetACLRetryTimeoutSec(1);
 
             AlterSettings(Server->ServerSettings);
-
-            Cerr << "=== Server->StartServer(false);" << Endl;
             Server->StartServer(false);
 
-            Cerr << "=== TenantModeEnabled() = " << TenantModeEnabled() << Endl;
             if (TenantModeEnabled()) {
                 Server->AnnoyingClient->SetNoConfigMode();
                 Server->ServerSettings.PQConfig.SetSourceIdTablePath("some unused path");
             }
-            Cerr << "=== Init PQ - start server on port " << Server->GrpcPort << Endl;
+            Cerr << "Init PQ - start server on port " << Server->GrpcPort << Endl;
             Server->GrpcServerOptions.SetMaxMessageSize(130_MB);
             EnablePQLogs({NKikimrServices::PQ_READ_PROXY, NKikimrServices::PQ_WRITE_PROXY, NKikimrServices::FLAT_TX_SCHEMESHARD});
             EnablePQLogs({NKikimrServices::PERSQUEUE}, NLog::EPriority::PRI_INFO);
@@ -89,40 +68,30 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
 
 
             Server->AnnoyingClient->FullInit();
-            if (!TenantModeEnabled())
-                Server->AnnoyingClient->CheckClustersList(Server->CleverServer->GetRuntime());
-
             Server->AnnoyingClient->CreateConsumer("user");
             if (TenantModeEnabled()) {
-                Cerr << "=== Will create fst-class topics\n";
+                Cerr << "Will create fst-class topics\n";
                 Server->AnnoyingClient->CreateTopicNoLegacy("/Root/acc/topic1", 1);
                 Server->AnnoyingClient->CreateTopicNoLegacy("/Root/PQ/acc/topic1", 1);
             } else {
-                Cerr << "=== Will create legacy-style topics\n";
+                Cerr << "Will create legacy-style topics\n";
                 Server->AnnoyingClient->CreateTopicNoLegacy("rt3.dc1--acc--topic2dc", 1);
                 Server->AnnoyingClient->CreateTopicNoLegacy("rt3.dc2--acc--topic2dc", 1, true, false);
                 Server->AnnoyingClient->CreateTopicNoLegacy("rt3.dc1--topic1", 1);
                 Server->AnnoyingClient->CreateTopicNoLegacy("rt3.dc1--acc--topic1", 1);
                 Server->WaitInit("topic1");
+                Sleep(TDuration::Seconds(10));
             }
-
-            Cerr << "=== EnablePQLogs" << Endl;
             EnablePQLogs({ NKikimrServices::KQP_PROXY }, NLog::EPriority::PRI_EMERG);
 
-            Cerr << "=== CreateChannel" << Endl;
             InsecureChannel = grpc::CreateChannel("localhost:" + ToString(Server->GrpcPort), grpc::InsecureChannelCredentials());
-            Cerr << "=== NewStub" << Endl;
             ServiceStub = Ydb::PersQueue::V1::PersQueueService::NewStub(InsecureChannel);
-            Cerr << "=== InitializeWritePQService" << Endl;
             InitializeWritePQService(TenantModeEnabled() ? "Root/acc/topic1" : "topic1");
 
-            Cerr << "=== PersQueueClient" << Endl;
             NYdb::TDriverConfig driverCfg;
             driverCfg.SetEndpoint(TStringBuilder() << "localhost:" << Server->GrpcPort).SetLog(CreateLogBackend("cerr", ELogPriority::TLOG_DEBUG)).SetDatabase("/Root");
             YdbDriver.reset(new NYdb::TDriver(driverCfg));
             PersQueueClient = MakeHolder<NYdb::NPersQueue::TPersQueueClient>(*YdbDriver);
-
-            Cerr << "=== InitializePQ completed" << Endl;
         }
 
         void EnablePQLogs(const TVector<NKikimrServices::EServiceKikimr> services,
@@ -135,23 +104,19 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
 
         void InitializeWritePQService(const TString &topicToWrite) {
             while (true) {
-                Cerr << "=== InitializeWritePQService start iteration" << Endl;
                 Sleep(TDuration::MilliSeconds(100));
 
                 Ydb::PersQueue::V1::StreamingWriteClientMessage req;
                 Ydb::PersQueue::V1::StreamingWriteServerMessage resp;
                 grpc::ClientContext context;
 
-                Cerr << "=== InitializeWritePQService create streamingWriter" << Endl;
                 auto stream = ServiceStub->StreamingWrite(&context);
                 UNIT_ASSERT(stream);
 
                 req.mutable_init_request()->set_topic(topicToWrite);
                 req.mutable_init_request()->set_message_group_id("12345678");
 
-                Cerr << "=== InitializeWritePQService Write" << Endl;
                 if (!stream->Write(req)) {
-                    Cerr << "=== InitializeWritePQService Write fail" << Endl;
                     UNIT_ASSERT_C(stream->Read(&resp), "Context error: " << context.debug_error_string());
                     UNIT_ASSERT_C(resp.status() == Ydb::StatusIds::UNAVAILABLE,
                                   "Response: " << resp << ", Context error: " << context.debug_error_string());
@@ -160,7 +125,6 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
 
                 AssertSuccessfullStreamingOperation(stream->Read(&resp), stream);
                 if (resp.status() == Ydb::StatusIds::UNAVAILABLE) {
-                    Cerr << "=== InitializeWritePQService Status = UNAVAILABLE" << Endl;
                     continue;
                 }
 
@@ -171,8 +135,6 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
 
                 break;
             }
-
-            Cerr << "=== InitializeWritePQService done" << Endl;
         }
 
     public:
@@ -180,11 +142,16 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
             return TenantMode;
         }
 
-        void ModifyTopicACL(const TString& topic, const TVector<std::pair<TString, TVector<TString>>>& acl) {
+        void ModifyTopicACL(const TString& topic, const NACLib::TDiffACL& acl) {
+            if (TenantModeEnabled()) {
+                TFsPath path(topic);
+                Server->AnnoyingClient->ModifyACL(path.Dirname(), path.Basename(), acl.SerializeAsString());
+            } else {
+                Server->AnnoyingClient->ModifyACL("/Root/PQ", topic, acl.SerializeAsString());
+            }
+            WaitACLModification();
 
-            ::ModifyTopicACL(YdbDriver.get(), topic, acl);
         }
-
 
         TString GetRoot() const {
             return !TenantModeEnabled() ? "/Root/PQ" : "";
@@ -198,10 +165,6 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
             return TenantModeEnabled() ? "/Root/acc/topic1" : "topic1";
         }
 
-
-        TString GetFullTopicPath() {
-            return TenantModeEnabled() ? "/Root/acc/topic1" : "/Root/PQ/rt3.dc1--topic1";
-        }
         TString GetTopicPathMultipleDC() const {
             return "acc/topic2dc";
         }
@@ -217,42 +180,25 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
         THolder<NYdb::NPersQueue::TPersQueueClient> PersQueueClient;
     };
 
-    struct TPersQueueV1TestServerSettings {
-        bool CheckACL = false;
-        bool TenantModeEnabled = false;
-        ui32 NodeCount = PQ_DEFAULT_NODE_COUNT;
-    };
-
     class TPersQueueV1TestServer : public TPersQueueV1TestServerBase {
     public:
-        explicit TPersQueueV1TestServer(const TPersQueueV1TestServerSettings& settings)
-            : TPersQueueV1TestServerBase(settings.TenantModeEnabled)
-            , Settings(settings)
+        TPersQueueV1TestServer(bool checkAcl = false, bool tenantModeEnabled = false)
+            : TPersQueueV1TestServerBase(tenantModeEnabled)
+            , CheckACL(checkAcl)
         {
             InitAll();
         }
-
-        TPersQueueV1TestServer(bool checkAcl = false, bool tenantModeEnabled = false)
-            : TPersQueueV1TestServer({ .CheckACL = checkAcl, .TenantModeEnabled = tenantModeEnabled })
-        {}
 
         void InitAll() {
             InitializePQ();
         }
 
         void AlterSettings(NKikimr::Tests::TServerSettings& settings) override {
-            if (Settings.CheckACL) {
+            if (CheckACL)
                 settings.PQConfig.SetCheckACL(true);
-            }
         }
-
-        NKikimr::Tests::TServerSettings GetServerSettings() override {
-            return NKikimr::NPersQueueTests::PQSettings()
-                .SetNodeCount(Settings.NodeCount);
-        }
-
     private:
-        TPersQueueV1TestServerSettings Settings;
+        bool CheckACL;
     };
 
     class TPersQueueV1TestServerWithRateLimiter : public TPersQueueV1TestServerBase {
@@ -335,3 +281,4 @@ static void ModifyTopicACL(NYdb::TDriver* driver, const TString& topic, const TV
 */
     };
 }
+

@@ -37,11 +37,6 @@ public:
                              "  Kind: \"pool-kind-1\" "
                              "} "
                              " Name: \"Root\" ");
-
-        // Context->SetLogPriority(NKikimrServices::SCHEME_BOARD_REPLICA, NLog::PRI_DEBUG);
-        // Context->SetLogPriority(NKikimrServices::SCHEME_BOARD_SUBSCRIBER, NLog::PRI_DEBUG);
-        // Context->SetLogPriority(NKikimrServices::TX_PROXY_SCHEME_CACHE, NLog::PRI_DEBUG);
-        // Context->SetLogPriority(NKikimrServices::FLAT_TX_SCHEMESHARD, NLog::PRI_DEBUG);
     }
 
     UNIT_TEST_SUITE(TCacheTest);
@@ -124,7 +119,7 @@ void TCacheTest::Navigate() {
     auto entry = TestNavigate("/Root/DirA", TNavigate::EStatus::Ok);
 
     TestNavigateByTableId(entry.TableId, TNavigate::EStatus::Ok, "/Root/DirA");
-    TestNavigateByTableId(TTableId(2UL << 56, 1), TNavigate::EStatus::RootUnknown, "");
+    TestNavigateByTableId(TTableId(1ull << 56, 1), TNavigate::EStatus::RootUnknown, "");
 }
 
 void TCacheTest::Attributes() {
@@ -185,7 +180,7 @@ void TCacheTest::Recreate() {
 
 void TCacheTest::RacyCreateAndSync() {
     THolder<IEventHandle> delayedSyncRequest;
-    auto prevObserver = Context->SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+    auto prevObserver = Context->SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
         switch (ev->GetTypeRewrite()) {
         case TSchemeBoardEvents::EvSyncRequest:
             delayedSyncRequest.Reset(ev.Release());
@@ -239,7 +234,7 @@ void TCacheTest::RacyRecreateAndSync() {
     TestNavigate("/Root/DirA", TNavigate::EStatus::PathErrorUnknown, "", TNavigate::EOp::OpPath, false, true, true);
 
     THolder<IEventHandle> delayedSyncRequest;
-    auto prevObserver = Context->SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+    auto prevObserver = Context->SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
         switch (ev->GetTypeRewrite()) {
         case TSchemeBoardEvents::EvSyncRequest:
             delayedSyncRequest.Reset(ev.Release());
@@ -667,7 +662,7 @@ void TCacheTest::MigrationLostMessage() {
     auto tenantSSNotifier = CreateNotificationSubscriber(*Context, tentantSchemeShard);
 
     bool deleteMsgHasBeenDropped = false;
-    auto skipDeleteNotification = [&deleteMsgHasBeenDropped](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto skipDeleteNotification = [&deleteMsgHasBeenDropped](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         if (ev->Type == TSchemeBoardEvents::EvNotifyDelete) {
             auto *msg = ev->Get<TSchemeBoardEvents::TEvNotifyDelete>();
             Cerr << Endl << Endl << Endl << "skipDeleteNotification"
@@ -1000,7 +995,7 @@ void TCacheTest::PathBelongsToDomain() {
 class TCacheTestWithDrops: public TCacheTest {
 public:
     TTestContext::TEventObserver ObserverFunc() override {
-        return [](TAutoPtr<IEventHandle>& ev) {
+        return [](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TSchemeBoardEvents::EvNotifyUpdate:
             case TSchemeBoardEvents::EvNotifyDelete:

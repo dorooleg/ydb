@@ -1,9 +1,9 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/viewer/json/json.h>

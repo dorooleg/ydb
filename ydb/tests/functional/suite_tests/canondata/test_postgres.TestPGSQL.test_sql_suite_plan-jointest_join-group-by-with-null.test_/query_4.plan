@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 12
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -29,17 +24,15 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "Node Type": "TopSort",
+                                        "Node Type": "TopSort-Aggregate",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 10
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
-                                                "TopSortBy": "argument.t1.q2"
+                                                "TopSortBy": "row.q2"
+                                            },
+                                            {
+                                                "Name": "Aggregate"
                                             }
                                         ],
                                         "PlanNodeId": 11,
@@ -56,25 +49,11 @@
                                                         "Node Type": "Aggregate-LeftJoin (MapJoin)",
                                                         "Operators": [
                                                             {
-                                                                "Aggregation": "{_yql_agg_0: COUNT(item.t2.q1,state._yql_agg_0)}",
+                                                                "Aggregation": "{_yql_agg_0: COUNT(item.t2.q1)}",
                                                                 "GroupBy": "item.t1.q2",
-                                                                "Inputs": [
-                                                                    {
-                                                                        "InternalOperatorId": 1
-                                                                    }
-                                                                ],
                                                                 "Name": "Aggregate"
                                                             },
                                                             {
-                                                                "Condition": "q2 = q1",
-                                                                "Inputs": [
-                                                                    {
-                                                                        "ExternalPlanNodeId": 8
-                                                                    },
-                                                                    {
-                                                                        "ExternalPlanNodeId": 6
-                                                                    }
-                                                                ],
                                                                 "Name": "LeftJoin (MapJoin)"
                                                             }
                                                         ],
@@ -89,7 +68,6 @@
                                                                         "Node Type": "TableFullScan",
                                                                         "Operators": [
                                                                             {
-                                                                                "Inputs": [],
                                                                                 "Name": "TableFullScan",
                                                                                 "ReadColumns": [
                                                                                     "q1",
@@ -127,11 +105,6 @@
                                                                                         "Node Type": "Limit",
                                                                                         "Operators": [
                                                                                             {
-                                                                                                "Inputs": [
-                                                                                                    {
-                                                                                                        "ExternalPlanNodeId": 2
-                                                                                                    }
-                                                                                                ],
                                                                                                 "Limit": "10",
                                                                                                 "Name": "Limit"
                                                                                             }
@@ -147,16 +120,10 @@
                                                                                                         "Node Type": "Limit-TableFullScan",
                                                                                                         "Operators": [
                                                                                                             {
-                                                                                                                "Inputs": [
-                                                                                                                    {
-                                                                                                                        "InternalOperatorId": 1
-                                                                                                                    }
-                                                                                                                ],
                                                                                                                 "Limit": "10",
                                                                                                                 "Name": "Limit"
                                                                                                             },
                                                                                                             {
-                                                                                                                "Inputs": [],
                                                                                                                 "Name": "TableFullScan",
                                                                                                                 "ReadColumns": [
                                                                                                                     "q1",
@@ -192,7 +159,7 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "t1.q2 (Asc)"
+                                    "q2 (Asc)"
                                 ]
                             }
                         ]

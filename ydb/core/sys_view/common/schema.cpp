@@ -192,7 +192,8 @@ private:
     void RegisterSystemViews() {
         RegisterSystemView<Schema::PartitionStats>(PartitionStatsName);
 
-        RegisterSystemView<Schema::Nodes>(NodesName);
+        // 'nodes' table is currently switched off
+        // RegisterSystemView<Schema::Nodes>(NodesName);
 
         RegisterSystemView<Schema::QueryStats>(TopQueriesByDuration1MinuteName);
         RegisterSystemView<Schema::QueryStats>(TopQueriesByDuration1HourName);
@@ -202,7 +203,6 @@ private:
         RegisterSystemView<Schema::QueryStats>(TopQueriesByCpuTime1HourName);
         RegisterSystemView<Schema::QueryStats>(TopQueriesByRequestUnits1MinuteName);
         RegisterSystemView<Schema::QueryStats>(TopQueriesByRequestUnits1HourName);
-        RegisterSystemView<Schema::QuerySessions>(QuerySessions);
 
         RegisterDomainSystemView<Schema::PDisks>(PDisksName);
         RegisterDomainSystemView<Schema::VSlots>(VSlotsName);
@@ -215,11 +215,7 @@ private:
         RegisterSystemView<Schema::QueryMetrics>(QueryMetricsName);
 
         RegisterOlapStoreSystemView<Schema::PrimaryIndexStats>(StorePrimaryIndexStatsName);
-        RegisterOlapStoreSystemView<Schema::PrimaryIndexPortionStats>(StorePrimaryIndexPortionStatsName);
-        RegisterOlapStoreSystemView<Schema::PrimaryIndexGranuleStats>(StorePrimaryIndexGranuleStatsName);
         RegisterColumnTableSystemView<Schema::PrimaryIndexStats>(TablePrimaryIndexStatsName);
-        RegisterColumnTableSystemView<Schema::PrimaryIndexPortionStats>(TablePrimaryIndexPortionStatsName);
-        RegisterColumnTableSystemView<Schema::PrimaryIndexGranuleStats>(TablePrimaryIndexGranuleStatsName);
 
         RegisterSystemView<Schema::TopPartitions>(TopPartitions1MinuteName);
         RegisterSystemView<Schema::TopPartitions>(TopPartitions1HourName);

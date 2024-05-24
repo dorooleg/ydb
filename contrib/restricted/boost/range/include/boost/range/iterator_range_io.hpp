@@ -31,7 +31,7 @@
 # ifndef BOOST_OLD_IOSTREAMS
 #  include <ostream>
 # else
-#  error #include <ostream.h>
+#  include <ostream.h>
 # endif
 #endif // _STLP_NO_IOSTREAMS
 

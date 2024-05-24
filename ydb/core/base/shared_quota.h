@@ -17,8 +17,8 @@ public:
         , UsedCounter(usedCounter)
         , SizeCounter(sizeCounter)
     {
-        Y_ABORT_UNLESS(UsedCounter);
-        Y_ABORT_UNLESS(SizeCounter);
+        Y_VERIFY(UsedCounter);
+        Y_VERIFY(SizeCounter);
     }
 
     bool TryCaptureQuota(ui64 quota)
@@ -57,7 +57,7 @@ public:
         ui64 quota;
         do {
             quota = AtomicLoad(&Quota);
-            Y_ABORT_UNLESS(delta > 0 || quota >= static_cast<ui64>(-delta));
+            Y_VERIFY(delta > 0 || quota >= static_cast<ui64>(-delta));
             updatedQuota = quota + delta;
         } while (!AtomicCas(&Quota, updatedQuota, quota));
         AtomicAdd(FreeQuota, delta);

@@ -2,11 +2,10 @@
 
 #include <ydb/core/persqueue/events/internal.h>
 #include <ydb/core/protos/pqconfig.pb.h>
-#include <ydb/core/protos/msgbus_kv.pb.h>
 #include <ydb/core/protos/tx.pb.h>
 #include <ydb/core/tx/tx_processing.h>
 
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/actorid.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/hash_set.h>
@@ -25,8 +24,7 @@ struct TDistributedTransaction {
                               ui64 extractTabletId);
     void OnProposeTransaction(const NKikimrPQ::TDataTransaction& txBody,
                               ui64 extractTabletId);
-    void OnProposeTransaction(const NKikimrPQ::TConfigTransaction& txBody,
-                              ui64 extractTabletId);
+    void OnProposeTransaction(const NKikimrPQ::TConfigTransaction& txBody);
     void OnPlanStep(ui64 step);
     void OnTxCalcPredicateResult(const TEvPQ::TEvTxCalcPredicateResult& event);
     void OnProposePartitionConfigResult(const TEvPQ::TEvProposePartitionConfigResult& event);
@@ -49,7 +47,6 @@ struct TDistributedTransaction {
     THashSet<ui64> Senders;        // список отправителей TEvReadSet
     THashSet<ui64> Receivers;      // список получателей TEvReadSet
     TVector<NKikimrPQ::TPartitionOperation> Operations;
-    TMaybe<ui64> WriteId;
 
     EDecision SelfDecision = NKikimrTx::TReadSetData::DECISION_UNKNOWN;
     EDecision ParticipantsDecision = NKikimrTx::TReadSetData::DECISION_UNKNOWN;
@@ -68,6 +65,9 @@ struct TDistributedTransaction {
     NPersQueue::TTopicConverterPtr TopicConverter;
 
     bool WriteInProgress = false;
+
+    void SetDecision(EDecision decision);
+    void SetDecision(ui64 tablet, EDecision decision);
 
     EDecision GetDecision() const;
 
@@ -88,7 +88,7 @@ struct TDistributedTransaction {
     void InitConfigTransaction(const NKikimrPQ::TTransaction& tx);
 
     void InitPartitions(const google::protobuf::RepeatedPtrField<NKikimrPQ::TPartitionOperation>& tx);
-    void InitPartitions();
+    void InitPartitions(const NKikimrPQ::TPQTabletConfig& config);
 
     template<class E>
     void OnPartitionResult(const E& event, EDecision decision);

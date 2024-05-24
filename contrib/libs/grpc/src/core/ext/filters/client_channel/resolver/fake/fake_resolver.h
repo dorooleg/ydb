@@ -14,20 +14,15 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_FAKE_FAKE_RESOLVER_H
-#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_FAKE_FAKE_RESOLVER_H
+#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_FAKE_FAKE_RESOLVER_H
+#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_FAKE_FAKE_RESOLVER_H
 
 #include <grpc/support/port_platform.h>
 
-#include "y_absl/base/thread_annotations.h"
-#include "y_absl/strings/string_view.h"
-
-#include <grpc/grpc.h>
-
-#include "src/core/lib/gpr/useful.h"
+#include "src/core/lib/channel/channel_args.h"
 #include "src/core/lib/gprpp/ref_counted.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
 #include "src/core/lib/gprpp/sync.h"
+#include "src/core/lib/iomgr/error.h"
 #include "src/core/lib/resolver/resolver.h"
 
 #define GRPC_ARG_FAKE_RESOLVER_RESPONSE_GENERATOR \
@@ -84,15 +79,6 @@ class FakeResolverResponseGenerator
   static RefCountedPtr<FakeResolverResponseGenerator> GetFromArgs(
       const grpc_channel_args* args);
 
-  static y_absl::string_view ChannelArgName() {
-    return GRPC_ARG_FAKE_RESOLVER_RESPONSE_GENERATOR;
-  }
-
-  static int ChannelArgsCompare(const FakeResolverResponseGenerator* a,
-                                const FakeResolverResponseGenerator* b) {
-    return QsortCompare(a, b);
-  }
-
  private:
   friend class FakeResolver;
   // Set the corresponding FakeResolver to this generator.
@@ -107,4 +93,4 @@ class FakeResolverResponseGenerator
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_FAKE_FAKE_RESOLVER_H
+#endif  // GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_FAKE_FAKE_RESOLVER_H

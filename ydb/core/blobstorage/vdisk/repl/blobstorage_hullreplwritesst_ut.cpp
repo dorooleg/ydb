@@ -14,15 +14,13 @@ std::shared_ptr<TReplCtx> CreateReplCtx(TVector<TVDiskID>& vdisks, const TIntrus
     auto counters = MakeIntrusive<::NMonitoring::TDynamicCounters>();
     auto vctx = MakeIntrusive<TVDiskContext>(TActorId(), info->PickTopology(), counters, TVDiskID(0, 1, 0, 0, 0),
         nullptr, NPDisk::DEVICE_TYPE_UNKNOWN);
-    auto hugeBlobCtx = std::make_shared<THugeBlobCtx>(nullptr, true);
+    auto hugeBlobCtx = std::make_shared<THugeBlobCtx>(512u << 10u, nullptr);
     auto dsk = MakeIntrusive<TPDiskParams>(ui8(1), 1u, 128u << 20, 4096u, 0u, 1000000000u, 1000000000u, 65536u, 65536u, 65536u);
     auto pdiskCtx = std::make_shared<TPDiskCtx>(dsk, TActorId(), TString());
     auto replCtx = std::make_shared<TReplCtx>(
         vctx,
-        nullptr,
         pdiskCtx,
         hugeBlobCtx,
-        4097,
         nullptr,
         info,
         TActorId(),
@@ -38,7 +36,7 @@ TVDiskContextPtr CreateVDiskContext(const TBlobStorageGroupInfo& info) {
 
 TIntrusivePtr<THullCtx> CreateHullCtx(const TBlobStorageGroupInfo& info, ui32 chunkSize, ui32 compWorthReadSize) {
     return MakeIntrusive<THullCtx>(CreateVDiskContext(info), chunkSize, compWorthReadSize, true, true, true, true, 1u,
-        1u, 2.0, 10u, 10u, 20u, 0.5, TDuration::Minutes(5), TDuration::Seconds(1), true);
+        1u, 2.0, 10u, 10u, 20u, 0.5, TDuration::Minutes(5), TDuration::Seconds(1));
 }
 
 TIntrusivePtr<THullDs> CreateHullDs(const TBlobStorageGroupInfo& info) {
@@ -69,7 +67,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
             ui32 offset = m.Offset;
             for (ui32 i = 0; i < m.PartsPtr->Size(); ++i) {
                 const auto& [ptr, size] = (*m.PartsPtr)[i];
-                Y_ABORT_UNLESS(offset + size <= data.size());
+                Y_VERIFY(offset + size <= data.size());
                 if (ptr) {
                     memcpy(data.Detach() + offset, ptr, size);
                 } else {
@@ -82,7 +80,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
         };
         auto read = [&](const TDiskPart& p) {
             const auto it = chunks.find(p.ChunkIdx);
-            Y_ABORT_UNLESS(it != chunks.end());
+            Y_VERIFY(it != chunks.end());
             const TString& s = it->second;
             return s.substr(p.Offset, p.Size);
         };
@@ -113,7 +111,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
                         if (TIngress::CreateIngressWithLocal(&groupInfo->GetTopology(), replCtx->VCtx->ShortSelfVDisk,
                                 TLogoBlobID(id, partIdx + 1))) {
                             vec.Set(partIdx);
-                            rope = TDiskBlob::Create(size, partIdx + 1, vec.GetSize(), TRope(std::move(data)), arena, true);
+                            rope = TDiskBlob::Create(size, partIdx + 1, vec.GetSize(), TRope(std::move(data)), arena);
                             break;
                         }
                     }
@@ -129,7 +127,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
 
                 case TReplSstStreamWriter::EState::PDISK_MESSAGE_PENDING: {
                     auto msg = writer.GetPendingPDiskMsg();
-                    Y_ABORT_UNLESS(msg);
+                    Y_VERIFY(msg);
                     if (auto *x = dynamic_cast<NPDisk::TEvChunkReserve*>(msg.get())) {
                         NPDisk::TEvChunkReserveResult res(NKikimrProto::OK, {});
                         for (ui32 i = 0; i < x->SizeChunks; ++i) {
@@ -143,13 +141,13 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
                             writeMsgs.emplace_back(static_cast<NPDisk::TEvChunkWrite*>(msg.release()));
                         }
                     } else {
-                        Y_ABORT();
+                        Y_FAIL();
                     }
                     break;
                 }
 
                 case TReplSstStreamWriter::EState::NOT_READY: {
-                    Y_ABORT_UNLESS(!writeMsgs.empty());
+                    Y_VERIFY(!writeMsgs.empty());
                     const size_t index = RandomNumber(writeMsgs.size());
                     handleWrite(*writeMsgs[index]);
                     writeMsgs.erase(writeMsgs.begin() + index);
@@ -201,7 +199,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
                 }
 
                 default:
-                    Y_ABORT();
+                    Y_FAIL();
             }
         }
     }

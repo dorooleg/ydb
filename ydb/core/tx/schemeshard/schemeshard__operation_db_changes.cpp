@@ -79,24 +79,8 @@ void TStorageChanges::Apply(TSchemeShard* ss, NTabletFlatExecutor::TTransactionC
         ss->PersistSubDomainAlter(db, pId, *subdomainInfo->GetAlter());
     }
 
-    for (const auto& pId : Views) {
-        ss->PersistView(db, pId);
-    }
-
     ss->PersistUpdateNextPathId(db);
     ss->PersistUpdateNextShardIdx(db);
-
-    for (const auto& [pathId, shardIdx, pqInfo] : PersQueue) {
-        ss->PersistPersQueue(db, pathId, shardIdx, pqInfo);
-    }
-
-    for (const auto& [pathId, pqGroup] : PersQueueGroup) {
-        ss->PersistPersQueueGroup(db, pathId, pqGroup);
-    }
-
-    for (const auto& [pathId, pqGroup] : AddPersQueueGroupAlter) {
-        ss->PersistAddPersQueueGroupAlter(db, pathId, pqGroup);
-    }
 }
 
 }

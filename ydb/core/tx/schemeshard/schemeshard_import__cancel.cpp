@@ -129,7 +129,7 @@ struct TSchemeShard::TImport::TTxCancelAck: public TSchemeShard::TXxport::TTxBas
             txId = TTxId(CancelIndexBuildResult->Get()->Record.GetTxId());
             id = CancelIndexBuildResult->Cookie;
         } else {
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
 
         if (!Self->Imports.contains(id)) {

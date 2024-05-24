@@ -141,10 +141,8 @@ class TBlobStorageController::TScrubState::TImpl {
             case TVDiskItem::EScrubState::ENQUEUED: return "ENQUEUED";
             case TVDiskItem::EScrubState::IN_PROGRESS: return "IN_PROGRESS";
         }
-        Y_ABORT();
+        Y_FAIL();
     }
-
-    friend class TBlobStorageController;
 
 public:
     TImpl(TBlobStorageController *self)
@@ -330,7 +328,7 @@ public:
 
         auto [it, inserted] = VDiskState.emplace(vslotId, vdiskId, std::move(state), scrubCycleStartTime,
             scrubCycleFinishTime, success);
-        Y_ABORT_UNLESS(inserted);
+        Y_VERIFY(inserted);
         AdjustUserState(&const_cast<TVDiskItem&>(*it));
     }
 
@@ -547,13 +545,13 @@ public:
     bool ScrubDisabled = false;
 
     void PutToQueue(TVDiskItem *scrub) {
-        Y_ABORT_UNLESS(!scrub->QueueIndex);
+        Y_VERIFY(!scrub->QueueIndex);
         scrub->QueueIndex = ++LastQueueIndex;
         AddCandidate(scrub);
     }
 
     void RemoveFromQueue(TVDiskItem *scrub) {
-        Y_ABORT_UNLESS(scrub->QueueIndex);
+        Y_VERIFY(scrub->QueueIndex);
         scrub->QueueIndex = 0;
         static_cast<TIntrusiveListItem<TVDiskItem, TPredLockedByPDisk>*>(scrub)->Unlink();
         static_cast<TIntrusiveListItem<TVDiskItem, TPredLockedByGroup>*>(scrub)->Unlink();
@@ -566,7 +564,7 @@ public:
     }
 
     bool CheckIfScrubPermitted(TVDiskItem *scrub, TInstant now) {
-        Y_ABORT_UNLESS(scrub->QueueIndex);
+        Y_VERIFY(scrub->QueueIndex);
 
         if (Self->ScrubPeriodicity == TDuration::Zero()) {
             ScrubDisabled = true;
@@ -659,8 +657,8 @@ public:
             --NumCandidates;
 
             // some sanity checks
-            Y_ABORT_UNLESS(scrub == &*VDiskState.find(scrub->VSlotId));
-            Y_ABORT_UNLESS(scrub->ScrubState == TVDiskItem::EScrubState::ENQUEUED);
+            Y_VERIFY(scrub == &*VDiskState.find(scrub->VSlotId));
+            Y_VERIFY(scrub->ScrubState == TVDiskItem::EScrubState::ENQUEUED);
 
             // run scrubbing for this item if it is allowed
             if (CheckIfScrubPermitted(scrub, now)) {
@@ -687,7 +685,7 @@ public:
     void RemoveFromInProgress(TVDiskItem *scrub, TInstant now) {
         const TPDiskId pdiskId = scrub->VSlotId.ComprisingPDiskId();
         const auto pdiskIt = CurrentlyScrubbedDisks.find(pdiskId);
-        Y_ABORT_UNLESS(pdiskIt != CurrentlyScrubbedDisks.end());
+        Y_VERIFY(pdiskIt != CurrentlyScrubbedDisks.end());
         if (!--pdiskIt->second.Count) {
             AddCandidates(pdiskIt->second);
             CurrentlyScrubbedDisks.erase(pdiskIt);
@@ -697,7 +695,7 @@ public:
 
         const TGroupId groupId = GetGroupId(scrub);
         const auto groupIt = CurrentlyScrubbedGroups.find(groupId);
-        Y_ABORT_UNLESS(groupIt != CurrentlyScrubbedGroups.end());
+        Y_VERIFY(groupIt != CurrentlyScrubbedGroups.end());
         if (!--groupIt->second.Count) {
             AddCandidates(groupIt->second);
             CurrentlyScrubbedGroups.erase(groupIt);
@@ -780,10 +778,6 @@ TBlobStorageController::TScrubState::~TScrubState()
 void TBlobStorageController::TScrubState::HandleTimer() {
     Impl->OnTimer(TActivationContext::Now());
     TActivationContext::Schedule(TDuration::Minutes(1), new IEventHandle(Impl->SelfId(), {}, new TEvPrivate::TEvScrub));
-}
-
-void TBlobStorageController::TScrubState::Clear() {
-    Impl.reset(new TImpl(Impl->Self));
 }
 
 void TBlobStorageController::TScrubState::AddItem(TVSlotId vslotId, std::optional<TString> state,

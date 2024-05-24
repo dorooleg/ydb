@@ -80,6 +80,12 @@ class KiKiMRNode(daemon.Daemon, kikimr_node_interface.NodeInterface):
         else:
             self.__log_file = None
 
+        self.__cms_config_cache_file = tempfile.NamedTemporaryFile(
+            dir=self.cwd,
+            prefix="cms_config_cache_",
+            delete=False
+        )
+        self.__cms_config_cache_file_name = self.__cms_config_cache_file.name
         daemon.Daemon.__init__(self, self.command, cwd=self.cwd, timeout=180, stderr_on_error_lines=240)
         self.__binary_path = None
 
@@ -104,6 +110,10 @@ class KiKiMRNode(daemon.Daemon, kikimr_node_interface.NodeInterface):
         if self.__binary_path:
             return self.__binary_path
         return self.__configurator.binary_path
+
+    @property
+    def cms_config_cache_file_name(self):
+        return self.__cms_config_cache_file_name
 
     @property
     def command(self):
@@ -172,6 +182,7 @@ class KiKiMRNode(daemon.Daemon, kikimr_node_interface.NodeInterface):
                 "--grpc-port=%s" % self.grpc_port,
                 "--mon-port=%d" % self.mon_port,
                 "--ic-port=%d" % self.ic_port,
+                "--cms-config-cache-file=%s" % self.cms_config_cache_file_name,
             ]
         )
 

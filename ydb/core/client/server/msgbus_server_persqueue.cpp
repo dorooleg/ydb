@@ -3,8 +3,8 @@
 #include "msgbus_server_persqueue.h"
 #include "msgbus_server_pq_metacache.h"
 #include "msgbus_server_pq_metarequest.h"
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <ydb/core/persqueue/events/global.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
@@ -65,7 +65,7 @@ TProcessingResult ProcessMetaCacheSingleTopicsResponse(
                 MSTATUS_ERROR,
                 NPersQueue::NErrorCode::UNKNOWN_TOPIC,
                 Sprintf("path '%s' has unknown/invalid root prefix '%s', Marker# PQ14",
-                        fullPath.c_str(), entry.Path.empty() ? "" :entry.Path[0].c_str()),
+                        fullPath.c_str(), entry.Path[0].c_str()),
                 true
             };
         }
@@ -190,11 +190,10 @@ void TPersQueueBaseRequestProcessor::AnswerAndDie(const TActorContext& ctx) {
 }
 
 void TPersQueueBaseRequestProcessor::Bootstrap(const TActorContext& ctx) {
-    StartTimestamp = ctx.Now();
+    LOG_INFO_S(ctx, NKikimrServices::PERSQUEUE, "proxy got request " << RequestId);
 
-    LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "Send to PqMetaCache TEvDescribeAllTopicsRequest");
-    bool ret = ctx.Send(PqMetaCache, new NPqMetaCacheV2::TEvPqNewMetaCache::TEvDescribeAllTopicsRequest());
-    LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "Send to PqMetaCache TEvDescribeAllTopicsRequest Result:" << ret);
+    StartTimestamp = ctx.Now();
+    ctx.Send(PqMetaCache, new NPqMetaCacheV2::TEvPqNewMetaCache::TEvDescribeAllTopicsRequest());
 
     if (ListNodes) {
         const TActorId nameserviceId = GetNameserviceActorId();
@@ -229,12 +228,12 @@ void TPersQueueBaseRequestProcessor::Handle(TEvPersQueue::TEvResponse::TPtr& ev,
         return SendReplyAndDie(std::move(ev->Get()->Record), ctx);
     }
     auto answeredChild = Children.find(ev->Sender);
-    Y_ABORT_UNLESS(answeredChild != Children.end());
-    Y_ABORT_UNLESS(!answeredChild->second->ActorAnswered);
+    Y_VERIFY(answeredChild != Children.end());
+    Y_VERIFY(!answeredChild->second->ActorAnswered);
     answeredChild->second->Response.Swap(&ev->Get()->Record);
     answeredChild->second->ActorAnswered = true;
     ++ChildrenAnswered;
-    Y_ABORT_UNLESS(ChildrenAnswered <= Children.size());
+    Y_VERIFY(ChildrenAnswered <= Children.size());
 
     if (ReadyForAnswer(ctx)) {
         return AnswerAndDie(ctx);
@@ -242,7 +241,7 @@ void TPersQueueBaseRequestProcessor::Handle(TEvPersQueue::TEvResponse::TPtr& ev,
 }
 
 void TPersQueueBaseRequestProcessor::Handle(TEvInterconnect::TEvNodesInfo::TPtr& ev, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(ListNodes);
+    Y_VERIFY(ListNodes);
     NodesInfo.reset(new TNodesInfo(ev->Release(), ctx));
     if (ReadyToCreateChildren()) {
         if (CreateChildren(ctx)) {
@@ -307,14 +306,12 @@ void TPersQueueBaseRequestProcessor::GetTopicsListOrThrow(
 void TPersQueueBaseRequestProcessor::Handle(
         NPqMetaCacheV2::TEvPqNewMetaCache::TEvDescribeTopicsResponse::TPtr&, const TActorContext&
 ) {
-    Y_ABORT();
+    Y_FAIL();
 }
 
 void TPersQueueBaseRequestProcessor::Handle(
         NPqMetaCacheV2::TEvPqNewMetaCache::TEvDescribeAllTopicsResponse::TPtr& ev, const TActorContext& ctx
 ) {
-    LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "TPersQueueBaseRequestProcessor::Handle");
-
     auto& path = ev->Get()->Path;
     if (!ev->Get()->Success) {
         return SendErrorReplyAndDie(ctx, MSTATUS_ERROR, NPersQueue::NErrorCode::UNKNOWN_TOPIC,
@@ -323,7 +320,7 @@ void TPersQueueBaseRequestProcessor::Handle(
 
     TopicsDescription = std::move(ev->Get()->Result);
     TopicsConverters = std::move(ev->Get()->Topics);
-    Y_ABORT_UNLESS(TopicsDescription->ResultSet.size() == TopicsConverters.size());
+    Y_VERIFY(TopicsDescription->ResultSet.size() == TopicsConverters.size());
     if (ReadyToCreateChildren()) {
         if (CreateChildren(ctx)) {
             return;
@@ -337,12 +334,10 @@ bool TPersQueueBaseRequestProcessor::ReadyToCreateChildren() const {
 }
 
 bool TPersQueueBaseRequestProcessor::CreateChildren(const TActorContext& ctx) {
-    LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "TPersQueueBaseRequestProcessor::CreateChildren");
-
     if (ChildrenCreationDone)
         return false;
     ChildrenCreationDone = true;
-    Y_ABORT_UNLESS(TopicsDescription->ResultSet.size() == TopicsConverters.size());
+    Y_VERIFY(TopicsDescription->ResultSet.size() == TopicsConverters.size());
     ui32 i = 0;
     for (const auto& entry : TopicsDescription->ResultSet) {
         auto converter = TopicsConverters[i++];
@@ -369,13 +364,10 @@ TPersQueueBaseRequestProcessor::~TPersQueueBaseRequestProcessor() {
 }
 
 bool TPersQueueBaseRequestProcessor::CreateChildrenIfNeeded(const TActorContext& ctx) {
-    LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "TPersQueueBaseRequestProcessor::CreateChildrenIfNeeded topics count = " << ChildrenToCreate.size());
-
-    Y_ABORT_UNLESS(NeedChildrenCreation);
+    Y_VERIFY(NeedChildrenCreation);
 
     if (AtomicAdd(Infly, ChildrenToCreate.size()) > MAX_INFLY) {
         AtomicSub(Infly, ChildrenToCreate.size());
-        LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "topics count =" << ChildrenToCreate.size() << " is greater then MAX_INFLY=" << MAX_INFLY);
         return false;
     }
 
@@ -399,8 +391,6 @@ bool TPersQueueBaseRequestProcessor::CreateChildrenIfNeeded(const TActorContext&
             return true;
         }
 
-        LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "CreateTopicSubactor for topic " << name);
-
         THolder<IActor> childActor = CreateTopicSubactor(perTopicInfo->TopicEntry, name);
         if (childActor.Get() != nullptr) {
             const TActorId actorId = ctx.Register(childActor.Release());
@@ -408,14 +398,12 @@ bool TPersQueueBaseRequestProcessor::CreateChildrenIfNeeded(const TActorContext&
             topics.emplace(name);
             Children.emplace(actorId, std::move(perTopicInfo));
         }
-        else
-            LOG_WARN_S(ctx, NKikimrServices::PERSQUEUE, "CreateTopicSubactor failed.");
     }
-    Y_ABORT_UNLESS(topics.size() == Children.size());
+    Y_VERIFY(topics.size() == Children.size());
 
     if (!TopicsToRequest.empty() && TopicsToRequest.size() != topics.size()) {
         // Write helpful error description
-        Y_ABORT_UNLESS(topics.size() < TopicsToRequest.size());
+        Y_VERIFY(topics.size() < TopicsToRequest.size());
         TStringBuilder errorDesc;
         errorDesc << "the following topics are not created: ";
         for (const TString& topic : TopicsToRequest) {
@@ -423,7 +411,8 @@ bool TPersQueueBaseRequestProcessor::CreateChildrenIfNeeded(const TActorContext&
                 errorDesc << topic << ", ";
             }
         }
-        SendErrorReplyAndDie(ctx, MSTATUS_ERROR, NPersQueue::NErrorCode::UNKNOWN_TOPIC, errorDesc << "Marker# PQ95");
+        SendErrorReplyAndDie(ctx, MSTATUS_ERROR, NPersQueue::NErrorCode::UNKNOWN_TOPIC,
+                             errorDesc << "Marker# PQ95");
         return true;
     }
     if (ReadyForAnswer(ctx)) {
@@ -566,7 +555,7 @@ public:
             return;
         }
         if (record.HasMetaRequest()) {
-            Y_ABORT_UNLESS(IsMetaRequest);
+            Y_VERIFY(IsMetaRequest);
             auto& meta = record.GetMetaRequest();
             ui32 count = meta.HasCmdGetPartitionLocations() + meta.HasCmdGetPartitionOffsets() +
                          meta.HasCmdGetTopicMetadata() + meta.HasCmdGetPartitionStatus() + meta.HasCmdGetReadSessionsInfo();
@@ -667,7 +656,7 @@ public:
             }
             for (const auto& pp : p.second.PartitionToTablet) {
                 auto it = TabletInfo.find(pp.second);
-                Y_ABORT_UNLESS(it != TabletInfo.end());
+                Y_VERIFY(it != TabletInfo.end());
                 auto ht = hostName.find(it->second.NodeId);
                 if (ht != hostName.end()) {
                     if (meta.GetCmdGetPartitionLocations().HasHost() && meta.GetCmdGetPartitionLocations().GetHost() != ht->second) {
@@ -729,7 +718,7 @@ public:
             }
             for (const auto& tablet: p.second.Tablets) {
                 auto it = TabletInfo.find(tablet);
-                Y_ABORT_UNLESS(it != TabletInfo.end());
+                Y_VERIFY(it != TabletInfo.end());
                 for (const auto& r : it->second.OffsetResponses) {
                     if (p.second.PartitionToTablet.find(r.GetPartition()) == p.second.PartitionToTablet.end())
                         continue;
@@ -766,7 +755,7 @@ public:
 
             for (const auto& tablet: p.second.Tablets) {
                 auto it = TabletInfo.find(tablet);
-                Y_ABORT_UNLESS(it != TabletInfo.end());
+                Y_VERIFY(it != TabletInfo.end());
                 for (const auto& r : it->second.StatusResponses) {
                     if (p.second.PartitionToTablet.find(r.GetPartition()) == p.second.PartitionToTablet.end())
                         continue;
@@ -807,7 +796,7 @@ public:
 
             THashMap<ui32, ui32> partitionToResp;
             ui32 sz = 0;
-            Y_ABORT_UNLESS(p.second.ReadSessionsInfo);
+            Y_VERIFY(p.second.ReadSessionsInfo);
             auto* sessionsInfo = p.second.ReadSessionsInfo.Get();
             for (ui32 i = 0; i < sessionsInfo->PartitionInfoSize(); ++i) {
                 const auto& resp = sessionsInfo->GetPartitionInfo(i);
@@ -821,7 +810,7 @@ public:
             }
             for (const auto& tablet: p.second.Tablets) {
                 auto it = TabletInfo.find(tablet);
-                Y_ABORT_UNLESS(it != TabletInfo.end());
+                Y_VERIFY(it != TabletInfo.end());
                 for (const auto& r : it->second.OffsetResponses) {
                     if (p.second.PartitionToTablet.find(r.GetPartition()) == p.second.PartitionToTablet.end())
                         continue;
@@ -846,8 +835,8 @@ public:
 
 
     bool AnswerIfCanForMeta(const TActorContext& ctx) {
-        Y_ABORT_UNLESS(IsMetaRequest);
-        Y_ABORT_UNLESS(RequestProto.HasMetaRequest());
+        Y_VERIFY(IsMetaRequest);
+        Y_VERIFY(RequestProto.HasMetaRequest());
         if (AclRequests)
             return false;
         if (DescribeRequests)
@@ -866,24 +855,24 @@ public:
         } else if (meta.HasCmdGetPartitionOffsets()) {
             if (TopicsAnswered != TopicInfo.size() || TabletsAnswered.size() < PartTabletsRequested)
                 return false;
-            Y_ABORT_UNLESS(PartTabletsRequested == TabletInfo.size());
+            Y_VERIFY(PartTabletsRequested == TabletInfo.size());
             AnswerGetPartitionOffsets(ctx);
             return true;
         } else if (meta.HasCmdGetPartitionStatus()) {
             if (TopicsAnswered != TopicInfo.size() || TabletsAnswered.size() < PartTabletsRequested) //not all responses got
                 return false;
-            Y_ABORT_UNLESS(PartTabletsRequested == TabletInfo.size()); //there could be balancers and partTablets in TabletInfo only
+            Y_VERIFY(PartTabletsRequested == TabletInfo.size()); //there could be balancers and partTablets in TabletInfo only
             AnswerGetPartitionStatus(ctx);
             return true;
         } else if (meta.HasCmdGetReadSessionsInfo()) {
             if (TopicsAnswered != TopicInfo.size() || TabletsAnswered.size() < TabletInfo.size() || !NodesInfo) //not all responses got; waiting respose from all balancers and partitions
                 return false;
-            Y_ABORT_UNLESS(PartTabletsRequested + TopicInfo.size() >= TabletInfo.size()); //there could be balancers and partTablets in TabletInfo only
+            Y_VERIFY(PartTabletsRequested + TopicInfo.size() >= TabletInfo.size()); //there could be balancers and partTablets in TabletInfo only
             AnswerGetReadSessionsInfo(ctx);
             return true;
 
         }
-        Y_ABORT("UNKNOWN request");
+        Y_FAIL("UNKNOWN request");
     }
 
     void Handle(TEvPersQueue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
@@ -896,9 +885,9 @@ public:
 
     void Handle(TEvPersQueue::TEvOffsetsResponse::TPtr& ev, const TActorContext& ctx) {
         const auto& response = ev->Get()->Record;
-        Y_ABORT_UNLESS(response.HasTabletId());
+        Y_VERIFY(response.HasTabletId());
         auto it = TabletInfo.find(response.GetTabletId());
-        Y_ABORT_UNLESS(it != TabletInfo.end());
+        Y_VERIFY(it != TabletInfo.end());
         for (ui32 i = 0; i < response.PartResultSize(); ++i) {
             it->second.OffsetResponses.push_back(response.GetPartResult(i));
         }
@@ -908,13 +897,13 @@ public:
 
     void Handle(TEvPersQueue::TEvReadSessionsInfoResponse::TPtr& ev, const TActorContext& ctx) {
         const auto& response = ev->Get()->Record;
-        Y_ABORT_UNLESS(response.HasTabletId());
+        Y_VERIFY(response.HasTabletId());
         auto it = TabletInfo.find(response.GetTabletId());
-        Y_ABORT_UNLESS(it != TabletInfo.end());
+        Y_VERIFY(it != TabletInfo.end());
         TabletsAnswered.insert(it->first);
 
         auto jt = TopicInfo.find(it->second.Topic);
-        Y_ABORT_UNLESS(jt != TopicInfo.end());
+        Y_VERIFY(jt != TopicInfo.end());
         jt->second.ReadSessionsInfo = MakeHolder<NKikimrPQ::TReadSessionsInfoResponse>(std::move(response));
 
         AnswerIfCanForMeta(ctx);
@@ -924,9 +913,9 @@ public:
 
     void Handle(TEvPersQueue::TEvStatusResponse::TPtr& ev, const TActorContext& ctx) {
         const auto& response = ev->Get()->Record;
-        Y_ABORT_UNLESS(response.HasTabletId());
+        Y_VERIFY(response.HasTabletId());
         auto it = TabletInfo.find(response.GetTabletId());
-        Y_ABORT_UNLESS(it != TabletInfo.end());
+        Y_VERIFY(it != TabletInfo.end());
         for (ui32 i = 0; i < response.PartResultSize(); ++i) {
             it->second.StatusResponses.push_back(response.GetPartResult(i));
         }
@@ -954,7 +943,7 @@ public:
         NoTopicsAtStart = TopicInfo.empty();
         bool hasTopics = !NoTopicsAtStart;
 
-        Y_ABORT_UNLESS(topics.size() == res.size());
+        Y_VERIFY(topics.size() == res.size());
         auto factory = NPersQueue::TTopicNamesConverterFactory(AppData(ctx)->PQConfig, {});
         for (auto i = 0u; i != res.size(); i++) {
             auto& entry = res[i];
@@ -1041,8 +1030,8 @@ public:
         if (RequestProto.HasPartitionRequest()) {
             ui64 tabletId = 0;
             auto it = TopicInfo.find(name);
-            Y_ABORT_UNLESS(it != TopicInfo.end());
-            Y_ABORT_UNLESS(it->second.PartitionsToRequest.size() == 1);
+            Y_VERIFY(it != TopicInfo.end());
+            Y_VERIFY(it->second.PartitionsToRequest.size() == 1);
             ui32 partition = *(it->second.PartitionsToRequest.begin());
             for (ui32 i = 0; i < pqDescr.PartitionsSize(); ++i) {
                 const auto& pi = pqDescr.GetPartitions(i);
@@ -1081,10 +1070,10 @@ public:
             bool metadataOnly = RequestProto.HasMetaRequest() && RequestProto.GetMetaRequest().HasCmdGetTopicMetadata();
             bool needAskBalancer = RequestProto.HasMetaRequest() && RequestProto.GetMetaRequest().HasCmdGetReadSessionsInfo();
 
-            Y_ABORT_UNLESS((needResolving + needAskOffset + needAskStatus + needAskFetch + metadataOnly) == 1);
+            Y_VERIFY((needResolving + needAskOffset + needAskStatus + needAskFetch + metadataOnly) == 1);
             ++TopicsAnswered;
             auto it = TopicInfo.find(name);
-            Y_ABORT_UNLESS(it != TopicInfo.end(), "topic '%s'", name.c_str());
+            Y_VERIFY(it != TopicInfo.end(), "topic '%s'", name.c_str());
             it->second.Config = pqDescr.GetPQTabletConfig();
             it->second.Config.SetVersion(pqDescr.GetAlterVersion());
             it->second.NumParts = pqDescr.PartitionsSize();
@@ -1092,7 +1081,7 @@ public:
                 AnswerIfCanForMeta(ctx);
                 return;
             }
-            Y_ABORT_UNLESS(it->second.BalancerTabletId);
+            Y_VERIFY(it->second.BalancerTabletId);
 
             if (needAskBalancer) {
 
@@ -1125,7 +1114,7 @@ public:
                     continue;
                 }
                 bool res = it->second.PartitionToTablet.insert({part, tabletId}).second;
-                Y_ABORT_UNLESS(res);
+                Y_VERIFY(res);
                 if (TabletInfo.find(tabletId) == TabletInfo.end()) {
                     auto& tabletInfo = TabletInfo[tabletId];
                     tabletInfo.Topic = name;
@@ -1175,7 +1164,7 @@ public:
                 return SendReplyAndDie(CreateErrorReply(MSTATUS_ERROR, NPersQueue::NErrorCode::UNKNOWN_TOPIC, ctx), ctx);
             }
 
-            Y_ABORT_UNLESS(!TabletInfo.empty()); // if TabletInfo is empty - topic is empty
+            Y_VERIFY(!TabletInfo.empty()); // if TabletInfo is empty - topic is empty
         }
     }
 
@@ -1273,7 +1262,7 @@ public:
             return;
         }
         CanProcessFetchRequest = true;
-        Y_ABORT_UNLESS(IsFetchRequest);
+        Y_VERIFY(IsFetchRequest);
         const auto& fetch = RequestProto.GetFetchRequest();
 
         if (FetchRequestReadsDone == fetch.PartitionSize()) {
@@ -1284,7 +1273,7 @@ public:
             return SendReplyAndDie(std::move(record), ctx);
         }
         const auto& clientId = fetch.GetClientId();
-        Y_ABORT_UNLESS(FetchRequestReadsDone < fetch.PartitionSize());
+        Y_VERIFY(FetchRequestReadsDone < fetch.PartitionSize());
         const auto& req = fetch.GetPartition(FetchRequestReadsDone);
         const auto& topic = req.GetTopic();
         const auto& offset = req.GetOffset();
@@ -1292,16 +1281,16 @@ public:
         const auto& maxBytes = req.GetMaxBytes();
         const auto& readTimestampMs = req.GetReadTimestampMs();
         auto it = TopicInfo.find(topic);
-        Y_ABORT_UNLESS(it != TopicInfo.end());
+        Y_VERIFY(it != TopicInfo.end());
         if (it->second.PartitionToTablet.find(part) == it->second.PartitionToTablet.end()) { //tablet's info is not filled for this topic yet
             return;
         }
         ui64 tabletId = it->second.PartitionToTablet[part];
-        Y_ABORT_UNLESS(tabletId);
+        Y_VERIFY(tabletId);
         FetchRequestCurrentReadTablet = tabletId;
         ++CurrentCookie;
         auto jt = TabletInfo.find(tabletId);
-        Y_ABORT_UNLESS(jt != TabletInfo.end());
+        Y_VERIFY(jt != TabletInfo.end());
         if (jt->second.BrokenPipe || FetchRequestBytesLeft == 0) { //answer right now
             ctx.Send(ctx.SelfID, FormEmptyCurrentRead(CurrentCookie).Release());
             return;
@@ -1328,7 +1317,7 @@ public:
 
     void ProcessFetchRequestResult(TEvPersQueue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasPartitionResponse());
+        Y_VERIFY(record.HasPartitionResponse());
         if (record.GetPartitionResponse().GetCookie() != CurrentCookie || FetchRequestCurrentReadTablet == 0) {
             LOG_ERROR_S(ctx, NKikimrServices::PERSQUEUE, "proxy fetch error: got response from tablet " << record.GetPartitionResponse().GetCookie()
                                 << " while waiting from " << CurrentCookie << " and requested tablet is " << FetchRequestCurrentReadTablet);
@@ -1343,7 +1332,7 @@ public:
 
         auto res = FetchResponse.AddPartResult();
         auto& fetch = RequestProto.GetFetchRequest();
-        Y_ABORT_UNLESS(FetchRequestReadsDone < fetch.PartitionSize());
+        Y_VERIFY(FetchRequestReadsDone < fetch.PartitionSize());
         const auto& req = fetch.GetPartition(FetchRequestReadsDone);
         const auto& topic = req.GetTopic();
         const auto& part = req.GetPartition();

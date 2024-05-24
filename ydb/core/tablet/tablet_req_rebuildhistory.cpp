@@ -1,13 +1,13 @@
 #include "tablet_impl.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/core/tablet/tablet_metrics.h>
 #include <util/generic/map.h>
 #include <util/generic/set.h>
 #include <util/string/builder.h>
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/services/services.pb.h>
+#include <library/cpp/actors/core/log.h>
+#include <ydb/core/protos/services.pb.h>
 #include <google/protobuf/text_format.h>
 
 #include "tablet_tracing_signals.h"
@@ -68,7 +68,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
                 Status = StatusOk;
                 break;
             default:
-                Y_ABORT();
+                Y_FAIL();
             }
         }
 
@@ -88,7 +88,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             case StatusMustBeIgnoredBody:
                 break;
             default:
-                Y_ABORT();
+                Y_FAIL();
             }
         }
 
@@ -109,8 +109,8 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
                 IsSnapshot = x.GetIsSnapshot();
 
             if (x.HasEmbeddedLogBody()) {
-                Y_ABORT_UNLESS(References.empty(), "must not mix embedded and referenced log bodies");
-                Y_ABORT_UNLESS(IsSnapshot == false, "log snapshot could not be embedded");
+                Y_VERIFY(References.empty(), "must not mix embedded and referenced log bodies");
+                Y_VERIFY(IsSnapshot == false, "log snapshot could not be embedded");
                 EmbeddedLogBody = x.GetEmbeddedLogBody();
             }
 
@@ -139,7 +139,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
                 Status = StatusBody;
                 break;
             case StatusOk:
-                Y_DEBUG_ABORT_UNLESS(false);
+                Y_VERIFY_DEBUG(false);
                 break;
             case StatusBody:
                 break;
@@ -152,7 +152,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             case StatusMustBeIgnoredBody:
                 break;
             default:
-                Y_ABORT();
+                Y_FAIL();
             }
         }
 
@@ -180,14 +180,14 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
         {}
 
         TLogEntry& Entry(ui32 step) {
-            Y_ABORT_UNLESS(step >= Base);
+            Y_VERIFY(step >= Base);
             const ui32 idx = step - Base;
-            Y_ABORT_UNLESS(idx < Body.size());
+            Y_VERIFY(idx < Body.size());
             return Body[idx];
         }
 
         void Ensure(ui32 step) {
-            Y_ABORT_UNLESS(step >= Base);
+            Y_VERIFY(step >= Base);
             const ui32 idx = step - Base;
             if (idx >= Body.size())
                 Body.resize(idx + 1);
@@ -233,7 +233,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             IntrospectionTrace->Attach(MakeHolder<NTracing::TOnProcessZeroEntry>(gen, Snapshot, Confirmed));
         }
 
-        Y_ABORT_UNLESS(logEntry.HasZeroConfirmed() && logEntry.HasZeroTailSz());
+        Y_VERIFY(logEntry.HasZeroConfirmed() && logEntry.HasZeroTailSz());
 
         TGenerationEntry &current = GenerationInfo(gen);
 
@@ -281,9 +281,6 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             // here we could erase intermediate entries but who cares as they would be skipped?
 
             it = LogInfo.find(prevGeneration);
-
-            // Note: prevGeneration is guaranteed to exist because of GenerationInfo call above
-            Y_ABORT_UNLESS(it != LogInfo.end());
         }
 
         // cleanup front entries
@@ -296,7 +293,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             prev.Base = Snapshot.second;
 
         const ui32 tailsz = logEntry.GetZeroTailSz();
-        Y_ABORT_UNLESS(logEntry.ZeroTailBitmaskSize() == ((tailsz + 63) / 64));
+        Y_VERIFY(logEntry.ZeroTailBitmaskSize() == ((tailsz + 63) / 64));
 
         const ui32 gensz = confirmed.second + tailsz;
         prev.Ensure(gensz);
@@ -341,7 +338,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
         if (IntrospectionTrace) {
             IntrospectionTrace->Attach(MakeHolder<NTracing::TOnProcessLogEntry>(id, Snapshot, Confirmed, logEntry));
         }
-        Y_ABORT_UNLESS(logEntry.HasSnapshot() && logEntry.HasConfirmed());
+        Y_VERIFY(logEntry.HasSnapshot() && logEntry.HasConfirmed());
 
         LOG_DEBUG(*TlsActivationContext, NKikimrServices::TABLET_MAIN, [&](){
             TStringBuilder sb;
@@ -461,7 +458,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
         if (IntrospectionTrace) {
             IntrospectionTrace->Attach(MakeHolder<NTracing::TOnApplyDiscoveryRange>(msg->GroupId, msg->From, msg->To));
         }
-        Y_ABORT_UNLESS(RangesToDiscover.erase(msg->To));
+        Y_VERIFY(RangesToDiscover.erase(msg->To));
         for (TVector<TEvBlobStorage::TEvRangeResult::TResponse>::iterator it = msg->Responses.begin(), end = msg->Responses.end(); it != end; ++it) {
             const TLogoBlobID &id = it->Id;
 
@@ -520,7 +517,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             ui64 totalSize = 0;
             for (ui64 i = firstRequestIdx; i != endIdx; ++i) {
                 ui64 size = refs[i].BlobSize();
-                Y_ABORT_UNLESS(size != 0);
+                Y_VERIFY(size != 0);
 
                 const ui64 replyDataSize = totalSize + size + NKikimr::BlobProtobufHeaderMaxSize;
                 if (replyDataSize <= NKikimr::MaxProtobufSize) {
@@ -532,7 +529,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
             }
 
             ui64 count = endRequestIdx - firstRequestIdx;
-            Y_ABORT_UNLESS(count > 0);
+            Y_VERIFY(count > 0);
 
             TArrayHolder<TEvBlobStorage::TEvGet::TQuery> q(new TEvBlobStorage::TEvGet::TQuery[count]);
             for (ui64 i = 0; i < count; ++i) {
@@ -582,13 +579,13 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
         if (IntrospectionTrace) {
             IntrospectionTrace->Attach(MakeHolder<NTracing::TOnCheckRefsGetResult>(msg->ResponseSz));
         }
-        Y_DEBUG_ABORT_UNLESS(msg->Status == NKikimrProto::OK);
+        Y_VERIFY_DEBUG(msg->Status == NKikimrProto::OK);
 
         for (ui32 i = 0, e = msg->ResponseSz; i != e; ++i) {
             const TEvBlobStorage::TEvGetResult::TResponse &response = msg->Responses[i];
             switch (response.Status) {
             case NKikimrProto::OK:
-                Y_ABORT_UNLESS(1 == RefsToCheck.erase(response.Id));
+                Y_VERIFY(1 == RefsToCheck.erase(response.Id));
                 GroupReadBytes[std::make_pair(response.Id.Channel(), msg->GroupId)] += response.Buffer.size();
                 GroupReadOps[std::make_pair(response.Id.Channel(), msg->GroupId)] += 1;
                 break;
@@ -642,13 +639,13 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
                     case TLogEntry::StatusUnknown:
                         break;
                     case TLogEntry::StatusOk:
-                        Y_ABORT();
+                        Y_FAIL();
                     case TLogEntry::StatusBody:
                         {
                             bool dependsOk = true;
                             for (TVector<ui32>::const_iterator it = entry.DependsOn.begin(), end = entry.DependsOn.end(); dependsOk && it != end; ++it) {
                                 const ui32 x = *it;
-                                Y_ABORT_UNLESS(x < step, "depends on future step %" PRIu32 " from %" PRIu32 ":%" PRIu32, x, generation, step);
+                                Y_VERIFY(x < step, "depends on future step %" PRIu32 " from %" PRIu32 ":%" PRIu32, x, generation, step);
                                 dependsOk = x < gx.Base || x <= Confirmed.second || gx.Entry(x).Status == TLogEntry::StatusOk || x <= generationSnapshotStep;
                             }
 
@@ -708,7 +705,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
                         }
                         break;
                     default:
-                        Y_ABORT();
+                        Y_FAIL();
                     }
                 } else {
                     if (step <= gx.Cutoff) {
@@ -762,7 +759,7 @@ class TTabletReqRebuildHistoryGraph : public TActorBootstrapped<TTabletReqRebuil
                 invalidLogEntry = std::make_pair(generation, Max<ui32>());
             } else {
                 gen = LogInfo.find(gx.NextGeneration);
-                Y_ABORT_UNLESS(gen != egen);
+                Y_VERIFY(gen != egen);
             }
         }
 

@@ -15,6 +15,32 @@ static constexpr int DEBUG_LOG_LEVEL = 7;
 
 using namespace NKikimr::NPersQueueTests;
 
+inline void WaitACLModification() {
+    // TODO: Tests are flacky without sleep after ModifyACL. Can we cleanly await modified ACLs without random waits? Or at least poll for ACL changes.
+    Sleep(TDuration::Seconds(5));
+}
+
+// TODO: Remove and replace all usage with ApiTestSetup
+#define SETUP_API_TEST_PREREQUISITES()\
+    const TString topic = "topic1";\
+    const TString cluster = "dc1";\
+    const TString pqRoot = "/Root/PQ";\
+    const TString messageGroupId = "test-message-group-id";\
+    TPortManager pm;\
+    const ui16 port = pm.GetPort(2134);\
+    const ui16 grpc = pm.GetPort(2135);\
+    TServerSettings settings = PQSettings(port);\
+    TServer server = TServer(settings);\
+    server.EnableGRpc(NGrpc::TServerOptions().SetHost("localhost").SetPort(grpc));\
+    TFlatMsgBusPQClient client(settings, grpc);\
+    client.FullInit();\
+    client.CreateTopic("rt3.dc1--" + TString(topic), 1);\
+    EnableLogs(server, { NKikimrServices::PQ_WRITE_PROXY });\
+    TPQDataWriter writer(messageGroupId, grpc, client, server.GetRuntime());\
+    writer.WaitWritePQServiceInitialization();\
+    auto channel = grpc::CreateChannel("localhost:" + ToString(grpc), grpc::InsecureChannelCredentials());\
+    auto service = Ydb::PersQueue::V1::PersQueueService::NewStub(channel);\
+
 template<typename TStream, typename TMessage = google::protobuf::Message>
 void AssertSuccessfullStreamingOperation(bool ok, std::unique_ptr<TStream>& stream, TMessage* message = nullptr) {
     if (!ok) {
@@ -55,28 +81,3 @@ void AssertStreamingSessionDead(std::unique_ptr<grpc::ClientReaderWriter<TClient
     UNIT_ASSERT_C(expectedErrorCode == actualErrorCode, serverMessage);
 }
 
-template<typename TClientMessage, typename TServerMessage>
-void AssertStreamingSessionDead(std::unique_ptr<grpc::ClientReaderWriter<TClientMessage, TServerMessage>>& stream,
-    const Ydb::StatusIds::StatusCode expectedStatus, const Ydb::PersQueue::ErrorCode::ErrorCode expectedErrorCode,
-    const TServerMessage& firstMessage)
-{
-    auto ensureExpectedError = [&](const TServerMessage& serverMessage) {
-        UNIT_ASSERT_LE(1, serverMessage.issues_size());
-        // TODO: Why namespace duplicates enum name "ErrorCode::ErrorCode"?
-        // TODO: Why "Ydb::PersQueue::ErrorCode::ErrorCode" doesn't work with streaming output like "Ydb::StatusIds::StatusCode" does?
-        auto actualErrorCode = static_cast<Ydb::PersQueue::ErrorCode::ErrorCode>(serverMessage.issues(0).issue_code());
-        UNIT_ASSERT_C(expectedErrorCode == actualErrorCode, serverMessage);
-    };
-
-    if (firstMessage.status() == expectedStatus) {
-        ensureExpectedError(firstMessage);
-        return;
-    }
-
-    TServerMessage serverMessage;
-    auto res = stream->Read(&serverMessage);
-    Cerr << serverMessage.DebugString() << "\n";
-    AssertSuccessfullStreamingOperation(res, stream);
-    UNIT_ASSERT_VALUES_EQUAL(expectedStatus, serverMessage.status());
-    ensureExpectedError(serverMessage);
-}

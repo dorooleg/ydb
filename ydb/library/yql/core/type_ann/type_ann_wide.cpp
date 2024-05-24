@@ -314,7 +314,7 @@ IGraphTransformer::TStatus WideCombinerWrapper(const TExprNode::TPtr& input, TEx
     }
 
     if (const auto& limit = input->Child(1U)->Content(); !limit.empty()) {
-        i64 memLimit = 0LL;
+        ui64 memLimit = 0ULL;
         if (!TryFromString(limit, memLimit)) {
             ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Child(1U)->Pos()), TStringBuilder() <<
                 "Bad memLimit value: " << limit));

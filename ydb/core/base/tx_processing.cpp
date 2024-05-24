@@ -75,7 +75,7 @@ NKikimr::TTimeCastBuckets::TTimeCastBuckets()
 NKikimr::TTimeCastBuckets::TTimeCastBuckets(ui32 timecastBuckets)
     : TimecastBucketsPerMediator(timecastBuckets)
 {
-    Y_ABORT_UNLESS(TimecastBucketsPerMediator);
+    Y_VERIFY(TimecastBucketsPerMediator);
 }
 
 NKikimr::TTimeCastBuckets::TTimeCastBuckets(const NKikimrSubDomains::TProcessingParams &processing)

@@ -37,29 +37,15 @@ class TDqAsyncOutputBuffer : public IDqAsyncOutputBuffer {
     };
 
 public:
-    TDqOutputStats PushStats;
-    TDqAsyncOutputBufferStats PopStats;
-
-    TDqAsyncOutputBuffer(ui64 outputIndex, const TString& type, NKikimr::NMiniKQL::TType* outputType, ui64 maxStoredBytes, TCollectStatsLevel level)
-        : MaxStoredBytes(maxStoredBytes)
+    TDqAsyncOutputBuffer(ui64 outputIndex, NKikimr::NMiniKQL::TType* outputType, ui64 maxStoredBytes, bool collectProfileStats)
+        : OutputIndex(outputIndex)
+        , MaxStoredBytes(maxStoredBytes)
         , OutputType(outputType)
-    {
-        PushStats.Level = level;
-        PopStats.Level = level;
-        PopStats.OutputIndex = outputIndex;
-        PopStats.Type = type;
-    }
+        , BasicStats(OutputIndex)
+        , ProfileStats(collectProfileStats ? &BasicStats : nullptr) {}
 
     ui64 GetOutputIndex() const override {
-        return PopStats.OutputIndex;
-    }
-
-    const TDqOutputStats& GetPushStats() const override {
-        return PushStats;
-    }
-    
-    const TDqAsyncOutputBufferStats& GetPopStats() const override {
-        return PopStats;
+        return OutputIndex;
     }
 
     bool IsFull() const override {
@@ -67,20 +53,18 @@ public:
     }
 
     void Push(NUdf::TUnboxedValue&& value) override {
+        if (!BasicStats.FirstRowIn) {
+            BasicStats.FirstRowIn = TInstant::Now();
+        }
+
         if (ValuesPushed++ % 1000 == 0) {
             ReestimateRowBytes(value);
         }
-        Y_ABORT_UNLESS(EstimatedRowBytes > 0);
+        Y_VERIFY(EstimatedRowBytes > 0);
         Values.emplace_back(std::move(value), EstimatedRowBytes);
         EstimatedStoredBytes += EstimatedRowBytes;
 
-        ReportChunkIn(1, EstimatedRowBytes);
-    }
-
-    void WidePush(NUdf::TUnboxedValue* values, ui32 count) override {
-        Y_UNUSED(values);
-        Y_UNUSED(count);
-        YQL_ENSURE(false, "Wide stream is not supported");
+        ReportChunkIn();
     }
 
     void Push(NDqProto::TWatermark&& watermark) override {
@@ -88,7 +72,7 @@ public:
         Values.emplace_back(std::move(watermark), bytesSize);
         EstimatedStoredBytes += bytesSize;
 
-        ReportChunkIn(1, bytesSize);
+        ReportChunkIn();
     }
 
     void Push(NDqProto::TCheckpoint&& checkpoint) override {
@@ -96,22 +80,21 @@ public:
         Values.emplace_back(std::move(checkpoint), bytesSize);
         EstimatedStoredBytes += bytesSize;
 
-        ReportChunkIn(1, bytesSize);
+        ReportChunkIn();
     }
 
     void Finish() override {
         Finished = true;
+
+        if (!BasicStats.FirstRowIn) {
+            BasicStats.FirstRowIn = TInstant::Now();
+        }
     }
 
-    ui64 Pop(NKikimr::NMiniKQL::TUnboxedValueBatch& batch, ui64 bytes) override {
+    ui64 Pop(NKikimr::NMiniKQL::TUnboxedValueVector& batch, ui64 bytes) override {
         batch.clear();
         ui64 valuesCount = 0;
         ui64 usedBytes = 0;
-
-        if (Values.empty()) {
-            PushStats.TryPause();
-            return 0;
-        }
 
         // Calc values count.
         for (auto iter = Values.cbegin(), end = Values.cend();
@@ -123,28 +106,24 @@ public:
         }
 
         // Reserve size and return data.
+        batch.reserve(valuesCount);
         while (valuesCount--) {
             batch.emplace_back(std::move(std::get<NUdf::TUnboxedValue>(Values.front().Value)));
             Values.pop_front();
         }
-        Y_ABORT_UNLESS(EstimatedStoredBytes >= usedBytes);
+        Y_VERIFY(EstimatedStoredBytes >= usedBytes);
         EstimatedStoredBytes -= usedBytes;
 
-        ReportChunkOut(batch.RowCount(), usedBytes);
+        ReportChunkOut(batch.size(), usedBytes);
 
         return usedBytes;
-    }
-
-    virtual ui64 Pop(TDqSerializedBatch&, ui64) override {
-        YQL_ENSURE(!"Unimplemented");
-        return 0;
     }
 
     bool Pop(NDqProto::TWatermark& watermark) override {
         if (!Values.empty() && std::holds_alternative<NDqProto::TWatermark>(Values.front().Value)) {
             watermark = std::move(std::get<NDqProto::TWatermark>(Values.front().Value));
             const auto size = Values.front().EstimatedSize;
-            Y_ABORT_UNLESS(EstimatedStoredBytes >= size);
+            Y_VERIFY(EstimatedStoredBytes >= size);
             EstimatedStoredBytes -= size;
             Values.pop_front();
 
@@ -152,7 +131,6 @@ public:
 
             return true;
         }
-        PushStats.TryPause();
         return false;
     }
 
@@ -160,7 +138,7 @@ public:
         if (!Values.empty() && std::holds_alternative<NDqProto::TCheckpoint>(Values.front().Value)) {
             checkpoint = std::move(std::get<NDqProto::TCheckpoint>(Values.front().Value));
             const auto size = Values.front().EstimatedSize;
-            Y_ABORT_UNLESS(EstimatedStoredBytes >= size);
+            Y_VERIFY(EstimatedStoredBytes >= size);
             EstimatedStoredBytes -= size;
             Values.pop_front();
 
@@ -168,7 +146,6 @@ public:
 
             return true;
         }
-        PushStats.TryPause();
         return false;
     }
 
@@ -193,6 +170,10 @@ public:
         return OutputType;
     }
 
+    const TDqAsyncOutputBufferStats* GetStats() const override {
+        return &BasicStats;
+    }
+
 private:
     void ReestimateRowBytes(const NUdf::TUnboxedValue& value) {
         const ui64 valueSize = TDqDataSerializer::EstimateSize(value, OutputType);
@@ -206,36 +187,22 @@ private:
         }
     }
 
-    void ReportChunkIn(ui64 rows, ui64 bytes) {
-        if (PushStats.CollectBasic()) {
-            PushStats.Bytes += bytes;
-            PushStats.Rows += rows;
-            PushStats.Chunks++;
-            PushStats.Resume();
-        }
-
-        if (IsFull()) {
-            PopStats.TryPause();
-        }
-
-        if (PopStats.CollectFull()) {
-            PopStats.MaxMemoryUsage = std::max(PopStats.MaxMemoryUsage, EstimatedStoredBytes);
-            PopStats.MaxRowsInMemory = std::max(PopStats.MaxRowsInMemory, Values.size());
+    void ReportChunkIn() {
+        BasicStats.Bytes += EstimatedRowBytes;
+        BasicStats.RowsIn++;
+        if (ProfileStats) {
+            ProfileStats->MaxMemoryUsage = std::max(ProfileStats->MaxMemoryUsage, EstimatedStoredBytes);
+            ProfileStats->MaxRowsInMemory = std::max(ProfileStats->MaxRowsInMemory, Values.size());
         }
     }
 
-    void ReportChunkOut(ui64 rows, ui64 bytes) {
-        if (PopStats.CollectBasic()) {
-            PopStats.Bytes += bytes;
-            PopStats.Rows += rows;
-            PopStats.Chunks++;
-            if (!IsFull()) {
-                PopStats.Resume();
-            }
-        }
+    void ReportChunkOut(ui64 rowsCount, ui64 /* usedBytes */) {
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += rowsCount;
     }
 
 private:
+    const ui64 OutputIndex;
     const ui64 MaxStoredBytes;
     NKikimr::NMiniKQL::TType* const OutputType;
     ui64 EstimatedStoredBytes = 0;
@@ -243,14 +210,16 @@ private:
     bool Finished = false;
     std::deque<TValueDesc> Values;
     ui64 EstimatedRowBytes = 0;
+    TDqAsyncOutputBufferStats BasicStats;
+    TDqAsyncOutputBufferStats* ProfileStats = nullptr;
 };
 
 } // namespace
 
-IDqAsyncOutputBuffer::TPtr CreateDqAsyncOutputBuffer(ui64 outputIndex, const TString& type, NKikimr::NMiniKQL::TType* outputType, ui64 maxStoredBytes,
-    TCollectStatsLevel level)
+IDqAsyncOutputBuffer::TPtr CreateDqAsyncOutputBuffer(ui64 outputIndex, NKikimr::NMiniKQL::TType* outputType, ui64 maxStoredBytes,
+    bool collectProfileStats)
 {
-    return MakeIntrusive<TDqAsyncOutputBuffer>(outputIndex, type, outputType, maxStoredBytes, level);
+    return MakeIntrusive<TDqAsyncOutputBuffer>(outputIndex, outputType, maxStoredBytes, collectProfileStats);
 }
 
 } // namespace NYql::NDq

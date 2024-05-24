@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ydb/library/yverify_stream/yverify_stream.h>
-#include <ydb/library/actors/util/ticket_lock.h>
+#include <ydb/core/util/yverify_stream.h>
+#include <library/cpp/actors/util/ticket_lock.h>
 
 #include <util/datetime/base.h>
 #include <util/datetime/cputimer.h>
@@ -19,8 +19,6 @@
 #include <array>
 #include <atomic>
 #include <optional>
-
-#include "device_type.h"
 
 namespace NKikimr {
 namespace NPDisk {
@@ -64,31 +62,14 @@ inline TString DiskModeToString(EDiskMode diskMode) {
     }
 }
 
-inline EDiskMode DiskModeFromDeviceType(const EDeviceType& deviceType) {
-    switch (deviceType) {
-    case DEVICE_TYPE_ROT:
-        return DM_HDD;
-    case DEVICE_TYPE_SSD:
-        return DM_SSD;
-    case DEVICE_TYPE_NVME:
-        return DM_NVME;
-    default:
-        return DM_NONE;
+static constexpr std::array<std::array<ui64, 3>, NSectorMap::DM_COUNT> DiskModeParamPresets = {
+    {
+        {0, 0, 0}, // DM_NONE
+        {9000, 200ull * 1024 * 1024, 66ull * 1024 * 1024}, // DM_HDD
+        {0, 500ull * 1024 * 1024, 500ull * 1024 * 1024}, // DM_SSD
+        {0, 1000ull * 1024 * 1024, 1000ull * 1024 * 1024}, // DM_NVME, probably unusable
     }
-}
-
-inline EDeviceType DiskModeToDeviceType(const EDiskMode& diskMode) {
-    switch (diskMode) {
-    case DM_HDD:
-        return DEVICE_TYPE_ROT;
-    case DM_SSD:
-        return DEVICE_TYPE_SSD;
-    case DM_NVME:
-        return DEVICE_TYPE_NVME;
-    default:
-        return DEVICE_TYPE_UNKNOWN;
-    }
-}
+};
 
 constexpr ui64 SECTOR_SIZE = 4096;
 
@@ -98,10 +79,8 @@ class TSectorOperationThrottler {
 public:
     struct TDiskModeParams {
         std::atomic<ui64> SeekSleepMicroSeconds;
-        std::atomic<ui64> FirstSectorReadRate;
-        std::atomic<ui64> LastSectorReadRate;
-        std::atomic<ui64> FirstSectorWriteRate;
-        std::atomic<ui64> LastSectorWriteRate;
+        std::atomic<ui64> FirstSectorRate;
+        std::atomic<ui64> LastSectorRate;
     };
 
 public:
@@ -110,28 +89,23 @@ public:
     }
 
     void Init(ui64 sectors, NSectorMap::EDiskMode diskMode) {
-        Y_ABORT_UNLESS(sectors > 0);
+        Y_VERIFY(sectors > 0);
 
-        Y_ABORT_UNLESS((ui32)diskMode < DM_COUNT);
-        EDeviceType deviceType = DiskModeToDeviceType(diskMode);
-        DiskModeParams.SeekSleepMicroSeconds = (DevicePerformance.at(deviceType).SeekTimeNs + 1000) / 1000 - 1;
-        DiskModeParams.FirstSectorReadRate = DevicePerformance.at(deviceType).FirstSectorReadBytesPerSec;
-        DiskModeParams.LastSectorReadRate = DevicePerformance.at(deviceType).LastSectorReadBytesPerSec;
-        DiskModeParams.FirstSectorWriteRate = DevicePerformance.at(deviceType).FirstSectorWriteBytesPerSec;
-        DiskModeParams.LastSectorWriteRate = DevicePerformance.at(deviceType).LastSectorWriteBytesPerSec;
+        Y_VERIFY((ui32)diskMode < DiskModeParamPresets.size());
+        DiskModeParams.SeekSleepMicroSeconds = DiskModeParamPresets[diskMode][0];
+        DiskModeParams.FirstSectorRate = DiskModeParamPresets[diskMode][1];
+        DiskModeParams.LastSectorRate = DiskModeParamPresets[diskMode][2];
 
         MaxSector = sectors - 1;
         MostRecentlyUsedSector = 0;
     }
 
     void ThrottleRead(i64 size, ui64 offset, bool prevOperationIsInProgress, double operationTimeMs) {
-        ThrottleOperation(size, offset, prevOperationIsInProgress, operationTimeMs,
-                DiskModeParams.FirstSectorReadRate, DiskModeParams.LastSectorReadRate);
+        ThrottleOperation(size, offset, prevOperationIsInProgress, operationTimeMs);
     }
 
     void ThrottleWrite(i64 size, ui64 offset, bool prevOperationIsInProgress, double operationTimeMs) {
-        ThrottleOperation(size, offset, prevOperationIsInProgress, operationTimeMs,
-                DiskModeParams.FirstSectorWriteRate, DiskModeParams.LastSectorWriteRate);
+        ThrottleOperation(size, offset, prevOperationIsInProgress, operationTimeMs);
     }
 
     TDiskModeParams* GetDiskModeParams() {
@@ -140,8 +114,7 @@ public:
 
 private:
     /* throttle read/write operation */
-    void ThrottleOperation(i64 size, ui64 offset, bool prevOperationIsInProgress, double operationTimeMs,
-            ui64 firstSectorRate, ui64 lastSectorRate) {
+    void ThrottleOperation(i64 size, ui64 offset, bool prevOperationIsInProgress, double operationTimeMs) {
         if (size == 0) {
             return;
         }
@@ -159,7 +132,7 @@ private:
             MostRecentlyUsedSector = endSector - 1;
         }
 
-        auto rate = CalcRate(firstSectorRate, lastSectorRate, midSector, MaxSector);
+        auto rate = CalcRate(DiskModeParams.FirstSectorRate, DiskModeParams.LastSectorRate, midSector, MaxSector);
 
         auto rateByMilliSeconds = rate / 1000;
         auto milliSecondsToWait = std::max(0., (double)size / rateByMilliSeconds - operationTimeMs);
@@ -167,8 +140,8 @@ private:
     }
 
     static double CalcRate(double firstSectorRate, double lastSectorRate, double sector, double lastSector) {
-        Y_ABORT_UNLESS(sector <= lastSector, "%lf %lf", sector, lastSector);
-        Y_ABORT_UNLESS(lastSectorRate <= firstSectorRate, "%lf %lf", firstSectorRate, lastSectorRate);
+        Y_VERIFY(sector <= lastSector, "%lf %lf", sector, lastSector);
+        Y_VERIFY(lastSectorRate <= firstSectorRate, "%lf %lf", firstSectorRate, lastSectorRate);
         return firstSectorRate - (sector / lastSector) * (firstSectorRate - lastSectorRate);
     }
 
@@ -242,8 +215,8 @@ public:
     }
 
     void Read(ui8 *data, i64 size, ui64 offset, bool prevOperationIsInProgress = false) {
-        Y_ABORT_UNLESS(size % NSectorMap::SECTOR_SIZE == 0);
-        Y_ABORT_UNLESS(offset % NSectorMap::SECTOR_SIZE == 0);
+        Y_VERIFY(size % NSectorMap::SECTOR_SIZE == 0);
+        Y_VERIFY(offset % NSectorMap::SECTOR_SIZE == 0);
 
         i64 dataSize = size;
         ui64 dataOffset = offset;
@@ -269,8 +242,8 @@ public:
     }
 
     void Write(const ui8 *data, i64 size, ui64 offset, bool prevOperationIsInProgress = false) {
-        Y_ABORT_UNLESS(size % NSectorMap::SECTOR_SIZE == 0);
-        Y_ABORT_UNLESS(offset % NSectorMap::SECTOR_SIZE == 0);
+        Y_VERIFY(size % NSectorMap::SECTOR_SIZE == 0);
+        Y_VERIFY(offset % NSectorMap::SECTOR_SIZE == 0);
 
         i64 dataSize = size;
         ui64 dataOffset = offset;
@@ -303,8 +276,8 @@ public:
 
     void Trim(i64 size, ui64 offset) {
         TGuard<TTicketLock> guard(MapLock);
-        Y_ABORT_UNLESS(size % NSectorMap::SECTOR_SIZE == 0);
-        Y_ABORT_UNLESS(offset % NSectorMap::SECTOR_SIZE == 0);
+        Y_VERIFY(size % NSectorMap::SECTOR_SIZE == 0);
+        Y_VERIFY(offset % NSectorMap::SECTOR_SIZE == 0);
         for (; size > 0; size -= NSectorMap::SECTOR_SIZE) {
             if (auto it = Map.find(offset); it != Map.end()) {
                 AllocatedBytes.fetch_sub(it->second.size());

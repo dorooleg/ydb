@@ -3,12 +3,11 @@
 #include "util.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/console/util/config_index.h>
 #include <ydb/core/mind/tenant_pool.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <util/system/hostname.h>
 #include <util/generic/ptr.h>
 
@@ -74,13 +73,17 @@ public:
     }
 
     void Bootstrap(const TActorContext &ctx) {
-        if (!AppData()->DomainsInfo->Domain) {
+        auto dinfo = AppData(ctx)->DomainsInfo;
+        if (dinfo->Domains.size() != 1) {
             Send(OwnerId, new NConsole::TEvConsole::TEvConfigSubscriptionError(Ydb::StatusIds::GENERIC_ERROR, "Ambiguous domain (use --domain option)"), 0, Cookie);
 
             Die(ctx);
 
             return;
         }
+
+        DomainUid = dinfo->Domains.begin()->second->DomainUid;
+        StateStorageGroup = dinfo->GetDefaultStateStorageGroup(DomainUid);
 
         SendPoolStatusRequest(ctx);
         Become(&TThis::StateWork);
@@ -103,13 +106,14 @@ public:
             HFuncTraced(TEvents::TEvPoisonPill, Handle);
 
             default:
-                Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
+                Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
                        ev->GetTypeRewrite(), ev->ToString().data());
         }
     }
 
     void SendPoolStatusRequest(const TActorContext &ctx) {
-        ctx.Send(MakeTenantPoolID(ctx.SelfID.NodeId()), new TEvTenantPool::TEvGetStatus(true), IEventHandle::FlagTrackDelivery);
+        ctx.Send(MakeTenantPoolID(ctx.SelfID.NodeId(), DomainUid), new TEvTenantPool::TEvGetStatus(true),
+            IEventHandle::FlagTrackDelivery);
     }
 
     void Handle(TEvPrivate::TEvRetryPoolStatus::TPtr &/*ev*/, const TActorContext &ctx) {
@@ -192,7 +196,7 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(Pipe);
+        Y_VERIFY(Pipe);
 
         if (rec.GetOrder() != (LastOrder + 1)) {
             BLOG_I("Order mismatch, will resubscribe");
@@ -246,16 +250,11 @@ public:
         auto *reflection = CurrentConfig.GetReflection();
         for (auto kind : rec.GetAffectedKinds()) {
             auto *field = desc1->FindFieldByNumber(kind);
-            if (field && reflection->HasField(CurrentConfig, field)) {
+            if (field && reflection->HasField(CurrentConfig, field))
                 reflection->ClearField(&CurrentConfig, field);
-            }
-            if (field && reflection->HasField(CurrentDynConfig, field)) {
-                reflection->ClearField(&CurrentDynConfig, field);
-            }
         }
 
         CurrentConfig.MergeFrom(rec.GetConfig());
-        CurrentDynConfig.MergeFrom(rec.GetConfig());
         if (newVersion.GetItems().empty())
             CurrentConfig.ClearVersion();
         else
@@ -264,13 +263,7 @@ public:
         notChanged &= changes.empty();
 
         if (!notChanged || !FirstUpdateSent) {
-            Send(OwnerId, new TEvConsole::TEvConfigSubscriptionNotification(
-                     Generation,
-                     CurrentConfig,
-                     changes,
-                     YamlConfig,
-                     VolatileYamlConfigs,
-                     CurrentDynConfig),
+            Send(OwnerId, new TEvConsole::TEvConfigSubscriptionNotification(Generation, CurrentConfig, changes, YamlConfig, VolatileYamlConfigs),
                 IEventHandle::FlagTrackDelivery, Cookie);
 
             FirstUpdateSent = true;
@@ -288,7 +281,7 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(Pipe);
+        Y_VERIFY(Pipe);
 
         Subscribe(ctx);
     }
@@ -375,7 +368,7 @@ private:
     }
 
     void OpenPipe(const TActorContext &ctx) {
-        auto console = MakeConsoleID();
+        auto console = MakeConsoleID(StateStorageGroup);
 
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = FastConnectRetryPolicy();
@@ -394,7 +387,6 @@ private:
     ui64 LastOrder;
 
     NKikimrConfig::TAppConfig CurrentConfig;
-    NKikimrConfig::TAppConfig CurrentDynConfig;
 
     bool ServeYaml = false;
     ui64 Version;
@@ -405,6 +397,9 @@ private:
 
     TString Tenant;
     TString NodeType;
+
+    ui32 DomainUid;
+    ui32 StateStorageGroup;
 
     TActorId Pipe;
 };

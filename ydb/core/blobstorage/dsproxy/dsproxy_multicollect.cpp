@@ -15,8 +15,6 @@ class TBlobStorageGroupMultiCollectRequest
         bool IsReplied;
     };
 
-    const ui64 Iterations;
-
     const ui64 TabletId;
     const ui32 RecordGeneration;
     const ui32 PerGenerationCounter; // monotone increasing cmd counter for RecordGeneration
@@ -51,24 +49,24 @@ class TBlobStorageGroupMultiCollectRequest
             return;
         }
 
-        Y_ABORT_UNLESS(ev->Cookie < RequestInfos.size());
+        Y_VERIFY(ev->Cookie < RequestInfos.size());
         TRequestInfo &info = RequestInfos[ev->Cookie];
-        Y_ABORT_UNLESS(!info.IsReplied);
+        Y_VERIFY(!info.IsReplied);
         info.IsReplied = true;
 
         if (FlagRequestsInFlight) {
             FlagRequestsInFlight--;
             if (FlagRequestsInFlight == 0) {
-                if (Collect) {
-                    SendRequest(Iterations - 1, true);
-                } else {
-                    ReplyAndDie(NKikimrProto::OK);
-                }
+                ui64 iterations =
+                    TEvBlobStorage::TEvCollectGarbage::PerGenerationCounterStepSize(Keep.get(), DoNotKeep.get());
+                ui64 idx = iterations - 1;
+                SendRequest(idx, true);
             }
         } else {
             CollectRequestsInFlight--;
-            Y_ABORT_UNLESS(CollectRequestsInFlight == 0);
+            Y_VERIFY(CollectRequestsInFlight == 0);
             ReplyAndDie(NKikimrProto::OK);
+            return;
         }
     }
 
@@ -81,7 +79,7 @@ class TBlobStorageGroupMultiCollectRequest
     }
 
     std::unique_ptr<IEventBase> RestartQuery(ui32) {
-        Y_ABORT();
+        Y_FAIL();
     }
 
 public:
@@ -97,10 +95,9 @@ public:
             const TIntrusivePtr<TGroupQueues> &state, const TActorId &source,
             const TIntrusivePtr<TBlobStorageGroupProxyMon> &mon, TEvBlobStorage::TEvCollectGarbage *ev, ui64 cookie,
             NWilson::TTraceId traceId, TInstant now, TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters)
-        : TBlobStorageGroupRequestActor(info, state, mon, source, cookie,
+        : TBlobStorageGroupRequestActor(info, state, mon, source, cookie, std::move(traceId),
                 NKikimrServices::BS_PROXY_MULTICOLLECT, false, {}, now, storagePoolCounters, 0,
-                NWilson::TSpan(TWilson::BlobStorage, std::move(traceId), "DSProxy.MultiCollect"), std::move(ev->ExecutionRelay))
-        , Iterations(ev->PerGenerationCounterStepSize())
+                "DSProxy.MultiCollect", std::move(ev->ExecutionRelay))
         , TabletId(ev->TabletId)
         , RecordGeneration(ev->RecordGeneration)
         , PerGenerationCounter(ev->PerGenerationCounter)
@@ -116,15 +113,13 @@ public:
         , FlagRequestsInFlight(0)
         , CollectRequestsInFlight(0)
         , StartTime(now)
-    {
-        Y_ABORT_UNLESS(Iterations > 1);
-    }
+    {}
 
-    void SendRequest(ui64 idx, bool withCollect) {
+    void SendRequest(ui64 idx, bool isLast) {
         ui64 cookie = RequestInfos.size();
         RequestInfos.push_back({false});
 
-        bool isCollect = withCollect && Collect;
+        bool isCollect = isLast ? Collect : false;
         std::unique_ptr<TVector<TLogoBlobID>> keepPart;
         std::unique_ptr<TVector<TLogoBlobID>> doNotKeepPart;
         ui64 keepCount = Keep ? Keep->size() : 0;
@@ -156,20 +151,16 @@ public:
         }
 
         std::unique_ptr<TEvBlobStorage::TEvCollectGarbage> ev(new TEvBlobStorage::TEvCollectGarbage(
-            TabletId, RecordGeneration, PerGenerationCounter, Channel,
+            TabletId, RecordGeneration, PerGenerationCounter + idx, Channel,
             isCollect, CollectGeneration, CollectStep, keepPart.release(), doNotKeepPart.release(), Deadline, false,
             Hard));
         ev->Decommission = Decommission; // retain decommission flag
         R_LOG_DEBUG_S("BPMC3", "SendRequest idx# " << idx
-            << " withCollect# " << withCollect
-            << " isCollect# " << isCollect
+            << " isLast# " << isLast
             << " ev# " << ev->ToString());
         SendToProxy(std::move(ev), cookie, Span.GetTraceId());
 
-        Y_ABORT_UNLESS(idx < Iterations - 1 ? !isCollect : isCollect || !Collect);
-
-        if (isCollect) {
-            Y_ABORT_UNLESS(!FlagRequestsInFlight);
+        if (isLast) {
             CollectRequestsInFlight++;
         } else {
             FlagRequestsInFlight++;
@@ -198,7 +189,8 @@ public:
             A_LOG_INFO_S("BPMC6", "DoNotKeep# " << item);
         }
 
-        for (ui64 idx = 0; idx < Iterations - (Collect ? 1 : 0); ++idx) {
+        ui64 iterations = TEvBlobStorage::TEvCollectGarbage::PerGenerationCounterStepSize(Keep.get(), DoNotKeep.get());
+        for (ui64 idx = 0; idx < iterations - 1; ++idx) {
             SendRequest(idx, false);
         }
         Become(&TThis::StateWait);

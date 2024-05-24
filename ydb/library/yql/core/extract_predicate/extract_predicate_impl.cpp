@@ -1,6 +1,5 @@
 #include "extract_predicate_impl.h"
 
-#include <ydb/library/yql/core/type_ann/type_ann_pg.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/core/yql_opt_utils.h>
 #include <ydb/library/yql/core/yql_expr_constraint.h>
@@ -9,8 +8,6 @@
 #include <ydb/library/yql/core/services/yql_transform_pipeline.h>
 #include <ydb/library/yql/core/services/yql_out_transformers.h>
 
-#include <ydb/library/yql/utils/utf8.h>
-
 namespace NYql {
 namespace NDetail {
 namespace {
@@ -18,31 +15,13 @@ namespace {
 using namespace NNodes;
 using NUdf::TCastResultOptions;
 
-TExprNode::TPtr BuildMultiplyLimit(TMaybe<size_t> limit, TExprContext& ctx, TPositionHandle pos) {
-    if (limit) {
-        return ctx.Builder(pos)
-            .Callable("Uint64")
-                .Atom(0, ToString(*limit), TNodeFlags::Default)
-            .Seal()
-            .Build();
-    } else {
-        return ctx.Builder(pos)
-            .Callable("Void")
-            .Seal()
-            .Build();
-    }
-}
-
-const TTypeAnnotationNode* GetBasePgOrDataType(const TTypeAnnotationNode* type) {
-    if (type && type->GetKind() == ETypeAnnotationKind::Pg) {
-        return type;
-    }
+const TTypeAnnotationNode* GetBaseDataType(const TTypeAnnotationNode *type) {
     type = RemoveAllOptionals(type);
     return (type && type->GetKind() == ETypeAnnotationKind::Data) ? type : nullptr;
 }
 
-bool IsPgOrDataOrMultiOptionalOfData(const TTypeAnnotationNode* type) {
-    return GetBasePgOrDataType(type) != nullptr;
+bool IsDataOrMultiOptionalOfData(const TTypeAnnotationNode* type) {
+    return GetBaseDataType(type) != nullptr;
 }
 
 TMaybe<size_t> GetSqlInCollectionSize(const TExprNode::TPtr& collection) {
@@ -175,13 +154,13 @@ bool IsRoundingSupported(const TExprNode& op, bool negated) {
 
                 for (size_t i = 0; i < keyTypes.size(); ++i) {
                     result.emplace_back();
-                    result.back().KeyBaseType = GetBasePgOrDataType(keyTypes[i]);
-                    result.back().ValueBaseType = GetBasePgOrDataType(valueTypes[i]);
+                    result.back().KeyBaseType = GetBaseDataType(keyTypes[i]);
+                    result.back().ValueBaseType = GetBaseDataType(valueTypes[i]);
                 }
             } else {
                 result.emplace_back();
-                result.back().KeyBaseType = GetBasePgOrDataType(keyType);
-                result.back().ValueBaseType = GetBasePgOrDataType(valueType);
+                result.back().KeyBaseType = GetBaseDataType(keyType);
+                result.back().ValueBaseType = GetBaseDataType(valueType);
             }
 
             return result;
@@ -208,16 +187,6 @@ bool IsRoundingSupported(const TExprNode& op, bool negated) {
     for (auto& item : types) {
         YQL_ENSURE(item.KeyBaseType);
         YQL_ENSURE(item.ValueBaseType);
-        const auto keyKind = item.KeyBaseType->GetKind();
-        const auto valueKind = item.ValueBaseType->GetKind();
-        if (keyKind != ETypeAnnotationKind::Data || valueKind != ETypeAnnotationKind::Data) {
-            YQL_ENSURE(keyKind == valueKind);
-            YQL_ENSURE(keyKind == ETypeAnnotationKind::Pg);
-            if (!IsSameAnnotation(*item.KeyBaseType, *item.ValueBaseType)) {
-                return false;
-            }
-            continue;
-        }
 
         EDataSlot valueSlot = item.ValueBaseType->Cast<TDataExprType>()->GetSlot();
         EDataSlot keySlot = item.KeyBaseType->Cast<TDataExprType>()->GetSlot();
@@ -239,7 +208,7 @@ bool IsRoundingSupported(const TExprNode& op, bool negated) {
 }
 
 bool IsSupportedMemberNode(const TExprNode& node, const TExprNode& row) {
-    return node.IsCallable("Member") && node.Child(0) == &row && IsPgOrDataOrMultiOptionalOfData(node.GetTypeAnn());
+    return node.IsCallable("Member") && node.Child(0) == &row && IsDataOrMultiOptionalOfData(node.GetTypeAnn());
 }
 
 bool IsValidForRange(const TExprNode& node, const TExprNode* otherNode, const TExprNode& row) {
@@ -264,9 +233,6 @@ const THashMap<TStringBuf, TStringBuf> SupportedBinOps = {
 };
 
 bool IsValidForRange(TExprNode::TPtr& node, const TExprNode& row, const TPredicateExtractorSettings& settings, TExprContext& ctx) {
-    if (settings.IsValidForRange && !settings.IsValidForRange(node)) {
-        return false;
-    }
     auto it = SupportedBinOps.find(node->Content());
     if (it != SupportedBinOps.end()) {
         if (IsValidForRange(node->Head(), &node->Tail(), row)) {
@@ -431,8 +397,8 @@ TExprNode::TPtr ExpandTupleBinOp(const TExprNode& node, TExprContext& ctx) {
     if (node.IsCallable({"<=", ">="})) {
         return ctx.Builder(node.Pos())
             .Callable("Or")
-                .Add(0, ctx.RenameNode(node, node.IsCallable("<=") ? "<" : ">"))
-                .Add(1, ctx.RenameNode(node, "=="))
+                .Add(0, ctx.RenameNode(node, "=="))
+                .Add(1, ctx.RenameNode(node, node.IsCallable("<=") ? "<" : ">"))
             .Seal()
             .Build();
     }
@@ -586,14 +552,14 @@ bool IsListOfMembers(const TExprNode& node) {
     }
 
     return AllOf(node.ChildrenList(), [](const auto& child) {
-        return child->IsCallable("Member") && IsPgOrDataOrMultiOptionalOfData(child->GetTypeAnn());
+        return child->IsCallable("Member") && IsDataOrMultiOptionalOfData(child->GetTypeAnn());
     });
 }
 
 bool IsMemberBinOpNode(const TExprNode& node) {
     YQL_ENSURE(node.ChildrenSize() == 2);
-    return node.Head().IsCallable("Member") && IsPgOrDataOrMultiOptionalOfData(node.Head().GetTypeAnn()) ||
-           node.Tail().IsCallable("Member") && IsPgOrDataOrMultiOptionalOfData(node.Tail().GetTypeAnn());
+    return node.Head().IsCallable("Member") && IsDataOrMultiOptionalOfData(node.Head().GetTypeAnn()) ||
+           node.Tail().IsCallable("Member") && IsDataOrMultiOptionalOfData(node.Tail().GetTypeAnn());
 }
 
 bool IsMemberListBinOpNode(const TExprNode& node) {
@@ -601,7 +567,7 @@ bool IsMemberListBinOpNode(const TExprNode& node) {
     return IsListOfMembers(node.Head()) || IsListOfMembers(node.Tail());
 }
 
-TExprNode::TPtr OptimizeNodeForRangeExtraction(const TExprNode::TPtr& node, const TExprNode::TPtr& parent, TExprContext& ctx) {
+TExprNode::TPtr OptimizeNodeForRangeExtraction(const TExprNode::TPtr& node, TExprContext& ctx) {
     auto it = node->IsCallable() ? SupportedBinOps.find(node->Content()) : SupportedBinOps.end();
     if (it != SupportedBinOps.end()) {
         TExprNode::TPtr toExpand;
@@ -622,6 +588,8 @@ TExprNode::TPtr OptimizeNodeForRangeExtraction(const TExprNode::TPtr& node, cons
             YQL_CLOG(DEBUG, Core) << node->Content() << " over tuple";
             return ExpandTupleBinOp(*toExpand, ctx);
         }
+
+        return node;
     }
 
     if (node->IsCallable("Not")) {
@@ -713,91 +681,11 @@ TExprNode::TPtr OptimizeNodeForRangeExtraction(const TExprNode::TPtr& node, cons
         }
     }
 
-    if (node->IsCallable("!=")) {
-        TExprNode::TPtr litArg;
-        TExprNode::TPtr anyArg;
-
-        if (node->Child(1)->IsCallable("Bool")) {
-            litArg = node->Child(1);
-            anyArg = node->Child(0);
-        }
-
-        if (node->Child(0)->IsCallable("Bool")) {
-            litArg = node->Child(0);
-            anyArg = node->Child(1);
-        }
-
-        if (litArg && anyArg) {
-            return ctx.Builder(node->Pos())
-                .Callable("==")
-                    .Add(0, anyArg)
-                    .Add(1, MakeBool(node->Pos(), !FromString<bool>(litArg->Head().Content()), ctx))
-                .Seal()
-                .Build();
-        }
-    }
-
-    if (node->IsCallable("Member") && (!parent || parent->IsCallable({"And", "Or", "Not", "Coalesce"}))) {
-        auto* typeAnn = node->GetTypeAnn();
-        if (typeAnn->GetKind() == ETypeAnnotationKind::Optional) {
-            typeAnn = typeAnn->Cast<TOptionalExprType>()->GetItemType();
-        }
-        if (typeAnn->GetKind() == ETypeAnnotationKind::Data &&
-            typeAnn->Cast<TDataExprType>()->GetSlot() == EDataSlot::Bool)
-        {
-            YQL_CLOG(DEBUG, Core) << "Replace raw Member with explicit bool comparison";
-            return ctx.Builder(node->Pos())
-                .Callable("==")
-                    .Add(0, node)
-                    .Add(1, MakeBool(node->Pos(), true, ctx))
-                .Seal()
-                .Build();
-        }
-    }
-
-    if (node->IsCallable("FromPg") && node->Head().IsCallable("PgResolvedOp")) {
-        auto opNode = node->HeadPtr();
-        TStringBuf op = opNode->Head().Content();
-        if (SupportedBinOps.contains(op) || op == "<>" || op == "=") {
-            auto left = opNode->ChildPtr(2);
-            auto right = opNode->ChildPtr(3);
-            if (IsSameAnnotation(*left->GetTypeAnn(), *right->GetTypeAnn())) {
-                TStringBuf newOp;
-                if (op == "=") {
-                    newOp = "==";
-                } else if (op == "<>") {
-                    newOp = "!=";
-                } else {
-                    newOp = op;
-                }
-                YQL_ENSURE(opNode->ChildrenSize() == 4);
-                YQL_CLOG(DEBUG, Core) << "Replace PgResolvedOp(" << op << ") with corresponding plain binary operation";
-                return ctx.Builder(node->Pos())
-                    .Callable(newOp)
-                        .Add(0, opNode->ChildPtr(2))
-                        .Add(1, opNode->ChildPtr(3))
-                    .Seal()
-                    .Build();
-            }
-        }
-    }
-
-    if (node->IsCallable("StartsWith")) {
-        if (node->Head().IsCallable("FromPg")) {
-            YQL_CLOG(DEBUG, Core) << "Get rid of FromPg() in " << node->Content() << " first argument";
-            return ctx.ChangeChild(*node, 0, node->Head().HeadPtr());
-        }
-        if (node->Tail().GetTypeAnn()->GetKind() == ETypeAnnotationKind::Pg) {
-            YQL_CLOG(DEBUG, Core) << "Convert second argument of " << node->Content() << " from PG type";
-            return ctx.ChangeChild(*node, 1, ctx.NewCallable(node->Tail().Pos(), "FromPg", {node->TailPtr()}));
-        }
-    }
-
     return node;
 }
 
-void DoOptimizeForRangeExtraction(const TExprNode::TPtr& input, TExprNode::TPtr& output, bool topLevel, TExprContext& ctx, const TExprNode::TPtr& parent = nullptr) {
-    output = OptimizeNodeForRangeExtraction(input, parent, ctx);
+void DoOptimizeForRangeExtraction(const TExprNode::TPtr& input, TExprNode::TPtr& output, bool topLevel, TExprContext& ctx) {
+    output = OptimizeNodeForRangeExtraction(input, ctx);
     if (output != input) {
         return;
     }
@@ -809,7 +697,7 @@ void DoOptimizeForRangeExtraction(const TExprNode::TPtr& input, TExprNode::TPtr&
             continue;
         }
         TExprNode::TPtr newChild = child;
-        DoOptimizeForRangeExtraction(child, newChild, false, ctx, input);
+        DoOptimizeForRangeExtraction(child, newChild, false, ctx);
         if (newChild != child) {
             changed = true;
             child = std::move(newChild);
@@ -923,22 +811,13 @@ TExprNode::TPtr BuildSingleComputeRange(const TStructExprType& rowType,
 
     if (opNode->IsCallable("StartsWith")) {
         YQL_ENSURE(keys.size() == 1);
-        const bool keyIsPg = firstKeyType->GetKind() == ETypeAnnotationKind::Pg;
-        const TTypeAnnotationNode* rangeForType = firstKeyType;
-        if (keyIsPg) {
-            const TTypeAnnotationNode* yqlType = NTypeAnnImpl::FromPgImpl(pos, firstKeyType, ctx);
-            YQL_ENSURE(yqlType);
-            rangeForType = yqlType;
-            YQL_ENSURE(opNode->Tail().GetTypeAnn()->GetKind() != ETypeAnnotationKind::Pg);
-        }
-        auto rangeForNode = ctx.Builder(pos)
+        return ctx.Builder(pos)
             .Callable("RangeFor")
                 .Atom(0, hasNot ? "NotStartsWith" : "StartsWith", TNodeFlags::Default)
                 .Add(1, opNode->TailPtr())
-                .Add(2, ExpandType(pos, *rangeForType, ctx))
+                .Add(2, ExpandType(pos, *firstKeyType, ctx))
             .Seal()
             .Build();
-        return ctx.WrapByCallableIf(keyIsPg, "RangeToPg", std::move(rangeForNode));
     }
 
     if (opNode->IsCallable("SqlIn")) {
@@ -1021,12 +900,15 @@ TExprNode::TPtr BuildSingleComputeRange(const TStructExprType& rowType,
         if (!hasNot) {
             // IN = collection of point intervals
             body = ctx.Builder(pos)
-                    .Callable("FlatMap")
+                .Callable("Take")
+                    .Callable(0, "FlatMap")
                         .Add(0, collection)
                         .Lambda(1)
                             .Param("item")
                             .Callable("RangeMultiply")
-                                .Add(0, BuildMultiplyLimit(settings.MaxRanges, ctx, pos))
+                                .Callable(0, "Uint64")
+                                    .Atom(0, ToString(settings.MaxRanges), TNodeFlags::Default)
+                                .Seal()
                                 .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                                     if (haveTuples) {
                                         const auto& types = compositeKeyType->Cast<TTupleExprType>()->GetItems();
@@ -1058,44 +940,29 @@ TExprNode::TPtr BuildSingleComputeRange(const TStructExprType& rowType,
                             .Seal()
                         .Seal()
                     .Seal()
-                .Build();
-            if (settings.MaxRanges) {
-                YQL_ENSURE(*settings.MaxRanges < Max<size_t>());
-                body = ctx.Builder(pos)
-                    .Callable("Take")
-                        .Add(0, body)
-                        .Callable(1, "Uint64")
-                            // +1 is essential here - RangeMultiply will detect overflow by this extra item
-                            .Atom(0, ToString(*settings.MaxRanges + 1), TNodeFlags::Default)
-                        .Seal()
+                    .Callable(1, "Uint64")
+                        // +1 is essential here - RangeMultiply will detect overflow by this extra item
+                        .Atom(0, ToString(settings.MaxRanges + 1), TNodeFlags::Default)
                     .Seal()
-                    .Build();
-            }
+                .Seal()
+                .Build();
             body = ctx.NewCallable(pos, "Collect", { body });
-            if (settings.MaxRanges) {
-                body = ctx.Builder(pos)
-                    .Callable("IfStrict")
-                        .Callable(0, ">")
-                            .Callable(0, "Length")
-                                .Add(0, body)
-                            .Seal()
-                            .Callable(1, "Uint64")
-                                .Atom(0, ToString(*settings.MaxRanges), TNodeFlags::Default)
-                            .Seal()
-                        .Seal()
-                        .Add(1, BuildFullRange(pos, rowType, keys, ctx))
-                        .Callable(2, "RangeUnion")
+            body = ctx.Builder(pos)
+                .Callable("IfStrict")
+                    .Callable(0, ">")
+                        .Callable(0, "Length")
                             .Add(0, body)
                         .Seal()
+                        .Callable(1, "Uint64")
+                            .Atom(0, ToString(settings.MaxRanges), TNodeFlags::Default)
+                        .Seal()
                     .Seal()
-                    .Build();
-            } else {
-                body = ctx.Builder(pos)
-                    .Callable("RangeUnion")
+                    .Add(1, BuildFullRange(pos, rowType, keys, ctx))
+                    .Callable(2, "RangeUnion")
                         .Add(0, body)
                     .Seal()
-                    .Build();
-            }
+                .Seal()
+                .Build();
         } else {
             YQL_ENSURE(false, "not supported yet, should be rejected earlier");
         }
@@ -1270,72 +1137,48 @@ TExprNode::TPtr DoRebuildRangeForIndexKeys(const TStructExprType& rowType, const
         }
 
         TVector<TNodeAndIndexRange> rests;
-        Sort(toRebuild.begin(), toRebuild.end(),
-            [&](const auto& fs, const auto& sc) {
-                return fs.IndexRange < sc.IndexRange;
-            });
-        TMap<size_t, TVector<TNodeAndIndexRange>> byBegin;
-        if (!toRebuild.empty()) {
-            byBegin[toRebuild[0].IndexRange.Begin] = {};
-        }
-
+        TMap<TIndexRange, TVector<TNodeAndIndexRange>> children;
         for (auto& current : toRebuild) {
             if (current.IndexRange.IsEmpty()) {
                 YQL_ENSURE(current.Node->IsCallable("RangeRest"));
                 rests.emplace_back(std::move(current));
             } else {
-                if (byBegin.contains(current.IndexRange.Begin)) {
-                    byBegin[current.IndexRange.Begin].push_back(current);
-                    byBegin[current.IndexRange.End] = {};
-                } else {
-                    rests.push_back(std::move(current));
-                }
+                children[current.IndexRange].push_back(std::move(current));
             }
         }
 
-        TMap<size_t, TNodeAndIndexRange> builtRange;
-        for (auto it = byBegin.rbegin(); it != byBegin.rend(); ++it) {
-            size_t end = 0;
-            size_t indexRangeEnd = 0;
-            TVector<TExprNode::TPtr> results;
-            TVector<TExprNode::TPtr> currents;
-            auto flush = [&] () {
-                if (!currents) {
-                    return;
-                }
-
-                TExprNode::TPtr toAdd = MakeRangeAnd(range->Pos(), std::move(currents), ctx);
-                if (auto ptr = builtRange.FindPtr(end)) {
-                    toAdd = MakeRangeAnd(range->Pos(), { toAdd, ptr->Node }, ctx);
-                    indexRangeEnd = std::max(indexRangeEnd, ptr->IndexRange.End);
-                }
-                results.push_back(toAdd);
-
-                indexRangeEnd = std::max(end, indexRangeEnd);
-                currents = {};
-            };
-            for (auto node : it->second) {
-                if (end != node.IndexRange.End) {
-                    flush();
-                    end = node.IndexRange.End;
-                }
-                currents.push_back(node.Node);
+        TVector<TVector<TNodeAndIndexRange>> childrenChains;
+        for (auto it = children.begin(); it != children.end(); ++it) {
+            if (!commonIndexRange) {
+                commonIndexRange = it->first;
+                childrenChains.emplace_back(std::move(it->second));
+                continue;
             }
-            if (currents) {
-                flush();
+            if (commonIndexRange->Begin == it->first.Begin) {
+                YQL_ENSURE(it->first.End > commonIndexRange->End);
+                for (auto& asRest : childrenChains) {
+                    rests.insert(rests.end(), asRest.begin(), asRest.end());
+                }
+                childrenChains.clear();
+                childrenChains.push_back(std::move(it->second));
+                commonIndexRange = it->first;
+                continue;
             }
-            if (results) {
-                auto& built = builtRange[it->first];
-                built.Node = MakeRangeAnd(range->Pos(), std::move(results), ctx);
-                built.IndexRange.Begin = it->first;
-                built.IndexRange.End = indexRangeEnd;
+
+            if (commonIndexRange->End == it->first.Begin) {
+                commonIndexRange->End = it->first.End;
+                childrenChains.push_back(std::move(it->second));
+            } else {
+                rests.insert(rests.end(), it->second.begin(), it->second.end());
             }
         }
 
-        if (builtRange) {
-            auto& first = *builtRange.begin();
-            rebuilt.push_back(first.second.Node);
-            commonIndexRange = first.second.IndexRange;
+        for (auto& chain : childrenChains) {
+            TExprNodeList chainNodes;
+            for (auto& entry : chain) {
+                chainNodes.push_back(entry.Node);
+            }
+            rebuilt.push_back(MakeRangeAnd(range->Pos(), std::move(chainNodes), ctx));
         }
 
         if (!rests.empty()) {
@@ -1351,7 +1194,7 @@ TExprNode::TPtr DoRebuildRangeForIndexKeys(const TStructExprType& rowType, const
         }
     }
 
-    TExprNode::TPtr result = rebuilt.size() == 1 ? rebuilt[0] : ctx.ChangeChildren(*range, std::move(rebuilt));
+    TExprNode::TPtr result = ctx.ChangeChildren(*range, std::move(rebuilt));
     if (commonIndexRange) {
         resultIndexRange = *commonIndexRange;
     } else {
@@ -1489,295 +1332,18 @@ bool IsRestTrue(const TExprNode& node) {
     return false;
 }
 
-TExprNode::TPtr BuildRangeMultiply(TPositionHandle pos, TMaybe<size_t> maxRanges, const TExprNodeList& toMultiply, TExprContext& ctx) {
+TExprNode::TPtr BuildRangeMultiply(TPositionHandle pos, size_t maxRanges, const TExprNodeList& toMultiply, TExprContext& ctx) {
     TExprNodeList args;
     args.reserve(toMultiply.size() + 1);
-    args.push_back(BuildMultiplyLimit(maxRanges, ctx, pos));
+    args.push_back(ctx.NewCallable(pos, "Uint64", { ctx.NewAtom(pos, ToString(maxRanges), TNodeFlags::Default) }));
     args.insert(args.end(), toMultiply.begin(), toMultiply.end());
     return ctx.NewCallable(pos, "RangeMultiply", std::move(args));
-}
-
-using TRangeHint = IPredicateRangeExtractor::TBuildResult::TLiteralRange;
-using TRangeBoundHint = IPredicateRangeExtractor::TBuildResult::TLiteralRange::TLiteralRangeBound;
-
-TMaybe<int> TryCompareColumns(const TExprNode::TPtr& fs, const TExprNode::TPtr& sc) {
-    if (!fs || !sc) {
-        return {};
-    }
-    if (fs == sc) {
-        return 0;
-    }
-
-    auto isNull = [](const TExprNode::TPtr& ptr) {
-        return ptr->IsCallable("Nothing") || (ptr->GetTypeAnn()
-            && ptr->GetTypeAnn()->GetKind() == ETypeAnnotationKind::Null);
-    };
-
-    if (isNull(fs)) {
-        if (isNull(sc)) {
-            return 0;
-        } else {
-            return -1;
-        }
-    }
-    if (isNull(sc)) {
-        return 1;
-    }
-
-    return {};
-}
-
-TMaybe<TRangeBoundHint> CompareBounds(
-    const TRangeBoundHint& hint1,
-    const TRangeBoundHint& hint2,
-    bool min, bool lefts)
-{
-    TRangeBoundHint hint;
-    bool uniteAreas = min == lefts;
-    for (size_t i = 0; ; i++) {
-        if (i >= hint1.Columns.size()) {
-            if (i >= hint2.Columns.size()) {
-                hint = hint1;
-                if (uniteAreas) {
-                    hint.Inclusive = hint1.Inclusive || hint2.Inclusive;
-                } else {
-                    hint.Inclusive = hint1.Inclusive && hint2.Inclusive;
-                }
-            } else if (hint1.Inclusive != uniteAreas) {
-                hint = hint2;
-            } else {
-                hint = hint1;
-            }
-            break;
-        }
-        if (i >= hint2.Columns.size()) {
-            if (hint2.Inclusive != uniteAreas) {
-                hint = hint1;
-            } else {
-                hint = hint2;
-            }
-            break;
-        }
-
-        if (!hint1.Columns[i] || !hint2.Columns[i]) {
-            return Nothing();
-        }
-        if (auto cmp = TryCompareColumns(hint1.Columns[i], hint2.Columns[i])) {
-            if (cmp == 0) {
-                continue;
-            } else if ((cmp < 0) == min) {
-                hint = hint1;
-            } else {
-                hint = hint2;
-            }
-
-            break;
-        } else {
-            return Nothing();
-        }
-    }
-
-    return hint;
-}
-
-TMaybe<TRangeHint> RangeHintIntersect(const TRangeHint& hint1, const TRangeHint& hint2) {
-    auto left = CompareBounds(hint1.Left, hint2.Left, /* min */ false, true);
-    auto right = CompareBounds(hint1.Right, hint2.Right, /* min */ true, false);
-    if (left && right) {
-        return TRangeHint{.Left = std::move(*left), .Right = std::move(*right)};
-    } else {
-        return Nothing();
-    }
-}
-
-TMaybe<TRangeHint> RangeHintIntersect(const TMaybe<TRangeHint>& hint1, const TMaybe<TRangeHint>& hint2) {
-    if (hint1 && hint2) {
-        return RangeHintIntersect(*hint1, *hint2);
-    } else {
-        return {};
-    }
-}
-
-
-TRangeHint RangeHintExtend(const TRangeHint& hint1, size_t hint1Len, const TRangeHint& hint2) {
-    TRangeHint hint = hint1;
-    if (hint.Left.Columns.size() == hint1Len && hint1.Left.Inclusive) {
-        hint.Left.Columns.insert(hint.Left.Columns.end(), hint2.Left.Columns.begin(), hint2.Left.Columns.end());
-        hint.Left.Inclusive = hint2.Left.Inclusive;
-    }
-    if (hint.Right.Columns.size() == hint1Len && hint1.Right.Inclusive) {
-        hint.Right.Columns.insert(hint.Right.Columns.end(), hint2.Right.Columns.begin(), hint2.Right.Columns.end());
-        hint.Right.Inclusive = hint2.Right.Inclusive;
-    }
-    return hint;
-}
-
-TMaybe<TRangeHint> RangeHintExtend(const TMaybe<TRangeHint>& hint1, size_t hint1Len, const TMaybe<TRangeHint>& hint2) {
-    if (hint1 && hint2) {
-        return RangeHintExtend(*hint1, hint1Len, *hint2);
-    } else {
-        return {};
-    }
-}
-
-bool IsValid(const TRangeBoundHint& left, const TRangeBoundHint& right) {
-    for (size_t i = 0; ; ++i) {
-        if (i >= left.Columns.size() || i >= right.Columns.size()) {
-            // ok, we have +-inf and sure that it's valid
-            return true;
-        }
-        auto cmp = TryCompareColumns(left.Columns[i], right.Columns[i]);
-        if (!cmp) {
-            return false;
-        } else if (*cmp < 0) {
-            return true;
-        } else if (*cmp > 0) {
-            return false;
-        }
-    }
-}
-
-TMaybe<TRangeHint> RangeHintUnion(const TRangeHint& hint1, const TRangeHint& hint2) {
-    if (!IsValid(hint1.Left, hint1.Right) || !IsValid(hint2.Left, hint2.Right)) {
-        return Nothing();
-    }
-
-    auto left = CompareBounds(hint1.Left, hint2.Left, /* min */ true, true);
-    auto right = CompareBounds(hint1.Right, hint2.Right, /* min */ false, false);
-    auto intersection = RangeHintIntersect(hint1, hint2);
-    if (!left || !right || !intersection) {
-        return Nothing();
-    }
-
-    { // check if there is no gap between ranges
-        for (size_t i = 0; ; ++i) {
-            bool leftFinished = i >= intersection->Left.Columns.size();
-            bool rightFinished = i >= intersection->Right.Columns.size();
-            if (leftFinished || rightFinished) {
-                if (leftFinished && intersection->Left.Inclusive) {
-                    break;
-                }
-                if (rightFinished && intersection->Right.Inclusive) {
-                    break;
-                }
-                return {};
-            }
-
-            auto cmp = TryCompareColumns(intersection->Left.Columns[i], intersection->Right.Columns[i]);
-            if (!cmp) {
-                return {};
-            } else if (*cmp < 0) {
-                break;
-            } else if (*cmp > 0) {
-                return {};
-            }
-        }
-    }
-
-    return TRangeHint{.Left = std::move(*left), .Right = std::move(*right)};
-}
-
-TMaybe<TRangeHint> RangeHintUnion(const TMaybe<TRangeHint>& hint1, const TMaybe<TRangeHint>& hint2) {
-    if (hint1 && hint2) {
-        return RangeHintUnion(*hint1, *hint2);
-    } else {
-        return {};
-    }
-}
-
-void TryBuildSingleRangeHint(TExprNode::TPtr range, const TStructExprType& rowType, const TVector<TString>& indexKeys, TIndexRange indexRange, TMaybe<TRangeHint>& hint, TExprContext& ctx) {
-    bool negated;
-    auto op = GetOpFromRange(*range, negated);
-    size_t rangeLen = indexRange.End - indexRange.Begin;
-
-    auto idx = rowType.FindItem(indexKeys[indexRange.Begin]);
-    YQL_ENSURE(idx);
-    const TTypeAnnotationNode* firstKeyType = rowType.GetItems()[*idx]->GetItemType();
-
-    auto isOptional = [&](const TExprNode::TPtr& node) {
-        YQL_ENSURE(node->GetTypeAnn());
-        return node->GetTypeAnn()->GetKind() == ETypeAnnotationKind::Optional || node->GetTypeAnn()->GetKind() == ETypeAnnotationKind::Null;
-    };
-
-    if (op->IsCallable("SqlIn") && !negated) {
-        TCoSqlIn sqlIn(op);
-        auto collection = sqlIn.Collection();
-        if ((collection.Ptr()->IsCallable({"AsList", "AsSet", "Just"}) ||
-                collection.Ptr()->GetTypeAnn()->GetKind() == ETypeAnnotationKind::Tuple) &&
-            GetSqlInCollectionSize(collection.Ptr()) == TMaybe<size_t>(1))
-        {
-            auto item = sqlIn.Collection().Ptr()->Child(0);
-            if (isOptional(item)) {
-                return;
-            }
-
-            hint.ConstructInPlace();
-            hint->Left.Inclusive = hint->Right.Inclusive = true;
-            hint->Left.Columns = hint->Right.Columns = {item};
-        }
-    } else if (op->IsCallable(">") || op->IsCallable(">=")) {
-        YQL_ENSURE(!negated);
-        if (isOptional(op->ChildPtr(1))) {
-            return;
-        }
-
-        hint.ConstructInPlace();
-        hint->Left.Inclusive = op->IsCallable(">=");
-        hint->Right.Inclusive = true;
-        YQL_ENSURE(rangeLen == 1);
-        hint->Left.Columns.push_back(op->ChildPtr(1));
-    } else if (op->IsCallable("<") || op->IsCallable("<=")) {
-        YQL_ENSURE(!negated);
-        if (isOptional(op->ChildPtr(1))) {
-            return;
-        }
-
-        hint.ConstructInPlace();
-        hint->Right.Inclusive = op->IsCallable("<=");
-
-        YQL_ENSURE(rangeLen == 1);
-        hint->Right.Columns.push_back(op->ChildPtr(1));
-
-        if (firstKeyType->GetKind() == ETypeAnnotationKind::Optional) {
-            auto none = Build<TCoNothing>(ctx, op->Pos())
-                    .OptionalType(ExpandType(op->Pos(), *firstKeyType, ctx))
-                    .Done();
-            hint->Left.Columns.push_back(none.Ptr());
-            hint->Left.Inclusive = false;
-        } else {
-            hint->Left.Inclusive = true;
-        }
-    } else if (op->IsCallable("==")) {
-        YQL_ENSURE(!negated);
-        if (isOptional(op->ChildPtr(1))) {
-            return;
-        }
-
-        hint.ConstructInPlace();
-        hint->Left.Inclusive = hint->Right.Inclusive = true;
-        hint->Left.Columns = hint->Right.Columns = {op->ChildPtr(1)};
-    } else if (op->IsCallable("Exists")) {
-        YQL_ENSURE(rangeLen == 1);
-        hint.ConstructInPlace();
-        auto none = Build<TCoNothing>(ctx, op->Pos())
-                .OptionalType(ExpandType(op->Pos(), *firstKeyType, ctx))
-                .Done();
-        if (negated) {
-            hint->Left.Inclusive = hint->Right.Inclusive = true;
-            hint->Left.Columns.push_back(none.Ptr());
-            hint->Right.Columns.push_back(none.Ptr());
-        } else {
-            hint->Left.Inclusive = false;
-            hint->Left.Columns.push_back(none.Ptr());
-            hint->Right.Inclusive = true;
-        }
-    }
 }
 
 TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, const TExprNode::TPtr& range,
     const TVector<TString>& indexKeys, const THashMap<TString, size_t>& indexKeysOrder,
     TExprNode::TPtr& prunedRange, TIndexRange& resultIndexRange, const TPredicateExtractorSettings& settings,
-    size_t usedPrefixLen, TExprContext& ctx, TMaybe<TRangeHint>& hint)
+    size_t usedPrefixLen, TExprContext& ctx)
 {
     prunedRange = {};
     resultIndexRange = {};
@@ -1791,9 +1357,6 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
         prunedRange = (rawCols.size() == cols.size()) ?
             BuildRestTrue(pos, rowType, ctx) :
             RebuildAsRangeRest(rowType, *range, ctx);
-        if (settings.BuildLiteralRange) {
-            TryBuildSingleRangeHint(range, rowType, indexKeys, resultIndexRange, hint, ctx);
-        }
         YQL_ENSURE(usedPrefixLen > 0 && usedPrefixLen <= indexKeys.size());
         return BuildSingleComputeRange(rowType, *range, indexKeysOrder, settings, indexKeys[usedPrefixLen - 1], ctx);
     }
@@ -1826,18 +1389,15 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
         for (auto& child : range->ChildrenList()) {
             prunedOutput.emplace_back();
             TIndexRange childIndexRange;
-            TMaybe<TRangeHint> childHint;
-            output.push_back(DoBuildMultiColumnComputeNode(rowType, child, indexKeys, indexKeysOrder, prunedOutput.back(), childIndexRange, settings, usedPrefixLen, ctx, childHint));
+            output.push_back(DoBuildMultiColumnComputeNode(rowType, child, indexKeys, indexKeysOrder, prunedOutput.back(), childIndexRange, settings, usedPrefixLen, ctx));
             childIndexRanges.push_back(childIndexRange);
             YQL_ENSURE(!childIndexRange.IsEmpty());
             if (resultIndexRange.IsEmpty()) {
                 resultIndexRange = childIndexRange;
-                hint = childHint;
             } else {
                 YQL_ENSURE(childIndexRange.Begin == resultIndexRange.Begin);
                 resultIndexRange.End = std::max(resultIndexRange.End, childIndexRange.End);
                 resultIndexRange.PointPrefixLen = std::min(resultIndexRange.PointPrefixLen, childIndexRange.PointPrefixLen);
-                hint = RangeHintUnion(childHint, hint);
             }
         }
 
@@ -1854,8 +1414,7 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
         for (const auto& child : range->ChildrenList()) {
             prunedOutput.emplace_back();
             TIndexRange childIndexRange;
-            TMaybe<TRangeHint> childHint;
-            auto compute = DoBuildMultiColumnComputeNode(rowType, child, indexKeys, indexKeysOrder, prunedOutput.back(), childIndexRange, settings, usedPrefixLen, ctx, childHint);
+            auto compute = DoBuildMultiColumnComputeNode(rowType, child, indexKeys, indexKeysOrder, prunedOutput.back(), childIndexRange, settings, usedPrefixLen, ctx);
             if (!compute) {
                 continue;
             }
@@ -1864,11 +1423,9 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
             YQL_ENSURE(!childIndexRange.IsEmpty());
             if (resultIndexRange.IsEmpty()) {
                 resultIndexRange = childIndexRange;
-                hint = childHint;
             } else {
                 if (childIndexRange.Begin != resultIndexRange.Begin)  {
                     YQL_ENSURE(childIndexRange.Begin == resultIndexRange.End);
-                    hint = RangeHintExtend(hint, resultIndexRange.End - resultIndexRange.Begin, childHint);
                     needAlign = false;
                     if (!resultIndexRange.IsPoint()) {
                         prunedOutput.back() = RebuildAsRangeRest(rowType, *child, ctx);
@@ -1877,7 +1434,6 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
                     }
                 } else {
                     resultIndexRange.PointPrefixLen = std::max(resultIndexRange.PointPrefixLen, childIndexRange.PointPrefixLen);
-                    hint = RangeHintIntersect(hint, childHint);
                 }
                 resultIndexRange.End = std::max(resultIndexRange.End, childIndexRange.End);
             }
@@ -1900,7 +1456,7 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
     prunedOutput.erase(
         std::remove_if(prunedOutput.begin(), prunedOutput.end(), [](const auto& pruned) { return IsRestTrue(*pruned); }),
         prunedOutput.end()
-        );
+    );
 
     if (prunedOutput.empty()) {
         prunedRange = BuildRestTrue(pos, rowType, ctx);
@@ -1913,179 +1469,12 @@ TExprNode::TPtr DoBuildMultiColumnComputeNode(const TStructExprType& rowType, co
     return ctx.NewCallable(pos, range->IsCallable("RangeOr") ? "RangeUnion" : "RangeIntersect", std::move(output));
 }
 
-IGraphTransformer::TStatus ConvertLiteral(TExprNode::TPtr& node, const NYql::TTypeAnnotationNode & sourceType, const NYql::TTypeAnnotationNode & expectedType, NYql::TExprContext& ctx) {
-    if (IsSameAnnotation(sourceType, expectedType)) {
-        return IGraphTransformer::TStatus::Ok;
-    }
-
-    if (expectedType.GetKind() == ETypeAnnotationKind::Optional) {
-        auto nextType = expectedType.Cast<TOptionalExprType>()->GetItemType();
-        auto originalNode = node;
-        auto status1 = ConvertLiteral(node, sourceType, *nextType, ctx);
-        if (status1.Level != IGraphTransformer::TStatus::Error) {
-            node = ctx.NewCallable(node->Pos(), "Just", { node });
-            return IGraphTransformer::TStatus::Repeat;
-        }
-
-        node = originalNode;
-        if (node->IsCallable("Just")) {
-            auto sourceItemType = sourceType.Cast<TOptionalExprType>()->GetItemType();
-            auto value = node->HeadRef();
-            auto status = ConvertLiteral(value, *sourceItemType, *nextType, ctx);
-            if (status.Level != IGraphTransformer::TStatus::Error) {
-                node = ctx.NewCallable(node->Pos(), "Just", { value });
-                return IGraphTransformer::TStatus::Repeat;
-            }
-        } else if (sourceType.GetKind() == ETypeAnnotationKind::Optional) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (IsNull(sourceType)) {
-            node = ctx.NewCallable(node->Pos(), "Nothing", { ExpandType(node->Pos(), expectedType, ctx) });
-            return IGraphTransformer::TStatus::Repeat;
-        }
-    }
-
-    if (expectedType.GetKind() == ETypeAnnotationKind::Data && sourceType.GetKind() == ETypeAnnotationKind::Data) {
-        const auto from = sourceType.Cast<TDataExprType>()->GetSlot();
-        const auto to = expectedType.Cast<TDataExprType>()->GetSlot();
-        if (from == EDataSlot::Utf8 && to == EDataSlot::String) {
-            auto pos = node->Pos();
-            node = ctx.NewCallable(pos, "ToString", { std::move(node) });
-            return IGraphTransformer::TStatus::Repeat;
-        }
-
-        if (node->IsCallable("String") && to == EDataSlot::Utf8) {
-            if (const  auto atom = node->Head().Content(); IsUtf8(atom)) {
-                node = ctx.RenameNode(*node, "Utf8");
-                return IGraphTransformer::TStatus::Repeat;
-            }
-        }
-
-        if (IsDataTypeNumeric(from) && IsDataTypeNumeric(to)) {
-            {
-                auto current = node;
-                bool negate = false;
-                for (;;) {
-                    if (current->IsCallable("Plus")) {
-                        current = current->HeadPtr();
-                    }
-                    else if (current->IsCallable("Minus")) {
-                        current = current->HeadPtr();
-                        negate = !negate;
-                    }
-                    else {
-                        break;
-                    }
-                }
-
-                if (const auto maybeInt = TMaybeNode<TCoIntegralCtor>(current)) {
-                    TString atomValue;
-                    if (AllowIntegralConversion(maybeInt.Cast(), false, to, &atomValue)) {
-                        node = ctx.NewCallable(node->Pos(), expectedType.Cast<TDataExprType>()->GetName(),
-                            {ctx.NewAtom(node->Pos(), atomValue, TNodeFlags::Default)});
-                        return IGraphTransformer::TStatus::Repeat;
-                    }
-                }
-            }
-
-            if (GetNumericDataTypeLevel(to) < GetNumericDataTypeLevel(from)) {
-                return IGraphTransformer::TStatus::Error;
-            }
-
-            auto castResult = NKikimr::NUdf::GetCastResult(from, to);
-            if (!castResult || *castResult & NKikimr::NUdf::Impossible) {
-                return IGraphTransformer::TStatus::Error;
-            }
-
-            if (*castResult != NKikimr::NUdf::ECastOptions::Complete) {
-                return IGraphTransformer::TStatus::Error;
-            }
-
-            const auto pos = node->Pos();
-            auto type = ExpandType(pos, expectedType, ctx);
-            node = ctx.NewCallable(pos, "Convert", {std::move(node), std::move(type)});
-            return IGraphTransformer::TStatus::Repeat;
-        }
-
-        auto fromFeatures = NUdf::GetDataTypeInfo(from).Features;
-        auto toFeatures = NUdf::GetDataTypeInfo(to).Features;
-        if ((fromFeatures & NUdf::TzDateType) && (toFeatures & (NUdf::DateType| NUdf::TzDateType)) ||
-            (toFeatures & NUdf::TzDateType) && (fromFeatures & (NUdf::DateType | NUdf::TzDateType))) {
-            const auto pos = node->Pos();
-            auto type = ExpandType(pos, expectedType, ctx);
-            node = ctx.NewCallable(pos, "SafeCast", {std::move(node), std::move(type)});
-            return IGraphTransformer::TStatus::Repeat;
-        }
-    }
-
-    return IGraphTransformer::TStatus::Error;
-}
-
-void NormalizeRangeHint(TMaybe<TRangeHint>& hint, const TVector<TString>& indexKeys, const TStructExprType& rowType, TExprContext& ctx, TTypeAnnotationContext& types) {
-    if (!hint) {
-        return;
-    }
-
-    auto normTypes = [&] (TRangeBoundHint& hint) {
-        for (size_t i = 0; i < hint.Columns.size(); ++i) {
-            auto idx = rowType.FindItem(indexKeys[i]);
-            YQL_ENSURE(idx);
-            const TTypeAnnotationNode* columnType = rowType.GetItems()[*idx]->GetItemType();
-            const TTypeAnnotationNode* unwrapOptional = columnType;
-
-            if (columnType->GetKind() == ETypeAnnotationKind::Optional) {
-                unwrapOptional = columnType->Cast<TOptionalExprType>()->GetItemType();
-            }
-
-            TTransformationPipeline pipeline(&types);
-            pipeline.AddServiceTransformers();
-            pipeline.AddTypeAnnotationTransformer();
-            pipeline.Add(CreateFunctorTransformer(
-                [&](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) -> IGraphTransformer::TStatus {
-                    output = input;
-
-                    auto status = ConvertLiteral(output, *output->GetTypeAnn(), *unwrapOptional, ctx);
-                    if (status == IGraphTransformer::TStatus::Error) {
-                        output = input;
-                        status = ConvertLiteral(output, *output->GetTypeAnn(), *columnType, ctx);
-                    }
-
-                    if (status == IGraphTransformer::TStatus::Repeat) {
-                        status.HasRestart = 1;
-                    }
-                    return status;
-                }
-            ), "ExtractPredicate", TIssuesIds::CORE_EXEC);
-
-            auto transformer = pipeline.BuildWithNoArgChecks(true);
-
-            for (;;) {
-                auto status = InstantTransform(*transformer, hint.Columns[i], ctx, true);
-                if (status == IGraphTransformer::TStatus::Ok) {
-                    break;
-                }
-                if (status == IGraphTransformer::TStatus::Error) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    };
-
-    if (!normTypes(hint->Left) || !normTypes(hint->Right)) {
-        hint.Clear();
-    }
-}
-
 TExprNode::TPtr BuildMultiColumnComputeNode(const TStructExprType& rowType, const TExprNode::TPtr& range,
     const TVector<TString>& indexKeys, const THashMap<TString, size_t>& indexKeysOrder,
-    TExprNode::TPtr& prunedRange, const TPredicateExtractorSettings& settings, size_t usedPrefixLen, size_t& pointPrefixLen,
-    TExprContext& ctx, TTypeAnnotationContext& types, TMaybe<TRangeHint>& resultHint)
+    TExprNode::TPtr& prunedRange, const TPredicateExtractorSettings& settings, size_t usedPrefixLen, size_t& pointPrefixLen, TExprContext& ctx)
 {
     TIndexRange resultIndexRange;
-    auto result = DoBuildMultiColumnComputeNode(rowType, range, indexKeys, indexKeysOrder, prunedRange, resultIndexRange, settings, usedPrefixLen, ctx, resultHint);
-    NormalizeRangeHint(resultHint, indexKeys, rowType, ctx, types);
+    auto result = DoBuildMultiColumnComputeNode(rowType, range, indexKeys, indexKeysOrder, prunedRange, resultIndexRange, settings, usedPrefixLen, ctx);
     pointPrefixLen = resultIndexRange.PointPrefixLen;
     YQL_ENSURE(pointPrefixLen <= usedPrefixLen);
     YQL_ENSURE(prunedRange);
@@ -2114,62 +1503,6 @@ TExprNode::TPtr BuildMultiColumnComputeNode(const TStructExprType& rowType, cons
         result = ctx.NewCallable(pos, "RangeFinalize", { result });
     }
     return result;
-}
-
-NYql::NNodes::TExprBase UnpackRangePoints(NYql::NNodes::TExprBase node, TConstArrayRef<TString> keyColumns, NYql::TExprContext& expCtx, NYql::TPositionHandle pos) {
-    TCoArgument rangeArg = Build<TCoArgument>(expCtx, pos)
-        .Name("rangeArg")
-        .Done();
-
-    TVector<TExprBase> structMembers;
-    structMembers.reserve(keyColumns.size());
-    for (size_t i = 0; i < keyColumns.size(); ++i) {
-        auto kth = [&] (size_t k) {
-            return Build<TCoUnwrap>(expCtx, pos)
-                .Optional<TCoNth>()
-                    .Tuple<TCoNth>()
-                        .Tuple(rangeArg)
-                        .Index().Build(k)
-                        .Build()
-                    .Index().Build(i)
-                    .Build()
-                .Done();
-        };
-
-        auto first = kth(0);
-        auto second = kth(1);
-
-        auto member = Build<TCoNameValueTuple>(expCtx, pos)
-            .Name().Build(keyColumns[i])
-            .Value<TCoEnsure>()
-                .Value(first)
-                .Message<TCoString>().Literal().Build("invalid range bounds").Build()
-                .Predicate<TCoOr>()
-                    .Add<TCoCmpEqual>()
-                        .Left(first)
-                        .Right(second)
-                        .Build()
-                    .Add<TCoAnd>()
-                        .Add<TCoNot>().Value<TCoExists>().Optional(first).Build().Build()
-                        .Add<TCoNot>().Value<TCoExists>().Optional(second).Build().Build()
-                        .Build()
-                    .Build()
-                .Build()
-            .Done();
-
-        structMembers.push_back(member);
-    }
-
-
-    return Build<TCoMap>(expCtx, pos)
-        .Input(node)
-        .Lambda()
-            .Args({rangeArg})
-            .Body<TCoAsStruct>()
-                .Add(structMembers)
-                .Build()
-            .Build()
-        .Done();
 }
 
 
@@ -2233,12 +1566,11 @@ bool TPredicateRangeExtractor::Prepare(const TExprNode::TPtr& filterLambdaNode, 
         }
         return node;
     }, ctx, settings);
-
     return status == IGraphTransformer::TStatus::Ok;
 }
 
 TPredicateRangeExtractor::TBuildResult TPredicateRangeExtractor::BuildComputeNode(const TVector<TString>& indexKeys,
-    TExprContext& ctx, TTypeAnnotationContext& typesCtx) const
+    TExprContext& ctx) const
 {
     YQL_ENSURE(FilterLambda && Range && RowType, "Prepare() is not called");
 
@@ -2257,8 +1589,8 @@ TPredicateRangeExtractor::TBuildResult TPredicateRangeExtractor::BuildComputeNod
     for (size_t i = 0; i < effectiveIndexKeys.size(); ++i) {
         TMaybe<ui32> idx = RowType->FindItem(effectiveIndexKeys[i]);
         if (idx) {
-            auto keyBaseType = GetBasePgOrDataType(RowType->GetItems()[*idx]->GetItemType());
-            if (!(keyBaseType && keyBaseType->IsComparable() && keyBaseType->IsEquatable())) {
+            auto keyBaseType = RemoveAllOptionals(RowType->GetItems()[*idx]->GetItemType());
+            if (!(keyBaseType->GetKind() == ETypeAnnotationKind::Data && keyBaseType->IsComparable() && keyBaseType->IsEquatable())) {
                 idx = {};
             }
         }
@@ -2276,11 +1608,11 @@ TPredicateRangeExtractor::TBuildResult TPredicateRangeExtractor::BuildComputeNod
     TExprNode::TPtr rebuiltRange = RebuildRangeForIndexKeys(*RowType, Range, indexKeysOrder, result.UsedPrefixLen, ctx);
     TExprNode::TPtr prunedRange;
     result.ComputeNode = BuildMultiColumnComputeNode(*RowType, rebuiltRange, effectiveIndexKeys, indexKeysOrder,
-        prunedRange, Settings, result.UsedPrefixLen, result.PointPrefixLen, ctx, typesCtx, result.LiteralRange);
-
+        prunedRange, Settings, result.UsedPrefixLen, result.PointPrefixLen, ctx);
     if (result.ComputeNode) {
         result.ExpectedMaxRanges = CalcMaxRanges(rebuiltRange, indexKeysOrder);
-        if (!Settings.MaxRanges || (result.ExpectedMaxRanges && *result.ExpectedMaxRanges < *Settings.MaxRanges)) {
+        if (result.ExpectedMaxRanges && *result.ExpectedMaxRanges < Settings.MaxRanges) {
+            // rebuild filter lambda with prunedRange predicate
             TCoLambda lambda(result.PrunedLambda);
             auto newPred = MakePredicateFromPrunedRange(prunedRange, lambda.Args().Arg(0).Ptr(), ctx);
 
@@ -2301,11 +1633,6 @@ TPredicateRangeExtractor::TBuildResult TPredicateRangeExtractor::BuildComputeNod
 
 IPredicateRangeExtractor::TPtr MakePredicateRangeExtractor(const TPredicateExtractorSettings& settings) {
     return MakeHolder<NDetail::TPredicateRangeExtractor>(settings);
-}
-
-
-TExprNode::TPtr BuildPointsList(const IPredicateRangeExtractor::TBuildResult& result, TConstArrayRef<TString> keyColumns, NYql::TExprContext& expCtx) {
-    return NDetail::UnpackRangePoints(NNodes::TExprBase(result.ComputeNode), keyColumns, expCtx, result.ComputeNode->Pos()).Ptr();
 }
 
 } // namespace NYql

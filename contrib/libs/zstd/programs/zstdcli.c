@@ -138,8 +138,8 @@ static int exeNameMatch(const char* exeName, const char* test)
 *  Command Line
 **************************************/
 /* print help either in `stderr` or `stdout` depending on originating request
- * error (badUsage) => stderr
- * help (usageAdvanced) => stdout
+ * error (badusage) => stderr
+ * help (usage_advanced) => stdout
  */
 static void usage(FILE* f, const char* programName)
 {
@@ -175,7 +175,7 @@ static void usage(FILE* f, const char* programName)
     DISPLAY_F(f, "\n");
 }
 
-static void usageAdvanced(const char* programName)
+static void usage_advanced(const char* programName)
 {
     DISPLAYOUT(WELCOME_MESSAGE);
     DISPLAYOUT("\n");
@@ -254,7 +254,7 @@ static void usageAdvanced(const char* programName)
 
     DISPLAYOUT("\n");
     DISPLAYOUT("  --format=zstd                 Compress files to the `.zst` format. [Default]\n");
-    DISPLAYOUT("  --[no-]mmap-dict              Memory-map dictionary file rather than mallocing and loading all at once\n");
+    DISPLAYOUT("  --mmap-dict                   Memory-map dictionary file rather than mallocing and loading all at once");
 #ifdef ZSTD_GZCOMPRESS
     DISPLAYOUT("  --format=gzip                 Compress files to the `.gz` format.\n");
 #endif
@@ -316,9 +316,9 @@ static void usageAdvanced(const char* programName)
 
 }
 
-static void badUsage(const char* programName, const char* parameter)
+static void badusage(const char* programName)
 {
-    DISPLAYLEVEL(1, "Incorrect parameter: %s \n", parameter);
+    DISPLAYLEVEL(1, "Incorrect parameters \n");
     if (g_displayLevel >= 2) usage(stderr, programName);
 }
 
@@ -589,7 +589,7 @@ static ZDICT_fastCover_params_t defaultFastCoverParams(void)
 
 
 /** parseAdaptParameters() :
- *  reads adapt parameters from *stringPtr (e.g. "--adapt=min=1,max=19) and store them into adaptMinPtr and adaptMaxPtr.
+ *  reads adapt parameters from *stringPtr (e.g. "--zstd=min=1,max=19) and store them into adaptMinPtr and adaptMaxPtr.
  *  Both adaptMinPtr and adaptMaxPtr must be already allocated and correctly initialized.
  *  There is no guarantee that any of these values will be updated.
  *  @return 1 means that parsing was successful,
@@ -856,7 +856,7 @@ int main(int argCount, const char* argv[])
     ZSTD_paramSwitch_e useRowMatchFinder = ZSTD_ps_auto;
     FIO_compressionType_t cType = FIO_zstdCompression;
     unsigned nbWorkers = 0;
-    double compressibility = -1.0;  /* lorem ipsum generator */
+    double compressibility = 0.5;
     unsigned bench_nbSeconds = 3;   /* would be better if this value was synchronized from bench */
     size_t blockSize = 0;
 
@@ -933,7 +933,6 @@ int main(int argCount, const char* argv[])
     /* command switches */
     for (argNb=1; argNb<argCount; argNb++) {
         const char* argument = argv[argNb];
-        const char* const originalArgument = argument;
         if (!argument) continue;   /* Protection if argument empty */
 
         if (nextArgumentsAreFiles) {
@@ -959,10 +958,10 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--uncompress")) { operation=zom_decompress; continue; }
                 if (!strcmp(argument, "--force")) { FIO_overwriteMode(prefs); forceStdin=1; forceStdout=1; followLinks=1; allowBlockDevices=1; continue; }
                 if (!strcmp(argument, "--version")) { printVersion(); CLEAN_RETURN(0); }
-                if (!strcmp(argument, "--help")) { usageAdvanced(programName); CLEAN_RETURN(0); }
+                if (!strcmp(argument, "--help")) { usage_advanced(programName); CLEAN_RETURN(0); }
                 if (!strcmp(argument, "--verbose")) { g_displayLevel++; continue; }
                 if (!strcmp(argument, "--quiet")) { g_displayLevel--; continue; }
-                if (!strcmp(argument, "--stdout")) { forceStdout=1; outFileName=stdoutmark; continue; }
+                if (!strcmp(argument, "--stdout")) { forceStdout=1; outFileName=stdoutmark; removeSrcFile=0; continue; }
                 if (!strcmp(argument, "--ultra")) { ultra=1; continue; }
                 if (!strcmp(argument, "--check")) { FIO_setChecksumFlag(prefs, 2); continue; }
                 if (!strcmp(argument, "--no-check")) { FIO_setChecksumFlag(prefs, 0); continue; }
@@ -984,7 +983,7 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--adapt")) { adapt = 1; continue; }
                 if (!strcmp(argument, "--no-row-match-finder")) { useRowMatchFinder = ZSTD_ps_disable; continue; }
                 if (!strcmp(argument, "--row-match-finder")) { useRowMatchFinder = ZSTD_ps_enable; continue; }
-                if (longCommandWArg(&argument, "--adapt=")) { adapt = 1; if (!parseAdaptParameters(argument, &adaptMin, &adaptMax)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); } continue; }
+                if (longCommandWArg(&argument, "--adapt=")) { adapt = 1; if (!parseAdaptParameters(argument, &adaptMin, &adaptMax)) { badusage(programName); CLEAN_RETURN(1); } continue; }
                 if (!strcmp(argument, "--single-thread")) { nbWorkers = 0; singleThread = 1; continue; }
                 if (!strcmp(argument, "--format=zstd")) { suffix = ZSTD_EXTENSION; cType = FIO_zstdCompression; continue; }
                 if (!strcmp(argument, "--mmap-dict")) { mmapDict = ZSTD_ps_enable; continue; }
@@ -1023,8 +1022,8 @@ int main(int argCount, const char* argv[])
                   dict = cover;
                   /* Allow optional arguments following an = */
                   if (*argument == 0) { memset(&coverParams, 0, sizeof(coverParams)); }
-                  else if (*argument++ != '=') { badUsage(programName, originalArgument); CLEAN_RETURN(1); }
-                  else if (!parseCoverParameters(argument, &coverParams)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); }
+                  else if (*argument++ != '=') { badusage(programName); CLEAN_RETURN(1); }
+                  else if (!parseCoverParameters(argument, &coverParams)) { badusage(programName); CLEAN_RETURN(1); }
                   continue;
                 }
                 if (longCommandWArg(&argument, "--train-fastcover")) {
@@ -1034,8 +1033,8 @@ int main(int argCount, const char* argv[])
                   dict = fastCover;
                   /* Allow optional arguments following an = */
                   if (*argument == 0) { memset(&fastCoverParams, 0, sizeof(fastCoverParams)); }
-                  else if (*argument++ != '=') { badUsage(programName, originalArgument); CLEAN_RETURN(1); }
-                  else if (!parseFastCoverParameters(argument, &fastCoverParams)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); }
+                  else if (*argument++ != '=') { badusage(programName); CLEAN_RETURN(1); }
+                  else if (!parseFastCoverParameters(argument, &fastCoverParams)) { badusage(programName); CLEAN_RETURN(1); }
                   continue;
                 }
                 if (longCommandWArg(&argument, "--train-legacy")) {
@@ -1045,8 +1044,8 @@ int main(int argCount, const char* argv[])
                   dict = legacy;
                   /* Allow optional arguments following an = */
                   if (*argument == 0) { continue; }
-                  else if (*argument++ != '=') { badUsage(programName, originalArgument); CLEAN_RETURN(1); }
-                  else if (!parseLegacyParameters(argument, &dictSelect)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); }
+                  else if (*argument++ != '=') { badusage(programName); CLEAN_RETURN(1); }
+                  else if (!parseLegacyParameters(argument, &dictSelect)) { badusage(programName); CLEAN_RETURN(1); }
                   continue;
                 }
 #endif
@@ -1057,7 +1056,7 @@ int main(int argCount, const char* argv[])
                 if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(blockSize); continue; }
                 if (longCommandWArg(&argument, "--maxdict")) { NEXT_UINT32(maxDictSize); continue; }
                 if (longCommandWArg(&argument, "--dictID")) { NEXT_UINT32(dictID); continue; }
-                if (longCommandWArg(&argument, "--zstd=")) { if (!parseCompressionParameters(argument, &compressionParams)) { badUsage(programName, originalArgument); CLEAN_RETURN(1); } ; cType = FIO_zstdCompression; continue; }
+                if (longCommandWArg(&argument, "--zstd=")) { if (!parseCompressionParameters(argument, &compressionParams)) { badusage(programName); CLEAN_RETURN(1); } ; cType = FIO_zstdCompression; continue; }
                 if (longCommandWArg(&argument, "--stream-size")) { NEXT_TSIZE(streamSrcSize); continue; }
                 if (longCommandWArg(&argument, "--target-compressed-block-size")) { NEXT_TSIZE(targetCBlockSize); continue; }
                 if (longCommandWArg(&argument, "--size-hint")) { NEXT_TSIZE(srcSizeHint); continue; }
@@ -1099,7 +1098,7 @@ int main(int argCount, const char* argv[])
                         ldmWindowLog = readU32FromChar(&argument);
                     } else if (*argument != 0) {
                         /* Invalid character following --long */
-                        badUsage(programName, originalArgument);
+                        badusage(programName);
                         CLEAN_RETURN(1);
                     } else {
                         ldmWindowLog = g_defaultMaxWindowLog;
@@ -1121,12 +1120,12 @@ int main(int argCount, const char* argv[])
                         if (fastLevel) {
                             dictCLevel = cLevel = -(int)fastLevel;
                         } else {
-                            badUsage(programName, originalArgument);
+                            badusage(programName);
                             CLEAN_RETURN(1);
                         }
                     } else if (*argument != 0) {
                         /* Invalid character following --fast */
-                        badUsage(programName, originalArgument);
+                        badusage(programName);
                         CLEAN_RETURN(1);
                     } else {
                         cLevel = -1;  /* default for --fast */
@@ -1142,8 +1141,7 @@ int main(int argCount, const char* argv[])
                     continue;
                 }
 
-                badUsage(programName, originalArgument);
-                CLEAN_RETURN(1);
+                /* fall-through, will trigger bad_usage() later on */
             }
 
             argument++;
@@ -1161,7 +1159,7 @@ int main(int argCount, const char* argv[])
                 {
                     /* Display help */
                 case 'V': printVersion(); CLEAN_RETURN(0);   /* Version Only */
-                case 'H': usageAdvanced(programName); CLEAN_RETURN(0);
+                case 'H': usage_advanced(programName); CLEAN_RETURN(0);
                 case 'h': usage(stdout, programName); CLEAN_RETURN(0);
 
                      /* Compress */
@@ -1176,10 +1174,7 @@ int main(int argCount, const char* argv[])
                         operation=zom_decompress; argument++; break;
 
                     /* Force stdout, even if stdout==console */
-                case 'c': forceStdout=1; outFileName=stdoutmark; argument++; break;
-
-                    /* destination file name */
-                case 'o': argument++; NEXT_FIELD(outFileName); break;
+                case 'c': forceStdout=1; outFileName=stdoutmark; removeSrcFile=0; argument++; break;
 
                     /* do not store filename - gzip compatibility - nothing to do */
                 case 'n': argument++; break;
@@ -1204,6 +1199,9 @@ int main(int argCount, const char* argv[])
 
                     /* test compressed file */
                 case 't': operation=zom_test; argument++; break;
+
+                    /* destination file name */
+                case 'o': argument++; NEXT_FIELD(outFileName); break;
 
                     /* limit memory */
                 case 'M':
@@ -1279,12 +1277,7 @@ int main(int argCount, const char* argv[])
                     break;
 
                     /* unknown command */
-                default :
-                    {   char shortArgument[3] = {'-', 0, 0};
-                        shortArgument[1] = argument[0];
-                        badUsage(programName, shortArgument);
-                        CLEAN_RETURN(1);
-                    }
+                default : badusage(programName); CLEAN_RETURN(1);
                 }
             }
             continue;
@@ -1375,7 +1368,6 @@ int main(int argCount, const char* argv[])
             CLEAN_RETURN(1);
         }
         benchParams.blockSize = blockSize;
-        benchParams.targetCBlockSize = targetCBlockSize;
         benchParams.nbWorkers = (int)nbWorkers;
         benchParams.realTime = (unsigned)setRealTimePrio;
         benchParams.nbSeconds = bench_nbSeconds;

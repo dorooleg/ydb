@@ -81,11 +81,11 @@ public:
     }
 
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr&) {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr& ev) {
-        Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK);
+        Y_VERIFY(ev->Get()->Status == NKikimrProto::OK);
     }
 
 private:

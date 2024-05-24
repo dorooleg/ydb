@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -27,7 +27,7 @@
 
 #include "curl_setup.h"
 
-#ifndef CURL_DISABLE_DIGEST_AUTH
+#if !defined(CURL_DISABLE_CRYPTO_AUTH)
 
 #include <curl/curl.h>
 
@@ -125,6 +125,7 @@ bool Curl_auth_digest_get_pair(const char *str, char *value, char *content,
         }
         else
           return FALSE;
+        break;
       }
     }
 
@@ -141,7 +142,7 @@ bool Curl_auth_digest_get_pair(const char *str, char *value, char *content,
 }
 
 #if !defined(USE_WINDOWS_SSPI)
-/* Convert md5 chunk to RFC2617 (section 3.1.3) -suitable ascii string */
+/* Convert md5 chunk to RFC2617 (section 3.1.3) -suitable ascii string*/
 static void auth_digest_md5_to_ascii(unsigned char *source, /* 16 bytes */
                                      unsigned char *dest) /* 33 bytes */
 {
@@ -150,7 +151,7 @@ static void auth_digest_md5_to_ascii(unsigned char *source, /* 16 bytes */
     msnprintf((char *) &dest[i * 2], 3, "%02x", source[i]);
 }
 
-/* Convert sha256 chunk to RFC7616 -suitable ascii string */
+/* Convert sha256 chunk to RFC7616 -suitable ascii string*/
 static void auth_digest_sha256_to_ascii(unsigned char *source, /* 32 bytes */
                                      unsigned char *dest) /* 65 bytes */
 {
@@ -185,7 +186,7 @@ static char *auth_digest_string_quoted(const char *source)
       }
       *d++ = *s++;
     }
-    *d = '\0';
+    *d = 0;
   }
 
   return dest;
@@ -419,7 +420,7 @@ CURLcode Curl_auth_create_digest_md5_message(struct Curl_easy *data,
     msnprintf(&HA1_hex[2 * i], 3, "%02x", digest[i]);
 
   /* Generate our SPN */
-  spn = Curl_auth_build_spn(service, data->conn->host.name, NULL);
+  spn = Curl_auth_build_spn(service, realm, NULL);
   if(!spn)
     return CURLE_OUT_OF_MEMORY;
 
@@ -489,7 +490,7 @@ CURLcode Curl_auth_create_digest_md5_message(struct Curl_easy *data,
 /*
  * Curl_auth_decode_digest_http_message()
  *
- * This is used to decode an HTTP DIGEST challenge message into the separate
+ * This is used to decode a HTTP DIGEST challenge message into the separate
  * attributes.
  *
  * Parameters:
@@ -649,7 +650,7 @@ CURLcode Curl_auth_decode_digest_http_message(const char *chlg,
 /*
  * auth_create_digest_http_message()
  *
- * This is used to generate an HTTP DIGEST response message ready for sending
+ * This is used to generate a HTTP DIGEST response message ready for sending
  * to the recipient.
  *
  * Parameters:
@@ -693,7 +694,6 @@ static CURLcode auth_create_digest_http_message(
   char *hashthis = NULL;
   char *tmp = NULL;
 
-  memset(hashbuf, 0, sizeof(hashbuf));
   if(!digest->nc)
     digest->nc = 1;
 
@@ -926,7 +926,7 @@ static CURLcode auth_create_digest_http_message(
 /*
  * Curl_auth_create_digest_http_message()
  *
- * This is used to generate an HTTP DIGEST response message ready for sending
+ * This is used to generate a HTTP DIGEST response message ready for sending
  * to the recipient.
  *
  * Parameters:
@@ -991,4 +991,4 @@ void Curl_auth_digest_cleanup(struct digestdata *digest)
 }
 #endif  /* !USE_WINDOWS_SSPI */
 
-#endif  /* !CURL_DISABLE_DIGEST_AUTH */
+#endif  /* CURL_DISABLE_CRYPTO_AUTH */

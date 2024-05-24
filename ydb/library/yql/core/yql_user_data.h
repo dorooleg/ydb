@@ -39,8 +39,6 @@ struct TUserDataBlock {
     TFileLinkPtr FrozenFile;
     // Prefix added to all UDF module names
     TString CustomUdfPrefix = {};
-
-    THashMap<TString, TString> Options = {};
 };
 
 class TUserDataKey {
@@ -107,5 +105,12 @@ inline IOutputStream& operator<<(IOutputStream& os, const TUserDataKey& key) {
 using TUserDataTable = THashMap<TUserDataKey, TUserDataBlock, TUserDataKey::THash, TUserDataKey::TEqualTo>;
 
 using TTokenResolver = std::function<TString(const TString&, const TString&)>;
+
+struct IUrlPreprocessing: public TThrRefBase {
+public:
+    using TPtr = TIntrusivePtr<IUrlPreprocessing>;
+    // Returns pair of <new url>, <url alias>
+    virtual std::pair<TString, TString> Preprocess(const TString& url) = 0;
+};
 
 } // namespace NYql

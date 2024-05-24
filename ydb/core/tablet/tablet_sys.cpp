@@ -4,10 +4,9 @@
 #include <ydb/core/base/compile_time_flags.h>
 #include <ydb/core/base/hive.h>
 #include <ydb/core/base/tablet_pipecache.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/log.h>
-#include <library/cpp/time_provider/time_provider.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/deque.h>
 #include <util/generic/hash.h>
@@ -15,11 +14,10 @@
 #include <util/generic/set.h>
 #include <util/stream/str.h>
 
-#if defined BLOG_D || defined BLOG_I || defined BLOG_ERROR || defined BLOG_LEVEL
+#if defined BLOG_D || defined BLOG_I || defined BLOG_ERROR
 #error log macro definition clash
 #endif
 
-#define BLOG_LEVEL(level, stream, marker) LOG_LOG_S(*TlsActivationContext, level, NKikimrServices::TABLET_MAIN, "Tablet: " << TabletID() << " " << stream << " Marker# " << marker)
 #define BLOG_D(stream, marker) LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::TABLET_MAIN, "Tablet: " << TabletID() << " " << stream << " Marker# " << marker)
 #define BLOG_I(stream, marker) LOG_INFO_S(*TlsActivationContext, NKikimrServices::TABLET_MAIN, "Tablet: " << TabletID() << " " << stream << " Marker# " << marker)
 #define BLOG_ERROR(stream, marker) LOG_ERROR_S(*TlsActivationContext, NKikimrServices::TABLET_MAIN, "Tablet: " << TabletID() << " " << stream << " Marker# " << marker)
@@ -36,6 +34,10 @@ namespace {
     static constexpr TDuration OfflineFollowerWaitFirst = TDuration::Seconds(4);
     static constexpr TDuration OfflineFollowerWaitRetry = TDuration::Seconds(15);
 
+}
+
+ui64 TTablet::StateStorageGroup() const {
+    return StateStorageGroupFromTabletID(Info->TabletID);
 }
 
 ui64 TTablet::TabletID() const {
@@ -71,7 +73,7 @@ void TTablet::PromoteToCandidate(ui32 gen) {
 
     StateStorageInfo.KnownStep = 0;
 
-    Y_DEBUG_ABORT_UNLESS(SetupInfo);
+    Y_VERIFY_DEBUG(SetupInfo);
     if (!UserTablet)
         UserTablet = SetupInfo->Apply(Info.Get(), SelfId());
     if (IntrospectionTrace) {
@@ -86,7 +88,7 @@ void TTablet::PromoteToCandidate(ui32 gen) {
 }
 
 void TTablet::TabletBlockBlobStorage() {
-    Y_ABORT_UNLESS(Info);
+    Y_VERIFY(Info);
 
     IActor * const x = CreateTabletReqBlockBlobStorage(SelfId(), Info.Get(), StateStorageInfo.KnownGeneration - 1, false);
     TActorId newActorId = Register(x);
@@ -150,7 +152,7 @@ void TTablet::WriteZeroEntry(TEvTablet::TDependencyGraph *graph) {
             confirmedIterator = it;
         }
 
-        Y_ABORT_UNLESS(gen == lastGeneration);
+        Y_VERIFY(gen == lastGeneration);
 
         lastInGeneration = step;
 
@@ -191,7 +193,7 @@ void TTablet::WriteZeroEntry(TEvTablet::TDependencyGraph *graph) {
                 ++confirmedIterator;
 
             for (ui32 i = confirmedStep + 1; i <= lastInGeneration; ++i) {
-                Y_DEBUG_ABORT_UNLESS(confirmedIterator != end);
+                Y_VERIFY_DEBUG(confirmedIterator != end);
                 if (confirmedIterator->Id.second == i) {
                     value |= mask;
                     ++confirmedIterator;
@@ -293,13 +295,13 @@ void TTablet::UpdateStateStorageSignature(TEvStateStorage::TEvUpdateSignature::T
 void TTablet::HandlePingBoot(TEvTablet::TEvPing::TPtr &ev) {
     // todo: handle wait-boot flag
     NKikimrTabletBase::TEvPing &record = ev->Get()->Record;
-    Y_ABORT_UNLESS(record.GetTabletID() == TabletID());
+    Y_VERIFY(record.GetTabletID() == TabletID());
     Send(ev->Sender, new TEvTablet::TEvPong(TabletID(), TEvTablet::TEvPong::FlagBoot | TEvTablet::TEvPong::FlagLeader));
 }
 
 void TTablet::HandlePingFollower(TEvTablet::TEvPing::TPtr &ev) {
     NKikimrTabletBase::TEvPing &record = ev->Get()->Record;
-    Y_ABORT_UNLESS(record.GetTabletID() == TabletID());
+    Y_VERIFY(record.GetTabletID() == TabletID());
     Send(ev->Sender, new TEvTablet::TEvPong(TabletID(), TEvTablet::TEvPong::FlagFollower));
 }
 
@@ -342,7 +344,7 @@ void TTablet::HandleByFollower(TEvTabletBase::TEvTryBuildFollowerGraph::TPtr &ev
     Y_UNUSED(ev);
 
     BLOG_TRACE("Follower starting to rebuild history", "TSYS02");
-    Y_DEBUG_ABORT_UNLESS(!RebuildGraphRequest);
+    Y_VERIFY_DEBUG(!RebuildGraphRequest);
     RebuildGraphRequest = Register(CreateTabletReqRebuildHistoryGraph(SelfId(), Info.Get(), 0, nullptr, ++FollowerInfo.RebuildGraphCookie));
 
     // todo: tracing? at least as event
@@ -427,7 +429,7 @@ void TTablet::HandleByFollower(TEvTablet::TEvFollowerDisconnect::TPtr &ev) {
 
 void TTablet::HandleByFollower(TEvTablet::TEvFollowerRefresh::TPtr &ev) {
     const auto &record = ev->Get()->Record;
-    Y_ABORT_UNLESS(record.GetTabletId() == TabletID());
+    Y_VERIFY(record.GetTabletId() == TabletID());
     if (record.GetGeneration() < ExpandGenStepPair(FollowerInfo.EpochGenStep).first) {
         Send(ev->Sender, new TEvTablet::TEvFollowerDetach(TabletID(), Max<ui32>()));
         return;
@@ -448,8 +450,8 @@ void TTablet::HandleByFollower(TEvTablet::TEvFollowerAuxUpdate::TPtr &ev) {
     if (!CheckFollowerUpdate(ev->Sender, record.GetFollowerAttempt(), record.GetStreamCounter()))
         return;
 
-    Y_ABORT_UNLESS(FollowerInfo.StreamCounter != 0);
-    Y_ABORT_UNLESS(UserTablet);
+    Y_VERIFY(FollowerInfo.StreamCounter != 0);
+    Y_VERIFY(UserTablet);
 
     Send(UserTablet, new TEvTablet::TEvFAuxUpdate(record.GetAuxPayload()));
 
@@ -469,7 +471,7 @@ void TTablet::HandleByFollower(TEvTablet::TEvFollowerUpdate::TPtr &ev) {
         FollowerInfo.RetryRound = 0; // reset retry round counter to enable fast sync with leader
 
         // first event, must be snapshot
-        Y_ABORT_UNLESS(record.GetIsSnapshot());
+        Y_VERIFY(record.GetIsSnapshot());
 
         // update storage info for case of channel history upgrade
         if (record.HasTabletStorageInfo()) {
@@ -501,7 +503,7 @@ void TTablet::HandleByFollower(TEvTablet::TEvFollowerUpdate::TPtr &ev) {
             << ", " << record.GetGeneration() << ":" << record.GetStep(), "TSYS09");
 
     } else {
-        Y_ABORT_UNLESS(UserTablet);
+        Y_VERIFY(UserTablet);
         Send(UserTablet, new TEvTablet::TEvFUpdate(*ev->Get()));
 
         BLOG_TRACE("SUpdate attempt: " << FollowerInfo.FollowerAttempt
@@ -559,10 +561,6 @@ TTablet::EraseFollowerInfo(TMap<TActorId, TLeaderInfo>::iterator followerIt) {
     const ui32 followerNode = followerIt->first.NodeId();
 
     auto retIt = LeaderInfo.erase(followerIt);
-
-    if (UserTablet) {
-        Send(UserTablet, new TEvTablet::TEvFollowerDetached(LeaderInfo.size()));
-    }
 
     TryPumpWaitingForGc();
     TryFinishFollowerSync();
@@ -726,7 +724,7 @@ void TTablet::HandleByLeader(TEvTablet::TEvFollowerAttach::TPtr &ev) {
     auto followerIt = LeaderInfo.find(followerId);
     if (followerIt != LeaderInfo.end()) {
         // attaching follower known
-        Y_ABORT_UNLESS(followerIt->second.FollowerAttempt < record.GetFollowerAttempt() || followerIt->second.FollowerAttempt == Max<ui32>());
+        Y_VERIFY(followerIt->second.FollowerAttempt < record.GetFollowerAttempt() || followerIt->second.FollowerAttempt == Max<ui32>());
 
         followerIt->second.SyncState = EFollowerSyncState::Pending; // keep ConfirmedGCStep and FromList
     } else {
@@ -735,7 +733,7 @@ void TTablet::HandleByLeader(TEvTablet::TEvFollowerAttach::TPtr &ev) {
             Graph.MinFollowerUpdate = Graph.NextEntry;
         }
         auto followerItPair = LeaderInfo.insert(decltype(LeaderInfo)::value_type(ev->Sender, TLeaderInfo(EFollowerSyncState::Pending)));
-        Y_ABORT_UNLESS(followerItPair.second);
+        Y_VERIFY(followerItPair.second);
 
         followerIt = followerItPair.first;
     }
@@ -762,7 +760,7 @@ void TTablet::HandleByLeader(TEvTablet::TEvFollowerGcAck::TPtr &ev) {
         return;
 
     const ui32 step = record.GetStep();
-    Y_DEBUG_ABORT_UNLESS(followerInfo->ConfirmedGCStep < step);
+    Y_VERIFY_DEBUG(followerInfo->ConfirmedGCStep < step);
     followerInfo->ConfirmedGCStep = Max(step, followerInfo->ConfirmedGCStep);
 
     TryPumpWaitingForGc();
@@ -793,7 +791,7 @@ void TTablet::HandleStateStorageInfoResolve(TEvStateStorage::TEvInfo::TPtr &ev) 
     switch (msg->Status) {
     case NKikimrProto::OK:
         { // enough replicas replied and we have state info now
-            Y_ABORT_UNLESS(msg->TabletID == TabletID());
+            Y_VERIFY(msg->TabletID == TabletID());
 
             if (msg->Locked) {
                 // tablet already locked, check lock threshold or die
@@ -822,7 +820,7 @@ void TTablet::HandleStateStorageInfoResolve(TEvStateStorage::TEvInfo::TPtr &ev) 
     case NKikimrProto::TIMEOUT:
         return LockedInitializationPath();
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -855,7 +853,7 @@ void TTablet::HandleStateStorageInfoLock(TEvStateStorage::TEvInfo::TPtr &ev) {
     case NKikimrProto::RACE:
         return CancelTablet(TEvTablet::TEvTabletDead::ReasonBootRace);
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -891,7 +889,7 @@ void TTablet::HandleStateStorageInfoUpgrade(TEvStateStorage::TEvInfo::TPtr &ev) 
     case NKikimrProto::RACE:
         return CancelTablet(TEvTablet::TEvTabletDead::ReasonBootRace);
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -998,34 +996,33 @@ void TTablet::HandleWriteZeroEntry(TEvTabletBase::TEvWriteLogResult::TPtr &ev) {
 
 void TTablet::Handle(TEvTablet::TEvPing::TPtr &ev) {
     NKikimrTabletBase::TEvPing &record = ev->Get()->Record;
-    Y_ABORT_UNLESS(record.GetTabletID() == TabletID());
+    Y_VERIFY(record.GetTabletID() == TabletID());
     Send(ev->Sender, new TEvTablet::TEvPong(TabletID(), TEvTablet::TEvPong::FlagLeader));
 }
 
 void TTablet::HandleByLeader(TEvTablet::TEvTabletActive::TPtr &ev) {
     Y_UNUSED(ev);
     ReportTabletStateChange(TTabletStateInfo::Active);
-    Send(Launcher, new TEvTablet::TEvReady(TabletID(), StateStorageInfo.KnownGeneration, UserTablet));
     ActivateTime = AppData()->TimeProvider->Now();
     BLOG_I("Active! Generation: " << StateStorageInfo.KnownGeneration
             <<  ", Type: " << TTabletTypes::TypeToStr((TTabletTypes::EType)Info->TabletType)
             <<  " started in " << (ActivateTime-BoostrapTime).MilliSeconds() << "msec", "TSYS24");
 
-    PipeConnectAcceptor->Activate(SelfId(), UserTablet, true, StateStorageInfo.KnownGeneration);
+    PipeConnectAcceptor->Activate(SelfId(), UserTablet, true);
 }
 
 void TTablet::HandleByFollower(TEvTablet::TEvTabletActive::TPtr &ev) {
     Y_UNUSED(ev);
     BLOG_D("Follower TabletStateActive", "TSYS25");
 
-    PipeConnectAcceptor->Activate(SelfId(), UserTablet, false, StateStorageInfo.KnownGeneration);
+    PipeConnectAcceptor->Activate(SelfId(), UserTablet, false);
 
     Send(FollowerStStGuardian, new TEvTablet::TEvFollowerUpdateState(false, SelfId(), UserTablet));
     ReportTabletStateChange(TTabletStateInfo::Active);
 }
 
 TTablet::TLogEntry* TTablet::MakeLogEntry(TEvTablet::TCommitInfo &commitInfo, NKikimrTabletBase::TTabletLogEntry *commitEv) {
-    Y_ABORT_UNLESS(commitInfo.TabletID == TabletID() && commitInfo.Generation == StateStorageInfo.KnownGeneration && commitInfo.Step == Graph.NextEntry,
+    Y_VERIFY(commitInfo.TabletID == TabletID() && commitInfo.Generation == StateStorageInfo.KnownGeneration && commitInfo.Step == Graph.NextEntry,
         "commitInfo.TabletID=%ld, tablet=%ld, commitInfo.Generation=%d, KnownGeneration=%d, commitInfo.Step=%d, nextEntry=%d",
         commitInfo.TabletID, TabletID(), commitInfo.Generation, StateStorageInfo.KnownGeneration, commitInfo.Step, Graph.NextEntry);
 
@@ -1094,7 +1091,7 @@ void TTablet::Handle(TEvTablet::TEvCommit::TPtr &ev) {
         return;
     }
 
-    Y_ABORT_UNLESS(Graph.DelayCommitQueue.empty());
+    Y_VERIFY(Graph.DelayCommitQueue.empty());
     HandleNext(ev);
 }
 
@@ -1136,7 +1133,7 @@ bool TTablet::HandleNext(TEvTablet::TEvCommit::TPtr &ev) {
 
     for (TVector<TEvTablet::TLogEntryReference>::const_iterator it = msg->References.begin(), end = msg->References.end(); it != end; ++it) {
         const TLogoBlobID &id = it->Id;
-        Y_ABORT_UNLESS(id.TabletID() == TabletID() && id.Generation() == StateStorageInfo.KnownGeneration);
+        Y_VERIFY(id.TabletID() == TabletID() && id.Generation() == StateStorageInfo.KnownGeneration);
         LogoBlobIDFromLogoBlobID(id, x->AddReferences());
 
         if (saveFollowerUpdate)
@@ -1162,7 +1159,7 @@ bool TTablet::HandleNext(TEvTablet::TEvCommit::TPtr &ev) {
     }
 
     if (msg->EmbeddedLogBody) {
-        Y_ABORT_UNLESS(x->ReferencesSize() == 0);
+        Y_VERIFY(x->ReferencesSize() == 0);
         x->SetEmbeddedLogBody(msg->EmbeddedLogBody);
 
         if (saveFollowerUpdate)
@@ -1196,7 +1193,7 @@ bool TTablet::HandleNext(TEvTablet::TEvCommit::TPtr &ev) {
 
     entry->StateStorageConfirmed = true; // todo: do real query against state-storage (optionally?)
     entry->Task = Register(
-        CreateTabletReqWriteLog(SelfId(), logid, x.release(), msg->References, msg->CommitTactic, Info.Get(), std::move(ev->TraceId))
+        CreateTabletReqWriteLog(SelfId(), logid, x.release(), msg->References, msg->CommitTactic, Info.Get())
     );
 
     Graph.StepsInFlight += 1;
@@ -1216,7 +1213,7 @@ void TTablet::CheckEntry(TGraph::TIndex::iterator it) {
         while (!entry && cleanupQueue) {
             it = Graph.Index.find(cleanupQueue.back());
             cleanupQueue.pop_back();
-            Y_ABORT_UNLESS(it != Graph.Index.end());
+            Y_VERIFY(it != Graph.Index.end());
             TLogEntry *ex = it->second;
             if (--ex->DependenciesLeft == 0 && ex->StateStorageConfirmed && ex->BlobStorageConfirmed) {
                 step = it->first;
@@ -1250,7 +1247,7 @@ void TTablet::CheckEntry(TGraph::TIndex::iterator it) {
                     cleanupQueue.push_back(i);
                 else {
                     it = Graph.Index.find(i);
-                    Y_ABORT_UNLESS(it != Graph.Index.end());
+                    Y_VERIFY(it != Graph.Index.end());
                     TLogEntry *ex = it->second;
                     if (--ex->DependenciesLeft == 0 && ex->StateStorageConfirmed && ex->BlobStorageConfirmed) {
                         step = it->first;
@@ -1263,7 +1260,7 @@ void TTablet::CheckEntry(TGraph::TIndex::iterator it) {
 }
 
 void TTablet::Handle(TEvBlobStorage::TEvCollectGarbageResult::TPtr &ev) {
-    Y_ABORT_UNLESS(GcInFly > 0);
+    Y_VERIFY(GcInFly > 0);
     --GcInFly;
 
     TEvBlobStorage::TEvCollectGarbageResult *msg = ev->Get();
@@ -1481,8 +1478,8 @@ void TTablet::ProgressFollowerQueue() {
         if (GcInFly) {
             // Since we always confirm the last commit it should be impossible
             // to ever try to commit inside a garbage collected range.
-            Y_DEBUG_ABORT_UNLESS(GcInFlyStep < Graph.SyncCommit.SyncStep);
-            Y_DEBUG_ABORT_UNLESS(GcNextStep < Graph.SyncCommit.SyncStep);
+            Y_VERIFY_DEBUG(GcInFlyStep < Graph.SyncCommit.SyncStep);
+            Y_VERIFY_DEBUG(GcNextStep < Graph.SyncCommit.SyncStep);
         }
 
         TLogoBlobID entryId(TabletID(), StateStorageInfo.KnownGeneration, Graph.SyncCommit.SyncStep, 0, 0, 1);
@@ -1493,8 +1490,8 @@ void TTablet::ProgressFollowerQueue() {
         entry->SetIsSnapshot(false);
         entry->SetIsTotalSnapshot(false);
 
-        Y_DEBUG_ABORT_UNLESS(Graph.Confirmed == Graph.SyncCommit.SyncStep); // last entry must be confirmed
-        Y_DEBUG_ABORT_UNLESS(Graph.SyncCommit.SyncStep > Graph.ConfirmedCommited); // commit should make some progress
+        Y_VERIFY_DEBUG(Graph.Confirmed == Graph.SyncCommit.SyncStep); // last entry must be confirmed
+        Y_VERIFY_DEBUG(Graph.SyncCommit.SyncStep > Graph.ConfirmedCommited); // commit should make some progress
 
         TVector<TEvTablet::TLogEntryReference> refs;
         Register(
@@ -1507,7 +1504,7 @@ void TTablet::Handle(TEvTabletPipe::TEvConnect::TPtr& ev) {
     if (PipeConnectAcceptor->IsStopped()) {
         PipeConnectAcceptor->Reject(ev, SelfId(), NKikimrProto::TRYLATER, Leader);
     } else if (PipeConnectAcceptor->IsActive()) {
-        PipeConnectAcceptor->Accept(ev, SelfId(), UserTablet, Leader, StateStorageInfo.KnownGeneration);
+        PipeConnectAcceptor->Accept(ev, SelfId(), UserTablet, Leader);
     } else {
         PipeConnectAcceptor->Enqueue(ev, SelfId());
     }
@@ -1527,9 +1524,9 @@ void TTablet::HandleQueued(TEvTabletPipe::TEvConnect::TPtr& ev) {
 }
 
 void TTablet::HandleByFollower(TEvTabletPipe::TEvConnect::TPtr &ev) {
-    Y_DEBUG_ABORT_UNLESS(!Leader);
+    Y_VERIFY_DEBUG(!Leader);
     if (PipeConnectAcceptor->IsActive() && !PipeConnectAcceptor->IsStopped()) {
-        PipeConnectAcceptor->Accept(ev, SelfId(), UserTablet, false, StateStorageInfo.KnownGeneration);
+        PipeConnectAcceptor->Accept(ev, SelfId(), UserTablet, false);
     } else {
         PipeConnectAcceptor->Reject(ev, SelfId(), NKikimrProto::TRYLATER, false);
     }
@@ -1544,13 +1541,13 @@ void TTablet::Handle(TEvTabletBase::TEvWriteLogResult::TPtr &ev) {
     switch (status) {
     case NKikimrProto::OK:
     {
-        Y_DEBUG_ABORT_UNLESS(logid.Generation() == StateStorageInfo.KnownGeneration && logid.TabletID() == TabletID());
+        Y_VERIFY_DEBUG(logid.Generation() == StateStorageInfo.KnownGeneration && logid.TabletID() == TabletID());
         const ui32 step = logid.Step();
 
         if (logid.Cookie() == 0) {
             TGraph::TIndex::iterator indexIt = Graph.Index.find(step);
 
-            Y_ABORT_UNLESS(indexIt != Graph.Index.end());
+            Y_VERIFY(indexIt != Graph.Index.end());
 
             TLogEntry *entry = indexIt->second;
             entry->BlobStorageConfirmed = true;
@@ -1565,7 +1562,7 @@ void TTablet::Handle(TEvTabletBase::TEvWriteLogResult::TPtr &ev) {
 
             CheckEntry(indexIt);
         } else {
-            Y_DEBUG_ABORT_UNLESS(logid.Cookie() == 1 && step == Graph.SyncCommit.SyncStep);
+            Y_VERIFY_DEBUG(logid.Cookie() == 1 && step == Graph.SyncCommit.SyncStep);
 
             Graph.ConfirmedCommited = Max(Graph.ConfirmedCommited, step);
             Graph.SyncCommit.SyncStep = 0;
@@ -1742,10 +1739,7 @@ void TTablet::ReassignYellowChannels(TVector<ui32> &&yellowMoveChannels) {
 }
 
 void TTablet::CancelTablet(TEvTablet::TEvTabletDead::EReason reason, const TString &details) {
-    BLOG_LEVEL(
-        reason == TEvTablet::TEvTabletDead::ReasonPill
-            ? NActors::NLog::PRI_NOTICE
-            : NActors::NLog::PRI_ERROR,
+    BLOG_ERROR(
         " Type: " << TTabletTypes::TypeToStr((TTabletTypes::EType)Info->TabletType)
         << ", EReason: " << TEvTablet::TEvTabletDead::Str(reason)
         << ", SuggestedGeneration: " << SuggestedGeneration
@@ -1857,8 +1851,8 @@ TTablet::TTablet(const TActorId &launcher, TTabletStorageInfo *info, TTabletSetu
     , ResourceProfiles(profiles)
     , TxCacheQuota(txCacheQuota)
 {
-    Y_ABORT_UNLESS(!info->Channels.empty() && !info->Channels[0].History.empty());
-    Y_ABORT_UNLESS(TTabletTypes::TypeInvalid != info->TabletType);
+    Y_VERIFY(!info->Channels.empty() && !info->Channels[0].History.empty());
+    Y_VERIFY(TTabletTypes::TypeInvalid != info->TabletType);
 }
 
 TAutoPtr<IEventHandle> TTablet::AfterRegister(const TActorId &self, const TActorId& parentId) {
@@ -1895,7 +1889,7 @@ void TTablet::BootstrapFollower() {
         IntrospectionTrace.Reset(NTracing::CreateTrace(NTracing::ITrace::TypeSysTabletBootstrap));
     }
 
-    StateStorageInfo.ProxyID = MakeStateStorageProxyID();
+    StateStorageInfo.ProxyID = MakeStateStorageProxyID(StateStorageGroup());
     Send(StateStorageInfo.ProxyID, new TEvStateStorage::TEvLookup(TabletID(), 0, TEvStateStorage::TProxyOptions(TEvStateStorage::TProxyOptions::SigAsync)));
     if (IntrospectionTrace) {
         IntrospectionTrace->Attach(MakeHolder<NTracing::TOnTabletBootstrap>(SuggestedGeneration, false, StateStorageInfo.ProxyID));
@@ -1914,7 +1908,7 @@ void TTablet::Bootstrap() {
         IntrospectionTrace.Reset(NTracing::CreateTrace(NTracing::ITrace::TypeSysTabletBootstrap));
     }
     ReportTabletStateChange(TTabletStateInfo::Created); // useless?
-    StateStorageInfo.ProxyID = MakeStateStorageProxyID();
+    StateStorageInfo.ProxyID = MakeStateStorageProxyID(StateStorageGroup());
     Send(StateStorageInfo.ProxyID, new TEvStateStorage::TEvLookup(TabletID(), 0, TEvStateStorage::TProxyOptions(TEvStateStorage::TProxyOptions::SigAsync)));
     if (IntrospectionTrace) {
         IntrospectionTrace->Attach(MakeHolder<NTracing::TOnTabletBootstrap>(SuggestedGeneration, true, StateStorageInfo.ProxyID));

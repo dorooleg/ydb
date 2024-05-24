@@ -10,7 +10,7 @@ struct TEnvironmentSetup {
     std::unique_ptr<TTestActorSystem> Runtime;
     const ui32 NodeCount;
     const ui32 Domain = 0;
-    const ui64 TabletId = MakeBSControllerID();
+    const ui64 TabletId = MakeBSControllerID(Domain);
     const TDuration Timeout = TDuration::Seconds(30);
     const ui32 GroupId = 0;
     const ui32 NodeId = 1;
@@ -30,17 +30,13 @@ struct TEnvironmentSetup {
         Cleanup();
     }
 
-    std::unique_ptr<TTestActorSystem> MakeRuntime() {
-        auto domainsInfo = MakeIntrusive<TDomainsInfo>();
-        domainsInfo->AddDomain(TDomainsInfo::TDomain::ConstructEmptyDomain("dom", Domain).Release());
-        return std::make_unique<TTestActorSystem>(NodeCount, NLog::PRI_ERROR, domainsInfo);
-    }
-
     void Initialize() {
-        Runtime = MakeRuntime();
+        Runtime = std::make_unique<TTestActorSystem>(NodeCount);
         TimerActor = Runtime->Register(new TTimerActor, NodeId);
         SetupLogging();
         Runtime->Start();
+        auto *appData = Runtime->GetAppData();
+        appData->DomainsInfo->AddDomain(TDomainsInfo::TDomain::ConstructEmptyDomain("dom", Domain).Release());
         if (LocationGenerator) {
             Runtime->SetupTabletRuntime(LocationGenerator);
         } else {
@@ -180,7 +176,7 @@ struct TEnvironmentSetup {
 
     void SetupStorage() {
         const TActorId proxyId = MakeBlobStorageProxyID(GroupId);
-        Runtime->RegisterService(proxyId, Runtime->Register(CreateBlobStorageGroupProxyMockActor(GroupId), NodeId));
+        Runtime->RegisterService(proxyId, Runtime->Register(CreateBlobStorageGroupProxyMockActor(), NodeId));
 
         for (ui32 nodeId : Runtime->GetNodes()) {
             const TActorId wardenId = Runtime->Register(new TNodeWardenMock(nodeId, TabletId), nodeId);
@@ -196,11 +192,6 @@ struct TEnvironmentSetup {
 
         bool working = true;
         Runtime->Sim([&] { return working; }, [&](IEventHandle& event) { working = event.GetTypeRewrite() != TEvTablet::EvBoot; });
-    }
-
-    void Sim(TDuration duration) {
-        const auto end = Runtime->GetClock() + duration;
-        Runtime->Sim([&] { return Runtime->GetClock() <= end; });
     }
 
     void WaitForNodeWardensToConnect() {

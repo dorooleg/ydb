@@ -5,7 +5,6 @@
 #include <ydb/core/formats/arrow/ssa_runtime_version.h>
 
 #include <ydb/library/yql/core/yql_opt_utils.h>
-#include <ydb/library/actors/core/log.h>
 
 #include <vector>
 #include <unordered_set>
@@ -199,76 +198,6 @@ TExprBase BuildAvgResultProcessing(const std::vector<TAggInfo>& aggInfos, const 
 
 } // anonymous namespace end
 
-template <class TReadClass>
-TExprBase KqpPushDownOlapGroupByKeysImpl(TExprBase node, TExprContext& ctx, bool& applied) {
-    applied = false;
-    auto aggCombine = node.Cast<TCoAggregateCombine>();
-    if (aggCombine.Keys().Empty()) {
-        return node;
-    }
-
-    auto maybeRead = aggCombine.Input().Maybe<TReadClass>();
-    if (!maybeRead) {
-        maybeRead = aggCombine.Input().Maybe<TCoFlatMap>().Input().Maybe<TReadClass>();
-    }
-
-    if (!maybeRead) {
-        return node;
-    }
-
-    if (NYql::HasSetting(maybeRead.Settings().Ref(), TKqpReadTableSettings::GroupByFieldNames)) {
-        return node;
-    }
-    auto newSettings = NYql::AddSetting(maybeRead.Settings().Cast().Ref(), maybeRead.Settings().Cast().Pos(),
-        TString(TKqpReadTableSettings::GroupByFieldNames.data(), TKqpReadTableSettings::GroupByFieldNames.size()), aggCombine.Keys().Ptr(), ctx);
-    if (auto read = aggCombine.Input().Maybe<TReadClass>()) {
-        applied = true;
-        return
-            Build<TCoAggregateCombine>(ctx, node.Pos()).InitFrom(node.Cast<TCoAggregateCombine>())
-               .Input<TReadClass>().InitFrom(read.Cast())
-                   .Settings(newSettings)
-               .Build()
-           .Done();
-    } else if (auto read = aggCombine.Input().Maybe<TCoFlatMap>().Input().Maybe<TReadClass>()) {
-        applied = true;
-        return
-            Build<TCoAggregateCombine>(ctx, node.Pos()).InitFrom(node.Cast<TCoAggregateCombine>())
-                .Input<TCoFlatMap>().InitFrom(aggCombine.Input().Maybe<TCoFlatMap>().Cast())
-                    .Input<TReadClass>().InitFrom(read.Cast())
-            .Settings(newSettings)
-                    .Build()
-                .Build()
-            .Done();
-    } else {
-        return node;
-    }
-}
-
-TExprBase KqpPushDownOlapGroupByKeys(TExprBase node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
-    if (NKikimr::NSsa::RuntimeVersion < 2U) {
-        // We introduced aggregate pushdown in v2 of SSA program
-        return node;
-    }
-
-    if (!kqpCtx.Config->HasOptEnableOlapPushdown() || !kqpCtx.Config->HasOptEnableOlapProvideComputeSharding()) {
-        return node;
-    }
-
-    if (!node.Maybe<TCoAggregateCombine>()) {
-        return node;
-    }
-    bool applied = false;
-    auto result = KqpPushDownOlapGroupByKeysImpl<TKqpReadOlapTableRanges>(node, ctx, applied);
-    if (applied) {
-        return result;
-    }
-    result = KqpPushDownOlapGroupByKeysImpl<TKqlReadTableRanges>(node, ctx, applied);
-    if (applied) {
-        return result;
-    }
-    return node;
-}
-
 TExprBase KqpPushOlapAggregate(TExprBase node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx)
 {
     if (NKikimr::NSsa::RuntimeVersion < 2U) {
@@ -285,8 +214,12 @@ TExprBase KqpPushOlapAggregate(TExprBase node, TExprContext& ctx, const TKqpOpti
     }
 
     auto aggCombine = node.Cast<TCoAggregateCombine>();
-
     if (aggCombine.Handlers().Size() == 0) {
+        return node;
+    }
+
+    // temporary for keys grouping push down not useful
+    if (!aggCombine.Keys().Empty()) {
         return node;
     }
 
@@ -296,11 +229,6 @@ TExprBase KqpPushOlapAggregate(TExprBase node, TExprContext& ctx, const TKqpOpti
     }
 
     if (!maybeRead) {
-        return node;
-    }
-
-    // temporary for keys grouping push down not useful
-    if (!aggCombine.Keys().Empty()) {
         return node;
     }
 

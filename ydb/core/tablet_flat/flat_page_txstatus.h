@@ -49,9 +49,9 @@ namespace NPage {
         {
             const auto got = NPage::TLabelWrapper().Read(Raw, EPage::TxStatus);
 
-            Y_ABORT_UNLESS(got == ECodec::Plain && got.Version == 0);
+            Y_VERIFY(got == ECodec::Plain && got.Version == 0);
 
-            Y_ABORT_UNLESS(sizeof(THeader) <= got.Page.size(),
+            Y_VERIFY(sizeof(THeader) <= got.Page.size(),
                     "NPage::TTxStatusPage header is out of page bounds");
 
             const THeader* header = TDeref<THeader>::At(got.Page.data(), 0);
@@ -61,7 +61,7 @@ namespace NPage {
                     sizeof(TCommittedItem) * header->CommittedCount +
                     sizeof(TRemovedItem) * header->RemovedCount);
 
-            Y_ABORT_UNLESS(expectedSize <= got.Page.size(),
+            Y_VERIFY(expectedSize <= got.Page.size(),
                     "NPage::TTxStatusPage items are out of page bounds");
 
             const TCommittedItem* ptrCommitted = TDeref<TCommittedItem>::At(header + 1, 0);
@@ -105,7 +105,7 @@ namespace NPage {
 
         void AddCommitted(ui64 txId, TRowVersion rowVersion) {
             auto it = CommittedMap.find(txId);
-            Y_DEBUG_ABORT_UNLESS(it == CommittedMap.end());
+            Y_VERIFY_DEBUG(it == CommittedMap.end());
             TTxStatusPage::TCommittedItem* item;
             if (it == CommittedMap.end()) {
                 size_t index = CommittedItems.size();
@@ -122,7 +122,7 @@ namespace NPage {
 
         void AddRemoved(ui64 txId) {
             auto it = RemovedMap.find(txId);
-            Y_DEBUG_ABORT_UNLESS(it == RemovedMap.end());
+            Y_VERIFY_DEBUG(it == RemovedMap.end());
             if (it == RemovedMap.end()) {
                 size_t index = RemovedItems.size();
                 auto& item = RemovedItems.emplace_back();
@@ -155,7 +155,9 @@ namespace NPage {
 
             NUtil::NBin::TPut out(buf.mutable_begin());
 
-            WriteUnaligned<TLabel>(out.Skip<TLabel>(), TLabel::Encode(EPage::TxStatus, 0, pageSize));
+            if (auto* label = out.Skip<TLabel>()) {
+                label->Init(EPage::TxStatus, 0, pageSize);
+            }
 
             if (auto* header = out.Skip<THeader>()) {
                 header->CommittedCount = CommittedItems.size();
@@ -165,7 +167,7 @@ namespace NPage {
             out.Put(CommittedItems);
             out.Put(RemovedItems);
 
-            Y_ABORT_UNLESS(*out == buf.mutable_end());
+            Y_VERIFY(*out == buf.mutable_end());
             NSan::CheckMemIsInitialized(buf.data(), buf.size());
 
             CommittedItems.clear();

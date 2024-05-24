@@ -2,56 +2,68 @@
 #include "util_deref.h"
 
 #include <util/system/sanitizers.h>
-#include <util/system/unaligned_mem.h>
 
 namespace NKikimr {
 namespace NTable {
 namespace NPage {
 
+    void TLabel::Init(EPage type, ui16 format, ui64 size) noexcept {
+        Type = type;
+        Format = format;
+        SetSize(size);
+    }
+
+    void TLabel::SetSize(ui64 size) noexcept {
+        // We use Max<ui32>() as a huge (>=4GB) page marker
+        Size = Y_LIKELY(size < Max<ui32>()) ? ui32(size) : Max<ui32>();
+    }
+
     TLabelWrapper::TResult TLabelWrapper::Read(TArrayRef<const char> raw, EPage type) const noexcept
     {
-        Y_ABORT_UNLESS(raw.size() >= sizeof(TLabel), "Page blob is too small to hold label");
+        auto label = TDeref<TLabel>::Copy(raw.begin(), 0);
 
-        auto label = ReadUnaligned<TLabel>(raw.data());
-
-        Y_ABORT_UNLESS(label.Type == type || type == EPage::Undef,
-            "Page blob has an unexpected label type");
-
-        if (Y_UNLIKELY(label.IsHuge())) {
-            Y_ABORT_UNLESS(raw.size() >= Max<ui32>(), "Page label huge page marker doesn't match data size");
-        } else {
-            Y_ABORT_UNLESS(label.Size == raw.size(), "Page label size doesn't match data size");
+        if (raw.size() < 8) {
+            Y_FAIL("NPage blob is too small to hold label");
+        } else if (label.Type != type && type != EPage::Undef) {
+            Y_FAIL("NPage blob has an unexpected label type");
+        } else if (label.Size != raw.size() && label.Size != Max<ui32>()) {
+            Y_FAIL("NPage label size doesn't match data size");
+        } else if (label.Size == Max<ui32>()) {
+            Y_VERIFY(raw.size() >= Max<ui32>(), "NPage label huge page marker doesn't match data size");
         }
 
         const ui16 version = label.Format & 0x7fff;
 
-        ECodec codec = ECodec::Plain;
-
-        auto* begin = raw.begin() + sizeof(TLabel);
-
-        if (label.IsExtended()) {
-            /* New style NPage label, has at least 8 extra bytes, the
+        if (label.Format & 0x8000) {
+            /* New style NPage label, has at least extra 8 bytes, the
                 current impl use only 1st byte. Futher is reserved for
                 in-place crc (may be) or other pages common metadata.
              */
 
-            Y_ABORT_UNLESS(raw.size() >= sizeof(TLabel) + sizeof(TLabelExt), "Page extended label doesn't match data size");
+            // this ugly construct is just to get ui8 at raw.begin() + sizeof(TLabel)
+            auto codec = ECodec(*TDeref<ui8>::At(TDeref<TLabel>::At(raw.begin(), 0) + 1, 0));
 
-            auto ext = ReadUnaligned<TLabelExt>(begin);
-            codec = ext.Codec;
-            begin += sizeof(TLabelExt);
+            auto *on = raw.begin() + sizeof(TLabel) + 8;
+
+            return { label.Type, version, codec, { on, raw.end() } };
+
+        } else {
+            /* old style NPage label, has no any extra attached data */
+
+            auto *on = raw.begin() + sizeof(TLabel);
+
+            return
+                { label.Type, version, ECodec::Plain, { on, raw.end() } };
         }
-
-        return { label.Type, version, codec, { begin, raw.end() } };
     }
 
     TSharedData TLabelWrapper::Wrap(TArrayRef<const char> plain, EPage page, ui16 version) noexcept
     {
-        Y_ABORT_UNLESS(!(version >> 15), "Version can use only 15 bits");
+        Y_VERIFY(!(version >> 15), "Version can use only 15 bits");
 
         TSharedData blob = TSharedData::Uninitialized(plain.size() + 8);
 
-        WriteUnaligned<TLabel>(blob.mutable_begin(), TLabel::Encode(page, version, blob.size()));
+        TDeref<TLabel>::At(blob.mutable_begin(), 0)->Init(page, version, blob.size());
 
         std::copy(plain.begin(), plain.end(), blob.mutable_begin() + 8);
 
@@ -62,11 +74,11 @@ namespace NPage {
 
     TString TLabelWrapper::WrapString(TArrayRef<const char> plain, EPage page, ui16 version) noexcept
     {
-        Y_ABORT_UNLESS(!(version >> 15), "Version can use only 15 bits");
+        Y_VERIFY(!(version >> 15), "Version can use only 15 bits");
 
         TString blob = TString::Uninitialized(plain.size() + 8);
 
-        WriteUnaligned<TLabel>(blob.begin(), TLabel::Encode(page, version, blob.size()));
+        TDeref<TLabel>::At(blob.begin(), 0)->Init(page, version, blob.size());
 
         std::copy(plain.begin(), plain.end(), blob.begin() + 8);
 

@@ -3,16 +3,14 @@
 #include "dynamic_nameserver.h"
 #include "node_broker.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/interconnect/events_local.h>
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
-#include <ydb/library/actors/interconnect/interconnect_address.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/interconnect/events_local.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/interconnect/interconnect_address.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/cms/console/configs_dispatcher.h>
-#include <ydb/core/cms/console/console.h>
 
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/core/protos/services.pb.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/bitmap.h>
 
@@ -181,7 +179,7 @@ public:
         : StaticConfig(setup)
         , ResolvePoolId(resolvePoolId)
     {
-        Y_ABORT_UNLESS(StaticConfig->IsEntriesUnique());
+        Y_VERIFY(StaticConfig->IsEntriesUnique());
 
         for (size_t i = 0; i < DynamicConfigs.size(); ++i)
             DynamicConfigs[i] = new TDynamicConfig;
@@ -193,7 +191,7 @@ public:
                        ui32 resolvePoolId)
         : TDynamicNameserver(setup, resolvePoolId)
     {
-        ui32 domain = domains.GetDomain()->DomainUid;
+        ui32 domain = NodeIdToDomain(node.GetNodeId(), domains);
         TDynamicConfig::TDynamicNodeInfo info(node);
         DynamicConfigs[domain]->DynamicNodes.emplace(node.GetNodeId(), info);
     }
@@ -209,10 +207,6 @@ public:
             HFunc(TEvNodeBroker::TEvNodesInfo, Handle);
             HFunc(TEvPrivate::TEvUpdateEpoch, Handle);
             HFunc(NMon::TEvHttpInfo, Handle);
-            hFunc(TEvents::TEvUnsubscribe, Handle);
-
-            hFunc(NConsole::TEvConfigsDispatcher::TEvSetConfigSubscriptionResponse, Handle);
-            hFunc(NConsole::TEvConsole::TEvConfigNotificationRequest, Handle);
         }
     }
 
@@ -245,11 +239,6 @@ private:
     void Handle(TEvPrivate::TEvUpdateEpoch::TPtr &ev, const TActorContext &ctx);
     void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx);
 
-    void Handle(NConsole::TEvConfigsDispatcher::TEvSetConfigSubscriptionResponse::TPtr ev);
-    void Handle(NConsole::TEvConsole::TEvConfigNotificationRequest::TPtr ev);
-
-    void Handle(TEvents::TEvUnsubscribe::TPtr ev);
-
 private:
     TIntrusivePtr<TTableNameserverSetup> StaticConfig;
     std::array<TDynamicConfigPtr, DOMAINS_COUNT> DynamicConfigs;
@@ -261,7 +250,6 @@ private:
     // Domain -> Epoch ID.
     THashMap<ui32, ui64> EpochUpdates;
     ui32 ResolvePoolId;
-    THashSet<TActorId> StaticNodeChangeSubscribers;
 };
 
 } // NNodeBroker

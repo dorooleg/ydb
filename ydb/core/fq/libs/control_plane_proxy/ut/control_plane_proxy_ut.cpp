@@ -15,8 +15,8 @@
 
 #include <ydb/core/fq/libs/control_plane_proxy/events/events.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <ydb/core/testlib/basics/runtime.h>
@@ -24,7 +24,7 @@
 #include <ydb/core/base/path.h>
 
 #include <ydb/library/folder_service/folder_service.h>
-#include <ydb/library/folder_service/mock/mock_folder_service_adapter.h>
+#include <ydb/library/folder_service/mock/mock_folder_service.h>
 
 #include <util/system/env.h>
 
@@ -89,10 +89,6 @@ public:
 struct TTestBootstrap {
     const TDuration RequestTimeout = TDuration::Seconds(10);
     NConfig::TControlPlaneProxyConfig Config;
-    NConfig::TControlPlaneStorageConfig StorageConfig;
-    NConfig::TComputeConfig ComputeConfig;
-    NConfig::TCommonConfig CommonConfig;
-    NYql::TS3GatewayConfig S3Config;
 
     TRuntimePtr Runtime;
     TGrabActor* MetaStorageGrab;
@@ -149,7 +145,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::ListQueriesRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvListQueriesRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvListQueriesRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -159,7 +155,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DescribeQueryRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeQueryRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeQueryRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -169,7 +165,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::GetQueryStatusRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvGetQueryStatusRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvGetQueryStatusRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -179,7 +175,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::ModifyQueryRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvModifyQueryRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvModifyQueryRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -189,7 +185,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DeleteQueryRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDeleteQueryRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDeleteQueryRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -199,7 +195,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::ControlQueryRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvControlQueryRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvControlQueryRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -209,7 +205,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::GetResultDataRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvGetResultDataRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvGetResultDataRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -230,7 +226,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DescribeJobRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeJobRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeJobRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -248,7 +244,7 @@ struct TTestBootstrap {
                 ->set_id(serviceAccountId);
         }
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvCreateConnectionRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvCreateConnectionRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -258,7 +254,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::ListConnectionsRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvListConnectionsRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvListConnectionsRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -268,7 +264,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DescribeConnectionRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeConnectionRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeConnectionRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -286,7 +282,7 @@ struct TTestBootstrap {
                 ->set_id(serviceAccountId);
         }
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvModifyConnectionRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvModifyConnectionRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -296,7 +292,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DeleteConnectionRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDeleteConnectionRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDeleteConnectionRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -313,7 +309,7 @@ struct TTestBootstrap {
                 ->set_id(serviceAccountId);
         }
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvTestConnectionRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvTestConnectionRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -323,7 +319,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::CreateBindingRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvCreateBindingRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvCreateBindingRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -333,7 +329,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::ListBindingsRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvListBindingsRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvListBindingsRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -343,7 +339,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DescribeBindingRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeBindingRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDescribeBindingRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -353,7 +349,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::ModifyBindingRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvModifyBindingRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvModifyBindingRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -363,7 +359,7 @@ struct TTestBootstrap {
         TActorId sender = Runtime->AllocateEdgeActor();
         FederatedQuery::DeleteBindingRequest proto;
 
-        auto request = std::make_unique<TEvControlPlaneProxy::TEvDeleteBindingRequest>("yandexcloud://my_folder", proto, user, "", permissions);
+        auto request = std::make_unique<TEvControlPlaneProxy::TEvDeleteBindingRequest>("my_folder", proto, user, "", permissions);
         Runtime->Send(new IEventHandle(ControlPlaneProxyActorId(), sender, request.release()));
         Runtime->DispatchEvents({}, TDuration::Zero());
     }
@@ -382,22 +378,13 @@ private:
     {
         TRuntimePtr runtime(new TTestBasicRuntime());
         runtime->SetLogPriority(NKikimrServices::STREAMS_CONTROL_PLANE_SERVICE, NLog::PRI_DEBUG);
-        auto controlPlaneProxy = CreateControlPlaneProxyActor(
-            Config,
-            StorageConfig,
-            ComputeConfig,
-            CommonConfig,
-            S3Config,
-            nullptr,
-            NFq::TYqSharedResources::TPtr{},
-            NKikimr::TYdbCredentialsProviderFactory(nullptr),
-            MakeIntrusive<::NMonitoring::TDynamicCounters>(),
-            true);
+
+        auto controlPlaneProxy = CreateControlPlaneProxyActor(Config, MakeIntrusive<::NMonitoring::TDynamicCounters>(), true);
         runtime->AddLocalService(
             ControlPlaneProxyActorId(),
             TActorSetupCmd(controlPlaneProxy, TMailboxType::Simple, 0));
 
-        auto folderService = NKikimr::NFolderService::CreateMockFolderServiceAdapterActor(NKikimrProto::NFolderService::TFolderServiceConfig{});
+        auto folderService = NKikimr::NFolderService::CreateMockFolderServiceActor(NKikimrProto::NFolderService::TFolderServiceConfig{});
         runtime->AddLocalService(
             NKikimr::NFolderService::FolderServiceActorId(),
             TActorSetupCmd(folderService, TMailboxType::Simple, 0),
@@ -405,7 +392,7 @@ private:
         );
 
         auto configService = CreateControlPlaneConfigActor(NFq::TYqSharedResources::TPtr{}, NKikimr::TYdbCredentialsProviderFactory(nullptr),
-            NConfig::TControlPlaneStorageConfig{}, NConfig::TComputeConfig{}, MakeIntrusive<::NMonitoring::TDynamicCounters>());
+            NConfig::TControlPlaneStorageConfig{}, MakeIntrusive<::NMonitoring::TDynamicCounters>());
         runtime->AddLocalService(
             NFq::ControlPlaneConfigActorId(),
             TActorSetupCmd(configService, TMailboxType::Simple, 0),
@@ -449,11 +436,15 @@ TVector<TString> AllPermissions() {
     return {
         "yq.queries.create@as",
         "yq.queries.invoke@as",
+        "yq.connections.use@as",
+        "yq.bindings.use@as",
         "yq.queries.get@as",
         "yq.queries.viewAst@as",
         "yq.queries.getStatus@as",
         "yq.queries.update@as",
         "yq.queries.invoke@as",
+        "yq.connections.use@as",
+        "yq.bindings.use@as",
         "yq.queries.delete@as",
         "yq.queries.control@as",
         "yq.queries.getData@as",
@@ -952,6 +943,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -971,6 +964,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -990,6 +985,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1009,6 +1006,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1028,6 +1027,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1047,6 +1048,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1066,6 +1069,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1085,6 +1090,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1104,6 +1111,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1123,6 +1132,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1142,6 +1153,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1161,6 +1174,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1180,6 +1195,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1199,6 +1216,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1218,6 +1237,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1237,6 +1258,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1256,6 +1279,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1275,6 +1300,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1294,6 +1321,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1303,7 +1332,7 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         NConfig::TControlPlaneProxyConfig config;
         config.SetEnablePermissions(true);
         TTestBootstrap bootstrap(config);
-        bootstrap.SendCreateBindingRequest({"yq.bindings.create@as", "yq.connections.get@as"});
+        bootstrap.SendCreateBindingRequest({"yq.bindings.create@as"});
         auto request = bootstrap.MetaStorageGrab->GetRequest();
         auto event = request->Get<TEvControlPlaneStorage::TEvCreateBindingRequest>();
         auto permissions = event->Permissions;
@@ -1313,6 +1342,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1332,6 +1363,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1351,6 +1384,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1370,6 +1405,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1389,6 +1426,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1403,6 +1442,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         bootstrap.SendCreateQueryRequest({
             "yq.queries.create@as",
             "yq.queries.invoke@as",
+            "yq.connections.use@as",
+            "yq.bindings.use@as",
             "yq.resources.managePublic@as"
         });
         auto request = bootstrap.MetaStorageGrab->GetRequest();
@@ -1414,6 +1455,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1437,6 +1480,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1462,6 +1507,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1475,7 +1522,9 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
             "yq.queries.update@as",
             "yq.queries.invoke@as",
             "yq.resources.managePublic@as",
-            "yq.resources.managePrivate@as"
+            "yq.resources.managePrivate@as",
+            "yq.connections.use@as",
+            "yq.bindings.use@as"
         });
         auto request = bootstrap.MetaStorageGrab->GetRequest();
         auto event = request->Get<TEvControlPlaneStorage::TEvModifyQueryRequest>();
@@ -1486,6 +1535,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1509,6 +1560,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1532,6 +1585,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1555,6 +1610,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1578,6 +1635,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1601,6 +1660,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1623,6 +1684,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1646,6 +1709,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1669,6 +1734,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1692,6 +1759,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1715,6 +1784,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1739,6 +1810,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1762,6 +1835,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1784,6 +1859,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1807,6 +1884,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1817,9 +1896,6 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         config.SetEnablePermissions(true);
         TTestBootstrap bootstrap(config);
         bootstrap.SendCreateBindingRequest({
-            "yq.connections.get@as",
-            "yq.resources.viewPublic@as",
-            "yq.resources.viewPrivate@as",
             "yq.bindings.create@as",
             "yq.resources.managePublic@as"
         });
@@ -1827,11 +1903,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         auto event = request->Get<TEvControlPlaneStorage::TEvCreateBindingRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1855,6 +1933,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1878,6 +1958,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1901,6 +1983,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -1924,6 +2008,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckPermissionsControlPlaneStorageSuccess) 
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2211,6 +2297,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2230,6 +2318,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2249,6 +2339,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2268,6 +2360,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2287,6 +2381,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2306,6 +2402,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2325,6 +2423,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2344,6 +2444,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2363,6 +2465,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2382,6 +2486,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2396,11 +2502,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvCreateConnectionRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2415,11 +2523,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvCreateConnectionRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2439,6 +2549,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2458,6 +2570,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2472,11 +2586,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvModifyConnectionRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2491,11 +2607,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvModifyConnectionRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2510,11 +2628,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvDeleteConnectionRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2534,6 +2654,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2553,6 +2675,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2567,11 +2691,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvCreateBindingRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2591,6 +2717,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2610,6 +2738,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2624,11 +2754,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvModifyBindingRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2643,11 +2775,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyCheckNegativePermissionsSuccess) {
         auto event = request->Get<TEvControlPlaneStorage::TEvDeleteBindingRequest>();
         auto permissions = event->Permissions;
         UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-        UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+        UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
         UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+        UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
         UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
         UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
     }
@@ -2682,6 +2816,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             // yq.jobs.*
 
             "yq.resources.managePublic@as",
+            "yq.connections.use@as",
+            "yq.bindings.use@as",
             "yq.queries.invoke@as",
             "yq.queries.getData@as",
             "yq.queries.getStatus@as",
@@ -2706,6 +2842,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2724,6 +2862,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2742,6 +2882,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2760,6 +2902,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2778,6 +2922,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2796,6 +2942,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2814,6 +2962,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2832,6 +2982,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2850,6 +3002,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2868,6 +3022,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2881,11 +3037,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvCreateConnectionRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2904,6 +3062,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2922,6 +3082,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2935,11 +3097,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvModifyConnectionRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2953,11 +3117,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvDeleteConnectionRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2976,6 +3142,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -2989,11 +3157,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvCreateBindingRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3012,6 +3182,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3030,6 +3202,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3043,11 +3217,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvModifyBindingRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3061,11 +3237,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvDeleteBindingRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3090,6 +3268,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             // yq.jobs.*
 
             "yq.resources.managePublic@as",
+            "yq.connections.use@as",
+            "yq.bindings.use@as",
             "yq.queries.invoke@as",
             "yq.queries.getData@as",
             "yq.queries.getStatus@as",
@@ -3114,6 +3294,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3132,6 +3314,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3150,6 +3334,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3168,6 +3354,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3186,6 +3374,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3204,6 +3394,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3222,6 +3414,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3240,6 +3434,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3258,6 +3454,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3276,6 +3474,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3289,11 +3489,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvCreateConnectionRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3312,6 +3514,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3330,6 +3534,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3343,11 +3549,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvModifyConnectionRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3361,11 +3569,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvDeleteConnectionRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3384,6 +3594,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3397,11 +3609,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvCreateBindingRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3420,6 +3634,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3438,6 +3654,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3451,11 +3669,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvModifyBindingRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3469,11 +3689,13 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             auto event = request->Get<TEvControlPlaneStorage::TEvDeleteBindingRequest>();
             auto permissions = event->Permissions;
             UNIT_ASSERT_VALUES_EQUAL(event->Scope, "yandexcloud://my_folder");
-            UNIT_ASSERT(permissions.Check(TPermissions::VIEW_PUBLIC));
+            UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_PRIVATE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3509,6 +3731,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3527,6 +3751,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3590,6 +3816,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3608,6 +3836,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3635,6 +3865,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3653,6 +3885,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3707,6 +3941,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3725,6 +3961,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3748,6 +3986,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
         }
 
         const TVector<TString> testUser4Permissions {
+            "yq.connections.use@as",
+            "yq.bindings.use@as",
             "yq.queries.invoke@as",
             "yq.queries.create@as",
             "yq.queries.getData@as",
@@ -3769,6 +4009,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3805,6 +4047,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }
@@ -3850,6 +4094,8 @@ Y_UNIT_TEST_SUITE(TControlPlaneProxyShouldPassHids) {
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_AST));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PUBLIC));
             UNIT_ASSERT(!permissions.Check(TPermissions::MANAGE_PRIVATE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::CONNECTIONS_USE));
+            UNIT_ASSERT(!permissions.Check(TPermissions::BINDINGS_USE));
             UNIT_ASSERT(!permissions.Check(TPermissions::QUERY_INVOKE));
             UNIT_ASSERT(!permissions.Check(TPermissions::VIEW_QUERY_TEXT));
         }

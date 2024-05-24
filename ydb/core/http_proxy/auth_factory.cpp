@@ -1,6 +1,5 @@
 #include "auth_factory.h"
 #include "http_req.h"
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/http_proxy/http_service.h>
 #include <ydb/core/http_proxy/http_req.h>
 #include <ydb/core/http_proxy/metrics_actor.h>
@@ -8,7 +7,7 @@
 
 #include <ydb/public/sdk/cpp/client/iam_private/iam.h>
 
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/http/http_proxy.h>
 
 namespace NKikimr::NHttpProxy {
 
@@ -66,9 +65,7 @@ void TIamAuthFactory::Initialize(
             NKikimr::NHttpProxy::MakeIamTokenServiceID(),
             TActorSetupCmd(actor, TMailboxType::HTSwap, appData.UserPoolId)));
 
-    bool isServerless = appData.FeatureFlags.GetEnableDbCounters(); //TODO: find out it via describe
-
-    actor = NKikimr::NHttpProxy::CreateMetricsActor(NKikimr::NHttpProxy::TMetricsSettings{appData.Counters->GetSubgroup("counters", isServerless ? "http_proxy_serverless" : "http_proxy")});
+    actor = NKikimr::NHttpProxy::CreateMetricsActor(NKikimr::NHttpProxy::TMetricsSettings{appData.Counters->GetSubgroup("counters", "http_proxy")});
     localServices.push_back(std::pair<TActorId, TActorSetupCmd>(
             NKikimr::NHttpProxy::MakeMetricsServiceID(),
             TActorSetupCmd(actor, TMailboxType::HTSwap, appData.UserPoolId)));

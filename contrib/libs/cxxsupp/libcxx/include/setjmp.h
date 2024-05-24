@@ -31,8 +31,10 @@ void longjmp(jmp_buf env, int val);
 #  pragma GCC system_header
 #endif
 
-#if __has_include_next(<setjmp.h>)
-#  include_next <setjmp.h>
+#ifdef _LIBCPP_COMPILER_MSVC
+#include Y_MSVC_INCLUDE_NEXT(setjmp.h)
+#else
+#include_next <setjmp.h>
 #endif
 
 #ifdef __cplusplus

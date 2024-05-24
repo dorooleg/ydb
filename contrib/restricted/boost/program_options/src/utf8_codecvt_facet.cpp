@@ -3,9 +3,7 @@
 // (See accompanying file LICENSE_1_0.txt
 // or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#ifndef BOOST_PROGRAM_OPTIONS_SOURCE
-# define BOOST_PROGRAM_OPTIONS_SOURCE
-#endif
+#define BOOST_PROGRAM_OPTIONS_SOURCE
 #include <boost/program_options/config.hpp>
 
 #define BOOST_UTF8_BEGIN_NAMESPACE \

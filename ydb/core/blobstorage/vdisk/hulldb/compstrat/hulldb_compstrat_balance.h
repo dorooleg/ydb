@@ -129,7 +129,7 @@ namespace NKikimr {
                         return i + 1;
                     }
                 }
-                Y_ABORT("free level not found");
+                Y_FAIL("free level not found");
                 return -1;
             }
 
@@ -140,7 +140,7 @@ namespace NKikimr {
                 ui32 added = 0;
                 auto it = SliceSnap.GetLevel0SstIterator();
                 it.SeekToFirst();
-                Y_DEBUG_ABORT_UNLESS(it.Valid());
+                Y_VERIFY_DEBUG(it.Valid());
                 while (it.Valid() && added < Boundaries->Level0MaxSstsAtOnce) {
                     // push to the task
                     TLevelSegmentPtr sst(it.Get());
@@ -148,7 +148,7 @@ namespace NKikimr {
                     added++;
                     it.Next();
                 }
-                Y_ABORT_UNLESS(added > 0);
+                Y_VERIFY(added > 0);
             }
 
             // check and run full compaction if required
@@ -239,7 +239,7 @@ namespace NKikimr {
                                 ToString().data()));
                 }
 
-                Y_ABORT_UNLESS(freeLevels <= totalPsl);
+                Y_VERIFY(freeLevels <= totalPsl);
                 double rank = 0.0;
                 if (freeLevels == totalPsl) {
                     rank = 0.0;
@@ -309,7 +309,7 @@ namespace NKikimr {
                     }
                     added++;
                 }
-                Y_ABORT_UNLESS(added);
+                Y_VERIFY(added);
             }
 
             void Compact() {
@@ -380,7 +380,7 @@ namespace NKikimr {
             {}
 
             void CalculateRanks(std::vector<double> &ranks) {
-                Y_DEBUG_ABORT_UNLESS(ranks.size() == 2);
+                Y_VERIFY_DEBUG(ranks.size() == 2);
                 ui32 otherLevelsNum = SliceSnap.GetLevelXNumber();
                 for (ui32 i = Boundaries->SortedParts * 2; i < otherLevelsNum; i++) {
                     ui32 virtualLevel = i - Boundaries->SortedParts * 2 + 2;
@@ -392,14 +392,14 @@ namespace NKikimr {
             void Compact(const ui32 virtualLevelToCompact) {
                 const ui32 srcLevel = virtualLevelToCompact - 2 + Boundaries->SortedParts * 2 + 1;
 
-                Y_DEBUG_ABORT_UNLESS(srcLevel > 0);
+                Y_VERIFY_DEBUG(srcLevel > 0);
                 const ui32 srcLevelArrIdx = srcLevel - 1; // srcLevel=1 has index 0
 
                 // find sst to compact
                 const TSortedLevel &srcLevelData = SliceSnap.GetLevelXRef(srcLevelArrIdx);
                 const TKey &lastCompactedKey = srcLevelData.LastCompactedKey;
                 const TSegments &srcSegs = srcLevelData.Segs->Segments;
-                Y_DEBUG_ABORT_UNLESS(!srcSegs.empty());
+                Y_VERIFY_DEBUG(!srcSegs.empty());
                 typename TSegments::const_iterator srcIt = ::LowerBound(srcSegs.begin(),
                                                                         srcSegs.end(),
                                                                         lastCompactedKey,
@@ -417,12 +417,12 @@ namespace NKikimr {
                     // srcIt is equal to srcSegs.begin() and it's fine
                 }
 
-                Y_ABORT_UNLESS(srcIt != srcSegs.end());
+                Y_VERIFY(srcIt != srcSegs.end());
                 CompactSst(srcLevel, srcIt);
             }
 
             void CompactSst(ui32 srcLevel, typename TSegments::const_iterator srcIt) {
-                Y_ABORT_UNLESS(srcLevel > 0);
+                Y_VERIFY(srcLevel > 0);
                 // srcIt points to the sst to compact
                 TKey firstKeyToCover = (*srcIt)->FirstKey();
                 TKey lastKeyToCover = (*srcIt)->LastKey();
@@ -453,7 +453,7 @@ namespace NKikimr {
                     const TSortedLevel &srcLevelData = SliceSnap.GetLevelXRef(srcLevelArrIdx);
                     if (!srcLevelData.Empty()) {
                         const TSegments &srcSegs = srcLevelData.Segs->Segments;
-                        Y_ABORT_UNLESS(!srcSegs.empty());
+                        Y_VERIFY(!srcSegs.empty());
                         for (typename TSegments::const_iterator it = srcSegs.begin(); it != srcSegs.end(); ++it) {
                             if ((*it)->GetLastLsn() <= attrs.FullCompactionLsn) {
                                 Sublog.Log() << "TBalanceLevelX::FullCompact: srcLevel# " << srcLevel
@@ -474,7 +474,7 @@ namespace NKikimr {
                     const TSortedLevel &srcLevelData = SliceSnap.GetLevelXRef(srcLevelArrIdx);
                     if (!srcLevelData.Empty()) {
                         const TSegments &srcSegs = srcLevelData.Segs->Segments;
-                        Y_ABORT_UNLESS(!srcSegs.empty());
+                        Y_VERIFY(!srcSegs.empty());
                         for (typename TSegments::const_iterator it = srcSegs.begin(); it != srcSegs.end(); ++it) {
                             // for the last level we add a condition that sst is subject for compaction if
                             // it was built before full compaction was started
@@ -601,7 +601,7 @@ namespace NKikimr {
                 BalanceLevelX.CalculateRanks(ranks);
 
                 // find level to compact
-                Y_DEBUG_ABORT_UNLESS(!ranks.empty());
+                Y_VERIFY_DEBUG(!ranks.empty());
                 ranks.VirtualLevelToCompact = 0;
                 double minRank = ranks[0];
                 for (ui32 i = 1; i < ranks.size(); i++) {
@@ -640,7 +640,7 @@ namespace NKikimr {
                     return ActCompactSsts;
                 }
 
-                Y_ABORT("impossible case");
+                Y_FAIL("impossible case");
             }
         };
 

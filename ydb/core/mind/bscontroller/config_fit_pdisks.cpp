@@ -84,7 +84,7 @@ namespace NKikimr {
 
         static void UpdatePDiskIfNeeded(const TPDiskId& pdiskId, const TDiskInfo& disk, ui32 defaultMaxSlots, TBlobStorageController::TConfigState& state) {
             auto pdiskInfo = state.PDisks.Find(pdiskId);
-            Y_ABORT_UNLESS(pdiskInfo != nullptr);
+            Y_VERIFY(pdiskInfo != nullptr);
             if (pdiskInfo->Kind != disk.PDiskCategory ||
                 pdiskInfo->SharedWithOs != disk.SharedWithOs ||
                 pdiskInfo->ReadCentric != disk.ReadCentric ||
@@ -93,16 +93,17 @@ namespace NKikimr {
             {
                 // update PDisk configuration
                 auto pdiskInfo = state.PDisks.FindForUpdate(pdiskId);
-                Y_ABORT_UNLESS(pdiskInfo != nullptr);
+                Y_VERIFY(pdiskInfo != nullptr);
                 pdiskInfo->Kind = disk.PDiskCategory;
                 pdiskInfo->SharedWithOs = disk.SharedWithOs;
                 pdiskInfo->ReadCentric = disk.ReadCentric;
                 pdiskInfo->BoxId = disk.BoxId;
                 if (pdiskInfo->PDiskConfig != disk.PDiskConfig) {
-                    if (const auto id = FindStaticPDisk(disk, state); id && state.StaticPDisks.at(*id).PDiskConfig != disk.PDiskConfig) {
-                        throw TExError() << "PDiskConfig mismatch for static disk" << TErrorParams::NodeId(disk.NodeId) << TErrorParams::Path(disk.Path);
-                    } else {
+                    // update PDiskConfig only for nonstatic PDisks
+                    if (!NKikimr::NBsController::FindStaticPDisk(disk, state)) {
                         pdiskInfo->PDiskConfig = disk.PDiskConfig;
+                    } else {
+                        throw TExError() << "Skipping PDiskConfig update for static disk" << TErrorParams::NodeId(disk.NodeId) << TErrorParams::Path(disk.Path);
                     }
                 }
                 // run ExtractConfig as the very last step
@@ -343,7 +344,7 @@ namespace NKikimr {
                             disk.PDiskCategory.GetRaw(), guid, disk.SharedWithOs, disk.ReadCentric,
                             /* nextVslotId */ 1000, disk.PDiskConfig, disk.BoxId, DefaultMaxSlots,
                             NKikimrBlobStorage::EDriveStatus::ACTIVE, /* statusTimestamp */ TInstant::Zero(),
-                            NKikimrBlobStorage::EDecommitStatus::DECOMMIT_NONE, NBsController::TPDiskMood::Normal,
+                            NKikimrBlobStorage::EDecommitStatus::DECOMMIT_NONE,
                             disk.Serial, disk.LastSeenSerial, disk.LastSeenPath, staticSlotUsage);
 
                     // Set PDiskId and Guid in DrivesSerials

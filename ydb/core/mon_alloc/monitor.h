@@ -1,10 +1,9 @@
 #pragma once
 
-#include <ydb/core/base/memobserver.h>
 #include <ydb/core/control/immediate_control_board_impl.h>
 
-#include <ydb/library/actors/core/defs.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/defs.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
@@ -46,7 +45,6 @@ namespace NKikimr {
     };
 
     NActors::IActor* CreateMemProfMonitor(
-        TIntrusivePtr<TMemObserver> memObserver,
         ui32 intervalSec,
         TIntrusivePtr<::NMonitoring::TDynamicCounters> counters,
         const TString& filePathPrefix = "");

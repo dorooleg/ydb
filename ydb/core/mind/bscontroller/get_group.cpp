@@ -4,8 +4,7 @@ namespace NKikimr::NBsController {
 
 class TBlobStorageController::TTxGetGroup : public TTransactionBase<TBlobStorageController> {
     TEvBlobStorage::TEvControllerGetGroup::TPtr Request;
-    std::unique_ptr<TEvBlobStorage::TEvControllerNodeServiceSetUpdate> Response;
-    TNodeId NodeId = {};
+    std::unique_ptr<IEventHandle> Response;
 
 public:
     TTxGetGroup(TEvBlobStorage::TEvControllerGetGroup::TPtr& ev, TBlobStorageController *controller)
@@ -21,34 +20,27 @@ public:
 
         STLOG(PRI_DEBUG, BS_CONTROLLER, BSCTXGG01, "Handle TEvControllerGetGroup", (Request, Request->Get()->Record));
 
-        NodeId = Request->Get()->Record.GetNodeID();
-
-        if (Request->Cookie != Max<ui64>() && !Self->ValidateIncomingNodeWardenEvent(*Request)) {
-            Response = std::make_unique<TEvBlobStorage::TEvControllerNodeServiceSetUpdate>(NKikimrProto::ERROR, NodeId);
-            return true;
-        }
-
         const auto& v = Request->Get()->Record.GetGroupIDs();
         TSet<ui32> groupIDsToRead(v.begin(), v.end());
 
-        Response = std::make_unique<TEvBlobStorage::TEvControllerNodeServiceSetUpdate>(NKikimrProto::OK, NodeId);
-        Self->ReadGroups(groupIDsToRead, true, Response.get(), NodeId);
+        const TNodeId nodeId = Request->Get()->Record.GetNodeID();
+        auto res = std::make_unique<TEvBlobStorage::TEvControllerNodeServiceSetUpdate>(NKikimrProto::OK, nodeId);
+        Self->ReadGroups(groupIDsToRead, true, res.get(), nodeId);
 
-        auto& node = Self->GetNode(NodeId);
+        auto& node = Self->GetNode(nodeId);
         for (TGroupId groupId : v) {
             node.GroupsRequested.insert(groupId);
-            Self->GroupToNode.emplace(groupId, NodeId);
+            Self->GroupToNode.emplace(groupId, nodeId);
         }
+
+        Response = std::make_unique<IEventHandle>(nodeId ? MakeBlobStorageNodeWardenID(nodeId) : Request->Sender,
+            Self->SelfId(), res.release());
 
         return true;
     }
 
     void Complete(const TActorContext&) override {
-        if (NodeId) {
-            Self->SendToWarden(NodeId, std::move(Response), Request->Cookie);
-        } else {
-            Self->SendInReply(*Request, std::move(Response));
-        }
+        TActivationContext::Send(Response.release());
     }
 };
 

@@ -20,7 +20,7 @@ void TIndexMonPage::Output(IMonHttpRequest& request) {
         return;
     }
 
-    Y_ABORT_UNLESS(pathInfo.StartsWith('/'));
+    Y_VERIFY(pathInfo.StartsWith('/'));
 
     TMonPagePtr found;
     // analogous to CGI PATH_INFO
@@ -28,14 +28,15 @@ void TIndexMonPage::Output(IMonHttpRequest& request) {
         TGuard<TMutex> g(Mtx);
         TStringBuf pathTmp = request.GetPathInfo();
         for (;;) {
-            if (TPagesByPath::iterator i = PagesByPath.find(pathTmp); i != PagesByPath.end()) {
-                found = *i->second;
+            TPagesByPath::iterator i = PagesByPath.find(pathTmp);
+            if (i != PagesByPath.end()) {
+                found = i->second;
                 pathInfo = request.GetPathInfo().substr(pathTmp.size());
-                Y_ABORT_UNLESS(pathInfo.empty() || pathInfo.StartsWith('/'));
+                Y_VERIFY(pathInfo.empty() || pathInfo.StartsWith('/'));
                 break;
             }
             size_t slash = pathTmp.find_last_of('/');
-            Y_ABORT_UNLESS(slash != TString::npos);
+            Y_VERIFY(slash != TString::npos);
             pathTmp = pathTmp.substr(0, slash);
             if (!pathTmp) {
                 break;
@@ -66,12 +67,18 @@ void TIndexMonPage::OutputIndex(IOutputStream& out, bool pathEndsWithSlash) {
 
 void TIndexMonPage::Register(TMonPagePtr page) {
     TGuard<TMutex> g(Mtx);
-    if (auto [it, inserted] = PagesByPath.try_emplace("/" + page->GetPath()); inserted) {
-        // new unique page just inserted, insert it to the end
-        it->second = Pages.insert(Pages.end(), page);
+    auto insres = PagesByPath.insert(std::make_pair("/" + page->GetPath(), page));
+    if (insres.second) {
+        // new unique page just inserted, update Pages
+        Pages.push_back(page);
     } else {
         // a page with the given path is already present, replace it with the new page
-        *it->second = page;
+
+        // find old page, sorry for O(n)
+        auto it = std::find(Pages.begin(), Pages.end(), insres.first->second);
+        *it = page;
+        // this already present, replace it
+        insres.first->second = page;
     }
     page->Parent = this;
 }
@@ -94,7 +101,7 @@ IMonPage* TIndexMonPage::FindPage(const TString& relativePath) {
     if (i == PagesByPath.end()) {
         return nullptr;
     } else {
-        return i->second->Get();
+        return i->second.Get();
     }
 }
 
@@ -136,9 +143,9 @@ TIndexMonPage* TIndexMonPage::FindIndexPage(const TString& relativePath) {
 }
 
 void TIndexMonPage::OutputCommonJsCss(IOutputStream& out) {
-    out << "<link rel='stylesheet' href='/static/css/bootstrap.min.css'>\n";
-    out << "<script language='javascript' type='text/javascript' src='/static/js/jquery.min.js'></script>\n";
-    out << "<script language='javascript' type='text/javascript' src='/static/js/bootstrap.min.js'></script>\n";
+    out << "<link rel='stylesheet' href='https://yastatic.net/bootstrap/3.3.1/css/bootstrap.min.css'>\n";
+    out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/jquery/2.1.3/jquery.min.js'></script>\n";
+    out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/bootstrap/3.3.1/js/bootstrap.min.js'></script>\n";
 }
 
 void TIndexMonPage::OutputHead(IOutputStream& out) {
@@ -164,7 +171,7 @@ void TIndexMonPage::OutputBody(IMonHttpRequest& req) {
 
 void TIndexMonPage::SortPages() {
     TGuard<TMutex> g(Mtx);
-    Pages.sort([](const TMonPagePtr& a, const TMonPagePtr& b) {
+    std::sort(Pages.begin(), Pages.end(), [](const TMonPagePtr& a, const TMonPagePtr& b) {
         return AsciiCompareIgnoreCase(a->GetTitle(), b->GetTitle()) < 0;
     });
 }

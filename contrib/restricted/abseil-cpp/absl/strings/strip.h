@@ -25,7 +25,6 @@
 #include <string>
 
 #include "absl/base/macros.h"
-#include "absl/base/nullability.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
@@ -44,8 +43,7 @@ ABSL_NAMESPACE_BEGIN
 //   absl::string_view input("abc");
 //   EXPECT_TRUE(absl::ConsumePrefix(&input, "a"));
 //   EXPECT_EQ(input, "bc");
-inline bool ConsumePrefix(absl::Nonnull<absl::string_view*> str,
-                          absl::string_view expected) {
+inline bool ConsumePrefix(absl::string_view* str, absl::string_view expected) {
   if (!absl::StartsWith(*str, expected)) return false;
   str->remove_prefix(expected.size());
   return true;
@@ -61,8 +59,7 @@ inline bool ConsumePrefix(absl::Nonnull<absl::string_view*> str,
 //   absl::string_view input("abcdef");
 //   EXPECT_TRUE(absl::ConsumeSuffix(&input, "def"));
 //   EXPECT_EQ(input, "abc");
-inline bool ConsumeSuffix(absl::Nonnull<absl::string_view*> str,
-                          absl::string_view expected) {
+inline bool ConsumeSuffix(absl::string_view* str, absl::string_view expected) {
   if (!absl::EndsWith(*str, expected)) return false;
   str->remove_suffix(expected.size());
   return true;

@@ -1,8 +1,5 @@
 #pragma once
-#include "special_keys.h"
-
 #include <ydb/library/accessor/accessor.h>
-#include <ydb/library/conclusion/result.h>
 
 #include <contrib/libs/apache/arrow/cpp/src/arrow/record_batch.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/array/array_binary.h>
@@ -48,73 +45,51 @@ public:
     ui32 GetRowBytesSize(const ui32 row) const;
 };
 
-class TBatchSplitttingContext {
-private:
-    YDB_ACCESSOR(ui64, SizeLimit, 6 * 1024 * 1024);
-    YDB_ACCESSOR_DEF(std::vector<TString>, FieldsForSpecialKeys);
-public:
-    explicit TBatchSplitttingContext(const ui64 size)
-        : SizeLimit(size)
-    {
-
-    }
-
-    void SetFieldsForSpecialKeys(const std::shared_ptr<arrow::Schema>& schema) {
-        std::vector<TString> local;
-        for (auto&& i : schema->fields()) {
-            local.emplace_back(i->name());
-        }
-        std::swap(local, FieldsForSpecialKeys);
-    }
-};
-
 class TSerializedBatch {
 private:
     YDB_READONLY_DEF(TString, SchemaData);
     YDB_READONLY_DEF(TString, Data);
     YDB_READONLY(ui32, RowsCount, 0);
-    YDB_READONLY(ui32, RawBytes, 0);
-    std::optional<TFirstLastSpecialKeys> SpecialKeys;
 public:
     size_t GetSize() const {
         return Data.size();
     }
 
-    const TFirstLastSpecialKeys& GetSpecialKeysSafe() const {
-        AFL_VERIFY(SpecialKeys);
-        return *SpecialKeys;
-    }
+    static bool BuildWithLimit(std::shared_ptr<arrow::RecordBatch> batch, const ui32 sizeLimit, std::vector<TSerializedBatch>& result, TString* errorMessage);
+    static bool BuildWithLimit(std::shared_ptr<arrow::RecordBatch> batch, const ui32 sizeLimit, std::optional<TSerializedBatch>& sbL, std::optional<TSerializedBatch>& sbR, TString* errorMessage);
+    static TSerializedBatch Build(std::shared_ptr<arrow::RecordBatch> batch);
 
-    bool HasSpecialKeys() const {
-        return !!SpecialKeys;
-    }
-
-    TString DebugString() const;
-
-    static TConclusion<std::vector<TSerializedBatch>> BuildWithLimit(std::shared_ptr<arrow::RecordBatch> batch, const TBatchSplitttingContext& context);
-    static TConclusionStatus BuildWithLimit(std::shared_ptr<arrow::RecordBatch> batch, const TBatchSplitttingContext& context, std::optional<TSerializedBatch>& sbL, std::optional<TSerializedBatch>& sbR);
-    static TSerializedBatch Build(std::shared_ptr<arrow::RecordBatch> batch, const TBatchSplitttingContext& context);
-
-    TSerializedBatch(TString&& schemaData, TString&& data, const ui32 rowsCount, const ui32 rawBytes, const std::optional<TFirstLastSpecialKeys>& specialKeys)
+    TSerializedBatch(TString&& schemaData, TString&& data, const ui32 rowsCount)
         : SchemaData(schemaData)
         , Data(data)
         , RowsCount(rowsCount)
-        , RawBytes(rawBytes)
-        , SpecialKeys(specialKeys)
     {
 
     }
 };
 
-TConclusion<std::vector<TSerializedBatch>> SplitByBlobSize(const std::shared_ptr<arrow::RecordBatch>& batch, const TBatchSplitttingContext& context);
+class TSplitBlobResult {
+private:
+    YDB_READONLY_DEF(std::vector<TSerializedBatch>, Result);
+    YDB_ACCESSOR_DEF(TString, ErrorMessage);
+public:
+    TSplitBlobResult(std::vector<TSerializedBatch>&& result)
+        : Result(std::move(result)) {
+
+    }
+    TSplitBlobResult(const TString& errorMessage)
+        : ErrorMessage(errorMessage) {
+
+    }
+    bool operator!() const {
+        return !!ErrorMessage;
+    }
+};
+
+TSplitBlobResult SplitByBlobSize(const std::shared_ptr<arrow::RecordBatch>& batch, const ui32 sizeLimit);
 
 // Return size in bytes including size of bitmap mask
 ui64 GetBatchDataSize(const std::shared_ptr<arrow::RecordBatch>& batch);
-ui64 GetTableDataSize(const std::shared_ptr<arrow::Table>& batch);
-// Return size in bytes including size of bitmap mask
-ui64 GetArrayMemorySize(const std::shared_ptr<arrow::ArrayData>& data);
-ui64 GetBatchMemorySize(const std::shared_ptr<arrow::RecordBatch>&batch);
-ui64 GetTableMemorySize(const std::shared_ptr<arrow::Table>& batch);
 // Return size in bytes *not* including size of bitmap mask
 ui64 GetArrayDataSize(const std::shared_ptr<arrow::Array>& column);
 

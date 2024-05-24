@@ -3,9 +3,8 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/kqp/common/kqp.h>
-#include <ydb/library/mkql_proto/protos/minikql.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/scope.h>
@@ -46,8 +45,6 @@ public:
 
 private:
     void AddSubscriber(const TActorId subscriberId) {
-        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "Subscribers.size: " << Subscribers.size() << " AddSubscriber");
-
         Subscribers.insert(subscriberId);
     }
 
@@ -58,8 +55,6 @@ private:
     }
 
     void HandleWhileWaiting(TEvClusterTracker::TEvSubscribe::TPtr& ev) {
-        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "AddSubscriber TEvSubscriber");
-
         AddSubscriber(ev->Sender);
 
         Become(&TThis::Working);
@@ -90,12 +85,11 @@ private:
             hFunc(TEvClusterTracker::TEvSubscribe, HandleWhileWorking);
             hFunc(TEvents::TEvWakeup, HandleWhileWorking);
             hFunc(NKqp::TEvKqp::TEvQueryResponse, HandleWhileWorking);
+            hFunc(NKqp::TEvKqp::TEvProcessResponse, HandleWhileWorking);
         }
     }
 
     void SendClustersList(TActorId subscriberId) {
-        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "SendClustersList");
-
         auto ev = MakeHolder<TEvClusterTracker::TEvClustersUpdate>();
 
         ev->ClustersList = ClustersList;
@@ -105,8 +99,6 @@ private:
     }
 
     void HandleWhileWorking(TEvClusterTracker::TEvSubscribe::TPtr& ev) {
-        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "HandleWhileWorking TEvSubscribe Subscribers.size: " << Subscribers.size() << " ClustersList: " << (ClustersList == nullptr ? "null" : std::to_string(ClustersList->Clusters.size())));
-
         AddSubscriber(ev->Sender);
 
         // List may be null due to reinit
@@ -116,10 +108,7 @@ private:
     }
 
     void BroadcastClustersUpdate() {
-        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "BroadcastClustersUpdate Subscribers.size: " << Subscribers.size());
-
         for (const auto& subscriberId : Subscribers) {
-            LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "BroadcastClustersUpdate subscriberId: " << subscriberId);
             SendClustersList(subscriberId);
         }
     }
@@ -141,16 +130,13 @@ private:
     }
 
     void HandleWhileWorking(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev) {
-        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "HandleWhileWorking TEvQueryResponse");
-
         const auto& record = ev->Get()->Record.GetRef();
         if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS && record.GetResponse().GetResults(0).GetValue().GetStruct(0).ListSize()) {
-            LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "HandleWhileWorking TEvQueryResponse UpdateClustersList");
             UpdateClustersList(record);
 
-            Y_ABORT_UNLESS(ClustersList);
-            Y_ABORT_UNLESS(ClustersList->Clusters.size());
-            Y_ABORT_UNLESS(ClustersListUpdateTimestamp && *ClustersListUpdateTimestamp);
+            Y_VERIFY(ClustersList);
+            Y_VERIFY(ClustersList->Clusters.size());
+            Y_VERIFY(ClustersListUpdateTimestamp && *ClustersListUpdateTimestamp);
 
             BroadcastClustersUpdate();
 
@@ -162,6 +148,15 @@ private:
 
             Schedule(TDuration::Seconds(Cfg().GetClustersUpdateTimeoutOnErrorSec()), new TEvents::TEvWakeup);
         }
+    }
+
+    void HandleWhileWorking(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev) {
+        const auto& record = ev->Get()->Record;
+        LOG_ERROR_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "failed to list clusters: " << record);
+
+        ClustersList = nullptr;
+
+        Schedule(TDuration::Seconds(Cfg().GetClustersUpdateTimeoutOnErrorSec()), new TEvents::TEvWakeup);
     }
 
     template<typename TProtoRecord>

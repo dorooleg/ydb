@@ -3,12 +3,12 @@
 #include <ydb/core/fq/libs/common/util.h>
 #include <ydb/core/fq/libs/events/events.h>
 
-#include <ydb/library/services/services.pb.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/core/protos/services.pb.h>
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_public/persqueue.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #define LOG_E(stream) \
     LOG_ERROR_S(*TlsActivationContext, NKikimrServices::STREAMS, QueryId << ": " << stream)
@@ -76,7 +76,7 @@ public:
         , QueryId(std::move(queryId))
         , Topic(std::move(topic))
         , YdbDriver(std::move(ydbDriver))
-        , TopicClient(YdbDriver, GetTopicClientSettings(std::move(credentialsProvider)))
+        , PqClient(YdbDriver, GetPqClientSettings(std::move(credentialsProvider)))
         , Index(index)
         , MaxRetries(maxRetries)
     {
@@ -101,12 +101,11 @@ public:
 
     void StartRequest() {
         LOG_D("Make request for read rule deletion for topic `" << Topic.topic_path() << "` [" << Index << "]");
-
-        NYdb::NTopic::TAlterTopicSettings alterTopicSettings;
-        alterTopicSettings.AppendDropConsumers(Topic.consumer_name());
-
-        TopicClient.AlterTopic(GetTopicPath(), alterTopicSettings)
-            .Subscribe(
+        PqClient.RemoveReadRule(
+            GetTopicPath(),
+            NYdb::NPersQueue::TRemoveReadRuleSettings()
+                .ConsumerName(Topic.consumer_name())
+        ).Subscribe(
             [actorSystem = TActivationContext::ActorSystem(), selfId = SelfId()](const NYdb::TAsyncStatus& status) {
                 actorSystem->Send(selfId, new TEvPrivate::TEvRemoveReadRuleStatus(status.GetValue()));
             }
@@ -120,9 +119,9 @@ public:
             PassAway();
         } else {
             if (!RetryState) {
-                // Choose default retry policy arguments from topic.h except maxRetries
+                // Choose default retry policy arguments from persqueue.h except maxRetries
                 RetryState =
-                    NYdb::NTopic::IRetryPolicy::GetExponentialBackoffPolicy(
+                    NYdb::NPersQueue::IRetryPolicy::GetExponentialBackoffPolicy(
                         TDuration::MilliSeconds(10), // minDelay
                         TDuration::MilliSeconds(200), // minLongRetryDelay
                         TDuration::Seconds(30), // maxDelay
@@ -157,8 +156,9 @@ public:
     )
 
 private:
-    NYdb::NTopic::TTopicClientSettings GetTopicClientSettings(std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProvider) {
-        return NYdb::NTopic::TTopicClientSettings()
+    NYdb::NPersQueue::TPersQueueClientSettings GetPqClientSettings(std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProvider) {
+        return NYdb::NPersQueue::TPersQueueClientSettings()
+            .ClusterDiscoveryMode(NYdb::NPersQueue::EClusterDiscoveryMode::Off)
             .Database(Topic.database())
             .DiscoveryEndpoint(Topic.cluster_endpoint())
             .CredentialsProviderFactory(std::move(credentialsProvider))
@@ -171,10 +171,10 @@ private:
     const TString QueryId;
     const Fq::Private::TopicConsumer Topic;
     NYdb::TDriver YdbDriver;
-    NYdb::NTopic::TTopicClient TopicClient;
+    NYdb::NPersQueue::TPersQueueClient PqClient;
     ui64 Index = 0;
     const size_t MaxRetries;
-    NYdb::NTopic::IRetryPolicy::IRetryState::TPtr RetryState;
+    NYdb::NPersQueue::IRetryPolicy::IRetryState::TPtr RetryState;
 };
 
 // Actor for deletion of read rules for all topics in the query.
@@ -195,7 +195,7 @@ public:
         , Credentials(std::move(credentials))
         , MaxRetries(maxRetries)
     {
-        Y_ABORT_UNLESS(!Topics.empty());
+        Y_VERIFY(!Topics.empty());
         Results.resize(Topics.size());
     }
 
@@ -214,7 +214,7 @@ public:
 
     void Handle(TEvPrivate::TEvSingleReadRuleDeleterResult::TPtr& ev) {
         const ui64 index = ev->Cookie;
-        Y_ABORT_UNLESS(!Results[index]);
+        Y_VERIFY(!Results[index]);
         if (ev->Get()->Issues) {
             Ok = false;
         }
@@ -231,7 +231,7 @@ public:
     }
 
     void SendResultsAndPassAwayIfDone() {
-        Y_ABORT_UNLESS(ResultsGot <= Topics.size());
+        Y_VERIFY(ResultsGot <= Topics.size());
         if (ResultsGot == Topics.size()) {
             NYql::TIssues issues;
             if (!Ok) {

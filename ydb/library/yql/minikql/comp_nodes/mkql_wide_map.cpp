@@ -1,6 +1,6 @@
 #include "mkql_wide_map.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/utils/cast.h>
 
@@ -32,7 +32,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -88,8 +88,8 @@ public:
         , Flow(flow)
         , Items(std::move(items))
         , NewItems(std::move(newItems))
-        , PasstroughtMap(GetPasstroughtMapOneToOne(Items, NewItems))
-        , ReversePasstroughtMap(GetPasstroughtMapOneToOne(NewItems, Items))
+        , PasstroughtMap(GetPasstroughtMap(Items, NewItems))
+        , ReversePasstroughtMap(GetPasstroughtMap(NewItems, Items))
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {}
 
@@ -97,11 +97,11 @@ public:
         auto** fields = ctx.WideFields.data() + WideFieldsIndex;
 
         for (auto i = 0U; i < Items.size(); ++i)
-            if (const auto& map = PasstroughtMap[i]; map && !Items[i]->GetDependencesCount()) {
+            if (Items[i]->GetDependencesCount() > 0U)
+                fields[i] = &Items[i]->RefValue(ctx);
+            else if (const auto& map = PasstroughtMap[i])
                 if (const auto out = output[*map])
                     fields[i] = out;
-            } else
-                fields[i] = &Items[i]->RefValue(ctx);
 
         if (const auto result = Flow->FetchValues(ctx, fields); EFetchResult::One != result)
             return result;
@@ -123,7 +123,9 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
+
+        const auto valueType = Type::getInt128Ty(context);
 
         const auto result = GetNodeValues(Flow, ctx, block);
 
@@ -137,7 +139,7 @@ public:
         block = work;
 
         for (auto i = 0U; i < Items.size(); ++i)
-            if (Items[i]->GetDependencesCount() > 0U || !PasstroughtMap[i])
+            if (Items[i]->GetDependencesCount() > 0U)
                 EnsureDynamicCast<ICodegeneratorExternalNode*>(Items[i])->CreateSetValue(ctx, block, result.second[i](ctx, block));
 
         BranchInst::Create(pass, block);
@@ -180,7 +182,7 @@ public:
         , Flow(flow)
         , Items(std::move(items))
         , NewItem(newItem)
-        , PasstroughItem(GetPasstroughtMap(TComputationNodePtrVector{NewItem}, Items).front())
+        , PasstroughItem(GetPasstroughtMap({NewItem}, Items).front())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {}
 
@@ -203,7 +205,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto getres = GetNodeValues(Flow, ctx, block);
 

@@ -49,13 +49,4 @@ void FormatPDisk(TString path, ui64 diskSizeBytes, ui32 sectorSizeBytes, ui32 us
 bool ReadPDiskFormatInfo(const TString &path, const NPDisk::TMainKey &mainKey, TPDiskInfo &outInfo,
     const bool doLock = false, TIntrusivePtr<NPDisk::TSectorMap> sectorMap = nullptr);
 
-// reads metadata from PDisk (if available)
-NPDisk::EPDiskMetadataOutcome ReadPDiskMetadata(const TString& path, const NPDisk::TMainKey& key, TRcBuf& metadata,
-    std::optional<ui64> *pdiskGuid);
-
-// updated PDisk metadata (when PDisk is properly formatted and supports metadata vault); size of metadata should not
-// exceed 15 MiB; when function fails (even many times), previusly stored metadata must be kept intact
-NPDisk::EPDiskMetadataOutcome WritePDiskMetadata(const TString& path, const NPDisk::TMainKey& key, TRcBuf&& metadata,
-    std::optional<ui64> *pdiskGuid);
-
 } // NKikimr

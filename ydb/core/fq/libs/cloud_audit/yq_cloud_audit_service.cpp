@@ -11,10 +11,10 @@
 
 #include <library/cpp/unified_agent_client/client.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/log_backend/actor_log_backend.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/log_backend/actor_log_backend.h>
 #include <library/cpp/retry/retry_policy.h>
 
 #include <util/datetime/base.h>
@@ -33,7 +33,7 @@ TString ParsePeer(TString peerName) {
     TString res(peerName);
     if (res.StartsWith("ipv4:[") || res.StartsWith("ipv6:[")) {
         size_t pos = res.find(']');
-        Y_ABORT_UNLESS(pos != TString::npos);
+        Y_VERIFY(pos != TString::npos);
         res = res.substr(6, pos - 6);
     } else if (res.StartsWith("ipv4:")) {
         size_t pos = res.rfind(':');
@@ -63,8 +63,6 @@ std::string MapConnectionType(const FederatedQuery::ConnectionSetting::Connectio
         return "ObjectStorage";
     case FederatedQuery::ConnectionSetting::ConnectionCase::kMonitoring:
         return "Monitoring";
-    case FederatedQuery::ConnectionSetting::ConnectionCase::kPostgresqlCluster:
-        return "PostgreSQLCluster";
     default:
         Y_ENSURE(false, "Invalid connection case " << i32(connectionCase));
     }
@@ -131,16 +129,14 @@ void FillResponse(TEvent& cloudEvent, const NYql::TIssues& issues) {
     cloudEvent.set_event_status(issues.Empty()
         ? yandex::cloud::events::EventStatus::DONE
         : yandex::cloud::events::EventStatus::ERROR);
-    
-    // response and error fields are mutually exclusive
-    // exactly one of them is required
+
+    // response field must always be filled
+    cloudEvent.mutable_response();
+
     if (issues) {
-        cloudEvent.clear_response();
         auto* error = cloudEvent.mutable_error();
         error->set_code(grpc::StatusCode::UNKNOWN);
         error->set_message(issues.ToString());
-    } else {
-        cloudEvent.mutable_response();
     }
 }
 
@@ -191,7 +187,7 @@ namespace NFq {
 template<class TEvent, class TRequest, class TAuditDetailsObj>
 class TAuditEventSenderActor : public NActors::TActorBootstrapped<TAuditEventSenderActor<TEvent, TRequest, TAuditDetailsObj>> {
     using Base = NActors::TActorBootstrapped<TAuditEventSenderActor<TEvent, TRequest, TAuditDetailsObj>>;
-    using IRetryPolicy = IRetryPolicy<NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse::TPtr&>;
+    using IRetryPolicy = IRetryPolicy<NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse::TPtr&>;
 
 public:
     TAuditEventSenderActor(
@@ -253,21 +249,22 @@ public:
         Base::Send(NKikimr::NFolderService::FolderServiceActorId(), CreateRequest().release(), 0, 0);
     }
 
-    std::unique_ptr<NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderRequest> CreateRequest() {
-        auto request = std::make_unique<NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderRequest>();
-        request->FolderId = ExtraInfo.FolderId;
+    std::unique_ptr<NKikimr::NFolderService::TEvFolderService::TEvGetFolderRequest> CreateRequest() {
+        auto request = std::make_unique<NKikimr::NFolderService::TEvFolderService::TEvGetFolderRequest>();
+        request->Request.set_folder_id(ExtraInfo.FolderId);
         request->Token = ExtraInfo.Token;
         return request;
     }
 
 private:
     STRICT_STFUNC(StateFunc,
-        hFunc(NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse, Handle);
+        hFunc(NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse, Handle);
     )
 
-    void Handle(NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse::TPtr& ev) {
+    void Handle(NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse::TPtr& ev) {
+        const auto& response = ev->Get()->Response;
         const auto& status = ev->Get()->Status;
-        if (!status.Ok() || ev->Get()->CloudId.empty()) {
+        if (!status.Ok() || !response.has_folder()) {
             auto& status = ev->Get()->Status;
             auto delay = RetryState->GetNextRetryDelay(ev);
             if (delay) {
@@ -289,7 +286,7 @@ private:
         AuditServiceSensors->ReportCloudIdResolvedSuccess();
 
         LOG_YQ_AUDIT_SERVICE_TRACE("EventId: " << *EventId << " cloud id resolved");
-        const auto cloudId = ev->Get()->CloudId;
+        const auto cloudId = ev->Get()->Response.folder().cloud_id();
         CloudEvent.mutable_event_metadata()->set_cloud_id(cloudId);
         SendAndComplete();
     }
@@ -333,9 +330,10 @@ private:
     }
 
     static const IRetryPolicy::TPtr& GetRetryPolicy() {
-        static IRetryPolicy::TPtr policy = IRetryPolicy::GetExponentialBackoffPolicy([](NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse::TPtr& ev) {
+        static IRetryPolicy::TPtr policy = IRetryPolicy::GetExponentialBackoffPolicy([](NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse::TPtr& ev) {
+            const auto& response = ev->Get()->Response;
             const auto& status = ev->Get()->Status;
-            return !status.Ok() || ev->Get()->CloudId.empty() ? ERetryErrorClass::ShortRetry : ERetryErrorClass::NoRetry;
+            return !status.Ok() || !response.has_folder() ? ERetryErrorClass::ShortRetry : ERetryErrorClass::NoRetry;
         }, TDuration::MilliSeconds(10), TDuration::MilliSeconds(200), TDuration::Seconds(30), 5);
         return policy;
     }

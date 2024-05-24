@@ -2,8 +2,6 @@
 
 #include "defs.h"
 
-#include <ydb/core/protos/blob_depot_config.pb.h>
-
 using namespace NActors;
 using namespace NKikimr;
 
@@ -52,7 +50,7 @@ struct TEnvironmentSetup {
     TEnvironmentSetup(TSettings&& settings)
         : Settings(std::move(settings))
     {
-        Y_ABORT_UNLESS(!Env);
+        Y_VERIFY(!Env);
         Env = this;
 
         struct TSetupEnv { TSetupEnv() { TEnvironmentSetup::SetupEnv(); } };
@@ -62,7 +60,7 @@ struct TEnvironmentSetup {
 
     ~TEnvironmentSetup() {
         Cleanup();
-        Y_ABORT_UNLESS(Env == this);
+        Y_VERIFY(Env == this);
         Env = nullptr;
     }
 
@@ -77,16 +75,8 @@ struct TEnvironmentSetup {
         Cerr << "RandomSeed# " << seed << Endl;
     }
 
-    std::unique_ptr<TTestActorSystem> MakeRuntime() {
-        auto domainsInfo = MakeIntrusive<TDomainsInfo>();
-        auto domain = TDomainsInfo::TDomain::ConstructEmptyDomain(DomainName, DomainId);
-        domainsInfo->AddDomain(domain.Get());
-        domainsInfo->AddHive(MakeDefaultHiveID());
-        return std::make_unique<TTestActorSystem>(Settings.NodeCount, NLog::PRI_ERROR, domainsInfo);
-    }
-
     void Initialize() {
-        Runtime = MakeRuntime();
+        Runtime = std::make_unique<TTestActorSystem>(Settings.NodeCount, NLog::PRI_ERROR);
 
         Runtime->FilterFunction = [this](ui32 nodeId, std::unique_ptr<IEventHandle>& ev) {
             GroupOverseer.ExamineEvent(nodeId, *ev);
@@ -99,6 +89,12 @@ struct TEnvironmentSetup {
 
         SetupLogging();
         Runtime->Start();
+        auto *appData = Runtime->GetAppData();
+
+        auto domain = TDomainsInfo::TDomain::ConstructEmptyDomain(DomainName, DomainId);
+        appData->DomainsInfo->AddDomain(domain.Get());
+        appData->DomainsInfo->AddHive(domain->DefaultHiveUid, MakeDefaultHiveID(domain->DefaultStateStorageGroup));
+
         Runtime->SetupTabletRuntime(1, Settings.ControllerNodeId);
         SetupStaticStorage();
         for (ui32 nodeId : Runtime->GetNodes()) {
@@ -132,7 +128,7 @@ struct TEnvironmentSetup {
     NKikimrBlobStorage::TConfigResponse Invoke(const NKikimrBlobStorage::TConfigRequest& request) {
         const TActorId edge = Runtime->AllocateEdgeActor(Settings.ControllerNodeId, __FILE__, __LINE__);
 
-        const TActorId clientId = Runtime->Register(NKikimr::NTabletPipe::CreateClient(edge, MakeBSControllerID(),
+        const TActorId clientId = Runtime->Register(NKikimr::NTabletPipe::CreateClient(edge, MakeBSControllerID(DomainId),
             NTabletPipe::TClientRetryPolicy::WithRetries()), edge.NodeId());
 
         {
@@ -189,8 +185,8 @@ struct TEnvironmentSetup {
 //            NKikimrServices::BS_PROXY_INDEXRESTOREGET,
 //            NKikimrServices::BS_PROXY_STATUS,
             NActorsServices::TEST,
-//            NKikimrServices::BLOB_DEPOT,
-//            NKikimrServices::BLOB_DEPOT_AGENT,
+            NKikimrServices::BLOB_DEPOT,
+            NKikimrServices::BLOB_DEPOT_AGENT,
 //            NKikimrServices::HIVE,
 //            NKikimrServices::LOCAL,
 //            NKikimrServices::TEST_SHARD,
@@ -201,7 +197,7 @@ struct TEnvironmentSetup {
             Runtime->SetLogPriority(comp, NLog::PRI_DEBUG);
         }
 
-//        Runtime->SetLogPriority(NKikimrServices::TEST_SHARD, NLog::PRI_INFO);
+        Runtime->SetLogPriority(NKikimrServices::TEST_SHARD, NLog::PRI_INFO);
     }
 
     void SetupStaticStorage() {
@@ -218,7 +214,7 @@ struct TEnvironmentSetup {
             }
 
             auto config = MakeIntrusive<TNodeWardenConfig>(new TMockPDiskServiceFactory(*this));
-            config->BlobStorageConfig.MutableServiceSet()->AddAvailabilityDomains(DomainId);
+            config->ServiceSet.AddAvailabilityDomains(DomainId);
             std::unique_ptr<IActor> warden(CreateBSNodeWarden(config));
 
             const TActorId wardenId = Runtime->Register(warden.release(), nodeId);
@@ -227,15 +223,17 @@ struct TEnvironmentSetup {
     }
 
     void SetupTablet(ui32 nodeId) {
+        auto *appData = Runtime->GetAppData();
+
         auto localConfig = MakeIntrusive<TLocalConfig>();
 
         localConfig->TabletClassInfo[TTabletTypes::BlobDepot] = TLocalConfig::TTabletClassInfo(new TTabletSetupInfo(
-            &NBlobDepot::CreateBlobDepot, TMailboxType::ReadAsFilled, Runtime->SYSTEM_POOL_ID, TMailboxType::ReadAsFilled,
-            Runtime->SYSTEM_POOL_ID));
+            &NBlobDepot::CreateBlobDepot, TMailboxType::ReadAsFilled, appData->SystemPoolId, TMailboxType::ReadAsFilled,
+            appData->SystemPoolId));
 
         localConfig->TabletClassInfo[TTabletTypes::TestShard] = TLocalConfig::TTabletClassInfo(new TTabletSetupInfo(
-            &NKikimr::NTestShard::CreateTestShard, TMailboxType::ReadAsFilled, Runtime->SYSTEM_POOL_ID,
-            TMailboxType::ReadAsFilled, Runtime->SYSTEM_POOL_ID));
+            &NKikimr::NTestShard::CreateTestShard, TMailboxType::ReadAsFilled, appData->SystemPoolId,
+            TMailboxType::ReadAsFilled, appData->SystemPoolId));
 
         auto tenantPoolConfig = MakeIntrusive<TTenantPoolConfig>(localConfig);
         tenantPoolConfig->AddStaticSlot(DomainName);
@@ -255,10 +253,10 @@ struct TEnvironmentSetup {
             IActor* (*Create)(const TActorId&, TTabletStorageInfo*);
         };
         std::vector<TTabletInfo> tablets{
-            {MakeBSControllerID(), TTabletTypes::BSController, &CreateFlatBsController},
+            {MakeBSControllerID(DomainId), TTabletTypes::BSController, &CreateFlatBsController},
         };
 
-        if (const ui64 tabletId = Runtime->GetDomainsInfo()->GetHive(); tabletId != TDomainsInfo::BadTabletId) {
+        for (const auto& [uid, tabletId] : appData->DomainsInfo->HivesByHiveUid) {
             tablets.push_back(TTabletInfo{tabletId, TTabletTypes::Hive, &CreateDefaultHive});
         }
 
@@ -337,7 +335,7 @@ struct TEnvironmentSetup {
             auto *cmd = request.AddCommand();
             auto *vg = cmd->MutableAllocateVirtualGroup();
             vg->SetName("vg");
-            vg->SetHiveId(Runtime->GetDomainsInfo()->GetHive());
+            vg->SetHiveId(Runtime->GetAppData()->DomainsInfo->HivesByHiveUid.begin()->second);
             vg->SetStoragePoolName("virtual");
             auto *prof = vg->AddChannelProfiles();
             prof->SetStoragePoolName(StoragePoolName);

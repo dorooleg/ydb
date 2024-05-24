@@ -1,5 +1,5 @@
 #pragma once
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/actorid.h>
 #include <library/cpp/lwtrace/all.h>
 
 #include <util/string/builder.h>

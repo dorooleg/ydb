@@ -28,7 +28,7 @@ namespace NPrivate {
 }
 
 template <class T, size_t Priority>
-Y_RETURNS_NONNULL static inline T* FastTlsSingletonWithPriority() {
+static inline T* FastTlsSingletonWithPriority() {
     return ::NPrivate::TFastThreadSingletonHelper<T, Priority>::Get();
 }
 
@@ -36,6 +36,6 @@ Y_RETURNS_NONNULL static inline T* FastTlsSingletonWithPriority() {
 // FastTlsSingleton with the same type parameter. If unique singleton
 // required, use unique types.
 template <class T>
-Y_RETURNS_NONNULL static inline T* FastTlsSingleton() {
+static inline T* FastTlsSingleton() {
     return FastTlsSingletonWithPriority<T, TSingletonTraits<T>::Priority>();
 }

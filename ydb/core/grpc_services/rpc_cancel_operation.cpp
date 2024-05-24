@@ -1,16 +1,13 @@
 #include "service_operation.h"
 #include "operation_helpers.h"
 #include "rpc_operation_request_base.h"
-#include <ydb/core/kqp/common/events/script_executions.h>
-#include <ydb/core/kqp/common/kqp.h>
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/tx/schemeshard/schemeshard_build_index.h>
 #include <ydb/core/tx/schemeshard/schemeshard_export.h>
 #include <ydb/core/tx/schemeshard/schemeshard_import.h>
-#include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -33,8 +30,6 @@ class TCancelOperationRPC: public TRpcOperationRequestActor<TCancelOperationRPC,
             return "[CancelImport]";
         case TOperationId::BUILD_INDEX:
             return "[CancelIndexBuild]";
-        case TOperationId::SCRIPT_EXECUTION:
-            return "[CancelScriptExecution]";
         default:
             return "[Untagged]";
         }
@@ -49,15 +44,8 @@ class TCancelOperationRPC: public TRpcOperationRequestActor<TCancelOperationRPC,
         case TOperationId::BUILD_INDEX:
             return new TEvIndexBuilder::TEvCancelRequest(TxId, DatabaseName, RawOperationId);
         default:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
-    }
-
-    bool NeedAllocateTxId() const {
-        const Ydb::TOperationId::EKind kind = OperationId.GetKind();
-        return kind == TOperationId::EXPORT
-            || kind == TOperationId::IMPORT
-            || kind == TOperationId::BUILD_INDEX;
     }
 
     void Handle(TEvExport::TEvCancelExportResponse::TPtr& ev) {
@@ -105,17 +93,11 @@ public:
                 }
                 break;
 
-            case TOperationId::SCRIPT_EXECUTION:
-                SendCancelScriptExecutionOperation();
-                break;
-
             default:
                 return Reply(StatusIds::UNSUPPORTED, TIssuesIds::DEFAULT_ERROR, "Unknown operation kind");
             }
 
-            if (NeedAllocateTxId()) {
-                AllocateTxId();
-            }
+            AllocateTxId();
         } catch (const yexception&) {
             return Reply(StatusIds::BAD_REQUEST, TIssuesIds::DEFAULT_ERROR, "Invalid operation id");
         }
@@ -128,25 +110,15 @@ public:
             hFunc(TEvExport::TEvCancelExportResponse, Handle);
             hFunc(TEvImport::TEvCancelImportResponse, Handle);
             hFunc(TEvIndexBuilder::TEvCancelResponse, Handle);
-            hFunc(NKqp::TEvCancelScriptExecutionOperationResponse, Handle);
         default:
             return StateBase(ev);
         }
     }
 
-    void Handle(NKqp::TEvCancelScriptExecutionOperationResponse::TPtr& ev) {
-        google::protobuf::RepeatedPtrField<Ydb::Issue::IssueMessage> issuesProto;
-        NYql::IssuesToMessage(ev->Get()->Issues, &issuesProto);
-        Reply(ev->Get()->Status, issuesProto);
-    }
-
-    void SendCancelScriptExecutionOperation() {
-        Send(NKqp::MakeKqpProxyID(SelfId().NodeId()), new NKqp::TEvCancelScriptExecutionOperation(DatabaseName, OperationId));
-    }
-
 private:
     TOperationId OperationId;
     ui64 RawOperationId = 0;
+
 }; // TCancelOperationRPC
 
 void DoCancelOperationRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {

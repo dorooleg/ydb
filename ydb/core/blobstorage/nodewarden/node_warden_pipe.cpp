@@ -8,14 +8,17 @@ void TNodeWarden::SendToController(std::unique_ptr<IEventBase> ev, ui64 cookie, 
 }
 
 void TNodeWarden::EstablishPipe() {
-    const ui64 controllerId = MakeBSControllerID();
+    Y_VERIFY(AppData() && AppData()->DomainsInfo);
+
+    const ui64 stateStorageGroup = AppData()->DomainsInfo->GetDefaultStateStorageGroup(AvailDomainId);
+    const ui64 controllerId = MakeBSControllerID(stateStorageGroup);
 
     PipeClientId = Register(NTabletPipe::CreateClient(SelfId(), controllerId, NTabletPipe::TClientRetryPolicy{
         .MaxRetryTime = TDuration::Seconds(5),
         .DoFirstRetryInstantly = false,
     }));
 
-    STLOG(PRI_DEBUG, BS_NODE, NW21, "EstablishPipe", (AvailDomainId, AvailDomainId),
+    STLOG(PRI_DEBUG, BS_NODE, NW21, "EstablishPipe", (AvailDomainId, AvailDomainId), (StateStorageGroup, stateStorageGroup),
         (PipeClientId, PipeClientId), (ControllerId, controllerId));
 
     SendRegisterNode();
@@ -52,10 +55,6 @@ void TNodeWarden::OnPipeError() {
             VDisksWithUnreportedMetrics.PushBack(&vdisk);
         }
     }
-    for (const auto& [cookie, callback] : ConfigInFlight) {
-        callback(nullptr);
-    }
-    ConfigInFlight.clear();
     EstablishPipe();
 }
 
@@ -76,7 +75,6 @@ void TNodeWarden::SendRegisterNode() {
     auto ev = std::make_unique<TEvBlobStorage::TEvControllerRegisterNode>(LocalNodeId, startedDynamicGroups, generations,
         WorkingLocalDrives);
     FillInVDiskStatus(ev->Record.MutableVDiskStatus(), true);
-    ev->Record.SetDeclarativePDiskManagement(true);
 
     SendToController(std::move(ev));
 }

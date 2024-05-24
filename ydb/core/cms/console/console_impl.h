@@ -15,7 +15,7 @@
 
 #include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/set.h>
 
@@ -54,7 +54,6 @@ private:
     ITransaction *CreateTxLoadState();
     ITransaction *CreateTxSetConfig(TEvConsole::TEvSetConfigRequest::TPtr &ev);
 
-    void DefaultSignalTabletActive(const TActorContext &ctx) override;
     void OnActivateExecutor(const TActorContext &ctx) override;
     void OnDetach(const TActorContext &ctx) override;
     void OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev, const TActorContext &ctx) override;
@@ -73,6 +72,8 @@ private:
     void ForwardToTenantsManager(TAutoPtr<IEventHandle> &ev, const TActorContext &ctx);
     void Handle(TEvConsole::TEvGetConfigRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvConsole::TEvSetConfigRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvents::TEvPoisonPill::TPtr &ev,
+                const TActorContext &ctx);
 
     STFUNC(StateInit)
     {
@@ -89,10 +90,8 @@ private:
             FFunc(TEvConsole::EvAlterTenantRequest, ForwardToTenantsManager);
             FFunc(TEvConsole::EvCheckConfigUpdatesRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvConfigNotificationResponse, ForwardToConfigsManager);
-            FFunc(TEvConsole::EvIsYamlReadOnlyRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvConfigureRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvGetAllConfigsRequest, ForwardToConfigsManager);
-            FFunc(TEvConsole::EvGetAllMetadataRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvAddVolatileConfigRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvRemoveVolatileConfigRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvGetLogTailRequest, ForwardToConfigsManager);
@@ -100,9 +99,7 @@ private:
             FFunc(TEvConsole::EvDescribeTenantOptionsRequest, ForwardToTenantsManager);
             FFunc(TEvConsole::EvGetConfigItemsRequest, ForwardToConfigsManager);
             HFuncTraced(TEvConsole::TEvGetConfigRequest, Handle);
-            FFunc(TEvConsole::EvReplaceYamlConfigRequest, ForwardToConfigsManager);
-            FFunc(TEvConsole::EvGetNodeLabelsRequest, ForwardToConfigsManager);
-            FFunc(TEvConsole::EvSetYamlConfigRequest, ForwardToConfigsManager);
+            FFunc(TEvConsole::EvApplyConfigRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvDropConfigRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvResolveConfigRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvResolveAllConfigRequest, ForwardToConfigsManager);
@@ -122,6 +119,7 @@ private:
             HFuncTraced(TEvConsole::TEvSetConfigRequest, Handle);
             FFunc(TEvConsole::EvToggleConfigValidatorRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvUpdateTenantPoolConfig, ForwardToTenantsManager);
+            HFuncTraced(TEvents::TEvPoisonPill, Handle);
             IgnoreFunc(TEvTabletPipe::TEvServerConnected);
             IgnoreFunc(TEvTabletPipe::TEvServerDisconnected);
 

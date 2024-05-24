@@ -8,8 +8,6 @@
 #include <util/string/cast.h>
 #include <util/string/builder.h>
 
-#include <functional>
-
 namespace NYql::NDom {
 
 template<bool Strict, bool AutoConvert>

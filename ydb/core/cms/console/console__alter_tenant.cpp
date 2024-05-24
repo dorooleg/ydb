@@ -240,12 +240,12 @@ public:
             auto size = pr.second;
             if (Tenant->StoragePools.contains(kind)) {
                 auto cur = Tenant->StoragePools.at(kind);
-                Y_ABORT_UNLESS(!cur->Borrowed);
+                Y_VERIFY(!cur->Borrowed);
                 pool = new TStoragePool(*cur);
                 pool->AddRequiredGroups(size);
                 pool->State = TStoragePool::NOT_UPDATED;
             } else {
-                Y_ABORT_UNLESS(!Tenant->AreResourcesShared);
+                Y_VERIFY(!Tenant->AreResourcesShared);
                 pool = Self->MakeStoragePool(Tenant, kind, size);
             }
 
@@ -319,7 +319,7 @@ public:
         auto ctx = executorCtx.MakeFor(Self->SelfId());
         LOG_DEBUG(ctx, NKikimrServices::CMS_TENANTS, "TTxAlterTenant Complete");
 
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
         Self->Counters.Inc(Response->Record.GetResponse().operation().status(),
                            COUNTER_ALTER_RESPONSES);
 

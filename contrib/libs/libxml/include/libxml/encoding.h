@@ -28,7 +28,7 @@
 #include <iconv.h>
 #endif
 #ifdef LIBXML_ICU_ENABLED
-#error #include <unicode/ucnv.h>
+#include <unicode/ucnv.h>
 #endif
 #ifdef __cplusplus
 extern "C" {

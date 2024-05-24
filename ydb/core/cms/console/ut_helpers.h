@@ -293,17 +293,17 @@ inline void CheckEqualsIgnoringVersion(NKikimrConfig::TAppConfig config1, NKikim
     UNIT_ASSERT_VALUES_EQUAL(config1.ShortDebugString(), config2.ShortDebugString());
 }
 
-inline void CheckReplaceConfig(TTenantTestRuntime &runtime,
+inline void CheckApplyConfig(TTenantTestRuntime &runtime,
                              Ydb::StatusIds::StatusCode code,
                              TString yamlConfig)
 {
         TAutoPtr<IEventHandle> handle;
-        auto *event = new TEvConsole::TEvReplaceYamlConfigRequest;
+        auto *event = new TEvConsole::TEvApplyConfigRequest;
         event->Record.MutableRequest()->set_config(yamlConfig);
         runtime.SendToConsole(event);
 
-        runtime.GrabEdgeEventRethrow<TEvConsole::TEvReplaceYamlConfigResponse>(handle);
-        Y_UNUSED(code);
+        auto reply = runtime.GrabEdgeEventRethrow<TEvConsole::TEvApplyConfigResponse>(handle);
+        UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetResponse().operation().status(), code);
 }
 
 inline void CheckDropConfig(TTenantTestRuntime &runtime,
@@ -313,12 +313,12 @@ inline void CheckDropConfig(TTenantTestRuntime &runtime,
 {
         TAutoPtr<IEventHandle> handle;
         auto *event = new TEvConsole::TEvDropConfigRequest;
-        event->Record.MutableRequest()->mutable_identity()->set_cluster(clusterName);
-        event->Record.MutableRequest()->mutable_identity()->set_version(version);
+        event->Record.MutableRequest()->set_cluster(clusterName);
+        event->Record.MutableRequest()->set_version(version);
         runtime.SendToConsole(event);
 
-        runtime.GrabEdgeEventRethrow<TEvConsole::TEvDropConfigResponse>(handle);
-        Y_UNUSED(code);
+        auto reply = runtime.GrabEdgeEventRethrow<TEvConsole::TEvDropConfigResponse>(handle);
+        UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetResponse().operation().status(), code);
 }
 
 inline void CheckAddVolatileConfig(TTenantTestRuntime &runtime,
@@ -328,15 +328,16 @@ inline void CheckAddVolatileConfig(TTenantTestRuntime &runtime,
                                    ui64 id,
                                    TString volatileYamlConfig)
 {
-        TString config = TString("metadata:\n  cluster: \"") + clusterName + "\"\n  version: " + ToString(version) + "\n  id: " + ToString(id) + "\nselector_config:\n" + volatileYamlConfig;
-
         TAutoPtr<IEventHandle> handle;
         auto *event = new TEvConsole::TEvAddVolatileConfigRequest;
-        event->Record.MutableRequest()->set_config(config);
+        event->Record.MutableRequest()->set_cluster(clusterName);
+        event->Record.MutableRequest()->set_version(version);
+        event->Record.MutableRequest()->set_id(id);
+        event->Record.MutableRequest()->set_config(volatileYamlConfig);
         runtime.SendToConsole(event);
 
-        runtime.GrabEdgeEventRethrow<TEvConsole::TEvAddVolatileConfigResponse>(handle);
-        Y_UNUSED(code);
+        auto reply = runtime.GrabEdgeEventRethrow<TEvConsole::TEvAddVolatileConfigResponse>(handle);
+        UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetResponse().operation().status(), code);
 }
 
 inline void CheckRemoveVolatileConfig(TTenantTestRuntime &runtime,
@@ -347,13 +348,13 @@ inline void CheckRemoveVolatileConfig(TTenantTestRuntime &runtime,
 {
         TAutoPtr<IEventHandle> handle;
         auto *event = new TEvConsole::TEvRemoveVolatileConfigRequest;
-        event->Record.MutableRequest()->mutable_identity()->set_cluster(clusterName);
-        event->Record.MutableRequest()->mutable_identity()->set_version(version);
-        event->Record.MutableRequest()->mutable_ids()->add_ids(id);
+        event->Record.MutableRequest()->set_cluster(clusterName);
+        event->Record.MutableRequest()->set_version(version);
+        event->Record.MutableRequest()->add_ids(id);
         runtime.SendToConsole(event);
 
-        runtime.GrabEdgeEventRethrow<TEvConsole::TEvRemoveVolatileConfigResponse>(handle);
-        Y_UNUSED(code);
+        auto reply = runtime.GrabEdgeEventRethrow<TEvConsole::TEvRemoveVolatileConfigResponse>(handle);
+        UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetResponse().operation().status(), code);
 }
 
 } // namesapce NKikimr::NConsole::NUT

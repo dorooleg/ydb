@@ -2,13 +2,13 @@
 
 #include "yql_setting.h"
 
+#include <ydb/library/yql/providers/common/activation/yql_activation.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 
 #include <library/cpp/string_utils/parse_size/parse_size.h>
 
 #include <util/string/cast.h>
 #include <util/string/join.h>
-#include <util/string/builder.h>
 #include <util/datetime/base.h>
 #include <util/generic/ptr.h>
 #include <util/generic/string.h>
@@ -21,6 +21,7 @@
 #include <util/generic/maybe.h>
 #include <util/generic/algorithm.h>
 
+#include <type_traits>
 
 namespace NYql {
 
@@ -93,8 +94,6 @@ namespace NCommon {
 class TSettingDispatcher: public TThrRefBase {
 public:
     using TPtr = TIntrusivePtr<TSettingDispatcher>;
-    // Returns true if can continue
-    using TErrorCallback = std::function<bool(const TString& message, bool isError)>;
 
     enum class EStage {
         CONFIG,
@@ -115,7 +114,7 @@ public:
             return Name_ ;
         }
 
-        virtual bool Handle(const TString& cluster, const TMaybe<TString>& value, bool validateOnly, const TErrorCallback& errorCallback) = 0;
+        virtual void Handle(const TString& cluster, const TMaybe<TString>& value, bool validateOnly) = 0;
         virtual void FreezeDefault() = 0;
         virtual void Restore(const TString& cluster) = 0;
         virtual bool IsRuntime() const = 0;
@@ -142,9 +141,9 @@ public:
         {
         }
 
-        bool Handle(const TString& cluster, const TMaybe<TString>& value, bool validateOnly, const TErrorCallback& errorCallback) override {
-            if (value) {
-                try {
+        void Handle(const TString& cluster, const TMaybe<TString>& value, bool validateOnly) override {
+            try {
+                if (value) {
                     TType v = Parser_(*value);
 
                     for (auto& validate: Validators_) {
@@ -152,21 +151,13 @@ public:
                     }
                     if (!validateOnly) {
                         ValueSetter_(cluster, v);
-                        if (Warning_) {
-                            return errorCallback(Warning_, false);
-                        }
                     }
-                } catch (...) {
-                    return errorCallback(TStringBuilder() << "Bad " << Name_.Quote() << " setting for " << cluster.Quote() << " cluster: " << CurrentExceptionMessage(), true);
-                }
-            } else if (!validateOnly) {
-                try {
+                } else if (!validateOnly) {
                     Restore(cluster);
-                } catch (...) {
-                    return errorCallback(CurrentExceptionMessage(), true);
                 }
+            } catch (const yexception& e) {
+                ythrow yexception() << "Bad " << Name_.Quote() << " setting for " << cluster.Quote() << " cluster: " << e.what();
             }
-            return true;
         }
 
         void FreezeDefault() override {
@@ -300,23 +291,12 @@ public:
             return *this;
         }
 
-        TSettingHandlerImpl& Warning(const TString& message) {
-            Warning_ = message;
-            return *this;
-        }
-
-        TSettingHandlerImpl& Deprecated() {
-            Warning_ = TStringBuilder() << "Pragma \"" << Name_ << "\" is deprecated and has no effect";
-            return *this;
-        }
-
     private:
         TConfSetting<TType, RUNTIME>& Setting_;
         TMaybe<TConfSetting<TType, RUNTIME>> Defaul_;
         ::NYql::NPrivate::TParser<TType> Parser_;
         TValueCallback ValueSetter_;
         TVector<TValueCallback> Validators_;
-        TString Warning_;
     };
 
     TSettingDispatcher() = default;
@@ -334,10 +314,6 @@ public:
         ValidClusters.insert(validClusters.begin(), validClusters.end());
     }
 
-    void AddValidCluster(const TString& cluster) {
-        ValidClusters.insert(cluster);
-    }
-
     template <typename TType, bool RUNTIME>
     TSettingHandlerImpl<TType, RUNTIME>& AddSetting(const TString& name, TConfSetting<TType, RUNTIME>& setting) {
         TIntrusivePtr<TSettingHandlerImpl<TType, RUNTIME>> handler = new TSettingHandlerImpl<TType, RUNTIME>(name, setting);
@@ -347,31 +323,27 @@ public:
         return *handler;
     }
 
-    bool IsRuntime(const TString& name);
+    bool Dispatch(const TString& cluster, const TString& name, const TMaybe<TString>& value, EStage stage);
 
-    bool Dispatch(const TString& cluster, const TString& name, const TMaybe<TString>& value, EStage stage, const TErrorCallback& errorCallback);
-
-    template <class TContainer, typename TFilter>
-    void Dispatch(const TString& cluster, const TContainer& clusterValues, const TFilter& filter) {
-        auto errorCallback = GetDefaultErrorCallback();
+    template <class TContainer>
+    void Dispatch(const TString& cluster, const TContainer& clusterValues, const TString& userName) {
         for (auto& v: clusterValues) {
-            if (filter(v)) {
-                Dispatch(cluster, v.GetName(), v.GetValue(), EStage::CONFIG, errorCallback);
+            if (!v.HasActivation() || NConfig::Allow(v.GetActivation(), userName)) {
+                Dispatch(cluster, v.GetName(), v.GetValue(), EStage::CONFIG);
             }
         }
     }
 
     template <class TContainer>
     void Dispatch(const TString& cluster, const TContainer& clusterValues) {
-        auto errorCallback = GetDefaultErrorCallback();
         for (auto& v: clusterValues) {
-            Dispatch(cluster, v.GetName(), v.GetValue(), EStage::CONFIG, errorCallback);
+            Dispatch(cluster, v.GetName(), v.GetValue(), EStage::CONFIG);
         }
     }
 
-    template <class TContainer, typename TFilter>
-    void Dispatch(const TContainer& globalValues, const TFilter& filter) {
-        Dispatch(ALL_CLUSTERS, globalValues, filter);
+    template <class TContainer>
+    void Dispatch(const TContainer& globalValues, const TString& userName) {
+        Dispatch(ALL_CLUSTERS, globalValues, userName);
     }
 
     template <class TContainer>
@@ -381,8 +353,6 @@ public:
 
     void FreezeDefaults();
     void Restore();
-    static TErrorCallback GetDefaultErrorCallback();
-    static TErrorCallback GetErrorCallback(TPositionHandle pos, TExprContext& ctx);
 
 protected:
     THashSet<TString> ValidClusters;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <util/generic/string.h>
 #include <util/generic/hash.h>
@@ -57,8 +57,8 @@ class TDiscoveryConverter {
 private:
     void BuildForFederation(const TStringBuf& databaseBuf, TStringBuf topicPath);
     void BuildFstClassNames();
-    [[nodiscard]] bool BuildFromFederationPath(const TString& rootPrefix);
-    [[nodiscard]] bool BuildFromShortModernName();
+    void BuildFromFederationPath(const TString& rootPrefix);
+    void BuildFromShortModernName();
 
 protected:
     TDiscoveryConverter() = default;
@@ -70,9 +70,9 @@ protected:
     TDiscoveryConverter(bool firstClass, const TString& pqNormalizedPrefix,
                         const NKikimrPQ::TPQTabletConfig& pqTabletConfig, const TString& ydbDatabaseRootOverride);
 
-    [[nodiscard]] bool BuildFromLegacyName(const TString& rootPrefix, bool forceFullname = false);
-    [[nodiscard]] bool TryParseModernMirroredPath(TStringBuf path);
-    [[nodiscard]] bool ParseModernPath(const TStringBuf& path);
+    void BuildFromLegacyName(const TString& rootPrefix, bool forceFullname = false);
+    bool TryParseModernMirroredPath(TStringBuf path);
+    void ParseModernPath(const TStringBuf& path);
 
 public:
     bool IsValid() const;
@@ -119,14 +119,14 @@ public:
     }
 
     void RestorePrimaryPath() {
-        Y_ABORT_UNLESS(!OriginalPath.empty());
+        Y_VERIFY(!OriginalPath.empty());
         PrimaryPath = OriginalPath;
         OriginalPath.clear();
     }
 
     // Only for control plane
     const TString& GetFullModernName() const {
-        Y_ABORT_UNLESS(!FullModernName.empty());
+        Y_VERIFY(!FullModernName.empty());
         return FullModernName;
     }
 
@@ -264,7 +264,6 @@ public:
 
     bool IsFirstClass() const;
 
-    operator bool() const { return Valid && !ClientsideName; };
 
 private:
     void BuildInternals(const NKikimrPQ::TPQTabletConfig& config);
@@ -337,7 +336,7 @@ public:
                             topic, localDc, localDc, database, NormalizedPrefix//, RootDatabases
                     );
                 } else if (dc.empty()) {
-                    TDiscoveryConverterPtr converter{new TDiscoveryConverter()};
+                    TDiscoveryConverterPtr converter;
                     converter->Valid = false;
                     converter->Reason = TStringBuilder() << "DC should be explicitly specified for topic " << topic << Endl;
                     return converter;

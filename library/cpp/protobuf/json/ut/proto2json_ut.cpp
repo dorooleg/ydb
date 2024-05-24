@@ -887,22 +887,6 @@ Y_UNIT_TEST(TestFieldNameMode) {
         UNIT_ASSERT_STRINGS_EQUAL(jsonStr.Str(), modelStr);
     }
 
-    // UseJsonName and UseJsonEnumValue
-    {
-        TString modelStr(R"_({"json_enum":"enum_1"})_");
-
-        TCustomJsonEnumValue proto;
-        proto.SetJsonEnum(EJsonEnum::J_1);
-
-        TStringStream jsonStr;
-        TProto2JsonConfig config;
-        config.SetUseJsonName(true);
-        config.SetUseJsonEnumValue(true);
-
-        UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr, config));
-        UNIT_ASSERT_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-    }
-
     // FieldNameMode with UseJsonName
     {
         TProto2JsonConfig config;
@@ -981,7 +965,7 @@ Y_UNIT_TEST(TestMapAsObject) {
     UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
 } // TestMapAsObject
 
-Y_UNIT_TEST(TestMapUsingGeneratedAsJSON) {
+Y_UNIT_TEST(TestMapWTF) {
     TMapType proto;
 
     auto& items = *proto.MutableItems();
@@ -995,47 +979,7 @@ Y_UNIT_TEST(TestMapUsingGeneratedAsJSON) {
     UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr));
 
     UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-} // TestMapUsingGeneratedAsJSON
-
-Y_UNIT_TEST(TestMapDefaultValue) {
-    TMapType proto;
-
-    auto& items = *proto.MutableItems();
-    items["key1"] = "";
-
-    TString modelStr(R"_({"Items":{"key1":""}})_");
-
-    TStringStream jsonStr;
-
-    TProto2JsonConfig config;
-    config.MapAsObject = true;
-    UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr, config));
-    UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-
-    jsonStr.Clear();
-    UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr));
-    UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-} // TestMapDefaultValue
-
-Y_UNIT_TEST(TestMapDefaultMessageValue) {
-    TComplexMapType proto;
-
-    auto& map = *proto.MutableNested();
-    map["key1"];  // Creates an empty nested message
-
-    TString modelStr(R"_({"Nested":{"key1":{}}})_");
-
-    TStringStream jsonStr;
-
-    TProto2JsonConfig config;
-    config.MapAsObject = true;
-    UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr, config));
-    UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-
-    jsonStr.Clear();
-    UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr));
-    UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-} // TestMapDefaultMessageValue
+} // TestMapWTF
 
 Y_UNIT_TEST(TestStringifyNumbers) {
 #define TEST_SINGLE(flag, field, value, expectString)                            \
@@ -1142,21 +1086,5 @@ Y_UNIT_TEST(TestFloatToString) {
 
 #undef TEST_SINGLE
 } // TestFloatToString
-
-Y_UNIT_TEST(TestAny) {
-    TProto2JsonConfig config;
-    config.SetConvertAny(true);
-
-    TString modelStr(R"_({"Any":{"@type":"type.googleapis.com/NProtobufJsonTest.TFlatOptional","String":"value\""}})_");
-
-    TFlatOptional proto;
-    proto.SetString(R"_(value")_");
-    TContainsAny protoWithAny;
-    protoWithAny.MutableAny()->PackFrom(proto);
-
-    TStringStream jsonStr;
-    UNIT_ASSERT_NO_EXCEPTION(Proto2Json(protoWithAny, jsonStr, config));
-    UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-}
 
 } // TProto2JsonTest

@@ -24,11 +24,10 @@ namespace NMonitoring {
         };
 
         TResourceMonPage(const TString& path, const TString& resourceName,
-                         const EResourceType& resourceType = BINARY, const bool isCached = false)
+                         const EResourceType& resourceType = BINARY)
             : IMonPage(path, "")
             , ResourceName(resourceName)
             , ResourceType(resourceType)
-            , IsCached(isCached)
         {
         }
 
@@ -39,7 +38,6 @@ namespace NMonitoring {
     private:
         TString ResourceName;
         EResourceType ResourceType;
-        bool IsCached;
     };
 
 }

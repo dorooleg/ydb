@@ -1,39 +1,30 @@
-//
-// Copyright 2015-2016 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+/*
+ *
+ * Copyright 2015-2016 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 #include <grpc/support/port_platform.h>
 
-#include <inttypes.h>
-#include <stdlib.h>
+#include <string.h>
 
-#include <algorithm>
-#include <initializer_list>
-#include <map>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
-#include <utility>
-#include <vector>
 
-#include "y_absl/base/attributes.h"
-#include "y_absl/status/status.h"
-#include "y_absl/status/statusor.h"
 #include "y_absl/strings/str_cat.h"
 #include "y_absl/strings/str_format.h"
-#include "y_absl/strings/str_join.h"
-#include "y_absl/strings/string_view.h"
 
 #include <grpc/support/log.h>
 
@@ -48,13 +39,13 @@ namespace {
 
 class JsonReader {
  public:
-  static y_absl::StatusOr<Json> Parse(y_absl::string_view input);
+  static grpc_error_handle Parse(y_absl::string_view input, Json* output);
 
  private:
   enum class Status {
-    GRPC_JSON_DONE,           // The parser finished successfully.
-    GRPC_JSON_PARSE_ERROR,    // The parser found an error in the json stream.
-    GRPC_JSON_INTERNAL_ERROR  // The parser got an internal error.
+    GRPC_JSON_DONE,          /* The parser finished successfully. */
+    GRPC_JSON_PARSE_ERROR,   /* The parser found an error in the json stream. */
+    GRPC_JSON_INTERNAL_ERROR /* The parser got an internal error. */
   };
 
   enum class State {
@@ -88,10 +79,10 @@ class JsonReader {
     GRPC_JSON_STATE_END
   };
 
-  // The first non-unicode value is 0x110000. But let's pick
-  // a value high enough to start our error codes from. These
-  // values are safe to return from the read_char function.
-  //
+  /* The first non-unicode value is 0x110000. But let's pick
+   * a value high enough to start our error codes from. These
+   * values are safe to return from the read_char function.
+   */
   static constexpr uint32_t GRPC_JSON_READ_CHAR_EOF = 0x7ffffff0;
 
   explicit JsonReader(y_absl::string_view input)
@@ -127,10 +118,9 @@ class JsonReader {
   bool container_just_begun_ = false;
   uint16_t unicode_char_ = 0;
   uint16_t unicode_high_surrogate_ = 0;
-  std::vector<TString> errors_;
+  std::vector<grpc_error_handle> errors_;
   bool truncated_errors_ = false;
   uint8_t utf8_bytes_remaining_ = 0;
-  uint8_t utf8_first_byte_ = 0;
 
   Json root_value_;
   std::vector<Json*> stack_;
@@ -140,56 +130,29 @@ class JsonReader {
 };
 
 bool JsonReader::StringAddChar(uint32_t c) {
-  if (utf8_bytes_remaining_ == 0) {
-    if ((c & 0x80) == 0) {
-      utf8_bytes_remaining_ = 0;
-    } else if ((c & 0xe0) == 0xc0 && c >= 0xc2) {
-      /// For the UTF-8 characters with length of 2 bytes, the range of the
-      /// first byte is [0xc2, 0xdf]. Reference: Table 3-7 in
-      /// https://www.unicode.org/versions/Unicode14.0.0/ch03.pdf
-      utf8_bytes_remaining_ = 1;
-    } else if ((c & 0xf0) == 0xe0) {
-      utf8_bytes_remaining_ = 2;
-    } else if ((c & 0xf8) == 0xf0 && c <= 0xf4) {
-      /// For the UTF-8 characters with length of 4 bytes, the range of the
-      /// first byte is [0xf0, 0xf4]. Reference: Table 3-7 in
-      /// https://www.unicode.org/versions/Unicode14.0.0/ch03.pdf
-      utf8_bytes_remaining_ = 3;
-    } else {
-      return false;
-    }
-    utf8_first_byte_ = c;
-  } else if (utf8_bytes_remaining_ == 1) {
-    if ((c & 0xc0) != 0x80) {
-      return false;
-    }
-    --utf8_bytes_remaining_;
-  } else if (utf8_bytes_remaining_ == 2) {
-    /// For UTF-8 characters starting with 0xe0, their length is 3 bytes, and
-    /// the range of the second byte is [0xa0, 0xbf]. For UTF-8 characters
-    /// starting with 0xed, their length is 3 bytes, and the range of the second
-    /// byte is [0x80, 0x9f]. Reference: Table 3-7 in
-    /// https://www.unicode.org/versions/Unicode14.0.0/ch03.pdf
-    if (((c & 0xc0) != 0x80) || (utf8_first_byte_ == 0xe0 && c < 0xa0) ||
-        (utf8_first_byte_ == 0xed && c > 0x9f)) {
-      return false;
-    }
-    --utf8_bytes_remaining_;
-  } else if (utf8_bytes_remaining_ == 3) {
-    /// For UTF-8 characters starting with 0xf0, their length is 4 bytes, and
-    /// the range of the second byte is [0x90, 0xbf]. For UTF-8 characters
-    /// starting with 0xf4, their length is 4 bytes, and the range of the second
-    /// byte is [0x80, 0x8f]. Reference: Table 3-7 in
-    /// https://www.unicode.org/versions/Unicode14.0.0/ch03.pdf
-    if (((c & 0xc0) != 0x80) || (utf8_first_byte_ == 0xf0 && c < 0x90) ||
-        (utf8_first_byte_ == 0xf4 && c > 0x8f)) {
-      return false;
-    }
-    --utf8_bytes_remaining_;
-  } else {
-    abort();
+  switch (utf8_bytes_remaining_) {
+    case 0:
+      if ((c & 0x80) == 0) {
+        utf8_bytes_remaining_ = 0;
+      } else if ((c & 0xe0) == 0xc0) {
+        utf8_bytes_remaining_ = 1;
+      } else if ((c & 0xf0) == 0xe0) {
+        utf8_bytes_remaining_ = 2;
+      } else if ((c & 0xf8) == 0xf0) {
+        utf8_bytes_remaining_ = 3;
+      } else {
+        return false;
+      }
+      break;
+    case 1:
+    case 2:
+    case 3:
+      if ((c & 0xc0) != 0x80) return false;
+      --utf8_bytes_remaining_;
+      break;
+    default:
+      abort();
   }
-
   string_.push_back(static_cast<uint8_t>(c));
   return true;
 }
@@ -240,8 +203,9 @@ Json* JsonReader::CreateAndLinkValue() {
         if (errors_.size() == GRPC_JSON_MAX_ERRORS) {
           truncated_errors_ = true;
         } else {
-          errors_.push_back(y_absl::StrFormat(
-              "duplicate key \"%s\" at index %" PRIuPTR, key_, CurrentIndex()));
+          errors_.push_back(GRPC_ERROR_CREATE_FROM_CPP_STRING(
+              y_absl::StrFormat("duplicate key \"%s\" at index %" PRIuPTR, key_,
+                              CurrentIndex())));
         }
       }
       value = &(*parent->mutable_object())[std::move(key_)];
@@ -259,9 +223,9 @@ bool JsonReader::StartContainer(Json::Type type) {
     if (errors_.size() == GRPC_JSON_MAX_ERRORS) {
       truncated_errors_ = true;
     } else {
-      errors_.push_back(
+      errors_.push_back(GRPC_ERROR_CREATE_FROM_CPP_STRING(
           y_absl::StrFormat("exceeded max stack depth (%d) at index %" PRIuPTR,
-                          GRPC_JSON_MAX_DEPTH, CurrentIndex()));
+                          GRPC_JSON_MAX_DEPTH, CurrentIndex())));
     }
     return false;
   }
@@ -318,21 +282,21 @@ bool JsonReader::IsComplete() {
                              state_ == State::GRPC_JSON_STATE_VALUE_END));
 }
 
-// Call this function to start parsing the input. It will return the following:
-//    . GRPC_JSON_DONE if the input got eof, and the parsing finished
-//      successfully.
-//    . GRPC_JSON_PARSE_ERROR if the input was somehow invalid.
-//    . GRPC_JSON_INTERNAL_ERROR if the parser somehow ended into an invalid
-//      internal state.
-//
+/* Call this function to start parsing the input. It will return the following:
+ *    . GRPC_JSON_DONE if the input got eof, and the parsing finished
+ *      successfully.
+ *    . GRPC_JSON_PARSE_ERROR if the input was somehow invalid.
+ *    . GRPC_JSON_INTERNAL_ERROR if the parser somehow ended into an invalid
+ *      internal state.
+ */
 JsonReader::Status JsonReader::Run() {
   uint32_t c;
 
-  // This state-machine is a strict implementation of ECMA-404
+  /* This state-machine is a strict implementation of ECMA-404 */
   while (true) {
     c = ReadChar();
     switch (c) {
-      // Let's process the error case first.
+      /* Let's process the error case first. */
       case GRPC_JSON_READ_CHAR_EOF:
         switch (state_) {
           case State::GRPC_JSON_STATE_VALUE_NUMBER:
@@ -351,7 +315,7 @@ JsonReader::Status JsonReader::Run() {
         }
         return Status::GRPC_JSON_PARSE_ERROR;
 
-      // Processing whitespaces.
+      /* Processing whitespaces. */
       case ' ':
       case '\t':
       case '\n':
@@ -386,7 +350,7 @@ JsonReader::Status JsonReader::Run() {
         }
         break;
 
-      // Value, object or array terminations.
+      /* Value, object or array terminations. */
       case ',':
       case '}':
       case ']':
@@ -463,7 +427,7 @@ JsonReader::Status JsonReader::Run() {
         }
         break;
 
-      // In-string escaping.
+      /* In-string escaping. */
       case '\\':
         switch (state_) {
           case State::GRPC_JSON_STATE_OBJECT_KEY_STRING:
@@ -476,7 +440,7 @@ JsonReader::Status JsonReader::Run() {
             state_ = State::GRPC_JSON_STATE_STRING_ESCAPE;
             break;
 
-          // This is the \\ case.
+          /* This is the \\ case. */
           case State::GRPC_JSON_STATE_STRING_ESCAPE:
             if (unicode_high_surrogate_ != 0) {
               return Status::GRPC_JSON_PARSE_ERROR;
@@ -664,17 +628,17 @@ JsonReader::Status JsonReader::Run() {
                 state_ = State::GRPC_JSON_STATE_STRING_ESCAPE_U4;
                 break;
               case State::GRPC_JSON_STATE_STRING_ESCAPE_U4:
-                // See grpc_json_writer_escape_string to have a description
-                // of what's going on here.
-                //
+                /* See grpc_json_writer_escape_string to have a description
+                 * of what's going on here.
+                 */
                 if ((unicode_char_ & 0xfc00) == 0xd800) {
-                  // high surrogate utf-16
+                  /* high surrogate utf-16 */
                   if (unicode_high_surrogate_ != 0) {
                     return Status::GRPC_JSON_PARSE_ERROR;
                   }
                   unicode_high_surrogate_ = unicode_char_;
                 } else if ((unicode_char_ & 0xfc00) == 0xdc00) {
-                  // low surrogate utf-16
+                  /* low surrogate utf-16 */
                   uint32_t utf32;
                   if (unicode_high_surrogate_ == 0) {
                     return Status::GRPC_JSON_PARSE_ERROR;
@@ -688,7 +652,7 @@ JsonReader::Status JsonReader::Run() {
                   }
                   unicode_high_surrogate_ = 0;
                 } else {
-                  // anything else
+                  /* anything else */
                   if (unicode_high_surrogate_ != 0) {
                     return Status::GRPC_JSON_PARSE_ERROR;
                   }
@@ -876,8 +840,8 @@ JsonReader::Status JsonReader::Run() {
             state_ = State::GRPC_JSON_STATE_VALUE_END;
             break;
 
-          // All of the VALUE_END cases are handled in the specialized case
-          // above.
+          /* All of the VALUE_END cases are handled in the specialized case
+           * above. */
           case State::GRPC_JSON_STATE_VALUE_END:
             switch (c) {
               case ',':
@@ -900,32 +864,35 @@ JsonReader::Status JsonReader::Run() {
   GPR_UNREACHABLE_CODE(return Status::GRPC_JSON_INTERNAL_ERROR);
 }
 
-y_absl::StatusOr<Json> JsonReader::Parse(y_absl::string_view input) {
+grpc_error_handle JsonReader::Parse(y_absl::string_view input, Json* output) {
   JsonReader reader(input);
   Status status = reader.Run();
   if (reader.truncated_errors_) {
-    reader.errors_.push_back(
+    reader.errors_.push_back(GRPC_ERROR_CREATE_FROM_STATIC_STRING(
         "too many errors encountered during JSON parsing -- fix reported "
-        "errors and try again to see additional errors");
+        "errors and try again to see additional errors"));
   }
   if (status == Status::GRPC_JSON_INTERNAL_ERROR) {
-    reader.errors_.push_back(y_absl::StrCat(
-        "internal error in JSON parser at index ", reader.CurrentIndex()));
+    reader.errors_.push_back(GRPC_ERROR_CREATE_FROM_CPP_STRING(y_absl::StrCat(
+        "internal error in JSON parser at index ", reader.CurrentIndex())));
   } else if (status == Status::GRPC_JSON_PARSE_ERROR) {
-    reader.errors_.push_back(
-        y_absl::StrCat("JSON parse error at index ", reader.CurrentIndex()));
+    reader.errors_.push_back(GRPC_ERROR_CREATE_FROM_CPP_STRING(
+        y_absl::StrCat("JSON parse error at index ", reader.CurrentIndex())));
   }
   if (!reader.errors_.empty()) {
-    return y_absl::InvalidArgumentError(y_absl::StrCat(
-        "JSON parsing failed: [", y_absl::StrJoin(reader.errors_, "; "), "]"));
+    return GRPC_ERROR_CREATE_FROM_VECTOR("JSON parsing failed",
+                                         &reader.errors_);
   }
-  return std::move(reader.root_value_);
+  *output = std::move(reader.root_value_);
+  return GRPC_ERROR_NONE;
 }
 
 }  // namespace
 
-y_absl::StatusOr<Json> Json::Parse(y_absl::string_view json_str) {
-  return JsonReader::Parse(json_str);
+Json Json::Parse(y_absl::string_view json_str, grpc_error_handle* error) {
+  Json value;
+  *error = JsonReader::Parse(json_str, &value);
+  return value;
 }
 
 }  // namespace grpc_core

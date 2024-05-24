@@ -6,20 +6,17 @@
 #include "util.h"
 
 #include <ydb/core/cms/console/util/config_index.h>
-#include <ydb/library/yaml_config/util.h>
-#include <ydb/library/yaml_config/yaml_config.h>
+#include <ydb/core/cms/console/yaml_config/util.h>
+#include <ydb/core/cms/console/yaml_config/yaml_config.h>
 #include <ydb/core/mind/tenant_pool.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/core/config/init/mock.h>
-#include <ydb/core/base/counters.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
-#include <ydb/core/config/init/init.h>
 
 #include <util/generic/bitmap.h>
 #include <util/generic/ptr.h>
@@ -38,8 +35,6 @@
 
 namespace NKikimr::NConsole {
 
-using namespace NConfig;
-
 const THashSet<ui32> DYNAMIC_KINDS({
     (ui32)NKikimrConsole::TConfigItem::ActorSystemConfigItem,
     (ui32)NKikimrConsole::TConfigItem::BootstrapConfigItem,
@@ -51,24 +46,17 @@ const THashSet<ui32> DYNAMIC_KINDS({
     (ui32)NKikimrConsole::TConfigItem::ImmediateControlsConfigItem,
     (ui32)NKikimrConsole::TConfigItem::LogConfigItem,
     (ui32)NKikimrConsole::TConfigItem::MonitoringConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::NameserviceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::NetClassifierDistributableConfigItem,
     (ui32)NKikimrConsole::TConfigItem::NodeBrokerConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::QueryServiceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::SchemeShardConfigItem,
     (ui32)NKikimrConsole::TConfigItem::SharedCacheConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TableProfilesConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TableServiceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TenantPoolConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TenantSlotBrokerConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::AllowEditYamlInUiItem,
-    (ui32)NKikimrConsole::TConfigItem::BackgroundCleaningConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::TracingConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::BlobStorageConfigItem,
 });
 
 const THashSet<ui32> NON_YAML_KINDS({
-    (ui32)NKikimrConsole::TConfigItem::NameserviceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::NetClassifierDistributableConfigItem,
 });
 
@@ -140,7 +128,11 @@ public:
         return NKikimrServices::TActivity::CONFIGS_DISPATCHER_ACTOR;
     }
 
-    TConfigsDispatcher(const TConfigsDispatcherInitInfo& initInfo);
+    TConfigsDispatcher(
+        const NKikimrConfig::TAppConfig &config,
+        const TMap<TString, TString> &labels,
+        const NKikimrConfig::TAppConfig &initialCmsConfig,
+        const NKikimrConfig::TAppConfig &initialCmsYamlConfig);
 
     void Bootstrap();
 
@@ -156,19 +148,8 @@ public:
 
     void UpdateYamlVersion(const TSubscription::TPtr &kinds) const;
 
-    struct TCheckKindsResult {
-        bool HasYamlKinds = false;
-        bool HasNonYamlKinds = false;
-    };
-
-    TCheckKindsResult CheckKinds(const TVector<ui32>& kinds, const char* errorContext) const;
-
     NKikimrConfig::TAppConfig ParseYamlProtoConfig();
-
-    TDynBitMap FilterKinds(const TDynBitMap& in);
-
-    void UpdateCandidateStartupConfig(TEvConsole::TEvConfigSubscriptionNotification::TPtr &ev);
-
+        
     void Handle(NMon::TEvHttpInfo::TPtr &ev);
     void Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev);
     void Handle(TEvConsole::TEvConfigSubscriptionNotification::TPtr &ev);
@@ -178,7 +159,6 @@ public:
     void Handle(TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest::TPtr &ev);
     void Handle(TEvConfigsDispatcher::TEvRemoveConfigSubscriptionRequest::TPtr &ev);
     void Handle(TEvConsole::TEvConfigNotificationRequest::TPtr &ev);
-    void Handle(TEvConsole::TEvGetNodeLabelsRequest::TPtr &ev);
 
     void ReplyMonJson(TActorId mailbox);
 
@@ -195,8 +175,6 @@ public:
             // Events from clients
             hFuncTraced(TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest, Handle);
             hFuncTraced(TEvConfigsDispatcher::TEvRemoveConfigSubscriptionRequest, Handle);
-            // Resolve
-            hFunc(TEvConsole::TEvGetNodeLabelsRequest, Handle);
         default:
             EnqueueEvent(ev);
             break;
@@ -219,8 +197,6 @@ public:
             hFuncTraced(TEvConfigsDispatcher::TEvRemoveConfigSubscriptionRequest, Handle);
             hFuncTraced(TEvConsole::TEvConfigNotificationResponse, Handle);
             IgnoreFunc(TEvConfigsDispatcher::TEvSetConfigSubscriptionResponse);
-            // Resolve
-            hFunc(TEvConsole::TEvGetNodeLabelsRequest, Handle);
 
             // Ignore these console requests until we get rid of persistent subscriptions-related code
             IgnoreFunc(TEvConsole::TEvAddConfigSubscriptionResponse);
@@ -228,7 +204,7 @@ public:
             // Pretend we got this
             hFuncTraced(TEvConsole::TEvConfigNotificationRequest, Handle);
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -236,18 +212,11 @@ public:
 
 
 private:
-    const TMap<TString, TString> Labels;
-    const std::variant<std::monostate, TDenyList, TAllowList> ItemsServeRules;
-    const NKikimrConfig::TAppConfig BaseConfig;
+    TMap<TString, TString> Labels;
+    const NKikimrConfig::TAppConfig InitialConfig;
     NKikimrConfig::TAppConfig CurrentConfig;
-    NKikimrConfig::TAppConfig CandidateStartupConfig;
-    bool StartupConfigProcessError = false;
-    bool StartupConfigProcessDiff = false;
-    TString StartupConfigInfo;
-    ::NMonitoring::TDynamicCounters::TCounterPtr StartupConfigChanged;
-    const std::optional<TDebugInfo> DebugInfo;
-    std::shared_ptr<NConfig::TRecordedInitialConfiguratorDeps> RecordedInitialConfiguratorDeps;
-    std::vector<TString> Args;
+    const NKikimrConfig::TAppConfig InitialCmsConfig;
+    const NKikimrConfig::TAppConfig InitialCmsYamlConfig;
     ui64 NextRequestCookie;
     TVector<TActorId> HttpRequests;
     TActorId CommonSubscriptionClient;
@@ -267,17 +236,19 @@ private:
 
 };
 
-TConfigsDispatcher::TConfigsDispatcher(const TConfigsDispatcherInitInfo& initInfo)
-        : Labels(initInfo.Labels)
-        , ItemsServeRules(initInfo.ItemsServeRules)
-        , BaseConfig(initInfo.InitialConfig)
-        , CurrentConfig(initInfo.InitialConfig)
-        , CandidateStartupConfig(initInfo.InitialConfig)
-        , DebugInfo(initInfo.DebugInfo)
-        , RecordedInitialConfiguratorDeps(std::move(initInfo.RecordedInitialConfiguratorDeps))
-        , Args(initInfo.Args)
+TConfigsDispatcher::TConfigsDispatcher(
+    const NKikimrConfig::TAppConfig &config,
+    const TMap<TString, TString> &labels,
+    const NKikimrConfig::TAppConfig &initialCmsConfig,
+    const NKikimrConfig::TAppConfig &initialCmsYamlConfig)
+        : Labels(labels)
+        , InitialConfig(config)
+        , CurrentConfig(config)
+        , InitialCmsConfig(initialCmsConfig)
+        , InitialCmsYamlConfig(initialCmsYamlConfig)
         , NextRequestCookie(Now().GetValue())
-{}
+{
+}
 
 void TConfigsDispatcher::Bootstrap()
 {
@@ -288,10 +259,6 @@ void TConfigsDispatcher::Bootstrap()
         NMonitoring::TIndexMonPage *actorsMonPage = mon->RegisterIndexPage("actors", "Actors");
         mon->RegisterActorPage(actorsMonPage, "configs_dispatcher", "Configs Dispatcher", false, TlsActivationContext->ExecutorThread.ActorSystem, SelfId());
     }
-    TIntrusivePtr<NMonitoring::TDynamicCounters> rootCounters = AppData()->Counters;
-    TIntrusivePtr<NMonitoring::TDynamicCounters> authCounters = GetServiceCounters(rootCounters, "config");
-    NMonitoring::TDynamicCounterPtr counters = authCounters->GetSubgroup("subsystem", "ConfigsDispatcher");
-    StartupConfigChanged = counters->GetCounter("StartupConfigChanged", true);
 
     auto commonClient = CreateConfigsSubscriber(
         SelfId(),
@@ -323,7 +290,7 @@ void TConfigsDispatcher::ProcessEnqueuedEvents()
 
 void TConfigsDispatcher::SendUpdateToSubscriber(TSubscription::TPtr subscription, TActorId subscriber)
 {
-    Y_ABORT_UNLESS(subscription->UpdateInProcess);
+    Y_VERIFY(subscription->UpdateInProcess);
 
     subscription->SubscribersToUpdate.insert(subscriber);
 
@@ -412,12 +379,9 @@ void TConfigsDispatcher::ReplyMonJson(TActorId mailbox) {
     response.InsertValue("yaml_config", YamlConfig);
     response.InsertValue("resolved_json_config", NJson::ReadJsonFastTree(ResolvedJsonConfig, true));
     response.InsertValue("current_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(CurrentConfig, NYamlConfig::GetProto2JsonConfig()), true));
-
-    if (DebugInfo) {
-        response.InsertValue("initial_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(DebugInfo->StaticConfig, NYamlConfig::GetProto2JsonConfig()), true));
-        response.InsertValue("initial_cms_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(DebugInfo->OldDynConfig, NYamlConfig::GetProto2JsonConfig()), true));
-        response.InsertValue("initial_cms_yaml_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(DebugInfo->NewDynConfig, NYamlConfig::GetProto2JsonConfig()), true));
-    }
+    response.InsertValue("initial_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(InitialConfig, NYamlConfig::GetProto2JsonConfig()), true));
+    response.InsertValue("initial_cms_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(InitialCmsConfig, NYamlConfig::GetProto2JsonConfig()), true));
+    response.InsertValue("initial_cms_yaml_json_config", NJson::ReadJsonFastTree(NProtobufJson::Proto2Json(InitialCmsYamlConfig, NYamlConfig::GetProto2JsonConfig()), true));
 
     NJson::WriteJson(&str, &response, {});
 
@@ -432,29 +396,6 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigNotificationRequest::TPtr &
     BLOG_TRACE("Send TEvConfigNotificationResponse: " << resp->Record.ShortDebugString());
 
     Send(ev->Sender, resp.Release(), 0, ev->Cookie);
-}
-
-
-TDynBitMap TConfigsDispatcher::FilterKinds(const TDynBitMap& in) {
-    TDynBitMap out;
-
-    if (const auto* denyList = std::get_if<TDenyList>(&ItemsServeRules)) {
-        Y_FOR_EACH_BIT(kind, in) {
-            if (!denyList->Items.contains(kind)) {
-                out.Set(kind);
-            }
-        }
-    } else if (const auto* allowList = std::get_if<TAllowList>(&ItemsServeRules)) {
-        Y_FOR_EACH_BIT(kind, in) {
-            if (allowList->Items.contains(kind)) {
-                out.Set(kind);
-            }
-        }
-    } else {
-        out = in;
-    }
-
-    return out;
 }
 
 void TConfigsDispatcher::Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev)
@@ -523,220 +464,142 @@ void TConfigsDispatcher::Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev)
                     }
                 }
                 str << "<br />" << Endl;
-                COLLAPSED_REF_CONTENT("effective-config", "Effective config") {
-                    str << "<div class=\"alert alert-primary tab-left\" role=\"alert\">" << Endl;
-                    str << "It is assumed that all config items marked dynamic are consumed by corresponding components at runtime." << Endl;
-                    str << "<br />" << Endl;
-                    str << "If any component is unable to update some config at runtime check \"Effective startup config\" below to see actual config for this component." << Endl;
-                    str << "<br />" << Endl;
-                    str << "Coloring: \"<font color=\"red\">config not set</font>\","
-                        << " \"<font color=\"green\">config set in dynamic config</font>\", \"<font color=\"#007bff\">config set in static config</font>\"" << Endl;
-                    str << "</div>" << Endl;
-                    NHttp::OutputRichConfigHTML(str, BaseConfig, YamlProtoConfig, CurrentConfig, DYNAMIC_KINDS, NON_YAML_KINDS, YamlConfigEnabled);
-                }
-                str << "<br />" << Endl;
-                COLLAPSED_REF_CONTENT("effective-startup-config", "Effective startup config") {
-                    str << "<div class=\"alert alert-primary tab-left\" role=\"alert\">" << Endl;
-                    str << "Some of these configs may be overwritten by dynamic ones." << Endl;
-                    str << "</div>" << Endl;
-                    NHttp::OutputConfigHTML(str, BaseConfig);
-                }
-                str << "<br />" << Endl;
-                COLLAPSED_REF_CONTENT("effective-dynamic-config", "Effective dynamic config") {
-                    str << "<div class=\"alert alert-primary tab-left\" role=\"alert\">" << Endl;
-                    str << "Some subscribers may get static configs if they exist even if dynamic one of corresponding kind is not present." << Endl;
-                    str << "</div>" << Endl;
-                    NKikimrConfig::TAppConfig trunc;
-                    if (YamlConfigEnabled) {
-                        ReplaceConfigItems(YamlProtoConfig, trunc, FilterKinds(KindsToBitMap(DYNAMIC_KINDS)), BaseConfig);
-                        ReplaceConfigItems(CurrentConfig, trunc, FilterKinds(KindsToBitMap(NON_YAML_KINDS)), trunc, false);
-                    } else {
-                        ReplaceConfigItems(CurrentConfig, trunc, FilterKinds(KindsToBitMap(DYNAMIC_KINDS)), BaseConfig);
-                    }
-                    NHttp::OutputConfigHTML(str, trunc);
-                }
-                str << "<br />" << Endl;
-                COLLAPSED_REF_CONTENT("debug-info", "Debug info") {
-                    DIV_CLASS("tab-left") {
-                        COLLAPSED_REF_CONTENT("args", "Startup process args") {
-                            PRE() {
-                                for (auto& arg : Args) {
-                                    str << "\"" << arg << "\" ";
-                                }
+                COLLAPSED_REF_CONTENT("state", "State") {
+                    PRE() {
+                        str << "SelfId: " << SelfId() << Endl;
+                        auto s = CurrentStateFunc();
+                        str << "State: " << ( s == &TThis::StateWork      ? "StateWork"
+                                            : s == &TThis::StateInit      ? "StateInit"
+                                                                          : "Unknown" ) << Endl;
+                        str << "YamlConfigEnabled: " << YamlConfigEnabled << Endl;
+                        str << "Subscriptions: " << Endl;
+                        for (auto &[kinds, subscription] : SubscriptionsByKinds) {
+                            str << "- Kinds: " << KindsToString(kinds) << Endl
+                                << "  Subscription: " << Endl
+                                << "    Yaml: " << subscription->Yaml << Endl
+                                << "    Subscribers: " << Endl;
+                            for (auto &[id, updates] : subscription->Subscribers) {
+                                str << "    - Actor: " << id << Endl;
+                                str << "      UpdatesSent: " << updates << Endl;
                             }
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("candidate-startup-config", "Candidate startup config") {
-                            str << "<div class=\"alert alert-primary tab-left\" role=\"alert\">" << Endl;
-                            if (StartupConfigProcessError) {
-                                str << "<b>Error: </b>" << Endl;
-                                PRE() {
-                                    str << StartupConfigInfo;
+                            if (subscription->YamlVersion) {
+                                str << "    YamlVersion: " << subscription->YamlVersion->Version << ".[";
+                                bool first = true;
+                                for (auto &[id, hash] : subscription->YamlVersion->VolatileVersions) {
+                                    str << (first ? "" : ",") << id << "." << hash;
+                                    first = false;
                                 }
-                            } else if (StartupConfigProcessDiff) {
-                                str << "<b>Configs are different: </b>" << Endl;
-                                PRE() {
-                                    str << StartupConfigInfo;
-                                }
+                                str << "]" << Endl;
                             } else {
-                                str << "<b>Configs are same.</b>" << Endl;
+                                str << "    CurrentConfigId: " << subscription->CurrentConfig.Version.ShortDebugString() << Endl;
                             }
-                            str << "</div>" << Endl;
-                            NHttp::OutputConfigHTML(str, CandidateStartupConfig);
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("effective-config-debug-info", "Effective config debug info") {
-                            NHttp::OutputConfigDebugInfoHTML(
-                                str,
-                                BaseConfig,
-                                YamlProtoConfig,
-                                CurrentConfig,
-                                {DebugInfo ? DebugInfo->InitInfo : THashMap<ui32, TConfigItemInfo>{}},
-                                DYNAMIC_KINDS,
-                                NON_YAML_KINDS,
-                                YamlConfigEnabled);
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("state", "State") {
-                            PRE() {
-                                str << "SelfId: " << SelfId() << Endl;
-                                auto s = CurrentStateFunc();
-                                str << "State: " << ( s == &TThis::StateWork      ? "StateWork"
-                                                    : s == &TThis::StateInit      ? "StateInit"
-                                                                                  : "Unknown" ) << Endl;
-                                str << "YamlConfigEnabled: " << YamlConfigEnabled << Endl;
-                                str << "Subscriptions: " << Endl;
-                                for (auto &[kinds, subscription] : SubscriptionsByKinds) {
-                                    str << "- Kinds: " << KindsToString(kinds) << Endl
-                                        << "  Subscription: " << Endl
-                                        << "    Yaml: " << subscription->Yaml << Endl
-                                        << "    Subscribers: " << Endl;
-                                    for (auto &[id, updates] : subscription->Subscribers) {
-                                        str << "    - Actor: " << id << Endl;
-                                        str << "      UpdatesSent: " << updates << Endl;
-                                    }
-                                    if (subscription->YamlVersion) {
-                                        str << "    YamlVersion: " << subscription->YamlVersion->Version << ".[";
-                                        bool first = true;
-                                        for (auto &[id, hash] : subscription->YamlVersion->VolatileVersions) {
-                                            str << (first ? "" : ",") << id << "." << hash;
-                                            first = false;
-                                        }
-                                        str << "]" << Endl;
-                                    } else {
-                                        str << "    CurrentConfigId: " << subscription->CurrentConfig.Version.ShortDebugString() << Endl;
-                                    }
-                                    str << "    CurrentConfig: " << subscription->CurrentConfig.Config.ShortDebugString() << Endl;
-                                    if (subscription->UpdateInProcess) {
-                                        str << "    UpdateInProcess: " << subscription->UpdateInProcess->Record.ShortDebugString() << Endl
-                                            << "    SubscribersToUpdate:";
-                                        for (auto &id : subscription->SubscribersToUpdate) {
-                                            str << " " << id;
-                                        }
-                                        str << Endl;
-                                        str << "    UpdateInProcessConfigVersion: " << subscription->UpdateInProcessConfigVersion.ShortDebugString() << Endl
-                                            << "    UpdateInProcessCookie: " << subscription->UpdateInProcessCookie << Endl;
-                                        if (subscription->UpdateInProcessYamlVersion) {
-                                            str << "    UpdateInProcessYamlVersion: " << subscription->UpdateInProcessYamlVersion->Version << Endl;
-                                        }
-                                    }
+                            str << "    CurrentConfig: " << subscription->CurrentConfig.Config.ShortDebugString() << Endl;
+                            if (subscription->UpdateInProcess) {
+                                str << "    UpdateInProcess: " << subscription->UpdateInProcess->Record.ShortDebugString() << Endl
+                                    << "    SubscribersToUpdate:";
+                                for (auto &id : subscription->SubscribersToUpdate) {
+                                    str << " " << id;
                                 }
-                                str << "Subscribers:" << Endl;
-                                for (auto &[subscriber, _] : SubscriptionsBySubscriber) {
-                                    str << "- " << subscriber << Endl;
+                                str << Endl;
+                                str << "    UpdateInProcessConfigVersion: " << subscription->UpdateInProcessConfigVersion.ShortDebugString() << Endl
+                                    << "    UpdateInProcessCookie: " << subscription->UpdateInProcessCookie << Endl;
+                                if (subscription->UpdateInProcessYamlVersion) {
+                                    str << "    UpdateInProcessYamlVersion: " << subscription->UpdateInProcessYamlVersion->Version << Endl;
                                 }
                             }
                         }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("yaml-config", "YAML config") {
+                        str << "Subscribers:" << Endl;
+                        for (auto &[subscriber, _] : SubscriptionsBySubscriber) {
+                            str << "- " << subscriber << Endl;
+                        }
+                    }
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("yaml-config", "YAML config") {
+                    DIV() {
+                        TAG(TH5) {
+                            str << "Persistent Config" << Endl;
+                        }
+                        TAG_CLASS_STYLE(TDiv, "configs-dispatcher", "padding: 0 12px;") {
+                            TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap fold-yaml-config yaml-btn-3"}, {"id", "fold-yaml-config"}, {"title", "fold"}}) {
+                                DIV_CLASS("yaml-sticky-btn") { }
+                            }
+                            TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap unfold-yaml-config yaml-btn-2"}, {"id", "unfold-yaml-config"}, {"title", "unfold"}}) {
+                                DIV_CLASS("yaml-sticky-btn") { }
+                            }
+                            TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap copy-yaml-config yaml-btn-1"}, {"id", "copy-yaml-config"}, {"title", "copy"}}) {
+                                DIV_CLASS("yaml-sticky-btn") { }
+                            }
+                            TAG_ATTRS(TDiv, {{"id", "yaml-config-item"}, {"name", "yaml-config-itemm"}}) {
+                                str << YamlConfig;
+                            }
+                        }
+                        str << "<hr/>" << Endl;
+                        for (auto &[id, config] : VolatileYamlConfigs) {
                             DIV() {
                                 TAG(TH5) {
-                                    str << "Persistent Config" << Endl;
+                                    str << "Volatile Config Id: " << id << Endl;
                                 }
                                 TAG_CLASS_STYLE(TDiv, "configs-dispatcher", "padding: 0 12px;") {
-                                    TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap fold-yaml-config yaml-btn-3"}, {"id", "fold-yaml-config"}, {"title", "fold"}}) {
+                                    TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap fold-yaml-config yaml-btn-3"}, {"title", "fold"}}) {
                                         DIV_CLASS("yaml-sticky-btn") { }
                                     }
-                                    TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap unfold-yaml-config yaml-btn-2"}, {"id", "unfold-yaml-config"}, {"title", "unfold"}}) {
+                                    TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap unfold-yaml-config yaml-btn-2"}, {"title", "unfold"}}) {
                                         DIV_CLASS("yaml-sticky-btn") { }
                                     }
-                                    TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap copy-yaml-config yaml-btn-1"}, {"id", "copy-yaml-config"}, {"title", "copy"}}) {
+                                    TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap copy-yaml-config yaml-btn-1"}, {"title", "copy"}}) {
                                         DIV_CLASS("yaml-sticky-btn") { }
                                     }
-                                    TAG_ATTRS(TDiv, {{"id", "yaml-config-item"}, {"name", "yaml-config-itemm"}}) {
-                                        str << YamlConfig;
+                                    DIV_CLASS("yaml-config-item") {
+                                        str << config;
                                     }
                                 }
-                                str << "<hr/>" << Endl;
-                                for (auto &[id, config] : VolatileYamlConfigs) {
-                                    DIV() {
-                                        TAG(TH5) {
-                                            str << "Volatile Config Id: " << id << Endl;
-                                        }
-                                        TAG_CLASS_STYLE(TDiv, "configs-dispatcher", "padding: 0 12px;") {
-                                            TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap fold-yaml-config yaml-btn-3"}, {"title", "fold"}}) {
-                                                DIV_CLASS("yaml-sticky-btn") { }
-                                            }
-                                            TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap unfold-yaml-config yaml-btn-2"}, {"title", "unfold"}}) {
-                                                DIV_CLASS("yaml-sticky-btn") { }
-                                            }
-                                            TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap copy-yaml-config yaml-btn-1"}, {"title", "copy"}}) {
-                                                DIV_CLASS("yaml-sticky-btn") { }
-                                            }
-                                            DIV_CLASS("yaml-config-item") {
-                                                str << config;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("resolved-yaml-config", "Resolved YAML config") {
-                            TAG_CLASS_STYLE(TDiv, "configs-dispatcher", "padding: 0 12px;") {
-                                TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap fold-yaml-config yaml-btn-3"}, {"id", "fold-resolved-yaml-config"}, {"title", "fold"}}) {
-                                    DIV_CLASS("yaml-sticky-btn") { }
-                                }
-                                TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap unfold-yaml-config yaml-btn-2"}, {"id", "unfold-resolved-yaml-config"}, {"title", "unfold"}}) {
-                                    DIV_CLASS("yaml-sticky-btn") { }
-                                }
-                                TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap copy-yaml-config yaml-btn-1"}, {"id", "copy-resolved-yaml-config"}, {"title", "copy"}}) {
-                                    DIV_CLASS("yaml-sticky-btn") { }
-                                }
-                                TAG_ATTRS(TDiv, {{"id", "resolved-yaml-config-item"}, {"name", "resolved-yaml-config-itemm"}}) {
-                                    str << ResolvedYamlConfig;
-                                }
-                            }
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("resolved-json-config", "Resolved JSON config") {
-                            PRE() {
-                                str << ResolvedJsonConfig << Endl;
-                            }
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("yaml-proto-config", "YAML proto config") {
-                            NHttp::OutputConfigHTML(str, YamlProtoConfig);
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("current-config", "Current config") {
-                            NHttp::OutputConfigHTML(str, CurrentConfig);
-                        }
-                        str << "<br />" << Endl;
-                        COLLAPSED_REF_CONTENT("initial-config", "Initial config") {
-                            NHttp::OutputConfigHTML(str, BaseConfig);
-                        }
-                        if  (DebugInfo) {
-                            str << "<br />" << Endl;
-                            COLLAPSED_REF_CONTENT("initial-cms-config", "Initial CMS config") {
-                                NHttp::OutputConfigHTML(str, DebugInfo->OldDynConfig);
-                            }
-                            str << "<br />" << Endl;
-                            COLLAPSED_REF_CONTENT("initial-cms-yaml-config", "Initial CMS YAML config") {
-                                NHttp::OutputConfigHTML(str, DebugInfo->NewDynConfig);
                             }
                         }
                     }
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("resolved-yaml-config", "Resolved YAML config") {
+                    TAG_CLASS_STYLE(TDiv, "configs-dispatcher", "padding: 0 12px;") {
+                        TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap fold-yaml-config yaml-btn-3"}, {"id", "fold-resolved-yaml-config"}, {"title", "fold"}}) {
+                            DIV_CLASS("yaml-sticky-btn") { }
+                        }
+                        TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap unfold-yaml-config yaml-btn-2"}, {"id", "unfold-resolved-yaml-config"}, {"title", "unfold"}}) {
+                            DIV_CLASS("yaml-sticky-btn") { }
+                        }
+                        TAG_ATTRS(TDiv, {{"class", "yaml-sticky-btn-wrap copy-yaml-config yaml-btn-1"}, {"id", "copy-resolved-yaml-config"}, {"title", "copy"}}) {
+                            DIV_CLASS("yaml-sticky-btn") { }
+                        }
+                        TAG_ATTRS(TDiv, {{"id", "resolved-yaml-config-item"}, {"name", "resolved-yaml-config-itemm"}}) {
+                            str << ResolvedYamlConfig;
+                        }
+                    }
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("resolved-json-config", "Resolved JSON config") {
+                    PRE() {
+                        str << ResolvedJsonConfig << Endl;
+                    }
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("yaml-proto-config", "YAML proto config") {
+                    NHttp::OutputConfigHTML(str, YamlProtoConfig);
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("current-config", "Current config") {
+                    NHttp::OutputConfigHTML(str, CurrentConfig);
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("initial-config", "Initial config") {
+                    NHttp::OutputConfigHTML(str, InitialConfig);
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("initial-cms-config", "Initial CMS config") {
+                    NHttp::OutputConfigHTML(str, InitialCmsConfig);
+                }
+                str << "<br />" << Endl;
+                COLLAPSED_REF_CONTENT("initial-cms-yaml-config", "Initial CMS YAML config") {
+                    NHttp::OutputConfigHTML(str, InitialCmsYamlConfig);
                 }
             }
         }
@@ -749,111 +612,9 @@ void TConfigsDispatcher::Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev)
     HttpRequests.clear();
 }
 
-class TConfigurationResult
-    : public IConfigurationResult
-{
-public:
-    // TODO make ref
-    const NKikimrConfig::TAppConfig& GetConfig() const {
-        return Config;
-    }
-
-    bool HasYamlConfig() const {
-        return !YamlConfig.empty();
-    }
-
-    const TString& GetYamlConfig() const {
-        return YamlConfig;
-    }
-
-    TMap<ui64, TString> GetVolatileYamlConfigs() const {
-        return VolatileYamlConfigs;
-    }
-
-    NKikimrConfig::TAppConfig Config;
-    TString YamlConfig;
-    TMap<ui64, TString> VolatileYamlConfigs;
-};
-
-void TConfigsDispatcher::UpdateCandidateStartupConfig(TEvConsole::TEvConfigSubscriptionNotification::TPtr &ev)
-try {
-    if (!RecordedInitialConfiguratorDeps) {
-        CandidateStartupConfig = {};
-        StartupConfigProcessError = true;
-        StartupConfigProcessDiff = false;
-        StartupConfigInfo = "Startup params not recorded. Corresponding functionality won't work.";
-        *StartupConfigChanged = 0;
-        return;
-    }
-
-    auto &rec = ev->Get()->Record;
-
-    auto dcClient = std::make_unique<TDynConfigClientMock>();
-    auto configs = std::make_shared<TConfigurationResult>();
-    dcClient->SavedResult = configs;
-    configs->Config = rec.GetRawConsoleConfig();
-    configs->YamlConfig = rec.GetYamlConfig();
-    // TODO volatile
-    RecordedInitialConfiguratorDeps->DynConfigClient = std::move(dcClient);
-    auto deps = RecordedInitialConfiguratorDeps->GetDeps();
-    NConfig::TInitialConfigurator initCfg(deps);
-
-    std::vector<const char*> argv;
-
-    for (const auto& arg : Args) {
-        argv.push_back(arg.data());
-    }
-
-    NLastGetopt::TOpts opts;
-    initCfg.RegisterCliOptions(opts);
-    deps.ProtoConfigFileProvider.RegisterCliOptions(opts);
-
-    NLastGetopt::TOptsParseResultException parseResult(&opts, argv.size(), argv.data());
-
-    initCfg.ValidateOptions(opts, parseResult);
-    initCfg.Parse(parseResult.GetFreeArgs());
-
-    NKikimrConfig::TAppConfig appConfig;
-    ui32 nodeId;
-    TKikimrScopeId scopeId;
-    TString tenantName;
-    TBasicKikimrServicesMask servicesMask;
-    TString clusterName;
-    NConfig::TConfigsDispatcherInitInfo configsDispatcherInitInfo;
-
-    initCfg.Apply(
-        appConfig,
-        nodeId,
-        scopeId,
-        tenantName,
-        servicesMask,
-        clusterName,
-        configsDispatcherInitInfo);
-
-    CandidateStartupConfig = appConfig;
-    StartupConfigProcessError = false;
-    StartupConfigProcessDiff = false;
-    StartupConfigInfo.clear();
-    google::protobuf::util::MessageDifferencer md;
-    auto fieldComparator = google::protobuf::util::DefaultFieldComparator();
-    md.set_field_comparator(&fieldComparator);
-    md.ReportDifferencesToString(&StartupConfigInfo);
-    StartupConfigProcessDiff = !md.Compare(BaseConfig, CandidateStartupConfig);
-    *StartupConfigChanged = StartupConfigProcessDiff ? 1 : 0;
-}
-catch (...) {
-    CandidateStartupConfig = {};
-    StartupConfigProcessError = true;
-    StartupConfigProcessDiff = false;
-    StartupConfigInfo = "Got exception while processing candidate config.";
-    *StartupConfigChanged = 1;
-}
-
 void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionNotification::TPtr &ev)
 {
     auto &rec = ev->Get()->Record;
-
-    UpdateCandidateStartupConfig(ev);
 
     CurrentConfig = rec.GetConfig();
 
@@ -899,8 +660,6 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionNotification::T
         newYamlProtoConfig = YamlProtoConfig;
     }
 
-    AppData()->YamlConfigEnabled = YamlConfigEnabled;
-
     std::swap(YamlProtoConfig, newYamlProtoConfig);
 
     THashSet<ui32> affectedKinds;
@@ -919,7 +678,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionNotification::T
         bool hasAffectedKinds = false;
 
         if (subscription->Yaml && YamlConfigEnabled) {
-            ReplaceConfigItems(YamlProtoConfig, trunc, FilterKinds(subscription->Kinds), BaseConfig);
+            ReplaceConfigItems(YamlProtoConfig, trunc, subscription->Kinds, InitialConfig);
         } else {
             Y_FOR_EACH_BIT(kind, kinds) {
                 if (affectedKinds.contains(kind)) {
@@ -932,7 +691,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionNotification::T
                 continue;
             }
 
-            ReplaceConfigItems(ev->Get()->Record.GetConfig(), trunc, FilterKinds(kinds), BaseConfig);
+            ReplaceConfigItems(ev->Get()->Record.GetConfig(), trunc, kinds, InitialConfig);
         }
 
         if (hasAffectedKinds || !CompareConfigs(subscription->CurrentConfig.Config, trunc) || CurrentStateFunc() == &TThis::StateInit) {
@@ -961,7 +720,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionNotification::T
             subscription->YamlVersion = std::nullopt;
         }
     }
-
+    
     if (CurrentStateFunc() == &TThis::StateInit) {
         Become(&TThis::StateWork);
         ProcessEnqueuedEvents();
@@ -982,7 +741,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionError::TPtr &ev
 {
     // The only reason we can get this response is ambiguous domain
     // So it is okay to fail here
-    Y_ABORT("Can't start Configs Dispatcher: %s",
+    Y_FAIL("Can't start Configs Dispatcher: %s",
             ev->Get()->Record.GetReason().c_str());
 }
 
@@ -990,17 +749,16 @@ void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvGetConfigRequest::TPtr 
 {
     auto resp = MakeHolder<TEvConfigsDispatcher::TEvGetConfigResponse>();
 
-    auto [yamlKinds, _] = CheckKinds(
-        ev->Get()->ConfigItemKinds,
-        "TEvGetConfigRequest handler");
+    for (auto kind : ev->Get()->ConfigItemKinds) {
+        if (!DYNAMIC_KINDS.contains(kind)) {
+            TStringStream sstr;
+            sstr << static_cast<NKikimrConsole::TConfigItem::EKind>(kind);
+            Y_FAIL("unexpected kind in GetConfigRequest: %s", sstr.Str().data());
+        }
+    }
 
     auto trunc = std::make_shared<NKikimrConfig::TAppConfig>();
-    auto kinds = KindsToBitMap(ev->Get()->ConfigItemKinds);
-    if (YamlConfigEnabled && yamlKinds) {
-        ReplaceConfigItems(YamlProtoConfig, *trunc, FilterKinds(kinds), BaseConfig);
-    } else {
-        ReplaceConfigItems(CurrentConfig, *trunc, FilterKinds(kinds), BaseConfig);
-    }
+    ReplaceConfigItems(CurrentConfig, *trunc, KindsToBitMap(ev->Get()->ConfigItemKinds), InitialConfig);
     resp->Config = trunc;
 
     BLOG_TRACE("Send TEvConfigsDispatcher::TEvGetConfigResponse"
@@ -1009,14 +767,15 @@ void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvGetConfigRequest::TPtr 
     Send(ev->Sender, std::move(resp), 0, ev->Cookie);
 }
 
-TConfigsDispatcher::TCheckKindsResult TConfigsDispatcher::CheckKinds(const TVector<ui32>& kinds, const char* errorContext) const {
+void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest::TPtr &ev)
+{
     bool yamlKinds = false;
     bool nonYamlKinds = false;
-    for (auto kind : kinds) {
+    for (auto kind : ev->Get()->ConfigItemKinds) {
         if (!DYNAMIC_KINDS.contains(kind)) {
             TStringStream sstr;
             sstr << static_cast<NKikimrConsole::TConfigItem::EKind>(kind);
-            Y_ABORT("unexpected kind in %s: %s", errorContext, sstr.Str().data());
+            Y_FAIL("unexpected kind in SetConfigSubscriptionRequest: %s", sstr.Str().data());
         }
 
         if (NON_YAML_KINDS.contains(kind)) {
@@ -1027,18 +786,9 @@ TConfigsDispatcher::TCheckKindsResult TConfigsDispatcher::CheckKinds(const TVect
     }
 
     if (yamlKinds && nonYamlKinds) {
-        Y_ABORT("both yaml and non yaml kinds in %s", errorContext);
+        Y_FAIL("both yaml and non yaml kinds in SetConfigSubscriptionRequest");
     }
 
-    return {yamlKinds, nonYamlKinds};
-}
-
-void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest::TPtr &ev)
-{
-    auto [yamlKinds, nonYamlKinds] = CheckKinds(
-        ev->Get()->ConfigItemKinds,
-        "SetConfigSubscriptionRequest handler");
-    Y_UNUSED(nonYamlKinds);
     auto kinds = KindsToBitMap(ev->Get()->ConfigItemKinds);
     auto subscriberActor = ev->Get()->Subscriber ? ev->Get()->Subscriber : ev->Sender;
 
@@ -1070,9 +820,9 @@ void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvSetConfigSubscriptionRe
             subscription->UpdateInProcess = MakeHolder<TEvConsole::TEvConfigNotificationRequest>();
             NKikimrConfig::TAppConfig trunc;
             if (YamlConfigEnabled) {
-                ReplaceConfigItems(YamlProtoConfig, trunc, FilterKinds(kinds), BaseConfig);
+                ReplaceConfigItems(YamlProtoConfig, trunc, kinds, InitialConfig);
             } else {
-                ReplaceConfigItems(CurrentConfig, trunc, FilterKinds(kinds), BaseConfig);
+                ReplaceConfigItems(CurrentConfig, trunc, kinds, InitialConfig);
             }
             subscription->UpdateInProcess->Record.MutableConfig()->CopyFrom(trunc);
             Y_FOR_EACH_BIT(kind, kinds) {
@@ -1160,22 +910,14 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigNotificationResponse::TPtr 
         subscription->UpdateInProcess = nullptr;
     }
 }
-
-
-void TConfigsDispatcher::Handle(TEvConsole::TEvGetNodeLabelsRequest::TPtr &ev) {
-    auto Response = MakeHolder<TEvConsole::TEvGetNodeLabelsResponse>();
-
-    for (const auto& [label, value] : Labels) {
-        auto *labelSer = Response->Record.MutableResponse()->add_labels();
-        labelSer->set_label(label);
-        labelSer->set_value(value);
-    }
-
-    Send(ev->Sender, Response.Release());
-}
-
-IActor *CreateConfigsDispatcher(const TConfigsDispatcherInitInfo& initInfo) {
-    return new TConfigsDispatcher(initInfo);
+    
+IActor *CreateConfigsDispatcher(
+    const NKikimrConfig::TAppConfig &config,
+    const TMap<TString, TString> &labels,
+    const NKikimrConfig::TAppConfig &initialCmsConfig,
+    const NKikimrConfig::TAppConfig &initialCmsYamlConfig)
+{
+    return new TConfigsDispatcher(config, labels, initialCmsConfig, initialCmsYamlConfig);
 }
 
 } // namespace NKikimr::NConsole

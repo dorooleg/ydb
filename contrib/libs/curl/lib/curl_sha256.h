@@ -7,8 +7,8 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Florin Petriuc, <petriuc.florin@gmail.com>
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 2017, Florin Petriuc, <petriuc.florin@gmail.com>
+ * Copyright (C) 2018 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -25,9 +25,7 @@
  *
  ***************************************************************************/
 
-#if !defined(CURL_DISABLE_AWS) || !defined(CURL_DISABLE_DIGEST_AUTH) \
-    || defined(USE_LIBSSH2)
-
+#ifndef CURL_DISABLE_CRYPTO_AUTH
 #include <curl/curl.h>
 #include "curl_hmac.h"
 
@@ -35,7 +33,7 @@ extern const struct HMAC_params Curl_HMAC_SHA256[1];
 
 #ifdef USE_WOLFSSL
 /* SHA256_DIGEST_LENGTH is an enum value in wolfSSL. Need to import it from
- * sha.h */
+ * sha.h*/
 #error #include <wolfssl/options.h>
 #error #include <wolfssl/openssl/sha.h>
 #else

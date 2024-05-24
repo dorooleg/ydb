@@ -1,7 +1,7 @@
 #pragma once
 
+#include "flat_fwd_conf.h"
 #include "flat_fwd_sieve.h"
-#include "flat_mem_snapshot.h"
 #include "flat_mem_warm.h"
 #include "flat_part_screen.h"
 #include "flat_part_iface.h"
@@ -37,8 +37,8 @@ namespace NFwd {
         {
             const auto &glob = memTable->GetBlobs()->Get(ref);
 
-            Y_ABORT_UNLESS(glob.Data, "External blob in TMemTable with no data");
-            Y_ABORT_UNLESS(!Blobs || ref >= Offset, "Unexpected ELargeObj reference");
+            Y_VERIFY(glob.Data, "External blob in TMemTable with no data");
+            Y_VERIFY(!Blobs || ref >= Offset, "Unexpected ELargeObj reference");
 
             bool omit = glob.Bytes() >= Edge && !TRowScheme::HasTag(Tags, tag);
 

@@ -33,11 +33,11 @@ struct TKesusTablet::TTxQuoterResourceAdd : public TTxBase {
         LOG_DEBUG_S(ctx, NKikimrServices::KESUS_TABLET,
             "[" << Self->TabletID() << "] TTxQuoterResourceAdd::Execute (sender=" << Sender
                 << ", cookie=" << Cookie << ", path=\"" << Record.GetResource().GetResourcePath()
-                    << "\", config=" << Record.GetResource().GetHierarchicalDRRResourceConfig() << ")");
+                    << "\", config=" << Record.GetResource().GetHierarhicalDRRResourceConfig() << ")");
 
         const auto& resourceDesc = Record.GetResource();
         if (const TQuoterResourceTree* resource = Self->QuoterResources.FindPath(resourceDesc.GetResourcePath())) {
-            if (NProtoBuf::IsEqual(resource->GetProps().GetHierarchicalDRRResourceConfig(), resourceDesc.GetHierarchicalDRRResourceConfig())) {
+            if (NProtoBuf::IsEqual(resource->GetProps().GetHierarhicalDRRResourceConfig(), resourceDesc.GetHierarhicalDRRResourceConfig())) {
                 THolder<TEvKesus::TEvAddQuoterResourceResult> reply =
                     MakeHolder<TEvKesus::TEvAddQuoterResourceResult>(
                         Ydb::StatusIds::ALREADY_EXISTS,
@@ -52,7 +52,7 @@ struct TKesusTablet::TTxQuoterResourceAdd : public TTxBase {
             return true;
         }
 
-        Y_ABORT_UNLESS(Self->NextQuoterResourceId > 0);
+        Y_VERIFY(Self->NextQuoterResourceId > 0);
 
         TString errorMessage;
         TQuoterResourceTree* resource = Self->QuoterResources.AddResource(Self->NextQuoterResourceId, Record.GetResource(), errorMessage);
@@ -84,7 +84,7 @@ struct TKesusTablet::TTxQuoterResourceAdd : public TTxBase {
             "[" << Self->TabletID() << "] TTxQuoterResourceAdd::Complete (sender=" << Sender
                 << ", cookie=" << Cookie << ")");
 
-        Y_ABORT_UNLESS(Reply);
+        Y_VERIFY(Reply);
         ctx.Send(Sender, std::move(Reply), 0, Cookie);
     }
 };
@@ -103,7 +103,7 @@ void TKesusTablet::Handle(TEvKesus::TEvAddQuoterResource::TPtr& ev) {
         return;
     }
 
-    if (!resourceDesc.HasHierarchicalDRRResourceConfig()) {
+    if (!resourceDesc.HasHierarhicalDRRResourceConfig()) {
         Send(ev->Sender,
             new TEvKesus::TEvAddQuoterResourceResult(
                 Ydb::StatusIds::BAD_REQUEST,

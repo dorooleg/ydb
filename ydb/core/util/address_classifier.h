@@ -1,7 +1,5 @@
 #pragma once
 
-#include <ydb/core/protos/netclassifier.pb.h>
-
 #include <library/cpp/ipmath/range_set.h>
 
 #include <util/generic/hash.h>

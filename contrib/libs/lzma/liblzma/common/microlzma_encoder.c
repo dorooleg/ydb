@@ -111,8 +111,7 @@ microlzma_encoder_init(lzma_next_coder *next, const lzma_allocator *allocator,
 
 	// Encode the properties byte. Bitwise-negation of it will be the
 	// first output byte.
-	if (lzma_lzma_lclppb_encode(options, &coder->props))
-		return LZMA_OPTIONS_ERROR;
+	return_if_error(lzma_lzma_lclppb_encode(options, &coder->props));
 
 	// Initialize the LZMA encoder.
 	const lzma_filter_info filters[2] = {

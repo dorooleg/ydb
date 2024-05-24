@@ -2,15 +2,14 @@
 
 #include <ydb/core/kqp/common/kqp_event_ids.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
-#include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
 #include <ydb/core/protos/config.pb.h>
 
 #include <ydb/library/yql/dq/runtime/dq_tasks_runner.h>
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor_async_io_factory.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/event_pb.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/event_pb.h>
 
 namespace NYql {
 namespace NDq {
@@ -33,15 +32,8 @@ struct TKqpNodeEvents {
 };
 
 struct TEvKqpNode {
-    struct TEvStartKqpTasksRequest : public TEventPBWithArena<TEvStartKqpTasksRequest, NKikimrKqp::TEvStartKqpTasksRequest, TKqpNodeEvents::EvStartKqpTasksRequest> {
-        using TBaseEv = TEventPBWithArena<TEvStartKqpTasksRequest, NKikimrKqp::TEvStartKqpTasksRequest, TKqpNodeEvents::EvStartKqpTasksRequest>;
-        using TBaseEv::TEventPBBase;
-
-        TEvStartKqpTasksRequest() = default;
-        explicit TEvStartKqpTasksRequest(TIntrusivePtr<NActors::TProtoArenaHolder> arena)
-            : TEventPBBase(std::move(arena))
-        {}
-    };
+    struct TEvStartKqpTasksRequest : public TEventPB<TEvStartKqpTasksRequest,
+        NKikimrKqp::TEvStartKqpTasksRequest, TKqpNodeEvents::EvStartKqpTasksRequest> {};
 
     struct TEvStartKqpTasksResponse : public TEventPB<TEvStartKqpTasksResponse,
         NKikimrKqp::TEvStartKqpTasksResponse, TKqpNodeEvents::EvStartKqpTasksResponse> {};
@@ -69,14 +61,12 @@ struct TEvKqpNode {
 struct IKqpNodeComputeActorFactory {
     virtual ~IKqpNodeComputeActorFactory() = default;
 
-    virtual IActor* CreateKqpComputeActor(const TActorId& executerId, ui64 txId, NYql::NDqProto::TDqTask* task,
-        const NYql::NDq::TComputeRuntimeSettings& settings, const NYql::NDq::TComputeMemoryLimits& memoryLimits,
-        NWilson::TTraceId traceId, TIntrusivePtr<NActors::TProtoArenaHolder> arena) = 0;
+    virtual IActor* CreateKqpComputeActor(const TActorId& executerId, ui64 txId, NYql::NDqProto::TDqTask&& task,
+        const NYql::NDq::TComputeRuntimeSettings& settings, const NYql::NDq::TComputeMemoryLimits& memoryLimits) = 0;
 };
 
 NActors::IActor* CreateKqpNodeService(const NKikimrConfig::TTableServiceConfig& tableServiceConfig,
-    TIntrusivePtr<TKqpCounters> counters, IKqpNodeComputeActorFactory* caFactory = nullptr, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory = nullptr,
-    const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup = std::nullopt);
+    TIntrusivePtr<TKqpCounters> counters, IKqpNodeComputeActorFactory* caFactory = nullptr, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory = nullptr);
 
 } // namespace NKqp
 } // namespace NKikimr

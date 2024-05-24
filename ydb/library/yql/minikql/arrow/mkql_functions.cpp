@@ -160,14 +160,14 @@ bool FindArrowFunction(TStringBuf name, const TArrayRef<TType*>& inputTypes, TTy
     }
 
     bool match = false;
-    switch (kernel->NullMode) {
-        case TKernel::ENullMode::Default:
+    switch (kernel->Family.NullMode) {
+        case TKernelFamily::ENullMode::Default:
             match = returnIsOptional == hasOptionals;
             break;
-        case TKernel::ENullMode::AlwaysNull:
+        case TKernelFamily::ENullMode::AlwaysNull:
             match = returnIsOptional;
             break;
-        case TKernel::ENullMode::AlwaysNotNull:
+        case TKernelFamily::ENullMode::AlwaysNotNull:
             match = !returnIsOptional;
             break;
     }

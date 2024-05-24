@@ -261,14 +261,17 @@ public:
             clientConfig.RetryPolicy = NTabletPipe::TClientRetryPolicy::WithRetries();
         }
 
-        auto &domainsInfo = AppData(ctx)->DomainsInfo;
-        if (!domainsInfo->Domain || domainsInfo->GetDomain()->DomainUid != DomainUid) {
+        auto &domainsInfo = *AppData(ctx)->DomainsInfo;
+        auto domainIt = domainsInfo.Domains.find(DomainUid);
+        if (domainIt == domainsInfo.Domains.end()) {
             // Report details
             ErrorReason = Sprintf("Incorrect DomainUid# %" PRIu64
                 " or kikimr domian configuration, Marker# HC9", (ui64)DomainUid);
             return SendReplyAndDie(CreateErrorReply(MSTATUS_ERROR, ctx), ctx);
         }
-        ui64 hiveTabletId = domainsInfo->GetHive();
+        auto &domain = domainIt->second;
+        ui64 hiveUid = domain->DefaultHiveUid;
+        ui64 hiveTabletId = domainsInfo.GetHive(hiveUid);
 
         if (Status == NKikimrProto::OK) {
             PipeClient = ctx.RegisterWithSameMailbox(NTabletPipe::CreateClient(ctx.SelfID, hiveTabletId, clientConfig));

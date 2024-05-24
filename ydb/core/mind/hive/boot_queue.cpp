@@ -4,14 +4,6 @@
 namespace NKikimr {
 namespace NHive {
 
-TBootQueue::TBootQueueRecord::TBootQueueRecord(const TTabletInfo& tablet, TNodeId suggestedNodeId)
-    : TabletId(tablet.GetLeader().Id)
-    , Priority(GetBootPriority(tablet))
-    , FollowerId(tablet.IsLeader() ? 0 : tablet.AsFollower().Id)
-    , SuggestedNodeId(suggestedNodeId)
-{
-}
-
 void TBootQueue::AddToBootQueue(TBootQueueRecord record) {
     BootQueue.push(record);
 }

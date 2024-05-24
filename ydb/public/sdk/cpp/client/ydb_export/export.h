@@ -125,3 +125,11 @@ private:
 
 } // namespace NExport
 } // namespace NYdb
+
+Y_DECLARE_OUT_SPEC(inline, NYdb::NExport::TExportToYtResponse, o, x) {
+    return x.Out(o);
+}
+
+Y_DECLARE_OUT_SPEC(inline, NYdb::NExport::TExportToS3Response, o, x) {
+    return x.Out(o);
+}

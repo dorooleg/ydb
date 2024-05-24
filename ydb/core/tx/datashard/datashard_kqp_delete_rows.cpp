@@ -47,8 +47,8 @@ public:
             if (!engineCtx.Host->IsMyKey(Owner.TableId, keyTuple)) {
                 return;
             }
-            Y_ABORT_UNLESS(engineCtx.ShardTableStats);
-            Y_ABORT_UNLESS(engineCtx.TaskTableStats);
+            Y_VERIFY(engineCtx.ShardTableStats);
+            Y_VERIFY(engineCtx.TaskTableStats);
 
             ui64 nEraseRow = engineCtx.ShardTableStats->NEraseRow;
 
@@ -142,16 +142,12 @@ IComputationNode* WrapKqpDeleteRows(TCallable& callable, const TComputationNodeF
         MKQL_ENSURE_S(inputIndex.emplace(TString(name), i).second);
 
         auto memberType = rowType->GetMemberType(i);
-        if (memberType->IsOptional()) {
-            memberType = AS_TYPE(TOptionalType, memberType)->GetItemType();
-        }
+        auto typeId = memberType->IsOptional()
+            ? AS_TYPE(TDataType, AS_TYPE(TOptionalType, memberType)->GetItemType())->GetSchemeType()
+            : AS_TYPE(TDataType, memberType)->GetSchemeType();
 
-        if (memberType->IsPg()) {
-            auto pgType = AS_TYPE(TPgType, memberType);
-            rowTypes[i] = NScheme::TTypeInfo(NScheme::NTypeIds::Pg, NPg::TypeDescFromPgTypeId(pgType->GetTypeId()));
-        } else {
-            rowTypes[i] = NScheme::TTypeInfo(AS_TYPE(TDataType, memberType)->GetSchemeType());
-        }
+        // TODO: support pg types
+        rowTypes[i] = NScheme::TTypeInfo(typeId);
     }
 
     TVector<ui32> keyIndices(tableInfo->KeyColumnIds.size());

@@ -33,7 +33,7 @@
 #include <iostream> 
 #define BOOST_FORMAT_OSTREAM_DEFINED
 
-#error #include <streambuf.h>
+#include <streambuf.h>
 #define BOOST_FORMAT_STREAMBUF_DEFINED
 
 #define BOOST_NO_TEMPLATE_STD_STREAM

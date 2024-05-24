@@ -35,9 +35,8 @@ public:
             ui64 cookie, NWilson::TTraceId traceId, TInstant now,
             TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters)
         : TBlobStorageGroupRequestActor(std::move(info), std::move(state), std::move(mon), source, cookie,
-                NKikimrServices::BS_PROXY_DISCOVER, false, {}, now, storagePoolCounters, ev->RestartCounter,
-                NWilson::TSpan(TWilson::BlobStorage, std::move(traceId), "DSProxy.Discover(mirror-3of4)"),
-                std::move(ev->ExecutionRelay))
+                std::move(traceId), NKikimrServices::BS_PROXY_DISCOVER, false, {}, now, storagePoolCounters,
+                ev->RestartCounter, "DSProxy.Discover(mirror-3of4)", std::move(ev->ExecutionRelay))
         , TabletId(ev->TabletId)
         , MinGeneration(ev->MinGeneration)
         , StartTime(now)
@@ -91,7 +90,7 @@ public:
         if (errorReason) {
             ErrorReason = std::move(*errorReason);
         }
-        Y_ABORT_UNLESS(status != NKikimrProto::OK);
+        Y_VERIFY(status != NKikimrProto::OK);
         auto formatFailedGroupDisks = [&] {
             TStringBuilder s;
             s << "[";
@@ -159,7 +158,7 @@ public:
             TEvBlobStorage::TEvVGet::EFlags::None, Nothing(), state.From, to, MaxBlobsAtOnce, nullptr,
             TEvBlobStorage::TEvVGet::TForceBlockTabletData(TabletId, ForceBlockedGeneration)), 0);
         const EDiskState prev = std::exchange(state.State, EDiskState::READ_PENDING);
-        Y_ABORT_UNLESS(prev == EDiskState::IDLE);
+        Y_VERIFY(prev == EDiskState::IDLE);
     }
 
     void Handle(TEvBlobStorage::TEvVGetResult::TPtr ev) {
@@ -173,9 +172,9 @@ public:
         }
         const TVDiskID& vdiskId = VDiskIDFromVDiskID(record.GetVDiskID());
         TDiskState& disk = DiskState[Info->GetOrderNumber(vdiskId)];
-        Y_DEBUG_ABORT_UNLESS(disk.VDiskId == vdiskId);
+        Y_VERIFY_DEBUG(disk.VDiskId == vdiskId);
         const EDiskState prev = std::exchange(disk.State, EDiskState::IDLE);
-        Y_ABORT_UNLESS(prev == EDiskState::READ_PENDING);
+        Y_VERIFY(prev == EDiskState::READ_PENDING);
         NumUnrepliedDisks -= !std::exchange(disk.Replied, true);
         switch (record.GetStatus()) {
             case NKikimrProto::OK: {
@@ -250,11 +249,11 @@ public:
                 if (disk.Covered(id)) {
                     --numPendingDisks; // this disk has already covered this blob
                 } else if (disk.State == EDiskState::IDLE) {
-                    Y_ABORT_UNLESS(disk.Replied);
-                    Y_ABORT_UNLESS(disk.From != MaxBlobId);
+                    Y_VERIFY(disk.Replied);
+                    Y_VERIFY(disk.From != MaxBlobId);
                     IssueRangeReadQuery(disk);
                 } else {
-                    Y_ABORT_UNLESS(disk.State == EDiskState::READ_PENDING);
+                    Y_VERIFY(disk.State == EDiskState::READ_PENDING);
                 }
             }
             if (numPendingDisks) {
@@ -271,7 +270,7 @@ public:
             Doubted = false;
             switch (Info->GetTopology().GetQuorumChecker().GetBlobState(layout, failedSubgroupDisks)) {
                 case TBlobStorageGroupInfo::EBS_DISINTEGRATED:
-                    Y_ABORT("incorrect state"); // we should not reach this point as we check failure model a bit earlier
+                    Y_FAIL("incorrect state"); // we should not reach this point as we check failure model a bit earlier
 
                 case TBlobStorageGroupInfo::EBS_UNRECOVERABLE_FRAGMENTARY:
                     // this blob is not recoverable, so, possibly, it must have never been written; we may skip it
@@ -292,19 +291,19 @@ public:
                 }
 
                 default:
-                    Y_ABORT("unexpected blob state");
+                    Y_FAIL("unexpected blob state");
             }
         }
 
         // ensure there are no remaining blobs to handle
-        Y_ABORT_UNLESS(BlobMetadata.empty());
+        Y_VERIFY(BlobMetadata.empty());
 
         // handle NODATA situation when all the disks are finished
         bool issuedMoreQueries = false;
         for (TDiskState& disk : DiskState) {
             if (disk.State == EDiskState::IDLE) {
-                Y_ABORT_UNLESS(disk.Replied);
-                Y_ABORT_UNLESS(disk.From != MaxBlobId);
+                Y_VERIFY(disk.Replied);
+                Y_VERIFY(disk.From != MaxBlobId);
                 IssueRangeReadQuery(disk);
                 issuedMoreQueries = true;
             }
@@ -316,11 +315,11 @@ public:
     }
 
     void Handle(TEvBlobStorage::TEvGetResult::TPtr ev) {
-        Y_ABORT_UNLESS(GetIssuedFor);
+        Y_VERIFY(GetIssuedFor);
         auto *msg = ev->Get();
-        Y_ABORT_UNLESS(msg->ResponseSz == 1);
+        Y_VERIFY(msg->ResponseSz == 1);
         auto& resp = msg->Responses[0];
-        Y_ABORT_UNLESS(resp.Id == *GetIssuedFor);
+        Y_VERIFY(resp.Id == *GetIssuedFor);
         GetIssuedFor.reset();
         switch (resp.Status) {
             case NKikimrProto::NODATA:
@@ -339,8 +338,8 @@ public:
                 break;
 
             case NKikimrProto::OK:
-                SendResponseAndDie(std::make_unique<TEvBlobStorage::TEvDiscoverResult>(resp.Id, MinGeneration,
-                    resp.Buffer.ConvertToString(), BlockedGeneration));
+                SendResponseAndDie(std::make_unique<TEvBlobStorage::TEvDiscoverResult>(resp.Id, MinGeneration, resp.Buffer,
+                    BlockedGeneration));
                 break;
 
             default:

@@ -94,7 +94,15 @@ IComputationNode* WrapTestStream(TCallable& callable, const TComputationNodeFact
     return new TTestStreamWrapper<WithYields>(ctx.Mutables, peakStep);
 }
 
-TComputationNodeFactory GetNodeFactory() {
+TIntrusivePtr<IRandomProvider> CreateRandomProvider() {
+    return CreateDeterministicRandomProvider(1);
+}
+
+TIntrusivePtr<ITimeProvider> CreateTimeProvider() {
+    return CreateDeterministicTimeProvider(10000000);
+}
+
+TComputationNodeFactory GetTestFactory() {
     return [](TCallable& callable, const TComputationNodeFactoryContext& ctx) -> IComputationNode* {
         if (callable.GetType()->GetName() == "TestList") {
             return new TExternalComputationNode(ctx.Mutables);
@@ -109,8 +117,41 @@ TComputationNodeFactory GetNodeFactory() {
     };
 }
 
+template<bool UseLLVM>
+struct TSetup_ {
+    TSetup_()
+        : Alloc(__LOCATION__)
+    {
+        FunctionRegistry = CreateFunctionRegistry(CreateBuiltinRegistry());
+        RandomProvider = CreateRandomProvider();
+        TimeProvider = CreateTimeProvider();
+
+        Env.Reset(new TTypeEnvironment(Alloc));
+        PgmBuilder.Reset(new TProgramBuilder(*Env, *FunctionRegistry));
+    }
+
+    TAutoPtr<IComputationGraph> BuildGraph(TRuntimeNode pgm, EGraphPerProcess graphPerProcess = EGraphPerProcess::Multi, const std::vector<TNode*>& entryPoints = std::vector<TNode*>()) {
+        Explorer.Walk(pgm.GetNode(), *Env);
+        TComputationPatternOpts opts(Alloc.Ref(), *Env, GetTestFactory(), FunctionRegistry.Get(),
+            NUdf::EValidateMode::None, NUdf::EValidatePolicy::Exception, UseLLVM ? "" : "OFF", graphPerProcess);
+        Pattern = MakeComputationPattern(Explorer, pgm, entryPoints, opts);
+        return Pattern->Clone(opts.ToComputationOptions(*RandomProvider, *TimeProvider));
+    }
+
+    TIntrusivePtr<IFunctionRegistry> FunctionRegistry;
+    TIntrusivePtr<IRandomProvider> RandomProvider;
+    TIntrusivePtr<ITimeProvider> TimeProvider;
+
+    TScopedAlloc Alloc;
+    THolder<TTypeEnvironment> Env;
+    THolder<TProgramBuilder> PgmBuilder;
+
+    TExploringNodeVisitor Explorer;
+    IComputationPattern::TPtr Pattern;
+};
+
 template <bool LLVM, bool WithYields = false>
-TRuntimeNode MakeStream(TSetup<LLVM>& setup, ui64 peakStep) {
+TRuntimeNode MakeStream(TSetup_<LLVM>& setup, ui64 peakStep) {
     TProgramBuilder& pb = *setup.PgmBuilder;
 
     TCallableBuilder callableBuilder(*setup.Env, WithYields ? "TestYieldStream" : "TestStream",
@@ -173,7 +214,7 @@ TRuntimeNode StreamToString(TProgramBuilder& pb, TRuntimeNode stream) {
 
 Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     Y_UNIT_TEST_LLVM(TestFullCombineWithOptOut) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -190,7 +231,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithListOut) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -212,7 +253,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithStreamOut) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -234,7 +275,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithOptOutAndYields) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -254,7 +295,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithListAndYields) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -279,7 +320,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithStreamAndYields) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -304,7 +345,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestPartialFlush) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -333,7 +374,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestCombineInSingleProc) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -350,7 +391,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestCombineSwithYield) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -380,7 +421,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamTest) {
 
 Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     Y_UNIT_TEST_LLVM(TestSumDoubleBooleanKeys) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         double positive = 0.0, negative = 0.0;
         const auto t = TInstant::Now();
@@ -426,7 +467,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumDoubleBooleanKeys) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         double pSum = 0.0, nSum = 0.0, pMax = 0.0, nMax = -1000.0, pMin = 1000.0, nMin = 0.0;
         const auto t = TInstant::Now();
@@ -491,7 +532,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestSumDoubleSmallKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::unordered_map<i8, double> expects(201);
         const auto t = TInstant::Now();
@@ -548,7 +589,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumDoubleSmallKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::unordered_map<i8, std::array<double, 3U>> expects(201);
         const auto t = TInstant::Now();
@@ -608,7 +649,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestSumDoubleStringKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::vector<std::pair<std::string, double>> stringI8Samples(I8Samples.size());
         std::transform(I8Samples.cbegin(), I8Samples.cend(), stringI8Samples.begin(), [](std::pair<i8, double> src){ return std::make_pair(ToString(src.first), src.second); });
@@ -668,7 +709,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumDoubleStringKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::vector<std::pair<std::string, double>> stringI8Samples(I8Samples.size());
         std::transform(I8Samples.cbegin(), I8Samples.cend(), stringI8Samples.begin(), [](std::pair<i8, double> src){ return std::make_pair(ToString(src.first), src.second); });
@@ -731,7 +772,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumTupleKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::vector<std::pair<std::pair<ui32, std::string>, double>> pairI8Samples(Ui16Samples.size());
         std::transform(Ui16Samples.cbegin(), Ui16Samples.cend(), pairI8Samples.begin(), [](std::pair<ui32, double> src){ return std::make_pair(std::make_pair(ui32(src.first / 10U % 100U), ToString(src.first % 10U)), src.second); });
@@ -802,7 +843,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineStreamPerfTest) {
 #if !defined(MKQL_RUNTIME_VERSION) || MKQL_RUNTIME_VERSION >= 3u
 Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     Y_UNIT_TEST_LLVM(TestFullCombineWithOptOut) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -819,7 +860,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithListOut) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -841,7 +882,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithStreamOut) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -863,7 +904,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithOptOutAndYields) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -883,7 +924,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithListAndYields) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -908,7 +949,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestFullCombineWithStreamAndYields) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             const auto item = pb.Member(state, "a");
@@ -933,7 +974,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestPartialFlush) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -962,7 +1003,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestCombineInSingleProc) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -979,7 +1020,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestCombineSwithYield) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
         const auto finish = [&](TRuntimeNode /*key*/, TRuntimeNode state) {
             return pb.NewOptional(pb.Member(state, "a"));
@@ -1009,7 +1050,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowTest) {
 
 Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     Y_UNIT_TEST_LLVM(TestSumDoubleBooleanKeys) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         double positive = 0.0, negative = 0.0;
         const auto t = TInstant::Now();
@@ -1055,7 +1096,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumDoubleBooleanKeys) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         double pSum = 0.0, nSum = 0.0, pMax = 0.0, nMax = -1000.0, pMin = 1000.0, nMin = 0.0;
         const auto t = TInstant::Now();
@@ -1120,7 +1161,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestSumDoubleSmallKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::unordered_map<i8, double> expects(201);
         const auto t = TInstant::Now();
@@ -1177,7 +1218,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumDoubleSmallKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::unordered_map<i8, std::array<double, 3U>> expects(201);
         const auto t = TInstant::Now();
@@ -1237,7 +1278,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestSumDoubleStringKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::vector<std::pair<std::string, double>> stringI8Samples(I8Samples.size());
         std::transform(I8Samples.cbegin(), I8Samples.cend(), stringI8Samples.begin(), [](std::pair<i8, double> src){ return std::make_pair(ToString(src.first), src.second); });
@@ -1297,7 +1338,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumDoubleStringKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::vector<std::pair<std::string, double>> stringI8Samples(I8Samples.size());
         std::transform(I8Samples.cbegin(), I8Samples.cend(), stringI8Samples.begin(), [](std::pair<i8, double> src){ return std::make_pair(ToString(src.first), src.second); });
@@ -1360,7 +1401,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     }
 
     Y_UNIT_TEST_LLVM(TestMinMaxSumTupleKey) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         std::vector<std::pair<std::pair<ui32, std::string>, double>> pairI8Samples(Ui16Samples.size());
         std::transform(Ui16Samples.cbegin(), Ui16Samples.cend(), pairI8Samples.begin(), [](std::pair<ui16, double> src){ return std::make_pair(std::make_pair(ui32(src.first / 10U % 100U), ToString(src.first % 10U)), src.second); });
@@ -1431,7 +1472,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLCombineFlowPerfTest) {
     const auto border = 9124596000000000ULL;
 
     Y_UNIT_TEST_LLVM(TestTpch) {
-        TSetup<LLVM> setup(GetNodeFactory());
+        TSetup_<LLVM> setup;
 
         struct TPairHash { size_t operator()(const std::pair<std::string_view, std::string_view>& p) const { return CombineHashes(std::hash<std::string_view>()(p.first), std::hash<std::string_view>()(p.second)); } };
 

@@ -1,6 +1,6 @@
 #include "mkql_builtins_compare.h"
 #include "mkql_builtins_datetime.h"
-#include "mkql_builtins_decimal.h" // Y_IGNORE
+#include "mkql_builtins_decimal.h"
 #include "mkql_builtins_string_kernels.h"
 
 #include <ydb/library/yql/minikql/mkql_type_ops.h>
@@ -145,7 +145,7 @@ struct TLess : public TCompareArithmeticBinary<TLeft, TRight, TLess<TLeft, TRigh
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenLess<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenLess<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -155,24 +155,24 @@ struct TLessOp;
 
 template<typename TLeft, typename TRight>
 struct TLessOp<TLeft, TRight, bool> : public TLess<TLeft, TRight, false> {
-    static constexpr auto NullMode = TKernel::ENullMode::Default;
+    static constexpr bool DefaultNulls = true;
 };
 
 template<typename TLeft, typename TRight, bool Aggr>
-struct TDiffDateLess : public TCompareArithmeticBinary<typename TLeft::TLayout, typename TRight::TLayout, TDiffDateLess<TLeft, TRight, Aggr>>, public TAggrLess {
-    static bool Do(typename TLeft::TLayout left, typename TRight::TLayout right)
+struct TDiffDateLess : public TCompareArithmeticBinary<TLeft, TRight, TDiffDateLess<TLeft, TRight, Aggr>>, public TAggrLess {
+    static bool Do(TLeft left, TRight right)
     {
         return std::is_same<TLeft, TRight>::value ?
-            Less<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right):
+            Less<TLeft, TRight, Aggr>(left, right):
             Less<TScaledDate, TScaledDate, Aggr>(ToScaledDate<TLeft>(left), ToScaledDate<TRight>(right));
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         return std::is_same<TLeft, TRight>::value ?
-            GenLess<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right, context, block):
+            GenLess<TLeft, TRight, Aggr>(left, right, context, block):
             GenLess<TScaledDate, TScaledDate, Aggr>(GenToScaledDate<TLeft>(left, context, block), GenToScaledDate<TRight>(right, context, block), context, block);
     }
 #endif
@@ -182,8 +182,8 @@ template<typename TLeft, typename TRight, typename TOutput>
 struct TDiffDateLessOp;
 
 template<typename TLeft, typename TRight>
-struct TDiffDateLessOp<TLeft, TRight, NUdf::TDataType<bool>> : public TDiffDateLess<TLeft, TRight, false> {
-    static constexpr auto NullMode = TKernel::ENullMode::Default;
+struct TDiffDateLessOp<TLeft, TRight, bool> : public TDiffDateLess<TLeft, TRight, false> {
+    static constexpr bool DefaultNulls = true;
 };
 
 template<typename TLeft, typename TRight, bool Aggr>
@@ -200,12 +200,12 @@ struct TAggrTzDateLess : public TCompareArithmeticBinaryWithTimezone<TLeft, TRig
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenLess<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenLess<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 
     static Value* GenTz(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenLess<ui16, ui16, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenLess<ui16, ui16, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -219,7 +219,7 @@ struct TCustomLess : public TAggrLess {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto res = CallBinaryUnboxedValueFunction(&CompareCustoms<Slot>, Type::getInt32Ty(context), left, right, ctx.Codegen, block);
         const auto comp = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_SLT, res, ConstantInt::get(res->getType(), 0), "less", block);
         ValueCleanup(EValueRepresentation::String, left, ctx, block);
@@ -239,7 +239,7 @@ struct TDecimalLess {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto lok = NDecimal::GenIsComparable(l, context, block);
@@ -262,7 +262,7 @@ struct TDecimalAggrLess : public TAggrLess {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto ls = GenLessSigned(l, r, block);
@@ -278,7 +278,6 @@ void RegisterLess(IBuiltinFunctionRegistry& registry) {
 
     RegisterComparePrimitive<TLess, TCompareArgsOpt>(registry, name);
     RegisterCompareDatetime<TDiffDateLess, TCompareArgsOpt>(registry, name);
-    RegisterCompareBigDatetime<TDiffDateLess, TCompareArgsOpt>(registry, name);
 
     RegisterCompareStrings<TCustomLess, TCompareArgsOpt>(registry, name);
     RegisterCompareCustomOpt<NUdf::TDataType<NUdf::TDecimal>, NUdf::TDataType<NUdf::TDecimal>, TDecimalLess, TCompareArgsOpt>(registry, name);

@@ -1,7 +1,5 @@
 #include "flat_dbase_scheme.h"
 
-#include <ydb/core/scheme/protos/type_info.pb.h>
-
 namespace NKikimr {
 namespace NTable {
 
@@ -58,13 +56,14 @@ TAutoPtr<TSchemeChanges> TScheme::GetSnapshot() const {
     delta.SetExecutorLogFlushPeriod(Executor.LogFlushPeriod);
     delta.SetExecutorResourceProfile(Executor.ResourceProfile);
     delta.SetExecutorFastLogPolicy(Executor.LogFastTactic);
+
     return delta.Flush();
 }
 
 
 TAlter& TAlter::Merge(const TSchemeChanges &log)
 {
-    Y_ABORT_UNLESS(&Log != &log, "Cannot merge changes onto itself");
+    Y_VERIFY(&Log != &log, "Cannot merge changes onto itself");
 
     int added = log.DeltaSize();
     if (added > 0) {
@@ -100,7 +99,7 @@ TAlter& TAlter::DropTable(ui32 id)
 
 TAlter& TAlter::AddColumn(ui32 table, const TString& name, ui32 id, ui32 type, bool notNull, TCell null)
 {
-    Y_ABORT_UNLESS(type != (ui32)NScheme::NTypeIds::Pg, "No pg type data");
+    Y_VERIFY(type != (ui32)NScheme::NTypeIds::Pg, "No pg type data");
     return AddPgColumn(table, name, id, type, 0, "", notNull, null);
 }
 
@@ -315,12 +314,6 @@ TAlter& TAlter::SetEraseCache(ui32 tableId, bool enabled, ui32 minRows, ui32 max
     return ApplyLastRecord();
 }
 
-TAlter& TAlter::SetRewrite()
-{
-    Log.SetRewrite(true);
-    return *this;
-}
-
 TAlter::operator bool() const noexcept
 {
     return Log.DeltaSize() > 0;
@@ -329,7 +322,7 @@ TAlter::operator bool() const noexcept
 TAutoPtr<TSchemeChanges> TAlter::Flush()
 {
     TAutoPtr<TSchemeChanges> log(new TSchemeChanges);
-    log->Swap(&Log);
+    log->MutableDelta()->Swap(Log.MutableDelta());
     return log;
 }
 
@@ -337,7 +330,7 @@ TAlter& TAlter::ApplyLastRecord()
 {
     if (Sink) {
         int deltasCount = Log.DeltaSize();
-        Y_ABORT_UNLESS(deltasCount > 0);
+        Y_VERIFY(deltasCount > 0);
 
         if (!Sink->ApplyAlterRecord(Log.GetDelta(deltasCount - 1))) {
             Log.MutableDelta()->RemoveLast();

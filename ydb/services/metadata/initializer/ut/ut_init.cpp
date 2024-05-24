@@ -19,7 +19,7 @@
 #include <ydb/services/metadata/secret/snapshot.h>
 #include <ydb/services/metadata/service.h>
 
-#include <ydb/library/actors/core/av_bootstrapped.h>
+#include <library/cpp/actors/core/av_bootstrapped.h>
 #include <library/cpp/protobuf/json/proto2json.h>
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -87,7 +87,7 @@ Y_UNIT_TEST_SUITE(Initializer) {
             switch (ev->GetTypeRewrite()) {
                 hFunc(NMetadata::NProvider::TEvManagerPrepared, Handle);
                 default:
-                    Y_ABORT_UNLESS(false);
+                    Y_VERIFY(false);
             }
         }
 
@@ -108,9 +108,7 @@ Y_UNIT_TEST_SUITE(Initializer) {
         ui32 grpcPort = pm.GetPort();
         ui32 msgbPort = pm.GetPort();
 
-        NKikimrProto::TAuthConfig authConfig;
-        authConfig.SetUseBuiltinDomain(true);
-        Tests::TServerSettings serverSettings(msgbPort, authConfig);
+        Tests::TServerSettings serverSettings(msgbPort);
         serverSettings.Port = msgbPort;
         serverSettings.GrpcPort = grpcPort;
         serverSettings.SetDomainName("Root")

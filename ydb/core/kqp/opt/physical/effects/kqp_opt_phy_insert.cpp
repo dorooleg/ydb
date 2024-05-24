@@ -1,6 +1,5 @@
 #include "kqp_opt_phy_effects_rules.h"
 #include "kqp_opt_phy_effects_impl.h"
-#include "kqp_opt_phy_uniq_helper.h"
 
 namespace NKikimr::NKqp::NOpt {
 
@@ -9,22 +8,178 @@ using namespace NYql::NDq;
 using namespace NYql::NNodes;
 
 TMaybeNode<TDqCnUnionAll> MakeConditionalInsertRows(const TExprBase& input, const TKikimrTableDescription& table,
-    const TMaybe<THashSet<TStringBuf>>& inputColumns, bool abortOnError, TPositionHandle pos, TExprContext& ctx)
+    bool abortOnError, TPositionHandle pos, TExprContext& ctx)
 {
     auto condenseResult = CondenseInput(input, ctx);
     if (!condenseResult) {
         return {};
     }
 
-    auto helper = CreateInsertUniqBuildHelper(table, inputColumns, pos, ctx);
-    auto computeKeysStage = helper->CreateComputeKeysStage(condenseResult.GetRef(), pos, ctx);
+    TCoArgument rowsListArg(ctx.NewArgument(pos, "rows_list"));
 
-    auto inputPrecompute = helper->CreateInputPrecompute(computeKeysStage, pos, ctx);
-    auto uniquePrecomputes = helper->CreateUniquePrecompute(computeKeysStage, pos, ctx);
+    auto dict = Build<TCoToDict>(ctx, pos)
+        .List(rowsListArg)
+        .KeySelector(MakeTableKeySelector(table, pos, ctx))
+        .PayloadSelector()
+            .Args({"stub"})
+            .Body<TCoVoid>()
+                .Build()
+            .Build()
+        .Settings()
+            .Add().Build("One")
+            .Add().Build("Hashed")
+            .Build()
+        .Done();
+
+    auto dictKeys = Build<TCoDictKeys>(ctx, pos)
+        .Dict(dict)
+        .Done();
+
+    auto areKeysUniqueValue = Build<TCoCmpEqual>(ctx, pos)
+        .Left<TCoLength>()
+            .List(rowsListArg)
+            .Build()
+        .Right<TCoLength>()
+            .List(dict)
+            .Build()
+        .Done();
+
+    auto variantType = Build<TCoVariantType>(ctx, pos)
+        .UnderlyingType<TCoTupleType>()
+            .Add<TCoTypeOf>()
+                .Value(rowsListArg)
+                .Build()
+            .Add<TCoTypeOf>()
+                .Value(dictKeys)
+                .Build()
+            .Add<TCoTypeOf>()
+                .Value(areKeysUniqueValue)
+                .Build()
+            .Build()
+        .Done();
+
+    auto computeKeysStage = Build<TDqStage>(ctx, pos)
+        .Inputs()
+            .Add(condenseResult->StageInputs)
+            .Build()
+        .Program()
+            .Args(condenseResult->StageArgs)
+            .Body<TCoFlatMap>()
+                .Input(condenseResult->Stream)
+                .Lambda()
+                    .Args({rowsListArg})
+                    .Body<TCoAsList>()
+                        .Add<TCoVariant>()
+                            .Item(rowsListArg)
+                            .Index().Build("0")
+                            .VarType(variantType)
+                            .Build()
+                        .Add<TCoVariant>()
+                            .Item(dictKeys)
+                            .Index().Build("1")
+                            .VarType(variantType)
+                            .Build()
+                        .Add<TCoVariant>()
+                            .Item(areKeysUniqueValue)
+                            .Index().Build("2")
+                            .VarType(variantType)
+                            .Build()
+                        .Build()
+                    .Build()
+                .Build()
+            .Build()
+        .Settings().Build()
+        .Done();
+
+    auto inputPrecompute = Build<TDqPhyPrecompute>(ctx, pos)
+        .Connection<TDqCnValue>()
+           .Output()
+               .Stage(computeKeysStage)
+               .Index().Build("0")
+               .Build()
+           .Build()
+        .Done();
+
+    auto lookupKeysPrecompute = Build<TDqPhyPrecompute>(ctx, pos)
+        .Connection<TDqCnValue>()
+           .Output()
+               .Stage(computeKeysStage)
+               .Index().Build("1")
+               .Build()
+           .Build()
+        .Done();
+
+    auto areKeysUniquePrecompute = Build<TDqPhyPrecompute>(ctx, pos)
+        .Connection<TDqCnValue>()
+           .Output()
+               .Stage(computeKeysStage)
+               .Index().Build("2")
+               .Build()
+           .Build()
+        .Done();
 
     auto _true = MakeBool(pos, true, ctx);
+    auto _false = MakeBool(pos, false, ctx);
 
-    auto aggrStage = helper->CreateLookupExistStage(computeKeysStage, table, _true, pos, ctx);
+    // Returns optional<bool>: <none> - nothing found, <false> - at least one key exists
+    auto lookupStage = Build<TDqStage>(ctx, pos)
+        .Inputs()
+            .Add(lookupKeysPrecompute)
+            .Build()
+        .Program()
+            .Args({"keys_list"})
+            .Body<TCoFlatMap>()
+                .Input<TCoTake>()
+                    .Input<TKqpLookupTable>()
+                        .Table(BuildTableMeta(table, pos, ctx))
+                        .LookupKeys<TCoIterator>()
+                            .List("keys_list")
+                            .Build()
+                        .Columns()
+                            .Build()
+                        .Build()
+                    .Count<TCoUint64>()
+                        .Literal().Build("1")
+                        .Build()
+                    .Build()
+                .Lambda()
+                    .Args({"row"})
+                    .Body<TCoJust>()
+                        .Input(_false)
+                        .Build()
+                    .Build()
+                .Build()
+            .Build()
+        .Settings().Build()
+        .Done();
+
+    // Returns <bool>: <true> - nothing found, <false> - at least one key exists
+    auto aggrStage = Build<TDqStage>(ctx, pos)
+        .Inputs()
+            .Add<TDqCnUnionAll>()
+                .Output()
+                    .Stage(lookupStage)
+                    .Index().Build("0")
+                    .Build()
+                .Build()
+            .Build()
+        .Program()
+            .Args({"row"})
+            .Body<TCoCondense>()
+                .Input("row")
+                .State(_true)
+                .SwitchHandler()
+                    .Args({"item", "state"})
+                    .Body(_false)
+                    .Build()
+                .UpdateHandler()
+                    .Args({"item", "state"})
+                    .Body(_false)
+                    .Build()
+                .Build()
+            .Build()
+        .Settings().Build()
+        .Done();
 
     // Returns <bool>: <true> - no existing keys, <false> - at least one key exists
     auto noExistingKeysPrecompute = Build<TDqPhyPrecompute>(ctx, pos)
@@ -36,30 +191,21 @@ TMaybeNode<TDqCnUnionAll> MakeConditionalInsertRows(const TExprBase& input, cons
             .Build()
         .Done();
 
-    struct TUniqueCheckNodes {
-        TUniqueCheckNodes(size_t sz) {
-            Bodies.reserve(sz);
-            Args.reserve(sz);
-        }
-        TVector<TExprNode::TPtr> Bodies;
-        TVector<TCoArgument> Args;
-    } uniqueCheckNodes(helper->GetChecksNum());
-
+    // Build condition checks depending on INSERT kind
+    TCoArgument inputRowsArg(ctx.NewArgument(pos, "input_rows"));
+    TCoArgument areKeysUniquesArg(ctx.NewArgument(pos, "are_keys_unique"));
     TCoArgument noExistingKeysArg(ctx.NewArgument(pos, "no_existing_keys"));
+
+    TExprNode::TPtr uniqueKeysCheck;
     TExprNode::TPtr noExistingKeysCheck;
 
-    // Build condition checks depending on INSERT kind
     if (abortOnError) {
-        for (size_t i = 0; i < helper->GetChecksNum(); i++) {
-            uniqueCheckNodes.Args.emplace_back(ctx.NewArgument(pos, "are_keys_unique"));
-            uniqueCheckNodes.Bodies.emplace_back(Build<TKqpEnsure>(ctx, pos)
-                .Value(_true)
-                .Predicate(uniqueCheckNodes.Args.back())
-                .IssueCode().Build(ToString((ui32) TIssuesIds::KIKIMR_CONSTRAINT_VIOLATION))
-                .Message(MakeMessage("Duplicated keys found.", pos, ctx))
-                .Done().Ptr()
-            );
-        }
+        uniqueKeysCheck = Build<TKqpEnsure>(ctx, pos)
+            .Value(_true)
+            .Predicate(areKeysUniquesArg)
+            .IssueCode().Build(ToString((ui32) TIssuesIds::KIKIMR_CONSTRAINT_VIOLATION))
+            .Message(MakeMessage("Duplicated keys found.", pos, ctx))
+            .Done().Ptr();
 
         noExistingKeysCheck = Build<TKqpEnsure>(ctx, pos)
             .Value(_true)
@@ -68,36 +214,25 @@ TMaybeNode<TDqCnUnionAll> MakeConditionalInsertRows(const TExprBase& input, cons
             .Message(MakeMessage("Conflict with existing key.", pos, ctx))
             .Done().Ptr();
     } else {
-        for (size_t i = 0; i < helper->GetChecksNum(); i++) {
-            uniqueCheckNodes.Args.emplace_back(ctx.NewArgument(pos, "are_keys_unique"));
-            uniqueCheckNodes.Bodies.emplace_back(uniqueCheckNodes.Args.back().Ptr());
-        }
-
+        uniqueKeysCheck = areKeysUniquesArg.Ptr();
         noExistingKeysCheck = noExistingKeysArg.Ptr();
     }
 
-
-    TCoArgument inputRowsArg(ctx.NewArgument(pos, "input_rows"));
     // Final pure compute stage to compute rows to insert and check for both conditions:
     // 1. No rows were found in table PK from input
     // 2. No duplicate PKs were found in input
-    TVector<TCoArgument> args;
-    args.reserve(uniqueCheckNodes.Args.size() + 2);
-    args.emplace_back(inputRowsArg);
-    args.insert(args.end(), uniqueCheckNodes.Args.begin(), uniqueCheckNodes.Args.end());
-    args.emplace_back(noExistingKeysArg);
     auto conditionStage = Build<TDqStage>(ctx, pos)
         .Inputs()
             .Add(inputPrecompute)
-            .Add(uniquePrecomputes)
+            .Add(areKeysUniquePrecompute)
             .Add(noExistingKeysPrecompute)
             .Build()
         .Program()
-            .Args(args)
+            .Args({inputRowsArg, areKeysUniquesArg, noExistingKeysArg})
             .Body<TCoToStream>()
                 .Input<TCoIfStrict>()
                     .Predicate<TCoAnd>()
-                        .Add(uniqueCheckNodes.Bodies)
+                        .Add(uniqueKeysCheck)
                         .Add(noExistingKeysCheck)
                         .Build()
                     .ThenValue(inputRowsArg)
@@ -127,8 +262,7 @@ TExprBase KqpBuildInsertStages(TExprBase node, TExprContext& ctx, const TKqpOpti
     bool abortOnError = insert.OnConflict().Value() == "abort"sv;
     const auto& table = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, insert.Table().Path());
 
-    const static TMaybe<THashSet<TStringBuf>> empty;
-    auto insertRows = MakeConditionalInsertRows(insert.Input(), table, empty, abortOnError, insert.Pos(), ctx);
+    auto insertRows = MakeConditionalInsertRows(insert.Input(), table, abortOnError, insert.Pos(), ctx);
     if (!insertRows) {
         return node;
     }
@@ -137,7 +271,6 @@ TExprBase KqpBuildInsertStages(TExprBase node, TExprContext& ctx, const TKqpOpti
         .Table(insert.Table())
         .Input(insertRows.Cast())
         .Columns(insert.Columns())
-        .ReturningColumns(insert.ReturningColumns())
         .Done();
 }
 

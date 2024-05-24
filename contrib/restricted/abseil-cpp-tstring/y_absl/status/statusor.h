@@ -39,20 +39,15 @@
 #include <exception>
 #include <initializer_list>
 #include <new>
-#include <ostream>
 #include <util/generic/string.h>
 #include <type_traits>
 #include <utility>
 
 #include "y_absl/base/attributes.h"
-#include "y_absl/base/nullability.h"
 #include "y_absl/base/call_once.h"
 #include "y_absl/meta/type_traits.h"
 #include "y_absl/status/internal/statusor_internal.h"
 #include "y_absl/status/status.h"
-#include "y_absl/strings/has_absl_stringify.h"
-#include "y_absl/strings/has_ostream_operator.h"
-#include "y_absl/strings/str_format.h"
 #include "y_absl/types/variant.h"
 #include "y_absl/utility/utility.h"
 
@@ -93,7 +88,7 @@ class BadStatusOrAccess : public std::exception {
   //
   // The pointer of this string is guaranteed to be valid until any non-const
   // function is invoked on the exception object.
-  y_absl::Nonnull<const char*> what() const noexcept override;
+  const char* what() const noexcept override;
 
   // BadStatusOrAccess::status()
   //
@@ -151,7 +146,7 @@ class Y_ABSL_MUST_USE_RESULT StatusOr;
 //
 //   y_absl::StatusOr<int> i = GetCount();
 //   if (i.ok()) {
-//     updated_total += *i;
+//     updated_total += *i
 //   }
 //
 // NOTE: using `y_absl::StatusOr<T>::value()` when no valid value is present will
@@ -416,7 +411,7 @@ class StatusOr : private internal_statusor::StatusOrData<T>,
       typename = typename std::enable_if<y_absl::conjunction<
           std::is_constructible<T, U&&>, std::is_assignable<T&, U&&>,
           y_absl::disjunction<
-              std::is_same<y_absl::remove_cvref_t<U>, T>,
+              std::is_same<y_absl::remove_cv_t<y_absl::remove_reference_t<U>>, T>,
               y_absl::conjunction<
                   y_absl::negation<std::is_convertible<U&&, y_absl::Status>>,
                   y_absl::negation<internal_statusor::
@@ -449,7 +444,8 @@ class StatusOr : private internal_statusor::StatusOrData<T>,
               internal_statusor::IsDirectInitializationValid<T, U&&>,
               std::is_constructible<T, U&&>, std::is_convertible<U&&, T>,
               y_absl::disjunction<
-                  std::is_same<y_absl::remove_cvref_t<U>, T>,
+                  std::is_same<y_absl::remove_cv_t<y_absl::remove_reference_t<U>>,
+                               T>,
                   y_absl::conjunction<
                       y_absl::negation<std::is_convertible<U&&, y_absl::Status>>,
                       y_absl::negation<
@@ -465,7 +461,8 @@ class StatusOr : private internal_statusor::StatusOrData<T>,
           y_absl::conjunction<
               internal_statusor::IsDirectInitializationValid<T, U&&>,
               y_absl::disjunction<
-                  std::is_same<y_absl::remove_cvref_t<U>, T>,
+                  std::is_same<y_absl::remove_cv_t<y_absl::remove_reference_t<U>>,
+                               T>,
                   y_absl::conjunction<
                       y_absl::negation<std::is_constructible<y_absl::Status, U&&>>,
                       y_absl::negation<
@@ -587,7 +584,7 @@ class StatusOr : private internal_statusor::StatusOrData<T>,
   // Reconstructs the inner value T in-place using the provided args, using the
   // T(args...) constructor. Returns reference to the reconstructed `T`.
   template <typename... Args>
-  T& emplace(Args&&... args) Y_ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  T& emplace(Args&&... args) {
     if (ok()) {
       this->Clear();
       this->MakeValue(std::forward<Args>(args)...);
@@ -603,8 +600,7 @@ class StatusOr : private internal_statusor::StatusOrData<T>,
       y_absl::enable_if_t<
           std::is_constructible<T, std::initializer_list<U>&, Args&&...>::value,
           int> = 0>
-  T& emplace(std::initializer_list<U> ilist,
-             Args&&... args) Y_ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  T& emplace(std::initializer_list<U> ilist, Args&&... args) {
     if (ok()) {
       this->Clear();
       this->MakeValue(ilist, std::forward<Args>(args)...);
@@ -614,21 +610,6 @@ class StatusOr : private internal_statusor::StatusOrData<T>,
     }
     return this->data_;
   }
-
-  // StatusOr<T>::AssignStatus()
-  //
-  // Sets the status of `y_absl::StatusOr<T>` to the given non-ok status value.
-  //
-  // NOTE: We recommend using the constructor and `operator=` where possible.
-  // This method is intended for use in generic programming, to enable setting
-  // the status of a `StatusOr<T>` when `T` may be `Status`. In that case, the
-  // constructor and `operator=` would assign into the inner value of type
-  // `Status`, rather than status of the `StatusOr` (b/280392796).
-  //
-  // REQUIRES: !Status(std::forward<U>(v)).ok(). This requirement is DCHECKed.
-  // In optimized builds, passing y_absl::OkStatus() here will have the effect
-  // of passing y_absl::StatusCode::kInternal as a fallback.
-  using internal_statusor::StatusOrData<T>::AssignStatus;
 
  private:
   using internal_statusor::StatusOrData<T>::Assign;
@@ -653,41 +634,6 @@ bool operator==(const StatusOr<T>& lhs, const StatusOr<T>& rhs) {
 template <typename T>
 bool operator!=(const StatusOr<T>& lhs, const StatusOr<T>& rhs) {
   return !(lhs == rhs);
-}
-
-// Prints the `value` or the status in brackets to `os`.
-//
-// Requires `T` supports `operator<<`.  Do not rely on the output format which
-// may change without notice.
-template <typename T, typename std::enable_if<
-                          y_absl::HasOstreamOperator<T>::value, int>::type = 0>
-std::ostream& operator<<(std::ostream& os, const StatusOr<T>& status_or) {
-  if (status_or.ok()) {
-    os << status_or.value();
-  } else {
-    os << internal_statusor::StringifyRandom::OpenBrackets()
-       << status_or.status()
-       << internal_statusor::StringifyRandom::CloseBrackets();
-  }
-  return os;
-}
-
-// As above, but supports `StrCat`, `StrFormat`, etc.
-//
-// Requires `T` has `AbslStringify`.  Do not rely on the output format which
-// may change without notice.
-template <
-    typename Sink, typename T,
-    typename std::enable_if<y_absl::HasAbslStringify<T>::value, int>::type = 0>
-void AbslStringify(Sink& sink, const StatusOr<T>& status_or) {
-  if (status_or.ok()) {
-    y_absl::Format(&sink, "%v", status_or.value());
-  } else {
-    y_absl::Format(&sink, "%s%v%s",
-                 internal_statusor::StringifyRandom::OpenBrackets(),
-                 status_or.status(),
-                 internal_statusor::StringifyRandom::CloseBrackets());
-  }
 }
 
 //------------------------------------------------------------------------------
@@ -790,13 +736,13 @@ T&& StatusOr<T>::operator*() && {
 }
 
 template <typename T>
-y_absl::Nonnull<const T*> StatusOr<T>::operator->() const {
+const T* StatusOr<T>::operator->() const {
   this->EnsureOk();
   return &this->data_;
 }
 
 template <typename T>
-y_absl::Nonnull<T*> StatusOr<T>::operator->() {
+T* StatusOr<T>::operator->() {
   this->EnsureOk();
   return &this->data_;
 }

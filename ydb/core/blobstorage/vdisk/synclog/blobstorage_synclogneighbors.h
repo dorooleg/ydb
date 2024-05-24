@@ -2,7 +2,7 @@
 
 #include "defs.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_syncneighbors.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <library/cpp/containers/intrusive_avl_tree/avltree.h>
 
@@ -38,7 +38,7 @@ namespace NKikimr {
                 }
 
                 TSyncPos(IInputStream &) {
-                    Y_ABORT("Not supported");
+                    Y_FAIL("Not supported");
                 }
             };
 
@@ -68,7 +68,7 @@ namespace NKikimr {
                 if (Neighbors.GetTotalDisks() == 1) {
                     return (ui64)-1;
                 }
-                Y_DEBUG_ABORT_UNLESS(CheckSyncPosQueue());
+                Y_VERIFY_DEBUG(CheckSyncPosQueue());
                 // TAvlTree doesn't have const Begin, se we have to remove 'const' qualifier
                 ui64 result = (const_cast<TSyncLogNeighbors*>(this))->SyncPosQueue.Begin()->SyncedLsn;
                 return result;
@@ -96,12 +96,12 @@ namespace NKikimr {
                 TNeighbors::TValue &diskData = Neighbors[vdisk];
                 TSyncPos &ref = diskData.Get();
                 // reorder
-                Y_DEBUG_ABORT_UNLESS(syncedLsn > ref.SyncedLsn);
+                Y_VERIFY_DEBUG(syncedLsn > ref.SyncedLsn);
                 ref.SyncedLsn = syncedLsn;
                 ref.Unlink();
                 SyncPosQueue.Insert(&ref);
 
-                Y_DEBUG_ABORT_UNLESS(CheckSyncPosQueue());
+                Y_VERIFY_DEBUG(CheckSyncPosQueue());
             }
 
             ui64 GetSyncedLsn(const TVDiskID &vdisk) {
@@ -128,7 +128,7 @@ namespace NKikimr {
                         SyncPosQueue.Insert(&(it->Get()));
                     }
                 }
-                Y_DEBUG_ABORT_UNLESS(CheckSyncPosQueue());
+                Y_VERIFY_DEBUG(CheckSyncPosQueue());
             }
 
         private:

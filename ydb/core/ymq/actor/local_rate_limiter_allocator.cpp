@@ -1,6 +1,6 @@
 #include "local_rate_limiter_allocator.h"
 
-#include <ydb/core/quoter/public/quoter.h>
+#include <ydb/core/base/quoter.h>
 
 #include <util/generic/hash_multi_map.h>
 #include <util/system/guard.h>
@@ -18,7 +18,7 @@ THashMultiMap<ui32, ui32> FreeRateToTag;
 TAdaptiveLock RatesLock;
 
 ui32 AllocateLocalRateLimiterTag(ui32 rate) {
-    Y_ABORT_UNLESS(rate != std::numeric_limits<ui32>::max());
+    Y_VERIFY(rate != std::numeric_limits<ui32>::max());
     auto lock = Guard(RatesLock);
     auto freeTagIt = FreeRateToTag.find(rate);
     if (freeTagIt != FreeRateToTag.end()) {

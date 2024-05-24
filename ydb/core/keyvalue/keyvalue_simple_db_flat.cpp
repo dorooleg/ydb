@@ -8,9 +8,8 @@ namespace NKikimr {
 namespace NKeyValue {
 
 
-TSimpleDbFlat::TSimpleDbFlat(NTable::TDatabase &db, TVector<TLogoBlobID>& trashBeingCommitted)
+TSimpleDbFlat::TSimpleDbFlat(NTable::TDatabase &db)
     : Db(db)
-    , TrashBeingCommitted(trashBeingCommitted)
 {}
 
 void TSimpleDbFlat::Erase(const TString &key, const TActorContext &ctx) {
@@ -27,10 +26,6 @@ void TSimpleDbFlat::Update(const TString &key, const TString &value, const TActo
     const auto valueStr = NScheme::TString::TInstance(value);
     NTable::TUpdateOp ops(VALUE_TAG, NTable::ECellOp::Set, valueStr);
     Db.Update(TABLE_ID, NTable::ERowOp::Upsert, { rawTypeValue }, { ops });
-}
-
-void TSimpleDbFlat::AddTrash(const TLogoBlobID& id) {
-    TrashBeingCommitted.push_back(id);
 }
 
 } // NKeyValue

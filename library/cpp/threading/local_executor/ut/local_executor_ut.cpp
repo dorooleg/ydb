@@ -233,6 +233,7 @@ Y_UNIT_TEST(RunOneAndCheckExceptionsWithWaitCompleteZeroExtraThreads) {
     RunRangeAndCheckExceptionsWithWaitComplete(1, 0);
 }
 }
+;
 
 Y_UNIT_TEST_SUITE(ExecRangeWithThrow){
     void RunParallelWhichThrowsTTestException(int rangeStart, int rangeSize, int threadsCount, int flags, TAtomic& processed){
@@ -322,6 +323,7 @@ Y_UNIT_TEST(NestedParallelExceptionsDoNotLeak) {
     UNIT_ASSERT_EQUAL(AtomicGet(processed2), DefaultRangeSize);
 }
 }
+;
 
 Y_UNIT_TEST_SUITE(ExecLargeRangeWithThrow){
 
@@ -366,4 +368,4 @@ Y_UNIT_TEST_SUITE(ExecLargeRangeWithThrow){
             TTestException
         );
     }
-}
+};

@@ -16,7 +16,7 @@ struct ITaskRunnerActor {
         virtual ~ICallbacks() = default;
         virtual void SinkSend(
             ui64 index,
-            NKikimr::NMiniKQL::TUnboxedValueBatch&& batch,
+            NKikimr::NMiniKQL::TUnboxedValueVector&& batch,
             TMaybe<NDqProto::TCheckpoint>&& checkpoint,
             i64 size,
             i64 checkpointSize,
@@ -29,7 +29,7 @@ struct ITaskRunnerActor {
     virtual void AsyncInputPush(
         ui64 cookie,
         ui64 index,
-        NKikimr::NMiniKQL::TUnboxedValueBatch&& batch,
+        NKikimr::NMiniKQL::TUnboxedValueVector&& batch,
         i64 space,
         bool finish) = 0;
 
@@ -43,7 +43,6 @@ struct ITaskRunnerActorFactory {
 
     virtual std::tuple<ITaskRunnerActor*, NActors::IActor*> Create(
         ITaskRunnerActor::ICallbacks* parent,
-        std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> alloc,
         const TTxId& txId,
         ui64 taskId,
         THashSet<ui32>&& inputChannelsWithDisabledCheckpoints = {},

@@ -66,7 +66,6 @@ public:
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TConsole::TTxLoadState Complete");
 
         Self->Become(&TConsole::StateWork);
-        Self->SignalTabletActive(ctx);
 
         ctx.Send(Self->TenantsManager->SelfId(), new TTenantsManager::TEvPrivate::TEvStateLoaded);
         ctx.Send(Self->ConfigsManager->SelfId(), new TConfigsManager::TEvPrivate::TEvStateLoaded);

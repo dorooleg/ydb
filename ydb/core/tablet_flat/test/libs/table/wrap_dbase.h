@@ -46,7 +46,7 @@ namespace NTest {
         EReady Seek(TRawVals key, ESeek seek) noexcept
         {
             if (seek == ESeek::Upper && !key)
-                Y_ABORT("Cannot cast ESeek::Upper with empty key to ELookup");
+                Y_FAIL("Cannot cast ESeek::Upper with empty key to ELookup");
 
             TKeyRange range;
             range.MinKey = key;
@@ -102,8 +102,8 @@ namespace NTest {
         TAutoPtr<TIter> Iter;
     };
 
-    using TWrapDbIter = TWrapDbIterImpl<TTableIter>;
-    using TWrapDbReverseIter = TWrapDbIterImpl<TTableReverseIter>;
+    using TWrapDbIter = TWrapDbIterImpl<TTableIt>;
+    using TWrapDbReverseIter = TWrapDbIterImpl<TTableReverseIt>;
 
 }
 }

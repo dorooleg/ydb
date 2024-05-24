@@ -4,21 +4,19 @@
 #include "grpc_request_proxy.h"
 #include "cancelation/cancelation.h"
 #include "cancelation/cancelation_event.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
+#include <ydb/core/tx/tx_proxy/proxy.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/core/util/wilson.h>
-#include <ydb/library/wilson_ids/wilson.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/public/api/protos/ydb_status_codes.pb.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -28,18 +26,6 @@ class TRpcRequestWithOperationParamsActor : public TActorBootstrapped<TDerived> 
 private:
     typedef TActorBootstrapped<TDerived> TBase;
     typedef typename std::conditional<IsOperation, IRequestOpCtx, IRequestNoOpCtx>::type TRequestBase;
-
-    template<typename TIn, typename TOut>
-    void Fill(const TIn* in, TOut* out) {
-        auto& operationParams = in->operation_params();
-        out->OperationTimeout_ = GetDuration(operationParams.operation_timeout());
-        out->CancelAfter_ = GetDuration(operationParams.cancel_after());
-        out->ReportCostInfo_ = operationParams.report_cost_info() == Ydb::FeatureFlag::ENABLED;
-    }
-
-    template<typename TOut>
-    void Fill(const NProtoBuf::Message*, TOut*) {
-    }
 
 public:
     enum EWakeupTag {
@@ -53,11 +39,10 @@ public:
     TRpcRequestWithOperationParamsActor(TRequestBase* request)
         : Request_(request)
     {
-        Fill(GetProtoRequest(), this);
-        //auto& operationParams = GetProtoRequest()->operation_params();
-        //OperationTimeout_ = GetDuration(operationParams.operation_timeout());
-        //CancelAfter_ = GetDuration(operationParams.cancel_after());
-        //ReportCostInfo_ = operationParams.report_cost_info() == Ydb::FeatureFlag::ENABLED;
+        auto& operationParams = GetProtoRequest()->operation_params();
+        OperationTimeout_ = GetDuration(operationParams.operation_timeout());
+        CancelAfter_ = GetDuration(operationParams.cancel_after());
+        ReportCostInfo_ = operationParams.report_cost_info() == Ydb::FeatureFlag::ENABLED;
     }
 
     const typename TRequest::TRequest* GetProtoRequest() const {
@@ -152,8 +137,6 @@ public:
 
     TRpcOperationRequestActor(IRequestOpCtx* request)
         : TBase(request)
-        , Span_(TWilsonGrpc::RequestActor, request->GetWilsonTraceId(),
-                "RequestProxy.RpcOperationRequestActor", NWilson::EFlags::AUTO_END)
     {}
 
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -202,18 +185,13 @@ protected:
     void Reply(Ydb::StatusIds::StatusCode status,
         const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message, const TActorContext& ctx)
     {
-        NYql::TIssues issues;
-        IssuesFromMessage(message, issues);
-        Request_->RaiseIssues(issues);
-        Request_->ReplyWithYdbStatus(status);
-        NWilson::EndSpanWithStatus(Span_, status);
+        Request_->SendResult(status, message);
         this->Die(ctx);
     }
 
     void Reply(Ydb::StatusIds::StatusCode status, const NYql::TIssues& issues, const TActorContext& ctx) {
         Request_->RaiseIssues(issues);
         Request_->ReplyWithYdbStatus(status);
-        NWilson::EndSpanWithStatus(Span_, status);
         this->Die(ctx);
     }
 
@@ -225,7 +203,13 @@ protected:
 
     void Reply(Ydb::StatusIds::StatusCode status, const TActorContext& ctx) {
         Request_->ReplyWithYdbStatus(status);
-        NWilson::EndSpanWithStatus(Span_, status);
+        this->Die(ctx);
+    }
+
+    void ReplyWithResult(Ydb::StatusIds::StatusCode status,
+        const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message, const TActorContext &ctx)
+    {
+        Request_->SendResult(status, message);
         this->Die(ctx);
     }
 
@@ -236,7 +220,6 @@ protected:
         const TActorContext& ctx)
     {
         Request_->SendResult(result, status, message);
-        NWilson::EndSpanWithStatus(Span_, status);
         this->Die(ctx);
     }
 
@@ -245,14 +228,12 @@ protected:
                          const TResult& result,
                          const TActorContext& ctx) {
         Request_->SendResult(result, status);
-        NWilson::EndSpanWithStatus(Span_, status);
         this->Die(ctx);
     }
 
     void ReplyOperation(Ydb::Operations::Operation& operation)
     {
         Request_->SendOperation(operation);
-        NWilson::EndSpanWithStatus(Span_, operation.status());
         this->PassAway();
     }
 
@@ -286,9 +267,6 @@ private:
         auto as = TActivationContext::ActorSystem();
         PassSubscription(ev->Get(), Request_.get(), as);
     }
-
-protected:
-    NWilson::TSpan Span_;
 };
 
 } // namespace NGRpcService

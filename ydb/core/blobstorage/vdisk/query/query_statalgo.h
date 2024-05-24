@@ -129,7 +129,7 @@ namespace NKikimr {
             }
 
             void AddFromFresh(const TMemRec& memRec, const TRope* /*data*/, const TKey& key, ui64 /*lsn*/) {
-                Y_ABORT_UNLESS(key == CurKey);
+                Y_VERIFY(key == CurKey);
                 if (!Constraint || Constraint->Check(CurKey)) {
                     auto mr = memRec.ToString(HullCtx->IngressCache.Get(), nullptr);
                     auto ing = IngressToString(HullCtx->VCtx->Top.get(), HullCtx->VCtx->ShortSelfVDisk, CurKey, memRec);

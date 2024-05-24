@@ -3,11 +3,11 @@
 #include <ydb/library/yql/minikql/mkql_terminator.h>
 
 extern "C" void* UdfAllocate(ui64 size) {
-    return ::NKikimr::NMiniKQL::MKQLAllocDeprecated(size, ::NKikimr::NMiniKQL::EMemorySubPool::Default);
+    return ::NKikimr::NMiniKQL::MKQLAllocDeprecated(size);
 }
 
 extern "C" void UdfFree(const void* mem) {
-    return ::NKikimr::NMiniKQL::MKQLFreeDeprecated(mem, ::NKikimr::NMiniKQL::EMemorySubPool::Default);
+    return ::NKikimr::NMiniKQL::MKQLFreeDeprecated(mem);
 }
 
 extern "C" [[noreturn]] void UdfTerminate(const char* message) {

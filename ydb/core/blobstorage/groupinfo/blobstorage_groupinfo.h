@@ -3,21 +3,16 @@
 #include "defs.h"
 #include <ydb/core/blobstorage/base/blobstorage_vdiskid.h>
 #include <ydb/core/blobstorage/crypto/crypto.h>
-#include <ydb/core/protos/blobstorage.pb.h>
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/event_filter.h>
-#include <ydb/core/protos/blobstorage_base3.pb.h>
+#include <ydb/core/protos/blobstorage.pb.h>
 #include <ydb/core/util/log_priority_mute_checker.h>
 
 #include <util/str_stl.h>
 #include <util/digest/numeric.h>
 #include <util/generic/hash_set.h>
-
-namespace NKikimrBlobStorage {
-    class TGroupInfo;
-};
 
 namespace NActors {
     class TNodeLocation;
@@ -250,8 +245,6 @@ public:
         // function returns idxInSubgroup-th element of vdisks array from PickSubgroup
         TVDiskIdShort GetVDiskInSubgroup(ui32 idxInSubgroup, ui32 hash) const;
 
-        bool IsHandoff(const TVDiskIdShort& vdisk, ui32 hash) const;
-
 
         TFailRealmIterator FailRealmsBegin() const;
         TFailRealmIterator FailRealmsEnd() const;
@@ -311,7 +304,7 @@ public:
     explicit TBlobStorageGroupInfo(TBlobStorageGroupType gtype, ui32 numVDisksPerFailDomain = 1,
             ui32 numFailDomains = 0, ui32 numFailRealms = 1, const TVector<TActorId> *vdiskIds = nullptr,
             EEncryptionMode encryptionMode = EEM_ENC_V1, ELifeCyclePhase lifeCyclePhase = ELCP_IN_USE,
-            TCypherKey key = TCypherKey((const ui8*)"TestKey", 8), ui32 groupId = 0);
+            TCypherKey key = TCypherKey((const ui8*)"TestKey", 8));
 
     TBlobStorageGroupInfo(std::shared_ptr<TTopology> topology, TDynamicInfo&& rti, TString storagePoolName,
         TMaybe<TKikimrScopeId> acceptedScope, NPDisk::EDeviceType deviceType);

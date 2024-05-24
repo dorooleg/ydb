@@ -2,15 +2,14 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/core/base/feature_flags.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/lwtrace/all.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/queue.h>
 #include <util/system/types.h>
@@ -205,7 +204,7 @@ namespace NKikimr {
 
             void TerminateProcess() {
                 if (EnableFailureInjectionTermination) {
-                    Y_ABORT("Terminating itself from TFailureInjectionActor");
+                    Y_FAIL("Terminating itself from TFailureInjectionActor");
                 }
             }
 

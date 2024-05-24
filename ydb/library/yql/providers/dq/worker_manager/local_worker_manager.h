@@ -10,7 +10,7 @@
 
 #include <ydb/library/yql/providers/dq/task_runner_actor/task_runner_actor.h>
 
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/actorid.h>
 
 namespace NYql {
 
@@ -22,6 +22,7 @@ namespace NYql::NDqs {
 
     struct TLocalWorkerManagerOptions {
         TWorkerManagerCounters Counters;
+        ::NMonitoring::TDynamicCounterPtr DqTaskCounters;
         NTaskRunnerProxy::IProxyFactory::TPtr Factory;
         NDq::IDqAsyncIoFactory::TPtr AsyncIoFactory;
         const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry = nullptr;
@@ -38,7 +39,6 @@ namespace NYql::NDqs {
         bool CanUseComputeActor = true;
         NActors::TActorId QuoterServiceActorId;
         bool ComputeActorOwnsCounters = false;
-        bool DropTaskCountersOnFinish = true;
     };
 
     NActors::IActor* CreateLocalWorkerManager(const TLocalWorkerManagerOptions& options);

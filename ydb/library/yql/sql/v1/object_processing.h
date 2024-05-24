@@ -37,44 +37,18 @@ class TCreateObject: public TObjectProcessorImpl {
 private:
     using TBase = TObjectProcessorImpl;
     std::map<TString, TDeferredAtom> Features;
-    std::set<TString> FeaturesToReset;
-protected:
-    bool ExistingOk = false;
-    bool ReplaceIfExists = false;
 protected:
     virtual INode::TPtr BuildOptions() const override {
-        TString mode;
-        if (ExistingOk) {
-            mode = "createObjectIfNotExists";
-        } else if (ReplaceIfExists) {
-            mode = "createObjectOrReplace";
-        } else {
-            mode = "createObject";
-        }
-
-        return Y(Q(Y(Q("mode"), Q(mode))));
+        return Y(Q(Y(Q("mode"), Q("createObject"))));
     }
     virtual INode::TPtr FillFeatures(INode::TPtr options) const override;
 public:
     TCreateObject(TPosition pos, const TString& objectId,
-        const TString& typeId, bool existingOk, bool replaceIfExists, std::map<TString, TDeferredAtom>&& features, std::set<TString>&& featuresToReset, const TObjectOperatorContext& context)
+        const TString& typeId, std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context)
         : TBase(pos, objectId, typeId, context)
-        , Features(std::move(features))
-        , FeaturesToReset(std::move(featuresToReset))
-        , ExistingOk(existingOk)
-        , ReplaceIfExists(replaceIfExists) {
-        }
-};
+        , Features(std::move(features)) {
 
-class TUpsertObject final: public TCreateObject {
-private:
-    using TBase = TCreateObject;
-protected:
-    virtual INode::TPtr BuildOptions() const override {
-        return Y(Q(Y(Q("mode"), Q("upsertObject"))));
     }
-public:
-    using TBase::TBase;
 };
 
 class TAlterObject final: public TCreateObject {
@@ -91,12 +65,9 @@ public:
 class TDropObject final: public TCreateObject {
 private:
     using TBase = TCreateObject;
-    bool MissingOk() const {
-        return ExistingOk; // Because we were derived from TCreateObject
-    }
 protected:
     virtual INode::TPtr BuildOptions() const override {
-        return Y(Q(Y(Q("mode"), Q(MissingOk() ? "dropObjectIfExists" : "dropObject"))));
+        return Y(Q(Y(Q("mode"), Q("dropObject"))));
     }
 public:
     using TBase::TBase;

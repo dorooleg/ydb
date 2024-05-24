@@ -4,14 +4,10 @@
 #include <ydb/library/yql/core/file_storage/file_storage.h>
 #include <ydb/library/yql/core/services/yql_plan.h>
 #include <ydb/library/yql/core/services/yql_transform_pipeline.h>
-#include <ydb/library/yql/core/url_lister/interface/url_lister_manager.h>
-#include <ydb/library/yql/core/url_preprocessing/interface/url_preprocessing.h>
 #include <ydb/library/yql/core/yql_type_annotation.h>
 #include <ydb/library/yql/core/yql_user_data.h>
-#include <ydb/library/yql/core/qplayer/storage/interface/yql_qstorage.h>
 #include <ydb/library/yql/providers/config/yql_config_provider.h>
 #include <ydb/library/yql/providers/result/provider/yql_result_provider.h>
-#include <ydb/library/yql/providers/common/proto/gateways_config.pb.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 #include <ydb/library/yql/sql/sql.h>
 
@@ -32,6 +28,7 @@ namespace NMiniKQL {
 
 namespace NYql {
 
+class TGatewaysConfig;
 class TProgram;
 using TProgramPtr = TIntrusivePtr<TProgram>;
 class TProgramFactory;
@@ -54,7 +51,6 @@ public:
     void SetCredentials(TCredentials::TPtr credentials);
     void SetGatewaysConfig(const TGatewaysConfig* gatewaysConfig);
     void SetModules(IModuleResolver::TPtr modules);
-    void SetUrlListerManager(IUrlListerManagerPtr urlListerManager);
     void SetUdfResolver(IUdfResolver::TPtr udfResolver);
     void SetUdfIndex(TUdfIndex::TPtr udfIndex, TUdfIndexPackageSet::TPtr udfIndexPackageSet);
     void SetFileStorage(TFileStoragePtr fileStorage);
@@ -64,15 +60,13 @@ public:
 
     TProgramPtr Create(
             const TFile& file,
-            const TString& sessionId = TString(),
-            const TQContext& qContext = {});
+            const TString& sessionId = TString());
 
     TProgramPtr Create(
             const TString& filename,
             const TString& sourceCode,
             const TString& sessionId = TString(),
-            EHiddenMode hiddenMode = EHiddenMode::Disable,
-            const TQContext& qContext = {});
+            EHiddenMode hiddenMode = EHiddenMode::Disable);
 
     void UnrepeatableRandom();
 private:
@@ -85,7 +79,6 @@ private:
     TCredentials::TPtr Credentials_;
     const TGatewaysConfig* GatewaysConfig_;
     IModuleResolver::TPtr Modules_;
-    IUrlListerManagerPtr UrlListerManager_;
     IUdfResolver::TPtr UdfResolver_;
     TUdfIndex::TPtr UdfIndex_;
     TUdfIndexPackageSet::TPtr UdfIndexPackageSet_;
@@ -108,11 +101,6 @@ public:
 
 public:
     ~TProgram();
-
-    void AddCredentials(const TVector<std::pair<TString, TCredential>>& credentials);
-    void ClearCredentials();
-
-    void AddUserDataTable(const TUserDataTable& userDataTable);
 
     bool ParseYql();
     bool ParseSql();
@@ -189,8 +177,7 @@ public:
     bool HasActiveProcesses();
     bool NeedWaitForActiveProcesses();
 
-    [[nodiscard]]
-    NThreading::TFuture<void> Abort();
+    void Abort();
 
     inline TIssues Issues() {
         if (ExprCtx_) {
@@ -242,10 +229,6 @@ public:
 
     void SetDiagnosticFormat(NYson::EYsonFormat format) {
         DiagnosticFormat_ = format;
-    }
-
-    void SetResultType(IDataProvider::EResultFormat type) {
-        ResultType_ = type;
     }
 
     TMaybe<TString> GetDiagnostics();
@@ -334,11 +317,6 @@ public:
         AbortHidden_ = std::move(func);
     }
 
-    TMaybe<TSet<TString>> GetUsedClusters() {
-        CollectUsedClusters();
-        return UsedClusters_;
-    }
-
 private:
     TProgram(
         const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
@@ -349,7 +327,6 @@ private:
         const TUserDataTable& userDataTable,
         const TCredentials::TPtr& credentials,
         const IModuleResolver::TPtr& modules,
-        const IUrlListerManagerPtr& urlListerManager,
         const IUdfResolver::TPtr& udfResolver,
         const TUdfIndex::TPtr& udfIndex,
         const TUdfIndexPackageSet::TPtr& udfIndexPackageSet,
@@ -362,8 +339,7 @@ private:
         const TString& runner,
         bool enableRangeComputeFor,
         const IArrowResolver::TPtr& arrowResolver,
-        EHiddenMode hiddenMode,
-        const TQContext& qContext);
+        EHiddenMode hiddenMode);
 
     TTypeAnnotationContextPtr BuildTypeAnnotationContext(const TString& username);
     TTypeAnnotationContextPtr GetAnnotationContext() const;
@@ -372,10 +348,8 @@ private:
 
     NThreading::TFuture<void> OpenSession(const TString& username);
 
-    [[nodiscard]]
-    NThreading::TFuture<void> CleanupLastSession();
-    [[nodiscard]]
-    NThreading::TFuture<void> CloseLastSession();
+    void CleanupLastSession();
+    void CloseLastSession();
 
     TFutureStatus RemoteKikimrValidate(const TString& cluster);
     TFutureStatus RemoteKikimrOptimize(const TString& cluster, const IPipelineConfigurator* pipelineConf);
@@ -390,28 +364,22 @@ private:
 
 private:
     std::optional<bool> CheckFallbackIssues(const TIssues& issues);
-    void HandleSourceCode(TString& sourceCode);
-    void HandleTranslationSettings(NSQLTranslation::TTranslationSettings& loadedSettings,
-        const NSQLTranslation::TTranslationSettings*& currentSettings);
 
     const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry_;
     const TIntrusivePtr<IRandomProvider> RandomProvider_;
     const TIntrusivePtr<ITimeProvider> TimeProvider_;
     const ui64 NextUniqueId_;
     TVector<TDataProviderInitializer> DataProvidersInit_;
-    TAdaptiveLock DataProvidersLock_;
     TVector<TDataProviderInfo> DataProviders_;
     TYqlOperationOptions OperationOptions_;
     TCredentials::TPtr Credentials_;
-    const IUrlListerManagerPtr UrlListerManager_;
-    IUdfResolver::TPtr UdfResolver_;
+    const IUdfResolver::TPtr UdfResolver_;
     const TUdfIndex::TPtr UdfIndex_;
     const TUdfIndexPackageSet::TPtr UdfIndexPackageSet_;
     const TFileStoragePtr FileStorage_;
     TUserDataTable SavedUserDataTable_;
-    TUserDataStorage::TPtr UserDataStorage_;
+    const TUserDataStorage::TPtr UserDataStorage_;
     const TGatewaysConfig* GatewaysConfig_;
-    TGatewaysConfig LoadedGatewaysConfig_;
     TString Filename_;
     TString SourceCode_;
     ESourceSyntax SourceSyntax_;
@@ -430,7 +398,6 @@ private:
     TAutoPtr<IGraphTransformer> Transformer_;
     TIntrusivePtr<TResultProviderConfig> ResultProviderConfig_;
     bool SupportsResultPosition_ = false;
-    IDataProvider::EResultFormat ResultType_;
     NYson::EYsonFormat ResultFormat_;
     NYson::EYsonFormat OutputFormat_;
     TMaybe<NYson::EYsonFormat> DiagnosticFormat_;
@@ -453,8 +420,6 @@ private:
     const EHiddenMode HiddenMode_ = EHiddenMode::Disable;
     THiddenQueryAborter AbortHidden_ = [](){};
     TMaybe<TString> LineageStr_;
-
-    TQContext QContext_;
 };
 
 } // namspace NYql

@@ -1,16 +1,14 @@
 #include "service_yql_scripting.h"
 #include "rpc_kqp_base.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/public/api/protos/ydb_scripting.pb.h>
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/feature_flags.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
 
 
@@ -66,9 +64,9 @@ private:
     static std::function<TEvStreamExecuteYqlScriptRequest::TFinishWrapper(std::function<void()>&&)>
     GetFinishWrapper(std::shared_ptr<std::atomic_bool> flag) {
         return [flag](std::function<void()>&& cb) {
-            return [cb = std::move(cb), flag](const NYdbGrpc::IRequestContextBase::TAsyncFinishResult& future) mutable {
+            return [cb = std::move(cb), flag](const NGrpc::IRequestContextBase::TAsyncFinishResult& future) mutable {
                 Y_ASSERT(future.HasValue());
-                if (future.GetValue() == NYdbGrpc::IRequestContextBase::EFinishStatus::CANCEL || flag->load()) {
+                if (future.GetValue() == NGrpc::IRequestContextBase::EFinishStatus::CANCEL || flag->load()) {
                     cb();
                 }
             };
@@ -91,7 +89,7 @@ public:
         CancelAfter_ = TDuration();
 
         auto call = dynamic_cast<TEvStreamExecuteYqlScriptRequest*>(request);
-        Y_ABORT_UNLESS(call);
+        Y_VERIFY(call);
         call->SetCustomFinishWrapper(GetFinishWrapper(CancelationFlag));
     }
 
@@ -154,8 +152,6 @@ private:
         auto req = GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
-        AuditContextAppend(Request_.get(), *req);
-
         auto script = req->script();
 
         NYql::TIssues issues;
@@ -164,11 +160,6 @@ private:
         }
 
         ::Ydb::Operations::OperationParams operationParams;
-
-        auto settings = NKqp::NPrivateEvents::TQueryRequestSettings()
-            .SetKeepSession(false)
-            .SetUseCancelAfter(false)
-            .SetSyntax(req->syntax());
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>(
             NKikimrKqp::QUERY_ACTION_EXECUTE,
@@ -183,7 +174,8 @@ private:
             req->collect_stats(),
             nullptr, // query_cache_policy
             req->has_operation_params() ? &req->operation_params() : nullptr,
-            settings
+            false, // keep session
+            false // use cancelAfter
         );
 
         if (!ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release())) {
@@ -318,7 +310,7 @@ private:
                 GRpcResponsesSize_ -= GRpcResponsesSizeQueue_.front();
                 GRpcResponsesSizeQueue_.pop();
             }
-            Y_DEBUG_ABORT_UNLESS(GRpcResponsesSizeQueue_.empty() == (GRpcResponsesSize_ == 0));
+            Y_VERIFY_DEBUG(GRpcResponsesSizeQueue_.empty() == (GRpcResponsesSize_ == 0));
 
             if (WaitOnSeqNo_ && RpcBufferSize_ > GRpcResponsesSize_) {
                 ui64 freeSpace = RpcBufferSize_ - GRpcResponsesSize_;
@@ -348,8 +340,6 @@ private:
         NYql::IssuesFromMessage(issueMessage, issues);
 
         if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
-            Request_->SetRuHeader(record.GetConsumedRu());
-
             Ydb::Scripting::ExecuteYqlPartialResponse response;
             TString out;
             auto& kqpResponse = record.GetResponse();
@@ -360,8 +350,6 @@ private:
             } else if (kqpResponse.HasQueryPlan()) {
                 response.mutable_result()->mutable_query_stats()->set_query_plan(kqpResponse.GetQueryPlan());
             }
-
-            AuditContextAppend(Request_.get(), *GetProtoRequest(), response);
 
             Y_PROTOBUF_SUPPRESS_NODISCARD response.SerializeToString(&out);
             RequestPtr()->SendSerializedResult(std::move(out), record.GetYdbStatus());
@@ -455,7 +443,7 @@ private:
             RequestPtr()->SendSerializedResult(std::move(out), status);
         }
 
-        RequestPtr()->FinishStream(status);
+        RequestPtr()->FinishStream();
         this->PassAway();
     }
 
@@ -491,7 +479,7 @@ private:
 } // namespace
 
 void DoStreamExecuteYqlScript(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
-    ui64 rpcBufferSize = f.GetChannelBufferSize();
+    ui64 rpcBufferSize = f.GetAppConfig()->GetTableServiceConfig().GetResourceManager().GetChannelBufferSize();
     f.RegisterActor(new TStreamExecuteYqlScriptRPC(p.release(), rpcBufferSize));
 }
 

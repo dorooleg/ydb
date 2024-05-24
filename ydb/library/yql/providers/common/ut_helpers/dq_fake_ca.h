@@ -24,7 +24,7 @@ using TRuntimePtr = std::unique_ptr<NActors::TTestActorRuntime>;
 using TCallback = std::function<void(TFakeActor&)>;
 template<typename T>
 using TReadValueParser = std::function<std::vector<T>(const NUdf::TUnboxedValue&)>;
-using TWriteValueProducer = std::function<NKikimr::NMiniKQL::TUnboxedValueBatch(NKikimr::NMiniKQL::THolderFactory&)>;
+using TWriteValueProducer = std::function<NKikimr::NMiniKQL::TUnboxedValueVector(NKikimr::NMiniKQL::THolderFactory&)>;
 
 namespace {
     struct TEvPrivate {
@@ -89,7 +89,7 @@ class TFakeActor : public NActors::TActor<TFakeActor> {
     struct TAsyncOutputCallbacks : public IDqComputeActorAsyncOutput::ICallbacks {
         explicit TAsyncOutputCallbacks(TFakeActor& parent) : Parent(parent) {}
 
-        void ResumeExecution(EResumeSource) override {
+        void ResumeExecution() override {
             Parent.AsyncOutputPromises.ResumeExecution.SetValue();
             Parent.AsyncOutputPromises.ResumeExecution = NThreading::NewPromise();
         };
@@ -191,15 +191,15 @@ struct TFakeCASetup {
         NThreading::TFuture<bool> nextDataFuture;
         Execute([&result, &parser, freeSpace, &nextDataFutureOut, this](TFakeActor& actor) {
             TMaybe<TInstant> watermark;
-            NKikimr::NMiniKQL::TUnboxedValueBatch buffer;
+            NKikimr::NMiniKQL::TUnboxedValueVector buffer;
             bool finished = false;
             actor.DqAsyncInput->GetAsyncInputData(buffer, watermark, finished, freeSpace);
 
-            buffer.ForEachRow([&](const NUdf::TUnboxedValue& value) {
-                for (const auto item : parser(value)) {
+            for (const auto& uv : buffer) {
+                for (const auto item : parser(uv)) {
                     result.emplace_back(item);
                 }
-            });
+            }
 
             if (watermark) {
                 result.emplace_back(*watermark);

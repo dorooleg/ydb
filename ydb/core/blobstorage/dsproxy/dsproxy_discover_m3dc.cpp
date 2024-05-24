@@ -51,7 +51,7 @@ class TDiscoverVDiskWorker {
             , Ingress(item.GetIngress())
             , Status(item.GetStatus())
         {
-            Y_DEBUG_ABORT_UNLESS(item.HasBlobID() && item.HasIngress() && item.HasStatus());
+            Y_VERIFY_DEBUG(item.HasBlobID() && item.HasIngress() && item.HasStatus());
         }
     };
 
@@ -97,7 +97,7 @@ public:
     // processor for received TEvVGetResult message
     bool Apply(TEvBlobStorage::TEvVGetResult *ev) {
         // the disk worker can't be ready while request is in processing
-        Y_ABORT_UNLESS(!IsReady(), "Unexpected Finished# %s BlobQueue# %s Erroneous# %s MoreBlobs# %s GetQueryInFlight# %s",
+        Y_VERIFY(!IsReady(), "Unexpected Finished# %s BlobQueue# %s Erroneous# %s MoreBlobs# %s GetQueryInFlight# %s",
                 Finished ? "true" : "false",
                 BlobQueue ? "true" : "false",
                 Erroneous ? "true" : "false",
@@ -105,15 +105,15 @@ public:
                 GetQueryInFlight ? "true" : "false");
 
         // ensure we have in flight query
-        Y_ABORT_UNLESS(GetQueryInFlight);
+        Y_VERIFY(GetQueryInFlight);
         GetQueryInFlight = false;
 
         // extract record and check it contains the status field
         const auto& record = ev->Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
 
         // ensure response came from our VDisk
-        Y_ABORT_UNLESS(record.HasVDiskID() && VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
+        Y_VERIFY(record.HasVDiskID() && VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
 
         // apply record according to the returned status
         switch (NKikimrProto::EReplyStatus status = record.GetStatus()) {
@@ -137,7 +137,7 @@ public:
                 break;
 
             default:
-                Y_ABORT("unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(status).data());
+                Y_FAIL("unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(status).data());
         }
 
         return true;
@@ -145,7 +145,7 @@ public:
 
     // obtain the identifier of most recent blob contained within this structure
     TMaybe<TLogoBlobID> GetLatestBlob() const {
-        Y_ABORT_UNLESS(IsReady());
+        Y_VERIFY(IsReady());
         return BlobQueue
             ? BlobQueue.front().Id
             : TMaybe<TLogoBlobID>();
@@ -160,7 +160,7 @@ public:
 
         TBlobQueueItem& item = BlobQueue.front();
         const TLogoBlobID& nextBlobId = item.Id;
-        Y_ABORT_UNLESS(id >= nextBlobId);
+        Y_VERIFY(id >= nextBlobId);
         if (id != nextBlobId) {
             return false; // blob id does not match requested one
         }
@@ -193,15 +193,15 @@ public:
 private:
     void ApplySuccessfulResult(const NKikimrBlobStorage::TEvVGetResult& record) {
         // ensure we haven't finished traversing index yet
-        Y_ABORT_UNLESS(!Finished);
+        Y_VERIFY(!Finished);
 
         // the blob queue must be empty on entry -- otherwise we have no reason to request more blobs
-        Y_ABORT_UNLESS(BlobQueue.empty());
+        Y_VERIFY(BlobQueue.empty());
 
         // update queue with new items
         for (const NKikimrBlobStorage::TQueryResult& item : record.GetResult()) {
             TBlobQueueItem newItem(item);
-            Y_ABORT_UNLESS(newItem.Id.PartId() == 0);
+            Y_VERIFY(newItem.Id.PartId() == 0);
             BlobQueue.emplace_back(newItem);
         }
         if (record.ResultSize() < BlobsAtOnce && !record.GetIsRangeOverflow()) {
@@ -211,7 +211,7 @@ private:
         // and then check for strict ordering
         if (BlobQueue.size() > 1) {
             for (auto it1 = BlobQueue.begin(), it2 = std::next(it1); it2 != BlobQueue.end(); ++it1, ++it2) {
-                Y_ABORT_UNLESS(it1->Id > it2->Id, "id1# %s id2# %s", it1->Id.ToString().data(), it2->Id.ToString().data());
+                Y_VERIFY(it1->Id > it2->Id, "id1# %s id2# %s", it1->Id.ToString().data(), it2->Id.ToString().data());
             }
         }
 
@@ -284,11 +284,11 @@ public:
     bool Apply(TEvBlobStorage::TEvVGetResult *ev) {
         // get a worker for this event
         const auto& record = ev->Record;
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
         const TVDiskID vdiskId = VDiskIDFromVDiskID(record.GetVDiskID());
         const TVDiskIdShort shortId(vdiskId);
         ui32 index = Info->GetOrderNumber(shortId);
-        Y_ABORT_UNLESS(index < VDiskWorkers.size());
+        Y_VERIFY(index < VDiskWorkers.size());
 
         // apply event
         TDiscoverVDiskWorker& worker = VDiskWorkers[index];
@@ -366,7 +366,7 @@ private:
                 // get order number for this vdisk and find matching worker
                 const TVDiskIdShort shortId(vdisk);
                 ui32 orderNumber = Info->GetOrderNumber(shortId);
-                Y_ABORT_UNLESS(orderNumber < VDiskWorkers.size());
+                Y_VERIFY(orderNumber < VDiskWorkers.size());
                 TDiscoverVDiskWorker& worker = VDiskWorkers[orderNumber];
 
                 // try to extract blob information from this worker and apply its status and ingress
@@ -412,7 +412,7 @@ private:
                     break;
 
                 default:
-                    Y_ABORT("unexpected status# %s", NKikimrProto::EReplyStatus_Name(status).data());
+                    Y_FAIL("unexpected status# %s", NKikimrProto::EReplyStatus_Name(status).data());
             }
         }
 
@@ -463,9 +463,8 @@ public:
             ui64 cookie, NWilson::TTraceId traceId, TInstant now,
             TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters)
         : TBlobStorageGroupRequestActor(std::move(info), std::move(state), std::move(mon), source, cookie,
-                NKikimrServices::BS_PROXY_DISCOVER, false, {}, now, storagePoolCounters, ev->RestartCounter,
-                NWilson::TSpan(TWilson::BlobStorage, std::move(traceId), "DSProxy.Discover(mirror-3-dc)"),
-                std::move(ev->ExecutionRelay))
+                std::move(traceId), NKikimrServices::BS_PROXY_DISCOVER, false, {}, now, storagePoolCounters,
+                ev->RestartCounter, "DSProxy.Discover(mirror-3-dc)", std::move(ev->ExecutionRelay))
         , TabletId(ev->TabletId)
         , MinGeneration(ev->MinGeneration)
         , StartTime(now)
@@ -536,13 +535,13 @@ public:
         ProcessReplyFromQueue(ev);
         CountEvent(*ev->Get());
 
-        Y_ABORT_UNLESS(RequestsInFlight > 0);
+        Y_VERIFY(RequestsInFlight > 0);
         --RequestsInFlight;
 
         // extract VDisk id
         TEvBlobStorage::TEvVGetResult *msg = ev->Get();
         const auto& record = msg->Record;
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
 
         A_LOG_DEBUG_S("DSPDM04", "received TEvVGetResult# " << msg->ToString());
 
@@ -557,7 +556,7 @@ public:
             SendWorkerMessages();
         }
 
-        Y_ABORT_UNLESS(RequestsInFlight || Responded);
+        Y_VERIFY(RequestsInFlight || Responded);
     }
 
     void TryToProcessNextProbe() {
@@ -566,7 +565,7 @@ public:
             ResultBlobId = state.BlobId;
             if (ResultBlobId) {
                 GetInFlight = true;
-                Y_ABORT_UNLESS(ResultBlobId.PartId() == 0);
+                Y_VERIFY(ResultBlobId.PartId() == 0);
                 auto query = std::make_unique<TEvBlobStorage::TEvGet>(ResultBlobId, 0U, 0U, Deadline,
                         NKikimrBlobStorage::Discover, true, !ReadBody, TEvBlobStorage::TEvGet::TForceBlockTabletData(TabletId, ForceBlockedGeneration));
                 query->IsInternal = true;
@@ -583,19 +582,19 @@ public:
     }
 
     void Handle(TEvBlobStorage::TEvGetResult::TPtr& ev) {
-        Y_ABORT_UNLESS(RequestsInFlight > 0);
+        Y_VERIFY(RequestsInFlight > 0);
         --RequestsInFlight;
 
         A_LOG_DEBUG_S("DSPDM05", "received TEvGetResult# " << ev->Get()->ToString());
 
         // get item from probe queue and ensure that we receive answer for exactly this query
-        Y_ABORT_UNLESS(Worker->IsReady());
+        Y_VERIFY(Worker->IsReady());
         const TDiscoverWorker::TDiscoveryState state = Worker->GetState();
-        Y_ABORT_UNLESS(state.BlobId == ResultBlobId);
+        Y_VERIFY(state.BlobId == ResultBlobId);
         Worker->PopState();
 
         // verify in flight flag
-        Y_ABORT_UNLESS(GetInFlight);
+        Y_VERIFY(GetInFlight);
         GetInFlight = false;
 
         // process message status -- any _message_ other than OK is treated as uncorrectable error (at least at this
@@ -606,13 +605,13 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(msg->ResponseSz == 1);
+        Y_VERIFY(msg->ResponseSz == 1);
         auto& resp = msg->Responses[0];
         switch (resp.Status) {
             case NKikimrProto::OK:
                 // okay response -- blob is read and stored in all replicas
-                Y_ABORT_UNLESS(resp.Id == ResultBlobId);
-                Buffer = resp.Buffer.ConvertToString();
+                Y_VERIFY(resp.Id == ResultBlobId);
+                Buffer = resp.Buffer;
                 GetFinished = true;
                 TryToSatisfyRequest();
                 break;
@@ -638,10 +637,10 @@ public:
                 break;
 
             default:
-                Y_ABORT("unexpected item status# %s", NKikimrProto::EReplyStatus_Name(resp.Status).data());
+                Y_FAIL("unexpected item status# %s", NKikimrProto::EReplyStatus_Name(resp.Status).data());
         }
 
-        Y_ABORT_UNLESS(RequestsInFlight || Responded, "Status# %s GetInFlight# %s GetBlockFinished# %s",
+        Y_VERIFY(RequestsInFlight || Responded, "Status# %s GetInFlight# %s GetBlockFinished# %s",
                 NKikimrProto::EReplyStatus_Name(resp.Status).data(), GetInFlight ? "true" : "false",
                 GetBlockFinished ? "true" : "false");
     }
@@ -659,7 +658,7 @@ public:
 
             R_LOG_DEBUG_S("DSPDM03", "Response# " << response->ToString());
 
-            Y_ABORT_UNLESS(!Responded);
+            Y_VERIFY(!Responded);
             const TDuration duration = TActivationContext::Now() - StartTime;
             LWPROBE(DSProxyRequestDuration, TEvBlobStorage::EvDiscover, 0, duration.SecondsFloat() * 1000.0,
                     TabletId, Info->GroupID, TLogoBlobID::MaxChannel, "", true);
@@ -671,8 +670,8 @@ public:
     void ReplyAndDie(NKikimrProto::EReplyStatus status) {
         R_LOG_ERROR_S("DSPDM02", "Status# " << NKikimrProto::EReplyStatus_Name(status));
 
-        Y_ABORT_UNLESS(!Responded);
-        Y_ABORT_UNLESS(status != NKikimrProto::OK);
+        Y_VERIFY(!Responded);
+        Y_VERIFY(status != NKikimrProto::OK);
         const TDuration duration = TActivationContext::Now() - StartTime;
         LWPROBE(DSProxyRequestDuration, TEvBlobStorage::EvDiscover, 0, duration.SecondsFloat() * 1000.0,
                 TabletId, Info->GroupID, TLogoBlobID::MaxChannel, "", false);
@@ -685,7 +684,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVGetBlockResult::TPtr& ev) {
         ProcessReplyFromQueue(ev);
-        Y_ABORT_UNLESS(RequestsInFlight > 0);
+        Y_VERIFY(RequestsInFlight > 0);
         --RequestsInFlight;
 
         TEvBlobStorage::TEvVGetBlockResult *msg = ev->Get();
@@ -694,9 +693,9 @@ public:
                 << " BlockedGeneration# " << BlockedGeneration);
 
         const auto& record = msg->Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
 
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
         const TVDiskID& vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
 
         // update blocked generation -- we need maximum
@@ -720,10 +719,10 @@ public:
                 break;
 
             default:
-                Y_ABORT("unexpected TEvVGetBlockResult status# %s", NKikimrProto::EReplyStatus_Name(quorumStatus).data());
+                Y_FAIL("unexpected TEvVGetBlockResult status# %s", NKikimrProto::EReplyStatus_Name(quorumStatus).data());
         }
 
-        Y_ABORT_UNLESS(RequestsInFlight || Responded);
+        Y_VERIFY(RequestsInFlight || Responded);
     }
 
     STATEFN(StateFunc) {

@@ -2,18 +2,18 @@
 #include "common.h"
 #include "table_record.h"
 
-#include <ydb/core/protos/kqp_physical.pb.h>
-#include <ydb/core/tx/locks/sys_tables.h>
+#include <ydb/core/tx/datashard/sys_tables.h>
 #include <ydb/library/accessor/accessor.h>
 #include <ydb/library/aclib/aclib.h>
 #include <ydb/library/conclusion/status.h>
 #include <ydb/library/conclusion/result.h>
+#include <ydb/library/yql/ast/yql_expr_builder.h>
+#include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 
 #include <ydb/services/metadata/abstract/kqp_common.h>
 #include <ydb/services/metadata/abstract/parsing.h>
 
 #include <library/cpp/threading/future/core/future.h>
-#include <ydb/library/actors/core/actorsystem.h>
 
 namespace NKikimr::NMetadata::NModifications {
 
@@ -48,11 +48,9 @@ public:
 class IOperationsManager {
 public:
     using TPtr = std::shared_ptr<IOperationsManager>;
-    using TYqlConclusionStatus = TConclusionSpecialStatus<NYql::TIssuesIds::EIssueCode, NYql::TIssuesIds::SUCCESS, NYql::TIssuesIds::DEFAULT_ERROR>;
 
     enum class EActivityType {
         Undefined,
-        Upsert,
         Create,
         Alter,
         Drop
@@ -62,8 +60,6 @@ public:
     private:
         YDB_ACCESSOR_DEF(std::optional<NACLib::TUserToken>, UserToken);
         YDB_ACCESSOR_DEF(TString, Database);
-        using TActorSystemPtr = TActorSystem*;
-        YDB_ACCESSOR_DEF(TActorSystemPtr, ActorSystem);
     };
 
     class TInternalModificationContext {
@@ -80,47 +76,22 @@ public:
 private:
     YDB_ACCESSOR_DEF(std::optional<TTableSchema>, ActualSchema);
 protected:
-    virtual NThreading::TFuture<TYqlConclusionStatus> DoModify(const NYql::TObjectSettingsImpl& settings, const ui32 nodeId,
-        const IClassBehaviour::TPtr& manager, TInternalModificationContext& context) const = 0;
-
-    virtual TYqlConclusionStatus DoPrepare(NKqpProto::TKqpSchemeOperation& schemeOperation, const NYql::TObjectSettingsImpl& settings,
-        const IClassBehaviour::TPtr& manager, TInternalModificationContext& context) const = 0;
+    virtual NThreading::TFuture<TConclusionStatus> DoModify(const NYql::TObjectSettingsImpl& settings, const ui32 nodeId,
+        IClassBehaviour::TPtr manager, TInternalModificationContext& context) const = 0;
 public:
     virtual ~IOperationsManager() = default;
 
-    NThreading::TFuture<TYqlConclusionStatus> UpsertObject(const NYql::TUpsertObjectSettings& settings, const ui32 nodeId,
-        const IClassBehaviour::TPtr& manager, const TExternalModificationContext& context) const;
+    NThreading::TFuture<TConclusionStatus> CreateObject(const NYql::TCreateObjectSettings& settings, const ui32 nodeId,
+        IClassBehaviour::TPtr manager, const TExternalModificationContext& context) const;
 
-    NThreading::TFuture<TYqlConclusionStatus> CreateObject(const NYql::TCreateObjectSettings& settings, const ui32 nodeId,
-        const IClassBehaviour::TPtr& manager, const TExternalModificationContext& context) const;
+    NThreading::TFuture<TConclusionStatus> AlterObject(const NYql::TAlterObjectSettings& settings, const ui32 nodeId,
+        IClassBehaviour::TPtr manager, const TExternalModificationContext& context) const;
 
-    NThreading::TFuture<TYqlConclusionStatus> AlterObject(const NYql::TAlterObjectSettings& settings, const ui32 nodeId,
-        const IClassBehaviour::TPtr& manager, const TExternalModificationContext& context) const;
-
-    NThreading::TFuture<TYqlConclusionStatus> DropObject(const NYql::TDropObjectSettings& settings, const ui32 nodeId,
-        const IClassBehaviour::TPtr& manager, const TExternalModificationContext& context) const;
-
-    TYqlConclusionStatus PrepareUpsertObjectSchemeOperation(NKqpProto::TKqpSchemeOperation& schemeOperation,
-        const NYql::TUpsertObjectSettings& settings, const IClassBehaviour::TPtr& manager,
-        const TExternalModificationContext& context) const;
-
-    TYqlConclusionStatus PrepareCreateObjectSchemeOperation(NKqpProto::TKqpSchemeOperation& schemeOperation,
-        const NYql::TCreateObjectSettings& settings, const IClassBehaviour::TPtr& manager,
-        const TExternalModificationContext& context) const;
-
-    TYqlConclusionStatus PrepareAlterObjectSchemeOperation(NKqpProto::TKqpSchemeOperation& schemeOperation,
-        const NYql::TAlterObjectSettings& settings, const IClassBehaviour::TPtr& manager,
-        const TExternalModificationContext& context) const;
-
-    TYqlConclusionStatus PrepareDropObjectSchemeOperation(NKqpProto::TKqpSchemeOperation& schemeOperation,
-        const NYql::TDropObjectSettings& settings, const IClassBehaviour::TPtr& manager,
-        const TExternalModificationContext& context) const;
-
-    virtual NThreading::TFuture<TYqlConclusionStatus> ExecutePrepared(const NKqpProto::TKqpSchemeOperation& schemeOperation,
-        const ui32 nodeId, const IClassBehaviour::TPtr& manager, const TExternalModificationContext& context) const = 0;
+    NThreading::TFuture<TConclusionStatus> DropObject(const NYql::TDropObjectSettings& settings, const ui32 nodeId,
+        IClassBehaviour::TPtr manager, const TExternalModificationContext& context) const;
 
     const TTableSchema& GetSchema() const {
-        Y_ABORT_UNLESS(!!ActualSchema);
+        Y_VERIFY(!!ActualSchema);
         return *ActualSchema;
     }
 };
@@ -139,7 +110,7 @@ public:
     TOperationParsingResult BuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings,
         IOperationsManager::TInternalModificationContext& context) const {
         TOperationParsingResult result = DoBuildPatchFromSettings(settings, context);
-        if (result.IsSuccess()) {
+        if (result) {
             if (!settings.GetFeaturesExtractor().IsFinished()) {
                 return TConclusionStatus::Fail("undefined params: " + settings.GetFeaturesExtractor().GetRemainedParamsString());
             }
@@ -154,7 +125,7 @@ public:
     }
 };
 
-class IObjectModificationCommand {
+class IAlterCommand {
 private:
     YDB_READONLY_DEF(std::vector<NInternal::TTableRecord>, Records);
     YDB_ACCESSOR_DEF(IClassBehaviour::TPtr, Behaviour);
@@ -163,13 +134,13 @@ protected:
     IOperationsManager::TInternalModificationContext Context;
     virtual void DoExecute() const = 0;
 public:
-    using TPtr = std::shared_ptr<IObjectModificationCommand>;
-    virtual ~IObjectModificationCommand() = default;
+    using TPtr = std::shared_ptr<IAlterCommand>;
+    virtual ~IAlterCommand() = default;
 
     template <class TObject>
     std::shared_ptr<IObjectOperationsManager<TObject>> GetOperationsManagerFor() const {
         auto result = std::dynamic_pointer_cast<IObjectOperationsManager<TObject>>(Behaviour->GetOperationsManager());
-        Y_ABORT_UNLESS(result);
+        Y_VERIFY(result);
         return result;
     }
 
@@ -177,7 +148,7 @@ public:
         return Context;
     }
 
-    IObjectModificationCommand(const std::vector<NInternal::TTableRecord>& records,
+    IAlterCommand(const std::vector<NInternal::TTableRecord>& records,
         IClassBehaviour::TPtr behaviour,
         NModifications::IAlterController::TPtr controller,
         const IOperationsManager::TInternalModificationContext& context)
@@ -185,17 +156,17 @@ public:
         , Behaviour(behaviour)
         , Controller(controller)
         , Context(context) {
-        Y_ABORT_UNLESS(Behaviour->GetOperationsManager());
+        Y_VERIFY(Behaviour->GetOperationsManager());
     }
 
-    IObjectModificationCommand(const NInternal::TTableRecord& record,
+    IAlterCommand(const NInternal::TTableRecord& record,
         IClassBehaviour::TPtr behaviour,
         NModifications::IAlterController::TPtr controller,
         const IOperationsManager::TInternalModificationContext& context)
         : Behaviour(behaviour)
         , Controller(controller)
         , Context(context) {
-        Y_ABORT_UNLESS(Behaviour->GetOperationsManager());
+        Y_VERIFY(Behaviour->GetOperationsManager());
         Records.emplace_back(record);
 
     }

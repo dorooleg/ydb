@@ -1,13 +1,13 @@
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/statestorage_impl.h>
 
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/basics/helpers.h>
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <ydb/core/testlib/basics/runtime.h>
@@ -21,7 +21,7 @@ class TBoardSubscriberTest: public NUnitTest::TTestBase {
 
     TActorId CreateSubscriber(const TString& path, const TActorId& owner, ui32 nodeIdx) {
         const TActorId subscriber = Context->Register(
-            CreateBoardLookupActor(path, owner, EBoardLookupMode::Subscription), nodeIdx
+            CreateBoardLookupActor(path, owner, 0, EBoardLookupMode::Subscription), nodeIdx
         );
         Context->EnableScheduleForActor(subscriber);
         return subscriber;
@@ -30,7 +30,7 @@ class TBoardSubscriberTest: public NUnitTest::TTestBase {
     TActorId CreatePublisher(
             const TString& path, const TString& payload, const TActorId& owner, ui32 nodeIdx) {
         const TActorId publisher = Context->Register(
-            CreateBoardPublishActor(path, payload, owner, 0, true), nodeIdx
+            CreateBoardPublishActor(path, payload, owner, 0, 0, true), nodeIdx
         );
         Context->EnableScheduleForActor(publisher);
         return publisher;
@@ -61,7 +61,7 @@ class TBoardSubscriberTest: public NUnitTest::TTestBase {
     }
 
     TVector<TActorId> ResolveReplicas() {
-        const TActorId proxy = MakeStateStorageProxyID();
+        const TActorId proxy = MakeStateStorageProxyID(0);
         const TActorId edge = Context->AllocateEdgeActor();
 
         Context->Send(proxy, edge, new TEvStateStorage::TEvResolveBoard("path"));
@@ -76,7 +76,7 @@ public:
     void SetUp() override {
         Context = MakeHolder<TTestBasicRuntime>(3);
 
-        SetupCustomStateStorage(*Context, 3, 3, 1);
+        SetupCustomStateStorage(*Context, 3, 3, 1, 0);
 
         Context->Initialize(TAppPrepare().Unwrap());
     }
@@ -275,7 +275,7 @@ void TBoardSubscriberTest::DropByDisconnect() {
         UNIT_ASSERT(event->Get()->InfoEntries.empty());
     }
 
-    auto prevObserverFunc = Context->SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+    auto prevObserverFunc = Context->SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
         switch (ev->GetTypeRewrite()) {
             case TEvStateStorage::TEvReplicaBoardPublish::EventType: {
                 if (ev->Recipient != replicas[0]) {

@@ -1,6 +1,5 @@
 #include "storage_pool_info.h"
 #include "hive_impl.h"
-#include <library/cpp/random_provider/random_provider.h>
 
 namespace NKikimr {
 namespace NHive {
@@ -22,11 +21,11 @@ TStorageGroupInfo& TStoragePoolInfo::GetStorageGroup(TStorageGroupId groupId) {
 }
 
 bool TStoragePoolInfo::AcquireAllocationUnit(const TLeaderTabletInfo* tablet, ui32 channel, TStorageGroupId groupId) {
-    return GetStorageGroup(groupId).AcquireAllocationUnit(tablet->GetChannel(channel));
+    return GetStorageGroup(groupId).AcquireAllocationUnit(tablet, channel);
 }
 
 bool TStoragePoolInfo::ReleaseAllocationUnit(const TLeaderTabletInfo* tablet, ui32 channel, TStorageGroupId groupId) {
-    return GetStorageGroup(groupId).ReleaseAllocationUnit(tablet->GetChannel(channel));
+    return GetStorageGroup(groupId).ReleaseAllocationUnit(tablet, channel);
 }
 
 void TStoragePoolInfo::UpdateStorageGroup(TStorageGroupId groupId, const TEvControllerSelectGroupsResult::TGroupParameters& groupParameters) {
@@ -39,19 +38,19 @@ void TStoragePoolInfo::DeleteStorageGroup(TStorageGroupId groupId) {
 
 template <>
 size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SELECT_STRATEGY_ROUND_ROBIN>(const TVector<double>& groupCandidateUsages) {
-    Y_ABORT_UNLESS(!groupCandidateUsages.empty());
+    Y_VERIFY(!groupCandidateUsages.empty());
     return RoundRobinPos++ % groupCandidateUsages.size();
 }
 
 template <>
 size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SELECT_STRATEGY_RANDOM>(const TVector<double>& groupCandidateUsages) {
-    Y_ABORT_UNLESS(!groupCandidateUsages.empty());
+    Y_VERIFY(!groupCandidateUsages.empty());
     return TAppData::RandomProvider->GenRand() % groupCandidateUsages.size();
 }
 
 template <>
 size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SELECT_STRATEGY_WEIGHTED_RANDOM>(const TVector<double>& groupCandidateUsages) {
-    Y_ABORT_UNLESS(!groupCandidateUsages.empty());
+    Y_VERIFY(!groupCandidateUsages.empty());
     double sumUsage = 0;
     double maxUsage = 0;
     for (double usage : groupCandidateUsages) {
@@ -76,7 +75,7 @@ size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SE
 
 template <>
 size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SELECT_STRATEGY_EXACT_MIN>(const TVector<double>& groupCandidateUsages) {
-    Y_ABORT_UNLESS(!groupCandidateUsages.empty());
+    Y_VERIFY(!groupCandidateUsages.empty());
     auto itMin = std::min_element(
                 groupCandidateUsages.begin(),
                 groupCandidateUsages.end()
@@ -86,7 +85,7 @@ size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SE
 
 template <>
 size_t TStoragePoolInfo::SelectGroup<NKikimrConfig::THiveConfig::HIVE_STORAGE_SELECT_STRATEGY_RANDOM_MIN_7P>(const TVector<double>& groupCandidateUsages) {
-    Y_ABORT_UNLESS(!groupCandidateUsages.empty());
+    Y_VERIFY(!groupCandidateUsages.empty());
     TVector<size_t> groupIndices(groupCandidateUsages.size());
     std::iota(groupIndices.begin(), groupIndices.end(), 0);
     auto itGroup = groupIndices.begin();
@@ -180,28 +179,6 @@ bool TStoragePoolInfo::AddTabletToWait(TTabletId tabletId) {
 
 TVector<TTabletId> TStoragePoolInfo::PullWaitingTablets() {
     return std::move(TabletsWaiting);
-}
-
-TStoragePoolInfo::TStats TStoragePoolInfo::GetStats() const {
-    TStoragePoolInfo::TStats stats = {};
-    if (Groups.empty()) {
-        return stats;
-    }
-    using TValue = decltype(Groups)::value_type;
-    auto [minIt, maxIt] = std::minmax_element(Groups.begin(), Groups.end(), [](const TValue& lhs, const TValue& rhs) {
-        return lhs.second.GetUsage() < rhs.second.GetUsage();
-    });
-    stats.MinUsage = minIt->second.GetUsage();
-    stats.MaxUsage = maxIt->second.GetUsage();
-    stats.MinUsageGroupId = minIt->first;
-    stats.MaxUsageGroupId = maxIt->first;
-    if (stats.MaxUsage > 0) {
-        double minUsageToBalance = Settings->GetMinGroupUsageToBalance();
-        double minUsage = std::max(stats.MinUsage, minUsageToBalance);
-        double maxUsage = std::max(stats.MaxUsage, minUsageToBalance);
-        stats.Scatter = (maxUsage - minUsage) / maxUsage;
-    }
-    return stats;
 }
 
 } // NHive

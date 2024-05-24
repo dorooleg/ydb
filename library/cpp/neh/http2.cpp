@@ -516,7 +516,7 @@ namespace {
 #endif
         }
 
-        void StartRequest(THttpRequestRef req, const TEndpoint& ep, size_t addrId, TDuration slowConn) {
+        void StartRequest(THttpRequestRef req, const TEndpoint& ep, size_t addrId, TDuration slowConn, bool useAsyncSendRequest = false) {
             {
                 //thread safe linking connection->request
                 TGuard<TSpinLock> g(SL_);
@@ -532,7 +532,7 @@ namespace {
                     ConnectDeadline_ = THttp2Options::ConnectTimeout - slowConn;
                 }
                 DBGOUT("AsyncConnect to " << ep.IpToString());
-                AS_.AsyncConnect(ep, std::bind(&THttpConn::OnConnect, THttpConnRef(this), _1, _2), connectDeadline);
+                AS_.AsyncConnect(ep, std::bind(&THttpConn::OnConnect, THttpConnRef(this), _1, _2, useAsyncSendRequest), connectDeadline);
             } catch (...) {
                 ReleaseRequest();
                 throw;
@@ -540,7 +540,7 @@ namespace {
         }
 
         //start next request on keep-alive connection
-        bool StartNextRequest(THttpRequestRef& req) {
+        bool StartNextRequest(THttpRequestRef& req, bool useAsyncSendRequest = false) {
             if (Finalized_) {
                 return false;
             }
@@ -555,12 +555,16 @@ namespace {
             BeginReadResponse_ = false;
 
             try {
-                TErrorCode ec;
-                SendRequest(req->BuildRequest(), ec); //throw std::bad_alloc
-                if (ec.Value() == ECANCELED) {
-                    OnCancel();
-                } else if (ec) {
-                    OnError(ec);
+                if (!useAsyncSendRequest) {
+                    TErrorCode ec;
+                    SendRequest(req->BuildRequest(), ec); //throw std::bad_alloc
+                    if (ec.Value() == ECANCELED) {
+                        OnCancel();
+                    } else if (ec) {
+                        OnError(ec);
+                    }
+                } else {
+                    SendRequestAsync(req->BuildRequest()); //throw std::bad_alloc
                 }
             } catch (...) {
                 OnError(CurrentExceptionMessage());
@@ -646,7 +650,7 @@ namespace {
         }
 
         //can be called only from asio
-        void OnConnect(const TErrorCode& ec, IHandlingContext& ctx) {
+        void OnConnect(const TErrorCode& ec, IHandlingContext& ctx, bool useAsyncSendRequest = false) {
             DBGOUT("THttpConn::OnConnect: " << ec.Value());
             if (Y_UNLIKELY(ec)) {
                 if (ec.Value() == ETIMEDOUT && ConnectDeadline_.GetValue()) {
@@ -708,10 +712,14 @@ namespace {
                 THttpRequestBuffersPtr ptr(req->BuildRequest());
                 PrepareParser();
 
-                TErrorCode ec3;
-                SendRequest(ptr, ec3);
-                if (ec3) {
-                    OnError(ec3);
+                if (!useAsyncSendRequest) {
+                    TErrorCode ec3;
+                    SendRequest(ptr, ec3);
+                    if (ec3) {
+                        OnError(ec3);
+                    }
+                } else {
+                    SendRequestAsync(ptr);
                 }
             }
         }
@@ -948,7 +956,7 @@ namespace {
                 SuggestPurgeCache();
 
                 if (ExceedHardLimit()) {
-                    Y_ABORT("neh::http2 output connections limit reached");
+                    Y_FAIL("neh::http2 output connections limit reached");
                     //ythrow yexception() << "neh::http2 output connections limit reached";
                 }
             }
@@ -1151,7 +1159,7 @@ namespace {
                 if (HttpConnManager()->Get(conn, Addr_->Id)) {
                     DBGOUT("Use connection from cache");
                     Conn_ = conn; //thread magic
-                    if (!conn->StartNextRequest(req)) {
+                    if (!conn->StartNextRequest(req, RequestSettings_.UseAsyncSendRequest)) {
                         continue; //if use connection from cache, ignore write error and try another conn
                     }
                 } else {
@@ -1760,7 +1768,7 @@ namespace {
                     TAtomicBase oldReqId;
                     do {
                         oldReqId = AtomicGet(PrimaryResponse_);
-                        Y_ABORT_UNLESS(oldReqId, "race inside http pipelining");
+                        Y_VERIFY(oldReqId, "race inside http pipelining");
                     } while (!AtomicCas(&PrimaryResponse_, requestId, oldReqId));
 
                     ProcessResponsesData();
@@ -1768,7 +1776,7 @@ namespace {
                     TAtomicBase oldReqId = AtomicGet(PrimaryResponse_);
                     if (oldReqId) {
                         while (!AtomicCas(&PrimaryResponse_, 0, oldReqId)) {
-                            Y_ABORT_UNLESS(oldReqId == AtomicGet(PrimaryResponse_), "race inside http pipelining [2]");
+                            Y_VERIFY(oldReqId == AtomicGet(PrimaryResponse_), "race inside http pipelining [2]");
                         }
                     }
                 }
@@ -1867,6 +1875,7 @@ namespace {
             , CB_(cb)
             , LimitRequestsPerConnection(THttp2Options::LimitRequestsPerConnection)
         {
+
             TNetworkAddress addr = THttp2Options::RespectHostInHttpServerNetworkAddress ?
                                     TNetworkAddress(TString(loc.Host), loc.GetPort())
                                     : TNetworkAddress(loc.GetPort());
@@ -1981,6 +1990,19 @@ namespace {
             THttpRequest::THandleRef ret(new THttpRequest::THandle(fallback, msg, !ss ? nullptr : new TStatCollector(ss)));
             try {
                 THttpRequest::Run(ret, msg, &T::Build, T::RequestSettings());
+            } catch (...) {
+                ret->ResetOnRecv();
+                throw;
+            }
+            return ret.Get();
+        }
+
+        THandleRef ScheduleAsyncRequest(const TMessage& msg, IOnRecv* fallback, TServiceStatRef& ss, bool useAsyncSendRequest) override {
+            THttpRequest::THandleRef ret(new THttpRequest::THandle(fallback, msg, !ss ? nullptr : new TStatCollector(ss)));
+            try {
+                auto requestSettings = T::RequestSettings();
+                requestSettings.SetUseAsyncSendRequest(useAsyncSendRequest);
+                THttpRequest::Run(ret, msg, &T::Build, requestSettings);
             } catch (...) {
                 ret->ResetOnRecv();
                 throw;

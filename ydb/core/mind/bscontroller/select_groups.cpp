@@ -32,7 +32,7 @@ public:
         out.SetNewStyleQuerySupported(true);
 
         if (!record.GetReturnAllMatchingGroups()) {
-            Y_DEBUG_ABORT("obsolete command");
+            Y_VERIFY_DEBUG(false, "obsolete command");
             out.SetStatus(NKikimrProto::ERROR);
         } else {
             TVector<const TGroupInfo*> groups;
@@ -91,7 +91,7 @@ void TBlobStorageController::Handle(TEvBlobStorage::TEvControllerSelectGroups::T
 void TBlobStorageController::ProcessSelectGroupsQueueItem(TList<TSelectGroupsQueueItem>::iterator it) {
     for (const TPDiskId& key : std::exchange(it->BlockedPDisks, {})) {
         const ui32 num = PDiskToQueue.erase(std::make_pair(key, it));
-        Y_ABORT_UNLESS(num);
+        Y_VERIFY(num);
     }
 
     bool missing = false;

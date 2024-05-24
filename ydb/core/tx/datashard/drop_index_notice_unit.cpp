@@ -18,7 +18,7 @@ public:
     }
 
     EExecutionStatus Execute(TOperation::TPtr op, TTransactionContext& txc, const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(op->IsSchemeTx());
+        Y_VERIFY(op->IsSchemeTx());
 
         TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
         Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
@@ -31,15 +31,15 @@ public:
         const auto& params = schemeTx.GetDropIndexNotice();
 
         const auto pathId = PathIdFromPathId(params.GetPathId());
-        Y_ABORT_UNLESS(pathId.OwnerId == DataShard.GetPathOwnerId());
+        Y_VERIFY(pathId.OwnerId == DataShard.GetPathOwnerId());
 
         const auto version = params.GetTableSchemaVersion();
-        Y_ABORT_UNLESS(version);
+        Y_VERIFY(version);
 
         TUserTable::TPtr tableInfo;
         if (params.HasIndexPathId()) {
             const auto& userTables = DataShard.GetUserTables();
-            Y_ABORT_UNLESS(userTables.contains(pathId.LocalPathId));
+            Y_VERIFY(userTables.contains(pathId.LocalPathId));
             const auto& indexes = userTables.at(pathId.LocalPathId)->Indexes;
 
             const auto indexPathId = PathIdFromPathId(params.GetIndexPathId());
@@ -54,7 +54,7 @@ public:
             tableInfo = DataShard.AlterTableSchemaVersion(ctx, txc, pathId, version);
         }
 
-        Y_ABORT_UNLESS(tableInfo);
+        Y_VERIFY(tableInfo);
         DataShard.AddUserTable(pathId, tableInfo);
 
         if (tableInfo->NeedSchemaSnapshots()) {

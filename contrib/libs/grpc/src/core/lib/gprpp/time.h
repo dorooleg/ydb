@@ -12,37 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef GRPC_SRC_CORE_LIB_GPRPP_TIME_H
-#define GRPC_SRC_CORE_LIB_GPRPP_TIME_H
+#ifndef GRPC_CORE_LIB_GPRPP_TIME_H
+#define GRPC_CORE_LIB_GPRPP_TIME_H
 
 #include <grpc/support/port_platform.h>
 
 #include <stdint.h>
 
+#include <cstdint>
 #include <limits>
 #include <ostream>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
 
-#include "y_absl/types/optional.h"
-
-#include <grpc/event_engine/event_engine.h>
 #include <grpc/support/time.h>
 
 #include "src/core/lib/gpr/time_precise.h"
 #include "src/core/lib/gpr/useful.h"
-
-#define GRPC_LOG_EVERY_N_SEC(n, severity, format, ...)          \
-  do {                                                          \
-    static std::atomic<uint64_t> prev{0};                       \
-    uint64_t now = grpc_core::Timestamp::FromTimespecRoundDown( \
-                       gpr_now(GPR_CLOCK_MONOTONIC))            \
-                       .milliseconds_after_process_epoch();     \
-    uint64_t prev_tsamp = prev.exchange(now);                   \
-    if (prev_tsamp == 0 || now - prev_tsamp > (n)*1000) {       \
-      gpr_log(severity, format, __VA_ARGS__);                   \
-    }                                                           \
-  } while (0)
 
 namespace grpc_core {
 
@@ -75,35 +61,6 @@ class Duration;
 // Timestamp represents a discrete point in time.
 class Timestamp {
  public:
-  // Base interface for time providers.
-  class Source {
-   public:
-    // Return the current time.
-    virtual Timestamp Now() = 0;
-    virtual void InvalidateCache() {}
-
-   protected:
-    // We don't delete through this interface, so non-virtual dtor is fine.
-    ~Source() = default;
-  };
-
-  class ScopedSource : public Source {
-   public:
-    ScopedSource() : previous_(thread_local_time_source_) {
-      thread_local_time_source_ = this;
-    }
-    ScopedSource(const ScopedSource&) = delete;
-    ScopedSource& operator=(const ScopedSource&) = delete;
-    void InvalidateCache() override { previous_->InvalidateCache(); }
-
-   protected:
-    ~ScopedSource() { thread_local_time_source_ = previous_; }
-    Source* previous() const { return previous_; }
-
-   private:
-    Source* const previous_;
-  };
-
   constexpr Timestamp() = default;
   // Constructs a Timestamp from a gpr_timespec.
   static Timestamp FromTimespecRoundDown(gpr_timespec t);
@@ -112,8 +69,6 @@ class Timestamp {
   // Construct a Timestamp from a gpr_cycle_counter.
   static Timestamp FromCycleCounterRoundUp(gpr_cycle_counter c);
   static Timestamp FromCycleCounterRoundDown(gpr_cycle_counter c);
-
-  static Timestamp Now() { return thread_local_time_source_->Now(); }
 
   static constexpr Timestamp FromMillisecondsAfterProcessEpoch(int64_t millis) {
     return Timestamp(millis);
@@ -161,27 +116,12 @@ class Timestamp {
   explicit constexpr Timestamp(int64_t millis) : millis_(millis) {}
 
   int64_t millis_ = 0;
-  static thread_local Timestamp::Source* thread_local_time_source_;
-};
-
-class ScopedTimeCache final : public Timestamp::ScopedSource {
- public:
-  Timestamp Now() override;
-
-  void InvalidateCache() override {
-    cached_time_ = y_absl::nullopt;
-    Timestamp::ScopedSource::InvalidateCache();
-  }
-  void TestOnlySetNow(Timestamp now) { cached_time_ = now; }
-
- private:
-  y_absl::optional<Timestamp> cached_time_;
 };
 
 // Duration represents a span of time.
 class Duration {
  public:
-  constexpr Duration() noexcept : millis_(0) {}
+  constexpr Duration() : millis_(0) {}
 
   static Duration FromTimespec(gpr_timespec t);
   static Duration FromSecondsAndNanoseconds(int64_t seconds, int32_t nanos);
@@ -260,7 +200,6 @@ class Duration {
     }
     return *this;
   }
-  Duration& operator*=(double multiplier);
   Duration& operator+=(Duration other) {
     millis_ += other.millis_;
     return *this;
@@ -269,17 +208,9 @@ class Duration {
   constexpr int64_t millis() const { return millis_; }
   double seconds() const { return static_cast<double>(millis_) / 1000.0; }
 
-  // NOLINTNEXTLINE: google-explicit-constructor
-  operator grpc_event_engine::experimental::EventEngine::Duration() const;
-
   gpr_timespec as_timespec() const;
 
   TString ToString() const;
-
-  // Returns the duration in the JSON form corresponding to a
-  // google.protobuf.Duration proto, as defined here:
-  // https://developers.google.com/protocol-buffers/docs/proto3#json
-  TString ToJsonString() const;
 
  private:
   explicit constexpr Duration(int64_t millis) : millis_(millis) {}
@@ -348,11 +279,6 @@ inline Duration Duration::FromSecondsAsDouble(double seconds) {
   return Milliseconds(static_cast<int64_t>(millis));
 }
 
-inline Duration& Duration::operator*=(double multiplier) {
-  *this = *this * multiplier;
-  return *this;
-}
-
 inline Timestamp& Timestamp::operator+=(Duration duration) {
   return *this = (*this + duration);
 }
@@ -364,4 +290,4 @@ std::ostream& operator<<(std::ostream& out, Duration duration);
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_GPRPP_TIME_H
+#endif  // GRPC_CORE_LIB_GPRPP_TIME_H

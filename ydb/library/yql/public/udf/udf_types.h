@@ -215,35 +215,17 @@ public:
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 26)
-class ITypeVisitor : public ITypeVisitor6 {
-protected:
-    ITypeVisitor();
-};
+using ITypeVisitor = ITypeVisitor6;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 25)
-class ITypeVisitor : public ITypeVisitor5 {
-protected:
-    ITypeVisitor();
-};
+using ITypeVisitor = ITypeVisitor5;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 21)
-class ITypeVisitor : public ITypeVisitor4 {
-protected:
-    ITypeVisitor();
-};
+using ITypeVisitor = ITypeVisitor4;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 15)
-class ITypeVisitor : public ITypeVisitor3 {
-protected:
-    ITypeVisitor();
-};
+using ITypeVisitor = ITypeVisitor3;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 13)
-class ITypeVisitor : public ITypeVisitor2 {
-protected:
-    ITypeVisitor();
-};
+using ITypeVisitor = ITypeVisitor2;
 #else
-class ITypeVisitor : public ITypeVisitor1 {
-protected:
-    ITypeVisitor();
-};
+using ITypeVisitor = ITypeVisitor1;
 #endif
 
 UDF_ASSERT_TYPE_SIZE(ITypeVisitor, 16);
@@ -269,7 +251,7 @@ public:
     }
 
     inline void UnRef() noexcept {
-        Y_DEBUG_ABORT_UNLESS(Refs_ > 0);
+        Y_VERIFY_DEBUG(Refs_ > 0);
         if (--Refs_ == 0) {
             delete this;
         }
@@ -338,29 +320,13 @@ public:
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 29)
-class ITypeInfoHelper : public ITypeInfoHelper4 {
-public:
-    using TPtr = TRefCountedPtr<ITypeInfoHelper>;
-    ITypeInfoHelper();
-};
+using ITypeInfoHelper = ITypeInfoHelper4;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 26)
-class ITypeInfoHelper : public ITypeInfoHelper3 {
-public:
-    using TPtr = TRefCountedPtr<ITypeInfoHelper>;
-    ITypeInfoHelper();
-};
+using ITypeInfoHelper = ITypeInfoHelper3;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 25)
-class ITypeInfoHelper : public ITypeInfoHelper2 {
-public:
-    using TPtr = TRefCountedPtr<ITypeInfoHelper>;
-    ITypeInfoHelper();
-};
+using ITypeInfoHelper = ITypeInfoHelper2;
 #else
-class ITypeInfoHelper : public ITypeInfoHelper1 {
-public:
-    using TPtr = TRefCountedPtr<ITypeInfoHelper>;
-    ITypeInfoHelper();
-};
+using ITypeInfoHelper = ITypeInfoHelper1;
 #endif
 
 UDF_ASSERT_TYPE_SIZE(ITypeInfoHelper, 16);

@@ -40,7 +40,7 @@ namespace NBoot {
             auto *load = step->ConsumeAs<TLoadBlobs>(Pending);
 
             if (load->Cookie < Skip || load->Cookie - Skip >= Queue.size())
-                Y_ABORT("Got TLoadBlobs result cookie out of queue range");
+                Y_FAIL("Got TLoadBlobs result cookie out of queue range");
 
             Queue.at(load->Cookie - Skip).Body = load->Plain();
 
@@ -59,7 +59,7 @@ namespace NBoot {
                 ++Skip, Queue.pop_front();
             }
 
-            Y_ABORT_UNLESS(Queue || !Pending, "TGCLog boot actor has lost entries");
+            Y_VERIFY(Queue || !Pending, "TGCLog boot actor has lost entries");
 
             if (!Queue) {
                 Env->Finish(this);

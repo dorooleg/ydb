@@ -2,19 +2,17 @@
 
 #include "util.h"
 
-#include <ydb/core/external_sources/object_storage.h>
 #include <ydb/core/fq/libs/config/yq_issue.h>
 #include <ydb/library/yql/providers/s3/path_generator/yql_s3_path_generator.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 #include <ydb/public/api/protos/draft/fq.pb.h>
 
-#include <library/cpp/scheme/scheme.h>
 #include <util/generic/fwd.h>
 #include <util/generic/set.h>
 #include <util/string/builder.h>
 #include <util/string/cast.h>
 
-#include <regex>
+#include <library/cpp/scheme/scheme.h>
 
 namespace NFq {
 
@@ -78,7 +76,12 @@ NYql::TIssues ValidateQuery(const T& ev, size_t maxSize)
     return issues;
 }
 
-NYql::TIssues ValidateEntityName(const TString& name);
+NYql::TIssues ValidateFormatSetting(const TString& format, const google::protobuf::Map<TString, TString>& formatSetting);
+
+
+NYql::TIssues ValidateDateFormatSetting(const google::protobuf::Map<TString, TString>& formatSetting, bool matchAllSettings = false);
+NYql::TIssues ValidateProjectionColumns(const FederatedQuery::Schema& schema, const TVector<TString>& partitionedBy);
+NYql::TIssues ValidateProjection(const FederatedQuery::Schema& schema, const TString& projection, const TVector<TString>& partitionedBy, size_t pathsLimit);
 
 template<typename T>
 NYql::TIssues ValidateBinding(const T& ev, size_t maxSize, const TSet<FederatedQuery::BindingSetting::BindingCase>& availableBindings, size_t pathsLimit)
@@ -92,7 +95,9 @@ NYql::TIssues ValidateBinding(const T& ev, size_t maxSize, const TSet<FederatedQ
             issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "binding.acl.visibility field is not specified"));
         }
 
-        issues.AddIssues(ValidateEntityName(content.name()));
+        if (content.name() != to_lower(content.name())) {
+            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, TStringBuilder{} << "Incorrect binding name: " << content.name() << ". Please use only lower case"));
+        }
 
         if (!content.has_setting()) {
             issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "binding.setting field is not specified"));
@@ -109,8 +114,7 @@ NYql::TIssues ValidateBinding(const T& ev, size_t maxSize, const TSet<FederatedQ
             if (!dataStreams.has_schema()) {
                 issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "data streams with empty schema is forbidden"));
             }
-            issues.AddIssues(NKikimr::NExternalSource::ValidateDateFormatSetting(dataStreams.format_setting(), true));
-            issues.AddIssues(NKikimr::NExternalSource::ValidateRawFormat(dataStreams.format(), dataStreams.schema(), google::protobuf::RepeatedPtrField<TString>()));
+            issues.AddIssues(ValidateDateFormatSetting(dataStreams.format_setting(), true));
             break;
         }
         case FederatedQuery::BindingSetting::BINDING_NOT_SET: {
@@ -121,7 +125,24 @@ NYql::TIssues ValidateBinding(const T& ev, size_t maxSize, const TSet<FederatedQ
         case FederatedQuery::BindingSetting::kObjectStorage:
             const FederatedQuery::ObjectStorageBinding objectStorage = setting.object_storage();
             for (const auto& subset: objectStorage.subset()) {
-                issues.AddIssues(NKikimr::NExternalSource::Validate(subset.schema(), subset, pathsLimit));
+                issues.AddIssues(ValidateFormatSetting(subset.format(), subset.format_setting()));
+                if (subset.projection_size() || subset.partitioned_by_size()) {
+                    try {
+                        TVector<TString> partitionedBy{subset.partitioned_by().begin(), subset.partitioned_by().end()};
+                        issues.AddIssues(ValidateProjectionColumns(subset.schema(), partitionedBy));
+                        TString projectionStr;
+                        if (subset.projection_size()) {
+                            NSc::TValue projection;
+                            for (const auto& [key, value]: subset.projection()) {
+                                projection[key] = value;
+                            }
+                            projectionStr = projection.ToJsonPretty();
+                        }
+                        issues.AddIssues(ValidateProjection(subset.schema(), projectionStr, partitionedBy, pathsLimit));
+                    } catch (...) {
+                        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST,CurrentExceptionMessage()));
+                    }
+                }
             }
             break;
         }
@@ -132,19 +153,10 @@ NYql::TIssues ValidateBinding(const T& ev, size_t maxSize, const TSet<FederatedQ
     return issues;
 }
 
-NYql::TIssues ValidateConnectionSetting(
-    const FederatedQuery::ConnectionSetting& setting,
-    const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections,
-    bool disableCurrentIam,
-    bool passwordRequired = true);
+NYql::TIssues ValidateConnectionSetting(const FederatedQuery::ConnectionSetting& setting, const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections, bool disableCurrentIam,  bool clickHousePasswordRequire = true);
 
 template<typename T>
-NYql::TIssues ValidateConnection(
-    const T& ev,
-    size_t maxSize,
-    const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections,
-    bool disableCurrentIam,
-    bool passwordRequired = true)
+NYql::TIssues ValidateConnection(const T& ev, size_t maxSize, const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections, bool disableCurrentIam,  bool clickHousePasswordRequire = true)
 {
     const auto& request = ev->Get()->Request;
     NYql::TIssues issues = ValidateEvent(ev, maxSize);
@@ -158,14 +170,16 @@ NYql::TIssues ValidateConnection(
         issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "content.acl.visibility field is not specified"));
     }
 
-    issues.AddIssues(ValidateEntityName(content.name()));
+    if (content.name() != to_lower(content.name())) {
+        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, TStringBuilder{} << "Incorrect connection name: " << content.name() << ". Please use only lower case"));
+    }
 
     if (!content.has_setting()) {
         issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "content.setting field is not specified"));
     }
 
     const FederatedQuery::ConnectionSetting& setting = content.setting();
-    issues.AddIssues(ValidateConnectionSetting(setting, availableConnections, disableCurrentIam, passwordRequired));
+    issues.AddIssues(ValidateConnectionSetting(setting, availableConnections, disableCurrentIam, clickHousePasswordRequire));
     return issues;
 }
 

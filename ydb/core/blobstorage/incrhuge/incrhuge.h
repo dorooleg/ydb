@@ -100,7 +100,7 @@ namespace NKikimr {
         };
 
         // TEvIncrHugeRead request is sent from VDisk to read previously written blob. User should provide correct and
-        // existing blob id, otherwise system will crash on Y_ABORT_UNLESS(because VDisk's database became inconsistent).
+        // existing blob id, otherwise system will crash on Y_VERIFY (because VDisk's database became inconsistent).
         // If Size field is zero, then blob is read up to end starting at Offset.
         struct TEvIncrHugeRead : public NActors::TEventLocal<TEvIncrHugeRead, TEvBlobStorage::EvIncrHugeRead> {
             ui8             Owner;  // the owner who wants to read the data
@@ -191,9 +191,9 @@ namespace NKikimr {
 
         inline ui32 PDiskIdFromIncrHugeKeeperId(const TActorId& keeperId) {
             ui64 raw2 = keeperId.RawX2();
-            Y_ABORT_UNLESS(raw2 < (ui64(1) << 32));
+            Y_VERIFY(raw2 < (ui64(1) << 32));
             ui32 pdiskId = raw2;
-            Y_DEBUG_ABORT_UNLESS(keeperId == MakeIncrHugeKeeperId(pdiskId));
+            Y_VERIFY_DEBUG(keeperId == MakeIncrHugeKeeperId(pdiskId));
             return pdiskId;
         }
 

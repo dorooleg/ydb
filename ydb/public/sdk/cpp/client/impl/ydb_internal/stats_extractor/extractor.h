@@ -31,7 +31,7 @@ public:
         auto strong = Client_.lock();
         if (strong) {
             auto sensorsRegistry = strong->GetMetricRegistry();
-            Y_ABORT_UNLESS(sensorsRegistry, "TMetricRegistry is null in Stats Extractor");
+            Y_VERIFY(sensorsRegistry, "TMetricRegistry is null in Stats Extractor");
             sensorsRegistry->Accept(TInstant::Zero(), consumer);
         } else {
              throw NSdkStats::DestroyedClientException();

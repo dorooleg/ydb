@@ -24,7 +24,7 @@ using namespace NKikimr::NMiniKQL;
 
 namespace {
 
-const THashSet<TStringBuf> VALID_SOURCES = {DqProviderName, ConfigProviderName, YtProviderName, ClickHouseProviderName, YdbProviderName, S3ProviderName, PgProviderName};
+const THashSet<TStringBuf> VALID_SOURCES = {DqProviderName, ConfigProviderName, YtProviderName, ClickHouseProviderName, YdbProviderName, S3ProviderName};
 const THashSet<TStringBuf> VALID_SINKS = {ResultProviderName, YtProviderName, S3ProviderName};
 
 }
@@ -99,7 +99,7 @@ public:
 
         IGraphTransformer::TStatus status = NDq::DqWrapRead(input, output, ctx, *State_->TypeCtx, *State_->Settings);
         if (input != output) {
-            YQL_CLOG(INFO, ProviderDq) << "DqsRecapture";
+            YQL_CLOG(DEBUG, ProviderDq) << "DqsRecapture";
             // TODO: Add before/after recapture transformers
             State_->TypeCtx->DqCaptured = true;
             // TODO: drop this after implementing DQS ConstraintTransformer
@@ -180,7 +180,7 @@ private:
             auto dataSink = State_->TypeCtx->DataSinkMap.FindPtr(dataSinkName);
             YQL_ENSURE(dataSink);
             if (auto dqIntegration = dataSink->Get()->GetDqIntegration()) {
-                if (auto canWrite = dqIntegration->CanWrite(node, ctx)) {
+                if (auto canWrite = dqIntegration->CanWrite(*State_->Settings, node, ctx)) {
                     if (!canWrite.GetRef()) {
                         good = false;
                     } else if (!State_->Settings->EnableInsert.Get().GetOrElse(false)) {

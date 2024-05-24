@@ -93,7 +93,7 @@ struct TSchemeShard::TTxMakeAccessDatabaseNoInheritable : public TTransactionBas
             for (const auto& item: sidsByDomain) {
                 TPathId domainId = item.first;
                 const TPathElement::TPtr domainElem = Self->PathsById.at(domainId);
-                Y_ABORT_UNLESS(domainElem->IsDomainRoot());
+                Y_VERIFY(domainElem->IsDomainRoot());
 
                 domainElem->ACL = FixAccess(domainElem->ACL, item.second);
                 domainElem->ACLVersion += 1;

@@ -59,20 +59,13 @@ THttpHeaders::THttpHeaders(IInputStream* stream) {
     }
 }
 
-THttpHeaders::THttpHeaders(TArrayRef<const THttpInputHeader> headers) {
-    for (const auto& header : headers) {
-        AddHeader(header);
-    }
-}
-
-
 bool THttpHeaders::HasHeader(const TStringBuf header) const {
     return FindHeader(header);
 }
 
 const THttpInputHeader* THttpHeaders::FindHeader(const TStringBuf header) const {
     for (const auto& hdr : Headers_) {
-        if (AsciiEqualsIgnoreCase(hdr.Name(), header)) {
+        if (AsciiCompareIgnoreCase(hdr.Name(), header) == 0) {
             return &hdr;
         }
     }
@@ -81,7 +74,7 @@ const THttpInputHeader* THttpHeaders::FindHeader(const TStringBuf header) const 
 
 void THttpHeaders::RemoveHeader(const TStringBuf header) {
     for (auto h = Headers_.begin(); h != Headers_.end(); ++h) {
-        if (AsciiEqualsIgnoreCase(h->Name(), header)) {
+        if (AsciiCompareIgnoreCase(h->Name(), header) == 0) {
             Headers_.erase(h);
             return;
         }
@@ -89,9 +82,8 @@ void THttpHeaders::RemoveHeader(const TStringBuf header) {
 }
 
 void THttpHeaders::AddOrReplaceHeader(const THttpInputHeader& header) {
-    TStringBuf name = header.Name();
     for (auto& hdr : Headers_) {
-        if (AsciiEqualsIgnoreCase(hdr.Name(), name)) {
+        if (AsciiCompareIgnoreCase(hdr.Name(), header.Name()) == 0) {
             hdr = header;
             return;
         }

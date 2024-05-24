@@ -21,7 +21,8 @@
 
 U_NAMESPACE_BEGIN
 
-namespace number::impl {
+namespace number {
+namespace impl {
 
 enum CldrPatternStyle {
     CLDR_PATTERN_STYLE_DECIMAL,
@@ -48,8 +49,8 @@ inline bool unitIsCurrency(const MeasureUnit& unit) {
     return uprv_strcmp("currency", unit.getType()) == 0;
 }
 
-inline bool unitIsBaseUnit(const MeasureUnit& unit) {
-    return unit == MeasureUnit();
+inline bool unitIsNoUnit(const MeasureUnit& unit) {
+    return uprv_strcmp("none", unit.getType()) == 0;
 }
 
 inline bool unitIsPercent(const MeasureUnit& unit) {
@@ -101,7 +102,8 @@ inline StandardPlural::Form getPluralSafe(
 
 } // namespace utils
 
-} // namespace number::impl
+} // namespace impl
+} // namespace number
 
 U_NAMESPACE_END
 

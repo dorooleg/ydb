@@ -20,10 +20,13 @@ struct TEvKeyValue {
         EvNotify,
         EvStoreCollect,
         EvCollect,
+        EvEraseCollect,
         EvPeriodicRefresh,
         EvReportWriteLatency,
         EvUpdateWeights,
         EvCompleteGC,
+        EvPartialCompleteGC,
+        EvContinueGC,
 
         EvRead = EvRequest + 16,
         EvReadRange,
@@ -142,28 +145,25 @@ struct TEvKeyValue {
         ui64 Step;
         NKeyValue::TRequestStat Stat;
         NMsgBusProxy::EResponseStatus Status;
-        std::deque<std::pair<TLogoBlobID, bool>> RefCountsIncr;
 
         TEvNotify() { }
 
         TEvNotify(ui64 requestUid, ui64 generation, ui64 step, const NKeyValue::TRequestStat &stat,
-                NMsgBusProxy::EResponseStatus status, std::deque<std::pair<TLogoBlobID, bool>>&& refCountsIncr)
+                NMsgBusProxy::EResponseStatus status)
             : RequestUid(requestUid)
             , Generation(generation)
             , Step(step)
             , Stat(stat)
             , Status(status)
-            , RefCountsIncr(std::move(refCountsIncr))
         {}
 
         TEvNotify(ui64 requestUid, ui64 generation, ui64 step, const NKeyValue::TRequestStat &stat,
-                NKikimrKeyValue::Statuses::ReplyStatus status, std::deque<std::pair<TLogoBlobID, bool>>&& refCountsIncr)
+                NKikimrKeyValue::Statuses::ReplyStatus status)
             : RequestUid(requestUid)
             , Generation(generation)
             , Step(step)
             , Stat(stat)
             , Status(ConvertStatus(status))
-            , RefCountsIncr(std::move(refCountsIncr))
         {}
 
         static NMsgBusProxy::EResponseStatus ConvertStatus(NKikimrKeyValue::Statuses::ReplyStatus status) {
@@ -182,8 +182,16 @@ struct TEvKeyValue {
         }
     };
 
+    struct TEvStoreCollect : public TEventLocal<TEvStoreCollect, EvStoreCollect> {
+        TEvStoreCollect() { }
+    };
+
     struct TEvCollect : public TEventLocal<TEvCollect, EvCollect> {
         TEvCollect() { }
+    };
+
+    struct TEvEraseCollect : public TEventLocal<TEvEraseCollect, EvEraseCollect> {
+        TEvEraseCollect() { }
     };
 
     struct TEvPeriodicRefresh : public TEventLocal<TEvPeriodicRefresh, EvPeriodicRefresh> {
@@ -191,11 +199,24 @@ struct TEvKeyValue {
     };
 
     struct TEvCompleteGC : public TEventLocal<TEvCompleteGC, EvCompleteGC> {
-        const bool Repeat;
+        TEvCompleteGC() { }
+    };
 
-        TEvCompleteGC(bool repeat)
-            : Repeat(repeat)
-        {}
+    struct TEvPartialCompleteGC : public TEventLocal<TEvPartialCompleteGC, EvPartialCompleteGC> {
+        TVector<TLogoBlobID> CollectedDoNotKeep;
+
+        TEvPartialCompleteGC() { }
+
+        TEvPartialCompleteGC(TVector<TLogoBlobID> &&doNotKeeps)
+            : CollectedDoNotKeep(std::move(doNotKeeps))
+        { }
+    };
+
+    struct TEvContinueGC : public TEventLocal<TEvContinueGC, EvContinueGC> {
+        TVector<TLogoBlobID> Buffer;
+        TEvContinueGC(TVector<TLogoBlobID> &&buffer)
+            : Buffer(std::move(buffer))
+        { }
     };
 };
 

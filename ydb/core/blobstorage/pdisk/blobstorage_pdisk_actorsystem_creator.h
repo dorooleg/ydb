@@ -2,25 +2,14 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 #include <ydb/library/pdisk_io/aio.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/core/control/immediate_control_board_impl.h>
-#include <ydb/core/grpc_services/grpc_helper.h>
-#include <ydb/core/protos/config.pb.h>
-#include <ydb/core/protos/netclassifier.pb.h>
-#include <ydb/core/protos/shared_cache.pb.h>
-#include <ydb/core/protos/datashard_config.pb.h>
-#include <ydb/core/base/feature_flags.h>
-#include <ydb/core/base/nameservice.h>
-#include <ydb/core/base/channel_profiles.h>
-#include <ydb/core/base/domain.h>
-
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 
 namespace NKikimr {
 
@@ -50,7 +39,7 @@ public:
         setup->Scheduler.Reset(new TBasicSchedulerThread(TSchedulerConfig(512, 100)));
 
         auto logSettings = MakeIntrusive<NActors::NLog::TSettings>(NActors::TActorId(1, "logger"),
-                NActorsServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, ui32{0});
+                NKikimrServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, ui32{0});
         logSettings->Append(
             NActorsServices::EServiceCommon_MIN,
             NActorsServices::EServiceCommon_MAX,
@@ -62,10 +51,10 @@ public:
             NKikimrServices::EServiceKikimr_Name
         );
         Counters = MakeIntrusive<::NMonitoring::TDynamicCounters>();
-        auto loggerActor = std::make_unique<NActors::TLoggerActor>(logSettings, NActors::CreateNullBackend(),
+        NActors::TLoggerActor *loggerActor = new NActors::TLoggerActor(logSettings, NActors::CreateNullBackend(),
                 GetServiceCounters(Counters, "utils"));
-        NActors::TActorSetupCmd loggerActorCmd(std::move(loggerActor), NActors::TMailboxType::Simple, 2);
-        setup->LocalServices.emplace_back(NActors::TActorId(1, "logger"), std::move(loggerActorCmd));
+        NActors::TActorSetupCmd loggerActorCmd(loggerActor, NActors::TMailboxType::Simple, 2);
+        setup->LocalServices.emplace_back(NActors::TActorId(1, "logger"), loggerActorCmd);
 
         ActorSystem = std::make_unique<TActorSystem>(setup, AppData.get(), logSettings);
         ActorSystem->Start();

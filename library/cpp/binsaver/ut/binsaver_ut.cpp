@@ -195,3 +195,4 @@ Y_UNIT_TEST(TestMemberAndOpIsMain) {
     TestBinSaverSerialization(obj);
 }
 }
+;

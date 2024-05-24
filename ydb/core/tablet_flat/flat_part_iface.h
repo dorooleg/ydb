@@ -6,7 +6,7 @@
 #include "flat_row_eggs.h"
 #include "util_basics.h"
 
-#include <ydb/library/actors/util/shared_data.h>
+#include <library/cpp/actors/util/shared_data.h>
 
 #include <util/generic/string.h>
 #include <util/system/types.h>
@@ -68,7 +68,7 @@ namespace NTable {
 
         virtual TResult Locate(const TMemTable*, ui64 ref, ui32 tag) noexcept = 0;
         virtual TResult Locate(const TPart*, ui64 ref, ELargeObj lob) noexcept = 0;
-        virtual const TSharedData* TryGetPage(const TPart* part, TPageId pageId, TGroupId groupId) = 0;
+        virtual const TSharedData* TryGetPage(const TPart* part, TPageId id, TGroupId groupId = { }) = 0;
 
         /**
          * Hook for cleaning up env on DB.RollbackChanges()

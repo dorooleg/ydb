@@ -8,8 +8,8 @@
 #include <ydb/core/base/blobstorage.h>
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
-#include <ydb/library/actors/core/actorid.h>
-#include <ydb/library/actors/core/event_local.h>
+#include <library/cpp/actors/core/actorid.h>
+#include <library/cpp/actors/core/event_local.h>
 
 #include <util/generic/vector.h>
 
@@ -22,11 +22,13 @@ using TLogThis = TCtorLogger<NKikimrServices::BLOB_CACHE>;
 
 struct TReadBlobRangeOptions {
     bool CacheAfterRead;
+    bool ForceFallback;
     bool IsBackgroud;
     bool WithDeadline = true;
 
     TString ToString() const {
         return TStringBuilder() << "cache: " << (ui32)CacheAfterRead
+            << " fallback: " << (ui32)ForceFallback
             << " background: " << (ui32)IsBackgroud
             << " dedlined: " << (ui32)WithDeadline;
     }
@@ -65,6 +67,11 @@ struct TEvBlobCache {
             : BlobRanges(std::move(blobRanges))
             , ReadOptions(std::move(opts))
         {
+            if (opts.ForceFallback) {
+                for (const auto& blobRange : BlobRanges) {
+                    Y_VERIFY(blobRange.BlobId == BlobRanges[0].BlobId);
+                }
+            }
         }
     };
 
@@ -74,14 +81,12 @@ struct TEvBlobCache {
         TString Data;
         const bool FromCache = false;
         const TInstant ConstructTime = Now();
-        const TString DataSourceId;
 
-        TEvReadBlobRangeResult(const TBlobRange& blobRange, NKikimrProto::EReplyStatus status, const TString& data, const bool fromCache = false, const TString& dataSourceId = Default<TString>())
+        TEvReadBlobRangeResult(const TBlobRange& blobRange, NKikimrProto::EReplyStatus status, const TString& data, const bool fromCache = false)
             : BlobRange(blobRange)
             , Status(status)
             , Data(data)
             , FromCache(fromCache)
-            , DataSourceId(dataSourceId)
         {}
     };
 

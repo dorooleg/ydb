@@ -1,72 +1,37 @@
-#include <google/protobuf/text_format.h>
-#include <google/protobuf/util/message_differencer.h>
 #include <library/cpp/svnversion/svnversion.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
-#include <ydb/core/viewer/json/json.h>
+#include <ydb/core/util/yverify_stream.h>
 #include "version.h"
-
-namespace NKikimr {
-
-TCompatibilityInfo CompatibilityInfo = TCompatibilityInfo{};
 
 using TCurrent = NKikimrConfig::TCurrentCompatibilityInfo;
 using TStored = NKikimrConfig::TStoredCompatibilityInfo;
-using TOldFormat = NActors::TInterconnectProxyCommon::TVersionInfo;
 
-using EComponentId = NKikimrConfig::TCompatibilityRule;
-using TComponentId = NKikimrConfig::TCompatibilityRule::EComponentId;
 
-TCompatibilityInfo::TCompatibilityInfo() {
-    using TStoredConstructor = TCompatibilityInfo::TProtoConstructor::TStoredCompatibilityInfo;
-    using TVersionConstructor = TCompatibilityInfo::TProtoConstructor::TVersion;
+/////////////////////////////////////////////////////////////
+// Global definitions
+/////////////////////////////////////////////////////////////
 
-    /////////////////////////////////////////////////////////
-    // Current CompatibilityInfo
-    /////////////////////////////////////////////////////////
+// new version control
+std::optional<TCurrent> TCompatibilityInfo::CompatibilityInfo = std::nullopt;
+TSpinLock TCompatibilityInfo::LockCurrent = TSpinLock();
+const TCurrent* TCompatibilityInfo::GetCurrent() {
+    TGuard<TSpinLock> g(TCompatibilityInfo::LockCurrent);
 
-    auto current = MakeCurrent();
+    if (!CompatibilityInfo) {
+        // using TYdbVersion = TCompatibilityInfo::TProtoConstructor::TYdbVersion;
+        // using TCompatibilityRule = TCompatibilityInfo::TProtoConstructor::TCompatibilityRule;
+        using TCurrentCompatibilityInfo = TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo;
 
-    // bool success = CompleteFromTag(current);
-    // Y_ABORT_UNLESS(success);
+        auto current = TCurrentCompatibilityInfo{
+            .Build = "trunk"
+        }.ToPB();
 
-    CurrentCompatibilityInfo.CopyFrom(current);
+        // Y_VERIFY_DEBUG(CompleteFromTag(current));
 
-    /////////////////////////////////////////////////////////
-    // Default CompatibilityInfo
-    /////////////////////////////////////////////////////////
-    DefaultCompatibilityInfo = TDefaultCompatibilityInfo{};
-#define EMPLACE_DEFAULT_COMPATIBILITY_INFO(componentName, app, year, major, minor, hotfix)      \
-    do {                                                                                        \
-        auto& defaultInfo = DefaultCompatibilityInfo[(ui32)EComponentId::componentName];        \
-        defaultInfo.emplace();                                                                  \
-        defaultInfo->CopyFrom(                                                                  \
-            TStoredConstructor{                                                                 \
-                .Application = app,                                                             \
-                .Version = TVersionConstructor{                                                 \
-                    .Year = year,                                                               \
-                    .Major = major,                                                             \
-                    .Minor = minor,                                                             \
-                    .Hotfix = hotfix,                                                           \
-                },                                                                              \
-            }.ToPB()                                                                            \
-        );                                                                                      \
-    } while (false)
+        CompatibilityInfo = TCurrent();
+        CompatibilityInfo->CopyFrom(current);
+    }
 
-    EMPLACE_DEFAULT_COMPATIBILITY_INFO(PDisk, "ydb", 23, 3, 13, 0);
-    EMPLACE_DEFAULT_COMPATIBILITY_INFO(VDisk, "ydb", 23, 2, 12, 0);
-    EMPLACE_DEFAULT_COMPATIBILITY_INFO(BlobStorageController, "ydb", 23, 3, 13, 0);
-
-#undef EMPLACE_DEFAULT_COMPATIBILITY_INFO
-}
-
-const TCurrent* TCompatibilityInfo::GetCurrent() const {
-    return &CurrentCompatibilityInfo;
-}
-
-const TStored* TCompatibilityInfo::GetDefault(TComponentId componentId) const {
-    const auto& info = DefaultCompatibilityInfo[componentId];
-    Y_VERIFY_S(info, "Default version is not defined for component# " << NKikimrConfig::TCompatibilityRule::EComponentId_Name(componentId));
-    return &*info;
+    return &*CompatibilityInfo;
 }
 
 // obsolete version control
@@ -85,72 +50,58 @@ TMaybe<NActors::TInterconnectProxyCommon::TVersionInfo> VERSION = NActors::TInte
 // Implementation
 /////////////////////////////////////////////////////////////
 
-// Auxiliary output functions
-TString PrintStoredAndCurrent(const TStored* stored, const TCurrent* current) {
-    TString storedStr;
-    TString currentStr;
-    google::protobuf::TextFormat::PrintToString(*stored, &storedStr);
-    google::protobuf::TextFormat::PrintToString(*current, &currentStr);
-    return TStringBuilder() << "Stored CompatibilityInfo# { " << storedStr << " } "
-            "Current CompatibilityInfo# { " << currentStr << " } ";
-}
+// Last stable YDB release, which doesn't include version control change
+// When the compatibility information is not present in component's data,
+// we assume component's version to be this version
+std::optional<TStored> TCompatibilityInfo::UnknownYdbRelease = std::nullopt;
+const TStored* TCompatibilityInfo::GetUnknown() {
+    static TSpinLock lock;
+    TGuard<TSpinLock> g(lock);
 
-TString PrintStoredAndCurrent(const TOldFormat& peer, const TCurrent* current) {
-    TStringStream str;
-    str << "Peer CompatibilityInfo# { ";
-    str << "Tag# " << peer.Tag;
-    str << "AcceptedTag# { ";
-    for (const TString& tag : peer.AcceptedTags) {
-        str << tag << " ";
+    if (!UnknownYdbRelease) {
+        using TYdbVersion = TCompatibilityInfo::TProtoConstructor::TYdbVersion;
+        // using TCompatibilityRule = TCompatibilityInfo::TProtoConstructor::TCompatibilityRule;
+        using TStoredCompatibilityInfo = TCompatibilityInfo::TProtoConstructor::TStoredCompatibilityInfo;
+
+        UnknownYdbRelease = TStored();
+        UnknownYdbRelease->CopyFrom(TStoredCompatibilityInfo{
+            .Build = "ydb",
+            .YdbVersion = TYdbVersion{ .Year = 22, .Major = 5, .Minor = 7, .Hotfix = 0 }
+
+        }.ToPB());
     }
-    str << " } } ";
-    TString currentStr;
-    google::protobuf::TextFormat::PrintToString(*current, &currentStr);
-    str << "Currrent CompatibilityInfo# { " << currentStr << " }";
-    return str.Str();
+
+    return &*UnknownYdbRelease;
 }
 
-bool CheckComponentId(const NKikimrConfig::TCompatibilityRule& rule, TComponentId componentId) {
-    if (!rule.HasComponentId()) {
-        return true;
-    }
-    const auto ruleComponentId = TComponentId(rule.GetComponentId());
-    return ruleComponentId == EComponentId::Any || ruleComponentId == componentId;
-}
-
-TStored TCompatibilityInfo::MakeStored(TComponentId componentId, const TCurrent* current) const {
-    Y_ABORT_UNLESS(current);
+TStored TCompatibilityInfo::MakeStored(ui32 componentId, const TCurrent* current) {
+    Y_VERIFY(current);
 
     TStored stored;
-    stored.SetApplication(current->GetApplication());
-    if (current->HasVersion()) {
-        stored.MutableVersion()->CopyFrom(current->GetVersion());
+    stored.SetBuild(current->GetBuild());
+    if (current->HasYdbVersion()) {
+        stored.MutableYdbVersion()->CopyFrom(current->GetYdbVersion());
     }
 
-    auto copyFromList = [&](const auto& current, auto& stored) {
-        for (const auto& rule : current) {
-            if (CheckComponentId(rule, componentId)) {
-                auto *newRule = stored.AddReadableBy();
-                if (rule.HasApplication()) {
-                    newRule->SetApplication(rule.GetApplication());
-                }
-                newRule->MutableUpperLimit()->CopyFrom(rule.GetUpperLimit());
-                newRule->MutableLowerLimit()->CopyFrom(rule.GetLowerLimit());
-                newRule->SetForbidden(rule.GetForbidden());
+    for (ui32 i = 0; i < current->StoresReadableBySize(); i++) {
+        auto rule = current->GetStoresReadableBy(i);
+        if (!rule.HasComponentId() || rule.GetComponentId() == componentId ||
+                rule.GetComponentId() == (ui32)NKikimrConfig::TCompatibilityRule::Any) {
+            auto *newRule = stored.AddReadableBy();
+            if (rule.HasBuild()) {
+                newRule->SetBuild(rule.GetBuild());
             }
+            newRule->MutableUpperLimit()->CopyFrom(rule.GetUpperLimit());
+            newRule->MutableBottomLimit()->CopyFrom(rule.GetBottomLimit());
+            newRule->SetForbidden(rule.GetForbidden());
         }
-    };
-
-    if (componentId == EComponentId::Interconnect) {
-        copyFromList(current->GetCanConnectTo(), stored);
-    } else {
-        copyFromList(current->GetStoresReadableBy(), stored);
     }
+
     return stored;
 }
 
-TStored TCompatibilityInfo::MakeStored(TComponentId componentId) const {
-    return MakeStored(componentId, GetCurrent());
+TStored TCompatibilityInfo::MakeStored(NKikimrConfig::TCompatibilityRule::EComponentId componentId) {
+    return MakeStored((ui32)componentId, GetCurrent());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -206,149 +157,152 @@ i32 CompareVersions(const NKikimrConfig::TYdbVersion& left, const NKikimrConfig:
     return 0;
 }
 
-bool IsVersionComplete(const NKikimrConfig::TYdbVersion& version) {
-    return version.HasYear() && version.HasMajor() && version.HasMinor() && version.HasHotfix();
-}
-
-// If stored CompatibilityInfo is not present, we:
-// - compare current to DefaultCompatibilityInfo if current is stable version
-// - consider versions compatible otherwise
-bool CheckNonPresent(const TCurrent* current, TComponentId componentId, TString& errorReason) {
-    Y_ABORT_UNLESS(current);
-    if (!current->HasVersion()) {
+// If StoredCompatibilityInfo is not present, we:
+// compare current to UnknownYdbRelease, if current version is stable, otherwise
+// we consider versions compatible
+bool CheckNonPresent(const TCurrent* current, ui32 componentId, TString& errorReason) {
+    Y_VERIFY(current);
+    if (!current->HasYdbVersion()) {
         return true;
     }
-    const auto* lastUnsupported = CompatibilityInfo.GetDefault(componentId);
-    Y_ABORT_UNLESS(lastUnsupported);
-
+    const auto* lastUnsupported = TCompatibilityInfo::GetUnknown();
+    Y_VERIFY(lastUnsupported);
     TString errorReason1;
-    if (!CompatibilityInfo.CheckCompatibility(lastUnsupported, componentId, errorReason1)) {
-        errorReason = "No stored YDB version found, default version is incompatible: " + errorReason1;
+    if (!TCompatibilityInfo::CheckCompatibility(current, lastUnsupported, componentId, errorReason1)) {
+        errorReason = "No stored YDB version found, last unsupported release is incompatible: " + errorReason1;
         return false;
     } else {
         return true;
     }
 }
 
-// Default rules:
-// Two stable versions are compatible if their Year's are the same and their Major's differ for no more, than 1.
-// Two unstable versions are compatible.
-// Stable and non-stable versions are not compatible.
-bool CheckDefaultRules(const NKikimrConfig::TYdbVersion* currentVersion, const NKikimrConfig::TYdbVersion* storedVersion) {
-    if (!currentVersion && !storedVersion) {
-        return true;
+// By default two stable versions are considered compatible, if their Year is the same 
+// and Major differ for no more, than 1, regardless of their Build
+// Two unstable versions are compatible only if they have the same Build
+// Stable and non-stable versions are not compatible by default
+bool CheckDefaultRules(TString currentBuild, const NKikimrConfig::TYdbVersion* currentYdbVersion, 
+        TString storedBuild, const NKikimrConfig::TYdbVersion* storedYdbVersion) {
+    if (!currentYdbVersion && !storedYdbVersion) {
+        return currentBuild == storedBuild;
     }
-    if (currentVersion && storedVersion) {
-        if (!currentVersion->HasYear() || !storedVersion->HasYear()) {
+    if (currentYdbVersion && storedYdbVersion) {
+        if (!currentYdbVersion->HasYear() || !storedYdbVersion->HasYear()) {
             return true;
         }
-        if (currentVersion->GetYear() != storedVersion->GetYear()) {
+        if (currentYdbVersion->GetYear() != storedYdbVersion->GetYear()) {
             return false;
         }
-        if (!currentVersion->HasMajor() || !storedVersion->HasMajor()) {
+        if (!currentYdbVersion->HasMajor() || !storedYdbVersion->HasMajor()) {
             return true;
         }
-        return std::abs((i32)currentVersion->GetMajor() - (i32)storedVersion->GetMajor()) <= 1;
+        return std::abs((i32)currentYdbVersion->GetMajor() - (i32)storedYdbVersion->GetMajor()) <= 1;
     }
 
     return false;
 }
 
-bool CheckRule(std::optional<TString> app, const NKikimrConfig::TYdbVersion* version, const NKikimrConfig::TCompatibilityRule& rule) {
-    if (app) {
-        if (rule.HasApplication()) {
-            if (rule.GetApplication() != *app) {
-                // this rule is not applicable to different application
+bool CheckRule(std::optional<TString> build, const NKikimrConfig::TYdbVersion* version, const NKikimrConfig::TCompatibilityRule& rule) {
+    if (build) {
+        if (rule.HasBuild()) {
+            if (rule.GetBuild() != *build) {
                 return false;
             }
-            if (!version) {
-                // rule for stable versions is not applicable to trunk
+            if (version == nullptr) {
                 return true;
             }
         } else {
-            if (!version) {
-                // rule for stable versions is not applicable to trunk
+            // non-stable build is incompatible with stable
+            if (version == nullptr) {
                 return false;
             }
         }
     } else {
-        if (!version) {
-            // neither application nor version is set, should not reach here
+        if (version == nullptr) {
             return false;
         }
-        if (rule.HasApplication()) {
-            // only rules, which are common to all applications, apply to version with no application info
+        if (rule.HasBuild()) {
             return false;
         }
     }
     
-    return (!rule.HasLowerLimit() || CompareVersions(*version, rule.GetLowerLimit()) > -1) &&
+    return (!rule.HasBottomLimit() || CompareVersions(*version, rule.GetBottomLimit()) > -1) &&
             (!rule.HasUpperLimit() || CompareVersions(*version, rule.GetUpperLimit()) < 1);
 }
 
-bool TCompatibilityInfo::CheckCompatibility(const TCurrent* current, const TStored* stored, TComponentId componentId, TString& errorReason) const {
-    Y_ABORT_UNLESS(current);
-    if (!stored) {
+bool TCompatibilityInfo::CheckCompatibility(const TCurrent* current, const TStored* stored, ui32 componentId, TString& errorReason) {
+    Y_VERIFY(current);
+    if (stored == nullptr) {
         // version record is not found
         return CheckNonPresent(current, componentId, errorReason);
     }
 
-    const auto& currentApplication = current->GetApplication();
-    const auto& storedApplication = stored->GetApplication();
-    const auto* currentVersion = current->HasVersion() ? &current->GetVersion() : nullptr;
-    const auto* storedVersion = stored->HasVersion() ? &stored->GetVersion() : nullptr;
+    const auto currentBuild = current->GetBuild();
+    const auto storedBuild = stored->GetBuild();
+    const auto* currentYdbVersion = current->HasYdbVersion() ? &current->GetYdbVersion() : nullptr;
+    const auto* storedYdbVersion = stored->HasYdbVersion() ? &stored->GetYdbVersion() : nullptr;
 
     bool permitted = false;
+    bool useDefault = true;
 
-    auto checkRuleList = [&](const auto& rules, const TString& application, const NKikimrConfig::TYdbVersion* version, const TString& errorPrefix) {
-        for (const auto& rule : rules) {
-            if (CheckComponentId(rule, componentId)) {
-                if (CheckRule(application, version, rule)) {
-                    if (rule.HasForbidden() && rule.GetForbidden()) {
-                        errorReason = errorPrefix + PrintStoredAndCurrent(stored, current);
-                        return false;
-                    } else {
-                        permitted = true;
-                    }
+    for (ui32 i = 0; i < current->CanLoadFromSize(); ++i) {
+        const auto rule = current->GetCanLoadFrom(i);
+        if (!rule.HasComponentId() || rule.GetComponentId() == componentId ||
+                rule.GetComponentId() == (ui32)NKikimrConfig::TCompatibilityRule::Any) {
+            useDefault = false;
+            if (CheckRule(storedBuild, storedYdbVersion, rule)) {
+                if (rule.HasForbidden() && rule.GetForbidden()) {
+                    errorReason = "Stored version is explicitly prohibited";
+                    return false;
+                } else {
+                    permitted = true;
                 }
             }
         }
-        return true;
-    };
-    
-    if (componentId == EComponentId::Interconnect) {
-        if (!checkRuleList(current->GetCanConnectTo(), storedApplication, storedVersion, "Peer version is explicitly prohibited, ")) {
-            return false;
-        }
-    } else {
-        if (!checkRuleList(current->GetCanLoadFrom(), storedApplication, storedVersion, "Stored version is explicitly prohibited, ")) {
-            return false;
+    }
+
+    for (ui32 i = 0; i < stored->ReadableBySize(); ++i) {
+        const auto rule = stored->GetReadableBy(i);
+        if (!rule.HasComponentId() || rule.GetComponentId() == componentId ||
+                rule.GetComponentId() == (ui32)NKikimrConfig::TCompatibilityRule::Any) {
+            if (CheckRule(currentBuild, currentYdbVersion, rule)) {
+                useDefault = false;
+                if (rule.HasForbidden() && rule.GetForbidden()) {
+                    errorReason = "Current version is explicitly prohibited";
+                    return false;
+                } else {
+                    permitted = true;
+                }
+            }
         }
     }
 
-    if (!checkRuleList(stored->GetReadableBy(), currentApplication, currentVersion, "Current version is explicitly prohibited, ")) {
-        return false;
-    }
 
     if (permitted) {
         return true;
     } else {
-        if (CheckDefaultRules(currentVersion, storedVersion)) {
-            return true;
-        } else {
-            errorReason = "Versions are not compatible neither by common rule nor by provided rule sets, "
-                    + PrintStoredAndCurrent(stored, current);
-            return false;
+        if (useDefault) {
+            if (CheckDefaultRules(currentBuild, currentYdbVersion, storedBuild, storedYdbVersion)) {
+                return true;
+            } else {
+                errorReason = "Versions are not compatible by default rules";
+                return false;
+            }
         }
+        errorReason = "Versions are not compatible by given rule sets";
+        return false;
     }
 }
 
-bool TCompatibilityInfo::CheckCompatibility(const TStored* stored, TComponentId componentId, TString& errorReason) const {
+bool TCompatibilityInfo::CheckCompatibility(const TStored* stored, ui32 componentId, TString& errorReason) {
     return CheckCompatibility(GetCurrent(), stored, componentId, errorReason);
 }
 
 void TCompatibilityInfo::Reset(TCurrent* newCurrent) {
-    CurrentCompatibilityInfo.CopyFrom(*newCurrent);
+    TGuard<TSpinLock> g(TCompatibilityInfo::LockCurrent);
+    if (!CompatibilityInfo) {
+        CompatibilityInfo = TCurrent();
+    }
+    CompatibilityInfo->CopyFrom(*newCurrent);
 }
 
 TString GetBranchName(TString url) {
@@ -378,7 +332,7 @@ TString GetBranchName(TString url) {
     return url;
 }
 
-std::optional<NKikimrConfig::TYdbVersion> ParseVersionFromTag(TString tag, TString delimiter = "-") {
+std::optional<NKikimrConfig::TYdbVersion> ParseYdbVersionFromTag(TString tag, TString delimiter = "-") {
     NKikimrConfig::TYdbVersion version;
     TVector<TString> splitted;
     Split(tag, delimiter , splitted);
@@ -409,15 +363,18 @@ std::optional<NKikimrConfig::TYdbVersion> ParseVersionFromTag(TString tag, TStri
     version.SetMajor(major);
 
     if (parts.empty()) {
-        // example: stable-22-1 == 22.1
-        // major version, from which minor tags are formed
+        // example: stable-22-1 == 22.1.1.0
+        version.SetMinor(1);
+        version.SetHotfix(0);
         return version;
     }
 
     // parse Minor version
     ui32 minor;
     if (!TryIntFromString<10, ui32>(parts.front(), minor)) {
-        // example: stable-22-1-testing == 22.1
+        // example: stable-22-1-testing == 22.1.1.0
+        version.SetMinor(1);
+        version.SetHotfix(0);
         return version;
     }
     parts.pop_front();
@@ -488,7 +445,7 @@ TString GetTagString() {
                 break;
             }
         }
-        tag = branch;
+        branch = tag;
     }
 
     for (const char* prefix : { "ydb/", "nbs/", "releases/nbs/", "releases/ydb/" , "releases/" }) {
@@ -502,41 +459,37 @@ TString GetTagString() {
 }
 
 bool TCompatibilityInfo::CompleteFromTag(NKikimrConfig::TCurrentCompatibilityInfo& current) {
-    if (current.GetApplication() == "trunk") {
-        Y_ABORT("Cannot complete trunk version");
-    }
-
     TString tag = GetTagString();
     for (TString delim : {"-", "."}) {
-        auto tryParse = ParseVersionFromTag(tag, delim);
+        auto tryParse = ParseYdbVersionFromTag(tag, delim);
         if (tryParse) {
             auto versionFromTag = *tryParse;
-            auto version = current.MutableVersion();
+            auto version = current.MutableYdbVersion();
             if (version->HasYear()) {
-                Y_ABORT_UNLESS(version->GetYear() == versionFromTag.GetYear());
+                Y_VERIFY_DEBUG(version->GetYear() == versionFromTag.GetYear());
             } else {
                 version->SetYear(versionFromTag.GetYear());
             }
             
             if (version->HasMajor()) {
-                Y_ABORT_UNLESS(version->GetMajor() == versionFromTag.GetMajor());
+                Y_VERIFY_DEBUG(version->GetMajor() == versionFromTag.GetMajor());
             } else {
-                version->SetMajor(versionFromTag.GetMajor());
+                version->SetYear(versionFromTag.GetYear());
             }
 
             if (versionFromTag.HasMinor()) {
                 if (version->HasMinor()) {
-                    Y_ABORT_UNLESS(version->GetMinor() == versionFromTag.GetMinor());
+                    Y_VERIFY_DEBUG(version->GetMinor() == versionFromTag.GetMinor());
                 } else {
-                    version->SetMinor(versionFromTag.GetMinor());
+                    version->SetYear(versionFromTag.GetYear());
                 }
             }
 
             if (versionFromTag.HasHotfix()) {
-                if (version->HasHotfix()) {
-                    Y_ABORT_UNLESS(version->GetHotfix() == versionFromTag.GetHotfix());
+                if (version->HasYear()) {
+                    Y_VERIFY_DEBUG(version->GetYear() == versionFromTag.GetYear());
                 } else {
-                    version->SetHotfix(versionFromTag.GetHotfix());
+                    version->SetYear(versionFromTag.GetYear());
                 }
             }
 
@@ -557,34 +510,41 @@ void CheckVersionTag() {
         const char* arcadia_url = GetArcadiaSourceUrl();
 
         if ((branch.StartsWith("releases/") || branch.StartsWith("tags/releases/")) && VERSION->Tag == "trunk") {
-            Y_ABORT("release branch %s with ARCADIA_SOURCE_URL# %s contains VersionTag# trunk", branch.data(), arcadia_url);
+            Y_FAIL("release branch %s with ARCADIA_SOURCE_URL# %s contains VersionTag# trunk", branch.data(), arcadia_url);
         }
     }
 }
 
-bool TCompatibilityInfo::CheckCompatibility(const TCurrent* current, const TOldFormat& peer, TComponentId componentId, TString& errorReason) const {
-    // stored version is peer version in terms of Interconnect
-    Y_ABORT_UNLESS(current);
-    Y_ABORT_UNLESS(componentId == EComponentId::Interconnect); // old version control is only implemented in IC
+using TOldFormat = NActors::TInterconnectProxyCommon::TVersionInfo;
 
-    std::optional<TString> peerApplication;
+bool TCompatibilityInfo::CheckCompatibility(const NKikimrConfig::TCurrentCompatibilityInfo* current,
+            const TOldFormat& stored, ui32 componentId, TString& errorReason) {
+    Y_VERIFY(current);
 
-    auto peerVersion = ParseVersionFromTag(peer.Tag);
-    if (!peerVersion) {
-        if (!current->HasVersion()) {
-            // both peer and current versions are non-stable
+    std::optional<TString> storedBuild;
+
+    auto storedVersion = ParseYdbVersionFromTag(stored.Tag);
+    if (!storedVersion) {
+        // non-stable version is stored
+        if (current->GetBuild() == stored.Tag) {
             return true;
         }
-        peerApplication = peer.Tag;
+        storedBuild = stored.Tag;
     }
 
     bool permitted = false;
+    bool useDefault = true;
 
-    for (const auto& rule : current->GetCanConnectTo()) {
-        if (CheckComponentId(rule, componentId)) {
-            if (CheckRule(peerApplication, &*peerVersion, rule)) {
+    for (ui32 i = 0; i < current->CanLoadFromSize(); ++i) {
+        const auto rule = current->GetCanLoadFrom(i);
+        if (!rule.HasComponentId() || rule.GetComponentId() == componentId ||
+                rule.GetComponentId() == (ui32)NKikimrConfig::TCompatibilityRule::Any) {
+            if (!rule.HasBuild()) {
+                useDefault = false;
+            }
+            if (CheckRule(storedBuild, &*storedVersion, rule)) {
                 if (rule.HasForbidden() && rule.GetForbidden()) {
-                    errorReason = "Peer version is explicitly prohibited, " + PrintStoredAndCurrent(peer, current);
+                    errorReason = "Stored version is explicitly prohibited";
                     return false;
                 } else {
                     permitted = true;
@@ -597,198 +557,59 @@ bool TCompatibilityInfo::CheckCompatibility(const TCurrent* current, const TOldF
         return true;
     }
 
-    for (const auto& tag : peer.AcceptedTags) {
-        auto version = ParseVersionFromTag(tag);
-        if (version && current->HasVersion()) {
-            if (CompareVersions(*version, current->GetVersion()) == 0) {
+    const auto* currentVersion = current->HasYdbVersion() ? &current->GetYdbVersion() : nullptr;
+    for (const auto& tag : stored.AcceptedTags) {
+        auto version = ParseYdbVersionFromTag(tag);
+        if (storedVersion && currentVersion) {
+            if (version->GetYear() == currentVersion->GetYear() &&
+                    version->GetMajor() == currentVersion->GetMajor() &&
+                    version->GetMinor() == currentVersion->GetMinor() &&
+                    version->GetHotfix() == currentVersion->GetHotfix()) {
                 return true;
             }
-        } else if (!version && !current->HasVersion())  {
-            if (current->GetApplication() == tag) {
+        } else if (!storedVersion && !currentVersion)  {
+            if (current->GetBuild() == tag) {
                 return true;
             }
         }
     }
 
-    // use common rule
-    if (current->HasVersion() && peerVersion) {
-        const auto& currentVersion = current->GetVersion();
-        if (!currentVersion.HasYear() || !peerVersion->HasYear()) {
-            return true;
-        }
-        if (currentVersion.GetYear() != peerVersion->GetYear()) {
-            errorReason = "Incompatible by common rule: peer's and current's Year differ, "
-                    + PrintStoredAndCurrent(peer, current);
-            return false;
-        }
-        if (!currentVersion.HasMajor() || !peerVersion->HasMajor()) {
-            return true;
-        }
-        if (std::abs((i32)currentVersion.GetMajor() - (i32)peerVersion->GetMajor()) <= 1) {
-            return true;
-        } else {
-            errorReason = "Incompatible by common rule: peer's and current's Major differ by more than 1, "
-                    + PrintStoredAndCurrent(peer, current);
-            return false;
-        }
-    } else if (!current->HasVersion() && !peerVersion) {
-        if (*peerApplication == current->GetApplication()) {
-            return true;
-        } else {
-            errorReason = "Incompatible by common rule: both versions are non-stable, peer's and current's Build differ, "
-                    + PrintStoredAndCurrent(peer, current);
-            return false;
-        }
-    } else {
-        errorReason = "Incompatible by common rule: one tag is stable and other is non-stable, "
-                + PrintStoredAndCurrent(peer, current);
-        return false;
-    }
-}
-
-bool TCompatibilityInfo::CheckCompatibility(const TOldFormat& peer, TComponentId componentId, TString& errorReason) const {
-    return CheckCompatibility(GetCurrent(), peer, componentId, errorReason);
-}
-
-void PrintVersion(IOutputStream& out, const NKikimrConfig::TYdbVersion& version, bool printSuffix = false) {
-    if (!version.HasYear() || !version.HasMajor()) {
-        out << "invalid";
-    } else {
-        out << version.GetYear() << '-' << version.GetMajor();
-        if (version.HasMinor()) {
-            out << "-" << version.GetMinor();
-        } else if (printSuffix) {
-            out << "-*";
-            return;
-        }
-
-        if (version.HasHotfix()) {
-            const ui32 hotfix = version.GetHotfix();
-            if (hotfix == 1) {
-                out << "-hotfix";
-            } else if (hotfix > 1) {
-                out << "-hotfix-" << hotfix;
+    if (useDefault) {
+        if (current->HasYdbVersion() && storedVersion) {
+            auto currentYdbVersion = current->GetYdbVersion();
+            if (!currentYdbVersion.HasYear() || !storedVersion->HasYear()) {
+                return true;
             }
-        } else if (printSuffix) {
-            out << "-*";
-        }
-    }
-}
-
-void PrintCompatibilityRule(IOutputStream& out, const NKikimrConfig::TCompatibilityRule& rule) {
-    if (rule.HasForbidden() && rule.GetForbidden()) {
-        out << "Forbid";
-    } else {
-        out << "Allow";
-    }
-
-    if (rule.HasApplication()) {
-        out << " application: " << rule.GetApplication() << ",";
-    }
-
-    if (rule.HasComponentId()) {
-        out << " component: " << NKikimrConfig::TCompatibilityRule::EComponentId_Name(rule.GetComponentId()) << ",";
-    }
-
-    if (rule.HasLowerLimit() && rule.HasUpperLimit() && google::protobuf::util::MessageDifferencer::Equals(rule.GetLowerLimit(), rule.GetUpperLimit())) {
-        if (IsVersionComplete(rule.GetLowerLimit())) {
-            out << " version: ";
+            if (currentYdbVersion.GetYear() != storedVersion->GetYear()) {
+                errorReason = "Default rules used, stored's and current's Year differ";
+                return false;
+            }
+            if (!currentYdbVersion.HasMajor() || !storedVersion->HasMajor()) {
+                return true;
+            }
+            if (std::abs((i32)currentYdbVersion.GetMajor() - (i32)storedVersion->GetMajor()) <= 1) {
+                return true;
+            } else {
+                errorReason = "Default rules used, stored's and current's Major difference is more than 1";
+                return false;
+            }
+        } else if (!current->HasYdbVersion() && !storedVersion) {
+            if (*storedBuild == current->GetBuild()) {
+                return true;
+            } else {
+                errorReason = "Default rules used, both versions are non-stable, stored's and current's Build differ";
+                return false;
+            }
         } else {
-            out << " versions: ";
-        }
-        PrintVersion(out, rule.GetLowerLimit(), true);
-    } else {
-        out << " bounds: ";
-        if (rule.HasLowerLimit()) {
-            out << "[";
-            PrintVersion(out, rule.GetLowerLimit(), true);
-        } else {
-            out << "(-inf";
-        }
-        out << "; ";
-        if (rule.HasUpperLimit()) {
-            PrintVersion(out, rule.GetUpperLimit(), true);
-            out << "]";
-        } else {
-            out << "+inf)";
+            errorReason = "Default rules used, stable and non-stable versions are incompatible";
+            return false;
         }
     }
+
+    errorReason = "Version tag doesn't match any current compatibility rule, current version is not in accepted tags list";
+    return false;
 }
 
-TString TCompatibilityInfo::PrintHumanReadable(const NKikimrConfig::TCurrentCompatibilityInfo* current) const {
-    TStringStream str("Current compatibility info:\n");
-
-    // print application name
-    str << "    Application: " << current->GetApplication() << "\n";
-
-    // print version
-    str << "    Version: ";
-    if (current->HasVersion()) {
-        PrintVersion(str, current->GetVersion());
-    } else {
-        str << "trunk";
-    }
-    str << "\n";
-
-    // print common rule
-    if (current->HasVersion() && current->GetVersion().HasYear() && current->GetVersion().HasMajor()) {
-        const auto& version = current->GetVersion();
-        str << "    Compatible by default with versions in range ";
-        ui32 year = version.GetYear();
-        ui32 major = version.GetMajor();
-    
-        str << "[" << year << "-";
-        if (major > 1) {
-            str << major - 1;
-        } else {
-            str << major;
-        }
-        str << "-*; " << year << "-" << major + 1 << "-*]\n";
-    }
-
-    // print compatibility rules
-    if (current->StoresReadableBySize() > 0) {
-        str << "    Additional StoresReadableBy rules:\n";
-        for (const auto& rule : current->GetStoresReadableBy()) {
-            str << "        ";
-            PrintCompatibilityRule(str, rule);
-            str << "\n";
-        }
-    }
-
-    if (current->CanLoadFromSize() > 0) {
-        str << "    Additional CanLoadFrom rules:\n";
-        for (const auto& rule : current->GetCanLoadFrom()) {
-            str << "        ";
-            PrintCompatibilityRule(str, rule);
-            str << "\n";
-        }
-    }
-
-    if (current->CanConnectToSize() > 0) {
-        str << "    Additional CanConnectTo rules:\n";
-        for (const auto& rule : current->GetCanConnectTo()) {
-            str << "        ";
-            PrintCompatibilityRule(str, rule);
-            str << "\n";
-        }
-    }
-
-    return str.Str();
+bool TCompatibilityInfo::CheckCompatibility(const TOldFormat& stored, ui32 componentId, TString& errorReason) {
+    return CheckCompatibility(GetCurrent(), stored, componentId, errorReason);
 }
-
-TString TCompatibilityInfo::PrintHumanReadable() const {
-    return PrintHumanReadable(GetCurrent());
-}
-
-TString TCompatibilityInfo::PrintJson(const NKikimrConfig::TCurrentCompatibilityInfo* current) const {
-    TStringStream str;
-    TProtoToJson::ProtoToJson(str, *current);
-    return str.Str();
-}
-
-TString TCompatibilityInfo::PrintJson() const {
-    return PrintJson(GetCurrent());
-}
-
-} // namespace NKikimr

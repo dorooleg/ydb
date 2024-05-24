@@ -36,8 +36,8 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterSolomonVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterSolomonVolume);
 
         auto solomon = context.SS->SolomonVolumes[txState->TargetPathId];
         Y_VERIFY_S(solomon, "solomon volume is null. PathId: " << txState->TargetPathId);
@@ -125,8 +125,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterSolomonVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterSolomonVolume);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -259,13 +259,7 @@ public:
         }
 
         TChannelsBindings channelsBinding;
-        bool isResolved = false;
-        if (alter.HasStorageConfig()) {
-            isResolved = context.SS->ResolveSolomonChannels(alter.GetStorageConfig(), path.GetPathIdForDomain(), channelsBinding);
-        } else {
-            isResolved = context.SS->ResolveSolomonChannels(channelProfileId, path.GetPathIdForDomain(), channelsBinding);
-        }
-        if (!isResolved) {
+        if (!context.SS->ResolveSolomonChannels(channelProfileId, path.GetPathIdForDomain(), channelsBinding)) {
             result->SetError(NKikimrScheme::StatusInvalidParameter, "Unable to construct channel binding with the storage pool");
             return result;
         }
@@ -289,7 +283,7 @@ public:
         if (alter.GetUpdateChannelsBinding()) {
             txState.Shards.reserve(alter.HasPartitionCount() ? alter.GetPartitionCount() : solomon->Partitions.size());
         } else {
-            Y_ABORT_UNLESS(alter.HasPartitionCount());
+            Y_VERIFY(alter.HasPartitionCount());
             txState.Shards.reserve(alter.GetPartitionCount() - solomon->Partitions.size());
         }
 
@@ -337,7 +331,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterSolomon");
+        Y_FAIL("no AbortPropose for TAlterSolomon");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -360,7 +354,7 @@ ISubOperation::TPtr CreateAlterSolomon(TOperationId id, const TTxTransaction& tx
 }
 
 ISubOperation::TPtr CreateAlterSolomon(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterSolomon>(id, state);
 }
 

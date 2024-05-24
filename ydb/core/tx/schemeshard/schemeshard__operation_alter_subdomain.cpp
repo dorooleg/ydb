@@ -27,13 +27,13 @@ void DeclareShards(TTxState& txState, TTxId txId, TPathId pathId,
 
 void PersistShards(NIceDb::TNiceDb& db, TTxState& txState, ui64 shardsToCreate, TSchemeShard* ss) {
     for (const auto& shard : txState.Shards) {
-        Y_ABORT_UNLESS(shard.Operation == TTxState::ETxState::CreateParts);
-        Y_ABORT_UNLESS(ss->ShardInfos.contains(shard.Idx), "shard info is set before");
+        Y_VERIFY(shard.Operation == TTxState::ETxState::CreateParts);
+        Y_VERIFY(ss->ShardInfos.contains(shard.Idx), "shard info is set before");
         auto& shardInfo = ss->ShardInfos[shard.Idx];
         ss->PersistShardMapping(db, shard.Idx, InvalidTabletId, shardInfo.PathId, shardInfo.CurrentTxId, shardInfo.TabletType);
         ss->PersistChannelsBinding(db, shard.Idx, shardInfo.BindedChannels);
     }
-    Y_ABORT_UNLESS(shardsToCreate == txState.Shards.size());
+    Y_VERIFY(shardsToCreate == txState.Shards.size());
 }
 
 class TAlterSubDomain: public TSubOperation {
@@ -126,9 +126,9 @@ public:
 
         TPathElement::TPtr subDomain = path.Base();
 
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(subDomain->PathId));
+        Y_VERIFY(context.SS->SubDomains.contains(subDomain->PathId));
         auto subDomainInfo = context.SS->SubDomains.at(subDomain->PathId);
-        Y_ABORT_UNLESS(subDomainInfo);
+        Y_VERIFY(subDomainInfo);
 
         if (subDomainInfo->GetAlter()) {
             result->SetError(NKikimrScheme::StatusPathDoesNotExist, "SubDomain is under another alter 2");
@@ -287,22 +287,7 @@ public:
         }
 
         if (settings.HasDatabaseQuotas()) {
-            if (const auto& effectivePools = requestedPools.empty()
-                    ? actualPools
-                    : requestedPools;
-                !CheckStorageQuotasKinds(settings.GetDatabaseQuotas(), effectivePools, path.PathString(), errStr)
-            ) {
-                result->SetError(NKikimrScheme::StatusInvalidParameter, errStr);
-                return result;
-            }
             alterData->SetDatabaseQuotas(settings.GetDatabaseQuotas());
-        }
-
-        if (const auto& auditSettings = subDomainInfo->GetAuditSettings()) {
-            alterData->SetAuditSettings(*auditSettings);
-        }
-        if (settings.HasAuditSettings()) {
-            alterData->ApplyAuditSettings(settings.GetAuditSettings());
         }
 
         NIceDb::TNiceDb db(context.GetDB());
@@ -311,7 +296,7 @@ public:
         subDomain->PathState = TPathElement::EPathState::EPathStateAlter;
         context.SS->PersistPath(db, subDomain->PathId);
 
-        Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));
+        Y_VERIFY(!context.SS->FindTx(OperationId));
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxAlterSubDomain, subDomain->PathId);
         txState.State = TTxState::CreateParts;
 
@@ -340,7 +325,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterSubDomain");
+        Y_FAIL("no AbortPropose for TAlterSubDomain");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -363,7 +348,7 @@ ISubOperation::TPtr CreateAlterSubDomain(TOperationId id, const TTxTransaction& 
 }
 
 ISubOperation::TPtr CreateAlterSubDomain(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterSubDomain>(id, state);
 }
 

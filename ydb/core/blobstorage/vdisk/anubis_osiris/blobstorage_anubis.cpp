@@ -58,7 +58,7 @@ namespace NKikimr {
             std::unique_ptr<IActor> finder(CreateAnubisCandidatesFinder(HullCtx, ctx.SelfID, Pos, std::move(LogoBlobsSnap),
                     std::move(BarriersSnap)));
             TActorId aid = RunInBatchPool(ctx, finder.release());
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
             Become(&TThis::WaitForCandidatesStateFunc);
         }
 
@@ -88,7 +88,7 @@ namespace NKikimr {
         }
 
         void CommunicateWithPeers(const TActorContext &ctx) {
-            Y_ABORT_UNLESS(MessagesSentToPeers == 0);
+            Y_VERIFY(MessagesSentToPeers == 0);
             for (const auto &x : HullCtx->VCtx->Top->GetVDisks()) {
                 if (HullCtx->VCtx->ShortSelfVDisk != x.VDiskIdShort) {
                     // not self
@@ -99,7 +99,7 @@ namespace NKikimr {
                     if (!checkIds.empty()) {
                         // send a check message to proxy if have something to check
                         auto it = QueueActorMapPtr->find(x.VDiskIdShort);
-                        Y_ABORT_UNLESS(it != QueueActorMapPtr->end());
+                        Y_VERIFY(it != QueueActorMapPtr->end());
                         ctx.Send(it->second, new TEvAnubisVGet(std::move(checkIds)));
                         ++MessagesSentToPeers;
                     }
@@ -107,7 +107,7 @@ namespace NKikimr {
             }
 
             // must send several messages or what we are checking?
-            Y_ABORT_UNLESS(MessagesSentToPeers != 0);
+            Y_VERIFY(MessagesSentToPeers != 0);
         }
 
         ////////////////////////////////////////////////////////////////////////
@@ -121,7 +121,7 @@ namespace NKikimr {
                       )
 
         void Handle(TEvAnubisVGetResult::TPtr &ev, const TActorContext &ctx) {
-            Y_ABORT_UNLESS(MessagesSentToPeers > 0);
+            Y_VERIFY(MessagesSentToPeers > 0);
             --MessagesSentToPeers;
 
             // mark ids with NODATA
@@ -156,7 +156,7 @@ namespace NKikimr {
                       )
 
         void RemoveBlobs(const TActorContext &ctx, TVector<TLogoBlobID> &&forRemoval) {
-            Y_ABORT_UNLESS(!forRemoval.empty());
+            Y_VERIFY(!forRemoval.empty());
 
             Become(&TThis::WaitWriteCompletion);
             BlobsToRemove = TBlobsToRemove(std::move(forRemoval));
@@ -167,7 +167,7 @@ namespace NKikimr {
             // send up to MaxInFly
             while (BlobsToRemove.Valid() && InFly < MaxInFly) {
                 const TLogoBlobID &id = BlobsToRemove.Get();
-                Y_ABORT_UNLESS(id.PartId() == 0);
+                Y_VERIFY(id.PartId() == 0);
                 LOG_ERROR(ctx, BS_SYNCER,
                           VDISKP(HullCtx->VCtx->VDiskLogPrefix,
                                 "TAnubisQuantumActor: DELETE: id# %s", id.ToString().data()));
@@ -228,7 +228,7 @@ namespace NKikimr {
         // Handle TEvHttpInfo
         ////////////////////////////////////////////////////////////////////////
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_VERIFY(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
             TStringStream str;
             HTML(str) {
                 str << "Pos: " << Pos << "<br>";
@@ -289,7 +289,7 @@ namespace NKikimr {
             for (const auto &x : HullCtx->VCtx->Top->GetVDisks()) {
                 if (HullCtx->VCtx->ShortSelfVDisk != x.VDiskIdShort) {
                     auto aid = ctx.Register(CreateAnubisProxy(HullCtx->VCtx, GInfo, x.VDiskIdShort, ReplInterconnectChannel));
-                    ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                    ActiveActors.Insert(aid);
                     (*QueueActorMapPtr)[x.VDiskIdShort] = aid;
                 }
             }
@@ -307,7 +307,7 @@ namespace NKikimr {
             auto a = std::make_unique<TAnubisQuantumActor>(HullCtx, QueueActorMapPtr, ctx.SelfID, SkeletonId, Pos,
                     std::move(snap.LogoBlobsSnap), std::move(snap.BarriersSnap), AnubisOsirisMaxInFly);
             auto aid = ctx.Register(a.release());
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
         void Handle(TEvAnubisQuantumDone::TPtr &ev, const TActorContext &ctx) {

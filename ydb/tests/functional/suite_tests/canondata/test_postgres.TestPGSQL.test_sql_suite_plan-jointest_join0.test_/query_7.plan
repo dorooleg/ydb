@@ -9,24 +9,17 @@
                 "PlanNodeType": "ResultSet",
                 "Plans": [
                     {
-                        "Node Type": "Aggregate-Limit",
+                        "Node Type": "Aggregate-Limit-Aggregate",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "InternalOperatorId": 1
-                                    }
-                                ],
                                 "Name": "Aggregate"
                             },
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 14
-                                    }
-                                ],
                                 "Limit": "1",
                                 "Name": "Limit"
+                            },
+                            {
+                                "Name": "Aggregate"
                             }
                         ],
                         "PlanNodeId": 15,
@@ -40,23 +33,9 @@
                                         "Node Type": "Aggregate-LeftJoin (MapJoin)",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Name": "Aggregate"
                                             },
                                             {
-                                                "Condition": "hundred,ten = t2.hundred,t3.ten",
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 12
-                                                    },
-                                                    {
-                                                        "ExternalPlanNodeId": 10
-                                                    }
-                                                ],
                                                 "Name": "LeftJoin (MapJoin)"
                                             }
                                         ],
@@ -80,23 +59,9 @@
                                                                         "Node Type": "InnerJoin (MapJoin)-Filter",
                                                                         "Operators": [
                                                                             {
-                                                                                "Condition": "thousand = unique2",
-                                                                                "Inputs": [
-                                                                                    {
-                                                                                        "InternalOperatorId": 1
-                                                                                    },
-                                                                                    {
-                                                                                        "ExternalPlanNodeId": 4
-                                                                                    }
-                                                                                ],
                                                                                 "Name": "InnerJoin (MapJoin)"
                                                                             },
                                                                             {
-                                                                                "Inputs": [
-                                                                                    {
-                                                                                        "ExternalPlanNodeId": 6
-                                                                                    }
-                                                                                ],
                                                                                 "Name": "Filter",
                                                                                 "Predicate": "Exist(item.thousand)"
                                                                             }
@@ -121,7 +86,6 @@
                                                                                                         "Node Type": "TableFullScan",
                                                                                                         "Operators": [
                                                                                                             {
-                                                                                                                "Inputs": [],
                                                                                                                 "Name": "TableFullScan",
                                                                                                                 "ReadColumns": [
                                                                                                                     "hundred",
@@ -156,7 +120,6 @@
                                                                                         "Node Type": "TableFullScan",
                                                                                         "Operators": [
                                                                                             {
-                                                                                                "Inputs": [],
                                                                                                 "Name": "TableFullScan",
                                                                                                 "ReadColumns": [
                                                                                                     "hundred",
@@ -192,11 +155,10 @@
                                                 "PlanNodeType": "Connection",
                                                 "Plans": [
                                                     {
-                                                        "Node Type": "TableRangeScan",
+                                                        "Node Type": "TablePointLookup",
                                                         "Operators": [
                                                             {
-                                                                "Inputs": [],
-                                                                "Name": "TableRangeScan",
+                                                                "Name": "TablePointLookup",
                                                                 "ReadColumns": [
                                                                     "hundred",
                                                                     "ten"
@@ -270,7 +232,7 @@
                     "scan_by": [
                         "unique2 (-\u221e, +\u221e)"
                     ],
-                    "type": "Scan"
+                    "type": "Lookup"
                 }
             ]
         }

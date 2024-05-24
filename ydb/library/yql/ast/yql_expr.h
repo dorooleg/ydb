@@ -8,7 +8,6 @@
 #include "yql_constraint.h"
 #include "yql_pos_handle.h"
 
-#include <ydb/library/yql/core/url_lister/interface/url_lister_manager.h>
 #include <ydb/library/yql/utils/yql_panic.h>
 #include <ydb/library/yql/public/issue/yql_issue_manager.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
@@ -20,7 +19,6 @@
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 #include <library/cpp/deprecated/enum_codegen/enum_codegen.h>
 
-#include <util/string/ascii.h>
 #include <util/string/builder.h>
 #include <util/generic/array_ref.h>
 #include <util/generic/deque.h>
@@ -47,9 +45,9 @@
     #define ENSURE_NOT_FROZEN_CTX \
         YQL_ENSURE(!Frozen, "Change in frozen expr context.");
 #else
-    #define ENSURE_NOT_DELETED Y_DEBUG_ABORT_UNLESS(!Dead(), "Access to dead node # %lu: %d '%s'", UniqueId_, (int)Type_, TString(ContentUnchecked()).data());
-    #define ENSURE_NOT_FROZEN Y_DEBUG_ABORT_UNLESS(!Frozen());
-    #define ENSURE_NOT_FROZEN_CTX Y_DEBUG_ABORT_UNLESS(!Frozen);
+    #define ENSURE_NOT_DELETED Y_VERIFY_DEBUG(!Dead(), "Access to dead node # %lu: %d '%s'", UniqueId_, (int)Type_, TString(ContentUnchecked()).data());
+    #define ENSURE_NOT_FROZEN Y_VERIFY_DEBUG(!Frozen());
+    #define ENSURE_NOT_FROZEN_CTX Y_VERIFY_DEBUG(!Frozen);
 #endif
 
 namespace NYql {
@@ -85,7 +83,6 @@ class TBlockExprType;
 class TScalarExprType;
 
 const size_t DefaultMistypeDistance = 3;
-const TString YqlVirtualPrefix = "_yql_virtual_";
 
 extern const TStringBuf ZeroString;
 
@@ -243,15 +240,8 @@ public:
     }
 
     bool IsBlockOrScalar() const {
-        return IsBlock() || IsScalar();
-    }
-
-    bool IsBlock() const {
-        return GetKind() == ETypeAnnotationKind::Block;
-    }
-
-    bool IsScalar() const {
-        return GetKind() == ETypeAnnotationKind::Scalar;
+        auto kind = GetKind();
+        return kind == ETypeAnnotationKind::Block || kind == ETypeAnnotationKind::Scalar;
     }
 
     bool HasFixedSizeRepr() const {
@@ -465,8 +455,6 @@ public:
         return Name;
     }
 
-    TStringBuf GetCleanName(bool isVirtual) const;
-
     const TTypeAnnotationNode* GetItemType() const {
         return ItemType;
     }
@@ -474,8 +462,6 @@ public:
     bool operator==(const TItemExprType& other) const {
         return GetName() == other.GetName() && GetItemType() == other.GetItemType();
     }
-
-    const TItemExprType* GetCleanItem(bool isVirtual, TExprContext& ctx) const;
 
 private:
     const TStringBuf Name;
@@ -507,7 +493,7 @@ public:
     }
 
     static ui64 MakeHash(const TVector<const TItemExprType*>& items) {
-        Y_DEBUG_ABORT_UNLESS(IsSorted(items.begin(), items.end(), TItemLess()));
+        Y_VERIFY_DEBUG(IsSorted(items.begin(), items.end(), TItemLess()));
         ui64 hash = TypeHashMagic | (ui64)ETypeAnnotationKind::Struct;
         hash = StreamHash(items.size(), hash);
         for (const auto& item : items) {
@@ -535,37 +521,6 @@ public:
         }
 
         return it - Items.begin();
-    }
-
-    TMaybe<ui32> FindItemI(const TStringBuf& name, bool* isVirtual) const {
-        for (ui32 v = 0; v < 2; ++v) {
-            if (isVirtual) {
-                *isVirtual = v > 0;
-            }
-
-            auto nameToSearch = (v ? YqlVirtualPrefix : "") + name;
-            auto strict = FindItem(nameToSearch);
-            if (strict) {
-                return strict;
-            }
-
-            TMaybe<ui32> ret;
-            for (ui32 i = 0; i < Items.size(); ++i) {
-                if (AsciiEqualsIgnoreCase(nameToSearch, Items[i]->GetName())) {
-                    if (ret) {
-                        return Nothing();
-                    }
-
-                    ret = i;
-                }
-            }
-
-            if (ret) {
-                return ret;
-            }
-        }
-
-        return Nothing();
     }
 
     const TTypeAnnotationNode* FindItemType(const TStringBuf& name) const {
@@ -598,20 +553,6 @@ public:
         }
 
         return true;
-    }
-
-
-    TString ToString() const {
-        TStringBuilder sb;
-
-        for (std::size_t i = 0; i < Items.size(); i++) {
-            sb << i << ": " << Items[i]->GetName() << "(" << FormatType(Items[i]->GetItemType()) << ")";
-            if (i != Items.size() - 1) {
-                sb << ", ";
-            }
-        }
-
-        return sb;
     }
 
 private:
@@ -1971,11 +1912,6 @@ public:
         return Make(Position_, (EType)Type_, TListType(Children_), Content(), Flags_, newUniqueId);
     }
 
-    TPtr CloneWithPosition(ui64 newUniqueId, TPositionHandle pos) const {
-        ENSURE_NOT_DELETED
-        return Make(pos, (EType)Type_, TListType(Children_), Content(), Flags_, newUniqueId);
-    }
-
     static TPtr NewNode(TPositionHandle position, EType type, TListType&& children, const TStringBuf& content, ui32 flags, ui64 uniqueId) {
         return Make(position, type, std::move(children), content, flags, uniqueId);
     }
@@ -2027,7 +1963,7 @@ public:
     }
 
     ui64 GetHash() const {
-        Y_DEBUG_ABORT_UNLESS(HashAbove == HashBelow);
+        Y_VERIFY_DEBUG(HashAbove == HashBelow);
         return HashAbove;
     }
 
@@ -2068,7 +2004,7 @@ public:
     }
 
     void SetDependencyScope(const TExprNode* outerLambda, const TExprNode* innerLambda) {
-        Y_DEBUG_ABORT_UNLESS(outerLambda == innerLambda || outerLambda->GetLambdaLevel() < innerLambda->GetLambdaLevel(), "Wrong scope of closures.");
+        Y_VERIFY_DEBUG(outerLambda == innerLambda || outerLambda->GetLambdaLevel() < innerLambda->GetLambdaLevel(), "Wrong scope of closures.");
         HasLambdaScope = 1;
         OuterLambda = outerLambda;
         InnerLambda = innerLambda;
@@ -2098,9 +2034,9 @@ public:
     }
 
     ~TExprNode() {
-        Y_ABORT_UNLESS(Dead(), "Node (id: %lu, type: %s, content: '%s') not dead on destruction.",
+        Y_VERIFY(Dead(), "Node (id: %lu, type: %s, content: '%s') not dead on destruction.",
             UniqueId_, ToString(Type_).data(),  TString(ContentUnchecked()).data());
-        Y_ABORT_UNLESS(!UseCount(), "Node (id: %lu, type: %s, content: '%s') has non-zero use count on destruction.",
+        Y_VERIFY(!UseCount(), "Node (id: %lu, type: %s, content: '%s') has non-zero use count on destruction.",
             UniqueId_, ToString(Type_).data(),  TString(ContentUnchecked()).data());
     }
 
@@ -2130,7 +2066,6 @@ private:
         , UsedInDependsOn(0)
         , UnordChildren(0)
         , ShallBeDisclosed(0)
-        , LiteralList(0)
     {}
 
     TExprNode(const TExprNode&) = delete;
@@ -2253,8 +2188,6 @@ public:
     Parent resolver should be alive while using child due to raw data sharing.
     */
     virtual IModuleResolver::TPtr CreateMutableChild() const = 0;
-    virtual void SetFileAliasPrefix(TString&& prefix) = 0;
-    virtual TString GetFileAliasPrefix() const = 0;
     virtual ~IModuleResolver() = default;
 };
 
@@ -2551,8 +2484,6 @@ struct TExprContext : private TNonCopyable {
     [[nodiscard]]
     TExprNode::TPtr ShallowCopy(const TExprNode& node);
     [[nodiscard]]
-    TExprNode::TPtr ShallowCopyWithPosition(const TExprNode& node, TPositionHandle pos);
-    [[nodiscard]]
     TExprNode::TPtr ChangeChildren(const TExprNode& node, TExprNode::TListType&& children);
     [[nodiscard]]
     TExprNode::TPtr ChangeChild(const TExprNode& node, ui32 index, TExprNode::TPtr&& child);
@@ -2788,12 +2719,10 @@ private:
 };
 
 bool CompileExpr(TAstNode& astRoot, TExprNode::TPtr& exprRoot, TExprContext& ctx,
-    IModuleResolver* resolver, IUrlListerManager* urlListerManager,
-    bool hasAnnotations = false, ui32 typeAnnotationIndex = Max<ui32>(), ui16 syntaxVersion = 0);
+    IModuleResolver* resolver, bool hasAnnotations = false, ui32 typeAnnotationIndex = Max<ui32>(), ui16 syntaxVersion = 0);
 
 bool CompileExpr(TAstNode& astRoot, TExprNode::TPtr& exprRoot, TExprContext& ctx,
-    IModuleResolver* resolver, IUrlListerManager* urlListerManager,
-    ui32 annotationFlags, ui16 syntaxVersion = 0);
+    IModuleResolver* resolver, ui32 annotationFlags, ui16 syntaxVersion = 0);
 
 struct TLibraryCohesion {
     TExportTable Exports;
@@ -2822,8 +2751,6 @@ struct TConvertToAstSettings {
     bool RefAtoms = false;
     std::function<bool(const TExprNode&)> NoInlineFunc;
     bool PrintArguments = false;
-    bool AllowFreeArgs = false;
-    bool NormalizeAtomFlags = false;
 };
 
 TAstParseResult ConvertToAst(const TExprNode& root, TExprContext& ctx, const TConvertToAstSettings& settings);
@@ -2837,8 +2764,6 @@ TString SubstParameters(const TString& str, const TMaybe<NYT::TNode>& params, TS
 
 const TTypeAnnotationNode* GetSeqItemType(const TTypeAnnotationNode* seq);
 const TTypeAnnotationNode& GetSeqItemType(const TTypeAnnotationNode& seq);
-
-const TTypeAnnotationNode& RemoveOptionality(const TTypeAnnotationNode& type);
 
 } // namespace NYql
 

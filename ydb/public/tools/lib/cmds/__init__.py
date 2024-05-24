@@ -6,11 +6,7 @@ import os
 import json
 import random
 import string
-import typing  # noqa: F401
-import sys
-from six.moves.urllib.parse import urlparse
 
-from ydb.library.yql.providers.common.proto.gateways_config_pb2 import TGenericConnectorConfig
 from ydb.tests.library.common import yatest_common
 from ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
 from ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
@@ -33,11 +29,8 @@ class EmptyArguments(object):
         self.auth_config_path = None
         self.debug_logging = []
         self.fixed_ports = False
-        self.base_port_offset = 0
         self.public_http_config_path = None
         self.dont_use_log_files = False
-        self.enabled_feature_flags = []
-        self.enabled_grpc_services = []
 
 
 def ensure_path_exists(path):
@@ -226,14 +219,8 @@ class Recipe(object):
         return ensure_path_exists(self.data_path)
 
 
-def use_in_memory_pdisks_flag(ydb_working_dir=None):
-    if os.getenv('YDB_USE_IN_MEMORY_PDISKS') is not None:
-        return os.getenv('YDB_USE_IN_MEMORY_PDISKS') == "true"
-
-    if ydb_working_dir:
-        return False
-
-    return True
+def use_in_memory_pdisks_flag():
+    return os.getenv('YDB_USE_IN_MEMORY_PDISKS') == 'true'
 
 
 def default_users():
@@ -256,34 +243,6 @@ def enable_survive_restart():
 
 def enable_tls():
     return os.getenv('YDB_GRPC_ENABLE_TLS') == 'true'
-
-
-def generic_connector_config():
-    endpoint = os.getenv("FQ_CONNECTOR_ENDPOINT")
-    if not endpoint:
-        return None
-
-    parsed = urlparse(endpoint)
-    if not parsed.hostname:
-        raise ValueError("Invalid host '{}' in FQ_CONNECTOR_ENDPOINT".format(parsed.hostname))
-
-    if not (1024 <= parsed.port <= 65535):
-        raise ValueError("Invalid port '{}' in FQ_CONNECTOR_ENDPOINT".format(parsed.port))
-
-    valid_schemes = ['grpc', 'grpcs']
-    if parsed.scheme not in valid_schemes:
-        raise ValueError("Invalid schema '{}' in FQ_CONNECTOR_ENDPOINT (possible: {})".format(parsed.scheme, valid_schemes))
-
-    cfg = TGenericConnectorConfig()
-    cfg.Endpoint.host = parsed.hostname
-    cfg.Endpoint.port = parsed.port
-
-    if parsed.scheme == 'grpc':
-        cfg.UseSsl = False
-    elif parsed.scheme == 'grpcs':
-        cfg.UseSsl = True
-
-    return cfg
 
 
 def grpc_tls_data_path(arguments):
@@ -331,23 +290,13 @@ def deploy(arguments):
 
     port_allocator = None
     if getattr(arguments, 'fixed_ports', False):
-        base_port_offset = getattr(arguments, 'base_port_offset', 0)
-        port_allocator = KikimrFixedPortAllocator(base_port_offset, [KikimrFixedNodePortAllocator(base_port_offset=base_port_offset)])
+        port_allocator = KikimrFixedPortAllocator([KikimrFixedNodePortAllocator()])
 
     optionals = {}
     if enable_tls():
         optionals.update({'grpc_tls_data_path': grpc_tls_data_path(arguments)})
         optionals.update({'grpc_ssl_enable': enable_tls()})
     pdisk_store_path = arguments.ydb_working_dir if arguments.ydb_working_dir else None
-
-    enable_feature_flags = arguments.enabled_feature_flags.copy()  # type: typing.List[str]
-    if 'YDB_FEATURE_FLAGS' in os.environ:
-        flags = os.environ['YDB_FEATURE_FLAGS'].split(",")
-        for flag_name in flags:
-            enable_feature_flags.append(flag_name)
-
-    if 'YDB_EXPERIMENTAL_PG' in os.environ:
-        optionals['pg_compatible_expirement'] = True
 
     configuration = KikimrConfigGenerator(
         parse_erasure(arguments),
@@ -362,15 +311,12 @@ def deploy(arguments):
         udfs_path=arguments.ydb_udfs_dir,
         additional_log_configs=additional_log_configs,
         port_allocator=port_allocator,
-        use_in_memory_pdisks=use_in_memory_pdisks_flag(arguments.ydb_working_dir),
+        use_in_memory_pdisks=use_in_memory_pdisks_flag(),
         fq_config_path=arguments.fq_config_path,
         public_http_config_path=arguments.public_http_config_path,
         auth_config_path=arguments.auth_config_path,
         use_log_files=not arguments.dont_use_log_files,
         default_users=default_users(),
-        extra_feature_flags=enable_feature_flags,
-        extra_grpc_services=arguments.enabled_grpc_services,
-        generic_connector_config=generic_connector_config(),
         **optionals
     )
 
@@ -414,25 +360,13 @@ def _stop_instances(arguments):
     recipe = Recipe(arguments)
     if not os.path.exists(recipe.metafile_path()):
         return
-    try:
-        info = recipe.read_metafile()
-    except Exception:
-        sys.stderr.write("Metafile not found for ydb recipe ...")
-        return
-
+    info = recipe.read_metafile()
     for node_id, node_meta in info['nodes'].items():
         pid = node_meta['pid']
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-
-        try:
-            with open(node_meta['stderr_file'], "r") as r:
-                sys.stderr.write(r.read())
-
-        except Exception as e:
-            sys.stderr.write(str(e))
 
 
 def cleanup_working_dir(arguments):
@@ -513,7 +447,6 @@ def produce_arguments(args):
     parser.add_argument("--debug-logging", nargs='*')
     parser.add_argument("--enable-pq", action='store_true', default=False)
     parser.add_argument("--fixed-ports", action='store_true', default=False)
-    parser.add_argument("--base-port-offset", action="store", type=int, default=0)
     parser.add_argument("--pq-client-service-type", action='append', default=[])
     parser.add_argument("--enable-datastreams", action='store_true', default=False)
     parser.add_argument("--enable-pqcd", action='store_true', default=False)
@@ -522,7 +455,6 @@ def produce_arguments(args):
     arguments.suppress_version_check = parsed.suppress_version_check
     arguments.ydb_working_dir = parsed.ydb_working_dir
     arguments.fixed_ports = parsed.fixed_ports
-    arguments.base_port_offset = parsed.base_port_offset
     if parsed.use_packages is not None:
         arguments.use_packages = parsed.use_packages
     if parsed.debug_logging:

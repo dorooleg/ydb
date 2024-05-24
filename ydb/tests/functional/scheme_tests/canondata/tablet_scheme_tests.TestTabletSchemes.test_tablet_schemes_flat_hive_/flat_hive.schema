@@ -31,11 +31,6 @@
                 "ColumnId": 5,
                 "ColumnName": "HiveId",
                 "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 6,
-                "ColumnName": "ServerlessComputeResourcesMode",
-                "ColumnType": "Uint32"
             }
         ],
         "ColumnsDropped": [],
@@ -46,8 +41,7 @@
                     2,
                     3,
                     4,
-                    5,
-                    6
+                    5
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -435,54 +429,6 @@
         }
     },
     {
-        "TableId": 20,
-        "TableName": "TabletAvailabilityRestrictions",
-        "TableKey": [
-            1,
-            2
-        ],
-        "ColumnsAdded": [
-            {
-                "ColumnId": 1,
-                "ColumnName": "Node",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 2,
-                "ColumnName": "TabletType",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 3,
-                "ColumnName": "MaxCount",
-                "ColumnType": "Uint64"
-            }
-        ],
-        "ColumnsDropped": [],
-        "ColumnFamilies": {
-            "0": {
-                "Columns": [
-                    1,
-                    2,
-                    3
-                ],
-                "RoomID": 0,
-                "Codec": 0,
-                "InMemory": false,
-                "Cache": 0,
-                "Small": 4294967295,
-                "Large": 4294967295
-            }
-        },
-        "Rooms": {
-            "0": {
-                "Main": 1,
-                "Outer": 1,
-                "Blobs": 1
-            }
-        }
-    },
-    {
         "TableId": 3,
         "TableName": "TabletChannelGen",
         "TableKey": [
@@ -532,53 +478,6 @@
                     3,
                     4,
                     5
-                ],
-                "RoomID": 0,
-                "Codec": 0,
-                "InMemory": false,
-                "Cache": 0,
-                "Small": 4294967295,
-                "Large": 4294967295
-            }
-        },
-        "Rooms": {
-            "0": {
-                "Main": 1,
-                "Outer": 1,
-                "Blobs": 1
-            }
-        }
-    },
-    {
-        "TableId": 21,
-        "TableName": "OperationsLog",
-        "TableKey": [
-            1
-        ],
-        "ColumnsAdded": [
-            {
-                "ColumnId": 1,
-                "ColumnName": "Timestamp",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 2,
-                "ColumnName": "User",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 3,
-                "ColumnName": "Operation",
-                "ColumnType": "String"
-            }
-        ],
-        "ColumnsDropped": [],
-        "ColumnFamilies": {
-            "0": {
-                "Columns": [
-                    1,
-                    2,
-                    3
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -647,16 +546,6 @@
                 "ColumnId": 9,
                 "ColumnName": "Location",
                 "ColumnType": "String"
-            },
-            {
-                "ColumnId": 10,
-                "ColumnName": "Name",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 11,
-                "ColumnName": "BecomeUpOnRestart",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
@@ -671,9 +560,7 @@
                     5,
                     6,
                     8,
-                    9,
-                    10,
-                    11
+                    9
                 ],
                 "RoomID": 0,
                 "Codec": 0,

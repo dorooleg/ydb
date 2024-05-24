@@ -106,9 +106,7 @@ public:
     static std::optional<TSecretIdOrValue> DeserializeFromOptional(const NKikimrSchemeOp::TSecretableVariable& proto, const TString& secretInfo, const TString& defaultOwnerId = Default<TString>()) {
         if (proto.HasSecretId()) {
             return DeserializeFromProto(proto, defaultOwnerId);
-        } else if (proto.HasValue()) {
-            return DeserializeFromString(proto.GetValue().GetData());
-        } if (secretInfo) {
+        } else if (secretInfo) {
             return DeserializeFromString(secretInfo, defaultOwnerId);
         } else {
             return {};

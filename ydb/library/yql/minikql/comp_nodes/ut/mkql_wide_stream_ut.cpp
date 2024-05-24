@@ -8,9 +8,9 @@ namespace NMiniKQL {
 #if !defined(MKQL_RUNTIME_VERSION) || MKQL_RUNTIME_VERSION >= 36u
 Y_UNIT_TEST_SUITE(TMiniKQLWideStreamTest) {
 
-Y_UNIT_TEST_LLVM(TestSimple) {
-    TSetup<LLVM> setup;
-    TProgramBuilder& pb = *setup.PgmBuilder;
+Y_UNIT_TEST(TestSimple) {
+    TSetup<false> setup;
+    auto& pb = *setup.PgmBuilder;
 
     const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
     const auto tupleType = pb.NewTupleType({ui64Type, ui64Type});
@@ -32,7 +32,7 @@ Y_UNIT_TEST_LLVM(TestSimple) {
     const auto narrowFlow = pb.NarrowMap(newWideFlow, [&](TRuntimeNode::TList items) -> TRuntimeNode {
         return pb.Sub(items[1], items[0]);
     });
-    const auto pgmReturn = pb.Collect(narrowFlow);
+    const auto pgmReturn = pb.ForwardList(narrowFlow);
 
     const auto graph = setup.BuildGraph(pgmReturn);
     const auto iterator = graph->GetValue().GetListIterator();

@@ -8,7 +8,7 @@
 #include <ydb/core/grpc_services/grpc_request_proxy.h>
 #include <ydb/core/grpc_services/rpc_calls.h>
 
-#include <ydb/library/grpc/server/grpc_request.h>
+#include <library/cpp/grpc/server/grpc_request.h>
 
 
 namespace NKikimr::NGRpcService {
@@ -22,11 +22,11 @@ TGRpcPQClusterDiscoveryService::TGRpcPQClusterDiscoveryService(
     , GRpcRequestProxyId_(id)
 {
     if (requestsInflightLimit.Defined()) {
-        Limiter = MakeHolder<NYdbGrpc::TGlobalLimiter>(requestsInflightLimit.GetRef());
+        Limiter = MakeHolder<NGrpc::TGlobalLimiter>(requestsInflightLimit.GetRef());
     }
 }
 
-void TGRpcPQClusterDiscoveryService::InitService(grpc::ServerCompletionQueue *cq, NYdbGrpc::TLoggerPtr logger) {
+void TGRpcPQClusterDiscoveryService::InitService(grpc::ServerCompletionQueue *cq, NGrpc::TLoggerPtr logger) {
     CQ_ = cq;
 
     if (ActorSystem_->AppData<TAppData>()->PQClusterDiscoveryConfig.GetEnabled()) {
@@ -38,7 +38,7 @@ void TGRpcPQClusterDiscoveryService::InitService(grpc::ServerCompletionQueue *cq
     }
 }
 
-void TGRpcPQClusterDiscoveryService::SetGlobalLimiterHandle(NYdbGrpc::TGlobalLimiter*) {
+void TGRpcPQClusterDiscoveryService::SetGlobalLimiterHandle(NGrpc::TGlobalLimiter*) {
 }
 
 bool TGRpcPQClusterDiscoveryService::IncRequest() {
@@ -54,7 +54,7 @@ void TGRpcPQClusterDiscoveryService::DecRequest() {
     }
 }
 
-void TGRpcPQClusterDiscoveryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcPQClusterDiscoveryService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = NGRpcService::CreateCounterCb(Counters_, ActorSystem_);
 
 #ifdef ADD_REQUEST
@@ -62,7 +62,7 @@ void TGRpcPQClusterDiscoveryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr 
 #endif
 #define ADD_REQUEST(NAME, IN, OUT, ACTION) \
     MakeIntrusive<TGRpcRequest<Ydb::PersQueue::ClusterDiscovery::IN, Ydb::PersQueue::ClusterDiscovery::OUT, TGRpcPQClusterDiscoveryService>>(this, &Service_, CQ_, \
-        [this](NYdbGrpc::IRequestContextBase* ctx) { \
+        [this](NGrpc::IRequestContextBase* ctx) { \
             NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer()); \
             ACTION; \
         }, &Ydb::PersQueue::V1::ClusterDiscoveryService::AsyncService::Request ## NAME, \

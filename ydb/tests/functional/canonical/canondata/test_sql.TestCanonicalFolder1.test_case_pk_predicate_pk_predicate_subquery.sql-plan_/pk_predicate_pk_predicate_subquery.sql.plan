@@ -14,8 +14,13 @@
                         "Group",
                         "Name"
                     ],
-                    "limit": "1001",
-                    "type": "Scan"
+                    "lookup_by": [
+                        "Group (n/a)"
+                    ],
+                    "scan_by": [
+                        "Name (-\u221e, +\u221e)"
+                    ],
+                    "type": "Lookup"
                 }
             ]
         },

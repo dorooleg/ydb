@@ -1,7 +1,7 @@
 #include "incrhuge_keeper.h"
 #include "incrhuge.h"
 #include "incrhuge_keeper_recovery_scan.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <library/cpp/digest/crc32c/crc32c.h>
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -107,7 +107,7 @@ namespace NKikimr {
         void TKeeper::InvokeCallback(void *cookie, NKikimrProto::EReplyStatus status, IEventBase *msg,
                 const TActorContext& ctx) {
             auto it = CallbackMap.find(cookie);
-            Y_ABORT_UNLESS(it != CallbackMap.end());
+            Y_VERIFY(it != CallbackMap.end());
             it->second->Apply(status, msg, ctx);
             CallbackMap.erase(it);
         }
@@ -132,7 +132,7 @@ namespace NKikimr {
 
         void TKeeper::Handle(TEvIncrHugeCallback::TPtr& ev, const TActorContext& ctx) {
             TEvIncrHugeCallback *msg = ev->Get();
-            Y_ABORT_UNLESS(msg->Callback);
+            Y_VERIFY(msg->Callback);
             msg->Callback->Apply(NKikimrProto::OK, msg, ctx);
         }
 
@@ -151,7 +151,7 @@ namespace NKikimr {
                     break;
 
                 default:
-                    Y_ABORT("unexpected case");
+                    Y_FAIL("unexpected case");
             }
         }
 

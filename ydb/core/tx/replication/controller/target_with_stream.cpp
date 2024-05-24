@@ -3,25 +3,27 @@
 #include "stream_remover.h"
 #include "target_with_stream.h"
 
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/events.h>
 
 namespace NKikimr::NReplication::NController {
 
 const TString ReplicationConsumerName = "replicationConsumer";
 
-void TTargetWithStream::Progress(TReplication::TPtr replication, const TActorContext& ctx) {
+void TTargetWithStream::Progress(ui64 schemeShardId, const TActorId& proxy, const TActorContext& ctx) {
     switch (GetStreamState()) {
     case EStreamState::Creating:
         if (GetStreamName().empty() && !NameAssignmentInProcess) {
-            ctx.Send(ctx.SelfID, new TEvPrivate::TEvAssignStreamName(replication->GetId(), GetId()));
+            ctx.Send(ctx.SelfID, new TEvPrivate::TEvAssignStreamName(GetReplicationId(), GetTargetId()));
             NameAssignmentInProcess = true;
         } else if (!StreamCreator) {
-            StreamCreator = ctx.Register(CreateStreamCreator(replication, GetId(), ctx));
+            StreamCreator = ctx.Register(CreateStreamCreator(ctx.SelfID, proxy,
+                GetReplicationId(), GetTargetId(), GetTargetKind(), GetSrcPath(), GetStreamName()));
         }
         return;
     case EStreamState::Removing:
         if (!StreamRemover) {
-            StreamRemover = ctx.Register(CreateStreamRemover(replication, GetId(), ctx));
+            StreamRemover = ctx.Register(CreateStreamRemover(ctx.SelfID, proxy,
+                GetReplicationId(), GetTargetId(), GetTargetKind(), GetSrcPath(), GetStreamName()));
         }
         return;
     case EStreamState::Ready:
@@ -30,12 +32,12 @@ void TTargetWithStream::Progress(TReplication::TPtr replication, const TActorCon
         break;
     }
 
-    TTargetBase::Progress(replication, ctx);
+    TTargetBase::Progress(schemeShardId, proxy, ctx);
 }
 
 void TTargetWithStream::Shutdown(const TActorContext& ctx) {
-    for (auto* x : TVector<TActorId*>{&StreamCreator, &StreamRemover}) {
-        if (auto actorId = std::exchange(*x, {})) {
+    for (auto& x : TVector<TActorId>{StreamCreator, StreamRemover}) {
+        if (auto actorId = std::exchange(x, {})) {
             ctx.Send(actorId, new TEvents::TEvPoison());
         }
     }

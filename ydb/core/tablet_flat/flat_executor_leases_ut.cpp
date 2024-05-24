@@ -2,7 +2,7 @@
 #include <ydb/core/tablet_flat/flat_cxx_database.h>
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/base/statestorage.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 namespace NKikimr::NTabletFlatExecutor {
@@ -183,13 +183,13 @@ Y_UNIT_TEST_SUITE(TFlatExecutorLeases) {
             Die(ctx);
         }
 
-        void DefaultSignalTabletActive(const TActorContext&) override {
-            // must be empty
-        }
-
         void OnActivateExecutor(const TActorContext&) override {
             Become(&TThis::StateWork);
             RunTxInitSchema();
+        }
+
+        void DefaultSignalTabletActive(const TActorContext&) override {
+            // nothing
         }
 
         void SwitchToWork(const TActorContext& ctx) {
@@ -254,7 +254,7 @@ Y_UNIT_TEST_SUITE(TFlatExecutorLeases) {
 
         bool blockDropLease = true;
         TVector<THolder<IEventHandle>> dropLeaseMsgs;
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto observerFunc = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTablet::TEvDropLease::EventType:
                     if (blockDropLease) {

@@ -26,7 +26,7 @@ namespace NJson2Udf {
         TUnboxedValue TryConvertJson(const IValueBuilder* valueBuilder, const TUnboxedValue& source) {
             Y_UNUSED(valueBuilder);
             Y_UNUSED(source);
-            Y_ABORT("Unsupported type");
+            Y_FAIL("Unsupported type");
         }
 
         template <>
@@ -240,7 +240,7 @@ namespace NJson2Udf {
 
     template <EDataSlot InputType, class TValueType, bool ForceConvert>
     TStringRef TSqlValue<InputType, TValueType, ForceConvert>::Name() {
-        Y_ABORT("Unknown name");
+        Y_FAIL("Unknown name");
     }
 
     template<>

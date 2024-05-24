@@ -433,10 +433,9 @@ public:
                     builder.SetError("Unknown data type");
                     return;
                 }
-                const auto& info = NUdf::GetDataTypeInfo(*slot);
-                const auto& features = info.Features;
+                const auto& features = NUdf::GetDataTypeInfo(*slot).Features;
                 if (!(features & NUdf::CanHash) || !(features & NUdf::CanEquate)) {
-                    builder.SetError(TStringBuilder() << "Type " << info.Name << " is not hashable or equatable");
+                    builder.SetError("Data type is not hashable or equatable");
                     return;
                 }
             }

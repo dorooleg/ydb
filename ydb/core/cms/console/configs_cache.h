@@ -5,7 +5,7 @@
 
 #include <ydb/core/base/counters.h>
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NKikimr::NConsole {
 
@@ -30,7 +30,7 @@ public:
             HFuncTraced(TEvConsole::TEvConfigSubscriptionError, Handle);
             HFuncTraced(TEvents::TEvPoisonPill, Handle);
             default:
-                Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
+                Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
                        ev->GetTypeRewrite(), ev->ToString().data());
         }
     }

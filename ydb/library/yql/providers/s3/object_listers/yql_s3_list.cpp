@@ -29,9 +29,7 @@ IOutputStream& operator<<(IOutputStream& stream, const TListingRequest& request)
                   << ",.Prefix=" << request.Prefix
                   << ",.Pattern=" << request.Pattern
                   << ",.PatternType=" << request.PatternType
-                  << ",.AwsUserPwd=<some token with length" << request.AuthInfo.GetAwsUserPwd().length() << ">"
-                  << ",.AwsSigV4=" << request.AuthInfo.GetAwsSigV4().length()
-                  << ",.Token=<some token with length " << request.AuthInfo.GetToken().length() << ">}";
+                  << ",.Token=<some token with length " << request.Token.length() << ">}";
 }
 
 namespace {
@@ -286,23 +284,23 @@ public:
     ~TS3Lister() override = default;
 private:
     static void SubmitRequestIntoGateway(TListingContext& ctx) {
-        IHTTPGateway::THeaders headers = IHTTPGateway::MakeYcHeaders(ctx.RequestId, ctx.ListingRequest.AuthInfo.GetToken(), {}, ctx.ListingRequest.AuthInfo.GetAwsUserPwd(), ctx.ListingRequest.AuthInfo.GetAwsSigV4());
+        IHTTPGateway::THeaders headers;
+        if (!ctx.ListingRequest.Token.empty()) {
+            headers.emplace_back("X-YaCloud-SubjectToken:" + ctx.ListingRequest.Token);
+        }
+        headers.emplace_back(TString{"X-Request-ID:"} + ctx.RequestId);
 
-        // We have to sort the cgi parameters for the correct aws signature
-        // This requirement will be fixed in the curl library
-        // https://github.com/curl/curl/commit/fc76a24c53b08cdf6eec8ba787d8eac64651d56e
-        // https://github.com/curl/curl/commit/c87920353883ef9d5aa952e724a8e2589d76add5
         TUrlBuilder urlBuilder(ctx.ListingRequest.Url);
+        urlBuilder.AddUrlParam("list-type", "2")
+            .AddUrlParam("prefix", ctx.ListingRequest.Prefix)
+            .AddUrlParam("max-keys", TStringBuilder() << ctx.MaxKeys);
+
         if (ctx.ContinuationToken.Defined()) {
             urlBuilder.AddUrlParam("continuation-token", *ctx.ContinuationToken);
         }
         if (ctx.Delimiter.Defined()) {
             urlBuilder.AddUrlParam("delimiter", *ctx.Delimiter);
         }
-
-        urlBuilder.AddUrlParam("list-type", "2")
-            .AddUrlParam("max-keys", TStringBuilder() << ctx.MaxKeys)
-            .AddUrlParam("prefix", ctx.ListingRequest.Prefix);
 
         auto gateway = ctx.GatewayWeak.lock();
         if (!gateway) {
@@ -410,7 +408,7 @@ private:
             YQL_CLOG(INFO, ProviderS3)
                 << "Listing of " << ctx.ListingRequest.Url << ctx.ListingRequest.Prefix
                 << ": got error from http gateway: " << issues.ToString(true);
-            ctx.Promise.SetValue(TListError{EListError::GENERAL, std::move(issues)});
+            ctx.Promise.SetValue(std::move(issues));
             ctx.NextRequestPromise.SetValue(Nothing());
         }
     } catch (const std::exception& ex) {

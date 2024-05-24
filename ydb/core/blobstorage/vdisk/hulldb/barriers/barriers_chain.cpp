@@ -87,7 +87,7 @@ namespace NKikimr {
             TTabletCmdValue &val = it->second;
             if (!insRes.second) {
                 // already exists
-                Y_ABORT_UNLESS(val.BarrierValue == newBarVal);
+                Y_VERIFY(val.BarrierValue == newBarVal);
                 // update stored ingress
                 TBarrierIngress::Merge(val.Ingress, memRec.Ingress);
             }

@@ -6,9 +6,7 @@
 
 #include <boost/config.hpp>
 
-#ifndef BOOST_PROGRAM_OPTIONS_SOURCE
-# define BOOST_PROGRAM_OPTIONS_SOURCE
-#endif
+#define BOOST_PROGRAM_OPTIONS_SOURCE
 #include <boost/program_options/config.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/options_description.hpp>

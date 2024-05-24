@@ -11,11 +11,9 @@ SelfHeal позволяет:
 
 SelfHeal включен по умолчанию.
 
-Компонент {{ ydb-short-name }}, отвечающий за SelfHeal, называется Sentinel.
-
 ## Включение и выключение SelfHeal {#on-off}
 
-Вы можете включать и выключать SelfHeal с помощью утилиты [{{ ydb-short-name }} DSTool](../../reference/ydb-dstool/index.md).
+Вы можете включать и выключать SelfHeal с помощью утилиты [{{ ydb-short-name }} DSTool](../../administration/ydb-dstool-overview.md).
 
 Чтобы включить SelfHeal выполните команду:
 

@@ -1783,7 +1783,6 @@ SearchCatCacheList(CatCache *cache,
 void
 ReleaseCatCacheList(CatCList *list)
 {
-    return;
 	/* Safety checks to ensure we were handed a cache entry */
 	Assert(list->cl_magic == CL_MAGIC);
 	Assert(list->refcount > 0);

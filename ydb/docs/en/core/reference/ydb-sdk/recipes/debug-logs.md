@@ -44,7 +44,7 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
            os.Getenv("YDB_CONNECTION_STRING"),
            ydbZap.WithTraces(
                log,
-               trace.DetailsAll,
+               ydbZap.WithDetails(trace.DetailsAll),
            ),
        )
        if err != nil {
@@ -78,8 +78,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        db, err := ydb.Open(ctx,
            os.Getenv("YDB_CONNECTION_STRING"),
            ydbZerolog.WithTraces(
-               &log,
-               trace.DetailsAll,
+               log,
+               ydbZerolog.WithDetails(trace.DetailsAll),
            ),
        )
        if err != nil {
@@ -113,8 +113,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        db, err := ydb.Open(ctx,
            os.Getenv("YDB_CONNECTION_STRING"),
            ydb.WithLogger(
-               logger,
                trace.DetailsAll,
+               ydb.WithExternalLogger(logger),
            ),
        )
        if err != nil {
@@ -171,7 +171,7 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
            os.Getenv("YDB_CONNECTION_STRING"),
            ydbZap.WithTraces(
                log,
-               trace.DetailsAll,
+               ydbZap.WithDetails(trace.DetailsAll),
            ),
        )
        if err != nil {
@@ -183,9 +183,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        if err != nil {
            panic(err)
        }
-       defer connector.Close()
 
-       db := sql.OpenDB(connector)
+       db := sql.OpnDB(connector)
        defer db.Close()
        ...
    }
@@ -215,8 +214,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        nativeDriver, err := ydb.Open(ctx,
            os.Getenv("YDB_CONNECTION_STRING"),
            ydbZerolog.WithTraces(
-               &log,
-               trace.DetailsAll,
+               log,
+               ydbZerolog.WithDetails(trace.DetailsAll),
            ),
        )
        if err != nil {
@@ -228,9 +227,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        if err != nil {
            panic(err)
        }
-       defer connector.Close()
 
-       db := sql.OpenDB(connector)
+       db := sql.OpnDB(connector)
        defer db.Close()
        ...
    }
@@ -260,8 +258,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        nativeDriver, err := ydb.Open(ctx,
            os.Getenv("YDB_CONNECTION_STRING"),
            ydb.WithLogger(
-               logger,
                trace.DetailsAll,
+               ydb.WithExternalLogger(logger),
            ),
        )
        if err != nil {
@@ -273,9 +271,8 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        if err != nil {
            panic(err)
        }
-       defer connector.Close()
 
-       db := sql.OpenDB(connector)
+       db := sql.OpnDB(connector)
        defer db.Close()
        ...
    }
@@ -340,20 +337,5 @@ Below are examples of code that enables logging in different {{ ydb-short-name }
        </Loggers>
    </Configuration>
    ```
-
-- PHP
-
-    For logging purposes, you need to use a class, that implements `\Psr\Log\LoggerInterface`.
-    YDB-PHP-SDK has build-in loggers in `YdbPlatform\Ydb\Logger` namespace:
-    * `NullLogger` - default logger, which writes nothing
-    * `SimpleStdLogger($level)` - logger, which writes to logs in stderr.
-
-    Usage example:
-    ```php
-    $config = [
-        'logger' => new \YdbPlatform\Ydb\Logger\SimpleStdLogger(\YdbPlatform\Ydb\Logger\SimpleStdLogger::INFO)
-    ]
-    $ydb = new \YdbPlatform\Ydb\Ydb($config);
-    ```
 
 {% endlist %}

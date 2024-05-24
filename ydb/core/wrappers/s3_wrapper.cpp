@@ -10,9 +10,9 @@
 #include <contrib/libs/aws-sdk-cpp/aws-cpp-sdk-core/include/aws/core/Aws.h>
 #include <contrib/libs/curl/include/curl/curl.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/singleton.h>
 #include <util/string/cast.h>
@@ -30,11 +30,15 @@ class TS3Wrapper: public TActor<TS3Wrapper> {
     }
 
 public:
+    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+        return NKikimrServices::TActivity::S3_WRAPPER_ACTOR;
+    }
+
     explicit TS3Wrapper(IExternalStorageOperator::TPtr storageOperator)
         : TActor(&TThis::StateWork)
         , StorageOperator(storageOperator)
     {
-        Y_ABORT_UNLESS(!!StorageOperator, "not initialized operator. incorrect config.");
+        Y_VERIFY(!!StorageOperator, "not initialized operator. incorrect config.");
     }
 
     virtual ~TS3Wrapper() = default;
@@ -52,7 +56,6 @@ public:
             hFunc(TEvCompleteMultipartUploadRequest, Handle);
             hFunc(TEvAbortMultipartUploadRequest, Handle);
             hFunc(TEvCheckObjectExistsRequest, Handle);
-            hFunc(TEvUploadPartCopyRequest, Handle);
 
             cFunc(TEvents::TEvPoison::EventType, PassAway);
         }

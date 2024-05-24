@@ -34,8 +34,12 @@ TEvSubDomain::TEvConfigureStatus::TEvConfigureStatus(NKikimrTx::TEvSubDomainConf
     Record.SetOnTabletId(tabletId);
 }
 
-TAutoPtr<TEvSubDomain::TEvConfigure> CreateDomainConfigurationFromStatic(const TAppData *appdata) {
-    return new TEvSubDomain::TEvConfigure(ExtractProcessingParams(*appdata->DomainsInfo->GetDomain()));
+TAutoPtr<TEvSubDomain::TEvConfigure> CreateDomainConfigurationFromStatic(const TAppData *appdata, ui64 tabletId) {
+    const ui32 selfDomain = appdata->DomainsInfo->GetDomainUidByTabletId(tabletId);
+    Y_VERIFY(selfDomain != appdata->DomainsInfo->BadDomainId);
+    const auto& domain = appdata->DomainsInfo->GetDomain(selfDomain);
+
+    return new TEvSubDomain::TEvConfigure(ExtractProcessingParams(domain));
 }
 
 }

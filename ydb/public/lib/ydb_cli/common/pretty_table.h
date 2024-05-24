@@ -48,7 +48,7 @@ public:
     public:
         template <typename T>
         TRow& Column(size_t index, const T& data) {
-            Y_ABORT_UNLESS(index < Columns.size());
+            Y_VERIFY(index < Columns.size());
 
             TString lines = TStringBuilder() << data;
 
@@ -75,8 +75,7 @@ public:
 
     private:
         size_t ColumnWidth(size_t columnIndex) const;
-        size_t ExtraBytes(TStringBuf data) const;
-        void PrintColumns(IOutputStream& o, const TVector<size_t>& widths) const;
+        bool PrintColumns(IOutputStream& o, const TVector<size_t>& widths, size_t lineNumber) const;
         bool HasFreeText() const;
         void PrintFreeText(IOutputStream& o, size_t width) const;
 

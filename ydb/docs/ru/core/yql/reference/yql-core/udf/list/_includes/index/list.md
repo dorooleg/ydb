@@ -3,7 +3,6 @@
 * [Histogram](../../histogram.md)
 * [Hyperscan](../../hyperscan.md)
 * [Ip](../../ip.md)
-* [Knn](../../knn.md)
 * [Math](../../math.md)
 * [Pcre](../../pcre.md)
 * [Pire](../../pire.md)

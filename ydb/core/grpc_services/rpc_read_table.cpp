@@ -1,14 +1,12 @@
 #include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
 #include "local_rate_limiter.h"
 #include "service_table.h"
 
-#include <ydb/library/yql/core/issue/yql_issue.h>
-#include <ydb/library/yql/core/issue/protos/issue_id.pb.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 #include <ydb/core/base/appdata.h>
@@ -147,8 +145,6 @@ public:
             InactiveServerTimerPending_ = true;
         }
 
-        MessageSizeLimit = cfg.GetMessageSizeLimit();
-
         SendProposeRequest(ctx);
 
         auto actorId = SelfId();
@@ -188,7 +184,7 @@ private:
             HFunc(TEvents::TEvWakeup, Handle);
             HFunc(TEvDataShard::TEvGetReadTableStreamStateRequest, Handle);
             default:
-                Y_ABORT("TRequestHandler: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
+                Y_FAIL("TRequestHandler: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
         }
     }
 
@@ -243,22 +239,10 @@ private:
                 return ReplyFinishStream(Ydb::StatusIds::UNAUTHORIZED, issueMessage, ctx);
             }
             case TEvTxUserProxy::TResultStatus::ResolveError: {
-                NYql::TIssue issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Got ResolveError response from TxProxy");
+                const NYql::TIssue& issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Got ResolveError response from TxProxy");
                 auto tmp = issueMessage.Add();
-                for (const auto& unresolved : msg->Record.GetUnresolvedKeys()) {
-                    issue.AddSubIssue(MakeIntrusive<NYql::TIssue>(unresolved));
-                }
                 NYql::IssueToMessage(issue, tmp);
                 return ReplyFinishStream(Ydb::StatusIds::SCHEME_ERROR, issueMessage, ctx);
-            }
-            case TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyShardOverloaded: {
-                const auto req = TEvReadTableRequest::GetProtoRequest(Request_.get());
-
-                auto issue = NYql::YqlIssue({}, NYql::TIssuesIds::KIKIMR_OVERLOADED, TStringBuilder()
-                    << "Table " << req->path() << " is overloaded");
-                auto tmp = issueMessage.Add();
-                NYql::IssueToMessage(issue, tmp);
-                return ReplyFinishStream(Ydb::StatusIds::OVERLOADED, issueMessage, ctx);
             }
             case TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyNotReady:
             case TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyShardTryLater:
@@ -497,9 +481,6 @@ private:
             return ReplyFinishStream(StatusIds::BAD_REQUEST, message, ctx);
         }
 
-        MessageSizeLimit = std::min(MessageSizeLimit, req->batch_limit_bytes() ? req->batch_limit_bytes() : Max<ui64>());
-        MessageRowsLimit = req->batch_limit_rows();
-
         // Snapshots are always enabled and cannot be disabled
         switch (req->use_snapshot()) {
             case Ydb::FeatureFlag::STATUS_UNSPECIFIED:
@@ -558,9 +539,11 @@ private:
             NullSerializeReadTableResponse(message, status, &out);
             Request_->SendSerializedResult(std::move(out), status);
         }
-        Request_->FinishStream(status);
+        Request_->FinishStream();
         LOG_NOTICE_S(ctx, NKikimrServices::READ_TABLE_API,
             SelfId() << " Finish grpc stream, status: " << (int)status);
+
+        auto &cfg = AppData(ctx)->StreamingConfig.GetOutputStreamConfig();
 
         // Answer all pending quota requests.
         while (!QuotaRequestQueue_.empty()) {
@@ -571,8 +554,7 @@ private:
             TAutoPtr<TEvTxProcessing::TEvStreamQuotaResponse> response
                 = new TEvTxProcessing::TEvStreamQuotaResponse;
             response->Record.SetTxId(rec.GetTxId());
-            response->Record.SetMessageSizeLimit(MessageSizeLimit);
-            response->Record.SetMessageRowsLimit(MessageRowsLimit);
+            response->Record.SetMessageSizeLimit(cfg.GetMessageSizeLimit());
             response->Record.SetReservedMessages(0);
 
             LOG_DEBUG_S(ctx, NKikimrServices::READ_TABLE_API,
@@ -650,8 +632,7 @@ private:
         TAutoPtr<TEvTxProcessing::TEvStreamQuotaResponse> response
             = new TEvTxProcessing::TEvStreamQuotaResponse;
         response->Record.SetTxId(rec.GetTxId());
-        response->Record.SetMessageSizeLimit(MessageSizeLimit);
-        response->Record.SetMessageRowsLimit(MessageRowsLimit);
+        response->Record.SetMessageSizeLimit(cfg.GetMessageSizeLimit());
         response->Record.SetReservedMessages(quotaSize);
 
         LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::READ_TABLE_API,
@@ -772,9 +753,6 @@ private:
     TActorId InactiveServerTimer_;
     bool InactiveClientTimerPending_ = false;
     bool InactiveServerTimerPending_ = false;
-
-    ui64 MessageSizeLimit = 0;
-    ui64 MessageRowsLimit = 0;
 
     struct TBuffEntry
     {

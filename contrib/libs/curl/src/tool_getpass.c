@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -46,8 +46,16 @@
 #  error #include iodef
 #endif
 
-#ifdef _WIN32
+#ifdef WIN32
 #  include <conio.h>
+#endif
+
+#ifdef NETWARE
+#  ifdef __NOVELL_LIBC__
+#    include <screen.h>
+#  else
+#    error #include <nwconio.h>
+#  endif
 #endif
 
 #ifdef HAVE_UNISTD_H
@@ -94,12 +102,12 @@ char *getpass_r(const char *prompt, char *buffer, size_t buflen)
 #define DONE
 #endif /* __VMS */
 
-#if defined(_WIN32)
+#if defined(WIN32)
 
 char *getpass_r(const char *prompt, char *buffer, size_t buflen)
 {
   size_t i;
-  fputs(prompt, tool_stderr);
+  fputs(prompt, stderr);
 
   for(i = 0; i < buflen; i++) {
     buffer[i] = (char)getch();
@@ -114,7 +122,7 @@ char *getpass_r(const char *prompt, char *buffer, size_t buflen)
         i = i - (i >= 1 ? 2 : 1);
   }
   /* since echo is disabled, print a newline */
-  fputs("\n", tool_stderr);
+  fputs("\n", stderr);
   /* if user didn't hit ENTER, terminate buffer */
   if(i == buflen)
     buffer[buflen-1] = '\0';
@@ -122,7 +130,46 @@ char *getpass_r(const char *prompt, char *buffer, size_t buflen)
   return buffer; /* we always return success */
 }
 #define DONE
-#endif /* _WIN32 */
+#endif /* WIN32 */
+
+#ifdef NETWARE
+/* NetWare implementation */
+#ifdef __NOVELL_LIBC__
+char *getpass_r(const char *prompt, char *buffer, size_t buflen)
+{
+  return getpassword(prompt, buffer, buflen);
+}
+#else
+char *getpass_r(const char *prompt, char *buffer, size_t buflen)
+{
+  size_t i = 0;
+
+  printf("%s", prompt);
+  do {
+    buffer[i++] = getch();
+    if(buffer[i-1] == '\b') {
+      /* remove this letter and if this is not the first key,
+         remove the previous one as well */
+      if(i > 1) {
+        printf("\b \b");
+        i = i - 2;
+      }
+      else {
+        RingTheBell();
+        i = i - 1;
+      }
+    }
+    else if(buffer[i-1] != 13)
+      putchar('*');
+
+  } while((buffer[i-1] != 13) && (i < buflen));
+  buffer[i-1] = '\0';
+  printf("\r\n");
+  return buffer;
+}
+#endif /* __NOVELL_LIBC__ */
+#define DONE
+#endif /* NETWARE */
 
 #ifndef DONE /* not previously provided */
 
@@ -184,7 +231,7 @@ char *getpass_r(const char *prompt, /* prompt to display */
 
   disabled = ttyecho(FALSE, fd); /* disable terminal echo */
 
-  fputs(prompt, tool_stderr);
+  fputs(prompt, stderr);
   nread = read(fd, password, buflen);
   if(nread > 0)
     password[--nread] = '\0'; /* null-terminate where enter is stored */
@@ -193,7 +240,7 @@ char *getpass_r(const char *prompt, /* prompt to display */
 
   if(disabled) {
     /* if echo actually was disabled, add a newline */
-    fputs("\n", tool_stderr);
+    fputs("\n", stderr);
     (void)ttyecho(TRUE, fd); /* enable echo */
   }
 

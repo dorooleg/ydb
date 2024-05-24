@@ -3,11 +3,10 @@
 #include <ydb/core/tx/tiering/external_data.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/core/formats/arrow/size_calcer.h>
 #include <ydb/core/wrappers/ut_helpers/s3_mock.h>
 #include <ydb/core/wrappers/s3_wrapper.h>
 #include <ydb/core/wrappers/fake_storage.h>
-#include <ydb/core/formats/arrow/hash/xx_hash.h>
+#include <ydb/core/tx/sharding/xx_hash.h>
 #include <ydb/library/accessor/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/services/metadata/manager/alter.h>
@@ -16,7 +15,7 @@
 #include <ydb/services/metadata/manager/ydb_value_operator.h>
 #include <ydb/services/metadata/service.h>
 
-#include <ydb/library/actors/core/av_bootstrapped.h>
+#include <library/cpp/actors/core/av_bootstrapped.h>
 #include <library/cpp/protobuf/json/proto2json.h>
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -140,7 +139,7 @@ Y_UNIT_TEST_SUITE(ExternalIndex) {
             UNIT_ASSERT_EQUAL(resultData, "[6000u]");
         }
         {
-            NArrow::NHash::NXX64::TStreamStringHashCalcer calcer(0);
+            NSharding::TStreamStringHashCalcer calcer(0);
             calcer.Start();
             TString resultData;
             TString uid = "uid_" + ::ToString(tsStart + 2);
@@ -172,11 +171,6 @@ Y_UNIT_TEST_SUITE(ExternalIndex) {
             TString resultData;
             lHelper.StartDataRequest("SELECT COUNT(*) FROM `/Root/.metadata/cs_index/external`", true, &resultData);
             UNIT_ASSERT_EQUAL(resultData, "[0u]");
-        }
-        {
-            TString resultData;
-            lHelper.StartDataRequest("SELECT COUNT(*) FROM `/Root/.metadata/initialization/migrations`", true, &resultData);
-            UNIT_ASSERT_EQUAL(resultData, "[6u]");
         }
     }
 

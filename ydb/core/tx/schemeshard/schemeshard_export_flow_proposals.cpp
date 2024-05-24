@@ -2,7 +2,6 @@
 #include "schemeshard_path_describer.h"
 
 #include <ydb/core/ydb_convert/compression.h>
-#include <ydb/public/api/protos/ydb_export.pb.h>
 
 #include <util/string/builder.h>
 #include <util/string/cast.h>
@@ -83,37 +82,13 @@ static NKikimrSchemeOp::TPathDescription GetTableDescription(TSchemeShard* ss, c
     return record.GetPathDescription();
 }
 
-void FillSetValForSequences(TSchemeShard* ss, NKikimrSchemeOp::TTableDescription& description,
-        const TPathId& exportItemPathId) {
-    NKikimrSchemeOp::TDescribeOptions opts;
-    opts.SetReturnSetVal(true);
-
-    auto pathDescription = DescribePath(ss, TlsActivationContext->AsActorContext(), exportItemPathId, opts);
-    auto tableDescription = pathDescription->GetRecord().GetPathDescription().GetTable();
-
-    THashMap<TString, NKikimrSchemeOp::TSequenceDescription::TSetVal> setValForSequences;
-
-    for (const auto& sequenceDescription : tableDescription.GetSequences()) {
-        if (sequenceDescription.HasSetVal()) {
-            setValForSequences[sequenceDescription.GetName()] = sequenceDescription.GetSetVal();
-        }
-    }
-
-    for (auto& sequenceDescription : *description.MutableSequences()) {
-        auto it = setValForSequences.find(sequenceDescription.GetName());
-        if (it != setValForSequences.end()) {
-            *sequenceDescription.MutableSetVal() = it->second;
-        }
-    }
-}
-
 THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
     TSchemeShard* ss,
     TTxId txId,
     const TExportInfo::TPtr exportInfo,
     ui32 itemIdx
 ) {
-    Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+    Y_VERIFY(itemIdx < exportInfo->Items.size());
 
     auto propose = MakeHolder<TEvSchemeShard::TEvModifySchemeTransaction>(ui64(txId), ss->TabletID());
 
@@ -130,24 +105,15 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
     task.SetNeedToBill(!exportInfo->UserSID || !ss->SystemBackupSIDs.contains(*exportInfo->UserSID));
 
     const TPath sourcePath = TPath::Init(exportInfo->Items[itemIdx].SourcePathId, ss);
-    const TPath exportItemPath = exportPath.Child(ToString(itemIdx));
-    if (sourcePath.IsResolved() && exportItemPath.IsResolved()) {
-        auto sourceDescription = GetTableDescription(ss, sourcePath.Base()->PathId);
-        if (sourceDescription.HasTable()) {
-            FillSetValForSequences(
-                ss, *sourceDescription.MutableTable(), exportItemPath.Base()->PathId);
-        }
-        task.MutableTable()->CopyFrom(sourceDescription);
+    if (sourcePath.IsResolved()) {
+        task.MutableTable()->CopyFrom(GetTableDescription(ss, sourcePath.Base()->PathId));
     }
-
-    task.SetSnapshotStep(exportInfo->SnapshotStep);
-    task.SetSnapshotTxId(exportInfo->SnapshotTxId);
 
     switch (exportInfo->Kind) {
     case TExportInfo::EKind::YT:
         {
             Ydb::Export::ExportToYtSettings exportSettings;
-            Y_ABORT_UNLESS(exportSettings.ParseFromString(exportInfo->Settings));
+            Y_VERIFY(exportSettings.ParseFromString(exportInfo->Settings));
 
             task.SetNumberOfRetries(exportSettings.number_of_retries());
             auto& backupSettings = *task.MutableYTSettings();
@@ -162,7 +128,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
     case TExportInfo::EKind::S3:
         {
             Ydb::Export::ExportToS3Settings exportSettings;
-            Y_ABORT_UNLESS(exportSettings.ParseFromString(exportInfo->Settings));
+            Y_VERIFY(exportSettings.ParseFromString(exportInfo->Settings));
 
             task.SetNumberOfRetries(exportSettings.number_of_retries());
             auto& backupSettings = *task.MutableS3Settings();
@@ -172,7 +138,6 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
             backupSettings.SetSecretKey(exportSettings.secret_key());
             backupSettings.SetObjectKeyPattern(exportSettings.items(itemIdx).destination_prefix());
             backupSettings.SetStorageClass(exportSettings.storage_class());
-            backupSettings.SetUseVirtualAddressing(!exportSettings.disable_virtual_addressing());
 
             switch (exportSettings.scheme()) {
             case Ydb::Export::ExportToS3Settings::HTTP:
@@ -182,7 +147,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
                 backupSettings.SetScheme(NKikimrSchemeOp::TS3Settings::HTTPS);
                 break;
             default:
-                Y_ABORT("Unknown scheme");
+                Y_FAIL("Unknown scheme");
             }
 
             if (const auto region = exportSettings.region()) {
@@ -190,7 +155,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
             }
 
             if (const auto compression = exportSettings.compression()) {
-                Y_ABORT_UNLESS(FillCompression(*task.MutableCompression(), compression));
+                Y_VERIFY(FillCompression(*task.MutableCompression(), compression));
             }
         }
         break;

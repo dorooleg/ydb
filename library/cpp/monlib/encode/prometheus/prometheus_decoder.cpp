@@ -71,9 +71,6 @@ namespace NMonitoring {
             using TBucketData = std::pair<TBucketBound, TBucketValue>;
             constexpr static TBucketData ZERO_BUCKET = { -std::numeric_limits<TBucketBound>::max(), 0 };
         public:
-            THistogramBuilder(TPrometheusDecodeSettings settings)
-                : Settings_(settings) {
-            }
             TStringBuf GetName() const noexcept {
                 return Name_;
             }
@@ -128,6 +125,7 @@ namespace NMonitoring {
 
                 Bounds_.push_back(bound);
                 Values_.push_back(value - PrevBucket_.second); // keep only delta between buckets
+
                 PrevBucket_ = { bound, value };
             }
 
@@ -137,7 +135,7 @@ namespace NMonitoring {
                 Time_ = TInstant::Zero();
                 PrevBucket_ = ZERO_BUCKET;
                 Labels_.Clear();
-                auto snapshot = ExplicitHistogramSnapshot(Bounds_, Values_, true);
+                auto snapshot = ExplicitHistogramSnapshot(Bounds_, Values_);
 
                 Bounds_.clear();
                 Values_.clear();
@@ -152,7 +150,6 @@ namespace NMonitoring {
             TBucketBounds Bounds_;
             TBucketValues Values_;
             TBucketData PrevBucket_ = ZERO_BUCKET;
-            TPrometheusDecodeSettings Settings_;
         };
 
         ///////////////////////////////////////////////////////////////////////
@@ -171,12 +168,10 @@ namespace NMonitoring {
         ///////////////////////////////////////////////////////////////////////
         class TPrometheusReader {
         public:
-            TPrometheusReader(TStringBuf data, IMetricConsumer* c, TStringBuf metricNameLabel, const TPrometheusDecodeSettings& settings = TPrometheusDecodeSettings{})
+            TPrometheusReader(TStringBuf data, IMetricConsumer* c, TStringBuf metricNameLabel)
                 : Data_(data)
                 , Consumer_(c)
                 , MetricNameLabel_(metricNameLabel)
-                , Settings_(settings)
-                , HistogramBuilder_(settings)
             {
             }
 
@@ -239,10 +234,8 @@ namespace NMonitoring {
                     SkipSpaces();
                     EPrometheusMetricType nextType = ReadType();
 
-                    auto emplaceResult = SeenTypes_.emplace(nextName, nextType);
-                    if (!emplaceResult.second) {
-                            Y_PARSER_ENSURE(emplaceResult.first->second == nextType, "second diferent TYPE for metric " << nextName);
-                    }
+                    bool inserted = SeenTypes_.emplace(nextName, nextType).second;
+                    Y_PARSER_ENSURE(inserted, "second TYPE line for metric " << nextName);
 
                     if (nextType == EPrometheusMetricType::HISTOGRAM) {
                         if (!HistogramBuilder_.Empty()) {
@@ -277,14 +270,12 @@ namespace NMonitoring {
                 TStringBuf baseName = name;
                 EPrometheusMetricType type = EPrometheusMetricType::UNTYPED;
 
-                if (Settings_.Mode != EPrometheusDecodeMode::RAW) {
-                    if (auto* seenType = SeenTypes_.FindPtr(name)) {
-                        type = *seenType;
-                    } else {
-                        baseName = NPrometheus::ToBaseName(name);
-                        if (auto* baseType = SeenTypes_.FindPtr(baseName)) {
-                            type = *baseType;
-                        }
+                if (auto* seenType = SeenTypes_.FindPtr(name)) {
+                    type = *seenType;
+                } else {
+                    baseName = NPrometheus::ToBaseName(name);
+                    if (auto* baseType = SeenTypes_.FindPtr(baseName)) {
+                        type = *baseType;
                     }
                 }
 
@@ -435,7 +426,7 @@ namespace NMonitoring {
             }
 
             TStringBuf ReadToken() {
-                Y_DEBUG_ABORT_UNLESS(CurrentPos_ > 0);
+                Y_VERIFY_DEBUG(CurrentPos_ > 0);
                 size_t begin = CurrentPos_ - 1; // read first byte again
                 while (HasRemaining() && !IsSpace(CurrentByte_) && CurrentByte_ != '\n') {
                     ReadNextByteUnsafe();
@@ -448,7 +439,7 @@ namespace NMonitoring {
                     return "";
                 }
 
-                Y_DEBUG_ABORT_UNLESS(CurrentPos_ > 0);
+                Y_VERIFY_DEBUG(CurrentPos_ > 0);
                 size_t begin = CurrentPos_ - 1; // read first byte again
                 while (HasRemaining()) {
                     ReadNextByteUnsafe();
@@ -464,7 +455,7 @@ namespace NMonitoring {
                     return "";
                 }
 
-                Y_DEBUG_ABORT_UNLESS(CurrentPos_ > 0);
+                Y_VERIFY_DEBUG(CurrentPos_ > 0);
                 size_t begin = CurrentPos_ - 1; // read first byte again
                 while (HasRemaining()) {
                     ReadNextByteUnsafe();
@@ -515,7 +506,7 @@ namespace NMonitoring {
             }
 
             TStringBuf TokenFromPos(size_t begin) {
-                Y_DEBUG_ABORT_UNLESS(CurrentPos_ > begin);
+                Y_VERIFY_DEBUG(CurrentPos_ > begin);
                 size_t len = CurrentPos_ - begin - 1;
                 if (len == 0) {
                     return {};
@@ -538,12 +529,10 @@ namespace NMonitoring {
             }
 
             void ConsumeCounter(TStringBuf name, const TLabelsMap& labels, TInstant time, double value) {
-                ui64 uintValue{0};
+                i64 intValue{0};
                 // not nan
-                if (value == value && value > 0) {
-                    if (!TryStaticCast(value, uintValue)) {
-                        uintValue = std::numeric_limits<ui64>::max();
-                    }
+                if (value == value) {
+                    Y_PARSER_ENSURE(TryStaticCast(value, intValue), "value " << value << " is out of range");
                 }
 
                 // see https://st.yandex-team.ru/SOLOMON-4142 for more details
@@ -551,7 +540,7 @@ namespace NMonitoring {
                 // TODO: need to fix after server-side aggregation become correct for COUNTERs
                 Consumer_->OnMetricBegin(EMetricType::RATE);
                 ConsumeLabels(name, labels);
-                Consumer_->OnUint64(time, uintValue);
+                Consumer_->OnUint64(time, intValue);
                 Consumer_->OnMetricEnd();
             }
 
@@ -591,7 +580,6 @@ namespace NMonitoring {
             TStringBuf Data_;
             IMetricConsumer* Consumer_;
             TStringBuf MetricNameLabel_;
-            TPrometheusDecodeSettings Settings_;
             THashMap<TString, EPrometheusMetricType> SeenTypes_;
             THistogramBuilder HistogramBuilder_;
 
@@ -601,8 +589,8 @@ namespace NMonitoring {
         };
     } // namespace
 
-void DecodePrometheus(TStringBuf data, IMetricConsumer* c, TStringBuf metricNameLabel, const TPrometheusDecodeSettings& settings) {
-    TPrometheusReader reader(data, c, metricNameLabel, settings);
+void DecodePrometheus(TStringBuf data, IMetricConsumer* c, TStringBuf metricNameLabel) {
+    TPrometheusReader reader(data, c, metricNameLabel);
     reader.Read();
 }
 

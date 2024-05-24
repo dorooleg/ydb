@@ -110,15 +110,13 @@ TValidationQuery CreateQueryComputeStatusValidator(const std::vector<FederatedQu
                                                    const TString& scope,
                                                    const TString& id,
                                                    const TString& error,
-                                                   const TString& tablePathPrefix,
-                                                   const ::NMonitoring::TDynamicCounters::TCounterPtr& parseProtobufError);
+                                                   const TString& tablePathPrefix);
 
 template<typename T>
 TValidationQuery CreateIdempotencyKeyValidator(const TString& scope,
                                                const TString& idempotencyKey,
                                                std::shared_ptr<T> response,
-                                               const TString& tablePathPrefix,
-                                               const ::NMonitoring::TDynamicCounters::TCounterPtr& parseProtobufError) {
+                                               const TString& tablePathPrefix) {
     TSqlQueryBuilder queryBuilder(tablePathPrefix);
     queryBuilder.AddString("idempotency_key", idempotencyKey);
     queryBuilder.AddString("scope", scope);
@@ -127,7 +125,7 @@ TValidationQuery CreateIdempotencyKeyValidator(const TString& scope,
         "WHERE `" SCOPE_COLUMN_NAME "` = $scope AND `" IDEMPOTENCY_KEY_COLUMN_NAME "` = $idempotency_key;\n"
     );
 
-    auto validator = [response, parseProtobufError](NYdb::NTable::TDataQueryResult result) {
+    auto validator = [response](NYdb::NTable::TDataQueryResult result) {
         const auto& resultSets = result.GetResultSets();
         if (resultSets.size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "internal error, result set size is not equal to 1 but equal " << resultSets.size();
@@ -139,7 +137,6 @@ TValidationQuery CreateIdempotencyKeyValidator(const TString& scope,
         }
 
         if (!response->first.ParseFromString(*parser.ColumnParser(RESPONSE_COLUMN_NAME).GetOptionalString())) {
-            parseProtobufError->Inc();
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for response. Please contact internal support";
         }
 
@@ -153,8 +150,7 @@ template<typename T, typename A>
 TValidationQuery CreateIdempotencyKeyValidator(const TString& scope,
                                                const TString& idempotencyKey,
                                                std::shared_ptr<std::pair<T, A>> response,
-                                               const TString& tablePathPrefix,
-                                               const ::NMonitoring::TDynamicCounters::TCounterPtr& parseProtobufError) {
+                                               const TString& tablePathPrefix) {
     TSqlQueryBuilder queryBuilder(tablePathPrefix);
     queryBuilder.AddString("idempotency_key", idempotencyKey);
     queryBuilder.AddString("scope", scope);
@@ -163,7 +159,7 @@ TValidationQuery CreateIdempotencyKeyValidator(const TString& scope,
         "WHERE `" SCOPE_COLUMN_NAME "` = $scope AND `" IDEMPOTENCY_KEY_COLUMN_NAME "` = $idempotency_key;\n"
     );
 
-    auto validator = [response, parseProtobufError](NYdb::NTable::TDataQueryResult result) {
+    auto validator = [response](NYdb::NTable::TDataQueryResult result) {
         const auto& resultSets = result.GetResultSets();
         if (resultSets.size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "internal error, result set size is not equal to 1 but equal " << resultSets.size();
@@ -175,7 +171,6 @@ TValidationQuery CreateIdempotencyKeyValidator(const TString& scope,
         }
 
         if (!response->first.ParseFromString(*parser.ColumnParser(RESPONSE_COLUMN_NAME).GetOptionalString())) {
-            parseProtobufError->Inc();
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for response. Please contact internal support";
         }
 

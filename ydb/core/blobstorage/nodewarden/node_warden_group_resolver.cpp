@@ -1,6 +1,4 @@
 #include "node_warden_impl.h"
-#include <ydb/core/base/nameservice.h>
-
 
 namespace NKikimr::NStorage {
 
@@ -167,7 +165,7 @@ namespace NKikimr::NStorage {
                     needed.erase(it->second);
                 }
                 if (needed.empty()) {
-                    Y_DEBUG_ABORT_UNLESS(GetResultingGroupInfo());
+                    Y_VERIFY_DEBUG(GetResultingGroupInfo());
                     return false; // information we have is quite conclusive, nothing more to scan
                 }
             }
@@ -191,7 +189,7 @@ namespace NKikimr::NStorage {
             auto& nodeInfo = Ctx.NodeInfo[nodeId];
             for (ui32 groupId : nodeInfo.StartedGroupIds) {
                 const size_t num = Ctx.StartedGroupIdToNodes.erase(std::make_pair(groupId, nodeId));
-                Y_ABORT_UNLESS(num);
+                Y_VERIFY(num);
             }
             nodeInfo.StartedGroupIds.clear();
 
@@ -201,7 +199,7 @@ namespace NKikimr::NStorage {
             bool trustworthy = false;
             for (ui32 groupId : nodeInfo.StartedGroupIds) {
                 const bool inserted = Ctx.StartedGroupIdToNodes.emplace(groupId, nodeId).second;
-                Y_ABORT_UNLESS(inserted);
+                Y_VERIFY(inserted);
                 trustworthy |= groupId == GroupId; // the group we are looking for
             }
 

@@ -40,7 +40,7 @@ public:
         Self->SubscribeForConfigUpdates(ctx);
         Self->ScheduleEpochUpdate(ctx);
         Self->PrepareEpochCache();
-        Self->SignalTabletActive(ctx);
+        Self->ProcessEnqueuedEvents(ctx);
         Self->TxCompleted(this, ctx);
     }
 

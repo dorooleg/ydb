@@ -1,56 +1,35 @@
-//
-//
-// Copyright 2016 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2016 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-#ifndef GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_OAUTH2_OAUTH2_CREDENTIALS_H
-#define GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_OAUTH2_OAUTH2_CREDENTIALS_H
+#ifndef GRPC_CORE_LIB_SECURITY_CREDENTIALS_OAUTH2_OAUTH2_CREDENTIALS_H
+#define GRPC_CORE_LIB_SECURITY_CREDENTIALS_OAUTH2_OAUTH2_CREDENTIALS_H
 
 #include <grpc/support/port_platform.h>
 
-#include <atomic>
-#include <initializer_list>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
-#include <utility>
-
-#include "y_absl/status/statusor.h"
-#include "y_absl/types/optional.h"
 
 #include <grpc/grpc_security.h>
-#include <grpc/support/sync.h>
-#include <grpc/support/time.h>
 
-#include "src/core/lib/gpr/useful.h"
-#include "src/core/lib/gprpp/orphanable.h"
 #include "src/core/lib/gprpp/ref_counted.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/gprpp/unique_type_name.h"
 #include "src/core/lib/http/httpcli.h"
-#include "src/core/lib/http/parser.h"
-#include "src/core/lib/iomgr/closure.h"
-#include "src/core/lib/iomgr/error.h"
-#include "src/core/lib/iomgr/polling_entity.h"
 #include "src/core/lib/json/json.h"
-#include "src/core/lib/promise/activity.h"
-#include "src/core/lib/promise/arena_promise.h"
 #include "src/core/lib/security/credentials/credentials.h"
-#include "src/core/lib/slice/slice.h"
-#include "src/core/lib/transport/transport.h"
 #include "src/core/lib/uri/uri_parser.h"
 
 // Constants.
@@ -101,9 +80,9 @@ struct grpc_oauth2_pending_get_request_metadata
   std::atomic<bool> done{false};
   grpc_core::Waker waker;
   grpc_polling_entity* pollent;
-  grpc_core::ClientMetadataHandle md;
+  grpc_core::ClientInitialMetadata md;
   struct grpc_oauth2_pending_get_request_metadata* next;
-  y_absl::StatusOr<grpc_core::Slice> result;
+  y_absl::StatusOr<grpc_core::ClientInitialMetadata> result;
 };
 
 // -- Oauth2 Token Fetcher credentials --
@@ -116,15 +95,13 @@ class grpc_oauth2_token_fetcher_credentials : public grpc_call_credentials {
   grpc_oauth2_token_fetcher_credentials();
   ~grpc_oauth2_token_fetcher_credentials() override;
 
-  grpc_core::ArenaPromise<y_absl::StatusOr<grpc_core::ClientMetadataHandle>>
-  GetRequestMetadata(grpc_core::ClientMetadataHandle initial_metadata,
+  grpc_core::ArenaPromise<y_absl::StatusOr<grpc_core::ClientInitialMetadata>>
+  GetRequestMetadata(grpc_core::ClientInitialMetadata initial_metadata,
                      const GetRequestMetadataArgs* args) override;
 
   void on_http_response(grpc_credentials_metadata_request* r,
                         grpc_error_handle error);
   TString debug_string() override;
-
-  grpc_core::UniqueTypeName type() const override;
 
  protected:
   virtual void fetch_oauth2(grpc_credentials_metadata_request* req,
@@ -160,8 +137,6 @@ class grpc_google_refresh_token_credentials final
 
   TString debug_string() override;
 
-  grpc_core::UniqueTypeName type() const override;
-
  protected:
   void fetch_oauth2(grpc_credentials_metadata_request* req,
                     grpc_polling_entity* pollent, grpc_iomgr_cb_func cb,
@@ -178,15 +153,11 @@ class grpc_access_token_credentials final : public grpc_call_credentials {
  public:
   explicit grpc_access_token_credentials(const char* access_token);
 
-  grpc_core::ArenaPromise<y_absl::StatusOr<grpc_core::ClientMetadataHandle>>
-  GetRequestMetadata(grpc_core::ClientMetadataHandle initial_metadata,
+  grpc_core::ArenaPromise<y_absl::StatusOr<grpc_core::ClientInitialMetadata>>
+  GetRequestMetadata(grpc_core::ClientInitialMetadata initial_metadata,
                      const GetRequestMetadataArgs* args) override;
 
   TString debug_string() override;
-
-  static grpc_core::UniqueTypeName Type();
-
-  grpc_core::UniqueTypeName type() const override { return Type(); }
 
  private:
   int cmp_impl(const grpc_call_credentials* other) const override {
@@ -219,4 +190,4 @@ y_absl::StatusOr<URI> ValidateStsCredentialsOptions(
     const grpc_sts_credentials_options* options);
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_OAUTH2_OAUTH2_CREDENTIALS_H
+#endif /* GRPC_CORE_LIB_SECURITY_CREDENTIALS_OAUTH2_OAUTH2_CREDENTIALS_H */

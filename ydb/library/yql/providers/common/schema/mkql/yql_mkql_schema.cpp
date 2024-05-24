@@ -68,7 +68,7 @@ class TRuntimeTypeSaver: public TSaver<TRuntimeTypeSaver<TSaver>> {
 
 public:
     TRuntimeTypeSaver(typename TBase::TConsumer& consumer)
-        : TBase(consumer, false)
+        : TBase(consumer)
     {
     }
 
@@ -189,21 +189,21 @@ struct TRuntimeTypeLoader {
         return Builder.NewVoid().GetStaticType();
     }
     TMaybe<TType> LoadGenericType(ui32 /*level*/) {
-        return Builder.GetTypeEnvironment().GetTypeOfTypeLazy();
+        return Builder.GetTypeEnvironment().GetTypeOfType();
     }
     TMaybe<TType> LoadEmptyListType(ui32 /*level*/) {
         if (NKikimr::NMiniKQL::RuntimeVersion < 11) {
             return Builder.NewListType(Builder.NewVoid().GetStaticType());
         }
 
-        return Builder.GetTypeEnvironment().GetTypeOfEmptyListLazy();
+        return Builder.GetTypeEnvironment().GetTypeOfEmptyList();
     }
     TMaybe<TType> LoadEmptyDictType(ui32 /*level*/) {
         if (NKikimr::NMiniKQL::RuntimeVersion < 11) {
             return Builder.NewDictType(Builder.NewVoid().GetStaticType(), Builder.NewVoid().GetStaticType(), false);
         }
 
-        return Builder.GetTypeEnvironment().GetTypeOfEmptyDictLazy();
+        return Builder.GetTypeEnvironment().GetTypeOfEmptyDict();
     }
     TMaybe<TType> LoadDataType(const TString& dataType, ui32 /*level*/) {
         const auto slot = NUdf::FindDataSlot(dataType);

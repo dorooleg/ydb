@@ -1,7 +1,7 @@
 #pragma once
 #include "defs.h"
 
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/mon.h>
 
 namespace NKikimr {
 

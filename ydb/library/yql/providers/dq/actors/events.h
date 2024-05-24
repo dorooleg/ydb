@@ -8,8 +8,8 @@
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/mkql_node.h>
 
-#include <ydb/library/actors/core/event_pb.h>
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/event_pb.h>
+#include <library/cpp/actors/core/events.h>
 
 namespace NYql::NDqs {
     using TDqExecuterEvents = NDq::TBaseDqExecuterEvents<NActors::TEvents::EEventSpace::ES_USERSPACE>;
@@ -45,7 +45,7 @@ namespace NYql::NDqs {
 
     struct TEvReadyState : NActors::TEventPB<TEvReadyState, NDqProto::TReadyState, TDqExecuterEvents::ES_READY_TO_PULL> {
         TEvReadyState() = default;
-        TEvReadyState(NActors::TActorId sourceId, TString type, NYql::NDqProto::EDqStatsMode statsMode);
+        TEvReadyState(NActors::TActorId sourceId, TString type);
         explicit TEvReadyState(NDqProto::TReadyState&& proto);
     };
 

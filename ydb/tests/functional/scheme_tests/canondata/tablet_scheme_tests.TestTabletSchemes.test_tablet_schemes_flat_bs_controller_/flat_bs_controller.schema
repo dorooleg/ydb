@@ -95,26 +95,6 @@
                 "ColumnId": 19,
                 "ColumnName": "NextVirtualGroupId",
                 "ColumnType": "Uint32"
-            },
-            {
-                "ColumnId": 20,
-                "ColumnName": "AllowMultipleRealmsOccupation",
-                "ColumnType": "Bool"
-            },
-            {
-                "ColumnId": 21,
-                "ColumnName": "CompatibilityInfo",
-                "ColumnType": "String"
-            },
-            {
-                "ColumnId": 22,
-                "ColumnName": "UseSelfHealLocalPolicy",
-                "ColumnType": "Bool"
-            },
-            {
-                "ColumnId": 23,
-                "ColumnName": "TryToRelocateBrokenDisksLocallyFirst",
-                "ColumnType": "Bool"
             }
         ],
         "ColumnsDropped": [],
@@ -138,11 +118,7 @@
                     16,
                     17,
                     18,
-                    19,
-                    20,
-                    21,
-                    22,
-                    23
+                    19
                 ],
                 "RoomID": 0,
                 "Codec": 0,
@@ -227,11 +203,6 @@
                 "ColumnType": "Uint32"
             },
             {
-                "ColumnId": 18,
-                "ColumnName": "Mood",
-                "ColumnType": "Byte"
-            },
-            {
                 "ColumnId": 1,
                 "ColumnName": "NodeID",
                 "ColumnType": "Uint32"
@@ -307,7 +278,6 @@
             "0": {
                 "Columns": [
                     17,
-                    18,
                     1,
                     2,
                     3,
@@ -1573,53 +1543,6 @@
                 "Columns": [
                     1,
                     2
-                ],
-                "RoomID": 0,
-                "Codec": 0,
-                "InMemory": false,
-                "Cache": 0,
-                "Small": 4294967295,
-                "Large": 4294967295
-            }
-        },
-        "Rooms": {
-            "0": {
-                "Main": 1,
-                "Outer": 1,
-                "Blobs": 1
-            }
-        }
-    },
-    {
-        "TableId": 131,
-        "TableName": "BlobDepotDeleteQueue",
-        "TableKey": [
-            1
-        ],
-        "ColumnsAdded": [
-            {
-                "ColumnId": 1,
-                "ColumnName": "GroupId",
-                "ColumnType": "Uint32"
-            },
-            {
-                "ColumnId": 2,
-                "ColumnName": "HiveId",
-                "ColumnType": "Uint64"
-            },
-            {
-                "ColumnId": 3,
-                "ColumnName": "BlobDepotId",
-                "ColumnType": "Uint64"
-            }
-        ],
-        "ColumnsDropped": [],
-        "ColumnFamilies": {
-            "0": {
-                "Columns": [
-                    1,
-                    2,
-                    3
                 ],
                 "RoomID": 0,
                 "Codec": 0,

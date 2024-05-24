@@ -21,9 +21,7 @@ void RegisterS3WriteActorFactory(TDqAsyncIoFactory& factory, ISecuredServiceAcco
                 prefixBuilder << restartCount << "_";
             }
 
-            return CreateS3WriteActor(args.TypeEnv, *args.HolderFactory.GetFunctionRegistry(), args.RandomProvider,
-                gateway, std::move(settings), args.OutputIndex, args.StatsLevel, args.TxId, prefixBuilder,
-                args.SecureParams, args.Callback, credentialsFactory, retryPolicy);
+            return CreateS3WriteActor(args.TypeEnv, *args.HolderFactory.GetFunctionRegistry(), args.RandomProvider, gateway, std::move(settings), args.OutputIndex, args.TxId, prefixBuilder, args.SecureParams, args.Callback, credentialsFactory, retryPolicy);
         });
 }
 

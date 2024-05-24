@@ -68,14 +68,14 @@ public:
     }
 
     std::shared_ptr<ISimpleBlockingWriteSession> CreateWriteSession(const TString& path) {
-        Y_ABORT_UNLESS(PQClient);
+        Y_VERIFY(PQClient);
         TWriteSessionSettings settings;
         settings.Path(path).MessageGroupId("test-src");
         return PQClient->CreateSimpleBlockingWriteSession(settings);
     }
 
     std::shared_ptr<IReadSession> CreateReadSession(const TVector<TString>& paths) {
-        Y_ABORT_UNLESS(PQClient);
+        Y_VERIFY(PQClient);
 
 
         TReadSessionSettings settings;
@@ -106,7 +106,7 @@ Y_UNIT_TEST_SUITE(TPQCompatTest) {
         THashMap<TString, THashSet<TString>> clustersFound;
         for (auto i = 0u; i < paths.size() * 2; i++) {
             auto ev = readSession->GetEvent(true);
-            Y_ABORT_UNLESS(ev.Defined());
+            Y_VERIFY(ev.Defined());
             auto* lockEvent = std::get_if<NYdb::NPersQueue::TReadSessionEvent::TCreatePartitionStreamEvent>(&*ev);
             if (!lockEvent) {
                 if (auto* otherEv = std::get_if<NYdb::NPersQueue::TReadSessionEvent::TDestroyPartitionStreamEvent>(&*ev)) {
@@ -174,15 +174,13 @@ Y_UNIT_TEST_SUITE(TPQCompatTest) {
         // Local topic with client write disabled
         testServer.CreateTopic("/Root/LbCommunal/some-topic", "account", false, true);
         // Non-local topic with client write enabled
+        testServer.CreateTopic("/Root/LbCommunal/some-topic-mirrored-from-dc2", "account", true, true);
         testServer.CreateTopic("/Root/LbCommunal/.some-topic/mirrored-from-dc2", "account", true, true);
-        // this validation was relaxed
-        testServer.CreateTopic("/Root/LbCommunal/some-topic-mirrored-from-dc2", "account", true, false);
         // No account
         testServer.CreateTopic("/Root/LbCommunal/some-topic", "", true, true);
         // Mirrored-from local
         testServer.CreateTopic("/Root/LbCommunal/.some-topic/mirrored-from-dc1", "account", false, true);
-        // this validation was relaxed
-        testServer.CreateTopic("/Root/LbCommunal/some-topic-mirrored-from-dc1", "account", false, false);
+        testServer.CreateTopic("/Root/LbCommunal/some-topic-mirrored-from-dc1", "account", false, true);
         // Bad mirrored names
         testServer.CreateTopic("/Root/LbCommunal/.some-topic/some-topic", "account", false, true);
         // Mirrored-from non-existing
@@ -240,65 +238,6 @@ Y_UNIT_TEST_SUITE(TPQCompatTest) {
             UNIT_ASSERT_VALUES_EQUAL(resp.operation().status(), Ydb::StatusIds::SUCCESS);
         }
 
-    }
-
-    Y_UNIT_TEST(LongProducerAndLongMessageGroupId) {
-        TPQv1CompatTestBase testServer;
-        std::shared_ptr<grpc::Channel> Channel_;
-        Channel_ = grpc::CreateChannel(
-                         "localhost:" + ToString(testServer.Server->GrpcPort),
-                         grpc::InsecureChannelCredentials()
-                    );
-        auto TopicStubP_ = Ydb::Topic::V1::TopicService::NewStub(Channel_);
-
-        struct Data {
-            TString ProducerId;
-            bool error;
-        };
-
-        std::vector<Data> data = {
-            {"producer-1", false},
-            { TString(2_KB, '-'), false},
-            { TString(2_KB + 1, '-'), true},
-        };
-
-        for(const auto& [producerId, error] : data) {
-            Cerr << ">>>>> Case producerId.length()=" << producerId.length() << Endl;
-
-            grpc::ClientContext wcontext;
-            wcontext.AddMetadata("x-ydb-database", "/Root/LbCommunal/account");
-
-            auto writeStream = TopicStubP_->StreamWrite(&wcontext);
-            UNIT_ASSERT(writeStream);
-
-            Ydb::Topic::StreamWriteMessage::FromClient req;
-            Ydb::Topic::StreamWriteMessage::FromServer resp;
-
-            req.mutable_init_request()->set_path("topic2");
-            if (!producerId.Empty()) {
-                req.mutable_init_request()->set_producer_id(producerId);
-                req.mutable_init_request()->set_message_group_id(producerId);
-            }
-
-            UNIT_ASSERT(writeStream->Write(req));
-            UNIT_ASSERT(writeStream->Read(&resp));
-            Cerr << ">>>>> Response = " << resp.server_message_case() << Endl;
-            UNIT_ASSERT(resp.server_message_case() == Ydb::Topic::StreamWriteMessage::FromServer::kInitResponse);
-            req.Clear();
-
-            Cerr << ">>>>> Write message" << Endl;
-            auto* write = req.mutable_write_request();
-            write->set_codec(Ydb::Topic::CODEC_RAW);
-
-            auto* msg = write->add_messages();
-            msg->set_seq_no(1);
-            msg->set_data("x");
-            UNIT_ASSERT(writeStream->Write(req));
-            UNIT_ASSERT(writeStream->Read(&resp));
-            Cerr << "===Got response: " << resp.ShortDebugString() << Endl;
-            UNIT_ASSERT(resp.server_message_case() ==  (error ? Ydb::Topic::StreamWriteMessage::FromServer::SERVER_MESSAGE_NOT_SET : Ydb::Topic::StreamWriteMessage::FromServer::kWriteResponse));
-            resp.Clear();
-        }
     }
 
     Y_UNIT_TEST(ReadWriteSessions) {

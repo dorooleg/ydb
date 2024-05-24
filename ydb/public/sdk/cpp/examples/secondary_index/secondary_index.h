@@ -66,7 +66,7 @@ private:
 
 inline void ThrowOnError(NYdb::TStatus status) {
     if (!status.IsSuccess()) {
-        throw TYdbErrorException(status) << status;
+        throw TYdbErrorException(std::move(status));
     }
 }
 

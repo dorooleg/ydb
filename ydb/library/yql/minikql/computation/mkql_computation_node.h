@@ -1,7 +1,6 @@
 #pragma once
 
 #include "mkql_computation_node_list.h"
-#include "mkql_spiller_factory.h"
 
 #include <ydb/library/yql/minikql/defs.h>
 #include <ydb/library/yql/minikql/arrow/mkql_memory_pool.h>
@@ -88,7 +87,7 @@ struct TComputationMutables {
     std::vector<TWideFieldsInitInfo> WideFieldInitialize;
 
     void DeferWideFieldsInit(ui32 count, std::set<ui32> used) {
-        Y_DEBUG_ABORT_UNLESS(AllOf(used, [count](ui32 i) { return i < count; }));
+        Y_VERIFY_DEBUG(AllOf(used, [count](ui32 i) { return i < count; }));
         WideFieldInitialize.push_back({CurValueIndex, CurWideFieldsIndex, std::move(used)});
         CurValueIndex += count;
         CurWideFieldsIndex += count;
@@ -117,16 +116,14 @@ struct TComputationContextLLVM {
 struct TComputationContext : public TComputationContextLLVM {
     IRandomProvider& RandomProvider;
     ITimeProvider& TimeProvider;
-    bool ExecuteLLVM = false;
+    bool ExecuteLLVM = true;
     arrow::MemoryPool& ArrowMemoryPool;
     std::vector<NUdf::TUnboxedValue*> WideFields;
     TTypeEnvironment* TypeEnv = nullptr;
-    const TComputationMutables Mutables;
-    std::shared_ptr<ISpillerFactory> SpillerFactory;
 
     TComputationContext(const THolderFactory& holderFactory,
         const NUdf::IValueBuilder* builder,
-        const TComputationOptsFull& opts,
+        TComputationOptsFull& opts,
         const TComputationMutables& mutables,
         arrow::MemoryPool& arrowMemoryPool);
 
@@ -407,10 +404,6 @@ public:
     typedef TIntrusivePtr<IComputationPattern> TPtr;
 
     virtual ~IComputationPattern() = default;
-    virtual void Compile(TString optLLVM, IStatsRegistry* stats) = 0;
-    virtual bool IsCompiled() const = 0;
-    virtual size_t CompiledCodeSize() const = 0;
-    virtual void RemoveCompiledCode() = 0;
     virtual THolder<IComputationGraph> Clone(const TComputationOptsFull& compOpts) = 0;
     virtual bool GetSuitableForCache() const = 0;
 };
@@ -423,21 +416,6 @@ IComputationPattern::TPtr MakeComputationPattern(
         const TComputationPatternOpts& opts);
 
 std::unique_ptr<NUdf::ISecureParamsProvider> MakeSimpleSecureParamsProvider(const THashMap<TString, TString>& secureParams);
-
-using TCallableComputationNodeBuilder = std::function<IComputationNode* (TCallable&, const TComputationNodeFactoryContext& ctx)>;
-
-template<typename... Ts>
-TCallableComputationNodeBuilder WrapComputationBuilder(IComputationNode* (*f)(const TComputationNodeFactoryContext&, Ts...)){
-    return [f](TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-        MKQL_ENSURE(callable.GetInputsCount() == sizeof...(Ts), "Incorrect number of inputs");
-        return CallComputationBuilderWithArgs(f, callable, ctx, std::make_index_sequence<sizeof...(Ts)>());
-    };
-}
-template<typename F, size_t... Is>
-auto CallComputationBuilderWithArgs(F* f, TCallable& callable, const TComputationNodeFactoryContext& ctx,
-                                           const std::integer_sequence<size_t, Is...> &)  {
-    return f(ctx, callable.GetInput(Is)...);
-}
 
 } // namespace NMiniKQL
 } // namespace NKikimr

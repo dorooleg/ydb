@@ -32,7 +32,7 @@ namespace NKikimr::NTestShard {
 
             case ::NTestShard::TStateServer::TRequest::kTabletInfo:
             case ::NTestShard::TStateServer::TRequest::COMMAND_NOT_SET:
-                Y_ABORT("incorrect request received");
+                Y_FAIL("incorrect request received");
         }
         
     }

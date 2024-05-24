@@ -1,7 +1,7 @@
 #pragma once
 
 #include "datashard.h"
-#include <ydb/core/tx/locks/locks.h>
+#include "datashard_locks.h"
 
 #include <ydb/core/base/row_version.h>
 #include <ydb/core/tablet_flat/flat_row_eggs.h>
@@ -64,14 +64,8 @@ struct TReadIteratorState {
     };
 
 public:
-    TReadIteratorState(
-            const TReadIteratorId& readId, const TPathId& pathId,
-            const TActorId& sessionId, const TRowVersion& readVersion, bool isHeadRead,
-            TMonotonic ts, NLWTrace::TOrbit&& orbit = {})
-        : ReadId(readId.ReadId)
-        , PathId(pathId)
-        , ReadVersion(readVersion)
-        , IsHeadRead(isHeadRead)
+    TReadIteratorState(const TActorId& sessionId, bool isHeadRead, TMonotonic ts, NLWTrace::TOrbit&& orbit = {})
+        : IsHeadRead(isHeadRead)
         , SessionId(sessionId)
         , StartTs(ts)
         , Orbit(std::move(orbit))
@@ -114,7 +108,7 @@ public:
             return;
 
         size_t ackedIndex = ackSeqNo - LastAckSeqNo - 1;
-        Y_ABORT_UNLESS(ackedIndex < UnackedReads.size());
+        Y_VERIFY(ackedIndex < UnackedReads.size());
 
         ui64 consumedRows = 0;
         ui64 consumedBytes = 0;
@@ -160,17 +154,17 @@ public:
 
     // Data from original request //
 
-    ui64 ReadId;
+    ui64 ReadId = 0;
     TPathId PathId;
     std::vector<NTable::TTag> Columns;
-    TRowVersion ReadVersion;
-    bool IsHeadRead;
+    TRowVersion ReadVersion = TRowVersion::Max();
+    bool IsHeadRead = false;
     ui64 LockId = 0;
     ui32 LockNodeId = 0;
     TLockInfo::TPtr Lock;
 
     // note that will be always overwritten by values from request
-    NKikimrDataEvents::EDataFormat Format = NKikimrDataEvents::FORMAT_CELLVEC;
+    NKikimrTxDataShard::EScanDataFormat Format = NKikimrTxDataShard::EScanDataFormat::CELLVEC;
 
     // mainly for tests
     ui64 MaxRowsInResult = Max<ui64>();
@@ -179,9 +173,7 @@ public:
 
     bool Reverse = false;
 
-    // The original event handle
-    TEvDataShard::TEvRead::TPtr Ev;
-    TEvDataShard::TEvRead* Request = nullptr;
+    std::shared_ptr<TEvDataShard::TEvRead> Request;
 
     // parallel to Request->Keys, but real data only in indices,
     // where in Request->Keys we have key prefix (here we have properly extended one).
@@ -190,10 +182,6 @@ public:
     // State itself //
 
     TQuota Quota;
-
-    // Number of rows processed so far
-    ui64 TotalRows = 0;
-    ui64 TotalRowsLimit = Max<ui64>();
 
     // items are running total,
     // first item corresponds to SeqNo = LastAckSeqNo + 1,
@@ -210,8 +198,7 @@ public:
     ui64 SeqNo = 0;
     ui64 LastAckSeqNo = 0;
     ui32 FirstUnprocessedQuery = 0;
-    TString LastProcessedKey;
-    bool LastProcessedKeyErased = false;
+    TString LastProcessedKey = 0;
 
     // Orbit used for tracking progress
     NLWTrace::TOrbit Orbit;

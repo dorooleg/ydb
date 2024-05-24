@@ -263,13 +263,6 @@ private:
     void HandleQueueFolderIdAndCustomName(TSqsEvents::TEvQueueFolderIdAndCustomName::TPtr& ev) {
         auto* result = Response_.MutableGetQueueAttributes();
 
-        if (ev->Get()->Throttled) {
-            RLOG_SQS_DEBUG("Get queue folder id and custom name was throttled.");
-            MakeError(result, NErrors::THROTTLING_EXCEPTION);
-            SendReplyAndDie();
-            return;
-        }
-
         if (ev->Get()->Failed || !ev->Get()->Exists) {
             RLOG_SQS_DEBUG("Get queue folder id and custom name failed. Failed: " << ev->Get()->Failed << ". Exists: " << ev->Get()->Exists);
             MakeError(result, NErrors::INTERNAL_FAILURE);
@@ -327,12 +320,12 @@ private:
     }
 
     void OnResponses(std::vector<NKikimrClient::TSqsResponse>&& responses) override {
-        Y_ABORT_UNLESS(Request().EntriesSize() == responses.size());
+        Y_VERIFY(Request().EntriesSize() == responses.size());
         auto& resp = *Response_.MutableGetQueueAttributesBatch();
         for (size_t i = 0; i < Request().EntriesSize(); ++i) {
             const auto& reqEntry = Request().GetEntries(i);
             auto& respEntry = *resp.AddEntries();
-            Y_ABORT_UNLESS(responses[i].HasGetQueueAttributes());
+            Y_VERIFY(responses[i].HasGetQueueAttributes());
             respEntry = std::move(*responses[i].MutableGetQueueAttributes());
             respEntry.SetId(reqEntry.GetId());
         }

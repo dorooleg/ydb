@@ -46,14 +46,14 @@ public:
             return false;
         }
 
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropFileStore);
+        Y_VERIFY(txState->TxType == TTxState::TxDropFileStore);
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
         auto parentDir = context.SS->PathsById.at(path->ParentPathId);
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -66,12 +66,6 @@ public:
         for (auto shard : txState->Shards) {
             context.OnComplete.DeleteShard(shard.Idx);
         }
-
-        TFileStoreInfo::TPtr fs = context.SS->FileStoreInfos.at(pathId);
-
-        const auto oldFileStoreSpace = fs->GetFileStoreSpace();
-        auto domainDir = context.SS->PathsById.at(context.SS->ResolvePathIdForDomain(path));
-        domainDir->ChangeFileStoreSpaceCommit({ }, oldFileStoreSpace);
 
         if (!AppData()->DisableSchemeShardCleanupOnDropForTest) {
             context.SS->PersistRemoveFileStoreInfo(db, pathId);
@@ -103,8 +97,8 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropFileStore);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropFileStore);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -122,7 +116,7 @@ public:
         TOperationContext& context) override;
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropFileStore");
+        Y_FAIL("no AbortPropose for TDropFileStore");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -270,7 +264,7 @@ ISubOperation::TPtr CreateDropFileStore(TOperationId id, const TTxTransaction& t
 }
 
 ISubOperation::TPtr CreateDropFileStore(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropFileStore>(id, state);
 }
 

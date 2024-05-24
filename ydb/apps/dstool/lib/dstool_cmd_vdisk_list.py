@@ -66,7 +66,6 @@ def do(args):
         'VSlotId',
         'VSlotStatus',
         'IsDonor',
-        'ReadOnly',
     ]
     col_units = {
         'Usage': '%',
@@ -104,7 +103,6 @@ def do(args):
             row['VSlotId'] = vslot_data.VSlotId
             row['VSlotStatus'] = vslot.Status
             row['IsDonor'] = group_map[group].GroupGeneration != vslot.GroupGeneration
-            row['ReadOnly'] = vslot.ReadOnly
             row['FailRealmIdx'] = vslot.FailRealmIdx
             row['FailDomainIdx'] = vslot.FailDomainIdx
             row['VDiskIdx'] = vslot.VDiskIdx

@@ -47,16 +47,13 @@ struct Schema : NIceDb::Schema {
         struct CreateIdempotencyKey : Column<25, NScheme::NTypeIds::Utf8> {};
         struct AlterIdempotencyKey : Column<26, NScheme::NTypeIds::Utf8> {};
         struct DatabaseQuotas : Column<27, NScheme::NTypeIds::String> {};
-        struct IsExternalStatisticsAggregator : Column<28, NScheme::NTypeIds::Bool> {};
-        struct IsExternalBackupController : Column<29, NScheme::NTypeIds::Bool> {};
 
         using TKey = TableKey<Path>;
         using TColumns = TableColumns<Path, State, Coordinators, Mediators, PlanResolution,
             Issue, TxId, UserToken, SubdomainVersion, ConfirmedSubdomain, TimeCastBucketsPerMediator,
             Attributes, Generation, SchemeShardId, PathId, ErrorCode, IsExternalSubDomain, IsExternalHive,
             AreResourcesShared, SharedDomainSchemeShardId, SharedDomainPathId, IsExternalSysViewProcessor,
-            SchemaOperationQuotas, CreateIdempotencyKey, AlterIdempotencyKey, DatabaseQuotas, IsExternalStatisticsAggregator,
-            IsExternalBackupController>;
+            SchemaOperationQuotas, CreateIdempotencyKey, AlterIdempotencyKey, DatabaseQuotas>;
     };
 
     struct TenantPools : Table<3> {

@@ -23,7 +23,7 @@ namespace NBoot {
 
         ~TLoadBlobs()
         {
-            Y_ABORT_UNLESS(!RefCount(), "TLoadBlobs is still referenced somewhere");
+            Y_VERIFY(!RefCount(), "TLoadBlobs is still referenced somewhere");
         }
 
         void Start() noexcept override { }
@@ -34,7 +34,7 @@ namespace NBoot {
                 Env->Finish(this);
         }
 
-        const TVector<TLogoBlobID>& Blobs() const
+        const TVector<TLogoBlobID> Blobs() const
         {
             return State.GetBlobs();
         }

@@ -5,9 +5,6 @@
 
 #include <ydb/core/kesus/tablet/events.h>
 
-#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
-
 namespace NKikimr {
 
 TTestServer::TTestServer(const TOptions &opts)
@@ -88,7 +85,7 @@ void TTestServer::CreateKesusesAndResources() {
     for (size_t i = 0; i < Opts.KesusCount; ++i) {
         auto [parent, name] = GetKesusPathAndName(i);
         const NMsgBusProxy::EResponseStatus status = Client->CreateKesus(parent, name);
-        Y_ABORT_UNLESS(status == NMsgBusProxy::MSTATUS_OK);
+        Y_VERIFY(status == NMsgBusProxy::MSTATUS_OK);
 
         // Create resources
         const ui64 tabletId = GetKesusTabletId(GetKesusPath(i));
@@ -101,11 +98,11 @@ void TTestServer::CreateKesusesAndResources() {
 
 ui64 TTestServer::GetKesusTabletId(const TString& path) {
     TAutoPtr<NMsgBusProxy::TBusResponse> resp = Client->Ls(path);
-    Y_ABORT_UNLESS(resp->Record.GetStatusCode() == NKikimrIssues::TStatusIds::SUCCESS);
+    Y_VERIFY(resp->Record.GetStatusCode() == NKikimrIssues::TStatusIds::SUCCESS);
     const auto& pathDesc = resp->Record.GetPathDescription();
-    Y_ABORT_UNLESS(pathDesc.HasKesus());
+    Y_VERIFY(pathDesc.HasKesus());
     const ui64 tabletId = pathDesc.GetKesus().GetKesusTabletId();
-    Y_ABORT_UNLESS(tabletId);
+    Y_VERIFY(tabletId);
     return tabletId;
 }
 
@@ -114,7 +111,7 @@ void TTestServer::CreateKesusResource(ui64 kesusTabletId, const TString& resourc
 
     TAutoPtr<NKesus::TEvKesus::TEvAddQuoterResource> request(new NKesus::TEvKesus::TEvAddQuoterResource());
     request->Record.MutableResource()->SetResourcePath(resourcePath);
-    auto* hdrrConfig = request->Record.MutableResource()->MutableHierarchicalDRRResourceConfig(); // Create HDRR config
+    auto* hdrrConfig = request->Record.MutableResource()->MutableHierarhicalDRRResourceConfig(); // Create HDRR config
     if (maxUnitsPerSecond) {
         hdrrConfig->SetMaxUnitsPerSecond(*maxUnitsPerSecond);
     }
@@ -125,7 +122,7 @@ void TTestServer::CreateKesusResource(ui64 kesusTabletId, const TString& resourc
     TAutoPtr<IEventHandle> handle;
     runtime->GrabEdgeEvent<NKesus::TEvKesus::TEvAddQuoterResourceResult>(handle);
     const NKikimrKesus::TEvAddQuoterResourceResult& record = handle->Get<NKesus::TEvKesus::TEvAddQuoterResourceResult>()->Record;
-    Y_ABORT_UNLESS(record.GetError().GetStatus() == Ydb::StatusIds::SUCCESS);
+    Y_VERIFY(record.GetError().GetStatus() == Ydb::StatusIds::SUCCESS);
 }
 
 void TTestServer::CreateKesusResource(const TString& kesusPath, const TString& resourcePath, TMaybe<double> maxUnitsPerSecond) {

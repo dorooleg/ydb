@@ -44,6 +44,8 @@ bool TBuildKqpDataTxOutRSUnit::IsReadyToExecute(TOperation::TPtr) const {
 EExecutionStatus TBuildKqpDataTxOutRSUnit::Execute(TOperation::TPtr op, TTransactionContext& txc,
     const TActorContext& ctx)
 {
+    TDataShardLocksDb locksDb(DataShard, txc);
+    TSetupSysLocks guardLocks(op, DataShard, &locksDb);
     TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
     Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
 
@@ -56,17 +58,14 @@ EExecutionStatus TBuildKqpDataTxOutRSUnit::Execute(TOperation::TPtr op, TTransac
             case ERestoreDataStatus::Restart:
                 return EExecutionStatus::Restart;
             case ERestoreDataStatus::Error:
-                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
-
-    TDataShardLocksDb locksDb(DataShard, txc);
-    TSetupSysLocks guardLocks(op, DataShard, &locksDb);
 
     const auto& dataTx = tx->GetDataTx();
     ui64 tabletId = DataShard.TabletID();
 
-    if (tx->GetDataTx()->CheckCancelled(tabletId)) {
+    if (tx->GetDataTx()->CheckCancelled()) {
         tx->ReleaseTxData(txc, ctx);
         BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::CANCELLED)
             ->AddError(NKikimrTxDataShard::TError::EXECUTION_CANCELLED, "Tx was cancelled");
@@ -78,7 +77,7 @@ EExecutionStatus TBuildKqpDataTxOutRSUnit::Execute(TOperation::TPtr op, TTransac
 
     try {
         bool useGenericReadSets = dataTx->GetUseGenericReadSets();
-        const auto& kqpLocks = dataTx->HasKqpLocks() ? dataTx->GetKqpLocks() : NKikimrDataEvents::TKqpLocks{};
+        const auto& kqpLocks = dataTx->GetKqpLocks();
         auto& tasksRunner = dataTx->GetKqpTasksRunner();
 
         auto allocGuard = tasksRunner.BindAllocator(txc.GetMemoryLimit() - dataTx->GetTxSize());
@@ -100,7 +99,7 @@ EExecutionStatus TBuildKqpDataTxOutRSUnit::Execute(TOperation::TPtr op, TTransac
         dataTx->SetReadVersion(DataShard.GetReadWriteVersions(tx).ReadVersion);
 
         if (dataTx->GetKqpComputeCtx().HasPersistentChannels()) {
-            auto result = KqpRunTransaction(ctx, op->GetTxId(), useGenericReadSets, tasksRunner);
+            auto result = KqpRunTransaction(ctx, op->GetTxId(), kqpLocks, useGenericReadSets, tasksRunner);
 
             Y_VERIFY_S(!dataTx->GetKqpComputeCtx().HadInconsistentReads(),
                 "Unexpected inconsistent reads in operation " << *op << " when preparing persistent channels");
@@ -111,7 +110,8 @@ EExecutionStatus TBuildKqpDataTxOutRSUnit::Execute(TOperation::TPtr op, TTransac
             }
         }
 
-        KqpFillOutReadSets(op->OutReadSets(), kqpLocks, useGenericReadSets, &tasksRunner, DataShard.SysLocksTable(), tabletId);
+        KqpFillOutReadSets(op->OutReadSets(), kqpLocks,
+            dataTx->HasKqpLocks(), useGenericReadSets, tasksRunner, DataShard.SysLocksTable(), tabletId);
     } catch (const TMemoryLimitExceededException&) {
         LOG_T("Operation " << *op << " at " << tabletId
             << " exceeded memory limit " << txc.GetMemoryLimit()

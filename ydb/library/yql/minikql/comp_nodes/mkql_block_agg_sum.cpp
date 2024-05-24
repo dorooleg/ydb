@@ -1,9 +1,9 @@
 #include "mkql_block_agg_sum.h"
+#include "mkql_block_builder.h"
 
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
-#include <ydb/library/yql/minikql/computation/mkql_block_builder.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
 #include <ydb/library/yql/minikql/arrow/arrow_util.h>
@@ -77,12 +77,11 @@ public:
 
     void Add(const void* state) final {
         auto typedState = static_cast<const TAvgState*>(state);
-        auto tupleBuilder = static_cast<NUdf::TTupleArrayBuilder<true>*>(Builder_.get());
         if (typedState->Count_) {
             TBlockItem tupleItems[] = { TBlockItem(typedState->Sum_), TBlockItem(typedState->Count_)} ;
-            tupleBuilder->Add(TBlockItem(tupleItems));
+            Builder_->Add(TBlockItem(tupleItems));
         } else {
-            tupleBuilder->Add(TBlockItem());
+            Builder_->Add(TBlockItem());
         }
     }
 
@@ -285,9 +284,9 @@ public:
     {
     }
 
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TStateType();
-        UpdateKey(state, batchNum, columns, row);
+        UpdateKey(state, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -295,8 +294,7 @@ public:
         Y_UNUSED(state);
     }
 
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         auto typedState = static_cast<TStateType*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<IsNullable, IsScalar, TIn, TSum>(typedState, datum, row);
@@ -324,9 +322,9 @@ public:
     {
     }
 
-    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TStateType();
-        UpdateState(state, batchNum, columns, row);
+        UpdateState(state, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -334,8 +332,7 @@ public:
         Y_UNUSED(state);
     }
 
-    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         auto typedState = static_cast<TStateType*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<IsNullable, IsScalar, TIn, TSum>(typedState, datum, row);
@@ -467,9 +464,9 @@ public:
     {
     }
 
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TAvgState();
-        UpdateKey(state, batchNum, columns, row);
+        UpdateKey(state, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -477,8 +474,7 @@ public:
         Y_UNUSED(state);
     }
 
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         auto typedState = static_cast<TAvgState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         if (datum.is_scalar()) {
@@ -521,9 +517,9 @@ public:
     {
     }
 
-    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TAvgState();
-        UpdateState(state, batchNum, columns, row);
+        UpdateState(state, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -531,8 +527,7 @@ public:
         Y_UNUSED(state);
     }
 
-    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         auto typedState = static_cast<TAvgState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         if (datum.is_scalar()) {
@@ -614,7 +609,7 @@ std::unique_ptr<typename TTag::TPreparedAggregator> PrepareSum(TTupleType* tuple
     auto dataType = UnpackOptionalData(argType, isOptional);
     bool isScalar = blockType->GetShape() == TBlockType::EShape::Scalar;
 
-
+    
     TType* sumRetType = nullptr;
     const auto& typeInfo = NYql::NUdf::GetDataTypeInfo(*dataType->GetDataSlot());
     if (typeInfo.Features & NYql::NUdf::EDataTypeFeatures::SignedIntegralType) {
@@ -623,7 +618,7 @@ std::unique_ptr<typename TTag::TPreparedAggregator> PrepareSum(TTupleType* tuple
         sumRetType = TDataType::Create(NUdf::TDataType<ui64>::Id, env);
     } else {
         Y_ENSURE(typeInfo.Features & NYql::NUdf::EDataTypeFeatures::FloatType);
-        sumRetType = dataType;
+        sumRetType = TDataType::Create(NUdf::TDataType<double>::Id, env);
     }
     sumRetType = TOptionalType::Create(sumRetType, env);
 
@@ -646,7 +641,7 @@ std::unique_ptr<typename TTag::TPreparedAggregator> PrepareSum(TTupleType* tuple
     case NUdf::EDataSlot::Uint64:
         return PrepareSumFixed<TTag, ui64, ui64>(sumRetType, isOptional, isScalar, filterColumn, argColumn);
     case NUdf::EDataSlot::Float:
-        return PrepareSumFixed<TTag, float, float>(sumRetType, isOptional, isScalar, filterColumn, argColumn);
+        return PrepareSumFixed<TTag, float, double>(sumRetType, isOptional, isScalar, filterColumn, argColumn);
     case NUdf::EDataSlot::Double:
         return PrepareSumFixed<TTag, double, double>(sumRetType, isOptional, isScalar, filterColumn, argColumn);
     default:
@@ -695,7 +690,7 @@ public:
         , ArgColumn_(argColumn)
         , OutputType_(outputType)
     {}
-
+    
     std::unique_ptr<typename TTag::TAggregator> Make(TComputationContext& ctx) const final {
         return std::make_unique<TAvgBlockAggregator<TTag, TIn>>(FilterColumn_, ArgColumn_, OutputType_, ctx);
     }

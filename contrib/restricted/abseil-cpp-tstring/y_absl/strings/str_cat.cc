@@ -16,15 +16,13 @@
 
 #include <assert.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <initializer_list>
 #include <util/generic/string.h>
-#include <type_traits>
 
-#include "y_absl/base/config.h"
-#include "y_absl/base/nullability.h"
+#include "y_absl/strings/ascii.h"
 #include "y_absl/strings/internal/resize_uninitialized.h"
 #include "y_absl/strings/numbers.h"
 #include "y_absl/strings/string_view.h"
@@ -32,6 +30,54 @@
 namespace y_absl {
 Y_ABSL_NAMESPACE_BEGIN
 
+AlphaNum::AlphaNum(Hex hex) {
+  static_assert(numbers_internal::kFastToBufferSize >= 32,
+                "This function only works when output buffer >= 32 bytes long");
+  char* const end = &digits_[numbers_internal::kFastToBufferSize];
+  auto real_width =
+      y_absl::numbers_internal::FastHexToBufferZeroPad16(hex.value, end - 16);
+  if (real_width >= hex.width) {
+    piece_ = y_absl::string_view(end - real_width, real_width);
+  } else {
+    // Pad first 16 chars because FastHexToBufferZeroPad16 pads only to 16 and
+    // max pad width can be up to 20.
+    std::memset(end - 32, hex.fill, 16);
+    // Patch up everything else up to the real_width.
+    std::memset(end - real_width - 16, hex.fill, 16);
+    piece_ = y_absl::string_view(end - hex.width, hex.width);
+  }
+}
+
+AlphaNum::AlphaNum(Dec dec) {
+  assert(dec.width <= numbers_internal::kFastToBufferSize);
+  char* const end = &digits_[numbers_internal::kFastToBufferSize];
+  char* const minfill = end - dec.width;
+  char* writer = end;
+  uint64_t value = dec.value;
+  bool neg = dec.neg;
+  while (value > 9) {
+    *--writer = '0' + (value % 10);
+    value /= 10;
+  }
+  *--writer = '0' + static_cast<char>(value);
+  if (neg) *--writer = '-';
+
+  ptrdiff_t fillers = writer - minfill;
+  if (fillers > 0) {
+    // Tricky: if the fill character is ' ', then it's <fill><+/-><digits>
+    // But...: if the fill character is '0', then it's <+/-><fill><digits>
+    bool add_sign_again = false;
+    if (neg && dec.fill == '0') {  // If filling with '0',
+      ++writer;                    // ignore the sign we just added
+      add_sign_again = true;       // and re-add the sign later.
+    }
+    writer -= fillers;
+    std::fill_n(writer, fillers, dec.fill);
+    if (add_sign_again) *--writer = '-';
+  }
+
+  piece_ = y_absl::string_view(writer, static_cast<size_t>(end - writer));
+}
 
 // ----------------------------------------------------------------------
 // StrCat()
@@ -40,10 +86,9 @@ Y_ABSL_NAMESPACE_BEGIN
 //    of a mix of raw C strings, string_views, strings, and integer values.
 // ----------------------------------------------------------------------
 
-namespace {
 // Append is merely a version of memcpy that returns the address of the byte
 // after the area just overwritten.
-y_absl::Nonnull<char*> Append(y_absl::Nonnull<char*> out, const AlphaNum& x) {
+static char* Append(char* out, const AlphaNum& x) {
   // memcpy is allowed to overwrite arbitrary memory, so doing this after the
   // call would force an extra fetch of x.size().
   char* after = out + x.size();
@@ -52,8 +97,6 @@ y_absl::Nonnull<char*> Append(y_absl::Nonnull<char*> out, const AlphaNum& x) {
   }
   return after;
 }
-
-}  // namespace
 
 TString StrCat(const AlphaNum& a, const AlphaNum& b) {
   TString result;
@@ -98,130 +141,6 @@ TString StrCat(const AlphaNum& a, const AlphaNum& b, const AlphaNum& c,
 namespace strings_internal {
 
 // Do not call directly - these are not part of the public API.
-void STLStringAppendUninitializedAmortized(TString* dest,
-                                           size_t to_append) {
-  strings_internal::AppendUninitializedTraits<TString>::Append(dest,
-                                                                   to_append);
-}
-
-template <typename Integer>
-std::enable_if_t<std::is_integral<Integer>::value, TString> IntegerToString(
-    Integer i) {
-  TString str;
-  const auto /* either bool or std::false_type */ is_negative =
-      y_absl::numbers_internal::IsNegative(i);
-  const uint32_t digits = y_absl::numbers_internal::Base10Digits(
-      y_absl::numbers_internal::UnsignedAbsoluteValue(i));
-  y_absl::strings_internal::STLStringResizeUninitialized(
-      &str, digits + static_cast<uint32_t>(is_negative));
-  y_absl::numbers_internal::FastIntToBufferBackward(i, &str[str.size()], digits);
-  return str;
-}
-
-template <>
-TString IntegerToString(long i) {  // NOLINT
-  if (sizeof(i) <= sizeof(int)) {
-    return IntegerToString(static_cast<int>(i));
-  } else {
-    return IntegerToString(static_cast<long long>(i));  // NOLINT
-  }
-}
-
-template <>
-TString IntegerToString(unsigned long i) {  // NOLINT
-  if (sizeof(i) <= sizeof(unsigned int)) {
-    return IntegerToString(static_cast<unsigned int>(i));
-  } else {
-    return IntegerToString(static_cast<unsigned long long>(i));  // NOLINT
-  }
-}
-
-template <typename Float>
-std::enable_if_t<std::is_floating_point<Float>::value, TString>
-FloatToString(Float f) {
-  TString result;
-  strings_internal::STLStringResizeUninitialized(
-      &result, numbers_internal::kSixDigitsToBufferSize);
-  char* start = &result[0];
-  result.erase(numbers_internal::SixDigitsToBuffer(f, start));
-  return result;
-}
-
-TString SingleArgStrCat(int x) { return IntegerToString(x); }
-TString SingleArgStrCat(unsigned int x) { return IntegerToString(x); }
-// NOLINTNEXTLINE
-TString SingleArgStrCat(long x) { return IntegerToString(x); }
-// NOLINTNEXTLINE
-TString SingleArgStrCat(unsigned long x) { return IntegerToString(x); }
-// NOLINTNEXTLINE
-TString SingleArgStrCat(long long x) { return IntegerToString(x); }
-// NOLINTNEXTLINE
-TString SingleArgStrCat(unsigned long long x) { return IntegerToString(x); }
-TString SingleArgStrCat(float x) { return FloatToString(x); }
-TString SingleArgStrCat(double x) { return FloatToString(x); }
-
-template <class Integer>
-std::enable_if_t<std::is_integral<Integer>::value, void> AppendIntegerToString(
-    TString& str, Integer i) {
-  const auto /* either bool or std::false_type */ is_negative =
-      y_absl::numbers_internal::IsNegative(i);
-  const uint32_t digits = y_absl::numbers_internal::Base10Digits(
-      y_absl::numbers_internal::UnsignedAbsoluteValue(i));
-  y_absl::strings_internal::STLStringAppendUninitializedAmortized(
-      &str, digits + static_cast<uint32_t>(is_negative));
-  y_absl::numbers_internal::FastIntToBufferBackward(i, &str[str.size()], digits);
-}
-
-template <>
-void AppendIntegerToString(TString& str, long i) {  // NOLINT
-  if (sizeof(i) <= sizeof(int)) {
-    return AppendIntegerToString(str, static_cast<int>(i));
-  } else {
-    return AppendIntegerToString(str, static_cast<long long>(i));  // NOLINT
-  }
-}
-
-template <>
-void AppendIntegerToString(TString& str,
-                           unsigned long i) {  // NOLINT
-  if (sizeof(i) <= sizeof(unsigned int)) {
-    return AppendIntegerToString(str, static_cast<unsigned int>(i));
-  } else {
-    return AppendIntegerToString(str,
-                                 static_cast<unsigned long long>(i));  // NOLINT
-  }
-}
-
-// `SingleArgStrAppend` overloads are defined here for the same reasons as with
-// `SingleArgStrCat` above.
-void SingleArgStrAppend(TString& str, int x) {
-  return AppendIntegerToString(str, x);
-}
-
-void SingleArgStrAppend(TString& str, unsigned int x) {
-  return AppendIntegerToString(str, x);
-}
-
-// NOLINTNEXTLINE
-void SingleArgStrAppend(TString& str, long x) {
-  return AppendIntegerToString(str, x);
-}
-
-// NOLINTNEXTLINE
-void SingleArgStrAppend(TString& str, unsigned long x) {
-  return AppendIntegerToString(str, x);
-}
-
-// NOLINTNEXTLINE
-void SingleArgStrAppend(TString& str, long long x) {
-  return AppendIntegerToString(str, x);
-}
-
-// NOLINTNEXTLINE
-void SingleArgStrAppend(TString& str, unsigned long long x) {
-  return AppendIntegerToString(str, x);
-}
-
 TString CatPieces(std::initializer_list<y_absl::string_view> pieces) {
   TString result;
   size_t total_size = 0;
@@ -250,15 +169,15 @@ TString CatPieces(std::initializer_list<y_absl::string_view> pieces) {
   assert(((src).size() == 0) ||      \
          (uintptr_t((src).data() - (dest).data()) > uintptr_t((dest).size())))
 
-void AppendPieces(y_absl::Nonnull<TString*> dest,
+void AppendPieces(TString* dest,
                   std::initializer_list<y_absl::string_view> pieces) {
   size_t old_size = dest->size();
-  size_t to_append = 0;
+  size_t total_size = old_size;
   for (y_absl::string_view piece : pieces) {
     ASSERT_NO_OVERLAP(*dest, piece);
-    to_append += piece.size();
+    total_size += piece.size();
   }
-  strings_internal::STLStringAppendUninitializedAmortized(dest, to_append);
+  strings_internal::STLStringResizeUninitializedAmortized(dest, total_size);
 
   char* const begin = &(*dest)[0];
   char* out = begin + old_size;
@@ -274,23 +193,17 @@ void AppendPieces(y_absl::Nonnull<TString*> dest,
 
 }  // namespace strings_internal
 
-void StrAppend(y_absl::Nonnull<TString*> dest, const AlphaNum& a) {
+void StrAppend(TString* dest, const AlphaNum& a) {
   ASSERT_NO_OVERLAP(*dest, a);
-  TString::size_type old_size = dest->size();
-  strings_internal::STLStringAppendUninitializedAmortized(dest, a.size());
-  char* const begin = &(*dest)[0];
-  char* out = begin + old_size;
-  out = Append(out, a);
-  assert(out == begin + dest->size());
+  dest->append(a.data(), a.size());
 }
 
-void StrAppend(y_absl::Nonnull<TString*> dest, const AlphaNum& a,
-               const AlphaNum& b) {
+void StrAppend(TString* dest, const AlphaNum& a, const AlphaNum& b) {
   ASSERT_NO_OVERLAP(*dest, a);
   ASSERT_NO_OVERLAP(*dest, b);
   TString::size_type old_size = dest->size();
-  strings_internal::STLStringAppendUninitializedAmortized(dest,
-                                                          a.size() + b.size());
+  strings_internal::STLStringResizeUninitializedAmortized(
+      dest, old_size + a.size() + b.size());
   char* const begin = &(*dest)[0];
   char* out = begin + old_size;
   out = Append(out, a);
@@ -298,14 +211,14 @@ void StrAppend(y_absl::Nonnull<TString*> dest, const AlphaNum& a,
   assert(out == begin + dest->size());
 }
 
-void StrAppend(y_absl::Nonnull<TString*> dest, const AlphaNum& a,
-               const AlphaNum& b, const AlphaNum& c) {
+void StrAppend(TString* dest, const AlphaNum& a, const AlphaNum& b,
+               const AlphaNum& c) {
   ASSERT_NO_OVERLAP(*dest, a);
   ASSERT_NO_OVERLAP(*dest, b);
   ASSERT_NO_OVERLAP(*dest, c);
   TString::size_type old_size = dest->size();
-  strings_internal::STLStringAppendUninitializedAmortized(
-      dest, a.size() + b.size() + c.size());
+  strings_internal::STLStringResizeUninitializedAmortized(
+      dest, old_size + a.size() + b.size() + c.size());
   char* const begin = &(*dest)[0];
   char* out = begin + old_size;
   out = Append(out, a);
@@ -314,15 +227,15 @@ void StrAppend(y_absl::Nonnull<TString*> dest, const AlphaNum& a,
   assert(out == begin + dest->size());
 }
 
-void StrAppend(y_absl::Nonnull<TString*> dest, const AlphaNum& a,
-               const AlphaNum& b, const AlphaNum& c, const AlphaNum& d) {
+void StrAppend(TString* dest, const AlphaNum& a, const AlphaNum& b,
+               const AlphaNum& c, const AlphaNum& d) {
   ASSERT_NO_OVERLAP(*dest, a);
   ASSERT_NO_OVERLAP(*dest, b);
   ASSERT_NO_OVERLAP(*dest, c);
   ASSERT_NO_OVERLAP(*dest, d);
   TString::size_type old_size = dest->size();
-  strings_internal::STLStringAppendUninitializedAmortized(
-      dest, a.size() + b.size() + c.size() + d.size());
+  strings_internal::STLStringResizeUninitializedAmortized(
+      dest, old_size + a.size() + b.size() + c.size() + d.size());
   char* const begin = &(*dest)[0];
   char* out = begin + old_size;
   out = Append(out, a);

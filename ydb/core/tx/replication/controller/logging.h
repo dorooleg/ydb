@@ -1,7 +1,8 @@
 #pragma once
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/base/defs.h>
+
+#include <library/cpp/actors/core/log.h>
 
 #define CLOG_T(ctx, stream) LOG_TRACE_S (ctx, NKikimrServices::REPLICATION_CONTROLLER, LogPrefix << stream)
 #define CLOG_D(ctx, stream) LOG_DEBUG_S (ctx, NKikimrServices::REPLICATION_CONTROLLER, LogPrefix << stream)

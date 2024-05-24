@@ -5,7 +5,7 @@ namespace NBsController {
 
 class TBlobStorageController::TTxProposeGroupKey : public TTransactionBase<TBlobStorageController> {
 protected:
-    TEvBlobStorage::TEvControllerProposeGroupKey::TPtr Event;
+    NKikimrBlobStorage::TEvControllerProposeGroupKey Proto;
     NKikimrProto::EReplyStatus Status = NKikimrProto::OK;
     ui32 NodeId = 0;
     ui32 GroupId = 0;
@@ -15,20 +15,18 @@ protected:
     ui64 MainKeyVersion = 0;
     ui64 GroupKeyNonce = 0;
     bool IsAnotherTxInProgress = false;
-
 public:
-    TTxProposeGroupKey(TEvBlobStorage::TEvControllerProposeGroupKey::TPtr event, TBlobStorageController *controller)
+    TTxProposeGroupKey(const NKikimrBlobStorage::TEvControllerProposeGroupKey& proto, TBlobStorageController *controller)
         : TBase(controller)
-        , Event(event)
+        , Proto(proto)
     {
-        const auto& proto = Event->Get()->Record;
-        NodeId = proto.GetNodeId();
-        GroupId = proto.GetGroupId();
-        LifeCyclePhase = proto.GetLifeCyclePhase();
-        MainKeyId =  proto.GetMainKeyId();
-        EncryptedGroupKey = proto.GetEncryptedGroupKey();
-        MainKeyVersion = proto.GetMainKeyVersion();
-        GroupKeyNonce = proto.GetGroupKeyNonce();
+        NodeId = Proto.GetNodeId();
+        GroupId = Proto.GetGroupId();
+        LifeCyclePhase = Proto.GetLifeCyclePhase();
+        MainKeyId =  Proto.GetMainKeyId();
+        EncryptedGroupKey = Proto.GetEncryptedGroupKey();
+        MainKeyVersion = Proto.GetMainKeyVersion();
+        GroupKeyNonce = Proto.GetGroupKeyNonce();
     }
 
     TTxType GetTxType() const override { return NBlobStorageController::TXTYPE_PROPOSE_GROUP_KEY; }
@@ -64,7 +62,7 @@ public:
         // Reflect group structure in the database (pass)
 
         TGroupInfo *group = Self->FindGroup(GroupId);
-        Y_ABORT_UNLESS(group); // the existence of this group must have been checked during ReadStep
+        Y_VERIFY(group); // the existence of this group must have been checked during ReadStep
         group->LifeCyclePhase = TBlobStorageGroupInfo::ELCP_IN_TRANSITION;
         group->MainKeyId = MainKeyId;
         group->EncryptedGroupKey = EncryptedGroupKey;
@@ -80,10 +78,6 @@ public:
 
     bool Execute(TTransactionContext &txc, const TActorContext&) override {
         STLOG(PRI_DEBUG, BS_CONTROLLER, BSCTXPGK07, "TTxProposeGroupKey Execute");
-        if (!Self->ValidateIncomingNodeWardenEvent(*Event)) {
-            Status = NKikimrProto::ERROR;
-            return true;
-        }
         Status = NKikimrProto::OK;
         ReadStep();
         if (Status == NKikimrProto::OK) {
@@ -96,7 +90,7 @@ public:
         STLOG(PRI_DEBUG, BS_CONTROLLER, BSCTXPGK08, "TTxProposeGroupKey Complete");
         if (Status == NKikimrProto::OK) {
             TGroupInfo *group = Self->FindGroup(GroupId);
-            Y_ABORT_UNLESS(group);
+            Y_VERIFY(group);
             if (group->LifeCyclePhase == TBlobStorageGroupInfo::ELCP_IN_TRANSITION) {
                 group->LifeCyclePhase = TBlobStorageGroupInfo::ELCP_IN_USE;
             } else {
@@ -105,7 +99,7 @@ public:
             }
         } else {
             STLOG(PRI_ERROR, BS_CONTROLLER, BSCTXPGK10, "TTxProposeGroupKey error", (GroupId, GroupId),
-                (Status, Status), (Request, Event->Get()->Record));
+                (Status, Status), (Request, Proto));
         }
         if (!IsAnotherTxInProgress) {
             // Get groupinfo for the group and send it to all whom it may concern.
@@ -117,9 +111,9 @@ public:
 void TBlobStorageController::Handle(TEvBlobStorage::TEvControllerProposeGroupKey::TPtr &ev) {
     const NKikimrBlobStorage::TEvControllerProposeGroupKey& proto = ev->Get()->Record;
     STLOG(PRI_DEBUG, BS_CONTROLLER, BSCTXPGK11, "Handle TEvControllerProposeGroupKey", (Request, proto));
-    Y_ABORT_UNLESS(AppData());
+    Y_VERIFY(AppData());
     NodesAwaitingKeysForGroup[proto.GetGroupId()].insert(proto.GetNodeId());
-    Execute(new TTxProposeGroupKey(ev, this));
+    Execute(new TTxProposeGroupKey(proto, this));
 }
 
 } // NBlobStorageController

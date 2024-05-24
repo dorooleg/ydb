@@ -83,7 +83,7 @@ static TVector<NPDisk::TDriveData> FilterOnlyUniqueSerial(TVector<NPDisk::TDrive
     return result;
 }
 
-static TVector<NPDisk::TDriveData> ListDevices(const char *folder, const TString& serial, std::regex device_regex, TStringStream& details) {
+static TVector<NPDisk::TDriveData> ListDevices(const char *folder, const TString& serial, std::regex device_regex) {
     TFsPath path(folder);
     TVector<TFsPath> children;
     try {
@@ -94,20 +94,15 @@ static TVector<NPDisk::TDriveData> ListDevices(const char *folder, const TString
     TVector<NPDisk::TDriveData> devicesFound;
     for (const auto& child : children) {
         if (std::regex_match(child.GetName().c_str(), device_regex)) {
+            TStringStream details;
             std::optional<NPDisk::TDriveData> data = NPDisk::GetDriveData(child.GetPath(), &details);
             if (data && (!serial || data->SerialNumber == serial)) {
                 devicesFound.push_back(*data);
             }
-            details << "#";
         }
     }
 
     return FilterOnlyUniqueSerial(devicesFound);
-}
-
-static TVector<NPDisk::TDriveData> ListDevices(const char *folder, const TString& serial, std::regex device_regex) {
-    TStringStream details;
-    return ListDevices(folder, serial, device_regex, details);
 }
 
 static std::optional<NPDisk::TDriveData> FindDeviceBySerialNumber(const char *folder, const TString& serial,
@@ -130,8 +125,8 @@ TVector<NPDisk::TDriveData> ListAllDevices() {
     return ListDevices("/dev", {}, std::regex(".*"));
 }
 
-TVector<NPDisk::TDriveData> ListDevicesWithPartlabel(TStringStream& details) {
-    return ListDevices("/dev/disk/by-partlabel", "", kikimrDevice, details);
+TVector<NPDisk::TDriveData> ListDevicesWithPartlabel() {
+    return ListDevices("/dev/disk/by-partlabel", "", kikimrDevice);
 }
 
 std::optional<NPDisk::TDriveData> FindDeviceBySerialNumber(const TString& serial, bool partlabelOnly) {

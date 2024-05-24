@@ -12,22 +12,22 @@ void TResourceMonPage::Output(NMonitoring::IMonHttpRequest& request) {
             out << HTTPOKJSON;
             break;
         case CSS:
-            out << (IsCached ? HTTPOKCSS_CACHED : HTTPOKCSS);
+            out << HTTPOKCSS;
             break;
         case JAVASCRIPT:
-            out << (IsCached ? HTTPOKJAVASCRIPT_CACHED : HTTPOKJAVASCRIPT);
+            out << HTTPOKJAVASCRIPT;
             break;
         case FONT_EOT:
-            out << (IsCached ? HTTPOKFONTEOT_CACHED : HTTPOKFONTEOT);
+            out << HTTPOKFONTEOT;
             break;
         case FONT_TTF:
-            out << (IsCached ? HTTPOKFONTTTF_CACHED : HTTPOKFONTTTF);
+            out << HTTPOKFONTTTF;
             break;
         case FONT_WOFF:
-            out << (IsCached ? HTTPOKFONTWOFF_CACHED : HTTPOKFONTWOFF);
+            out << HTTPOKFONTWOFF;
             break;
         case FONT_WOFF2:
-            out << (IsCached ? HTTPOKFONTWOFF2_CACHED : HTTPOKFONTWOFF2);
+            out << HTTPOKFONTWOFF2;
             break;
         case PNG:
             out << HTTPOKPNG;

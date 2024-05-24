@@ -42,7 +42,6 @@ bool TReadBuffer::nextImpl() {
     do {
         if (InputAvailable_ == 0 && !InputExhausted_) {
             InputAvailable_ = Source_.read(reinterpret_cast<char*>(InBuffer.data()), InBuffer.size());
-            InputSize_ = InputAvailable_;
             if (InputAvailable_ == 0) {
                 InputExhausted_ = true;
             }
@@ -53,8 +52,8 @@ bool TReadBuffer::nextImpl() {
             InitDecoder();
         }
 
-        auto inBuffer = const_cast<const unsigned char*>(reinterpret_cast<unsigned char*>(InBuffer.data()) + (InputSize_ - InputAvailable_));
-        auto outBuffer = reinterpret_cast<unsigned char*>(OutBuffer.data()) + (OutBuffer.size() - availableOut);
+        auto inBuffer = const_cast<const unsigned char*>(reinterpret_cast<unsigned char*>(InBuffer.data()));
+        auto outBuffer = reinterpret_cast<unsigned char*>(OutBuffer.data());
 
         SubstreamFinished_ = false;
         result = BrotliDecoderDecompressStream(

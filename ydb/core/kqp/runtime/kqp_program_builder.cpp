@@ -25,7 +25,8 @@ TType* GetRowType(const TProgramBuilder& builder, const TArrayRef<TKqpTableColum
                 break;
             }
             case NKikimr::NScheme::NTypeIds::Pg: {
-                Y_ABORT_UNLESS(column.TypeDesc, "No pg type description");
+                Y_VERIFY(column.TypeDesc, "No pg type description");
+                Y_VERIFY(!column.NotNull, "pg not null types are not allowed");
                 type = TPgType::Create(NPg::PgTypeIdFromTypeDesc(column.TypeDesc), builder.GetTypeEnvironment());
                 break;
             }
@@ -143,29 +144,6 @@ TType* MakeBlockType(TProgramBuilder& builder, TStructType* rowType) {
     return builder.NewBlockType(builder.NewTupleType(tupleItems), TBlockType::EShape::Many);
 }
 
-EJoinKind GetIndexLookupJoinKind(const TString& joinKind) {
-    if (joinKind == "Inner") {
-        return EJoinKind::Inner;
-    } else if (joinKind == "Left") {
-        return EJoinKind::Left;
-    } else if (joinKind == "LeftOnly") {
-        return EJoinKind::LeftOnly;
-    } else if (joinKind == "RightSemi") {
-        return EJoinKind::RightSemi;
-    } else if (joinKind == "LeftSemi") {
-        return EJoinKind::LeftSemi;
-    } else {
-        MKQL_ENSURE_S(false, "Unexpected join kind: " << joinKind);
-    }
-}
-
-bool RightJoinSideAllowed(const TString& joinType) {
-    return joinType != "LeftOnly";
-}
-
-bool RightJoinSideOptional(const TString& joinType) {
-    return joinType == "Left";
-}
 } // namespace
 
 TKqpProgramBuilder::TKqpProgramBuilder(const TTypeEnvironment& env, const IFunctionRegistry& functionRegistry)
@@ -275,7 +253,7 @@ TRuntimeNode TKqpProgramBuilder::KqpLookupTable(const TTableId& tableId, const T
 }
 
 TRuntimeNode TKqpProgramBuilder::KqpUpsertRows(const TTableId& tableId, const TRuntimeNode& rows,
-    const TArrayRef<TKqpTableColumn>& upsertColumns, bool isUpdate)
+    const TArrayRef<TKqpTableColumn>& upsertColumns)
 {
     auto streamType = AS_TYPE(TStreamType, rows.GetStaticType());
     auto rowType = AS_TYPE(TStructType, streamType->GetItemType());
@@ -286,7 +264,7 @@ TRuntimeNode TKqpProgramBuilder::KqpUpsertRows(const TTableId& tableId, const TR
     builder.Add(BuildTableIdLiteral(tableId, *this));
     builder.Add(rows);
     builder.Add(BuildColumnIndicesMap(*this, *rowType, upsertColumns));
-    builder.Add(this->NewDataLiteral<bool>(isUpdate));
+
     return TRuntimeNode(builder.Build(), false);
 }
 
@@ -334,78 +312,6 @@ TRuntimeNode TKqpProgramBuilder::KqpEnsure(TRuntimeNode value, TRuntimeNode pred
     callableBuilder.Add(predicate);
     callableBuilder.Add(issueCode);
     callableBuilder.Add(message);
-    return TRuntimeNode(callableBuilder.Build(), false);
-}
-
-TRuntimeNode TKqpProgramBuilder::KqpIndexLookupJoin(const TRuntimeNode& input, const TString& joinType,
-    const TString& leftLabel, const TString& rightLabel) {
-
-    auto inputRowItems = AS_TYPE(TTupleType, AS_TYPE(TStreamType, input.GetStaticType())->GetItemType());
-    MKQL_ENSURE(inputRowItems->GetElementsCount() == 2, "Expected 2 elements");
-
-    auto leftRowType = AS_TYPE(TStructType, inputRowItems->GetElementType(0));
-    auto rightRowType = AS_TYPE(TStructType, AS_TYPE(TOptionalType, inputRowItems->GetElementType(1))->GetItemType());
-
-    TStructTypeBuilder rowTypeBuilder(GetTypeEnvironment());
-
-    TVector<TString> leftRowColumns;
-    leftRowColumns.reserve(leftRowType->GetMembersCount());
-    for (ui32 i = 0; i < leftRowType->GetMembersCount(); ++i) {
-        TString newMemberName = leftLabel.empty() ? TString(leftRowType->GetMemberName(i))
-            : TString::Join(leftLabel, ".", leftRowType->GetMemberName(i));
-        rowTypeBuilder.Add(newMemberName, leftRowType->GetMemberType(i));
-        leftRowColumns.push_back(newMemberName);
-    }
-
-    TVector<TString> rightRowColumns;
-    rightRowColumns.reserve(rightRowType->GetMembersCount());
-    if (RightJoinSideAllowed(joinType)) {
-        for (ui32 i = 0; i < rightRowType->GetMembersCount(); ++i) {
-            TString newMemberName = rightLabel.empty() ? TString(rightRowType->GetMemberName(i))
-                : TString::Join(rightLabel, ".", rightRowType->GetMemberName(i));
-
-            const bool makeOptional = RightJoinSideOptional(joinType)
-                && rightRowType->GetMemberType(i)->GetKind() != TType::EKind::Optional
-                && rightRowType->GetMemberType(i)->GetKind() != TType::EKind::Pg;
-
-            TType* memberType = makeOptional
-                ? TOptionalType::Create(rightRowType->GetMemberType(i), GetTypeEnvironment())
-                : rightRowType->GetMemberType(i);
-
-            rowTypeBuilder.Add(newMemberName, memberType);
-            rightRowColumns.push_back(newMemberName);
-        }
-    }
-
-    auto resultRowStruct = rowTypeBuilder.Build();
-
-    TDictLiteralBuilder leftIndicesMap(GetTypeEnvironment(),
-        TDataType::Create(NUdf::TDataType<ui32>::Id, GetTypeEnvironment()),
-        TDataType::Create(NUdf::TDataType<ui32>::Id, GetTypeEnvironment())
-    );
-
-    for (ui32 i = 0; i < leftRowColumns.size(); ++i) {
-        auto resultIndex = resultRowStruct->GetMemberIndex(leftRowColumns[i]);
-        leftIndicesMap.Add(NewDataLiteral<ui32>(i), NewDataLiteral<ui32>(resultIndex));
-    }
-
-    TDictLiteralBuilder rightIndicesMap(GetTypeEnvironment(),
-        TDataType::Create(NUdf::TDataType<ui32>::Id, GetTypeEnvironment()),
-        TDataType::Create(NUdf::TDataType<ui32>::Id, GetTypeEnvironment())
-    );
-
-    for (ui32 i = 0; i < rightRowColumns.size(); ++i) {
-        auto resultIndex = resultRowStruct->GetMemberIndex(rightRowColumns[i]);
-        rightIndicesMap.Add(NewDataLiteral<ui32>(i), NewDataLiteral<ui32>(resultIndex));
-    }
-
-    auto returnType = NewStreamType(resultRowStruct);
-
-    TCallableBuilder callableBuilder(Env, __func__, returnType);
-    callableBuilder.Add(input);
-    callableBuilder.Add(NewDataLiteral<ui32>((ui32)GetIndexLookupJoinKind(joinType)));
-    callableBuilder.Add(TRuntimeNode(leftIndicesMap.Build(), true));
-    callableBuilder.Add(TRuntimeNode(rightIndicesMap.Build(), true));
     return TRuntimeNode(callableBuilder.Build(), false);
 }
 

@@ -321,6 +321,9 @@ void RunPredicateTest(const std::vector<TString>& predicates, bool withNulls) {
     auto streamDb = kikimr.GetTableClient();
 
     for (auto& item: predicates) {
+        TString disablePredicateExtractor = R"(
+            PRAGMA Kikimr.OptEnablePredicateExtract = "false";
+        )";
         TString query = R"(
             SELECT `Value` FROM `/Root/TestPredicates` WHERE <PREDICATE> ORDER BY `Value`;
         )";
@@ -329,7 +332,7 @@ void RunPredicateTest(const std::vector<TString>& predicates, bool withNulls) {
 
         Cerr << "Execute query" << Endl << query << Endl;
 
-        auto it = streamDb.StreamExecuteScanQuery(query).GetValueSync();
+        auto it = streamDb.StreamExecuteScanQuery(disablePredicateExtractor + query).GetValueSync();
         UNIT_ASSERT(it.IsSuccess());
 
         auto expectedYson = StreamResultToYson(it);
@@ -645,24 +648,19 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
             UNIT_ASSERT(result.IsSuccess());
 
             auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-            size_t readPhase = 0;
-            if (stats.query_phases().size() == 3) {
-                readPhase = 1;
-            } else {
-                UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
-            }
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
 
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).affected_shards(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access().size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access(0).name(), "/Root/MultiShardTable");
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access(0).reads().rows(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access(0).partitions_count(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).name(), "/Root/MultiShardTable");
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).partitions_count(), 2);
 
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).affected_shards(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access().size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access(0).name(), "/Root/MultiShardTable");
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access(0).updates().rows(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access(0).partitions_count(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).affected_shards(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access().size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access(0).name(), "/Root/MultiShardTable");
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access(0).updates().rows(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access(0).partitions_count(), 1);
         }
     }
 
@@ -1052,8 +1050,12 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
 
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 0);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).updates().rows(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).deletes().rows(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).partitions_count(), 3);
 
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).affected_shards(), 1);
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access().size(), 1);
@@ -1086,18 +1088,13 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
             [[2];[403u];["Value3"]]])", FormatResultSetYson(result.GetResultSet(0)));
 
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-        size_t phase = 0;
-        if (stats.query_phases().size() == 2) {
-            phase = 1;
-        } else {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
-        }
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
 
         if (!settings.AppConfig.GetTableServiceConfig().GetEnableKqpDataQueryStreamLookup()) {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).affected_shards(), 4);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).partitions_count(), 4);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 4);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).partitions_count(), 4);
         }
     }
 
@@ -1128,14 +1125,9 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         ])", FormatResultSetYson(result.GetResultSet(0)));
 
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-        size_t phase = 0;
-        if (stats.query_phases().size() == 2) {
-            phase = 1;
-        } else {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
-        }
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
     }
 
     Y_UNIT_TEST(LiteralOrCompisiteCollision) {
@@ -1165,14 +1157,9 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         ])", FormatResultSetYson(result.GetResultSet(0)));
 
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-        size_t phase = 0;
-        if (stats.query_phases().size() == 2) {
-            phase = 1;
-        } else {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
-        }
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
     }
 
     Y_UNIT_TEST(NoFullScanAtScanQuery) {
@@ -1486,6 +1473,10 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
             --!syntax_v1
         )";
 
+        TString enablePredicateExtractor = R"(
+            PRAGMA Kikimr.OptEnablePredicateExtract = "true";
+        )";
+
         for (const auto& predicate : predicates) {
             TString query = R"(
 
@@ -1504,7 +1495,7 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
             UNIT_ASSERT_C(expectedResult.IsSuccess(), expectedResult.GetIssues().ToString());
             const auto expectedYson = FormatResultSetYson(expectedResult.GetResultSet(0));
 
-            auto result = session.ExecuteDataQuery(useSyntaxV1 + query,
+            auto result = session.ExecuteDataQuery(useSyntaxV1 + enablePredicateExtractor + query,
                 TTxControl::BeginTx().CommitTx(), params).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
 

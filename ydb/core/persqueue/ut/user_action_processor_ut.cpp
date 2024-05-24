@@ -9,8 +9,8 @@
 #include <ydb/public/api/protos/draft/persqueue_error_codes.pb.h>
 #include <ydb/public/lib/base/msgbus_status.h>
 
-#include <ydb/library/actors/core/actorid.h>
-#include <ydb/library/actors/core/event.h>
+#include <library/cpp/actors/core/actorid.h>
+#include <library/cpp/actors/core/event.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/hash.h>
@@ -26,7 +26,7 @@ Y_UNIT_TEST_SUITE(TUserActionProcessorTests) {
 namespace NHelpers {
 
 struct TCreatePartitionParams {
-    TPartitionId Partition = TPartitionId{1};
+    ui32 Partition = 1;
     ui64 Begin = 0;
     ui64 End = 0;
     TMaybe<ui64> PlanStep;
@@ -141,7 +141,7 @@ protected:
     void SetUp(NUnitTest::TTestContext&) override;
     void TearDown(NUnitTest::TTestContext&) override;
 
-    void CreatePartitionActor(const TPartitionId& partition,
+    void CreatePartitionActor(ui32 partition,
                               const TVector<TCreateConsumerParams>& consumers,
                               bool newPartition,
                               TVector<TTransaction> txs);
@@ -238,7 +238,7 @@ void TUserActionProcessorFixture::TearDown(NUnitTest::TTestContext&)
 {
 }
 
-void TUserActionProcessorFixture::CreatePartitionActor(const TPartitionId& id,
+void TUserActionProcessorFixture::CreatePartitionActor(ui32 id,
                                                        const TVector<TCreateConsumerParams>& consumers,
                                                        bool newPartition,
                                                        TVector<TTransaction> txs)
@@ -306,7 +306,7 @@ void TUserActionProcessorFixture::CreatePartition(const TCreatePartitionParams& 
         SendMetaReadResponse(params.PlanStep, params.TxId);
 
         WaitInfoRangeRequest();
-        SendInfoRangeResponse(params.Partition.InternalPartitionId, consumers);
+        SendInfoRangeResponse(params.Partition, consumers);
 
         WaitDataRangeRequest();
         SendDataRangeResponse(params.Begin, params.End);
@@ -378,6 +378,8 @@ void TUserActionProcessorFixture::WaitCmdWrite(const TCmdWriteMatcher& matcher)
 {
     auto event = Ctx->Runtime->GrabEdgeEvent<TEvKeyValue::TEvRequest>();
     UNIT_ASSERT(event != nullptr);
+
+    UNIT_ASSERT_VALUES_EQUAL(event->Record.GetCookie(), 1);             // SET_OFFSET_COOKIE
 
     if (matcher.Count.Defined()) {
         UNIT_ASSERT_VALUES_EQUAL(*matcher.Count,
@@ -455,6 +457,7 @@ void TUserActionProcessorFixture::SendCmdWriteResponse(NMsgBusProxy::EResponseSt
 {
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(status);
+    event->Record.SetCookie(1); // SET_OFFSET_COOKIE
 
     Ctx->Runtime->SingleSys()->Send(new IEventHandle(ActorId, Ctx->Edge, event.Release()));
 }
@@ -623,7 +626,7 @@ void TUserActionProcessorFixture::WaitDataRangeRequest()
 
 void TUserActionProcessorFixture::SendDataRangeResponse(ui64 begin, ui64 end)
 {
-    Y_ABORT_UNLESS(begin <= end);
+    Y_VERIFY(begin <= end);
 
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);

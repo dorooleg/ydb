@@ -38,7 +38,7 @@ void TReadInfoActor::Bootstrap(const TActorContext& ctx) {
     Become(&TThis::StateFunc);
 
     auto request = dynamic_cast<const ReadInfoRequest*>(GetProtoRequest());
-    Y_ABORT_UNLESS(request);
+    Y_VERIFY(request);
     ClientId = NPersQueue::ConvertNewConsumerName(request->consumer().path(), ctx);
 
     bool readOnlyLocal = request->get_only_original();
@@ -122,9 +122,9 @@ void TReadInfoActor::Handle(TEvPersQueue::TEvResponse::TPtr& ev, const TActorCon
     ReadInfoResult result;
 
     const auto& resp = ev->Get()->Record;
-    Y_ABORT_UNLESS(resp.HasMetaResponse());
+    Y_VERIFY(resp.HasMetaResponse());
 
-    Y_ABORT_UNLESS(resp.GetMetaResponse().GetCmdGetReadSessionsInfoResult().TopicResultSize() == TopicAndTablets.size());
+    Y_VERIFY(resp.GetMetaResponse().GetCmdGetReadSessionsInfoResult().TopicResultSize() == TopicAndTablets.size());
     TMap<std::pair<TString, ui64>, ReadInfoResult::TopicInfo::PartitionInfo*> partResultMap;
     for (auto& tt : resp.GetMetaResponse().GetCmdGetReadSessionsInfoResult().GetTopicResult()) {
         auto topicRes = result.add_topics();

@@ -3,14 +3,12 @@
 #include <ydb/library/yql/providers/dq/expr_nodes/dqs_expr_nodes.h>
 #include <ydb/library/yql/providers/common/mkql/yql_type_mkql.h>
 #include <ydb/library/yql/providers/common/codec/yql_codec.h>
-#include <ydb/library/yql/providers/common/provider/yql_provider_names.h>
 
 #include <ydb/library/yql/core/yql_expr_optimize.h>
 #include <ydb/library/yql/core/peephole_opt/yql_opt_peephole_physical.h>
 #include <ydb/library/yql/core/type_ann/type_ann_core.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/core/yql_type_annotation.h>
-#include <ydb/library/yql/core/yql_opt_utils.h>
 
 #include <ydb/library/yql/dq/opt/dq_opt.h>
 #include <ydb/library/yql/dq/opt/dq_opt_phy.h>
@@ -18,7 +16,6 @@
 #include <ydb/library/yql/dq/opt/dq_opt_build.h>
 #include <ydb/library/yql/dq/opt/dq_opt_peephole.h>
 #include <ydb/library/yql/dq/type_ann/dq_type_ann.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
 
 #include <ydb/library/yql/utils/log/log.h>
 
@@ -67,48 +64,8 @@ namespace NYql::NDqs {
         });
     }
 
-    THolder<IGraphTransformer> CreateDqsRewritePhyBlockReadOnDqIntegrationTransformer(TTypeAnnotationContext& typesCtx) {
-        return CreateFunctorTransformer([&typesCtx](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {
-            TOptimizeExprSettings optSettings{nullptr};
-            optSettings.VisitLambdas = true;
-            optSettings.VisitTuples = true;
-            return OptimizeExpr(input, output,
-                [&typesCtx](const TExprNode::TPtr& node, TExprContext& ctx) -> TExprNode::TPtr {
-                    if (!TDqReadWideWrap::Match(node.Get())) {
-                        return node;
-                    }
-
-                    auto readWideWrap = TDqReadWideWrap(node);
-                    auto dataSource = readWideWrap.Raw()->Child(0)->Child(1);
-                    auto dataSourceName = dataSource->Child(0)->Content();
-                    if (dataSourceName == DqProviderName || dataSource->IsCallable(ConfigureName)) {
-                        return node;
-                    }
-
-                    auto datasource = typesCtx.DataSourceMap.FindPtr(dataSourceName);
-                    YQL_ENSURE(datasource);
-                    auto dqIntegration = (*datasource)->GetDqIntegration();
-                    if (!dqIntegration || !dqIntegration->CanBlockRead(readWideWrap, ctx, typesCtx)) {
-                        return node;
-                    }
-
-                    YQL_CLOG(INFO, ProviderDq) << "DqsRewritePhyBlockReadOnDqIntegration";
-                    return Build<TCoWideFromBlocks>(ctx, node->Pos())
-                            .Input(
-                                Build<TCoToFlow>(ctx, node->Pos())
-                                .Input(Build<TDqReadBlockWideWrap>(ctx, node->Pos())
-                                                .Input(readWideWrap.Input())
-                                                .Flags(readWideWrap.Flags())
-                                                .Token(readWideWrap.Token())
-                                            .Done().Ptr())
-                                .Done())
-                            .Done().Ptr();
-                }, ctx, optSettings);
-        });
-    }
-
-    THolder<IGraphTransformer> CreateDqsReplacePrecomputesTransformer(TTypeAnnotationContext& typesCtx) {
-        return CreateFunctorTransformer([&typesCtx](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) -> TStatus {
+    THolder<IGraphTransformer> CreateDqsReplacePrecomputesTransformer(TTypeAnnotationContext& typesCtx, const NKikimr::NMiniKQL::IFunctionRegistry* funcRegistry) {
+        return CreateFunctorTransformer([&typesCtx, funcRegistry](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) -> TStatus {
             TOptimizeExprSettings settings(&typesCtx);
             settings.VisitChecker = [&](const TExprNode& node) {
                 return input.Get() == &node || (!TDqReadWrapBase::Match(&node) && !TDqPhyPrecompute::Match(&node));
@@ -117,7 +74,7 @@ namespace NYql::NDqs {
 
             NKikimr::NMiniKQL::TScopedAlloc alloc(__LOCATION__);
             NKikimr::NMiniKQL::TTypeEnvironment env(alloc);
-            NKikimr::NMiniKQL::TTypeBuilder typeBuilder(env);
+            NKikimr::NMiniKQL::TProgramBuilder pgmBuilder(env, *funcRegistry);
             NKikimr::NMiniKQL::TMemoryUsageInfo memInfo("Precompute");
             NKikimr::NMiniKQL::THolderFactory holderFactory(alloc.Ref(), memInfo);
 
@@ -135,7 +92,7 @@ namespace NYql::NDqs {
                             YQL_ENSURE(dataNode.IsList() && !dataNode.AsList().empty());
                             dataNode = dataNode[0];
                             TStringStream err;
-                            NKikimr::NMiniKQL::TType* mkqlType = NCommon::BuildType(*input.Ref().GetTypeAnn(), typeBuilder, err);
+                            NKikimr::NMiniKQL::TType* mkqlType = NCommon::BuildType(*input.Ref().GetTypeAnn(), pgmBuilder, err);
                             if (!mkqlType) {
                                 ctx.AddError(TIssue(ctx.GetPosition(input.Pos()), TStringBuilder() << "Failed to process " << TDqPhyPrecompute::CallableName() << " type: " << err.Str()));
                                 return nullptr;
@@ -189,7 +146,7 @@ namespace NYql::NDqs {
                     YQL_ENSURE(dataNode.IsList() && !dataNode.AsList().empty());
                     dataNode = dataNode[0];
                     TStringStream err;
-                    NKikimr::NMiniKQL::TType* mkqlType = NCommon::BuildType(*node->GetTypeAnn(), typeBuilder, err);
+                    NKikimr::NMiniKQL::TType* mkqlType = NCommon::BuildType(*node->GetTypeAnn(), pgmBuilder, err);
                     if (!mkqlType) {
                         ctx.AddError(TIssue(ctx.GetPosition(node->Pos()), TStringBuilder() << "Failed to process " << TDqPhyPrecompute::CallableName() << " type: " << err.Str()));
                         return TStatus::Error;

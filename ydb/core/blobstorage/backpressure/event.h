@@ -26,7 +26,7 @@ inline NLWTrace::TOrbit MoveOrbit(TPtr&) {
 
 template<>
 inline NLWTrace::TOrbit MoveOrbit<TEvBlobStorage::TEvVPut::TPtr>(TEvBlobStorage::TEvVPut::TPtr& ev) {
-    Y_ABORT_UNLESS(ev->Get());
+    Y_VERIFY(ev->Get());
     return std::move(ev->Get()->Orbit);
 }
 
@@ -115,7 +115,7 @@ public:
             CASE(TEvVGetBlock);
             CASE(TEvVCollectGarbage);
             CASE(TEvVGetBarrier);
-            default: Y_ABORT();
+            default: Y_FAIL();
 #undef CASE
         }
     }

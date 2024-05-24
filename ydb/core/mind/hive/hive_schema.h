@@ -192,11 +192,9 @@ struct Schema : NIceDb::Schema {
         struct Drain : Column<6, NScheme::NTypeIds::Bool> { static constexpr bool Default = false; };
         struct DrainInitiators : Column<8, NScheme::NTypeIds::String> { using Type = TVector<TActorId>; };
         struct Location : Column<9, NScheme::NTypeIds::String> { using Type = NActorsInterconnect::TNodeLocation; };
-        struct Name : Column<10, NScheme::NTypeIds::String> {};
-        struct BecomeUpOnRestart : Column<11, NScheme::NTypeIds::Bool> {};
 
         using TKey = TableKey<ID>;
-        using TColumns = TableColumns<ID, Local, Down, Freeze, ServicedDomains, Statistics, Drain, DrainInitiators, Location, Name, BecomeUpOnRestart>;
+        using TColumns = TableColumns<ID, Local, Down, Freeze, ServicedDomains, Statistics, Drain, DrainInitiators, Location>;
     };
 
     struct TabletCategory : Table<6> {
@@ -269,10 +267,9 @@ struct Schema : NIceDb::Schema {
         struct Path : Column<3, NScheme::NTypeIds::Utf8> {};
         struct Primary : Column<4, NScheme::NTypeIds::Bool> {};
         struct HiveId : Column<5, NScheme::NTypeIds::Uint64> {};
-        struct ServerlessComputeResourcesMode : Column<6, NScheme::NTypeIds::Uint32> { using Type = NKikimrSubDomains::EServerlessComputeResourcesMode; };
 
         using TKey = TableKey<SchemeshardId, PathId>;
-        using TColumns = TableColumns<SchemeshardId, PathId, Path, Primary, HiveId, ServerlessComputeResourcesMode>;
+        using TColumns = TableColumns<SchemeshardId, PathId, Path, Primary, HiveId>;
     };
 
     struct BlockedOwner : Table<18> {
@@ -291,24 +288,6 @@ struct Schema : NIceDb::Schema {
         using TColumns = TableColumns<Begin, End, OwnerId>;
     };
 
-    struct TabletAvailabilityRestrictions : Table<20> {
-        struct Node : Column<1, Schema::Node::ID::ColumnType> {};
-        struct TabletType : Column<2, NScheme::NTypeIds::Uint64> { using Type = TTabletTypes::EType;  };
-        struct MaxCount : Column<3, NScheme::NTypeIds::Uint64> {};
-
-        using TKey = TableKey<Node, TabletType>;
-        using TColumns = TableColumns<Node, TabletType, MaxCount>;
-    };
-
-    struct OperationsLog : Table<21> {
-        struct Timestamp : Column<1, NScheme::NTypeIds::Uint64> {};
-        struct User : Column<2, NScheme::NTypeIds::String> {};
-        struct Operation : Column<3, NScheme::NTypeIds::String> {}; // JSON
-
-        using TKey = TableKey<Timestamp>;
-        using TColumns = TableColumns<Timestamp, User, Operation>;
-    };
-
     using TTables = SchemaTables<
                                 State,
                                 Tablet,
@@ -323,9 +302,7 @@ struct Schema : NIceDb::Schema {
                                 Metrics,
                                 SubDomain,
                                 BlockedOwner,
-                                TabletOwners,
-                                TabletAvailabilityRestrictions,
-                                OperationsLog
+                                TabletOwners
                                 >;
     using TSettings = SchemaSettings<
                                     ExecutorLogBatching<true>,

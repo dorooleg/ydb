@@ -16,7 +16,7 @@ TGRpcYdbClickhouseInternalService::TGRpcYdbClickhouseInternalService(NActors::TA
     , LimiterRegistry_(inFlightLimiterRegistry)
 {}
 
-void TGRpcYdbClickhouseInternalService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcYdbClickhouseInternalService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
     auto getLimiter = CreateLimiterCb(LimiterRegistry_);
 
@@ -25,7 +25,7 @@ void TGRpcYdbClickhouseInternalService::SetupIncomingRequests(NYdbGrpc::TLoggerP
 #endif
 #define ADD_REQUEST(NAME, IN, OUT, CB) \
     MakeIntrusive<TGRpcRequest<Ydb::ClickhouseInternal::IN, Ydb::ClickhouseInternal::OUT, TGRpcYdbClickhouseInternalService>>(this, &Service_, CQ_, \
-        [this](NYdbGrpc::IRequestContextBase *ctx) { \
+        [this](NGrpc::IRequestContextBase *ctx) { \
             NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer()); \
             ActorSystem_->Send(GRpcRequestProxyId_, \
                 new NGRpcService::TGrpcRequestOperationCall<Ydb::ClickhouseInternal::IN, Ydb::ClickhouseInternal::OUT> \

@@ -4,7 +4,7 @@
 #include <ydb/services/metadata/manager/restore_controller.h>
 #include <ydb/services/metadata/request/request_actor.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NMetadata::NModifications {
 
@@ -23,7 +23,7 @@ private:
         const NRequest::TDialogSelect::TResponse& result = ev->Get()->GetResult();
         Ydb::Table::ExecuteQueryResult qResult;
         result.operation().result().UnpackTo(&qResult);
-        Y_ABORT_UNLESS((size_t)qResult.result_sets().size() == 1);
+        Y_VERIFY((size_t)qResult.result_sets().size() == 1);
 
         typename TObject::TDecoder decoder(qResult.result_sets()[0]);
         std::vector<TObject> objects;
@@ -50,7 +50,7 @@ public:
         , SessionId(sessionId)
         , UserToken(uToken)
     {
-        Y_ABORT_UNLESS(SessionId);
+        Y_VERIFY(SessionId);
     }
 
     STATEFN(StateMain) {

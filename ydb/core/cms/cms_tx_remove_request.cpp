@@ -20,16 +20,6 @@ public:
     bool Execute(TTransactionContext &txc, const TActorContext &ctx) override {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemoveRequest Execute");
 
-        auto it = Self->State->ScheduledRequests.find(Id);
-        if (it != Self->State->ScheduledRequests.end()) {
-            if (it->second.Request.GetEvictVDisks()) {
-                for (const auto &action : it->second.Request.GetActions()) {
-                    auto ret = Self->ResetHostMarkers(action.GetHost(), txc, ctx);
-                    std::move(ret.begin(), ret.end(), std::back_inserter(UpdateMarkers));
-                }
-            }
-        }
-
         NIceDb::TNiceDb db(txc.DB);
         db.Table<Schema::Request>().Key(Id).Delete();
         Self->State->ScheduledRequests.erase(Id);
@@ -45,19 +35,17 @@ public:
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemoveRequest Complete");
 
         if (Response) {
-            Y_ABORT_UNLESS(Request);
+            Y_VERIFY(Request);
             Self->Reply(Request.Get(), Response, ctx);
         }
 
-        Self->RemoveEmptyTasks(ctx);
-        Self->SentinelUpdateHostMarkers(std::move(UpdateMarkers), ctx);
+        Self->RemoveEmptyWalleTasks(ctx);
     }
 
 private:
     THolder<IEventBase> Request;
     TAutoPtr<IEventHandle> Response;
     TString Id;
-    TVector<TEvSentinel::TEvUpdateHostMarkers::THostMarkers> UpdateMarkers;
 };
 
 ITransaction *TCms::CreateTxRemoveRequest(const TString &id, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp) {

@@ -31,7 +31,7 @@ public:
         } else if (PrivEv) {
             return ExecutePriv(txc, ctx);
         } else {
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
     }
 
@@ -81,12 +81,10 @@ public:
                 NIceDb::TUpdate<Schema::SrcStreams::State>(target->GetStreamState())
             );
 
-            if (record.GetCascade()) {
-                target->SetDstState(TReplication::EDstState::Removing);
-                db.Table<Schema::Targets>().Key(Replication->GetId(), tid).Update(
-                    NIceDb::TUpdate<Schema::Targets::DstState>(target->GetDstState())
-                );
-            }
+            target->SetDstState(TReplication::EDstState::Removing); // TODO: configurable
+            db.Table<Schema::Targets>().Key(Replication->GetId(), tid).Update(
+                NIceDb::TUpdate<Schema::Targets::DstState>(target->GetDstState())
+            );
         }
 
         CLOG_N(ctx, "Drop replication"

@@ -2,7 +2,6 @@
 
 #include <ydb/core/protos/import.pb.h>
 #include <ydb/public/api/protos/ydb_operation.pb.h>
-#include <ydb/public/api/protos/ydb_import.pb.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
 #include <util/string/cast.h>
@@ -21,7 +20,7 @@ struct TImportConv {
             NOperationId::AddOptionalValue(operationId, "kind", "s3");
             break;
         default:
-            Y_DEBUG_ABORT("Unknown import kind");
+            Y_VERIFY_DEBUG(false, "Unknown import kind");
             break;
         }
 
@@ -48,7 +47,7 @@ struct TImportConv {
             Fill<ImportFromS3Metadata, ImportFromS3Result>(operation, import, import.GetImportFromS3Settings());
             break;
         default:
-            Y_DEBUG_ABORT("Unknown import kind");
+            Y_VERIFY_DEBUG(false, "Unknown import kind");
             break;
         }
 

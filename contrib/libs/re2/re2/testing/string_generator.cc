@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
+#include "library/cpp/testing/gtest/gtest.h"
 #include "util/logging.h"
 #include "re2/testing/string_generator.h"
 
@@ -81,11 +81,11 @@ bool StringGenerator::RandomDigits() {
 // currently described by digits_.  Calls IncrementDigits
 // after computing the string, so that it knows the answer
 // for subsequent HasNext() calls.
-absl::string_view StringGenerator::Next() {
+const StringPiece& StringGenerator::Next() {
   CHECK(hasnext_);
   if (generate_null_) {
     generate_null_ = false;
-    sp_ = absl::string_view();
+    sp_ = StringPiece();
     return sp_;
   }
   s_.clear();

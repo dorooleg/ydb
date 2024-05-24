@@ -19,9 +19,8 @@ FederatedQuery::BindingSetting::BindingCase GetBindingType(const TString& typeSt
 
 }
 
-TControlPlaneStorageConfig::TControlPlaneStorageConfig(const NConfig::TControlPlaneStorageConfig& config, const NYql::TS3GatewayConfig& s3Config, const NConfig::TCommonConfig& common, const NConfig::TComputeConfig& computeConfigProto)
+TControlPlaneStorageConfig::TControlPlaneStorageConfig(const NConfig::TControlPlaneStorageConfig& config, const NYql::TS3GatewayConfig& s3Config, const NConfig::TCommonConfig& common)
     : Proto(FillDefaultParameters(config))
-    , ComputeConfigProto(computeConfigProto)
     , IdsPrefix(common.GetIdsPrefix())
     , IdempotencyKeyTtl(GetDuration(Proto.GetIdempotencyKeysTtl(), TDuration::Minutes(10)))
     , AutomaticQueriesTtl(GetDuration(Proto.GetAutomaticQueriesTtl(), TDuration::Days(1)))
@@ -38,10 +37,6 @@ TControlPlaneStorageConfig::TControlPlaneStorageConfig(const NConfig::TControlPl
 
     for (const auto& availableBinding : Proto.GetAvailableBinding()) {
         AvailableBindings.insert(GetBindingType(availableBinding));
-    }
-
-    for (const auto& availableConnection : Proto.GetAvailableStreamingConnection()) {
-        AvailableStreamingConnections.insert(GetConnectionType(availableConnection));
     }
 
     GeneratorPathsLimit =

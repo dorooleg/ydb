@@ -1,7 +1,5 @@
 #include "login_page.h"
-#include "login_shared_func.h"
 
-#include <ydb/library/actors/http/http_proxy.h>
 #include <library/cpp/json/json_value.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
@@ -9,7 +7,6 @@
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/core/security/ldap_auth_provider.h>
 
 #include <ydb/library/login/login.h>
 #include <ydb/library/security/util.h>
@@ -25,16 +22,20 @@ using THttpResponsePtr = THolder<NMon::IEvHttpInfoRes>;
 
 class TLoginRequest : public NActors::TActorBootstrapped<TLoginRequest> {
 public:
-    using TBase = NActors::TActorBootstrapped<TLoginRequest>;
-
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::ACTORLIB_COMMON;
     }
 
-    TLoginRequest(NHttp::TEvHttpProxy::TEvHttpIncomingRequest::TPtr& ev)
-        : Sender(ev->Sender)
-        , Request(ev->Get()->Request)
+    TLoginRequest(IMonHttpRequest& request, NThreading::TPromise<THttpResponsePtr> result)
+        : Request(request)
+        , Result(result)
     {
+    }
+
+    ~TLoginRequest() {
+        if (!Result.HasValue()) {
+            Result.SetValue(nullptr);
+        }
     }
 
     STATEFN(StateWork) {
@@ -43,71 +44,80 @@ public:
             hFunc(TEvTabletPipe::TEvClientConnected, HandleConnect);
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleNavigate);
             hFunc(TEvSchemeShard::TEvLoginResult, HandleResult);
-            hFunc(TEvLdapAuthProvider::TEvAuthenticateResponse, Handle);
             cFunc(TEvents::TSystem::Wakeup, HandleTimeout);
         }
     }
 
-    void Bootstrap() {
-        ALOG_WARN(NActorsServices::HTTP, Request->Address << " " << Request->Method << " " << Request->URL);
+    static TString GetMethod(HTTP_METHOD method) {
+        switch (method) {
+            case HTTP_METHOD_UNDEFINED: return "UNDEFINED";
+            case HTTP_METHOD_OPTIONS: return "OPTIONS";
+            case HTTP_METHOD_GET: return "GET";
+            case HTTP_METHOD_HEAD: return "HEAD";
+            case HTTP_METHOD_POST: return "POST";
+            case HTTP_METHOD_PUT: return "PUT";
+            case HTTP_METHOD_DELETE: return "DELETE";
+            case HTTP_METHOD_TRACE: return "TRACE";
+            case HTTP_METHOD_CONNECT: return "CONNECT";
+            case HTTP_METHOD_EXTENSION: return "EXTENSION";
+            default: return "UNKNOWN";
+        }
+    }
 
-        if (Request->Method == "OPTIONS") {
+    void Bootstrap() {
+        LOG_WARN_S(*TlsActivationContext, NActorsServices::HTTP,
+                        Request.GetRemoteAddr()
+                        << " " << GetMethod(Request.GetMethod())
+                        << " " << Request.GetUri());
+
+        if (Request.GetMethod() == HTTP_METHOD_OPTIONS) {
             return ReplyOptionsAndPassAway();
         }
 
-        if (Request->Method != "POST") {
-            return ReplyErrorAndPassAway("400", "Bad Request", "Invalid method");
+        if (Request.GetMethod() != HTTP_METHOD_POST) {
+            return ReplyErrorAndPassAway("400 Bad Request", "Invalid method");
         }
 
-        NHttp::THeaders headers(Request->Headers);
-
-        if (headers.Get("Content-Type").Before(';') != "application/json") {
-            return ReplyErrorAndPassAway("400", "Bad Request", "Invalid Content-Type");
+        if (Request.GetHeader("Content-Type").Before(';') != "application/json") {
+            return ReplyErrorAndPassAway("400 Bad Request", "Invalid Content-Type");
         }
 
         NJson::TJsonValue postData;
 
-        if (!NJson::ReadJsonTree(Request->Body, &postData)) {
-            return ReplyErrorAndPassAway("400", "Bad Request", "Invalid JSON data");
-        }
-
-        TString login;
-        TString password;
-        NJson::TJsonValue* jsonUser;
-        if (postData.GetValuePointer("user", &jsonUser)) {
-            login = jsonUser->GetStringRobust();
-        } else {
-            return ReplyErrorAndPassAway("400", "Bad Request", "User must be specified");
-        }
-
-        NJson::TJsonValue* jsonPassword;
-        if (postData.GetValuePointer("password", &jsonPassword)) {
-            password = jsonPassword->GetStringRobust();
-        } else {
-            return ReplyErrorAndPassAway("400", "Bad Request", "Password must be specified");
+        if (!NJson::ReadJsonTree(Request.GetPostContent(), &postData)) {
+            return ReplyErrorAndPassAway("400 Bad Request", "Invalid JSON data");
         }
 
         if (postData.Has("database")) {
             Database = postData["database"].GetStringRobust();
+        } else {
+            TDomainsInfo* domainsInfo = AppData()->DomainsInfo.Get();
+            const TDomainsInfo::TDomain& domain = *domainsInfo->Domains.begin()->second.Get();
+            Database = "/" + domain.Name;
         }
 
-        AuthCredentials = PrepareCredentials(login, password, AppData()->AuthConfig);
-        if (AuthCredentials.AuthType == TAuthCredentials::EAuthType::Ldap) {
-            ALOG_DEBUG(NActorsServices::HTTP, "Login: Requesting LDAP provider for user " << AuthCredentials.Login);
-            Send(MakeLdapAuthProviderID(), new TEvLdapAuthProvider::TEvAuthenticateRequest(AuthCredentials.Login, AuthCredentials.Password));
+        NJson::TJsonValue* jsonUser;
+        if (postData.GetValuePointer("user", &jsonUser)) {
+            User = jsonUser->GetStringRobust();
         } else {
-            auto *domain = AppData()->DomainsInfo->GetDomain();
-            TString rootDatabase = "/" + domain->Name;
-            ui64 rootSchemeShardTabletId = domain->SchemeRoot;
-            if (!Database.empty() && Database != rootDatabase) {
-                Database = rootDatabase;
-                ALOG_DEBUG(NActorsServices::HTTP, "Login: Requesting schemecache for database " << Database);
-                Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(CreateNavigateKeySetRequest(Database).Release()));
-            } else {
-                Database = rootDatabase;
-                RequestSchemeShard(rootSchemeShardTabletId);
-            }
+            return ReplyErrorAndPassAway("400 Bad Request", "User must be specified");
         }
+
+        NJson::TJsonValue* jsonPassword;
+        if (postData.GetValuePointer("password", &jsonPassword)) {
+            Password = jsonPassword->GetStringRobust();
+        } else {
+            return ReplyErrorAndPassAway("400 Bad Request", "Password must be specified");
+        }
+
+        auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
+        request->DatabaseName = Database;
+        auto& entry = request->ResultSet.emplace_back();
+        entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
+        entry.Path = ::NKikimr::SplitPath(Database);
+        entry.RedirectRequired = false;
+        Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
+
         Become(&TThis::StateWork, Timeout, new TEvents::TEvWakeup());
     }
 
@@ -117,45 +127,31 @@ public:
         return clientConfig;
     }
 
-    void RequestSchemeShard(ui64 schemeShardTabletId) {
-        ALOG_DEBUG(NActorsServices::HTTP, "Login: Requesting schemeshard " << schemeShardTabletId << " for user " << AuthCredentials.Login);
-        IActor* pipe = NTabletPipe::CreateClient(SelfId(), schemeShardTabletId, GetPipeClientConfig());
-        PipeClient = RegisterWithSameMailbox(pipe);
-        THolder<TEvSchemeShard::TEvLogin> request = MakeHolder<TEvSchemeShard::TEvLogin>();
-        request.Get()->Record = CreateLoginRequest(AuthCredentials, AppData()->AuthConfig);
-        NTabletPipe::SendData(SelfId(), PipeClient, request.Release());
-    }
-
     void HandleNavigate(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
         const NSchemeCache::TSchemeCacheNavigate* response = ev->Get()->Request.Get();
         if (response->ResultSet.size() == 1) {
             if (response->ResultSet.front().Status == NSchemeCache::TSchemeCacheNavigate::EStatus::Ok) {
                 const NSchemeCache::TSchemeCacheNavigate::TEntry& entry = response->ResultSet.front();
                 ui64 schemeShardTabletId = entry.DomainInfo->ExtractSchemeShard();
-                RequestSchemeShard(schemeShardTabletId);
+                IActor* pipe = NTabletPipe::CreateClient(SelfId(), schemeShardTabletId, GetPipeClientConfig());
+                TActorId pipeClient = RegisterWithSameMailbox(pipe);
+                THolder<TEvSchemeShard::TEvLogin> request = MakeHolder<TEvSchemeShard::TEvLogin>();
+                request.Get()->Record.SetUser(User);
+                request.Get()->Record.SetPassword(Password);
+                NTabletPipe::SendData(SelfId(), pipeClient, request.Release());
                 return;
             } else {
-                ReplyErrorAndPassAway("503", "Service Unavailable", TStringBuilder()
+                ReplyErrorAndPassAway("503 Service Unavailable", TStringBuilder()
                     << "Status " << static_cast<int>(response->ResultSet.front().Status));
             }
         } else {
-            ReplyErrorAndPassAway("503", "Service Unavailable", "Scheme error");
-        }
-    }
-
-    void Handle(TEvLdapAuthProvider::TEvAuthenticateResponse::TPtr& ev) {
-        TEvLdapAuthProvider::TEvAuthenticateResponse* response = ev->Get();
-        if (response->Status == TEvLdapAuthProvider::EStatus::SUCCESS) {
-            ALOG_DEBUG(NActorsServices::HTTP, "Login: Requesting schemecache for database " << Database);
-            Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(CreateNavigateKeySetRequest(Database).Release()));
-        } else {
-            ReplyErrorAndPassAway("403", "Forbidden", response->Error.Message);
+            ReplyErrorAndPassAway("503 Service Unavailable", "Scheme error");
         }
     }
 
     void HandleResult(TEvSchemeShard::TEvLoginResult::TPtr& ev) {
         if (ev->Get()->Record.GetError()) {
-            ReplyErrorAndPassAway("403", "Forbidden", ev->Get()->Record.GetError());
+            ReplyErrorAndPassAway("403 Forbidden", ev->Get()->Record.GetError());
         } else {
             ReplyCookieAndPassAway(ev->Get()->Record.GetToken());
         }
@@ -163,7 +159,7 @@ public:
 
     void HandleConnect(TEvTabletPipe::TEvClientConnected::TPtr& ev) {
         if (ev->Get()->Status != NKikimrProto::OK) {
-            ReplyErrorAndPassAway("503", "Service Unavailable", "SchemeShard is not available");
+            ReplyErrorAndPassAway("503 Service Unavailable", "SchemeShard is not available");
         }
     }
 
@@ -172,64 +168,93 @@ public:
     }
 
     void HandleTimeout() {
-        ReplyErrorAndPassAway("504", "Gateway Timeout", "Timeout");
+        ReplyErrorAndPassAway("504 Gateway Timeout", "Timeout");
     }
 
     void ReplyOptionsAndPassAway() {
-        NHttp::THeadersBuilder headers;
-        SetCORS(headers);
-        headers.Set("Allow", "OPTIONS, POST");
-        Send(Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(Request->CreateResponse("204", "No Content", headers)));
+        Result.SetValue(MakeHolder<NMon::TEvHttpInfoRes>(
+            "HTTP/1.1 204 No Content\r\n"
+            "Allow: OPTIONS, POST\r\n"
+            "Connection: Keep-Alive\r\n\r\n", 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
     }
 
-    void SetCORS(NHttp::THeadersBuilder& headers) {
+    TString GetCORS() {
         TStringBuilder res;
-        TString origin = TString(NHttp::THeaders(Request->Headers)["Origin"]);
+        TString origin = TString(Request.GetHeader("Origin"));
         if (origin.empty()) {
             origin = "*";
         }
-        headers.Set("Access-Control-Allow-Origin", origin);
-        headers.Set("Access-Control-Allow-Credentials", "true");
-        headers.Set("Access-Control-Allow-Headers", "Content-Type,Authorization,Origin,Accept");
-        headers.Set("Access-Control-Allow-Methods", "OPTIONS, GET, POST");
+        res << "Access-Control-Allow-Origin: " << origin << "\r\n";
+        res << "Access-Control-Allow-Credentials: true\r\n";
+        res << "Access-Control-Allow-Headers: Content-Type,Authorization,Origin,Accept\r\n";
+        res << "Access-Control-Allow-Methods: OPTIONS, GET, POST\r\n";
+        return res;
     }
 
     void ReplyCookieAndPassAway(const TString& cookie) {
-        ALOG_DEBUG(NActorsServices::HTTP, "Login success for " << AuthCredentials.Login);
-        NHttp::THeadersBuilder headers;
-        SetCORS(headers);
+        TStringStream response;
         TDuration maxAge = (ToInstant(NLogin::TLoginProvider::GetTokenExpiresAt(cookie)) - TInstant::Now());
-        headers.Set("Set-Cookie", TStringBuilder() << "ydb_session_id=" << cookie << "; Max-Age=" << maxAge.Seconds());
-        Send(Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(Request->CreateResponse("200", "OK", headers)));
+        response << "HTTP/1.1 200 OK\r\n";
+        response << "Set-Cookie: ydb_session_id=" << cookie << "; Max-Age=" << maxAge.Seconds() << "\r\n";
+        response << GetCORS();
+        response << "\r\n";
+        Result.SetValue(MakeHolder<NMon::TEvHttpInfoRes>(response.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
     }
 
-    void ReplyErrorAndPassAway(const TString& status, const TString& message, const TString& error) {
-        ALOG_ERROR(NActorsServices::HTTP, "Login: " << error);
-        NHttp::THeadersBuilder headers;
-        SetCORS(headers);
-        headers.Set("Content-Type", "application/json");
+    void ReplyErrorAndPassAway(const TString& status, const TString& error) {
         NJson::TJsonValue body;
         body["error"] = error;
-        Send(Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(Request->CreateResponse(status, message, headers, NJson::WriteJson(body, false))));
+        TStringStream response;
+        TString responseBody = NJson::WriteJson(body, false);
+        response << "HTTP/1.1 " << status << "\r\n";
+        response << "Content-Type: application/json\r\n";
+        response << "Content-Length: " << responseBody.Size() << "\r\n";
+        response << GetCORS();
+        response << "\r\n";
+        response << responseBody;
+        Result.SetValue(MakeHolder<NMon::TEvHttpInfoRes>(response.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
-    }
-
-    void PassAway() override {
-        if (PipeClient) {
-            NTabletPipe::CloseClient(TBase::SelfId(), PipeClient);
-        }
-        TBase::PassAway();
     }
 
 protected:
-    TActorId Sender;
-    NHttp::THttpIncomingRequestPtr Request;
+    IMonHttpRequest& Request;
+    NThreading::TPromise<THttpResponsePtr> Result;
     TDuration Timeout = TDuration::Seconds(60);
     TString Database;
-    TActorId PipeClient;
-    TAuthCredentials AuthCredentials;
+    TString User;
+    TString Password;
+};
+
+class TLoginMonPage: public IMonPage {
+public:
+    TLoginMonPage(TActorSystem* actorSystem, const TString& path)
+        : IMonPage(path, {})
+        , ActorSystem(actorSystem)
+    {
+    }
+
+    void Output(IMonHttpRequest &request) override {
+        auto promise = NThreading::NewPromise<THttpResponsePtr>();
+        auto future = promise.GetFuture();
+
+        ActorSystem->Register(new TLoginRequest(request, promise));
+
+        THttpResponsePtr result = future.ExtractValue(TDuration::Max());
+
+        if (result) {
+            Output(request, *result);
+        }
+    }
+
+private:
+    void Output(IMonHttpRequest& request, const NMon::IEvHttpInfoRes& result) const {
+        result.Output(request.Output());
+    }
+
+private:
+    TActorSystem* ActorSystem;
 };
 
 class TLogoutRequest : public NActors::TActorBootstrapped<TLogoutRequest> {
@@ -238,27 +263,63 @@ public:
         return NKikimrServices::TActivity::ACTORLIB_COMMON;
     }
 
-    TLogoutRequest(NHttp::TEvHttpProxy::TEvHttpIncomingRequest::TPtr& ev)
-        : Sender(ev->Sender)
-        , Request(ev->Get()->Request)
+    TLogoutRequest(IMonHttpRequest& request, NThreading::TPromise<THttpResponsePtr> result)
+        : Request(request)
+        , Result(result)
     {
+    }
+
+    ~TLogoutRequest() {
+        if (!Result.HasValue()) {
+            Result.SetValue(nullptr);
+        }
     }
 
     STATEFN(StateWork) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
+            cFunc(TEvents::TSystem::Wakeup, HandleTimeout);
+        }
+    }
+
+    static TString GetMethod(HTTP_METHOD method) {
+        switch (method) {
+            case HTTP_METHOD_UNDEFINED: return "UNDEFINED";
+            case HTTP_METHOD_OPTIONS: return "OPTIONS";
+            case HTTP_METHOD_GET: return "GET";
+            case HTTP_METHOD_HEAD: return "HEAD";
+            case HTTP_METHOD_POST: return "POST";
+            case HTTP_METHOD_PUT: return "PUT";
+            case HTTP_METHOD_DELETE: return "DELETE";
+            case HTTP_METHOD_TRACE: return "TRACE";
+            case HTTP_METHOD_CONNECT: return "CONNECT";
+            case HTTP_METHOD_EXTENSION: return "EXTENSION";
+            default: return "UNKNOWN";
         }
     }
 
     void Bootstrap() {
-        ALOG_WARN(NActorsServices::HTTP, Request->Address << " " << Request->Method << " " << Request->URL);
+        LOG_WARN_S(*TlsActivationContext, NActorsServices::HTTP,
+                        Request.GetRemoteAddr()
+                        << " " << GetMethod(Request.GetMethod())
+                        << " " << Request.GetUri());
 
-        if (Request->Method == "OPTIONS") {
+        if (Request.GetMethod() == HTTP_METHOD_OPTIONS) {
             return ReplyOptionsAndPassAway();
         }
 
-        if (Request->Method != "POST") {
-            return ReplyErrorAndPassAway("400", "Bad Request", "Invalid method");
+        if (Request.GetMethod() != HTTP_METHOD_POST) {
+            return ReplyErrorAndPassAway("400 Bad Request", "Invalid method");
+        }
+
+        if (Request.GetHeader("Content-Type").Before(';') != "application/json") {
+            return ReplyErrorAndPassAway("400 Bad Request", "Invalid Content-Type");
+        }
+
+        NJson::TJsonValue postData;
+
+        if (!NJson::ReadJsonTree(Request.GetPostContent(), &postData)) {
+            return ReplyErrorAndPassAway("400 Bad Request", "Invalid JSON data");
         }
 
         ReplyDeleteCookieAndPassAway();
@@ -268,88 +329,87 @@ public:
         PassAway();
     }
 
-    void ReplyOptionsAndPassAway() {
-        NHttp::THeadersBuilder headers;
-        headers.Set("Allow", "OPTIONS, POST");
-        Send(Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(Request->CreateResponse("204", "No Content", headers)));
-        PassAway();
+    void HandleTimeout() {
+        ReplyErrorAndPassAway("504 Gateway Timeout", "Timeout");
     }
 
-    void SetCORS(NHttp::THeadersBuilder& headers) {
-        TStringBuilder res;
-        TString origin = TString(NHttp::THeaders(Request->Headers)["Origin"]);
-        if (origin.empty()) {
-            origin = "*";
-        }
-        headers.Set("Access-Control-Allow-Origin", origin);
-        headers.Set("Access-Control-Allow-Credentials", "true");
-        headers.Set("Access-Control-Allow-Headers", "Content-Type,Authorization,Origin,Accept");
-        headers.Set("Access-Control-Allow-Methods", "OPTIONS, GET, POST");
+    void ReplyOptionsAndPassAway() {
+        Result.SetValue(MakeHolder<NMon::TEvHttpInfoRes>(
+            "HTTP/1.1 204 No Content\r\n"
+            "Allow: OPTIONS, POST\r\n"
+            "Connection: Keep-Alive\r\n\r\n", 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+        PassAway();
     }
 
     void ReplyDeleteCookieAndPassAway() {
-        ALOG_DEBUG(NActorsServices::HTTP, "Logout success");
-        NHttp::THeadersBuilder headers;
-        SetCORS(headers);
-        headers.Set("Set-Cookie", "ydb_session_id=; Max-Age=0");
-        Send(Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(Request->CreateResponse("200", "OK", headers)));
+        TStringStream response;
+        response << "HTTP/1.1 200 OK\r\n";
+        response << "Set-Cookie: ydb_session_id=; Max-Age=0\r\n";
+        response << "\r\n";
+        Result.SetValue(MakeHolder<NMon::TEvHttpInfoRes>(response.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
     }
 
-    void ReplyErrorAndPassAway(const TString& status, const TString& message, const TString& error) {
-        ALOG_ERROR(NActorsServices::HTTP, "Logout: " << error);
-        NHttp::THeadersBuilder headers;
-        SetCORS(headers);
-        headers.Set("Content-Type", "application/json");
+    void ReplyErrorAndPassAway(const TString& status, const TString& error) {
         NJson::TJsonValue body;
         body["error"] = error;
-        Send(Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(Request->CreateResponse(status, message, headers, NJson::WriteJson(body, false))));
+        TStringStream response;
+        TString responseBody = NJson::WriteJson(body, false);
+        response << "HTTP/1.1 " << status << "\r\n";
+        response << "Content-Type: application/json\r\n";
+        response << "Content-Length: " << responseBody.Size() << "\r\n";
+        response << "\r\n";
+        response << responseBody;
+        Result.SetValue(MakeHolder<NMon::TEvHttpInfoRes>(response.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
     }
 
 protected:
-    TActorId Sender;
-    NHttp::THttpIncomingRequestPtr Request;
+    IMonHttpRequest& Request;
+    NThreading::TPromise<THttpResponsePtr> Result;
+    TDuration Timeout = TDuration::Seconds(60);
 };
 
-class TLoginService : public TActor<TLoginService> {
+class TLogoutMonPage: public IMonPage {
 public:
-    TLoginService()
-        : TActor(&TLoginService::Work)
-    {}
-
-    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
-        return NKikimrServices::TActivity::ACTORLIB_COMMON;
+    TLogoutMonPage(TActorSystem* actorSystem, const TString& path)
+        : IMonPage(path, {})
+        , ActorSystem(actorSystem)
+    {
     }
 
-    STATEFN(Work) {
-        switch (ev->GetTypeRewrite()) {
-            hFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
-            hFunc(NHttp::TEvHttpProxy::TEvHttpIncomingRequest, HandleRequest);
+    void Output(IMonHttpRequest &request) override {
+        auto promise = NThreading::NewPromise<THttpResponsePtr>();
+        auto future = promise.GetFuture();
+
+        ActorSystem->Register(new TLogoutRequest(request, promise));
+
+        THttpResponsePtr result = future.ExtractValue(TDuration::Max());
+
+        if (result) {
+            Output(request, *result);
         }
     }
 
-    void HandlePoisonPill(TEvents::TEvPoisonPill::TPtr&) {
-        PassAway();
+private:
+    void Output(IMonHttpRequest& request, const NMon::IEvHttpInfoRes& result) const {
+        result.Output(request.Output());
     }
 
-    void HandleRequest(NHttp::TEvHttpProxy::TEvHttpIncomingRequest::TPtr& ev) {
-        if (ev->Get()->Request->URL == "/login") {
-            Register(new TLoginRequest(ev));
-        } else if (ev->Get()->Request->URL == "/logout") {
-            Register(new TLogoutRequest(ev));
-        } else {
-            Send(ev->Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(ev->Get()->Request->CreateResponseNotFound()));
-        }
-    }
+private:
+    TActorSystem* ActorSystem;
 };
 
 }
 
 namespace NKikimr {
 
-NActors::IActor* CreateWebLoginService() {
-    return new TLoginService();
+IMonPage* CreateLoginPage(TActorSystem* actorSystem, const TString& path) {
+    return new TLoginMonPage(actorSystem, path);
+}
+
+IMonPage* CreateLogoutPage(TActorSystem* actorSystem, const TString& path) {
+    return new TLogoutMonPage(actorSystem, path);
 }
 
 }

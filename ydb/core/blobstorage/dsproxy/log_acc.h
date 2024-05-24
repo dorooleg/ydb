@@ -1,7 +1,6 @@
 #pragma once
 
 #include "defs.h"
-#include <library/cpp/random_provider/random_provider.h>
 
 namespace NKikimr {
 
@@ -73,7 +72,6 @@ namespace NKikimr {
         const TString RequestPrefix;
         const NKikimrServices::EServiceKikimr LogComponent;
         TLogAccumulator LogAcc;
-        bool SuppressLog = false;
 
         TLogContext(NKikimrServices::EServiceKikimr logComponent, bool logAccEnabled)
             : RequestPrefix(Sprintf("[%016" PRIx64 "]", TAppData::RandomProvider->GenRand64()))
@@ -143,9 +141,6 @@ namespace NKikimr {
 #define A_LOG_LOG_SX(logCtx, isRelease, priority, marker, stream) \
     do { \
         auto& lc = (logCtx); \
-        if (lc.SuppressLog) { \
-            break; \
-        } \
         A_LOG_LOG_S_IMPL(isRelease, lc.LogAcc, priority, lc.LogComponent, \
             lc.RequestPrefix << " " << stream << " Marker# " << marker); \
     } while (false)

@@ -1,26 +1,35 @@
 #include "logoblob.h"
 #include <ydb/core/protos/base.pb.h>
+#include <util/string/printf.h>
 
 namespace NKikimr {
 
 TString TLogoBlobID::ToString() const {
-    TString str;
-    str.reserve(64);
-    TStringOutput outStr(str);
-    Out(outStr);
-    return str;
+    return Sprintf(
+        "[%" PRIu64 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 "]",
+        TabletID(),
+        Generation(),
+        Step(),
+        Channel(),
+        Cookie(),
+        BlobSize(),
+        PartId()).data();
 }
 
 void TLogoBlobID::Out(IOutputStream &o) const {
-    o << '['
-        << TabletID() << ':'
-        << Generation() << ':'
-        << Step() << ':'
-        << Channel() << ':'
-        << Cookie() << ':'
-        << BlobSize() << ':'
-        << PartId()
-        << ']' ;
+    char buf[240];
+    sprintf(buf,
+        "[%" PRIu64 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 ":%" PRIu32 "]",
+        TabletID(),
+        Generation(),
+        Step(),
+        Channel(),
+        Cookie(),
+        BlobSize(),
+        PartId()
+    );
+
+    o << buf;
 }
 
 void TLogoBlobID::Out(IOutputStream &o, const TVector<TLogoBlobID> &vec) {

@@ -4,8 +4,8 @@
 
 #include <ydb/core/base/path.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NTxProxy {
@@ -25,7 +25,6 @@ namespace {
             TVector<TString>& unresolvedKeys)
     {
         TVector<TCell> key;
-        TVector<TString> memoryOwner;
         if (proto.HasValue()) {
             if (!proto.HasType()) {
                 unresolvedKeys.push_back("No type was specified in the range key tuple");
@@ -35,7 +34,7 @@ namespace {
             auto& value = proto.GetValue();
             auto& type = proto.GetType();
             TString errStr;
-            bool res = NMiniKQL::CellsFromTuple(&type, value, keyTypes, {}, true, key, errStr, memoryOwner);
+            bool res = NMiniKQL::CellsFromTuple(&type, value, keyTypes, true, key, errStr);
             if (!res) {
                 unresolvedKeys.push_back("Failed to parse range key tuple: " + errStr);
                 return false;
@@ -50,7 +49,7 @@ namespace {
                 break;
         }
 
-        buf = TSerializedCellVec(key);
+        buf.Parse(TSerializedCellVec::Serialize(key));
         return true;
     }
 
@@ -66,7 +65,7 @@ namespace {
                 continue;
             }
 
-            Y_ABORT_UNLESS(entry.DomainInfo);
+            Y_VERIFY(entry.DomainInfo);
 
             if (!domainInfo) {
                 domainInfo = entry.DomainInfo;

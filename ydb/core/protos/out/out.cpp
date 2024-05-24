@@ -1,7 +1,7 @@
 #include <ydb/core/protos/blobstorage.pb.h>
 #include <ydb/core/protos/blobstorage_vdisk_internal.pb.h>
 #include <ydb/core/protos/blobstorage_vdisk_config.pb.h>
-#include <ydb/core/protos/bootstrap.pb.h>
+#include <ydb/core/protos/cms.pb.h>
 #include <ydb/core/protos/console_base.pb.h>
 #include <ydb/core/protos/console_config.pb.h>
 #include <ydb/core/protos/console_tenant.pb.h>
@@ -10,20 +10,6 @@
 #include <ydb/core/protos/resource_broker.pb.h>
 #include <ydb/core/protos/tenant_pool.pb.h>
 #include <ydb/core/protos/tx_datashard.pb.h>
-#include <ydb/core/protos/blobstorage_base.pb.h>
-#include <ydb/core/protos/base.pb.h>
-#include <ydb/core/protos/blobstorage_config.pb.h>
-#include <ydb/core/protos/blobstorage_base3.pb.h>
-#include <ydb/core/protos/node_broker.pb.h>
-#include <ydb/core/protos/config.pb.h>
-#include <ydb/core/protos/tx_datashard.pb.h>
-#include <ydb/core/protos/blobstorage_disk.pb.h>
-#include <ydb/core/protos/blobstorage_disk_color.pb.h>
-#include <ydb/core/protos/kqp.pb.h>
-#include <ydb/core/protos/node_whiteboard.pb.h>
-#include <ydb/core/protos/flat_scheme_op.pb.h>
-#include <ydb/core/protos/subdomains.pb.h>
-#include <ydb/core/protos/data_events.pb.h>
 
 #include <util/stream/output.h>
 
@@ -69,6 +55,14 @@ Y_DECLARE_OUT_SPEC(, NKikimrBlobStorage::ESyncFullStage, stream, value) {
 
 Y_DECLARE_OUT_SPEC(, NKikimrProto::EReplyStatus, stream, value) {
     stream << NKikimrProto::EReplyStatus_Name(value);
+}
+
+Y_DECLARE_OUT_SPEC(, NKikimrCms::TStatus::ECode, stream, value) {
+    stream << NKikimrCms::TStatus::ECode_Name(value);
+}
+
+Y_DECLARE_OUT_SPEC(, NKikimrCms::EState, stream, value) {
+    stream << NKikimrCms::EState_Name(value);
 }
 
 Y_DECLARE_OUT_SPEC(, NKikimrBlobStorage::EDriveStatus, stream, value) {
@@ -123,8 +117,20 @@ Y_DECLARE_OUT_SPEC(, NKikimrNodeBroker::TStatus::ECode, stream, value) {
     stream << NKikimrNodeBroker::TStatus::ECode_Name(value);
 }
 
+Y_DECLARE_OUT_SPEC(, NKikimrCms::EMarker, stream, value) {
+    stream << NKikimrCms::EMarker_Name(value);
+}
+
 Y_DECLARE_OUT_SPEC(, NKikimrTxDataShard::ETransactionKind, stream, value) {
     stream << NKikimrTxDataShard::ETransactionKind_Name(value);
+}
+
+Y_DECLARE_OUT_SPEC(, NKikimrCms::ETextFormat, stream, value) {
+    stream << NKikimrCms::ETextFormat_Name(value);
+}
+
+Y_DECLARE_OUT_SPEC(, NKikimrCms::TLogRecordData::EType, stream, value) {
+    stream << NKikimrCms::TLogRecordData::EType_Name(value);
 }
 
 Y_DECLARE_OUT_SPEC(, NKikimrConfig::TBootstrap::ETabletType, stream, value) {
@@ -137,10 +143,6 @@ Y_DECLARE_OUT_SPEC(, NKikimrTxDataShard::TEvProposeTransactionResult::EStatus, s
 
 Y_DECLARE_OUT_SPEC(, NKikimrTxDataShard::EDatashardState, stream, value) {
     stream << NKikimrTxDataShard::EDatashardState_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrTxDataShard::TError::EKind, stream, value) {
-    stream << NKikimrTxDataShard::TError::EKind_Name(value);
 }
 
 Y_DECLARE_OUT_SPEC(, NKikimrBlobStorage::TPDiskState::E, stream, value) {
@@ -209,32 +211,4 @@ Y_DECLARE_OUT_SPEC(, NKikimrSchemeOp::ECdcStreamFormat, stream, value) {
 
 Y_DECLARE_OUT_SPEC(, NKikimrSchemeOp::ECdcStreamState, stream, value) {
     stream << NKikimrSchemeOp::ECdcStreamState_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrSchemeOp::TTableReplicationConfig::EReplicationMode, stream, value) {
-    stream << NKikimrSchemeOp::TTableReplicationConfig::EReplicationMode_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrSchemeOp::TTableReplicationConfig::EConsistency, stream, value) {
-    stream << NKikimrSchemeOp::TTableReplicationConfig::EConsistency_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrSubDomains::EServerlessComputeResourcesMode, stream, value) {
-    stream << NKikimrSubDomains::EServerlessComputeResourcesMode_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrDataEvents::EDataFormat, stream, value) {
-    stream << NKikimrDataEvents::EDataFormat_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrDataEvents::TEvWriteResult::EStatus, stream, value) {
-    stream << NKikimrDataEvents::TEvWriteResult::EStatus_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrDataEvents::TEvWrite::TOperation::EOperationType, stream, value) {
-    stream << NKikimrDataEvents::TEvWrite::TOperation::EOperationType_Name(value);
-}
-
-Y_DECLARE_OUT_SPEC(, NKikimrDataEvents::TEvWrite::ETxMode, stream, value) {
-    stream << NKikimrDataEvents::TEvWrite::ETxMode_Name(value);
 }

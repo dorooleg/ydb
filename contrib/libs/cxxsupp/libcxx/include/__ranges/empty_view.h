@@ -6,15 +6,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-
 #ifndef _LIBCPP___RANGES_EMPTY_VIEW_H
 #define _LIBCPP___RANGES_EMPTY_VIEW_H
 
 #include <__config>
 #include <__ranges/enable_borrowed_range.h>
 #include <__ranges/view_interface.h>
-#include <__type_traits/is_object.h>
-#include <cstddef>
+#include <type_traits>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -22,7 +20,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if _LIBCPP_STD_VER >= 20
+#if !defined(_LIBCPP_HAS_NO_CONCEPTS) && !defined(_LIBCPP_HAS_NO_INCOMPLETE_RANGES)
 
 namespace ranges {
   template<class _Tp>
@@ -38,16 +36,9 @@ namespace ranges {
 
   template<class _Tp>
   inline constexpr bool enable_borrowed_range<empty_view<_Tp>> = true;
-
-  namespace views {
-
-  template <class _Tp>
-  inline constexpr empty_view<_Tp> empty{};
-
-  } // namespace views
 } // namespace ranges
 
-#endif // _LIBCPP_STD_VER >= 20
+#endif // !defined(_LIBCPP_HAS_NO_CONCEPTS) && !defined(_LIBCPP_HAS_NO_INCOMPLETE_RANGES)
 
 _LIBCPP_END_NAMESPACE_STD
 

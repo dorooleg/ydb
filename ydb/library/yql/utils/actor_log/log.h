@@ -2,10 +2,10 @@
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/utils/log/tls_backend.h>
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NYql {
 namespace NDq {

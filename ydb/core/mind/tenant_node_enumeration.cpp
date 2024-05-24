@@ -3,9 +3,8 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/path.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <util/generic/algorithm.h>
 
 namespace NKikimr {
@@ -14,10 +13,24 @@ TString MakeTenantNodeEnumerationPath(const TString &tenantName) {
     return "node+" + tenantName;
 }
 
+static ui32 ExtractDefaultGroupForPath(const TString &path) {
+    auto *domains = AppData()->DomainsInfo.Get();
+    const TStringBuf domainName = ExtractDomain(path);
+    auto *domainInfo = domains->GetDomainByName(domainName);
+    if (domainInfo)
+        return domainInfo->DefaultStateStorageGroup;
+    else
+        return Max<ui32>();
+}
+
 class TTenantNodeEnumerationPublisher : public TActorBootstrapped<TTenantNodeEnumerationPublisher> {
     void StartPublishing() {
         const TString assignedPath = MakeTenantNodeEnumerationPath(AppData()->TenantName);
-        Register(CreateBoardPublishActor(assignedPath, TString(), SelfId(), 0, true));
+        const ui32 statestorageGroupId = ExtractDefaultGroupForPath(AppData()->TenantName);
+        if (statestorageGroupId == Max<ui32>())
+            return;
+
+        Register(CreateBoardPublishActor(assignedPath, TString(), SelfId(), statestorageGroupId, 0, true));
     }
 
 public:
@@ -81,8 +94,12 @@ public:
     {}
 
     void Bootstrap() {
+        const ui32 statestorageGroupId = ExtractDefaultGroupForPath(TenantName);
+        if (statestorageGroupId == Max<ui32>())
+            return ReportErrorAndDie();
+
         const TString path = MakeTenantNodeEnumerationPath(TenantName);
-        LookupActor = Register(CreateBoardLookupActor(path, SelfId(), EBoardLookupMode::Majority));
+        LookupActor = Register(CreateBoardLookupActor(path, SelfId(), statestorageGroupId, EBoardLookupMode::Majority));
 
         Become(&TThis::StateWait);
     }

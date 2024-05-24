@@ -90,13 +90,8 @@ TValidationQuery CreateModifyUniqueNameValidator(const TString& tableName,
                 ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Not valid number of lines, one is expected. Please contact internal support";
             }
 
-            FederatedQuery::Acl::Visibility oldVisibility =
-                static_cast<FederatedQuery::Acl::Visibility>(
-                    parser.ColumnParser(VISIBILITY_COLUMN_NAME)
-                        .GetOptionalInt64()
-                        .GetOrElse(FederatedQuery::Acl::VISIBILITY_UNSPECIFIED));
-            TString oldName =
-                parser.ColumnParser(NAME_COLUMN_NAME).GetOptionalString().GetOrElse("");
+            FederatedQuery::Acl::Visibility oldVisibility = static_cast<FederatedQuery::Acl::Visibility>(parser.ColumnParser(VISIBILITY_COLUMN_NAME).GetOptionalInt64().GetOrElse(FederatedQuery::Acl::VISIBILITY_UNSPECIFIED));
+            TString oldName = parser.ColumnParser(NAME_COLUMN_NAME).GetOptionalString().GetOrElse("");
 
             if (oldVisibility == visibility && oldName == name) {
                 return false;
@@ -451,8 +446,7 @@ TValidationQuery CreateQueryComputeStatusValidator(const std::vector<FederatedQu
                                                    const TString& scope,
                                                    const TString& id,
                                                    const TString& error,
-                                                   const TString& tablePathPrefix,
-                                                   const ::NMonitoring::TDynamicCounters::TCounterPtr& parseProtobufError) {
+                                                   const TString& tablePathPrefix) {
     TSqlQueryBuilder queryBuilder(tablePathPrefix, "ComputeStatusValidator");
     queryBuilder.AddString("scope", scope);
     queryBuilder.AddString("query_id", id);
@@ -462,7 +456,7 @@ TValidationQuery CreateQueryComputeStatusValidator(const std::vector<FederatedQu
         "WHERE `" SCOPE_COLUMN_NAME "` = $scope AND `" QUERY_ID_COLUMN_NAME "` = $query_id;\n"
     );
 
-    auto validator = [error, computeStatuses, parseProtobufError](NYdb::NTable::TDataQueryResult result) {
+    auto validator = [error, computeStatuses](NYdb::NTable::TDataQueryResult result) {
         const auto& resultSets = result.GetResultSets();
         if (resultSets.size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 1 but equal " << resultSets.size() << ". Please contact internal support";
@@ -475,7 +469,6 @@ TValidationQuery CreateQueryComputeStatusValidator(const std::vector<FederatedQu
 
         FederatedQuery::Query query;
         if (!query.ParseFromString(*parser.ColumnParser(QUERY_COLUMN_NAME).GetOptionalString())) {
-            parseProtobufError->Inc();
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for query. Please contact internal support";
         }
 

@@ -4,7 +4,7 @@
 #include "datashard_impl.h"
 #include "execution_unit_kind.h"
 
-#include <ydb/library/actors/wilson/wilson_span.h>
+#include <library/cpp/actors/wilson/wilson_span.h>
 
 namespace NKikimr::NDataShard {
 
@@ -67,7 +67,7 @@ private:
 
 class TDataShard::TTxProgressTransaction : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
 public:
-    explicit TTxProgressTransaction(TDataShard *self, TOperation::TPtr op, NWilson::TTraceId &&traceId);
+    explicit TTxProgressTransaction(TDataShard *self, TOperation::TPtr op = nullptr);
     bool Execute(TTransactionContext &txc, const TActorContext &ctx) override;
     void Complete(const TActorContext &ctx) override;
     TTxType GetTxType() const override { return TXTYPE_PROGRESS_START; }
@@ -85,8 +85,7 @@ public:
     TTxProposeTransactionBase(TDataShard *self,
                               TEvDataShard::TEvProposeTransaction::TPtr &&ev,
                               TInstant receivedAt, ui64 tieBreakerIndex,
-                              bool delayed,
-                              NWilson::TSpan &&datashardTransactionSpan);
+                              bool delayed);
 
     bool Execute(NTabletFlatExecutor::TTransactionContext &txc,
                  const TActorContext &ctx) override;
@@ -110,32 +109,7 @@ protected:
     bool Acked;
     bool Rescheduled = false;
     bool WaitComplete = false;
-    NWilson::TSpan DatashardTransactionSpan;
-};
-
-class TDataShard::TTxWrite: public NTabletFlatExecutor::TTransactionBase<TDataShard> {
-public:
-    TTxWrite(TDataShard* ds,
-             NEvents::TDataEvents::TEvWrite::TPtr ev,
-             TInstant receivedAt,
-             ui64 tieBreakerIndex,
-             bool delayed,
-             NWilson::TSpan &&datashardTransactionSpan);
-    bool Execute(TTransactionContext& txc, const TActorContext& ctx) override;
-    void Complete(const TActorContext& ctx) override;
-    
-protected:
-    TOperation::TPtr Op;
-    NEvents::TDataEvents::TEvWrite::TPtr Ev;
-    const TInstant ReceivedAt;
-    const ui64 TieBreakerIndex;
-    ui64 TxId;
-    TVector<EExecutionUnitKind> CompleteList;
-    TInstant CommitStart;
-    bool Acked;
-    bool Rescheduled = false;
-    bool WaitComplete = false;
-    NWilson::TSpan DatashardTransactionSpan;
+    NWilson::TSpan ProposeTransactionSpan;
 };
 
 class TDataShard::TTxReadSet : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
@@ -164,6 +138,16 @@ public:
     TTxType GetTxType() const override { return TXTYPE_PROGRESS_RESEND_RS; }
 private:
     const ui64 Seqno;
+};
+
+class TDataShard::TTxCancelTransactionProposal : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
+public:
+    TTxCancelTransactionProposal(TDataShard *self, ui64 txId);
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override;
+    void Complete(const TActorContext &ctx) override;
+    TTxType GetTxType() const override { return TXTYPE_CANCEL_TX_PROPOSAL; }
+private:
+    const ui64 TxId;
 };
 
 inline bool MaybeRequestMoreTxMemory(ui64 usage, NTabletFlatExecutor::TTransactionContext &txc) {

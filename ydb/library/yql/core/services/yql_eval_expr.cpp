@@ -17,8 +17,6 @@
 #include <library/cpp/yson/node/node_io.h>
 #include <library/cpp/string_utils/base64/base64.h>
 
-#include <openssl/sha.h>
-
 #include <util/string/builder.h>
 
 namespace NYql {
@@ -26,8 +24,6 @@ namespace NYql {
 using namespace NKikimr;
 using namespace NKikimr::NMiniKQL;
 using namespace NNodes;
-
-const TString EvaluationComponent = "Evaluation";
 
 static THashSet<TStringBuf> EvaluationFuncs = {
     TStringBuf("EvaluateAtom"),
@@ -45,30 +41,13 @@ static THashSet<TStringBuf> SubqueryExpandFuncs = {
     TStringBuf("SubqueryAssumeOrderBy")
 };
 
-TString MakeCacheKey(const TExprNode& root, TExprContext& ctx) {
-    TConvertToAstSettings settings;
-    settings.NormalizeAtomFlags = true;
-    settings.AllowFreeArgs = false;
-    settings.RefAtoms = true;
-    settings.NoInlineFunc = [](const TExprNode&) { return true; };
-    auto ast = ConvertToAst(root, ctx, settings);
-    YQL_ENSURE(ast.Root);
-    auto str = ast.Root->ToString();
-    SHA256_CTX sha;
-    SHA256_Init(&sha);
-    SHA256_Update(&sha, str.Data(), str.Size());
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_Final(hash, &sha);
-    return TString((const char*)hash, sizeof(hash));
-}
-
 bool CheckPendingArgs(const TExprNode& root, TNodeSet& visited, TNodeMap<const TExprNode*>& activeArgs, const TNodeMap<ui32>& externalWorlds, TExprContext& ctx,
     bool underTypeOf, bool& hasUnresolvedTypes) {
     if (!visited.emplace(&root).second) {
         return true;
     }
 
-    if (root.IsCallable({"TypeOf", "SqlColumnOrType", "SqlPlainColumnOrType"})) {
+    if (root.IsCallable("TypeOf")) {
         underTypeOf = true;
     }
 
@@ -181,7 +160,7 @@ private:
             pop = true;
         }
 
-        if (node.IsCallable({ "EvaluateIf!", "EvaluateFor!", "EvaluateParallelFor!" })) {
+        if (node.IsCallable({ "EvaluateIf!", "EvaluateFor!" })) {
             // scan predicate/list only
             if (node.ChildrenSize() > 1) {
                 CurrentEvalNodes.insert(&node);
@@ -405,7 +384,6 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
     TString nextProvider;
     TMaybe<IDataProvider*> calcProvider;
     TExprNode::TPtr calcWorldRoot;
-    TPositionHandle pipelinePos;
     bool isAtomPipeline = false;
     bool isOptionalAtom = false;
     bool isTypePipeline = false;
@@ -608,8 +586,7 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
             }
         }
 
-        if (node->IsCallable({"EvaluateFor!", "EvaluateParallelFor!"})) {
-            const bool seq = node->IsCallable("EvaluateFor!");
+        if (node->IsCallable("EvaluateFor!")) {
             if (!EnsureMinArgsCount(*node, 3, ctx)) {
                 return nullptr;
             }
@@ -666,24 +643,20 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
             }
 
             auto itemsCount = list->ChildrenSize() - (list->IsCallable("List") ? 1 : 0);
-            const auto limit = seq ? types.EvaluateForLimit : types.EvaluateParallelForLimit;
-            if (itemsCount > limit) {
-                ctx.AddError(TIssue(ctx.GetPosition(list->Pos()), TStringBuilder() << "Too large list for EVALUATE " << (seq ? "" : "PARALLEL ") << "FOR, allowed: " <<
-                    limit << ", got: " << itemsCount));
+            if (itemsCount > types.EvaluateForLimit) {
+                ctx.AddError(TIssue(ctx.GetPosition(list->Pos()), TStringBuilder() << "Too large list for EVALUATE FOR, allowed: " <<
+                    types.EvaluateForLimit << ", got: " << itemsCount));
                 return nullptr;
             }
 
             auto world = node->ChildPtr(0);
             auto ret = ctx.Builder(node->Pos())
-                .Callable(seq ? "Seq!" : "Sync!")
+                .Callable("Seq!")
+                    .Add(0, world)
                     .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                        ui32 pos = 0;
-                        if (seq) {
-                            parent.Add(pos++, world);
-                        }
-
+                        ui32 pos = 1;
                         for (ui32 i = list->IsCallable("List") ? 1 : 0; i < list->ChildrenSize(); ++i) {
-                            auto arg = seq ? ctx.NewArgument(node->Pos(), "world") : world;
+                            auto arg = ctx.NewArgument(node->Pos(), "world");
                             auto body = ctx.Builder(node->Pos())
                                 .Apply(node->ChildPtr(2))
                                     .With(0, arg)
@@ -691,12 +664,8 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
                                 .Seal()
                                 .Build();
 
-                            if (seq) {
-                                auto lambda = ctx.NewLambda(node->Pos(), ctx.NewArguments(node->Pos(), { arg }), std::move(body));
-                                parent.Add(pos++, lambda);
-                            } else {
-                                parent.Add(pos++, body);
-                            }
+                            auto lambda = ctx.NewLambda(node->Pos(), ctx.NewArguments(node->Pos(), { arg }), std::move(body));
+                            parent.Add(pos++, lambda);
                         }
 
                         return parent;
@@ -810,9 +779,9 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
                 }
 
                 auto itemsCount = list->ChildrenSize();
-                if (itemsCount > types.EvaluateParallelForLimit) {
+                if (itemsCount > types.EvaluateForLimit) {
                     ctx.AddError(TIssue(ctx.GetPosition(list->Pos()), TStringBuilder() << "Too large list for subquery loop, allowed: " <<
-                        types.EvaluateParallelForLimit << ", got: " << itemsCount));
+                        types.EvaluateForLimit << ", got: " << itemsCount));
                     return nullptr;
                 }
 
@@ -981,7 +950,6 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
             return nullptr;
         }
 
-        pipelinePos = node->Pos();
         isAtomPipeline = node->IsCallable("EvaluateAtom");
         isTypePipeline = node->IsCallable("EvaluateType");
         isCodePipeline = node->IsCallable("EvaluateCode");
@@ -1046,34 +1014,16 @@ IGraphTransformer::TStatus EvaluateExpression(const TExprNode::TPtr& input, TExp
 
             delegatedNode->SetTypeAnn(atomType);
             delegatedNode->SetState(TExprNode::EState::ConstrComplete);
-            TString yson;
-            TString key;
-            if (types.QContext) {
-                key = MakeCacheKey(*clonedArg, ctx);
+
+            status = SyncTransform(calcTransfomer ? *calcTransfomer : (*calcProvider.Get())->GetCallableExecutionTransformer(), delegatedNode, ctx);
+            if (status.Level == IGraphTransformer::TStatus::Error) {
+                return nullptr;
             }
 
-            if (types.QContext.CanRead()) {
-                auto item = types.QContext.GetReader()->Get({EvaluationComponent, key}).GetValueSync();
-                if (!item) {
-                    throw yexception() << "Missing replay data";
-                }
-
-                yson = item->Value;
-            } else {
-                auto& transformer = calcTransfomer ? *calcTransfomer : (*calcProvider.Get())->GetCallableExecutionTransformer();
-                status = SyncTransform(transformer, delegatedNode, ctx);
-                if (status.Level == IGraphTransformer::TStatus::Error) {
-                    return nullptr;
-                }
-
-                yson = delegatedNode->GetResult().Content();
-            }
-
+            auto yson = delegatedNode->GetResult().Content();
             ysonNode = NYT::NodeFromYsonString(yson);
             if (ysonNode.HasKey("FallbackProvider")) {
                 nextProvider = ysonNode["FallbackProvider"].AsString();
-            } else if (types.QContext.CanWrite()) {
-                types.QContext.GetWriter()->Put({EvaluationComponent, key}, yson).GetValueSync();
             }
         } while (ysonNode.HasKey("FallbackProvider"));
 

@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import os
 import itertools
 import logging
 import time
@@ -70,9 +69,7 @@ HAS_QUEUES_PARAMS = {
 
 
 def get_sqs_client_path():
-    if os.getenv("SQS_CLIENT_BINARY"):
-        return yatest_common.binary_path(os.getenv("SQS_CLIENT_BINARY"))
-    raise RuntimeError("SQS_CLIENT_BINARY enviroment variable is not specified")
+    return yatest_common.binary_path("ydb/core/ymq/client/bin/sqs")
 
 
 def to_bytes(v):
@@ -272,8 +269,7 @@ class KikimrSqsTestBase(object):
         raised = False
         try:
             self._driver.scheme_client.describe_path('{}/{}/Queues'.format(self.sqs_root, username))
-        except Exception as e:
-            logger.debug(f'No queue table: {e}')
+        except:
             raised = True  # Expect SchemeError or at least ConnectionLost in tests with node killings
 
         assert_that(raised)
@@ -557,7 +553,7 @@ class KikimrSqsTestBase(object):
             else:
                 if self.cluster.nodes[i + 1].is_alive():
                     return i
-        assert False, 'alive node not found'
+        assert(False)
 
     def _get_mon_port(self, node_index):
         if self.slot_count:
@@ -582,7 +578,7 @@ class KikimrSqsTestBase(object):
             raise Exception('Unknown counters format: \"{}\"'.format(counters_format))
 
         if folder is not None:
-            labels = "/cloud%3D{cloud}/folder%3D{folder}".format(cloud=cloud, folder=folder)
+            labels="/cloud%3D{cloud}/folder%3D{folder}".format(cloud=cloud, folder=folder)
         else:
             labels = ''
         counters_url = 'http://localhost:{port}/counters/counters%3D{component}{labels}{suffix}'.format(

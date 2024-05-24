@@ -2,8 +2,6 @@
 #include "defs.h"
 #include "blobstorage_pdisk_defs.h"
 
-#include <ydb/core/protos/blobstorage_disk_color.pb.h>
-
 namespace NKikimr {
 namespace NPDisk {
 
@@ -66,27 +64,14 @@ struct TColorLimits {
 
     static TColorLimits MakeLogLimits() {
         return {
-            {100, 1000}, // Black: Stop early to leave some space for disaster recovery
-            {150, 1000}, // Red
-            {200, 1000}, // Orange
-            {210, 1000}, // PreOrange
-            {250, 1000}, // LightOrange
-            {350, 1000}, // Yellow
-            {400, 1000}, // LightYellow
-            {450, 1000}, // Cyan
-        };
-    }
-
-    static TColorLimits MakeExtendedLogLimits() {
-        return {
-            {50, 1000}, // Black: Stop early to leave some space for disaster recovery
-            {100, 1000}, // Red
-            {200, 1000}, // Orange
-            {210, 1000}, // PreOrange
-            {250, 1000}, // LightOrange
-            {350, 1000}, // Yellow
-            {400, 1000}, // LightYellow
-            {450, 1000}, // Cyan
+            {250, 1000}, // Black: Stop early to leave some space for disaster recovery
+            {350, 1000}, // Red
+            {500, 1000}, // Orange
+            {600, 1000}, // PreOrange
+            {700, 1000}, // LightOrange
+            {900, 1000}, // Yellow
+            {930, 1000}, // LightYellow
+            {982, 1000}, // Cyan: Ask to cut log
         };
     }
 
@@ -104,7 +89,7 @@ struct TColorLimits {
 
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MIN_SENTINEL_DO_NOT_USE_:
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MAX_SENTINEL_DO_NOT_USE_:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 };

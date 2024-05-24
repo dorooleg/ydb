@@ -7,9 +7,9 @@
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NSysView {
@@ -25,7 +25,7 @@ public:
         return NKikimrServices::TActivity::KQP_SYSTEM_VIEW_SCAN;
     }
 
-    TNodesScan(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+    TNodesScan(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
         const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
         : TBase(ownerId, scanId, tableId, tableRange, columns)
     {
@@ -80,21 +80,13 @@ private:
     }
 
     void StartScan() {
-        if (IsEmptyRange || TenantNodes.empty()) {
+        if (IsEmptyRange) {
             ReplyEmptyAndDie();
             return;
         }
 
-        const NActors::TActorId nameserviceId = GetNameserviceActorId();
+        const TActorId nameserviceId = GetNameserviceActorId();
         Send(nameserviceId, new TEvInterconnect::TEvListNodes());
-
-        for (const auto& nodeId : TenantNodes) {
-            TActorId whiteboardId = MakeNodeWhiteboardServiceId(nodeId);
-            auto request = MakeHolder<TEvWhiteboard::TEvSystemStateRequest>();
-
-            Send(whiteboardId, request.Release(),
-                IEventHandle::FlagTrackDelivery | IEventHandle::FlagSubscribeOnSession, nodeId);
-        }
     }
 
     void Handle(NKqp::TEvKqpCompute::TEvScanDataAck::TPtr&) {
@@ -111,6 +103,12 @@ private:
                 nodeId >= NodeIdFrom &&
                 nodeId <= NodeIdTo)
             {
+                TActorId whiteboardId = MakeNodeWhiteboardServiceId(nodeId);
+                auto request = MakeHolder<TEvWhiteboard::TEvSystemStateRequest>();
+
+                Send(whiteboardId, request.Release(),
+                    IEventHandle::FlagTrackDelivery | IEventHandle::FlagSubscribeOnSession, nodeId);
+
                 NodesInfo.emplace(nodeId, info);
             }
         }
@@ -118,7 +116,6 @@ private:
         if (NodesInfo.empty()) {
             ReplyEmptyAndDie();
         }
-        RequestDone();
     }
 
     void Handle(TEvWhiteboard::TEvSystemStateResponse::TPtr& ev) {
@@ -145,7 +142,7 @@ private:
     }
 
     void RequestDone() {
-        if (NodesInfo.empty() || TenantNodes.size() != WBSystemInfo.size()) {
+        if (NodesInfo.size() != WBSystemInfo.size()) {
             return;
         }
 
@@ -190,44 +187,6 @@ private:
                     }
                     auto interval = TInstant::Now().MicroSeconds() - *time * 1000;
                     return TCell::Make<i64>(interval > 0 ? interval : 0);
-                }});
-                insert({TSchema::CpuThreads::ColumnId, [] (const TNodeInfo&, const TWBInfo* wbInfo) {
-                    ui32 threads = 0;
-                    if (wbInfo && wbInfo->Record.SystemStateInfoSize() == 1) {
-                        const auto& systemState = wbInfo->Record.GetSystemStateInfo(0);
-                        for (const auto& poolStat : systemState.GetPoolStats()) {
-                            if (poolStat.GetName() != "IO") {
-                                threads += poolStat.GetThreads();
-                            }
-                        }
-                    }
-                    return TCell::Make<ui32>(threads);
-                }});
-                insert({TSchema::CpuUsage::ColumnId, [] (const TNodeInfo&, const TWBInfo* wbInfo) {
-                    ui32 threads = 0;
-                    double usage = 0.0;
-                    if (wbInfo && wbInfo->Record.SystemStateInfoSize() == 1) {
-                        const auto& systemState = wbInfo->Record.GetSystemStateInfo(0);
-                        for (const auto& poolStat : systemState.GetPoolStats()) {
-                            if (poolStat.GetName() != "IO") {
-                                threads += poolStat.GetThreads();
-                                usage += poolStat.GetUsage() * poolStat.GetThreads();
-                            }
-                        }
-                    }
-                    return threads ? TCell::Make<double>(usage / threads) : TCell();
-                }});
-                insert({TSchema::CpuIdle::ColumnId, [] (const TNodeInfo&, const TWBInfo* wbInfo) {
-                    double idle = 1.0;
-                    if (wbInfo && wbInfo->Record.SystemStateInfoSize() == 1) {
-                        const auto& systemState = wbInfo->Record.GetSystemStateInfo(0);
-                        for (const auto& poolStat : systemState.GetPoolStats()) {
-                            if (poolStat.GetName() != "IO") {
-                                idle = std::min(idle, 1.0 - poolStat.GetUsage());
-                            }
-                        }
-                    }
-                    return TCell::Make<double>(std::max(idle, 0.0));
                 }});
             }
         };
@@ -274,7 +233,7 @@ private:
     THashMap<TNodeId, THolder<TEvWhiteboard::TEvSystemStateResponse>> WBSystemInfo;
 };
 
-THolder<NActors::IActor> CreateNodesScan(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+THolder<IActor> CreateNodesScan(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
     const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
 {
     return MakeHolder<TNodesScan>(ownerId, scanId, tableId, tableRange, columns);

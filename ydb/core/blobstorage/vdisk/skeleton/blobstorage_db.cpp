@@ -6,6 +6,7 @@ namespace NKikimr {
     // DATABASE
     ////////////////////////////////////////////////////////////////////////////
     TDb::TDb(TIntrusivePtr<TVDiskConfig> cfg,
+             TIntrusivePtr<TBlobStorageGroupInfo> info,
              const TVDiskContextPtr &vctx)
         : VDiskIncarnationGuid()
         , VDiskIncarnationGuidSet(false)
@@ -14,6 +15,13 @@ namespace NKikimr {
         , VCtx(vctx)
         , GType(VCtx->Top->GType)
         , LocalRecoveryInfo()
+        , Handoff(new THandoffDelegate(vctx->ShortSelfVDisk, info,           // FIXME: we store Info here
+                                       THandoffParams{vctx->VDiskLogPrefix,
+                                                                 Config->HandoffMaxWaitQueueSize,
+                                                                 Config->HandoffMaxWaitQueueByteSize,
+                                                                 Config->HandoffMaxInFlightSize,
+                                                                 Config->HandoffMaxInFlightByteSize,
+                                                                 Config->HandoffTimeout}))
         , SkeletonID()
         , LoggerID()
         , SyncLogID()

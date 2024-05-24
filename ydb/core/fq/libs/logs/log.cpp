@@ -5,7 +5,7 @@
 
 #include <ydb/library/yql/utils/actor_log/log.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #define LOG_C(stream) LOG_CRIT_S (::NActors::TActivationContext::AsActorContext(), NKikimrServices::FQ_LOG_UPDATER, stream)
 #define LOG_E(stream) LOG_ERROR_S(::NActors::TActivationContext::AsActorContext(), NKikimrServices::FQ_LOG_UPDATER, stream)
@@ -44,7 +44,7 @@ private:
             hFunc(NConsole::TEvConfigsDispatcher::TEvSetConfigSubscriptionResponse, Handle);
             hFunc(NConsole::TEvConsole::TEvConfigNotificationRequest, Handle);
         default:
-            Y_ABORT("TYqlLogsUpdater: unexpected event type: %" PRIx32 " event: %s",
+            Y_FAIL("TYqlLogsUpdater: unexpected event type: %" PRIx32 " event: %s",
                 ev->GetTypeRewrite(), ev->ToString().data());
         }
     }

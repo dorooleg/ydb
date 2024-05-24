@@ -19,15 +19,15 @@ bool ValidateConfig(const NKikimrSchemeOp::TCreateSolomonVolume& op,
         return false;
     }
     if (op.GetPartitionCount()) {
-        if (!op.HasChannelProfileId() && !op.HasStorageConfig()) {
-            errStr = "set storage config, please";
+        if (!op.HasChannelProfileId()) {
+            errStr = "set channel profile id, please";
             status = TEvSchemeShard::EStatus::StatusInvalidParameter;
         }
         return true;
     }
 
-    if (op.HasChannelProfileId() || op.HasStorageConfig()) {
-        errStr = "don't set channel profile id or storage config, please. We are going to adopt already created tablets";
+    if (op.HasChannelProfileId()) {
+        errStr = "don't set channel profile id, please. We are going to adopt already created tablets";
         status = TEvSchemeShard::EStatus::StatusInvalidParameter;
     }
 
@@ -112,12 +112,12 @@ public:
                                << ", at tablet" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSolomonVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSolomonVolume);
 
         auto solomonVol = context.SS->SolomonVolumes[txState->TargetPathId];
         Y_VERIFY_S(solomonVol, "solomon volume is null. PathId: " << txState->TargetPathId);
-        Y_ABORT_UNLESS(solomonVol->Partitions.size() == txState->Shards.size(),
+        Y_VERIFY(solomonVol->Partitions.size() == txState->Shards.size(),
                  "%" PRIu64 "solomon shards expected, %" PRIu64 " created",
                  solomonVol->Partitions.size(), txState->Shards.size());
 
@@ -188,8 +188,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSolomonVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSolomonVolume);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -330,17 +330,9 @@ public:
         const bool adoptingTablets = solomonDescription.AdoptedPartitionsSize() > 0;
 
         TChannelsBindings channelsBinding;
-        if (!adoptingTablets) {
-            bool isResolved = false;
-            if (solomonDescription.HasStorageConfig()) {
-                isResolved = context.SS->ResolveSolomonChannels(solomonDescription.GetStorageConfig(), dstPath.GetPathIdForDomain(), channelsBinding);
-            } else {
-                isResolved = context.SS->ResolveSolomonChannels(channelProfileId, dstPath.GetPathIdForDomain(), channelsBinding);
-            }
-            if (!isResolved) {
-                result->SetError(NKikimrScheme::StatusInvalidParameter, "Unable to construct channel binding with the storage pool");
-                return result;
-            }
+        if (!adoptingTablets && !context.SS->ResolveSolomonChannels(channelProfileId, dstPath.GetPathIdForDomain(), channelsBinding)) {
+            result->SetError(NKikimrScheme::StatusInvalidParameter, "Unable to construct channel binding with the storage pool");
+            return result;
         }
 
         dstPath.MaterializeLeaf(owner);
@@ -403,18 +395,19 @@ public:
 
         context.SS->PersistTxState(db, OperationId);
 
+        context.SS->PersistPath(db, newSolomon->PathId);
 
         if (!acl.empty()) {
             newSolomon->ApplyACL(acl);
+            context.SS->PersistACL(db, newSolomon);
         }
-        context.SS->PersistPath(db, newSolomon->PathId);
 
         context.SS->PersistUpdateNextPathId(db);
         context.SS->PersistUpdateNextShardIdx(db);
 
         IncParentDirAlterVersionWithRepublish(OperationId, dstPath, context);
 
-        Y_ABORT_UNLESS(shardsToCreate == txState.Shards.size());
+        Y_VERIFY(shardsToCreate == txState.Shards.size());
         dstPath.DomainInfo()->IncPathsInside();
         dstPath.DomainInfo()->AddInternalShards(txState);
 
@@ -426,7 +419,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreateSolomon");
+        Y_FAIL("no AbortPropose for TCreateSolomon");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -449,7 +442,7 @@ ISubOperation::TPtr CreateNewSolomon(TOperationId id, const TTxTransaction& tx) 
 }
 
 ISubOperation::TPtr CreateNewSolomon(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TCreateSolomon>(id, state);
 }
 

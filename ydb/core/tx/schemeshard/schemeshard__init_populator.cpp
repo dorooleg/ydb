@@ -13,7 +13,7 @@ using namespace NTabletFlatExecutor;
 struct TSchemeShard::TTxInitPopulator : public TTransactionBase<TSchemeShard> {
     using TDescription = NSchemeBoard::TTwoPartDescription;
 
-    std::vector<std::pair<TPathId, TDescription>> Descriptions;
+    TMap<TPathId, TDescription> Descriptions;
     TSideEffects::TPublications DelayedPublications;
 
     explicit TTxInitPopulator(TSelf *self, TSideEffects::TPublications&& publications)
@@ -25,7 +25,7 @@ struct TSchemeShard::TTxInitPopulator : public TTransactionBase<TSchemeShard> {
     TTxType GetTxType() const override { return TXTYPE_INIT_POPULATOR; }
 
     bool Execute(TTransactionContext&, const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(Self->IsSchemeShardConfigured());
+        Y_VERIFY(Self->IsSchemeShardConfigured());
 
         for (auto item: Self->PathsById) {
             TPathId pathId = item.first;
@@ -49,7 +49,7 @@ struct TSchemeShard::TTxInitPopulator : public TTransactionBase<TSchemeShard> {
 
             auto result = DescribePath(Self, ctx, pathId);
             TDescription description(std::move(result->PreSerializedData), std::move(result->Record));
-            Descriptions.emplace_back(pathId, std::move(description));
+            Descriptions.emplace(pathId, std::move(description));
         }
 
         return true;
@@ -57,13 +57,16 @@ struct TSchemeShard::TTxInitPopulator : public TTransactionBase<TSchemeShard> {
 
     void Complete(const TActorContext& ctx) override {
         const ui64 tabletId = Self->TabletID();
+        const auto &domains = *AppData()->DomainsInfo;
+        const ui32 domainId = domains.GetDomainUidByTabletId(tabletId);
+        const ui32 boardSSId = domains.GetDomain(domainId).DefaultSchemeBoardGroup;
 
         IActor* populator = CreateSchemeBoardPopulator(
-            tabletId, Self->Generation(),
+            tabletId, Self->Generation(), boardSSId,
             std::move(Descriptions), Self->NextLocalPathId
         );
 
-        Y_ABORT_UNLESS(!Self->SchemeBoardPopulator);
+        Y_VERIFY(!Self->SchemeBoardPopulator);
         Self->SchemeBoardPopulator = Self->Register(populator);
 
         Self->PublishToSchemeBoard(std::move(DelayedPublications), ctx);

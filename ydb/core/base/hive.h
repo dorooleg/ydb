@@ -46,8 +46,6 @@ namespace NKikimr {
             EvQueryMigration,
             EvRequestTabletOwners,
             EvReassignOnDecommitGroup,
-            EvUpdateTabletsObject,
-            EvUpdateDomain,
 
             // replies
             EvBootTabletReply = EvBootTablet + 512,
@@ -80,8 +78,6 @@ namespace NKikimr {
             EvTabletOwnersReply,
             EvInvalidateStoragePoolsReply,
             EvReassignOnDecommitGroupReply,
-            EvUpdateTabletsObjectReply,
-            EvUpdateDomainReply,
 
             EvEnd
         };
@@ -854,20 +850,6 @@ namespace NKikimr {
         };
 
         struct TEvReassignOnDecommitGroupReply : TEventPB<TEvReassignOnDecommitGroupReply, NKikimrHive::TEvReassignOnDecommitGroupReply, EvReassignOnDecommitGroupReply> {};
-
-        struct TEvUpdateTabletsObject : TEventPB<TEvUpdateTabletsObject, NKikimrHive::TEvUpdateTabletsObject, EvUpdateTabletsObject> {};
-
-        struct TEvUpdateTabletsObjectReply : TEventPB<TEvUpdateTabletsObjectReply, NKikimrHive::TEvUpdateTabletsObjectReply, EvUpdateTabletsObjectReply> {
-            TEvUpdateTabletsObjectReply() = default;
-
-            TEvUpdateTabletsObjectReply(NKikimrProto::EReplyStatus status) {
-                Record.SetStatus(status);
-            }
-        };
-
-        struct TEvUpdateDomain : TEventPB<TEvUpdateDomain, NKikimrHive::TEvUpdateDomain, EvUpdateDomain> {};
-
-        struct TEvUpdateDomainReply : TEventPB<TEvUpdateDomainReply, NKikimrHive::TEvUpdateDomainReply, EvUpdateDomainReply> {};
     };
 
     IActor* CreateDefaultHive(const TActorId &tablet, TTabletStorageInfo *info);

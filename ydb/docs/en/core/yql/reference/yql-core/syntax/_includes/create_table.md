@@ -5,7 +5,7 @@
 {{ ydb-short-name }} supports two types of tables:
 
 * [Row-oriented](../../../../concepts/datamodel/table.md)
-* [Column-oriented](../../../../concepts/datamodel/table.md#olap-data-types).
+* [Column-oriented](../../../../concepts/column-table.md).
 
 When you create a table, the table type is specified by the `STORE` parameter, with `ROW` creating a [row-oriented table](#row) and `COLUMN` creating a [column](#olap-tables)-oriented table. If the `STORE` parameter is omitted, a row-oriented table is created by default.
 
@@ -25,7 +25,7 @@ The table is created automatically during the first [INSERT INTO](insert_into.md
 
 The `CREATE TABLE` call creates a {% if concept_table %}[table]({{ concept_table }}){% else %}table{% endif %} with the specified data schema{% if feature_map_tables %} and key columns (`PRIMARY KEY`){% endif %}. {% if feature_secondary_index == true %}It lets you define secondary indexes on the created table.{% endif %}
 
-    CREATE [TEMPORARY | TEMP] TABLE table_name (
+    CREATE TABLE table_name (
         column1 type1,
 {% if feature_not_null == true %}        column2 type2 NOT NULL,{% else %}        column2 type2,{% endif %}
         ...
@@ -79,6 +79,7 @@ It is mandatory to specify the `PRIMARY KEY` with a non-empty list of columns. T
     )
 
 
+
 {% if feature_secondary_index %}
 {% if feature_olap_tables %}#{% endif %}## Secondary indexes {#secondary_index}
 
@@ -111,18 +112,6 @@ CREATE TABLE my_table (
     PRIMARY KEY (a)
 )
 ```
-{% endif %}
-
-{% if feature_temp_tables %}
-{% if feature_olap_tables %}#{%endif%}## Creating a temporary table {#temporary_tables}
-```sql
-CREATE TEMPORARY TABLE table_name (
-    ...
-);
-```
-
-{% include [temp-table-description.md](../../../../_includes/temp-table-description.md) %}
-
 {% endif %}
 
 {% if feature_map_tables and concept_table %}
@@ -163,7 +152,7 @@ WITH (
 
 Columns of the same table can be grouped to set the following parameters:
 
-* `DATA`: A storage device type for the data in this column group. Acceptable values: ```ssd```, ```rot```.
+* `DATA`: A storage device type for the data in this column group. Acceptable values: ```ssd```, ```hdd```.
 * `COMPRESSION`: A data compression codec. Acceptable values: ```off```, ```lz4```.
 
 By default, all columns are in the same group named ```default```.  If necessary, the parameters of this group can also be redefined.
@@ -182,7 +171,7 @@ CREATE TABLE series_with_families (
         COMPRESSION = "off"
     ),
     FAMILY family_large (
-        DATA = "rot",
+        DATA = "hdd",
         COMPRESSION = "lz4"
     )
 );
@@ -208,7 +197,7 @@ Column-oriented {{ ydb-short-name }} tables are in the Preview mode.
 
 {% endnote %}
 
-The `CREATE TABLE` statement creates a [column-oriented](../../../../concepts/datamodel/table.md#olap-data-types) table with the specified data schema and key columns (`PRIMARY KEY`).
+The `CREATE TABLE` statement creates a [column-oriented](../../../../concepts/column-table.md) table with the specified data schema and key columns (`PRIMARY KEY`).
 
 ```sql
 CREATE TABLE table_name (
@@ -230,7 +219,7 @@ WITH (
 
 ### Columns {#olap-columns}
 
-Data types supported by column-oriented tables and constraints imposed on data types in primary keys or data columns are described in the [supported data types](../../../../concepts/datamodel/table.md#olap-data-types) section for column-oriented tables.
+Data types supported by column-oriented tables and constraints imposed on data types in primary keys or data columns are described in the [supported data types](../../../../concepts/column-table.md#olap-data-types) section for column-oriented tables.
 
 Make sure to add the `PRIMARY KEY` and `PARTITION BY` clauses with a non-empty list of columns.
 
@@ -268,7 +257,7 @@ Here, `key` is the name of the parameter and `value` is its value.
 
 Supported parameters in column-oriented tables:
 
-* `AUTO_PARTITIONING_MIN_PARTITIONS_COUNT` sets the minimum physical number of partitions used to store data (see [{#T}](../../../../concepts/datamodel/table.md#olap-tables-partitioning)).
+* `AUTO_PARTITIONING_MIN_PARTITIONS_COUNT` sets the minimum physical number of partitions used to store data (see [{#T}](../../../../concepts/column-table.md#olap-tables-partitioning)).
 
 For example, the following code creates a column-oriented table with ten partitions:
 

@@ -1,17 +1,14 @@
 #include "datashard_impl.h"
 
-#include <util/generic/algorithm.h>
 #include <util/generic/size_literals.h>
 
-#include <optional>
-
-namespace NKikimr::NDataShard {
+namespace NKikimr {
+namespace NDataShard {
 
 using namespace NTabletFlatExecutor;
 
 class TDataShard::TTxRequestChangeRecords: public TTransactionBase<TDataShard> {
     using Schema = TDataShard::Schema;
-    using IChangeRecord = NChangeExchange::IChangeRecord;
 
     bool Precharge(NIceDb::TNiceDb& db) {
         size_t bodiesSize = 0;
@@ -43,94 +40,6 @@ class TDataShard::TTxRequestChangeRecords: public TTransactionBase<TDataShard> {
         return ok;
     }
 
-    template <typename TTable>
-    using TEqualKeyIterator = typename TTable::Operations::template EqualKeyIterator<TTable, typename TTable::TKey::KeyValuesType>;
-
-    template <typename TTable>
-    using TFullRowset = typename TTable::Operations::template Rowset<TTable, TEqualKeyIterator<TTable>, typename TTable::TColumns>;
-
-    struct TLoadResult {
-        NTable::EReady Ready;
-        IChangeRecord::TPtr Record;
-
-        TLoadResult() = default;
-        TLoadResult(NTable::EReady ready)
-            : Ready(ready)
-        {
-        }
-
-        explicit TLoadResult(NTable::EReady ready, IChangeRecord::TPtr record)
-            : Ready(ready)
-            , Record(record)
-        {
-        }
-    };
-
-    template <typename TBasicTable, typename TDetailsTable, bool HaveLock>
-    TLoadResult LoadRecord(ui64 order, const std::optional<TCommittedLockChangeRecords>& commited,
-            const TFullRowset<TBasicTable>& basic, const TFullRowset<TDetailsTable>& details) const
-    {
-        if (!basic.IsReady() || !details.IsReady()) {
-            return NTable::EReady::Page;
-        }
-
-        if (!basic.IsValid() && !details.IsValid()) {
-            return NTable::EReady::Gone;
-        }
-
-        Y_VERIFY_S(basic.IsValid() && details.IsValid(), "Inconsistent basic and details"
-            << ", basic.IsValid: " << basic.IsValid()
-            << ", details.IsValid: " << details.IsValid()
-            << ", order: " << order);
-
-        const auto schemaVersion = basic.template GetValue<typename TBasicTable::SchemaVersion>();
-        const auto tableId = TPathId(
-            basic.template GetValue<typename TBasicTable::TableOwnerId>(),
-            basic.template GetValue<typename TBasicTable::TablePathId>()
-        );
-
-        TUserTable::TCPtr schema;
-        if (schemaVersion) {
-            const auto snapshotKey = TSchemaSnapshotKey(tableId, schemaVersion);
-            if (const auto* snapshot = Self->GetSchemaSnapshotManager().FindSnapshot(snapshotKey)) {
-                schema = snapshot->Schema;
-            }
-        }
-
-        TChangeRecord::ESource source = TChangeRecord::ESource::Unspecified;
-        if (details.template HaveValue<typename TDetailsTable::Source>()) {
-            source = details.template GetValue<typename TDetailsTable::Source>();
-        }
-
-        auto builder = TChangeRecordBuilder(details.template GetValue<typename TDetailsTable::Kind>())
-            .WithOrder(order)
-            .WithPathId(TPathId(
-                basic.template GetValue<typename TBasicTable::PathOwnerId>(),
-                basic.template GetValue<typename TBasicTable::LocalPathId>()
-            ))
-            .WithTableId(tableId)
-            .WithSchemaVersion(schemaVersion)
-            .WithSchema(schema)
-            .WithBody(details.template GetValue<typename TDetailsTable::Body>())
-            .WithSource(source);
-
-        if constexpr (HaveLock) {
-            Y_ABORT_UNLESS(commited);
-            builder
-                .WithGroup(commited->Group)
-                .WithStep(commited->Step)
-                .WithTxId(commited->TxId);
-        } else {
-            Y_ABORT_UNLESS(!commited);
-            builder
-                .WithGroup(basic.template GetValue<typename TBasicTable::Group>())
-                .WithStep(basic.template GetValue<typename TBasicTable::PlanStep>())
-                .WithTxId(basic.template GetValue<typename TBasicTable::TxId>());
-        }
-
-        return TLoadResult(NTable::EReady::Data, builder.Build());
-    }
-
     bool Select(NIceDb::TNiceDb& db) {
         for (auto& [recipient, records] : Self->ChangeRecordsRequested) {
             if (!records) {
@@ -150,8 +59,6 @@ class TDataShard::TTxRequestChangeRecords: public TTransactionBase<TDataShard> {
                     break;
                 }
 
-                TLoadResult result;
-
                 if (itQueue->second.LockId) {
                     auto itCommit = Self->CommittedLockChangeRecords.find(itQueue->second.LockId);
                     if (itCommit == Self->CommittedLockChangeRecords.end()) {
@@ -161,35 +68,109 @@ class TDataShard::TTxRequestChangeRecords: public TTransactionBase<TDataShard> {
                         continue;
                     }
 
-                    result = LoadRecord<Schema::LockChangeRecords, Schema::LockChangeRecordDetails, true>(it->Order, itCommit->second,
-                        db.Table<Schema::LockChangeRecords>().Key(itQueue->second.LockId, itQueue->second.LockOffset).Select(),
-                        db.Table<Schema::LockChangeRecordDetails>().Key(itQueue->second.LockId, itQueue->second.LockOffset).Select());
-                } else {
-                    result = LoadRecord<Schema::ChangeRecords, Schema::ChangeRecordDetails, false>(it->Order, std::nullopt,
-                        db.Table<Schema::ChangeRecords>().Key(it->Order).Select(),
-                        db.Table<Schema::ChangeRecordDetails>().Key(it->Order).Select());
-                }
+                    auto basic = db.Table<Schema::LockChangeRecords>().Key(itQueue->second.LockId, itQueue->second.LockOffset).Select();
+                    auto details = db.Table<Schema::LockChangeRecordDetails>().Key(itQueue->second.LockId, itQueue->second.LockOffset).Select();
 
-                switch (result.Ready) {
-                case NTable::EReady::Page:
-                    return false;
-                case NTable::EReady::Gone:
-                    RecordsToForget[recipient].emplace_back(it->Order);
-                    it = records.erase(it);
-                    continue;
-                case NTable::EReady::Data:
-                    break;
-                }
+                    if (!basic.IsReady() || !details.IsReady()) {
+                        return false;
+                    }
 
-                if (itQueue->second.LockId) {
-                    RecordsToSend[recipient].push_back(
-                        TChangeRecordBuilder(result.Record)
-                            .WithLockId(itQueue->second.LockId)
-                            .WithLockOffset(itQueue->second.LockOffset)
-                            .Build()
+                    if (!basic.IsValid() && !details.IsValid()) {
+                        RecordsToForget[recipient].emplace_back(it->Order);
+                        it = records.erase(it);
+                        continue;
+                    }
+
+                    Y_VERIFY_S(basic.IsValid() && details.IsValid(), "Inconsistent basic and details"
+                        << ", basic.IsValid: " << basic.IsValid()
+                        << ", details.IsValid: " << details.IsValid()
+                        << ", recipient: " << recipient
+                        << ", records.size: " << records.size()
+                        << ", it->Order: " << it->Order
+                        << ", it->BodySize: " << it->BodySize
+                        << ", LockId: " << itQueue->second.LockId
+                        << ", LockOffset: " << itQueue->second.LockOffset);
+
+                    const auto schemaVersion = basic.GetValue<Schema::LockChangeRecords::SchemaVersion>();
+                    const auto tableId = TPathId(
+                        basic.GetValue<Schema::LockChangeRecords::TableOwnerId>(),
+                        basic.GetValue<Schema::LockChangeRecords::TablePathId>()
                     );
+
+                    TUserTable::TCPtr schema;
+                    if (schemaVersion) {
+                        const auto snapshotKey = TSchemaSnapshotKey(tableId, schemaVersion);
+                        if (const auto* snapshot = Self->GetSchemaSnapshotManager().FindSnapshot(snapshotKey)) {
+                            schema = snapshot->Schema;
+                        }
+                    }
+
+                    RecordsToSend[recipient].emplace_back(TChangeRecordBuilder(details.GetValue<Schema::LockChangeRecordDetails::Kind>())
+                        .WithOrder(it->Order)
+                        .WithGroup(itCommit->second.Group)
+                        .WithStep(itCommit->second.Step)
+                        .WithTxId(itCommit->second.TxId)
+                        .WithPathId(TPathId(
+                            basic.GetValue<Schema::LockChangeRecords::PathOwnerId>(),
+                            basic.GetValue<Schema::LockChangeRecords::LocalPathId>()
+                        ))
+                        .WithTableId(tableId)
+                        .WithSchemaVersion(schemaVersion)
+                        .WithSchema(schema)
+                        .WithBody(details.GetValue<Schema::LockChangeRecordDetails::Body>())
+                        .WithLockId(itQueue->second.LockId)
+                        .WithLockOffset(itQueue->second.LockOffset)
+                        .Build());
                 } else {
-                    RecordsToSend[recipient].push_back(std::move(result.Record));
+                    auto basic = db.Table<Schema::ChangeRecords>().Key(it->Order).Select();
+                    auto details = db.Table<Schema::ChangeRecordDetails>().Key(it->Order).Select();
+
+                    if (!basic.IsReady() || !details.IsReady()) {
+                        return false;
+                    }
+
+                    if (!basic.IsValid() && !details.IsValid()) {
+                        RecordsToForget[recipient].emplace_back(it->Order);
+                        it = records.erase(it);
+                        continue;
+                    }
+
+                    Y_VERIFY_S(basic.IsValid() && details.IsValid(), "Inconsistent basic and details"
+                        << ", basic.IsValid: " << basic.IsValid()
+                        << ", details.IsValid: " << details.IsValid()
+                        << ", recipient: " << recipient
+                        << ", records.size: " << records.size()
+                        << ", it->Order: " << it->Order
+                        << ", it->BodySize: " << it->BodySize);
+
+                    const auto schemaVersion = basic.GetValue<Schema::ChangeRecords::SchemaVersion>();
+                    const auto tableId = TPathId(
+                        basic.GetValue<Schema::ChangeRecords::TableOwnerId>(),
+                        basic.GetValue<Schema::ChangeRecords::TablePathId>()
+                    );
+
+                    TUserTable::TCPtr schema;
+                    if (schemaVersion) {
+                        const auto snapshotKey = TSchemaSnapshotKey(tableId, schemaVersion);
+                        if (const auto* snapshot = Self->GetSchemaSnapshotManager().FindSnapshot(snapshotKey)) {
+                            schema = snapshot->Schema;
+                        }
+                    }
+                    
+                    RecordsToSend[recipient].emplace_back(TChangeRecordBuilder(details.GetValue<Schema::ChangeRecordDetails::Kind>())
+                        .WithOrder(it->Order)
+                        .WithGroup(basic.GetValue<Schema::ChangeRecords::Group>())
+                        .WithStep(basic.GetValue<Schema::ChangeRecords::PlanStep>())
+                        .WithTxId(basic.GetValue<Schema::ChangeRecords::TxId>())
+                        .WithPathId(TPathId(
+                            basic.GetValue<Schema::ChangeRecords::PathOwnerId>(),
+                            basic.GetValue<Schema::ChangeRecords::LocalPathId>()
+                        ))
+                        .WithTableId(tableId)
+                        .WithSchemaVersion(schemaVersion)
+                        .WithSchema(schema)
+                        .WithBody(details.GetValue<Schema::ChangeRecordDetails::Body>())
+                        .Build());
                 }
 
                 MemUsage += it->BodySize;
@@ -233,7 +214,7 @@ public:
             LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Send " << records.size() << " change records"
                 << ": to# " << to
                 << ", at tablet# " << Self->TabletID());
-            ctx.Send(to, new NChangeExchange::TEvChangeExchange::TEvRecords(std::move(records)));
+            ctx.Send(to, new TEvChangeExchange::TEvRecords(std::move(records)));
         }
 
         size_t forgotten = 0;
@@ -246,22 +227,19 @@ public:
             LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Forget " << records.size() << " change records"
                 << ": to# " << to
                 << ", at tablet# " << Self->TabletID());
-            ctx.Send(to, new NChangeExchange::TEvChangeExchange::TEvForgetRecords(std::move(records)));
+            ctx.Send(to, new TEvChangeExchange::TEvForgetRecords(std::move(records)));
         }
 
-        size_t left = Accumulate(Self->ChangeRecordsRequested, (size_t)0, [](size_t sum, const auto& kv) {
-            return sum + kv.second.size();
-        });
+        size_t left = 0;
+        for (const auto& [_, records] : Self->ChangeRecordsRequested) {
+            left += records.size();
+        }
 
         LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD, "TTxRequestChangeRecords Complete"
             << ": sent# " << sent
             << ", forgotten# " << forgotten
             << ", left# " << left
             << ", at tablet# " << Self->TabletID());
-
-        Self->SetCounter(COUNTER_CHANGE_RECORDS_REQUESTED, left);
-        Self->IncCounter(COUNTER_CHANGE_RECORDS_SENT, sent);
-        Self->IncCounter(COUNTER_CHANGE_RECORDS_FORGOTTEN, forgotten);
 
         if (left) {
             Self->Execute(new TTxRequestChangeRecords(Self), ctx);
@@ -274,7 +252,7 @@ private:
     static constexpr size_t MemLimit = 512_KB;
     size_t MemUsage = 0;
 
-    THashMap<TActorId, TVector<IChangeRecord::TPtr>> RecordsToSend;
+    THashMap<TActorId, TVector<TChangeRecord>> RecordsToSend;
     THashMap<TActorId, TVector<ui64>> RecordsToForget;
 
 }; // TTxRequestChangeRecords
@@ -329,7 +307,7 @@ public:
     }
 
     void Complete(const TActorContext& ctx) override {
-        LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD, "TTxRemoveChangeRecords Complete"
+        LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, "TTxRemoveChangeRecords Complete"
             << ": removed# " << RemovedCount
             << ", left# " << Self->ChangeRecordsToRemove.size()
             << ", at tablet# " << Self->TabletID());
@@ -341,7 +319,6 @@ public:
         }
 
         if (ChangeExchangeSplit) {
-            Self->KillChangeSender(ctx);
             Self->ChangeExchangeSplitter.DoSplit(ctx);
         }
 
@@ -350,8 +327,6 @@ public:
                 Self->ChangeSenderActivator.DoSend(dstTabletId, ctx);
             }
         }
-
-        Self->CheckStateChange(ctx);
     }
 
 private:
@@ -374,13 +349,13 @@ public:
     }
 
     bool Execute(TTransactionContext&, const TActorContext& ctx) override {
-        LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, "TTxChangeExchangeSplitAck Execute"
+        LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD, "TTxChangeExchangeSplitAck Execute"
             << ", at tablet# " << Self->TabletID());
 
-        Y_ABORT_UNLESS(!Self->ChangesQueue);
+        Y_VERIFY(!Self->ChangesQueue);
 
         Self->ChangeExchangeSplitter.Ack();
-        Y_ABORT_UNLESS(Self->ChangeExchangeSplitter.Done());
+        Y_VERIFY(Self->ChangeExchangeSplitter.Done());
 
         for (const auto dstTabletId : Self->ChangeSenderActivator.GetDstSet()) {
             if (Self->SplitSrcSnapshotSender.Acked(dstTabletId)) {
@@ -408,11 +383,8 @@ private:
 }; // TTxChangeExchangeSplitAck
 
 /// Request
-void TDataShard::Handle(NChangeExchange::TEvChangeExchange::TEvRequestRecords::TPtr& ev, const TActorContext& ctx) {
+void TDataShard::Handle(TEvChangeExchange::TEvRequestRecords::TPtr& ev, const TActorContext& ctx) {
     ChangeRecordsRequested[ev->Sender].insert(ev->Get()->Records.begin(), ev->Get()->Records.end());
-    SetCounter(COUNTER_CHANGE_QUEUE_SIZE, Accumulate(ChangeRecordsRequested, (size_t)0, [](size_t sum, const auto& kv) {
-        return sum + kv.second.size();
-    }));
     ScheduleRequestChangeRecords(ctx);
 }
 
@@ -428,7 +400,7 @@ void TDataShard::Handle(TEvPrivate::TEvRequestChangeRecords::TPtr&, const TActor
 }
 
 /// Remove
-void TDataShard::Handle(NChangeExchange::TEvChangeExchange::TEvRemoveRecords::TPtr& ev, const TActorContext& ctx) {
+void TDataShard::Handle(TEvChangeExchange::TEvRemoveRecords::TPtr& ev, const TActorContext& ctx) {
     ChangeRecordsToRemove.insert(ev->Get()->Records.begin(), ev->Get()->Records.end());
     ScheduleRemoveChangeRecords(ctx);
 }
@@ -449,4 +421,5 @@ void TDataShard::Handle(TEvChangeExchange::TEvSplitAck::TPtr&, const TActorConte
     Execute(new TTxChangeExchangeSplitAck(this), ctx);
 }
 
-}
+} // NDataShard
+} // NKikimr

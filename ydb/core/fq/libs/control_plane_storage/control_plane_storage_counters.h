@@ -30,7 +30,6 @@ public:
     ::NMonitoring::TDynamicCounters::TCounterPtr InFly;
     ::NMonitoring::TDynamicCounters::TCounterPtr Ok;
     ::NMonitoring::TDynamicCounters::TCounterPtr Error;
-    ::NMonitoring::TDynamicCounters::TCounterPtr ParseProtobufError;
     ::NMonitoring::TDynamicCounters::TCounterPtr Retry;
     ::NMonitoring::TDynamicCounters::TCounterPtr RequestBytes;
     ::NMonitoring::TDynamicCounters::TCounterPtr ResponseBytes;
@@ -54,9 +53,6 @@ class TFinalStatusCounters: public virtual TThrRefBase {
     ::NMonitoring::TDynamicCounters::TCounterPtr AbortedByUser;
     ::NMonitoring::TDynamicCounters::TCounterPtr Failed;
     ::NMonitoring::TDynamicCounters::TCounterPtr Paused;
-
-public:
-    ::NMonitoring::TDynamicCounters::TCounterPtr Unavailable;
 
 public:
     TFinalStatusCounters(const ::NMonitoring::TDynamicCounterPtr& counters);

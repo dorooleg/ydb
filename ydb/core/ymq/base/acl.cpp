@@ -63,7 +63,7 @@ public:
             Access2ACEIndex[pair.second] = pair.first;
         }
 
-        Y_ABORT_UNLESS(Access2ACEIndex.size() == ACE2AccessIndex.size());
+        Y_VERIFY(Access2ACEIndex.size() == ACE2AccessIndex.size());
     }
 
     EACLSourceType GetActionACLSourceTypeImpl(const TStringBuf action) const {

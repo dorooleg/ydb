@@ -14,6 +14,8 @@ protected:
 
     virtual NModifications::TOperationParsingResult DoBuildPatchFromSettings(
         const NYql::TObjectSettingsImpl& settings, TInternalModificationContext& context) const override;
+
+public:
 };
 
 class TAccessManager: public NModifications::TGenericOperationsManager<TAccess> {
@@ -24,6 +26,7 @@ protected:
 
     virtual NModifications::TOperationParsingResult DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings,
         TInternalModificationContext& context) const override;
+public:
 };
 
 }

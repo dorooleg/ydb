@@ -9,9 +9,9 @@ TMeta::TMeta(TSharedData raw, ui32 group)
     : Raw(std::move(raw))
     , Group(group)
 {
-    Y_ABORT_UNLESS(Raw.size() >= sizeof(NPageCollection::THeader));
+    Y_VERIFY(Raw.size() >= sizeof(NPageCollection::THeader));
     Header = (const NPageCollection::THeader *)Raw.data();
-    Y_ABORT_UNLESS(Header->Magic == NPageCollection::Magic);
+    Y_VERIFY(Header->Magic == NPageCollection::Magic);
 
     if (Header->Pages == 0)
         return;
@@ -43,7 +43,7 @@ size_t TMeta::BackingSize() const noexcept
 
 TBorder TMeta::Bounds(ui32 begin, ui32 end) const noexcept
 {
-    Y_ABORT_UNLESS(begin <= end && Max(begin, end) < Header->Pages);
+    Y_VERIFY(begin <= end && Max(begin, end) < Header->Pages);
 
     const ui64 offset = (begin == 0) ? 0 : Index[begin - 1].Page;
 
@@ -52,7 +52,7 @@ TBorder TMeta::Bounds(ui32 begin, ui32 end) const noexcept
 
 TInfo TMeta::Page(ui32 page) const noexcept
 {
-    Y_ABORT_UNLESS(page < Header->Pages,
+    Y_VERIFY(page < Header->Pages,
             "Requested page %" PRIu32 " out of %" PRIu32 " total pages",
             page, Header->Pages);
 
@@ -61,19 +61,19 @@ TInfo TMeta::Page(ui32 page) const noexcept
 
 ui32 TMeta::GetPageType(ui32 pageId) const noexcept
 {
-    Y_DEBUG_ABORT_UNLESS(pageId < Header->Pages);
+    Y_VERIFY_DEBUG(pageId < Header->Pages);
     return Extra[pageId].Type;
 }
 
 ui32 TMeta::GetPageChecksum(ui32 pageId) const noexcept
 {
-    Y_DEBUG_ABORT_UNLESS(pageId < Header->Pages);
+    Y_VERIFY_DEBUG(pageId < Header->Pages);
     return Extra[pageId].Crc32;
 }
 
 ui64 TMeta::GetPageSize(ui32 pageId) const noexcept
 {
-    Y_DEBUG_ABORT_UNLESS(pageId < Header->Pages);
+    Y_VERIFY_DEBUG(pageId < Header->Pages);
 
     const ui64 begin = (pageId == 0) ? 0 : Index[pageId - 1].Page;
     return Index[pageId].Page - begin;
@@ -81,7 +81,7 @@ ui64 TMeta::GetPageSize(ui32 pageId) const noexcept
 
 TStringBuf TMeta::GetPageInplaceData(ui32 pageId) const noexcept
 {
-    Y_DEBUG_ABORT_UNLESS(pageId < Header->Pages);
+    Y_VERIFY_DEBUG(pageId < Header->Pages);
 
     const ui64 end = Index[pageId].Inplace;
     const ui64 begin = (pageId == 0) ? 0 : Index[pageId - 1].Inplace;

@@ -6,10 +6,6 @@
 
 namespace NKikimr {
 
-    inline TActorId MakeMonBlobRangeId() {
-        return TActorId(0, TStringBuf("blob_range_m", 12));
-    }
-
-    IActor *CreateMonBlobRangeActor();
+    NMonitoring::IMonPage *CreateMonBlobRangePage(const TString& path, TActorSystem *actorSystem);
 
 } // NKikimr

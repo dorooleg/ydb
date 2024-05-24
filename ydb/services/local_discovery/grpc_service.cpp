@@ -39,7 +39,7 @@ void AddEndpointsForGrpcConfig(const NKikimrConfig::TGRpcConfig& grpcConfig, Ydb
 namespace NKikimr {
 namespace NGRpcService {
 
-static TString GetSdkBuildInfo(NYdbGrpc::IRequestContextBase* reqCtx) {
+static TString GetSdkBuildInfo(NGrpc::IRequestContextBase* reqCtx) {
     const auto& res = reqCtx->GetPeerMetaValues(NYdb::YDB_SDK_BUILD_INFO_HEADER);
     if (res.empty()) {
         return {};
@@ -58,12 +58,12 @@ TGRpcLocalDiscoveryService::TGRpcLocalDiscoveryService(const NKikimrConfig::TGRp
 {
 }
 
-void TGRpcLocalDiscoveryService::InitService(grpc::ServerCompletionQueue *cq, NYdbGrpc::TLoggerPtr logger) {
+void TGRpcLocalDiscoveryService::InitService(grpc::ServerCompletionQueue *cq, NGrpc::TLoggerPtr logger) {
     CQ_ = cq;
     SetupIncomingRequests(std::move(logger));
 }
 
-void TGRpcLocalDiscoveryService::SetGlobalLimiterHandle(NYdbGrpc::TGlobalLimiter *limiter) {
+void TGRpcLocalDiscoveryService::SetGlobalLimiterHandle(NGrpc::TGlobalLimiter *limiter) {
     Limiter_ = limiter;
 }
 
@@ -80,32 +80,29 @@ void TGRpcLocalDiscoveryService::SetDynamicNodeAuthParams(const TDynamicNodeAuth
     DynamicNodeAuthorizationParams = dynamicNodeAuthorizationParams;
 }
 
-void TGRpcLocalDiscoveryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcLocalDiscoveryService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
     using namespace Ydb;
 #ifdef ADD_REQUEST
 #error macro already defined
 #endif
 
-#define ADD_REQUEST(NAME, CB, REQUEST_TYPE) \
+#define ADD_REQUEST(NAME, CB) \
     MakeIntrusive<TGRpcRequest<Discovery::NAME##Request, Discovery::NAME##Response, TGRpcLocalDiscoveryService>>   \
         (this, &Service_, CQ_,                                                                                \
-            [this](NYdbGrpc::IRequestContextBase *ctx) {                                                      \
+            [this](NGrpc::IRequestContextBase *ctx) {                                                         \
                 NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer(), GetSdkBuildInfo(ctx));        \
                 ActorSystem_->Send(GRpcRequestProxyId_,                                                       \
                     new TGrpcRequestOperationCall<Discovery::NAME##Request, Discovery::NAME##Response>        \
-                        (ctx, CB, TRequestAuxSettings {                                                       \
-                            .RlMode = TRateLimiterMode::Rps,                                                  \
-                            .RequestType = NJaegerTracing::ERequestType::DISCOVERY_##REQUEST_TYPE,            \
-                        }));                                                                                  \
+                        (ctx, CB, TRequestAuxSettings{TRateLimiterMode::Rps, nullptr}));                     \
             }, &Ydb::Discovery::V1::DiscoveryService::AsyncService::Request ## NAME,                          \
             #NAME, logger, getCounterBlock("discovery", #NAME))->Run();
 
-    ADD_REQUEST(WhoAmI, &DoWhoAmIRequest, WHOAMI)
+    ADD_REQUEST(WhoAmI, &DoWhoAmIRequest)
     NodeRegistrationRequest = [authParams = this->DynamicNodeAuthorizationParams] (std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
         DoNodeRegistrationRequest(std::move(p), f, authParams);
     };
-    ADD_REQUEST(NodeRegistration, NodeRegistrationRequest, NODEREGISTRATION)
+    ADD_REQUEST(NodeRegistration, NodeRegistrationRequest)
 #undef ADD_REQUEST
 
 using namespace std::placeholders;
@@ -114,22 +111,19 @@ using namespace std::placeholders;
 #error macro already defined
 #endif
 
-#define ADD_METHOD(NAME, METHOD, REQUEST_TYPE) \
+#define ADD_METHOD(NAME, METHOD) \
     MakeIntrusive<TGRpcRequest<Discovery::NAME##Request, Discovery::NAME##Response, TGRpcLocalDiscoveryService>>   \
         (this, &Service_, CQ_,                                                                                \
-            [this](NYdbGrpc::IRequestContextBase *ctx) {                                                      \
+            [this](NGrpc::IRequestContextBase *ctx) {                                                         \
                 NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer(), GetSdkBuildInfo(ctx));        \
                 TFuncCallback cb = std::bind(&TGRpcLocalDiscoveryService::METHOD, this, _1, _2);              \
                 ActorSystem_->Send(GRpcRequestProxyId_,                                                       \
                     new TGrpcRequestFunctionCall<Discovery::NAME##Request, Discovery::NAME##Response>         \
-                        (ctx, cb, TRequestAuxSettings {                                                       \
-                            .RlMode = TRateLimiterMode::Rps,                                                  \
-                            .RequestType = NJaegerTracing::ERequestType::DISCOVERY_##REQUEST_TYPE,            \
-                        }));                                                                                  \
+                        (ctx, cb, TRequestAuxSettings{TRateLimiterMode::Rps, nullptr}));                      \
             }, &Ydb::Discovery::V1::DiscoveryService::AsyncService::Request ## NAME,                          \
             #NAME, logger, getCounterBlock("discovery", #NAME))->Run();
 
-    ADD_METHOD(ListEndpoints, DoListEndpointsRequest, LISTENDPOINTS)
+    ADD_METHOD(ListEndpoints, DoListEndpointsRequest)
 #undef ADD_METHOD
 
 }

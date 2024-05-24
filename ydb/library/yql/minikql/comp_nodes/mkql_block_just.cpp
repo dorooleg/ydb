@@ -1,6 +1,6 @@
 #include "mkql_block_just.h"
+#include "mkql_block_impl.h"
 
-#include <ydb/library/yql/minikql/computation/mkql_block_impl.h>
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
 #include <ydb/library/yql/minikql/arrow/arrow_util.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
@@ -18,7 +18,7 @@ public:
         : ReturnArrowType(returnArrowType)
     {}
 
-    arrow::Status Exec(arrow::compute::KernelContext*, const arrow::compute::ExecBatch& batch, arrow::Datum* res) const {
+    arrow::Status Exec(arrow::compute::KernelContext* ctx, const arrow::compute::ExecBatch& batch, arrow::Datum* res) const {
         arrow::Datum inputDatum = batch.values[0];
         if (Trivial) {
             *res = inputDatum;
@@ -71,7 +71,7 @@ IComputationNode* WrapBlockJust(TCallable& callable, const TComputationNodeFacto
 
     auto dataCompute = LocateNode(ctx.NodeLocator, callable, 0);
 
-    TComputationNodePtrVector argsNodes = { dataCompute };
+    TVector<IComputationNode*> argsNodes = { dataCompute };
     TVector<TType*> argsTypes = { dataType };
 
     std::shared_ptr<arrow::compute::ScalarKernel> kernel;

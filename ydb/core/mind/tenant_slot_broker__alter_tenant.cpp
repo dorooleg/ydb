@@ -32,15 +32,15 @@ public:
             ++slotIt;
 
             if (onlySplit) {
-                Y_ABORT_UNLESS(!onlyMisplaced);
-                Y_ABORT_UNLESS(allocation->Group);
+                Y_VERIFY(!onlyMisplaced);
+                Y_VERIFY(allocation->Group);
                 if (!allocation->SplitCount)
                     return;
                 if (slot->DataCenter == allocation->Group->GetPreferredDataCenter())
                     continue;
             } else if (onlyMisplaced) {
-                Y_ABORT_UNLESS(!onlySplit);
-                Y_ABORT_UNLESS(allocation->Description.DataCenter != ANY_DATA_CENTER);
+                Y_VERIFY(!onlySplit);
+                Y_VERIFY(allocation->Description.DataCenter != ANY_DATA_CENTER);
                 if (!allocation->MisplacedCount)
                     return;
                 if (slot->DataCenter == allocation->Description.DataCenter)
@@ -64,7 +64,7 @@ public:
             }
 
             if (reattached) {
-                Y_ABORT_UNLESS(slot->UsedAs != key);
+                Y_VERIFY(slot->UsedAs != key);
                 Self->DetachSlotNoConfigureNoDb(slot, false);
                 Self->AttachSlotNoConfigure(slot, tenant, key, slot->Label, txc);
             } else {
@@ -189,7 +189,7 @@ public:
                 if (detach.contains(pr.first))
                     DetachSlots(tenant, detach, pr.second, txc, ctx);
 
-            Y_ABORT_UNLESS(detach.empty());
+            Y_VERIFY(detach.empty());
 
             // Add/remove sot labels for tenant.
             if (tenant->GetTotalRequired() > total)

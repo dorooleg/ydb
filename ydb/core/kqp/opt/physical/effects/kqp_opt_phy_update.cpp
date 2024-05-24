@@ -7,6 +7,13 @@ using namespace NYql;
 using namespace NYql::NDq;
 using namespace NYql::NNodes;
 
+namespace {
+
+struct TDictAndKeysResult {
+    TDqPhyPrecompute DictPrecompute;
+    TDqPhyPrecompute KeysPrecompute;
+};
+
 TDictAndKeysResult PrecomputeDictAndKeys(const TCondenseInputResult& condenseResult, TPositionHandle pos,
     TExprContext& ctx)
 {
@@ -83,6 +90,8 @@ TDictAndKeysResult PrecomputeDictAndKeys(const TCondenseInputResult& condenseRes
     };
 }
 
+} // namespace
+
 TExprBase KqpBuildUpdateStages(TExprBase node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
     if (!node.Maybe<TKqlUpdateRows>()) {
         return node;
@@ -150,12 +159,6 @@ TExprBase KqpBuildUpdateStages(TExprBase node, TExprContext& ctx, const TKqpOpti
         .Table(update.Table())
         .Input(prepareUpdate)
         .Columns(update.Columns())
-        .ReturningColumns(update.ReturningColumns())
-        .Settings()
-            .Add()
-                .Name().Build("IsUpdate")
-            .Build()
-        .Build()
         .Done();
 
     return node;

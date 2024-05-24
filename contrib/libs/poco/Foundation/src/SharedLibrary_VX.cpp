@@ -17,7 +17,7 @@
 #include "Poco/Format.h"
 #error #include <loadLib.h>
 #error #include <unldLib.h>
-#error #include <ioLib.h>
+#include <ioLib.h>
 #error #include <symLib.h>
 #error #include <sysSymTbl.h>
 #include <cstring>

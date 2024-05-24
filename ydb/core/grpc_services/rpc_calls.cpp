@@ -37,12 +37,6 @@ void FillYdbStatus(Ydb::Topic::StreamReadMessage::FromServer& resp, const NYql::
 }
 
 template <>
-void FillYdbStatus(Ydb::Topic::StreamDirectReadMessage::FromServer& resp, const NYql::TIssues& issues, Ydb::StatusIds::StatusCode status) {
-    resp.set_status(status);
-    NYql::IssuesToMessage(issues, resp.mutable_issues());
-}
-
-template <>
 void FillYdbStatus(Draft::Dummy::PingResponse& resp, const NYql::TIssues& issues, Ydb::StatusIds::StatusCode status) {
     Y_UNUSED(resp);
     Y_UNUSED(issues);
@@ -75,21 +69,21 @@ std::pair<TString, TString> SplitPath(const TString& path) {
     return {path.substr(0, splitPos), path.substr(splitPos + 1)};
 }
 
-void RefreshTokenSendRequest(const TActorContext& ctx, IEventBase* refreshTokenRequest) {
-    ctx.Send(CreateGRpcRequestProxyId(), refreshTokenRequest);
+void RefreshToken(const TString& token, const TString& database, const TActorContext& ctx, TActorId from) {
+    ctx.Send(CreateGRpcRequestProxyId(), new TRefreshTokenImpl(token, database, from));
 }
 
-void RefreshTokenReplyUnauthenticated(TActorId recipient, TActorId sender, NYql::TIssues&& issues) {
-    TActivationContext::Send(new IEventHandle(recipient, sender,
-        new TGRpcRequestProxy::TEvRefreshTokenResponse{false, nullptr, false, std::move(issues)}
-    ));
+void TRefreshTokenImpl::ReplyUnauthenticated(const TString&) {
+    TActivationContext::Send(new IEventHandle(From_, TActorId(),
+        new TGRpcRequestProxy::TEvRefreshTokenResponse
+            { false, nullptr, false, IssueManager_.GetIssues()}));
 }
 
-void RefreshTokenReplyUnavailable(TActorId recipient, NYql::TIssues&& issues) {
+void TRefreshTokenImpl::ReplyUnavaliable() {
     const TActorContext& ctx = TActivationContext::AsActorContext();
-    ctx.Send(recipient,
-        new TGRpcRequestProxy::TEvRefreshTokenResponse{false, nullptr, true, std::move(issues)}
-    );
+    ctx.Send(From_,
+        new TGRpcRequestProxy::TEvRefreshTokenResponse
+            { false, nullptr, true, IssueManager_.GetIssues()});
 }
 
 } // namespace NGRpcService

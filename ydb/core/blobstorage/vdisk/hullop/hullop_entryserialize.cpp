@@ -13,7 +13,7 @@ namespace NKikimr {
         str.Write(&CurSignature, sizeof(ui32));
         // pb payload
         bool success = pb.SerializeToArcadiaStream(&str);
-        Y_ABORT_UNLESS(success);
+        Y_VERIFY(success);
         return str.Str();
     }
 

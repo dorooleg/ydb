@@ -20,12 +20,11 @@ See the description of the command to init the data load:
 {{ ydb-cli }} workload clickbench init --help
 ```
 
-### Available parameters {#init-options}
+### Available parameters {#init_options}
 
 | Parameter name | Parameter description |
 ---|---
 | `--table <value>` | The table name. The default value is `clickbench/hits`. |
-| `--store <value>` | Type of table storage. Acceptable values: `row`, `column`. Default value: `row`. |
 
 ## Uploading data to the table {#load}
 
@@ -53,7 +52,7 @@ See the description of the command to run the data load:
 {{ ydb-cli }} workload clickbench run --help
 ```
 
-### Global parameters for all types of load {#run-options}
+### Global parameters for all types of load {#run_options}
 
 | Parameter name | Parameter description |
 ---|---

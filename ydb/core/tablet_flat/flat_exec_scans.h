@@ -305,7 +305,7 @@ namespace NTabletFlatExecutor {
                 std::make_tuple(token),
                 std::make_tuple(token, table, options, std::move(snapshot)));
 
-            Y_ABORT_UNLESS(got.second, "Failed to make new scan state entry");
+            Y_VERIFY(got.second, "Failed to make new scan state entry");
 
             auto *one = &got.first->second;
 
@@ -343,7 +343,7 @@ namespace NTabletFlatExecutor {
                 conf.AheadHi = Tables[one.Table].AheadHi;
             }
 
-            Y_ABORT_UNLESS(one.Snapshot);
+            Y_VERIFY(one.Snapshot);
             auto *actor = new NOps::TDriver(one.Serial, one.Scan, conf, std::move(one.Snapshot));
 
             if (auto logl = Logger->Log(NUtil::ELnLev::Info))

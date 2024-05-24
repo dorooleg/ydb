@@ -1,8 +1,30 @@
 #include "codegen.h"
-Y_PRAGMA_DIAGNOSTIC_PUSH
-Y_PRAGMA("GCC diagnostic ignored \"-Wbitwise-instead-of-logical\"")
-#include "codegen_llvm_deps.h" // Y_IGNORE
-Y_PRAGMA_DIAGNOSTIC_POP
+#include <llvm/ExecutionEngine/ExecutionEngine.h>
+#include <llvm/ExecutionEngine/JITEventListener.h>
+#include <llvm/ExecutionEngine/MCJIT.h>
+#include <llvm/IR/DiagnosticInfo.h>
+#include <llvm/IR/DiagnosticPrinter.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Linker/Linker.h>
+#include <llvm-c/Disassembler.h>
+#include <llvm/Support/Host.h>
+#include <llvm/Support/ManagedStatic.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/Timer.h>
+#include <llvm/Support/ErrorHandling.h>
+#include <llvm/Transforms/IPO.h>
+#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#include <llvm/Transforms/Instrumentation.h>
+#include <llvm/Transforms/Instrumentation/AddressSanitizer.h>
+#include <llvm/Transforms/Instrumentation/MemorySanitizer.h>
+#include <llvm/Transforms/Instrumentation/ThreadSanitizer.h>
+#include <llvm/LinkAllPasses.h>
+
 #include <contrib/libs/re2/re2/re2.h>
 
 #include <util/generic/maybe.h>
@@ -189,16 +211,10 @@ namespace NCodegen {
 
 namespace {
 
-    void FatalErrorHandler(void* user_data,
-#if LLVM_VERSION_MAJOR == 12
-    const std::string& reason
-#else
-    const char* reason
-#endif
-    , bool gen_crash_diag) {
+    void FatalErrorHandler(void* user_data, const std::string& reason, bool gen_crash_diag) {
         Y_UNUSED(user_data);
         Y_UNUSED(gen_crash_diag);
-        ythrow yexception() << "LLVM fatal error: " << reason;
+        ythrow yexception() << "LLVM fatal error: " << reason.c_str();
     }
 
     void AddAddressSanitizerPasses(const llvm::PassManagerBuilder& builder, llvm::legacy::PassManagerBase& pm) {
@@ -227,14 +243,18 @@ namespace {
         }
     };
 
+    struct TCodegenCleanup {
+        ~TCodegenCleanup() {
+            llvm::llvm_shutdown();
+        }
+    };
+
+    TCodegenCleanup Cleanup;
+
     bool CompareFuncOffsets(const std::pair<ui64, llvm::Function*>& lhs,
         const std::pair<ui64, llvm::Function*>& rhs) {
         return lhs.first < rhs.first;
     }
-}
-
-bool ICodegen::IsCodegenAvailable() {
-    return true;
 }
 
 class TCodegen : public ICodegen, private llvm::JITEventListener {
@@ -293,9 +313,7 @@ public:
         targetOptions.EnableFastISel = true;
         // init manually, this field was lost in llvm::TargetOptions ctor :/
         // make coverity happy
-#if LLVM_VERSION_MAJOR == 12
         targetOptions.StackProtectorGuardOffset = 0;
-#endif        
 
         std::string what;
         auto&& engineBuilder = llvm::EngineBuilder(std::move(module));
@@ -469,7 +487,6 @@ public:
         passManagerBuilder.populateModulePassManager(*modulePassManager);
         passManagerBuilder.populateFunctionPassManager(*functionPassManager);
 
-        auto functionPassStart = Now();
         functionPassManager->doInitialization();
         for (auto it = Module_->begin(), jt = Module_->end(); it != jt; ++it) {
             if (!it->isDeclaration()) {
@@ -477,10 +494,6 @@ public:
             }
         }
         functionPassManager->doFinalization();
-
-        if (compileStats) {
-            compileStats->FunctionPassTime = (Now() - functionPassStart).MilliSeconds();
-        }
 
         auto modulePassStart = Now();
         modulePassManager->run(*Module_);
@@ -517,10 +530,6 @@ public:
         if (dumpTimers) {
             llvm::TimerGroup::printAll(llvm::errs());
             llvm::TimePassesIsEnabled = false;
-        }
-
-        if (compileStats) {
-            compileStats->TotalObjectSize = TotalObjectSize;
         }
     }
 
@@ -570,7 +579,9 @@ public:
         std::unique_ptr<void, void(*)(void*)> delDis(dis, LLVMDisasmDispose);
         LLVMSetDisasmOptions(dis, LLVMDisassembler_Option_AsmPrinterVariant);
         char outline[1024];
-        size_t pos = 0;
+        int pos;
+
+        pos = 0;
         while (pos < size) {
             size_t l = LLVMDisasmInstruction(dis, (uint8_t*)buf + pos, size - pos, 0, outline, sizeof(outline));
             if (!l) {
@@ -649,8 +660,6 @@ public:
                             const llvm::RuntimeDyld::LoadedObjectInfo &loi) override
     {
         Y_UNUSED(key);
-        TotalObjectSize += obj.getData().size();
-
         for (const auto& section : obj.sections()) {
             //auto nameExp = section.getName();
             //auto name = nameExp.get();
@@ -720,12 +729,9 @@ private:
     std::string Diagnostic_;
     std::string Triple_;
     llvm::Module* Module_;
-#ifdef __linux__    
     llvm::JITEventListener* PerfListener_ = nullptr;
-#endif
     std::unique_ptr<llvm::ExecutionEngine> Engine_;
     std::vector<std::pair<llvm::object::SectionRef, ui64>> CodeSections_;
-    ui64 TotalObjectSize = 0;
     std::vector<std::pair<ui64, llvm::Function*>> SortedFuncs_;
     TMaybe<THashSet<TString>> ExportedSymbols;
     THashMap<const void*, TString> ReverseGlobalMapping_;
@@ -737,11 +743,6 @@ private:
 ICodegen::TPtr
 ICodegen::Make(ETarget target, ESanitize sanitize) {
     return std::make_unique<TCodegen>(target, sanitize);
-}
-
-ICodegen::TSharedPtr
-ICodegen::MakeShared(ETarget target, ESanitize sanitize) {
-    return std::make_shared<TCodegen>(target, sanitize);
 }
 
 }

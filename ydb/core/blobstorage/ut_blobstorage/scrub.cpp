@@ -53,7 +53,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
                             } else if (item.Level == 18) {
                                 ++num18;
                             } else {
-                                Y_ABORT("unexpected level");
+                                Y_FAIL("unexpected level");
                             }
                         }
                     }
@@ -100,7 +100,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
                 for (const auto& item : r.GetResult()) {
                     if (item.GetStatus() == NKikimrProto::OK) {
                         const TLogoBlobID& id = LogoBlobIDFromLogoBlobID(item.GetBlobID());
-                        const TString buffer = res->Get()->GetBlobData(item).ConvertToString();
+                        const TString& buffer = item.GetBuffer();
                         const TString& hash = MD5::Calc(buffer);
                         data.emplace(id, hash);
                         Cerr << "BlobId# " << id.ToString() << " hash# " << hash << " size# " << buffer.size() << Endl;
@@ -149,7 +149,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
             for (const auto& result : r.GetResult()) {
                 const TLogoBlobID& key = LogoBlobIDFromLogoBlobID(result.GetBlobID());
                 UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NKikimrProto::OK, "Id# " << key);
-                UNIT_ASSERT_EQUAL(MD5::Calc(res->Get()->GetBlobData(result).ConvertToString()), data.at(key));
+                UNIT_ASSERT_EQUAL(MD5::Calc(result.GetBuffer()), data.at(key));
                 --numBlobs;
             }
         }
@@ -180,7 +180,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
         ui32 nodeId, pdiskId;
         std::tie(nodeId, pdiskId, std::ignore) = DecomposeVDiskServiceId(vdiskActorId);
         auto it = env.PDiskMockStates.find(std::make_pair(nodeId, pdiskId));
-        Y_ABORT_UNLESS(it != env.PDiskMockStates.end());
+        Y_VERIFY(it != env.PDiskMockStates.end());
         TPDiskMockState::TPtr snapshot = it->second->Snapshot();
 
         std::map<ui32, std::vector<const TLayout::TLayoutRecord*>> indexes;
@@ -294,7 +294,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
                         recs.insert(recs.end(), value.begin(), value.end());
                     }
                 }
-                Y_ABORT_UNLESS(!recs.empty());
+                Y_VERIFY(!recs.empty());
                 return recs[RandomNumber(recs.size())];
             };
 

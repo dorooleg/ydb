@@ -17,7 +17,7 @@
 # include <istream>
 # include <ostream>
 #else
-# error #include <iostream.h>
+# include <iostream.h>
 #endif
 
 #ifndef BOOST_IOSTREAMS_NO_STREAM_TEMPLATES

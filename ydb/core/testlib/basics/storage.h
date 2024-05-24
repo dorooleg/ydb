@@ -88,10 +88,10 @@ namespace NKikimr {
             {
                 auto text = MakeTextConf(domains);
 
-                google::protobuf::TextFormat::ParseFromString(text, conf->BlobStorageConfig.MutableServiceSet());
+                google::protobuf::TextFormat::ParseFromString(text, &conf->ServiceSet);
             }
 
-            conf->BlobStorageConfig.MutableServiceSet()->SetEnableProxyMock(Mock);
+            conf->ServiceSet.SetEnableProxyMock(Mock);
             conf->PDiskConfigOverlay.SetGetDriveDataSwitch(NKikimrBlobStorage::TPDiskConfig::DoNotTouch);
             conf->PDiskConfigOverlay.SetWriteCacheSwitch(NKikimrBlobStorage::TPDiskConfig::DoNotTouch);
 
@@ -120,8 +120,8 @@ namespace NKikimr {
             SubstGlobal(escapedPdiskPath, "\\", "\\\\");
             TStringStream str;
 
-            if (const auto& domain = domains.Domain) {
-                str << "AvailabilityDomains: " << domain->DomainUid << Endl;
+            for (const auto &it: domains.Domains) {
+                str << "AvailabilityDomains: " << it.second->DomainUid << Endl;
             }
             str << "PDisks { NodeID: " << Runtime.GetNodeId(0) << " PDiskID: 1 PDiskGuid: " << PDiskGuid
                 << " Path: \"" << escapedPdiskPath << "\"}" << Endl;

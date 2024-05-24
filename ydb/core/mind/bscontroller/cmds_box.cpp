@@ -169,8 +169,8 @@ namespace NKikimr::NBsController {
 
                 // update storage pool id mapping in group itself
                 TGroupInfo *group = Groups.FindForUpdate(node.mapped());
-                Y_ABORT_UNLESS(group);
-                Y_ABORT_UNLESS(group->StoragePoolId == origin);
+                Y_VERIFY(group);
+                Y_VERIFY(group->StoragePoolId == origin);
                 group->StoragePoolId = target;
 
                 // update the key and insert item back into map
@@ -188,35 +188,13 @@ namespace NKikimr::NBsController {
         PDisks.ForEach([&](const TPDiskId& pdiskId, const TPDiskInfo& pdiskInfo) {
             if (pdiskInfo.BoxId == cmd.GetOriginBoxId()) {
                 TPDiskInfo *mut = PDisks.FindForUpdate(pdiskId);
-                Y_ABORT_UNLESS(mut);
+                Y_VERIFY(mut);
                 mut->BoxId = cmd.GetTargetBoxId();
             }
         });
 
         // drop origin box
         boxes.erase(cmd.GetOriginBoxId());
-    }
-
-    void TBlobStorageController::TConfigState::ExecuteStep(const NKikimrBlobStorage::TRestartPDisk& cmd, TStatus& /*status*/) {
-        auto targetPDiskId = cmd.GetTargetPDiskId();
-
-        TPDiskId pdiskId(targetPDiskId.GetNodeId(), targetPDiskId.GetPDiskId());
-
-        TPDiskInfo *pdisk = PDisks.FindForUpdate(pdiskId);
-
-        if (!pdisk) {
-            throw TExPDiskNotFound(pdiskId.NodeId, pdiskId.PDiskId);
-        }
-
-        pdisk->Mood = TPDiskMood::Restarting;
-
-        for (const auto& [id, slot] : pdisk->VSlotsOnPDisk) {
-            if (slot->Group) {
-                TGroupInfo *group = Groups.FindForUpdate(slot->Group->ID);
-
-                group->CalculateGroupStatus();
-            }
-        }
     }
 
 } // namespace NKikimr::NBsController

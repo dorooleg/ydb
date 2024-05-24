@@ -10,8 +10,6 @@
 
 namespace NYdb {
 
-using std::string;
-
 class TEndpointElectorSafe::TObjRegistry : public IObjRegistryHandle {
 public:
     TObjRegistry(const ui64& nodeId)
@@ -25,7 +23,7 @@ public:
 
     void Remove(TEndpointObj* obj) {
         std::unique_lock lock(Mutex_);
-        Y_ABORT_UNLESS(Objs_.find(obj) != Objs_.end());
+        Y_VERIFY(Objs_.find(obj) != Objs_.end());
         Objs_.erase(obj);
     }
 
@@ -72,8 +70,8 @@ static i32 GetBestK(const std::vector<TEndpointRecord>& records) {
     return pos - 1;
 }
 
-std::vector<string> TEndpointElectorSafe::SetNewState(std::vector<TEndpointRecord>&& records) {
-    std::unordered_set<string> index;
+std::vector<TStringType> TEndpointElectorSafe::SetNewState(std::vector<TEndpointRecord>&& records) {
+    std::unordered_set<TStringType> index;
     std::vector<TEndpointRecord> uniqRec;
 
     for (auto&& record : records) {
@@ -86,7 +84,7 @@ std::vector<string> TEndpointElectorSafe::SetNewState(std::vector<TEndpointRecor
 
     auto bestK = GetBestK(uniqRec);
 
-    std::vector<string> removed;
+    std::vector<TStringType> removed;
     std::vector<std::shared_ptr<TObjRegistry>> notifyRemoved;
 
     {
@@ -97,7 +95,7 @@ std::vector<string> TEndpointElectorSafe::SetNewState(std::vector<TEndpointRecor
                 removed.emplace_back(record.Endpoint);
 
                 auto it = KnownEndpoints_.find(record.Endpoint);
-                Y_ABORT_UNLESS(it != KnownEndpoints_.end());
+                Y_VERIFY(it != KnownEndpoints_.end());
                 KnownEndpoints_.erase(it);
 
                 auto nodeIdIt = KnownEndpointsByNodeId_.find(record.NodeId);
@@ -115,7 +113,7 @@ std::vector<string> TEndpointElectorSafe::SetNewState(std::vector<TEndpointRecor
             KnownEndpoints_[record.Endpoint] = record;
             KnownEndpointsByNodeId_[record.NodeId].Record = record;
         }
-        Y_ABORT_UNLESS(Records_.size() == KnownEndpoints_.size());
+        Y_VERIFY(Records_.size() == KnownEndpoints_.size());
         EndpointCountGauge_.SetValue(Records_.size());
         EndpointActiveGauge_.SetValue(Records_.size());
         BestK_ = bestK;
@@ -130,7 +128,7 @@ std::vector<string> TEndpointElectorSafe::SetNewState(std::vector<TEndpointRecor
     return removed;
 }
 
-TEndpointRecord TEndpointElectorSafe::GetEndpoint(const TEndpointKey& preferredEndpoint, bool onlyPreferred) const {
+TEndpointRecord TEndpointElectorSafe::GetEndpoint(const TEndpointKey& preferredEndpoint) const {
     std::shared_lock guard(Mutex_);
 
     if (preferredEndpoint.GetNodeId()) {
@@ -146,13 +144,9 @@ TEndpointRecord TEndpointElectorSafe::GetEndpoint(const TEndpointKey& preferredE
             return it->second;
         }
     }
-
-    if(onlyPreferred)
-        return {};
-
     if (BestK_ == -1) {
         Y_ASSERT(Records_.empty());
-        return {};
+        return TEndpointRecord();
     } else {
         // returns value in range [0, n)
         auto idx = RandomNumber<size_t>(BestK_ + 1);
@@ -161,7 +155,7 @@ TEndpointRecord TEndpointElectorSafe::GetEndpoint(const TEndpointKey& preferredE
 }
 
 // TODO: Suboptimal, but should not be used often
-void TEndpointElectorSafe::PessimizeEndpoint(const string& endpoint) {
+void TEndpointElectorSafe::PessimizeEndpoint(const TStringType& endpoint) {
     std::unique_lock guard(Mutex_);
     for (auto& r : Records_) {
         if (r.Endpoint == endpoint && r.Priority != Max<i32>()) {

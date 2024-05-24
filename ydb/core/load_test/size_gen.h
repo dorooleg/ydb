@@ -2,6 +2,7 @@
 
 #include "defs.h"
 #include "gen.h"
+#include <ydb/core/protos/blobstorage.pb.h>
 
 namespace NKikimr {
     namespace NSizeGenerator {
@@ -13,7 +14,7 @@ namespace NKikimr {
                 : Min(x.GetMin())
                 , Max(x.GetMax())
             {
-                Y_ABORT_UNLESS(x.HasMin() && x.HasMax());
+                Y_VERIFY(x.HasMin() && x.HasMax());
             }
 
             ui32 Generate() const {

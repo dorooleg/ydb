@@ -4,7 +4,7 @@ namespace NKikimr::NMetadata::NProvider {
 
 void TDSAccessorRefresher::OnBootstrap() {
     TBase::OnBootstrap();
-    UnsafeBecome(&TDSAccessorRefresher::StateMain);
+    Become(&TDSAccessorRefresher::StateMain);
     Sender<TEvRefresh>().SendTo(SelfId());
 }
 

@@ -7,7 +7,8 @@ namespace NKqp {
 void RegisterStreamLookupActorFactory(NYql::NDq::TDqAsyncIoFactory& factory, TIntrusivePtr<TKqpCounters> counters) {
     factory.RegisterInputTransform<NKikimrKqp::TKqpStreamLookupSettings>("StreamLookupInputTransformer", [counters](NKikimrKqp::TKqpStreamLookupSettings&& settings,
         NYql::NDq::TDqAsyncIoFactory::TInputTransformArguments&& args) {
-            return CreateStreamLookupActor(std::move(args), std::move(settings), counters);
+            return CreateStreamLookupActor(args.InputIndex, args.TransformInput, args.ComputeActorId, args.TypeEnv,
+                args.HolderFactory, args.Alloc, std::move(settings), counters);
     });
 }
 

@@ -144,7 +144,7 @@ TExprBase KqpPushPredicateToReadTable(TExprBase node, TExprContext& ctx, const T
     TMaybeNode<TCoAtom> indexName;
 
     //TODO: remove this branch KIKIMR-15255, KIKIMR-15321
-    if (!readMatch && (kqpCtx.IsDataQuery() || kqpCtx.IsGenericQuery())) {
+    if (!readMatch && kqpCtx.IsDataQuery()) {
         if (auto readRangesMatch = MatchRead<TKqlReadTableRangesBase>(flatmap.Input())) {
             auto read = readRangesMatch->Read.Cast<TKqlReadTableRangesBase>();
             if (TCoVoid::Match(read.Ranges().Raw())) {
@@ -222,7 +222,7 @@ TExprBase KqpPushPredicateToReadTable(TExprBase node, TExprContext& ctx, const T
     fetches.reserve(lookup.GetKeyRanges().size());
 
     for (auto& keyRange : lookup.GetKeyRanges()) {
-        bool useDataOrGenericQueryLookup = false;
+        bool useDataQueryLookup = false;
         bool useScanQueryLookup = false;
         if (onlyPointRanges && !IsPointPrefix(keyRange)) {
             return node;
@@ -233,14 +233,13 @@ TExprBase KqpPushPredicateToReadTable(TExprBase node, TExprContext& ctx, const T
             // NOTE: Use more efficient full key lookup implementation in datashard.
             // Consider using lookup for partial keys as well once better constant folding
             // is available, currently it can introduce redundant compute stage.
-            useDataOrGenericQueryLookup = (kqpCtx.IsDataQuery() || kqpCtx.IsGenericQuery()) && isFullKey;
+            useDataQueryLookup = kqpCtx.IsDataQuery() && isFullKey;
             useScanQueryLookup = kqpCtx.IsScanQuery() && isFullKey
                 && kqpCtx.Config->EnableKqpScanQueryStreamLookup;
         }
 
         TMaybeNode<TExprBase> readInput;
-        // TODO: Use single implementation for all kinds of queries.
-        if (useDataOrGenericQueryLookup) {
+        if (useDataQueryLookup) {
             auto lookupKeys = BuildEquiRangeLookup(keyRange, tableDesc, read.Pos(), ctx);
 
             if (indexName) {
@@ -273,7 +272,6 @@ TExprBase KqpPushPredicateToReadTable(TExprBase node, TExprContext& ctx, const T
                     .Table(read.Table())
                     .LookupKeys(lookupKeys)
                     .Columns(read.Columns())
-                    .LookupStrategy().Build(TKqpStreamLookupStrategyName)
                     .Done();
             }
         } else {
@@ -335,157 +333,88 @@ TExprBase KqpPushPredicateToReadTable(TExprBase node, TExprContext& ctx, const T
         .Done();
 }
 
-TMaybeNode<TExprBase> KqpRewriteLiteralLookup(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
-    if (!node.Maybe<TKqlLookupTable>()) {
-        return {};
-    }
-
-    const TKqlLookupTable& lookup = node.Cast<TKqlLookupTable>();
-
-    if (!kqpCtx.Config->EnableKqpDataQuerySourceRead) {
-        return {};
-    }
-
-    TMaybeNode<TExprBase> lookupKeys = lookup.LookupKeys();
-    TMaybeNode<TCoSkipNullMembers> skipNullMembers;
-    if (lookupKeys.Maybe<TCoSkipNullMembers>()) {
-        skipNullMembers = lookupKeys.Cast<TCoSkipNullMembers>();
-        lookupKeys = skipNullMembers.Input();
-    }
-
-    TKqpReadTableSettings settings;
-    if (skipNullMembers) {
-        auto skipNullColumns = skipNullMembers.Cast().Members();
-
-        if (skipNullColumns) {
-            for (const auto &column : skipNullColumns.Cast()) {
-                settings.AddSkipNullKey(TString(column.Value()));
-            }
-        }
-    }
-
-    const auto& table = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, lookup.Table().Path().Value());
-    if (auto lookupKeysFlatMap = lookupKeys.Maybe<TCoFlatMapBase>()) {
-        auto flatMapRangeInput = lookupKeysFlatMap.Cast().Input().Maybe<TCoRangeFinalize>();
-
-        // This rule should depend on feature flag for safety
-        if (!flatMapRangeInput || !kqpCtx.Config->EnableKqpDataQueryStreamLookup) {
-            return {};
-        }
-
-        auto lookupKeysType = lookupKeys.Ref().GetTypeAnn();
-        YQL_ENSURE(lookupKeysType);
-        YQL_ENSURE(lookupKeysType->GetKind() == ETypeAnnotationKind::List);
-        auto itemType = lookupKeysType->Cast<TListExprType>()->GetItemType();
-        YQL_ENSURE(itemType->GetKind() == ETypeAnnotationKind::Struct);
-        auto structType = itemType->Cast<TStructExprType>();
-
-        TVector<TString> usedColumns;
-        usedColumns.reserve(structType->GetSize());
-        for (const auto& keyColumnName : table.Metadata->KeyColumnNames) {
-            if (!structType->FindItem(keyColumnName)) {
-                break;
-            }
-            
-            usedColumns.emplace_back(keyColumnName);
-        }
-
-        YQL_ENSURE(usedColumns.size() == structType->GetSize());
-
-        TKqpReadTableExplainPrompt prompt;
-        prompt.SetUsedKeyColumns(std::move(usedColumns));
-        prompt.SetPointPrefixLen(structType->GetSize());
-
-
-        return Build<TKqlReadTableRanges>(ctx, lookup.Pos())
-            .Table(lookup.Table())
-            .Ranges(flatMapRangeInput.Cast())
-            .Columns(lookup.Columns())
-            .Settings(settings.BuildNode(ctx, lookup.Pos()))
-            .ExplainPrompt(prompt.BuildNode(ctx, lookup.Pos()))
-            .Done();
-    }
-
-    auto maybeAsList = lookupKeys.Maybe<TCoAsList>();
-    if (!maybeAsList) {
-        return {};
-    }
-
-    // one point expected
-    if (maybeAsList.Cast().ArgCount() != 1) {
-        return {};
-    }
-
-    auto maybeStruct = maybeAsList.Cast().Arg(0).Maybe<TCoAsStruct>();
-    if (!maybeStruct) {
-        return node;
-    }
-
-    // full pk expected
-    if (table.Metadata->KeyColumnNames.size() != maybeStruct.Cast().ArgCount()) {
-        return {};
-    }
-
-    std::unordered_map<TString, TExprBase> keyColumnsStruct;
-    for (const auto& item : maybeStruct.Cast()) {
-        const auto& tuple = item.Cast<TCoNameValueTuple>();
-        keyColumnsStruct.insert({TString(tuple.Name().Value()),  tuple.Value().Cast()});
-    }
-
-    TVector<TExprBase> keyValues;
-    keyValues.reserve(maybeStruct.Cast().ArgCount());
-    for (const auto& name : table.Metadata->KeyColumnNames) {
-        auto it = keyColumnsStruct.find(name);
-        YQL_ENSURE(it != keyColumnsStruct.end());
-        keyValues.push_back(it->second);
-    }
-
-    if (skipNullMembers) {
-        auto skipNullColumns = skipNullMembers.Cast().Members();
-
-        if (skipNullColumns) {
-            for (const auto &column : skipNullColumns.Cast()) {
-                settings.AddSkipNullKey(TString(column.Value()));
-            }
-        }
-    }
-
-    return Build<TKqlReadTable>(ctx, lookup.Pos())
-        .Table(lookup.Table())
-        .Range<TKqlKeyRange>()
-            .From<TKqlKeyInc>()
-                .Add(keyValues)
-                .Build()
-            .To<TKqlKeyInc>()
-                .Add(keyValues)
-                .Build()
-            .Build()
-        .Columns(lookup.Columns())
-        .Settings(settings.BuildNode(ctx, lookup.Pos()))
-        .Done();
-}
-
 TExprBase KqpRewriteLookupTable(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
     if (!node.Maybe<TKqlLookupTable>()) {
         return node;
     }
 
-    if (auto literal = KqpRewriteLiteralLookup(node, ctx, kqpCtx)) {
-        return literal.Cast();
-    }
-
     const TKqlLookupTable& lookup = node.Cast<TKqlLookupTable>();
+    if (!IsDqPureExpr(lookup.LookupKeys())) {
+        if (!kqpCtx.Config->EnableKqpDataQueryStreamLookup) {
+            return node;
+        }
 
-    if (!kqpCtx.Config->EnableKqpDataQueryStreamLookup) {
-        return node;
+        return Build<TKqlStreamLookupTable>(ctx, lookup.Pos())
+            .Table(lookup.Table())
+            .LookupKeys(lookup.LookupKeys())
+            .Columns(lookup.Columns())
+            .Done();
+    } else {
+        if (!kqpCtx.Config->EnableKqpDataQuerySourceRead) {
+            return node;
+        }
+
+        TMaybeNode<TExprBase> lookupKeys = lookup.LookupKeys();
+        TMaybeNode<TCoSkipNullMembers> skipNullMembers;
+        if (lookupKeys.Maybe<TCoSkipNullMembers>()) {
+            skipNullMembers = lookupKeys.Cast<TCoSkipNullMembers>();
+            lookupKeys = skipNullMembers.Input();
+        }
+
+        auto maybeAsList = lookupKeys.Maybe<TCoAsList>();
+        if (!maybeAsList) {
+            return node;
+        }
+
+        // one point expected
+        if (maybeAsList.Cast().ArgCount() != 1) {
+            return node;
+        }
+
+        auto maybeStruct = maybeAsList.Cast().Arg(0).Maybe<TCoAsStruct>();
+        if (!maybeStruct) {
+            return node;
+        }
+
+        // full pk expected
+        const auto& table = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, lookup.Table().Path().Value());
+        if (table.Metadata->KeyColumnNames.size() != maybeStruct.Cast().ArgCount()) {
+            return node;
+        }
+
+        std::unordered_map<TString, TExprBase> keyColumnsStruct;
+        for (const auto& item : maybeStruct.Cast()) {
+            const auto& tuple = item.Cast<TCoNameValueTuple>();
+            keyColumnsStruct.insert({TString(tuple.Name().Value()),  tuple.Value().Cast()});
+        }
+
+        TKqpReadTableSettings settings;
+        TVector<TExprBase> keyValues;
+        keyValues.reserve(maybeStruct.Cast().ArgCount());
+        for (const auto& name : table.Metadata->KeyColumnNames) {
+            auto it = keyColumnsStruct.find(name);
+            YQL_ENSURE(it != keyColumnsStruct.end());
+            keyValues.push_back(it->second);
+
+            if (skipNullMembers) {
+                settings.AddSkipNullKey(name);
+            }
+        }
+
+        return Build<TKqlReadTable>(ctx, lookup.Pos())
+            .Table(lookup.Table())
+            .Range<TKqlKeyRange>()
+                .From<TKqlKeyInc>()
+                    .Add(keyValues)
+                    .Build()
+                .To<TKqlKeyInc>()
+                    .Add(keyValues)
+                    .Build()
+                .Build()
+            .Columns(lookup.Columns())
+            .Settings(settings.BuildNode(ctx, lookup.Pos()))
+            .Done();
     }
-
-    return Build<TKqlStreamLookupTable>(ctx, lookup.Pos())
-        .Table(lookup.Table())
-        .LookupKeys(lookup.LookupKeys())
-        .Columns(lookup.Columns())
-        .LookupStrategy().Build(TKqpStreamLookupStrategyName)
-        .Done();
 }
 
 TExprBase KqpDropTakeOverLookupTable(const TExprBase& node, TExprContext&, const TKqpOptimizeContext& kqpCtx) {

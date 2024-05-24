@@ -18,11 +18,6 @@
                                 "Node Type": "Limit",
                                 "Operators": [
                                     {
-                                        "Inputs": [
-                                            {
-                                                "ExternalPlanNodeId": 2
-                                            }
-                                        ],
                                         "Limit": "10",
                                         "Name": "Limit"
                                     }
@@ -38,35 +33,24 @@
                                                 "Node Type": "TopSort-Filter-TableFullScan",
                                                 "Operators": [
                                                     {
-                                                        "Inputs": [
-                                                            {
-                                                                "InternalOperatorId": 1
-                                                            }
-                                                        ],
                                                         "Limit": "10",
                                                         "Name": "TopSort",
                                                         "TopSortBy": "$5.SearchPhrase"
                                                     },
                                                     {
-                                                        "Inputs": [
-                                                            {
-                                                                "InternalOperatorId": 2
-                                                            }
-                                                        ],
                                                         "Name": "Filter",
                                                         "Predicate": "item.SearchPhrase != \"\""
                                                     },
                                                     {
-                                                        "Inputs": [],
                                                         "Name": "TableFullScan",
                                                         "ReadColumns": [
                                                             "SearchPhrase"
                                                         ],
                                                         "ReadRanges": [
+                                                            "EventTime (-\u221e, +\u221e)",
                                                             "CounterID (-\u221e, +\u221e)",
                                                             "EventDate (-\u221e, +\u221e)",
                                                             "UserID (-\u221e, +\u221e)",
-                                                            "EventTime (-\u221e, +\u221e)",
                                                             "WatchID (-\u221e, +\u221e)"
                                                         ],
                                                         "Table": "clickbench/plans/row/hits"
@@ -88,77 +72,6 @@
                     }
                 ]
             },
-            "SimplifiedPlan": {
-                "Node Type": "Query",
-                "PlanNodeId": 0,
-                "PlanNodeType": "Query",
-                "Plans": [
-                    {
-                        "Node Type": "ResultSet",
-                        "PlanNodeId": 1,
-                        "PlanNodeType": "ResultSet",
-                        "Plans": [
-                            {
-                                "Node Type": "Limit",
-                                "Operators": [
-                                    {
-                                        "Limit": "10",
-                                        "Name": "Limit"
-                                    }
-                                ],
-                                "PlanNodeId": 2,
-                                "Plans": [
-                                    {
-                                        "Node Type": "TopSort",
-                                        "Operators": [
-                                            {
-                                                "Limit": "10",
-                                                "Name": "TopSort",
-                                                "TopSortBy": "$5.SearchPhrase"
-                                            }
-                                        ],
-                                        "PlanNodeId": 4,
-                                        "Plans": [
-                                            {
-                                                "Node Type": "Filter",
-                                                "Operators": [
-                                                    {
-                                                        "Name": "Filter",
-                                                        "Predicate": "item.SearchPhrase != \"\""
-                                                    }
-                                                ],
-                                                "PlanNodeId": 5,
-                                                "Plans": [
-                                                    {
-                                                        "Node Type": "TableFullScan",
-                                                        "Operators": [
-                                                            {
-                                                                "Name": "TableFullScan",
-                                                                "ReadColumns": [
-                                                                    "SearchPhrase"
-                                                                ],
-                                                                "ReadRanges": [
-                                                                    "CounterID (-\u221e, +\u221e)",
-                                                                    "EventDate (-\u221e, +\u221e)",
-                                                                    "UserID (-\u221e, +\u221e)",
-                                                                    "EventTime (-\u221e, +\u221e)",
-                                                                    "WatchID (-\u221e, +\u221e)"
-                                                                ],
-                                                                "Table": "clickbench/plans/row/hits"
-                                                            }
-                                                        ],
-                                                        "PlanNodeId": 6
-                                                    }
-                                                ]
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
             "tables": [
                 {
                     "name": "/local/clickbench/plans/row/hits",
@@ -168,10 +81,10 @@
                                 "SearchPhrase"
                             ],
                             "scan_by": [
+                                "EventTime (-\u221e, +\u221e)",
                                 "CounterID (-\u221e, +\u221e)",
                                 "EventDate (-\u221e, +\u221e)",
                                 "UserID (-\u221e, +\u221e)",
-                                "EventTime (-\u221e, +\u221e)",
                                 "WatchID (-\u221e, +\u221e)"
                             ],
                             "type": "FullScan"

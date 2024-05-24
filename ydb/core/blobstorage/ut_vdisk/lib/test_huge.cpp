@@ -55,7 +55,7 @@ public:
             case 0: {
                 const ui32 minHugeBlobSize = 65 << 10;
                 TString abcdefghkj(CreateData("abcdefghkj", minHugeBlobSize, true));
-                const TLogoBlobID logoBlobId(DefaultTestTabletId, 1, 10, 0, abcdefghkj.size(), 0, 1);
+                const TLogoBlobID logoBlobId(0, 1, 10, 0, abcdefghkj.size(), 0, 1);
                 ctx.Send(HugeKeeperId,
                          new TEvHullWriteHugeBlob(TActorId(), 0, logoBlobId, TIngress(),
                                 TRope(abcdefghkj),
@@ -65,16 +65,16 @@ public:
                 return false;
             }
             case 1:
-                Y_ABORT();
+                Y_FAIL();
             case 2:
                 return true;
             default:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 
     void Handle(TEvHullLogHugeBlob::TPtr &ev, const TActorContext &ctx) override {
-        Y_ABORT_UNLESS(State == 1);
+        Y_VERIFY(State == 1);
         // FIXME: log
 
         const auto *msg = ev->Get();
@@ -136,7 +136,7 @@ class THugeModuleRecoveryActor : public TActorBootstrapped<THugeModuleRecoveryAc
 
     bool InitHugeBlobKeeper(const TActorContext &ctx, const TStartingPoints &startingPoints) {
         Y_UNUSED(ctx);
-        const ui32 oldMinHugeBlobInBytes = 64 << 10;
+        const ui32 minHugeBlobInBytes = 64 << 10;
         const ui32 milestoneHugeBlobInBytes = 64 << 10;
         const ui32 maxBlobInBytes = 128 << 10;
         auto logFunc = [] (const TString) { /* empty */ };
@@ -148,12 +148,12 @@ class THugeModuleRecoveryActor : public TActorBootstrapped<THugeModuleRecoveryAc
                         HmCtx->VCtx,
                         HmCtx->PDiskCtx->Dsk->ChunkSize,
                         HmCtx->PDiskCtx->Dsk->AppendBlockSize,
-                        HmCtx->PDiskCtx->Dsk->AppendBlockSize,
-                        oldMinHugeBlobInBytes,
+                        minHugeBlobInBytes,
                         milestoneHugeBlobInBytes,
                         maxBlobInBytes,
                         HmCtx->Config->HugeBlobOverhead,
                         HmCtx->Config->HugeBlobsFreeChunkReservation,
+                        HmCtx->Config->HugeBlobOldMapCompatible,
                         logFunc);
         } else {
             // read existing one
@@ -167,12 +167,12 @@ class THugeModuleRecoveryActor : public TActorBootstrapped<THugeModuleRecoveryAc
                         HmCtx->VCtx,
                         HmCtx->PDiskCtx->Dsk->ChunkSize,
                         HmCtx->PDiskCtx->Dsk->AppendBlockSize,
-                        HmCtx->PDiskCtx->Dsk->AppendBlockSize,
-                        oldMinHugeBlobInBytes,
+                        minHugeBlobInBytes,
                         milestoneHugeBlobInBytes,
                         maxBlobInBytes,
                         HmCtx->Config->HugeBlobOverhead,
                         HmCtx->Config->HugeBlobsFreeChunkReservation,
+                        HmCtx->Config->HugeBlobOldMapCompatible,
                         lsn, entryPoint, logFunc);
         }
 
@@ -182,14 +182,14 @@ class THugeModuleRecoveryActor : public TActorBootstrapped<THugeModuleRecoveryAc
     void Handle(NPDisk::TEvYardInitResult::TPtr &ev, const TActorContext &ctx) {
         const auto &m = ev->Get();
         NKikimrProto::EReplyStatus status = m->Status;
-        Y_ABORT_UNLESS(status == NKikimrProto::OK, "Status# %s ErrorReason# %s",
+        Y_VERIFY(status == NKikimrProto::OK, "Status# %s ErrorReason# %s",
                 NKikimrProto::EReplyStatus_Name(status).c_str(), m->ErrorReason.c_str());
         HmCtx->PDiskCtx = std::make_shared<TPDiskCtx>(m->PDiskParams, HmCtx->Config->BaseInfo.PDiskActorID, TString());
 
         // prepare starting points
         const TStartingPoints &startingPoints = ev->Get()->StartingPoints;
         bool result = InitHugeBlobKeeper(ctx, startingPoints);
-        Y_ABORT_UNLESS(result);
+        Y_VERIFY(result);
 
         // start reading log
         ctx.Send(HmCtx->PDiskCtx->PDiskId,
@@ -199,11 +199,11 @@ class THugeModuleRecoveryActor : public TActorBootstrapped<THugeModuleRecoveryAc
     void Handle(NPDisk::TEvReadLogResult::TPtr &ev, const TActorContext &ctx) {
         const auto &m = ev->Get();
         NKikimrProto::EReplyStatus status = m->Status;
-        Y_ABORT_UNLESS(status == NKikimrProto::OK, "Status# %s ErrorReason# %s",
+        Y_VERIFY(status == NKikimrProto::OK, "Status# %s ErrorReason# %s",
                 NKikimrProto::EReplyStatus_Name(status).c_str(), m->ErrorReason.c_str());
         if (m->Results) {
             const ui64 lsn = m->Results.back().Lsn;
-            Y_ABORT_UNLESS(lsn > Lsn);
+            Y_VERIFY(lsn > Lsn);
             Lsn = lsn;
         }
 
@@ -229,7 +229,7 @@ class THugeModuleRecoveryActor : public TActorBootstrapped<THugeModuleRecoveryAc
         HmCtx->LogCutterID = ctx.ExecutorThread.RegisterActor(CreateRecoveryLogCutter(std::move(logCutterCtx)));
         RepairedHuge->FinishRecovery(ctx);
         auto hugeKeeperCtx = std::make_shared<THugeKeeperCtx>(HmCtx->VCtx, HmCtx->PDiskCtx, HmCtx->LsnMngr,
-                HmCtx->MainID, HmCtx->LoggerID, HmCtx->LogCutterID, "{}", false);
+                HmCtx->MainID, HmCtx->LoggerID, HmCtx->LogCutterID, "{}");
         TAutoPtr<IActor> hugeKeeperActor(CreateHullHugeBlobKeeper(hugeKeeperCtx, RepairedHuge));
         HmCtx->HugeKeeperID = ctx.ExecutorThread.RegisterActor(hugeKeeperActor.Release());
 

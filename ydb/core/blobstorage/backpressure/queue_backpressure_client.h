@@ -17,15 +17,13 @@ namespace NKikimr {
         NKikimrBlobStorage::EVDiskQueueId QueueId;
         bool IsConnected;
         bool ExtraBlockChecksSupport;
-        std::shared_ptr<const TCostModel> CostModel;
 
         TEvProxyQueueState(const TVDiskID &vDiskId, NKikimrBlobStorage::EVDiskQueueId queueId, bool isConnected,
-                bool extraBlockChecksSupport, std::shared_ptr<const TCostModel> costModel)
+                bool extraBlockChecksSupport)
             : VDiskId(vDiskId)
             , QueueId(queueId)
             , IsConnected(isConnected)
             , ExtraBlockChecksSupport(extraBlockChecksSupport)
-            , CostModel(std::move(costModel))
         {}
 
         TString ToString() const {
@@ -34,9 +32,6 @@ namespace NKikimr {
             str << " QueueId# " << static_cast<ui32>(QueueId);
             str << " IsConnected# " << (IsConnected ? "true" : "false");
             str << " ExtraBlockChecksSupport# " << (ExtraBlockChecksSupport ? "true" : "false");
-            if (CostModel) {
-                str << " CostModel# " << CostModel->ToString();
-            }
             str << "}";
             return str.Str();
         }

@@ -21,13 +21,9 @@ public:
         auto codeValue = Code_->GetValue(ctx);
         auto code = GetYqlCode(codeValue);
         NYql::TExprContext& exprCtx = GetExprContext(ctx, ExprCtxMutableIndex_);
-        NYql::TConvertToAstSettings settings;
-        settings.AnnotationFlags = AnnotatePosition_ ?
+        auto ast = NYql::ConvertToAst(*code, exprCtx, AnnotatePosition_ ?
             NYql::TExprAnnotationFlags::Position :
-            NYql::TExprAnnotationFlags::None;
-        settings.RefAtoms = true;
-        settings.AllowFreeArgs = true;
-        auto ast = NYql::ConvertToAst(*code, exprCtx, settings);
+            NYql::TExprAnnotationFlags::None, true);
         auto str = ast.Root->ToString(NYql::TAstPrintFlags::PerLine | NYql::TAstPrintFlags::ShortQuote);
         return MakeString(str);
     }

@@ -33,19 +33,13 @@
             {"Index": 3, "Name": "RightLabel", "Type": "TExprBase",
                 "NB": "Atom - if right is real table, Void - otherwise"},
             {"Index": 4, "Name": "JoinType", "Type": "TCoAtom"},
-            {"Index": 5, "Name": "JoinKeys", "Type": "TDqJoinKeyTupleList"},
-            {"Index": 6, "Name": "LeftJoinKeyNames", "Type": "TCoAtomList"},
-            {"Index": 7, "Name": "RightJoinKeyNames", "Type": "TCoAtomList"}
+            {"Index": 5, "Name": "JoinKeys", "Type": "TDqJoinKeyTupleList"}
         ]
     },
     {
         "Name": "TDqJoin",
         "Base": "TDqJoinBase",
-        "Match": {"Type": "Callable", "Name": "DqJoin"},
-        "Children": [
-            {"Index": 8, "Name": "JoinAlgo", "Type": "TCoAtom"},
-            {"Index": 9, "Name": "Flags", "Type": "TCoAtomList", "Optional": true}
-        ]
+        "Match": {"Type": "Callable", "Name": "DqJoin"}
     },
     {
         "Name": "TDqPhyMapJoin",
@@ -176,23 +170,6 @@
         "Match": {"Type": "Callable", "Name": "DqCnMap"}
     },
     {
-        "Name": "TDqCnStreamLookup",
-        "Base": "TDqConnection",
-        "Match": {"Type": "Callable", "Name": "DqCnStreamLookup"},
-        "Children": [
-            {"Index": 1, "Name": "LeftLabel", "Type": "TCoAtom"},
-            {"Index": 2, "Name": "RightInputRowType", "Type": "TExprBase", "NB": "TODO Replace with data source"},
-            {"Index": 3, "Name": "RightLabel", "Type": "TCoAtom"},
-            {"Index": 4, "Name": "JoinType", "Type": "TCoAtom"},
-            {"Index": 5, "Name": "JoinKeys", "Type": "TDqJoinKeyTupleList"},
-            {"Index": 6, "Name": "LeftJoinKeyNames", "Type": "TCoAtomList"},
-            {"Index": 7, "Name": "RightJoinKeyNames", "Type": "TCoAtomList"},
-            {"Index": 8, "Name": "TTL", "Type": "TCoAtom"},
-            {"Index": 9, "Name": "MaxDelay", "Type": "TCoAtom"},
-            {"Index": 10, "Name": "MaxCachedRows", "Type": "TCoAtom"}
-        ]
-    },
-    {
         "Name": "TDqCnResult",
         "Base": "TDqConnection",
         "Match": {"Type": "Callable", "Name": "DqCnResult"},
@@ -277,32 +254,6 @@
             {"Index": 0, "Name": "Input", "Type": "TExprBase"},
             {"Index": 1, "Name": "Name", "Type": "TCoAtom"}
         ]
-    },
-    {
-      "Name": "TDqReadWrapBase",
-      "Base": "TExprBase",
-      "Match": {"Type": "CallableBase"},
-      "Builder": {"Generate": "None"},
-      "Children": [
-        {"Index": 0, "Name": "Input", "Type": "TExprBase"},
-        {"Index": 1, "Name": "Flags", "Type": "TCoAtomList"},
-        {"Index": 2, "Name": "Token", "Type": "TCoSecureParam", "Optional": true}
-      ]
-    },
-    {
-      "Name": "TDqReadWrap",
-      "Base": "TDqReadWrapBase",
-      "Match": {"Type": "Callable", "Name": "DqReadWrap"}
-    },
-    {
-      "Name": "TDqReadWideWrap",
-      "Base": "TDqReadWrapBase",
-      "Match": {"Type": "Callable", "Name": "DqReadWideWrap"}
-    },
-    {
-      "Name": "TDqReadBlockWideWrap",
-      "Base": "TDqReadWrapBase",
-      "Match": {"Type": "Callable", "Name": "DqReadBlockWideWrap"}
     }
     ]
 }

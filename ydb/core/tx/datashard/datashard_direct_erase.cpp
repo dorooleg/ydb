@@ -31,7 +31,7 @@ TDirectTxErase::EStatus TDirectTxErase::CheckedExecute(
     }
 
     const TUserTable& tableInfo = *self->GetUserTables().at(tableId);
-    Y_ABORT_UNLESS(tableInfo.LocalTid == localTableId);
+    Y_VERIFY(tableInfo.LocalTid == localTableId);
 
     if (request.GetSchemaVersion() && tableInfo.GetTableSchemaVersion()
         && request.GetSchemaVersion() != tableInfo.GetTableSchemaVersion()) {
@@ -59,7 +59,6 @@ TDirectTxErase::EStatus TDirectTxErase::CheckedExecute(
         }
     }
 
-    std::optional<NMiniKQL::TEngineHostCounters> engineHostCounters;
     std::optional<TDataShardUserDb> userDb;
     std::optional<TDataShardChangeGroupProvider> groupProvider;
 
@@ -70,8 +69,7 @@ TDirectTxErase::EStatus TDirectTxErase::CheckedExecute(
             condition->Prepare(params.Txc->DB.GetRowScheme(localTableId), 0);
         }
 
-        engineHostCounters.emplace();
-        userDb.emplace(*self, params.Txc->DB, params.GlobalTxId, params.ReadVersion, params.WriteVersion, *engineHostCounters, TAppData::TimeProvider->Now());
+        userDb.emplace(*self, params.Txc->DB, params.ReadVersion);
         groupProvider.emplace(*self, params.Txc->DB);
         params.Tx->ChangeCollector.Reset(CreateChangeCollector(*self, *userDb, *groupProvider, params.Txc->DB, tableInfo));
     }
@@ -180,7 +178,7 @@ TDirectTxErase::EStatus TDirectTxErase::CheckedExecute(
             self->GetConflictsCache().GetTableCache(localTableId).AddUncommittedWrite(keyCells.GetCells(), params.GlobalTxId, params.Txc->DB);
             if (!commitAdded && userDb) {
                 // Make sure we see our own changes on further iterations
-                userDb->AddCommitTxId(fullTableId, params.GlobalTxId, params.WriteVersion);
+                userDb->AddCommitTxId(params.GlobalTxId, params.WriteVersion);
                 commitAdded = true;
             }
         } else {
@@ -212,7 +210,6 @@ TDirectTxErase::EStatus TDirectTxErase::CheckedExecute(
             /* participants */ { },
             groupProvider ? groupProvider->GetCurrentChangeGroup() : std::nullopt,
             /* ordered */ false,
-            /* arbiter */ false,
             *params.Txc);
         // Note: transaction is already committed, no additional waiting needed
     }
@@ -231,7 +228,7 @@ bool TDirectTxErase::CheckRequest(TDataShard* self, const NKikimrTxDataShard::TE
     case EStatus::Error:
         return false;
     case EStatus::PageFault:
-        Y_ABORT("Unexpected");
+        Y_FAIL("Unexpected");
     }
 }
 
@@ -270,7 +267,7 @@ bool TDirectTxErase::Execute(TDataShard* self, TTransactionContext& txc,
 }
 
 TDirectTxResult TDirectTxErase::GetResult(TDataShard* self) {
-    Y_ABORT_UNLESS(Result);
+    Y_VERIFY(Result);
 
     if (Result->Record.GetStatus() == NKikimrTxDataShard::TEvEraseRowsResponse::OK) {
         self->IncCounter(COUNTER_ERASE_ROWS_SUCCESS);

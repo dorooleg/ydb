@@ -33,11 +33,7 @@ public:
             }
             if (Self->WarmUp &&
                 node.Statistics.RestartTimestampSize() < Self->GetNodeRestartsToIgnoreInWarmup()) {
-                TInstant now = TActivationContext::Now();
-                if (Self->LastConnect != TInstant{}) {
-                    Self->MaxTimeBetweenConnects = std::max(Self->MaxTimeBetweenConnects, now - Self->LastConnect);
-                }
-                Self->LastConnect = now;
+                Self->LastConnect = TActivationContext::Now();
             }
             if (node.LocationAcquired) {
                 NIceDb::TNiceDb db(txc.DB);
@@ -49,9 +45,8 @@ public:
             Self->ProcessWaitQueue(); // new node connected
             if (node.Drain && Self->BalancerNodes.count(nodeId) == 0) {
                 BLOG_D("THive::TTxStatus(" << nodeId << ")::Complete - continuing node drain");
-                Self->StartHiveDrain(nodeId, {.Persist = true, .DownPolicy = NKikimrHive::EDrainDownPolicy::DRAIN_POLICY_NO_DOWN});
+                Self->StartHiveDrain(nodeId, {.Persist = true, .KeepDown = node.Down});
             }
-            Self->ObjectDistributions.AddNode(node);
         } else {
             BLOG_W("THive::TTxStatus(status=" << static_cast<int>(status)
                    << " node=" << TNodeInfo::EVolatileStateName(node.GetVolatileState()) << ") - killing node " << node.Id);

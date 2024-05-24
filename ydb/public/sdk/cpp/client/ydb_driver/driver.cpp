@@ -15,13 +15,13 @@
 
 namespace NYdb {
 
-using NYdbGrpc::TGRpcClientLow;
-using NYdbGrpc::TServiceConnection;
-using NYdbGrpc::TSimpleRequestProcessor;
-using NYdbGrpc::TGRpcClientConfig;
-using NYdbGrpc::TResponseCallback;
-using NYdbGrpc::TGrpcStatus;
-using NYdbGrpc::TTcpKeepAliveSettings;
+using NGrpc::TGRpcClientLow;
+using NGrpc::TServiceConnection;
+using NGrpc::TSimpleRequestProcessor;
+using NGrpc::TGRpcClientConfig;
+using NGrpc::TResponseCallback;
+using NGrpc::TGrpcStatus;
+using NGrpc::TTcpKeepAliveSettings;
 
 using Ydb::StatusIds;
 
@@ -59,7 +59,7 @@ public:
     std::shared_ptr<ICredentialsProviderFactory> CredentialsProviderFactory = CreateInsecureCredentialsProviderFactory();
     EDiscoveryMode DiscoveryMode = EDiscoveryMode::Sync;
     size_t MaxQueuedRequests = 100;
-    NYdbGrpc::TTcpKeepAliveSettings TcpKeepAliveSettings =
+    NGrpc::TTcpKeepAliveSettings TcpKeepAliveSettings =
         {
             true,
             TCP_KEEPALIVE_IDLE,

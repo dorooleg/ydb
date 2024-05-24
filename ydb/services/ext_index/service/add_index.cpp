@@ -31,12 +31,12 @@ public:
         TVector<TCell> key;
         key.reserve(1 + PKColumnsCount);
         key.emplace_back(TCell::Make(Hashes[Index]));
-        Y_ABORT_UNLESS(PKColumnsCount == cells.size());
+        Y_VERIFY(PKColumnsCount == cells.size());
         for (auto&& c : cells) {
             key.emplace_back(c);
         }
-        TSerializedCellVec serializedKey(key);
-        Rows->emplace_back(std::move(serializedKey), "");
+        TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
+        Rows->emplace_back(serializedKey, "");
         ++Index;
     }
 };

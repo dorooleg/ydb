@@ -1,30 +1,31 @@
-//
-//
-// Copyright 2018 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2018 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 #include <grpc/support/port_platform.h>
 
 #include "src/core/ext/xds/xds_client_stats.h"
 
-#include <grpc/support/log.h>
+#include <string.h>
+
+#include <grpc/support/atm.h>
+#include <grpc/support/string_util.h>
 
 #include "src/core/ext/xds/xds_client.h"
-#include "src/core/lib/debug/trace.h"
-#include "src/core/lib/gprpp/debug_location.h"
 
 namespace grpc_core {
 
@@ -53,7 +54,7 @@ XdsClusterDropStats::XdsClusterDropStats(
       eds_service_name_(eds_service_name) {
   if (GRPC_TRACE_FLAG_ENABLED(grpc_xds_client_trace)) {
     gpr_log(GPR_INFO, "[xds_client %p] created drop stats %p for {%s, %s, %s}",
-            xds_client_.get(), this, lrs_server_.server_uri().c_str(),
+            xds_client_.get(), this, lrs_server_.server_uri.c_str(),
             TString(cluster_name_).c_str(),
             TString(eds_service_name_).c_str());
   }
@@ -63,7 +64,7 @@ XdsClusterDropStats::~XdsClusterDropStats() {
   if (GRPC_TRACE_FLAG_ENABLED(grpc_xds_client_trace)) {
     gpr_log(GPR_INFO,
             "[xds_client %p] destroying drop stats %p for {%s, %s, %s}",
-            xds_client_.get(), this, lrs_server_.server_uri().c_str(),
+            xds_client_.get(), this, lrs_server_.server_uri.c_str(),
             TString(cluster_name_).c_str(),
             TString(eds_service_name_).c_str());
   }
@@ -108,7 +109,7 @@ XdsClusterLocalityStats::XdsClusterLocalityStats(
   if (GRPC_TRACE_FLAG_ENABLED(grpc_xds_client_trace)) {
     gpr_log(GPR_INFO,
             "[xds_client %p] created locality stats %p for {%s, %s, %s, %s}",
-            xds_client_.get(), this, lrs_server_.server_uri().c_str(),
+            xds_client_.get(), this, lrs_server_.server_uri.c_str(),
             TString(cluster_name_).c_str(),
             TString(eds_service_name_).c_str(),
             name_->AsHumanReadableString().c_str());
@@ -119,7 +120,7 @@ XdsClusterLocalityStats::~XdsClusterLocalityStats() {
   if (GRPC_TRACE_FLAG_ENABLED(grpc_xds_client_trace)) {
     gpr_log(GPR_INFO,
             "[xds_client %p] destroying locality stats %p for {%s, %s, %s, %s}",
-            xds_client_.get(), this, lrs_server_.server_uri().c_str(),
+            xds_client_.get(), this, lrs_server_.server_uri.c_str(),
             TString(cluster_name_).c_str(),
             TString(eds_service_name_).c_str(),
             name_->AsHumanReadableString().c_str());
@@ -131,43 +132,29 @@ XdsClusterLocalityStats::~XdsClusterLocalityStats() {
 
 XdsClusterLocalityStats::Snapshot
 XdsClusterLocalityStats::GetSnapshotAndReset() {
-  Snapshot snapshot;
-  for (auto& percpu_stats : stats_) {
-    Snapshot percpu_snapshot = {
-        GetAndResetCounter(&percpu_stats.total_successful_requests),
-        // Don't reset total_requests_in_progress because it's
-        // not related to a single reporting interval.
-        percpu_stats.total_requests_in_progress.load(std::memory_order_relaxed),
-        GetAndResetCounter(&percpu_stats.total_error_requests),
-        GetAndResetCounter(&percpu_stats.total_issued_requests),
-        {}};
-    {
-      MutexLock lock(&percpu_stats.backend_metrics_mu);
-      percpu_snapshot.backend_metrics = std::move(percpu_stats.backend_metrics);
-    }
-    snapshot += percpu_snapshot;
-  }
+  Snapshot snapshot = {
+      GetAndResetCounter(&total_successful_requests_),
+      // Don't reset total_requests_in_progress because it's
+      // not related to a single reporting interval.
+      total_requests_in_progress_.load(std::memory_order_relaxed),
+      GetAndResetCounter(&total_error_requests_),
+      GetAndResetCounter(&total_issued_requests_),
+      {}};
+  MutexLock lock(&backend_metrics_mu_);
+  snapshot.backend_metrics = std::move(backend_metrics_);
   return snapshot;
 }
 
 void XdsClusterLocalityStats::AddCallStarted() {
-  Stats& stats = stats_.this_cpu();
-  stats.total_issued_requests.fetch_add(1, std::memory_order_relaxed);
-  stats.total_requests_in_progress.fetch_add(1, std::memory_order_relaxed);
+  total_issued_requests_.fetch_add(1, std::memory_order_relaxed);
+  total_requests_in_progress_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void XdsClusterLocalityStats::AddCallFinished(
-    const std::map<y_absl::string_view, double>* named_metrics, bool fail) {
-  Stats& stats = stats_.this_cpu();
+void XdsClusterLocalityStats::AddCallFinished(bool fail) {
   std::atomic<uint64_t>& to_increment =
-      fail ? stats.total_error_requests : stats.total_successful_requests;
+      fail ? total_error_requests_ : total_successful_requests_;
   to_increment.fetch_add(1, std::memory_order_relaxed);
-  stats.total_requests_in_progress.fetch_add(-1, std::memory_order_acq_rel);
-  if (named_metrics == nullptr) return;
-  MutexLock lock(&stats.backend_metrics_mu);
-  for (const auto& m : *named_metrics) {
-    stats.backend_metrics[TString(m.first)] += BackendMetric{1, m.second};
-  }
+  total_requests_in_progress_.fetch_add(-1, std::memory_order_acq_rel);
 }
 
 }  // namespace grpc_core

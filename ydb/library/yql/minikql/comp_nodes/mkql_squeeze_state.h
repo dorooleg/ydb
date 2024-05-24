@@ -29,7 +29,7 @@ struct TSqueezeState {
 
     TSqueezeState(const TSqueezeState& state);
 
-    NUdf::TUnboxedValue Save(TComputationContext& ctx) const;
+    NUdf::TUnboxedValuePod Save(TComputationContext& ctx) const;
 
     void Load(TComputationContext& ctx, const NUdf::TStringRef& state);
 

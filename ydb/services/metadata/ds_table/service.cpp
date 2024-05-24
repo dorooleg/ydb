@@ -18,19 +18,19 @@ IActor* CreateService(const TConfig& config) {
 
 void TService::PrepareManagers(std::vector<IClassBehaviour::TPtr> managers, TAutoPtr<IEventBase> ev, const NActors::TActorId& sender) {
     TBehavioursId id(managers);
-    if (RegistrationData->GetSnapshotOwner()->HasInitializationSnapshot()) {
+    if (RegistrationData->GetInitializationSnapshot()) {
         auto bInitializer = NInitializer::TDBObjectBehaviour::GetInstance();
         switch (RegistrationData->GetStage()) {
             case TRegistrationData::EStage::Created:
                 RegistrationData->StartInitialization();
-                Y_ABORT_UNLESS(RegistrationData->InRegistration.emplace(bInitializer->GetTypeId(), bInitializer).second);
+                Y_VERIFY(RegistrationData->InRegistration.emplace(bInitializer->GetTypeId(), bInitializer).second);
                 RegisterWithSameMailbox(new TBehaviourRegistrator(bInitializer, RegistrationData, Config.GetRequestConfig()));
                 break;
             case TRegistrationData::EStage::WaitInitializerInfo:
                 break;
             case TRegistrationData::EStage::Active:
                 for (auto&& b : managers) {
-                    Y_ABORT_UNLESS(!RegistrationData->Registered.contains(b->GetTypeId()));
+                    Y_VERIFY(!RegistrationData->Registered.contains(b->GetTypeId()));
                     if (!RegistrationData->InRegistration.contains(b->GetTypeId()) && !RegistrationData->Registered.contains(b->GetTypeId())) {
                         RegistrationData->InRegistration.emplace(b->GetTypeId(), b);
                         RegisterWithSameMailbox(new TBehaviourRegistrator(b, RegistrationData, Config.GetRequestConfig()));

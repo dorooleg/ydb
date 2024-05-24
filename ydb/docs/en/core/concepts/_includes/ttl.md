@@ -53,6 +53,7 @@ The *BRO* has the following properties:
    * Milliseconds.
    * Microseconds.
    * Nanoseconds.
+* TTL setup using [YQL](../../yql/reference/index.md) is only possible for the `Date`, `Datetime`, and `Timestamp` columns.
 * You can't specify multiple TTL columns.
 * You can't delete the TTL column. However, if this is required, you should first [disable TTL](#disable) for the table.
 
@@ -118,19 +119,13 @@ In the example below, the items of the `mytable` table will be deleted an hour a
 
 {% note tip %}
 
-When setting up TTL using YQL, an `Interval` is created from a string literal in [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) format with [some restrictions](../../yql/reference/builtins/basic#data-type-literals).
+When setting up TTL using YQL, an `Interval` is created from a string literal in [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) format.
 
 {% endnote %}
 
 The example below shows how to use the `modified_at` column with a numeric type (`Uint32`) as a TTL column. The column value is interpreted as the number of seconds since the Unix epoch:
 
 {% list tabs %}
-
-- YQL
-
-  ```yql
-  ALTER TABLE `mytable` SET (TTL = Interval("PT1H") ON modified_at AS SECONDS);
-  ```
 
 - CLI
 
@@ -159,7 +154,7 @@ The example below shows how to use the `modified_at` column with a numeric type 
   ```go
   err := session.AlterTable(ctx, "mytable",
     options.WithSetTimeToLiveSettings(
-      options.NewTTLSettings().ColumnSeconds("modified_at").ExpireAfter(time.Hour),
+      options.NewTTLSettings().ColumnSecond("modified_at").ExpireAfter(time.Hour),
     ),
   )
   ```

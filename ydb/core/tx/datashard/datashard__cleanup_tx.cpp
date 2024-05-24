@@ -21,7 +21,7 @@ public:
 
         NIceDb::TNiceDb db(txc.DB);
 
-        auto cleanupStatus = Self->Pipeline.Cleanup(db, ctx, Replies);
+        auto cleanupStatus = Self->Pipeline.Cleanup(db, ctx);
         switch (cleanupStatus) {
             case ECleanupStatus::None:
                 break;
@@ -29,10 +29,6 @@ public:
                 Self->IncCounter(COUNTER_TX_WAIT_DATA);
                 return false;
             case ECleanupStatus::Success:
-                if (!Replies.empty() && !txc.DB.HasChanges()) {
-                    // We want to send confirmed replies when cleaning up volatile transactions
-                    ReplyTs = Self->ConfirmReadOnlyLease();
-                }
                 LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD,
                         "Cleaned up old txs at " << Self->TabletID()
                         << " TxInFly " << Self->TxInFly());
@@ -75,18 +71,9 @@ public:
     }
 
     void Complete(const TActorContext& ctx) override {
-        if (ReplyTs) {
-            Self->SendConfirmedReplies(ReplyTs, std::move(Replies));
-        } else {
-            Self->SendCommittedReplies(std::move(Replies));
-        }
         Self->CheckSplitCanStart(ctx);
         Self->CheckMvccStateChangeCanStart(ctx);
     }
-
-private:
-    std::vector<std::unique_ptr<IEventHandle>> Replies;
-    TMonotonic ReplyTs;
 };
 
 void TDataShard::ExecuteCleanupTx(const TActorContext& ctx) {
@@ -96,57 +83,6 @@ void TDataShard::ExecuteCleanupTx(const TActorContext& ctx) {
 void TDataShard::Handle(TEvPrivate::TEvCleanupTransaction::TPtr&, const TActorContext& ctx) {
     IncCounter(COUNTER_TX_CLEANUP_SCHEDULED);
     ExecuteCleanupTx(ctx);
-}
-
-class TDataShard::TTxCleanupVolatileTransaction : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
-public:
-    TTxCleanupVolatileTransaction(TDataShard* self, ui64 txId)
-        : TTransactionBase(self)
-        , TxId(txId)
-    {}
-
-    TTxType GetTxType() const override { return TXTYPE_CLEANUP_VOLATILE; }
-
-    bool Execute(TTransactionContext&, const TActorContext& ctx) override {
-        if (!Self->IsStateActive()) {
-            LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD,
-                "Cleanup volatile tx at non-ready tablet " << Self->TabletID() << " state " << Self->State);
-            return true;
-        }
-
-        if (Self->Pipeline.CleanupVolatile(TxId, ctx, Replies)) {
-            LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD,
-                    "Cleaned up volatile tx " << TxId << " at " << Self->TabletID()
-                    << " TxInFly " << Self->TxInFly());
-            Self->IncCounter(COUNTER_TX_PROGRESS_CLEANUP);
-
-            if (!Replies.empty()) {
-                // We want to send confirmed replies when cleaning up volatile transactions
-                ReplyTs = Self->ConfirmReadOnlyLease();
-            }
-        }
-
-        return true;
-    }
-
-    void Complete(const TActorContext& ctx) override {
-        if (ReplyTs) {
-            Self->SendConfirmedReplies(ReplyTs, std::move(Replies));
-        } else {
-            Self->SendCommittedReplies(std::move(Replies));
-        }
-        Self->CheckSplitCanStart(ctx);
-        Self->CheckMvccStateChangeCanStart(ctx);
-    }
-
-private:
-    const ui64 TxId;
-    std::vector<std::unique_ptr<IEventHandle>> Replies;
-    TMonotonic ReplyTs;
-};
-
-void TDataShard::ExecuteCleanupVolatileTx(ui64 txId, const TActorContext& ctx) {
-    Execute(new TTxCleanupVolatileTransaction(this, txId), ctx);
 }
 
 } // namespace NDataShard

@@ -355,7 +355,7 @@ struct TLocalConfig : public TThrRefBase {
 
     struct TTabletClassInfo {
         TTabletSetupInfo::TPtr SetupInfo;
-        std::optional<ui64> MaxCount; // maximum allowed number of running tablets, nullopt means unlimited
+        ui64 MaxCount = 0; // maximum allowed number of running tablets, 0 means unlimited
         i32 Priority = 0;
 
         TTabletClassInfo()

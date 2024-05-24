@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -26,8 +26,7 @@
 
 #include "curl_setup.h"
 
-#if (defined(USE_CURL_NTLM_CORE) && !defined(USE_WINDOWS_SSPI))         \
-  || !defined(CURL_DISABLE_AWS) || !defined(CURL_DISABLE_DIGEST_AUTH)
+#ifndef CURL_DISABLE_CRYPTO_AUTH
 
 #include <curl/curl.h>
 
@@ -170,4 +169,4 @@ CURLcode Curl_hmacit(const struct HMAC_params *hashparams,
   return CURLE_OK;
 }
 
-#endif /* Using NTLM (without SSPI) or AWS */
+#endif /* CURL_DISABLE_CRYPTO_AUTH */

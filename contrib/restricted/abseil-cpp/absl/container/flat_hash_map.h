@@ -64,7 +64,7 @@ struct FlatHashMapPolicy;
 //   `insert()`, provided that the map is provided a compatible heterogeneous
 //   hashing function and equality operator.
 // * Invalidates any references and pointers to elements within the table after
-//   `rehash()` and when the table is moved.
+//   `rehash()`.
 // * Contains a `capacity()` member function indicating the number of element
 //   slots (open, deleted, and empty) within the hash map.
 // * Returns `void` from the `erase(iterator)` overload.
@@ -235,11 +235,7 @@ class flat_hash_map : public absl::container_internal::raw_hash_map<
   // iterator erase(const_iterator first, const_iterator last):
   //
   //   Erases the elements in the open interval [`first`, `last`), returning an
-  //   iterator pointing to `last`. The special case of calling
-  //   `erase(begin(), end())` resets the reserved growth such that if
-  //   `reserve(N)` has previously been called and there has been no intervening
-  //   call to `clear()`, then after calling `erase(begin(), end())`, it is safe
-  //   to assume that inserting N elements will not cause a rehash.
+  //   iterator pointing to `last`.
   //
   // size_type erase(const key_type& key):
   //
@@ -579,9 +575,9 @@ struct FlatHashMapPolicy {
   }
 
   template <class Allocator>
-  static auto transfer(Allocator* alloc, slot_type* new_slot,
+  static void transfer(Allocator* alloc, slot_type* new_slot,
                        slot_type* old_slot) {
-    return slot_policy::transfer(alloc, new_slot, old_slot);
+    slot_policy::transfer(alloc, new_slot, old_slot);
   }
 
   template <class F, class... Args>

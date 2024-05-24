@@ -1,37 +1,38 @@
 #include "config.h"
 #include "control_plane_proxy.h"
 #include "probes.h"
+#include "utils.h"
 
 #include <ydb/core/fq/libs/actors/logging/log.h>
-#include <ydb/core/fq/libs/compute/ydb/control_plane/compute_database_control_plane_service.h>
-#include <ydb/core/fq/libs/compute/ydb/events/events.h>
+#include <ydb/core/fq/libs/common/cache.h>
 #include <ydb/core/fq/libs/control_plane_config/control_plane_config.h>
 #include <ydb/core/fq/libs/control_plane_storage/control_plane_storage.h>
-#include <ydb/core/fq/libs/control_plane_storage/request_validators.h>
 #include <ydb/core/fq/libs/control_plane_storage/events/events.h>
+#include <ydb/core/fq/libs/control_plane_storage/util.h>
 #include <ydb/core/fq/libs/quota_manager/quota_manager.h>
 #include <ydb/core/fq/libs/rate_limiter/events/control_plane_events.h>
-#include <ydb/core/fq/libs/result_formatter/result_formatter.h>
 #include <ydb/core/fq/libs/test_connection/events/events.h>
 #include <ydb/core/fq/libs/test_connection/test_connection.h>
+#include <ydb/core/fq/libs/ydb/util.h>
 #include <ydb/core/fq/libs/ydb/ydb.h>
 
 #include <ydb/core/fq/libs/config/yq_issue.h>
-#include <ydb/core/fq/libs/control_plane_proxy/actors/control_plane_storage_requester_actor.h>
-#include <ydb/core/fq/libs/control_plane_proxy/actors/request_actor.h>
-#include <ydb/core/fq/libs/control_plane_proxy/actors/utils.h>
-#include <ydb/core/fq/libs/control_plane_proxy/actors/ydb_schema_query_actor.h>
 #include <ydb/core/fq/libs/control_plane_proxy/events/events.h>
-#include <ydb/core/fq/libs/control_plane_proxy/utils/utils.h>
-#include <ydb/public/lib/fq/scope.h>
+#include <ydb/core/fq/libs/control_plane_proxy/control_plane_proxy.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor.h>
+
+#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 
 #include <ydb/library/ycloud/api/access_service.h>
 #include <ydb/library/ycloud/impl/access_service.h>
 #include <ydb/library/ycloud/impl/mock_access_service.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
+
+#include <util/generic/maybe.h>
+#include <util/generic/ptr.h>
 
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <ydb/library/security/util.h>
@@ -44,26 +45,146 @@
 #include <ydb/library/folder_service/folder_service.h>
 #include <ydb/library/folder_service/events.h>
 
-#include <contrib/libs/fmt/include/fmt/format.h>
-
-#include <util/generic/maybe.h>
-#include <util/generic/ptr.h>
-#include <util/string/ascii.h>
-#include <util/string/join.h>
-#include <util/string/strip.h>
 
 namespace NFq {
 namespace {
 
 using namespace NActors;
-using namespace ::NFq::NConfig;
+using namespace NFq::NConfig;
 using namespace NKikimr;
 using namespace NThreading;
 using namespace NYdb;
 using namespace NYdb::NTable;
-using namespace ::NFq::NPrivate;
 
 LWTRACE_USING(YQ_CONTROL_PLANE_PROXY_PROVIDER);
+
+struct TRequestScopeCounters: public virtual TThrRefBase {
+    const TString Name;
+
+    ::NMonitoring::TDynamicCounterPtr Counters;
+    ::NMonitoring::TDynamicCounters::TCounterPtr InFly;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Ok;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Error;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Timeout;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Retry;
+
+    explicit TRequestScopeCounters(const TString& name)
+        : Name(name)
+    { }
+
+    void Register(const ::NMonitoring::TDynamicCounterPtr& counters) {
+        Counters = counters;
+        ::NMonitoring::TDynamicCounterPtr subgroup = counters->GetSubgroup("request_scope", Name);
+        InFly = subgroup->GetCounter("InFly", false);
+        Ok = subgroup->GetCounter("Ok", true);
+        Error = subgroup->GetCounter("Error", true);
+        Timeout = subgroup->GetCounter("Timeout", true);
+        Timeout = subgroup->GetCounter("Retry", true);
+    }
+
+    virtual ~TRequestScopeCounters() override {
+        Counters->RemoveSubgroup("request_scope", Name);
+    }
+
+private:
+    static ::NMonitoring::IHistogramCollectorPtr GetLatencyHistogramBuckets() {
+        return ::NMonitoring::ExplicitHistogram({0, 1, 2, 5, 10, 20, 50, 100, 500, 1000, 2000, 5000, 10000, 30000, 50000, 500000});
+    }
+};
+
+struct TRequestCommonCounters: public virtual TThrRefBase {
+    const TString Name;
+
+    ::NMonitoring::TDynamicCounterPtr Counters;
+    ::NMonitoring::TDynamicCounters::TCounterPtr InFly;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Ok;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Error;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Timeout;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Retry;
+    ::NMonitoring::THistogramPtr LatencyMs;
+
+    explicit TRequestCommonCounters(const TString& name)
+        : Name(name)
+    { }
+
+    void Register(const ::NMonitoring::TDynamicCounterPtr& counters) {
+        Counters = counters;
+        ::NMonitoring::TDynamicCounterPtr subgroup = counters->GetSubgroup("request_common", Name);
+        InFly = subgroup->GetCounter("InFly", false);
+        Ok = subgroup->GetCounter("Ok", true);
+        Error = subgroup->GetCounter("Error", true);
+        Timeout = subgroup->GetCounter("Timeout", true);
+        Retry = subgroup->GetCounter("Retry", true);
+        LatencyMs = subgroup->GetHistogram("LatencyMs", GetLatencyHistogramBuckets());
+    }
+
+    virtual ~TRequestCommonCounters() override {
+        Counters->RemoveSubgroup("request_common", Name);
+    }
+
+private:
+    static ::NMonitoring::IHistogramCollectorPtr GetLatencyHistogramBuckets() {
+        return ::NMonitoring::ExplicitHistogram({0, 1, 2, 5, 10, 20, 50, 100, 500, 1000, 2000, 5000, 10000, 30000, 50000, 500000});
+    }
+};
+
+using TRequestScopeCountersPtr = TIntrusivePtr<TRequestScopeCounters>;
+using TRequestCommonCountersPtr = TIntrusivePtr<TRequestCommonCounters>;
+
+struct TRequestCounters {
+    TRequestScopeCountersPtr Scope;
+    TRequestCommonCountersPtr Common;
+
+    void IncInFly() {
+        Scope->InFly->Inc();
+        Common->InFly->Inc();
+    }
+
+    void DecInFly() {
+        Scope->InFly->Dec();
+        Common->InFly->Dec();
+    }
+
+    void IncOk() {
+        Scope->Ok->Inc();
+        Common->Ok->Inc();
+    }
+
+    void DecOk() {
+        Scope->Ok->Dec();
+        Common->Ok->Dec();
+    }
+
+    void IncError() {
+        Scope->Error->Inc();
+        Common->Error->Inc();
+    }
+
+    void DecError() {
+        Scope->Error->Dec();
+        Common->Error->Dec();
+    }
+
+    void IncTimeout() {
+        Scope->Timeout->Inc();
+        Common->Timeout->Inc();
+    }
+
+    void DecTimeout() {
+        Scope->Timeout->Dec();
+        Common->Timeout->Dec();
+    }
+
+    void IncRetry() {
+        Scope->Retry->Inc();
+        Common->Retry->Inc();
+    }
+
+    void DecRetry() {
+        Scope->Retry->Dec();
+        Common->Retry->Dec();
+    }
+};
 
 template<class TEventRequest, class TResponseProxy>
 class TGetQuotaActor : public NActors::TActorBootstrapped<TGetQuotaActor<TEventRequest, TResponseProxy>> {
@@ -105,21 +226,10 @@ public:
     }
 
     void HandleTimeout() {
-        CPP_LOG_W("Quota request timeout. Cloud id: " << Event->Get()->CloudId << " Actor id: " << SelfId());
+        CPP_LOG_D("Quota request timeout. Cloud id: " << Event->Get()->CloudId << " Actor id: " << SelfId());
         Send(MakeQuotaServiceActorId(SelfId().NodeId()), new TEvQuotaService::TQuotaGetRequest(SUBJECT_TYPE_CLOUD, Event->Get()->CloudId, true));
     }
 };
-
-TString CutBearer(TString token) {
-    auto bearer = "Bearer "sv;
-    if (!AsciiHasPrefixIgnoreCase(token, bearer)) {
-        return token;
-    }
-    // cut prefix and strip
-    token = token.substr(bearer.size());
-    StripInPlace(token);
-    return token;
-}
 
 template<class TEventRequest, class TResponseProxy>
 class TResolveSubjectTypeActor : public NActors::TActorBootstrapped<TResolveSubjectTypeActor<TEventRequest, TResponseProxy>> {
@@ -131,15 +241,15 @@ class TResolveSubjectTypeActor : public NActors::TActorBootstrapped<TResolveSubj
     using TBase::Register;
     using IRetryPolicy = IRetryPolicy<NCloud::TEvAccessService::TEvAuthenticateResponse::TPtr&>;
 
-    const ::NFq::TControlPlaneProxyConfig Config;
-    const TActorId Sender;
-    const TRequestCommonCountersPtr Counters;
-    const TString Token;
-    const std::function<void(const TDuration&, bool, bool)> Probe;
+    ::NFq::TControlPlaneProxyConfig Config;
+    TActorId Sender;
+    TRequestCommonCountersPtr Counters;
+    TString Token;
+    std::function<void(const TDuration&, bool, bool)> Probe;
     TEventRequest Event;
-    const ui32 Cookie;
-    const TInstant StartTime;
-    const IRetryPolicy::IRetryState::TPtr RetryState;
+    ui32 Cookie;
+    TInstant StartTime;
+    IRetryPolicy::IRetryState::TPtr RetryState;
     const TActorId AccessService;
 
 public:
@@ -152,15 +262,14 @@ public:
         : Config(config)
         , Sender(sender)
         , Counters(counters)
-        , Token(CutBearer(token))
+        , Token(token)
         , Probe(probe)
         , Event(event)
         , Cookie(cookie)
         , StartTime(TInstant::Now())
         , RetryState(GetRetryPolicy()->CreateRetryState())
         , AccessService(accessService)
-    {
-    }
+    {}
 
     static constexpr char ActorName[] = "YQ_CONTROL_PLANE_PROXY_RESOLVE_SUBJECT_TYPE";
 
@@ -183,7 +292,7 @@ public:
     )
 
     void HandleTimeout() {
-        CPP_LOG_W("Resolve subject type timeout. Token: " << MaskTicket(Token) << " Actor id: " << SelfId());
+        CPP_LOG_D("Resolve subject type timeout. Token: " << MaskTicket(Token) << " Actor id: " << SelfId());
         NYql::TIssues issues;
         NYql::TIssue issue = MakeErrorIssue(TIssuesIds::TIMEOUT, "Request (resolve subject type) timeout. Try repeating the request later");
         issues.AddIssue(issue);
@@ -196,6 +305,8 @@ public:
     }
 
     void Handle(NCloud::TEvAccessService::TEvAuthenticateResponse::TPtr& ev) {
+        Counters->InFly->Dec();
+        Counters->LatencyMs->Collect((TInstant::Now() - StartTime).MilliSeconds());
         const auto& response = ev->Get()->Response;
         const auto& status = ev->Get()->Status;
         if (!status.Ok() || !response.has_subject()) {
@@ -207,22 +318,19 @@ public:
                 TActivationContext::Schedule(*delay, new IEventHandle(AccessService, static_cast<const TActorId&>(SelfId()), CreateRequest().release()));
                 return;
             }
-            const TDuration delta = TInstant::Now() - StartTime;
-            Counters->InFly->Dec();
-            Counters->LatencyMs->Collect((delta).MilliSeconds());
             Counters->Error->Inc();
             CPP_LOG_E(errorMessage);
             NYql::TIssues issues;
-            NYql::TIssue issue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, "Resolve subject type error");
+            NYql::TIssue issue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, "Resolve subject type error: ");
             issues.AddIssue(issue);
+            Counters->Error->Inc();
+            const TDuration delta = TInstant::Now() - StartTime;
             Probe(delta, false, false);
             Send(Sender, new TResponseProxy(issues, {}), 0, Cookie);
             PassAway();
             return;
         }
 
-        Counters->InFly->Dec();
-        Counters->LatencyMs->Collect((TInstant::Now() - StartTime).MilliSeconds());
         Counters->Ok->Inc();
         TString subjectType = GetSubjectType(response.subject());
         Event->Get()->SubjectType = subjectType;
@@ -231,6 +339,7 @@ public:
         TActivationContext::Send(Event->Forward(ControlPlaneProxyActorId()));
         PassAway();
     }
+
 
 private:
     static TString GetSubjectType(const yandex::cloud::priv::servicecontrol::v1::Subject& subject) {
@@ -263,7 +372,7 @@ class TResolveFolderActor : public NActors::TActorBootstrapped<TResolveFolderAct
     using TBase::PassAway;
     using TBase::Become;
     using TBase::Register;
-    using IRetryPolicy = IRetryPolicy<NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse::TPtr&>;
+    using IRetryPolicy = IRetryPolicy<NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse::TPtr&>;
 
     ::NFq::TControlPlaneProxyConfig Config;
     TActorId Sender;
@@ -281,14 +390,14 @@ class TResolveFolderActor : public NActors::TActorBootstrapped<TResolveFolderAct
 public:
     TResolveFolderActor(const TRequestCommonCountersPtr& counters,
                         TActorId sender, const ::NFq::TControlPlaneProxyConfig& config,
-                        const TString& scope, const TString& token,
+                        const TString& folderId, const TString& token,
                         const std::function<void(const TDuration&, bool, bool)>& probe,
                         TEventRequest event,
                         ui32 cookie, bool quotaManagerEnabled)
         : Config(config)
         , Sender(sender)
         , Counters(counters)
-        , FolderId(NYdb::NFq::TScope(scope).ParseFolder())
+        , FolderId(folderId)
         , Token(token)
         , Probe(probe)
         , Event(event)
@@ -307,20 +416,20 @@ public:
         Send(NKikimr::NFolderService::FolderServiceActorId(), CreateRequest().release(), 0, 0);
     }
 
-    std::unique_ptr<NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderRequest> CreateRequest() {
-        auto request = std::make_unique<NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderRequest>();
-        request->FolderId = FolderId;
+    std::unique_ptr<NKikimr::NFolderService::TEvFolderService::TEvGetFolderRequest> CreateRequest() {
+        auto request = std::make_unique<NKikimr::NFolderService::TEvFolderService::TEvGetFolderRequest>();
+        request->Request.set_folder_id(FolderId);
         request->Token = Token;
         return request;
     }
 
     STRICT_STFUNC(StateFunc,
         cFunc(NActors::TEvents::TSystem::Wakeup, HandleTimeout);
-        hFunc(NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse, Handle);
+        hFunc(NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse, Handle);
     )
 
     void HandleTimeout() {
-        CPP_LOG_W("Resolve folder timeout. Folder id: " << FolderId << " Actor id: " << SelfId());
+        CPP_LOG_D("Resolve folder timeout. Folder id: " << FolderId << " Actor id: " << SelfId());
         NYql::TIssues issues;
         NYql::TIssue issue = MakeErrorIssue(TIssuesIds::TIMEOUT, "Request timeout. Try repeating the request later");
         issues.AddIssue(issue);
@@ -332,10 +441,12 @@ public:
         PassAway();
     }
 
-    void Handle(NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse::TPtr& ev) {
-
+    void Handle(NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse::TPtr& ev) {
+        Counters->InFly->Dec();
+        Counters->LatencyMs->Collect((TInstant::Now() - StartTime).MilliSeconds());
+        const auto& response = ev->Get()->Response;
         const auto& status = ev->Get()->Status;
-        if (!status.Ok() || ev->Get()->CloudId.empty()) {
+        if (!status.Ok() || !response.has_folder()) {
             TString errorMessage = "Msg: " + status.Msg + " Details: " + status.Details + " Code: " + ToString(status.GRpcStatusCode) + " InternalError: " + ToString(status.InternalError);
             auto delay = RetryState->GetNextRetryDelay(ev);
             if (delay) {
@@ -344,24 +455,21 @@ public:
                 TActivationContext::Schedule(*delay, new IEventHandle(NKikimr::NFolderService::FolderServiceActorId(), static_cast<const TActorId&>(SelfId()), CreateRequest().release()));
                 return;
             }
-            const TDuration delta = TInstant::Now() - StartTime;
-            Counters->InFly->Dec();
-            Counters->LatencyMs->Collect((delta).MilliSeconds());
             Counters->Error->Inc();
             CPP_LOG_E(errorMessage);
             NYql::TIssues issues;
             NYql::TIssue issue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, "Resolve folder error");
             issues.AddIssue(issue);
+            Counters->Error->Inc();
+            const TDuration delta = TInstant::Now() - StartTime;
             Probe(delta, false, false);
             Send(Sender, new TResponseProxy(issues, {}), 0, Cookie);
             PassAway();
             return;
         }
 
-        Counters->InFly->Dec();
-        Counters->LatencyMs->Collect((TInstant::Now() - StartTime).MilliSeconds());
         Counters->Ok->Inc();
-        TString cloudId = ev->Get()->CloudId;
+        TString cloudId = response.folder().cloud_id();
         Event->Get()->CloudId = cloudId;
         CPP_LOG_T("Cloud id: " << cloudId << " Folder id: " << FolderId);
 
@@ -375,144 +483,413 @@ public:
 
 private:
     static const IRetryPolicy::TPtr& GetRetryPolicy() {
-        static IRetryPolicy::TPtr policy = IRetryPolicy::GetExponentialBackoffPolicy([](NKikimr::NFolderService::TEvFolderService::TEvGetCloudByFolderResponse::TPtr& ev) {
+        static IRetryPolicy::TPtr policy = IRetryPolicy::GetExponentialBackoffPolicy([](NKikimr::NFolderService::TEvFolderService::TEvGetFolderResponse::TPtr& ev) {
+            const auto& response = ev->Get()->Response;
             const auto& status = ev->Get()->Status;
-            return !status.Ok() || ev->Get()->CloudId.empty() ? ERetryErrorClass::ShortRetry : ERetryErrorClass::NoRetry;
+            return !status.Ok() || !response.has_folder() ? ERetryErrorClass::ShortRetry : ERetryErrorClass::NoRetry;
         }, TDuration::MilliSeconds(10), TDuration::MilliSeconds(200), TDuration::Seconds(30), 5);
         return policy;
     }
 };
 
-template<class TEventRequest, class TResponseProxy>
-class TCreateComputeDatabaseActor : public NActors::TActorBootstrapped<TCreateComputeDatabaseActor<TEventRequest, TResponseProxy>> {
-    using TBase = NActors::TActorBootstrapped<TCreateComputeDatabaseActor<TEventRequest, TResponseProxy>>;
+template<class TRequestProto, class TRequest, class TResponse, class TResponseProxy>
+class TRequestActor : public NActors::TActorBootstrapped<TRequestActor<TRequestProto, TRequest, TResponse, TResponseProxy>> {
+protected:
+    using TBase = NActors::TActorBootstrapped<TRequestActor<TRequestProto, TRequest, TResponse, TResponseProxy>>;
     using TBase::SelfId;
     using TBase::Send;
     using TBase::PassAway;
     using TBase::Become;
-    using TBase::Register;
+    using TBase::Schedule;
 
     ::NFq::TControlPlaneProxyConfig Config;
-    ::NFq::TComputeConfig ComputeConfig;
-    TActorId Sender;
-    TRequestCommonCountersPtr Counters;
-    TString CloudId;
+    TRequestProto RequestProto;
     TString Scope;
+    TString FolderId;
+    TString User;
     TString Token;
-    std::function<void(const TDuration&, bool, bool)> Probe;
-    TEventRequest Event;
+    TActorId Sender;
     ui32 Cookie;
+    TActorId ServiceId;
+    TRequestCounters Counters;
     TInstant StartTime;
+    std::function<void(const TDuration&, bool /* isSuccess */, bool /* isTimeout */)> Probe;
+    TPermissions Permissions;
+    TString CloudId;
+    TString SubjectType;
+    const TMaybe<TQuotaMap> Quotas;
+    TTenantInfo::TPtr TenantInfo;
+    ui32 RetryCount = 0;
 
 public:
-    TCreateComputeDatabaseActor(const TRequestCommonCountersPtr& counters,
-                                TActorId sender,
-                                const ::NFq::TControlPlaneProxyConfig& config,
-                                const ::NFq::TComputeConfig& computeConfig,
-                                const TString& cloudId,
-                                const TString& scope,
-                                const std::function<void(const TDuration&, bool, bool)>& probe,
-                                TEventRequest event,
-                                ui32 cookie)
-        : Config(config)
-        , ComputeConfig(computeConfig)
-        , Sender(sender)
-        , Counters(counters)
-        , CloudId(cloudId)
-        , Scope(scope)
-        , Probe(probe)
-        , Event(event)
-        , Cookie(cookie)
-        , StartTime(TInstant::Now()) { }
+    static constexpr char ActorName[] = "YQ_CONTROL_PLANE_PROXY_REQUEST_ACTOR";
 
-    static constexpr char ActorName[] = "YQ_CONTROL_PLANE_PROXY_CREATE_DATABASE";
+    explicit TRequestActor(const ::NFq::TControlPlaneProxyConfig& config,
+                           TActorId sender, ui32 cookie,
+                           const TString& scope, const TString& folderId, TRequestProto&& requestProto,
+                           TString&& user, TString&& token, const TActorId& serviceId,
+                           const TRequestCounters& counters,
+                           const std::function<void(const TDuration&, bool, bool)>& probe,
+                           TPermissions permissions,
+                           const TString& cloudId, const TString& subjectType, TMaybe<TQuotaMap>&& quotas = Nothing())
+        : Config(config)
+        , RequestProto(std::forward<TRequestProto>(requestProto))
+        , Scope(scope)
+        , FolderId(folderId)
+        , User(std::move(user))
+        , Token(std::move(token))
+        , Sender(sender)
+        , Cookie(cookie)
+        , ServiceId(serviceId)
+        , Counters(counters)
+        , StartTime(TInstant::Now())
+        , Probe(probe)
+        , Permissions(permissions)
+        , CloudId(cloudId)
+        , SubjectType(subjectType)
+        , Quotas(std::move(quotas))
+    {
+        Counters.IncInFly();
+    }
+
+public:
 
     void Bootstrap() {
-        CPP_LOG_T("Create database bootstrap. CloudId: " << CloudId << " Scope: " << Scope << " Actor id: " << SelfId());
-        if (!ComputeConfig.YdbComputeControlPlaneEnabled(Scope)) {
-            Event->Get()->ComputeDatabase = FederatedQuery::Internal::ComputeDatabaseInternal{};
-            TActivationContext::Send(Event->Forward(ControlPlaneProxyActorId()));
-            PassAway();
-            return;
-        }
-        Become(&TCreateComputeDatabaseActor::StateFunc, Config.RequestTimeout, new NActors::TEvents::TEvWakeup());
-        Counters->InFly->Inc();
-        Send(::NFq::ComputeDatabaseControlPlaneServiceActorId(), CreateRequest().release(), 0, 0);
+        CPP_LOG_T("Request actor. Actor id: " << SelfId());
+        Become(&TRequestActor::StateFunc, Config.RequestTimeout, new NActors::TEvents::TEvWakeup());
+        Send(ControlPlaneConfigActorId(), new TEvControlPlaneConfig::TEvGetTenantInfoRequest());
+        OnBootstrap();
     }
 
-    std::unique_ptr<TEvYdbCompute::TEvCreateDatabaseRequest> CreateRequest() {
-        return std::make_unique<TEvYdbCompute::TEvCreateDatabaseRequest>(CloudId, Scope);
-    }
+    virtual void OnBootstrap() {}
 
     STRICT_STFUNC(StateFunc,
         cFunc(NActors::TEvents::TSystem::Wakeup, HandleTimeout);
-        hFunc(TEvYdbCompute::TEvCreateDatabaseResponse, Handle);
+        hFunc(TResponse, Handle);
+        cFunc(TEvControlPlaneConfig::EvGetTenantInfoRequest, HandleRetry);
+        hFunc(TEvControlPlaneConfig::TEvGetTenantInfoResponse, Handle);
     )
 
+    void HandleRetry() {
+        Send(ControlPlaneConfigActorId(), new TEvControlPlaneConfig::TEvGetTenantInfoRequest());
+    }
+
+    void Handle(TEvControlPlaneConfig::TEvGetTenantInfoResponse::TPtr& ev) {
+        TenantInfo = std::move(ev->Get()->TenantInfo);
+        if (TenantInfo) {
+            SendRequestIfCan();
+        } else {
+            RetryCount++;
+            Schedule(Now() + Config.ConfigRetryPeriod * (1 << RetryCount), new TEvControlPlaneConfig::TEvGetTenantInfoRequest());
+        }
+    }
+
     void HandleTimeout() {
-        CPP_LOG_W("Create database timeout. CloudId: " << CloudId << " Scope: " << Scope << " Actor id: " << SelfId());
+        CPP_LOG_D("Request timeout. " << RequestProto.DebugString());
         NYql::TIssues issues;
-        NYql::TIssue issue = MakeErrorIssue(TIssuesIds::TIMEOUT, "Create database: request timeout. Try repeating the request later");
+        NYql::TIssue issue = MakeErrorIssue(TIssuesIds::TIMEOUT, "Request timeout. Try repeating the request later");
         issues.AddIssue(issue);
-        Counters->Error->Inc();
-        Counters->Timeout->Inc();
+        Counters.IncTimeout();
+        ReplyWithError(issues, true);
+    }
+
+    void Handle(typename TResponse::TPtr& ev) {
+        auto& response = *ev->Get();
+        ProcessResponse(response);
+    }
+
+    template<typename T>
+    void ProcessResponse(const T& response) {
+        if (response.Issues) {
+            ReplyWithError(response.Issues);
+        } else {
+            ReplyWithSuccess(response.Result);
+        }
+    }
+
+    template<typename T> requires requires (T t) { t.AuditDetails; }
+    void ProcessResponse(const T& response) {
+        if (response.Issues) {
+            ReplyWithError(response.Issues);
+        } else {
+            ReplyWithSuccess(response.Result, response.AuditDetails);
+        }
+    }
+
+    void ReplyWithError(const NYql::TIssues& issues, bool isTimeout = false) {
         const TDuration delta = TInstant::Now() - StartTime;
-        Probe(delta, false, true);
-        Send(Sender, new TResponseProxy(issues, {}), 0, Cookie);
+        Counters.IncError();
+        Probe(delta, false, isTimeout);
+        Send(Sender, new TResponseProxy(issues, SubjectType), 0, Cookie);
         PassAway();
     }
 
-    void Handle(TEvYdbCompute::TEvCreateDatabaseResponse::TPtr& ev) {
-        Counters->InFly->Dec();
-        Counters->LatencyMs->Collect((TInstant::Now() - StartTime).MilliSeconds());
-        if (ev->Get()->Issues) {
-            Counters->Error->Inc();
-            CPP_LOG_E(ev->Get()->Issues.ToOneLineString());
-            const TDuration delta = TInstant::Now() - StartTime;
-            Probe(delta, false, false);
-            Send(Sender, new TResponseProxy(ev->Get()->Issues, {}), 0, Cookie);
-            PassAway();
-            return;
-        }
-        Counters->Ok->Inc();
-        Event->Get()->ComputeDatabase = ev->Get()->Result;
-        TActivationContext::Send(Event->Forward(ControlPlaneProxyActorId()));
+    template <class... TArgs>
+    void ReplyWithSuccess(TArgs&&... args) {
+        const TDuration delta = TInstant::Now() - StartTime;
+        Counters.IncOk();
+        Probe(delta, true, false);
+        Send(Sender, new TResponseProxy(std::forward<TArgs>(args)..., SubjectType), 0, Cookie);
         PassAway();
+    }
+
+    virtual bool CanSendRequest() const {
+        return bool(TenantInfo);
+    }
+
+    void SendRequestIfCan() {
+        if (CanSendRequest()) {
+            Send(ServiceId, new TRequest(Scope, RequestProto, User, Token, CloudId, Permissions, Quotas, TenantInfo), 0, Cookie);
+        }
+    }
+
+    virtual ~TRequestActor() {
+        Counters.DecInFly();
+        Counters.Common->LatencyMs->Collect((TInstant::Now() - StartTime).MilliSeconds());
     }
 };
 
+class TCreateQueryRequestActor : public TRequestActor<FederatedQuery::CreateQueryRequest,
+                                                      TEvControlPlaneStorage::TEvCreateQueryRequest,
+                                                      TEvControlPlaneStorage::TEvCreateQueryResponse,
+                                                      TEvControlPlaneProxy::TEvCreateQueryResponse>
+{
+    bool QuoterResourceCreated = false;
+public:
+    using TBaseRequestActor = TRequestActor<FederatedQuery::CreateQueryRequest,
+                                            TEvControlPlaneStorage::TEvCreateQueryRequest,
+                                            TEvControlPlaneStorage::TEvCreateQueryResponse,
+                                            TEvControlPlaneProxy::TEvCreateQueryResponse>;
+    using TBaseRequestActor::TBaseRequestActor;
 
+    STFUNC(StateFunc) {
+        switch (ev->GetTypeRewrite()) {
+            hFunc(TEvRateLimiter::TEvCreateResourceResponse, Handle);
+        default:
+            return TBaseRequestActor::StateFunc(ev);
+        }
+    }
+
+    void OnBootstrap() override {
+        Become(&TCreateQueryRequestActor::StateFunc);
+        if (Quotas) {
+            SendCreateRateLimiterResourceRequest();
+        } else {
+            SendRequestIfCan();
+        }
+    }
+
+    void SendCreateRateLimiterResourceRequest() {
+        if (auto quotaIt = Quotas->find(QUOTA_CPU_PERCENT_LIMIT); quotaIt != Quotas->end()) {
+            const double cloudLimit = static_cast<double>(quotaIt->second.Limit.Value * 10); // percent -> milliseconds
+            CPP_LOG_T("Create rate limiter resource for cloud with limit " << cloudLimit << "ms");
+            Send(RateLimiterControlPlaneServiceId(), new TEvRateLimiter::TEvCreateResource(CloudId, cloudLimit));
+        } else {
+            NYql::TIssues issues;
+            NYql::TIssue issue = MakeErrorIssue(TIssuesIds::INTERNAL_ERROR, TStringBuilder() << "CPU quota for cloud \"" << CloudId << "\" was not found");
+            issues.AddIssue(issue);
+            CPP_LOG_W("Failed to get cpu quota for cloud " << CloudId);
+            ReplyWithError(issues);
+        }
+    }
+
+    void Handle(TEvRateLimiter::TEvCreateResourceResponse::TPtr& ev) {
+        CPP_LOG_D("Create response from rate limiter service. Success: " << ev->Get()->Success);
+        if (ev->Get()->Success) {
+            QuoterResourceCreated = true;
+            SendRequestIfCan();
+        } else {
+            NYql::TIssue issue("Failed to create rate limiter resource");
+            for (const NYql::TIssue& i : ev->Get()->Issues) {
+                issue.AddSubIssue(MakeIntrusive<NYql::TIssue>(i));
+            }
+            NYql::TIssues issues;
+            issues.AddIssue(issue);
+            ReplyWithError(issues);
+        }
+    }
+
+    bool CanSendRequest() const override {
+        return (QuoterResourceCreated || !Quotas) && TBaseRequestActor::CanSendRequest();
+    }
+};
 
 class TControlPlaneProxyActor : public NActors::TActorBootstrapped<TControlPlaneProxyActor> {
-private:
+    enum ERequestTypeScope {
+        RTS_CREATE_QUERY,
+        RTS_LIST_QUERIES,
+        RTS_DESCRIBE_QUERY,
+        RTS_GET_QUERY_STATUS,
+        RTS_MODIFY_QUERY,
+        RTS_DELETE_QUERY,
+        RTS_CONTROL_QUERY,
+        RTS_GET_RESULT_DATA,
+        RTS_LIST_JOBS,
+        RTS_DESCRIBE_JOB,
+        RTS_CREATE_CONNECTION,
+        RTS_LIST_CONNECTIONS,
+        RTS_DESCRIBE_CONNECTION,
+        RTS_MODIFY_CONNECTION,
+        RTS_DELETE_CONNECTION,
+        RTS_TEST_CONNECTION,
+        RTS_CREATE_BINDING,
+        RTS_LIST_BINDINGS,
+        RTS_DESCRIBE_BINDING,
+        RTS_MODIFY_BINDING,
+        RTS_DELETE_BINDING,
+        RTS_MAX,
+    };
+
+    enum ERequestTypeCommon {
+        RTC_RESOLVE_FOLDER,
+        RTC_CREATE_QUERY,
+        RTC_LIST_QUERIES,
+        RTC_DESCRIBE_QUERY,
+        RTC_GET_QUERY_STATUS,
+        RTC_MODIFY_QUERY,
+        RTC_DELETE_QUERY,
+        RTC_CONTROL_QUERY,
+        RTC_GET_RESULT_DATA,
+        RTC_LIST_JOBS,
+        RTC_DESCRIBE_JOB,
+        RTC_CREATE_CONNECTION,
+        RTC_LIST_CONNECTIONS,
+        RTC_DESCRIBE_CONNECTION,
+        RTC_MODIFY_CONNECTION,
+        RTC_DELETE_CONNECTION,
+        RTC_TEST_CONNECTION,
+        RTC_CREATE_BINDING,
+        RTC_LIST_BINDINGS,
+        RTC_DESCRIBE_BINDING,
+        RTC_MODIFY_BINDING,
+        RTC_DELETE_BINDING,
+        RTC_RESOLVE_SUBJECT_TYPE,
+        RTC_MAX,
+    };
+
+    class TCounters: public virtual TThrRefBase {
+        struct TMetricsScope {
+            TString CloudId;
+            TString Scope;
+
+            TMetricsScope() = default;
+
+            TMetricsScope(const TString& cloudId, const TString& scope)
+                : CloudId(cloudId)
+                , Scope(scope)
+            {}
+
+            bool operator<(const TMetricsScope& right) const {
+                return std::make_pair(CloudId, Scope) < std::make_pair(right.CloudId, right.Scope);
+            }
+        };
+
+        using TScopeCounters = std::array<TRequestScopeCountersPtr, RTS_MAX>;
+        using TScopeCountersPtr = std::shared_ptr<TScopeCounters>;
+
+        std::array<TRequestCommonCountersPtr, RTC_MAX> CommonRequests = CreateArray<RTC_MAX, TRequestCommonCountersPtr>({
+            { MakeIntrusive<TRequestCommonCounters>("ResolveFolder") },
+            { MakeIntrusive<TRequestCommonCounters>("CreateQuery") },
+            { MakeIntrusive<TRequestCommonCounters>("ListQueries") },
+            { MakeIntrusive<TRequestCommonCounters>("DescribeQuery") },
+            { MakeIntrusive<TRequestCommonCounters>("GetQueryStatus") },
+            { MakeIntrusive<TRequestCommonCounters>("ModifyQuery") },
+            { MakeIntrusive<TRequestCommonCounters>("DeleteQuery") },
+            { MakeIntrusive<TRequestCommonCounters>("ControlQuery") },
+            { MakeIntrusive<TRequestCommonCounters>("GetResultData") },
+            { MakeIntrusive<TRequestCommonCounters>("ListJobs") },
+            { MakeIntrusive<TRequestCommonCounters>("DescribeJob") },
+            { MakeIntrusive<TRequestCommonCounters>("CreateConnection") },
+            { MakeIntrusive<TRequestCommonCounters>("ListConnections") },
+            { MakeIntrusive<TRequestCommonCounters>("DescribeConnection") },
+            { MakeIntrusive<TRequestCommonCounters>("ModifyConnection") },
+            { MakeIntrusive<TRequestCommonCounters>("DeleteConnection") },
+            { MakeIntrusive<TRequestCommonCounters>("TestConnection") },
+            { MakeIntrusive<TRequestCommonCounters>("CreateBinding") },
+            { MakeIntrusive<TRequestCommonCounters>("ListBindings") },
+            { MakeIntrusive<TRequestCommonCounters>("DescribeBinding") },
+            { MakeIntrusive<TRequestCommonCounters>("ModifyBinding") },
+            { MakeIntrusive<TRequestCommonCounters>("DeleteBinding") },
+            { MakeIntrusive<TRequestCommonCounters>("ResolveSubjectType") },
+        });
+
+        TTtlCache<TMetricsScope, TScopeCountersPtr, TMap> ScopeCounters{TTtlCacheSettings{}.SetTtl(TDuration::Days(1))};
+        ::NMonitoring::TDynamicCounterPtr Counters;
+
+    public:
+        explicit TCounters(const ::NMonitoring::TDynamicCounterPtr& counters)
+            : Counters(counters)
+        {
+            for (auto& request: CommonRequests) {
+                request->Register(Counters);
+            }
+        }
+
+        TRequestCounters GetCounters(const TString& cloudId, const TString& scope, ERequestTypeScope scopeType, ERequestTypeCommon commonType) {
+            return {GetScopeCounters(cloudId, scope, scopeType), GetCommonCounters(commonType)};
+        }
+
+        TRequestCommonCountersPtr GetCommonCounters(ERequestTypeCommon type) {
+            return CommonRequests[type];
+        }
+
+        TRequestScopeCountersPtr GetScopeCounters(const TString& cloudId, const TString& scope, ERequestTypeScope type) {
+            TMetricsScope key{cloudId, scope};
+            TMaybe<TScopeCountersPtr> cacheVal;
+            ScopeCounters.Get(key, &cacheVal);
+            if (cacheVal) {
+                return (**cacheVal)[type];
+            }
+
+            auto scopeRequests = std::make_shared<TScopeCounters>(CreateArray<RTS_MAX, TRequestScopeCountersPtr>({
+                { MakeIntrusive<TRequestScopeCounters>("CreateQuery") },
+                { MakeIntrusive<TRequestScopeCounters>("ListQueries") },
+                { MakeIntrusive<TRequestScopeCounters>("DescribeQuery") },
+                { MakeIntrusive<TRequestScopeCounters>("GetQueryStatus") },
+                { MakeIntrusive<TRequestScopeCounters>("ModifyQuery") },
+                { MakeIntrusive<TRequestScopeCounters>("DeleteQuery") },
+                { MakeIntrusive<TRequestScopeCounters>("ControlQuery") },
+                { MakeIntrusive<TRequestScopeCounters>("GetResultData") },
+                { MakeIntrusive<TRequestScopeCounters>("ListJobs") },
+                { MakeIntrusive<TRequestScopeCounters>("DescribeJob") },
+                { MakeIntrusive<TRequestScopeCounters>("CreateConnection") },
+                { MakeIntrusive<TRequestScopeCounters>("ListConnections") },
+                { MakeIntrusive<TRequestScopeCounters>("DescribeConnection") },
+                { MakeIntrusive<TRequestScopeCounters>("ModifyConnection") },
+                { MakeIntrusive<TRequestScopeCounters>("DeleteConnection") },
+                { MakeIntrusive<TRequestScopeCounters>("TestConnection") },
+                { MakeIntrusive<TRequestScopeCounters>("CreateBinding") },
+                { MakeIntrusive<TRequestScopeCounters>("ListBindings") },
+                { MakeIntrusive<TRequestScopeCounters>("DescribeBinding") },
+                { MakeIntrusive<TRequestScopeCounters>("ModifyBinding") },
+                { MakeIntrusive<TRequestScopeCounters>("DeleteBinding") },
+            }));
+
+            auto scopeCounters = Counters
+                        ->GetSubgroup("cloud_id", cloudId)
+                        ->GetSubgroup("scope", scope);
+
+            for (auto& request: *scopeRequests) {
+                request->Register(scopeCounters);
+            }
+            cacheVal = scopeRequests;
+            ScopeCounters.Put(key, cacheVal);
+            return (*scopeRequests)[type];
+        }
+    };
+
     TCounters Counters;
     const ::NFq::TControlPlaneProxyConfig Config;
-    const TYqSharedResources::TPtr YqSharedResources;
-    const NKikimr::TYdbCredentialsProviderFactory CredentialsProviderFactory;
     const bool QuotaManagerEnabled;
-    NConfig::TComputeConfig ComputeConfig;
     TActorId AccessService;
-    ::NFq::TSigner::TPtr Signer;
 
 public:
-    TControlPlaneProxyActor(
-        const NConfig::TControlPlaneProxyConfig& config,
-        const NConfig::TControlPlaneStorageConfig& storageConfig,
-        const NConfig::TComputeConfig& computeConfig,
-        const NConfig::TCommonConfig& commonConfig,
-        const NYql::TS3GatewayConfig& s3Config,
-        const ::NFq::TSigner::TPtr& signer,
-        const TYqSharedResources::TPtr& yqSharedResources,
-        const NKikimr::TYdbCredentialsProviderFactory& credentialsProviderFactory,
-        const ::NMonitoring::TDynamicCounterPtr& counters,
-        bool quotaManagerEnabled)
+    TControlPlaneProxyActor(const NConfig::TControlPlaneProxyConfig& config, const ::NMonitoring::TDynamicCounterPtr& counters, bool quotaManagerEnabled)
         : Counters(counters)
-        , Config(config, storageConfig, computeConfig, commonConfig, s3Config)
-        , YqSharedResources(yqSharedResources)
-        , CredentialsProviderFactory(credentialsProviderFactory)
+        , Config(config)
         , QuotaManagerEnabled(quotaManagerEnabled)
-        , Signer(signer)
-        {}
+    {
+    }
 
     static constexpr char ActorName[] = "YQ_CONTROL_PLANE_PROXY";
 
@@ -569,6 +946,32 @@ private:
         hFunc(NMon::TEvHttpInfo, Handle);
     )
 
+    inline static const TMap<TString, TPermissions::TPermission> PermissionsItems = {
+        {"yq.resources.viewPublic@as", TPermissions::VIEW_PUBLIC},
+        {"yq.resources.viewPrivate@as", TPermissions::VIEW_PRIVATE},
+        {"yq.queries.viewAst@as", TPermissions::VIEW_AST},
+        {"yq.resources.managePublic@as", TPermissions::MANAGE_PUBLIC},
+        {"yq.resources.managePrivate@as", TPermissions::MANAGE_PRIVATE},
+        {"yq.connections.use@as", TPermissions::CONNECTIONS_USE},
+        {"yq.bindings.use@as", TPermissions::BINDINGS_USE},
+        {"yq.queries.invoke@as", TPermissions::QUERY_INVOKE},
+        {"yq.queries.viewQueryText@as", TPermissions::VIEW_QUERY_TEXT},
+    };
+
+    template<typename T>
+    TPermissions ExtractPermissions(T& ev, const TPermissions& availablePermissions) {
+        TPermissions permissions;
+        for (const auto& permission: ev->Get()->Permissions) {
+            if (auto it = PermissionsItems.find(permission); it != PermissionsItems.end()) {
+                // cut off permissions that should not be used in other services
+                if (availablePermissions.Check(it->second)) {
+                    permissions.Set(it->second);
+                }
+            }
+        }
+        return permissions;
+    }
+
     template<typename T>
     NYql::TIssues ValidatePermissions(T& ev, const TVector<TString>& requiredPermissions) {
         NYql::TIssues issues;
@@ -576,64 +979,13 @@ private:
             return issues;
         }
 
-        for (const auto& requiredPermission : requiredPermissions) {
+        for (const auto& requiredPermission: requiredPermissions) {
             if (!IsIn(ev->Get()->Permissions, requiredPermission)) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::ACCESS_DENIED, "No permission " + requiredPermission + " in a given scope " + ev->Get()->Scope));
+                issues.AddIssue(MakeErrorIssue(TIssuesIds::ACCESS_DENIED, "No permission " + requiredPermission + " in a given scope yandexcloud://" + ev->Get()->FolderId));
             }
         }
 
         return issues;
-    }
-
-    template<class TProxyRequest, class TProxyResponse, class TProbe>
-    void ValidationFailedHandler(typename TProxyRequest::TPtr ev,
-                                 const NYql::TIssues& issues,
-                                 TRequestCounters& requestCounters,
-                                 const TInstant& startTime,
-                                 const TProbe& probe,
-                                 const TString& requestName) {
-        CPS_LOG_E(requestName << ", validation failed: " << ev->Get()->Scope << " "
-                              << ev->Get()->User << " "
-                              << NKikimr::MaskTicket(ev->Get()->Token) << " "
-                              << ev->Get()->Request.DebugString()
-                              << " error: " << issues.ToString());
-        Send(ev->Sender, new TProxyResponse(issues, ev->Get()->SubjectType), 0, ev->Cookie);
-        requestCounters.IncError();
-        TDuration delta = TInstant::Now() - startTime;
-        requestCounters.Common->LatencyMs->Collect(delta.MilliSeconds());
-        probe(delta, false, false);
-    }
-
-    template<class TProxyRequest, class TProxyResponse, class TProbe>
-    bool ValidateNameUniquenessConstraint(typename TProxyRequest::TPtr& ev,
-                                          TRequestCounters& requestCounters,
-                                          const TInstant& startTime,
-                                          const TProbe& probe,
-                                          const TString& requestName) {
-        bool entityWithSameNameExists = ev->Get()->EntityWithSameNameType.Defined();
-        if (entityWithSameNameExists) {
-            TString errorMessage;
-            switch (*ev->Get()->EntityWithSameNameType) {
-                case TEvControlPlaneProxy::EEntityType::Connection:
-                    errorMessage =
-                        "Connection with the same name already exists. Please choose another name";
-                    break;
-
-                case TEvControlPlaneProxy::EEntityType::Binding:
-                    errorMessage =
-                        "Binding with the same name already exists. Please choose another name";
-                    break;
-            }
-
-            ValidationFailedHandler<TProxyRequest, TProxyResponse>(
-                std::move(ev),
-                NYql::TIssues{NYql::TIssue{errorMessage}},
-                requestCounters,
-                startTime,
-                probe,
-                requestName);
-        }
-        return !entityWithSameNameExists;
     }
 
     void Handle(TEvControlPlaneProxy::TEvCreateQueryRequest::TPtr& ev) {
@@ -641,8 +993,9 @@ private:
         FederatedQuery::CreateQueryRequest request = ev->Get()->Request;
         CPP_LOG_T("CreateQueryRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -657,7 +1010,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvCreateQueryRequest::TPtr,
                                              TEvControlPlaneProxy::TEvCreateQueryResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -683,26 +1036,19 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvCreateQueryRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvCreateQueryResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::QUERY_INVOKE
+            | TPermissions::TPermission::CONNECTIONS_USE
+            | TPermissions::TPermission::BINDINGS_USE
             | TPermissions::TPermission::MANAGE_PUBLIC
         };
 
-        Register(new TCreateQueryRequestActor(ev,
-                                              Config,
-                                              ControlPlaneStorageServiceActorId(),
-                                              requestCounters,
-                                              probe,
-                                              availablePermissions));
+        Register(new TCreateQueryRequestActor
+                                            (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                            std::move(request), std::move(user), std::move(token),
+                                            ControlPlaneStorageServiceActorId(),
+                                            requestCounters,
+                                            probe, ExtractPermissions(ev, availablePermissions), cloudId, subjectType, std::move(ev->Get()->Quotas)));
     }
 
     void Handle(TEvControlPlaneProxy::TEvListQueriesRequest::TPtr& ev) {
@@ -710,8 +1056,9 @@ private:
         FederatedQuery::ListQueriesRequest request = ev->Get()->Request;
         CPP_LOG_T("ListQueriesRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -726,7 +1073,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvListQueriesRequest::TPtr,
                                              TEvControlPlaneProxy::TEvListQueriesResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -760,14 +1107,13 @@ private:
         Register(new TRequestActor<FederatedQuery::ListQueriesRequest,
                                    TEvControlPlaneStorage::TEvListQueriesRequest,
                                    TEvControlPlaneStorage::TEvListQueriesResponse,
-                                   TEvControlPlaneProxy::TEvListQueriesRequest,
-                                   TEvControlPlaneProxy::TEvListQueriesResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvListQueriesResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDescribeQueryRequest::TPtr& ev) {
@@ -775,8 +1121,9 @@ private:
         FederatedQuery::DescribeQueryRequest request = ev->Get()->Request;
         CPP_LOG_T("DescribeQueryRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -792,7 +1139,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDescribeQueryRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDescribeQueryResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -828,14 +1175,13 @@ private:
         Register(new TRequestActor<FederatedQuery::DescribeQueryRequest,
                                    TEvControlPlaneStorage::TEvDescribeQueryRequest,
                                    TEvControlPlaneStorage::TEvDescribeQueryResponse,
-                                   TEvControlPlaneProxy::TEvDescribeQueryRequest,
-                                   TEvControlPlaneProxy::TEvDescribeQueryResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvDescribeQueryResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvGetQueryStatusRequest::TPtr& ev) {
@@ -843,8 +1189,9 @@ private:
         FederatedQuery::GetQueryStatusRequest request = ev->Get()->Request;
         CPP_LOG_T("GetStatusRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -860,7 +1207,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvGetQueryStatusRequest::TPtr,
                                              TEvControlPlaneProxy::TEvGetQueryStatusResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -894,14 +1241,13 @@ private:
         Register(new TRequestActor<FederatedQuery::GetQueryStatusRequest,
                                    TEvControlPlaneStorage::TEvGetQueryStatusRequest,
                                    TEvControlPlaneStorage::TEvGetQueryStatusResponse,
-                                   TEvControlPlaneProxy::TEvGetQueryStatusRequest,
-                                   TEvControlPlaneProxy::TEvGetQueryStatusResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvGetQueryStatusResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvModifyQueryRequest::TPtr& ev) {
@@ -909,8 +1255,9 @@ private:
         FederatedQuery::ModifyQueryRequest request = ev->Get()->Request;
         CPP_LOG_T("ModifyQueryRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -926,7 +1273,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvModifyQueryRequest::TPtr,
                                              TEvControlPlaneProxy::TEvModifyQueryResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -952,17 +1299,10 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvModifyQueryRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvModifyQueryResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::QUERY_INVOKE
+            | TPermissions::TPermission::CONNECTIONS_USE
+            | TPermissions::TPermission::BINDINGS_USE
             | TPermissions::TPermission::MANAGE_PUBLIC
             | TPermissions::TPermission::MANAGE_PRIVATE
         };
@@ -970,14 +1310,13 @@ private:
         Register(new TRequestActor<FederatedQuery::ModifyQueryRequest,
                                    TEvControlPlaneStorage::TEvModifyQueryRequest,
                                    TEvControlPlaneStorage::TEvModifyQueryResponse,
-                                   TEvControlPlaneProxy::TEvModifyQueryRequest,
-                                   TEvControlPlaneProxy::TEvModifyQueryResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvModifyQueryResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDeleteQueryRequest::TPtr& ev) {
@@ -985,8 +1324,9 @@ private:
         FederatedQuery::DeleteQueryRequest request = ev->Get()->Request;
         CPP_LOG_T("DeleteQueryRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -1002,7 +1342,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDeleteQueryRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDeleteQueryResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1036,14 +1376,13 @@ private:
         Register(new TRequestActor<FederatedQuery::DeleteQueryRequest,
                                    TEvControlPlaneStorage::TEvDeleteQueryRequest,
                                    TEvControlPlaneStorage::TEvDeleteQueryResponse,
-                                   TEvControlPlaneProxy::TEvDeleteQueryRequest,
-                                   TEvControlPlaneProxy::TEvDeleteQueryResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvDeleteQueryResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvControlQueryRequest::TPtr& ev) {
@@ -1051,8 +1390,9 @@ private:
         FederatedQuery::ControlQueryRequest request = ev->Get()->Request;
         CPP_LOG_T("ControlQueryRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -1068,7 +1408,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvControlQueryRequest::TPtr,
                                              TEvControlPlaneProxy::TEvControlQueryResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1102,14 +1442,13 @@ private:
         Register(new TRequestActor<FederatedQuery::ControlQueryRequest,
                                    TEvControlPlaneStorage::TEvControlQueryRequest,
                                    TEvControlPlaneStorage::TEvControlQueryResponse,
-                                   TEvControlPlaneProxy::TEvControlQueryRequest,
-                                   TEvControlPlaneProxy::TEvControlQueryResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvControlQueryResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvGetResultDataRequest::TPtr& ev) {
@@ -1117,8 +1456,9 @@ private:
         FederatedQuery::GetResultDataRequest request = ev->Get()->Request;
         CPP_LOG_T("GetResultDataRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -1137,7 +1477,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvGetResultDataRequest::TPtr,
                                              TEvControlPlaneProxy::TEvGetResultDataResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1171,14 +1511,13 @@ private:
         Register(new TRequestActor<FederatedQuery::GetResultDataRequest,
                                    TEvControlPlaneStorage::TEvGetResultDataRequest,
                                    TEvControlPlaneStorage::TEvGetResultDataResponse,
-                                   TEvControlPlaneProxy::TEvGetResultDataRequest,
-                                   TEvControlPlaneProxy::TEvGetResultDataResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvGetResultDataResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvListJobsRequest::TPtr& ev) {
@@ -1186,8 +1525,9 @@ private:
         FederatedQuery::ListJobsRequest request = ev->Get()->Request;
         CPP_LOG_T("ListJobsRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString queryId = request.query_id();
@@ -1203,7 +1543,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvListJobsRequest::TPtr,
                                              TEvControlPlaneProxy::TEvListJobsResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1237,14 +1577,13 @@ private:
         Register(new TRequestActor<FederatedQuery::ListJobsRequest,
                                    TEvControlPlaneStorage::TEvListJobsRequest,
                                    TEvControlPlaneStorage::TEvListJobsResponse,
-                                   TEvControlPlaneProxy::TEvListJobsRequest,
-                                   TEvControlPlaneProxy::TEvListJobsResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvListJobsResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDescribeJobRequest::TPtr& ev) {
@@ -1252,8 +1591,9 @@ private:
         FederatedQuery::DescribeJobRequest request = ev->Get()->Request;
         CPP_LOG_T("DescribeJobRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString jobId = request.job_id();
@@ -1269,7 +1609,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDescribeJobRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDescribeJobResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1305,14 +1645,13 @@ private:
         Register(new TRequestActor<FederatedQuery::DescribeJobRequest,
                                    TEvControlPlaneStorage::TEvDescribeJobRequest,
                                    TEvControlPlaneStorage::TEvDescribeJobResponse,
-                                   TEvControlPlaneProxy::TEvDescribeJobRequest,
-                                   TEvControlPlaneProxy::TEvDescribeJobResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvDescribeJobResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvCreateConnectionRequest::TPtr& ev) {
@@ -1320,8 +1659,9 @@ private:
         FederatedQuery::CreateConnectionRequest request = ev->Get()->Request;
         CPP_LOG_T("CreateConnectionRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -1336,7 +1676,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvCreateConnectionRequest::TPtr,
                                              TEvControlPlaneProxy::TEvCreateConnectionResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1367,106 +1707,19 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvCreateConnectionRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvCreateConnectionResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
-        const auto isYDBOperationEnabled =
-            Config.ComputeConfig.IsYDBSchemaOperationsEnabled(
-                ev->Get()->Scope, ev->Get()->Request.content().setting().connection_case());
-        if (isYDBOperationEnabled && !ev->Get()->RequestValidationPassed) {
-            auto requestValidationIssues =
-                ::NFq::ValidateConnection(ev,
-                                          Config.StorageConfig.Proto.GetMaxRequestSize(),
-                                          Config.StorageConfig.AvailableConnections,
-                                          Config.StorageConfig.Proto.GetDisableCurrentIam(),
-                                          false);
-            if (requestValidationIssues) {
-                CPS_LOG_E("CreateConnectionRequest, validation failed: "
-                          << scope << " " << user << " " << NKikimr::MaskTicket(token)
-                          << " " << request.DebugString()
-                          << " error: " << requestValidationIssues.ToString());
-                Send(ev->Sender,
-                     new TEvControlPlaneProxy::TEvCreateConnectionResponse(
-                         requestValidationIssues, subjectType),
-                     0,
-                     ev->Cookie);
-                requestCounters.IncError();
-                TDuration delta = TInstant::Now() - startTime;
-                requestCounters.Common->LatencyMs->Collect(delta.MilliSeconds());
-                probe(delta, false, false);
-                return;
-            }
-            ev->Get()->RequestValidationPassed = true;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::MANAGE_PUBLIC
-            | TPermissions::TPermission::VIEW_PUBLIC
         };
-
-        if (isYDBOperationEnabled) {
-            if (!ev->Get()->ConnectionsWithSameNameWereListed) {
-                Register(MakeListConnectionIdsActor(ControlPlaneProxyActorId(),
-                                                    ev,
-                                                    Counters,
-                                                    Config.RequestTimeout,
-                                                    availablePermissions));
-                return;
-            }
-            if (!ev->Get()->BindingWithSameNameWereListed) {
-                Register(MakeListBindingIdsActor(ControlPlaneProxyActorId(),
-                                                 ev,
-                                                 Counters,
-                                                 Config.RequestTimeout,
-                                                 availablePermissions));
-                return;
-            }
-            if (!ValidateNameUniquenessConstraint<
-                    TEvControlPlaneProxy::TEvCreateConnectionRequest,
-                    TEvControlPlaneProxy::TEvCreateConnectionResponse>(
-                    ev, requestCounters, startTime, probe, "TEvCreateConnectionRequest")) {
-                return;
-            }
-        }
-
-        if (isYDBOperationEnabled) {
-            if (!ev->Get()->YDBClient) {
-                ev->Get()->YDBClient = CreateNewTableClient(ev,
-                                                            Config.ComputeConfig,
-                                                            YqSharedResources,
-                                                            CredentialsProviderFactory);
-            }
-
-            if (!ev->Get()->ComputeYDBOperationWasPerformed) {
-                Register(NPrivate::MakeCreateConnectionActor(ControlPlaneProxyActorId(),
-                                                             std::move(ev),
-                                                             Config.RequestTimeout,
-                                                             Counters,
-                                                             availablePermissions,
-                                                             Config.CommonConfig,
-                                                             Config.ComputeConfig,
-                                                             Signer));
-                return;
-            }
-        }
 
         Register(new TRequestActor<FederatedQuery::CreateConnectionRequest,
                                    TEvControlPlaneStorage::TEvCreateConnectionRequest,
                                    TEvControlPlaneStorage::TEvCreateConnectionResponse,
-                                   TEvControlPlaneProxy::TEvCreateConnectionRequest,
-                                   TEvControlPlaneProxy::TEvCreateConnectionResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvCreateConnectionResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe, ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvListConnectionsRequest::TPtr& ev) {
@@ -1474,8 +1727,9 @@ private:
         FederatedQuery::ListConnectionsRequest request = ev->Get()->Request;
         CPP_LOG_T("ListConnectionsRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -1490,7 +1744,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvListConnectionsRequest::TPtr,
                                              TEvControlPlaneProxy::TEvListConnectionsResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1524,14 +1778,13 @@ private:
         Register(new TRequestActor<FederatedQuery::ListConnectionsRequest,
                                    TEvControlPlaneStorage::TEvListConnectionsRequest,
                                    TEvControlPlaneStorage::TEvListConnectionsResponse,
-                                   TEvControlPlaneProxy::TEvListConnectionsRequest,
-                                   TEvControlPlaneProxy::TEvListConnectionsResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvListConnectionsResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDescribeConnectionRequest::TPtr& ev) {
@@ -1539,8 +1792,9 @@ private:
         FederatedQuery::DescribeConnectionRequest request = ev->Get()->Request;
         CPP_LOG_T("DescribeConnectionRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString connectionId = request.connection_id();
@@ -1556,7 +1810,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDescribeConnectionRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDescribeConnectionResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1590,14 +1844,13 @@ private:
         Register(new TRequestActor<FederatedQuery::DescribeConnectionRequest,
                                    TEvControlPlaneStorage::TEvDescribeConnectionRequest,
                                    TEvControlPlaneStorage::TEvDescribeConnectionResponse,
-                                   TEvControlPlaneProxy::TEvDescribeConnectionRequest,
-                                   TEvControlPlaneProxy::TEvDescribeConnectionResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvDescribeConnectionResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvModifyConnectionRequest::TPtr& ev) {
@@ -1605,8 +1858,9 @@ private:
         FederatedQuery::ModifyConnectionRequest request = ev->Get()->Request;
         CPP_LOG_T("ModifyConnectionRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString connectionId = request.connection_id();
@@ -1622,7 +1876,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvModifyConnectionRequest::TPtr,
                                              TEvControlPlaneProxy::TEvModifyConnectionResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1653,108 +1907,21 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvModifyConnectionRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvModifyConnectionResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
-        const auto isYDBOperationEnabled = Config.ComputeConfig.IsYDBSchemaOperationsEnabled(
-            ev->Get()->Scope, ev->Get()->Request.content().setting().connection_case());
-
-        if (isYDBOperationEnabled && !ev->Get()->RequestValidationPassed) {
-            auto requestValidationIssues =
-                ::NFq::ValidateConnection(ev,
-                                          Config.StorageConfig.Proto.GetMaxRequestSize(),
-                                          Config.StorageConfig.AvailableConnections,
-                                          Config.StorageConfig.Proto.GetDisableCurrentIam(),
-                                          false);
-            if (requestValidationIssues) {
-                CPS_LOG_E("ModifyConnectionRequest, validation failed: "
-                          << scope << " " << user << " " << NKikimr::MaskTicket(token)
-                          << " " << request.DebugString()
-                          << " error: " << requestValidationIssues.ToString());
-                Send(ev->Sender,
-                     new TEvControlPlaneProxy::TEvModifyConnectionResponse(
-                         requestValidationIssues, subjectType),
-                     0,
-                     ev->Cookie);
-                requestCounters.IncError();
-                TDuration delta = TInstant::Now() - startTime;
-                requestCounters.Common->LatencyMs->Collect(delta.MilliSeconds());
-                probe(delta, false, false);
-                return;
-            }
-            ev->Get()->RequestValidationPassed = true;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::MANAGE_PUBLIC
             | TPermissions::TPermission::MANAGE_PRIVATE
-            | TPermissions::TPermission::VIEW_PUBLIC
-            | TPermissions::TPermission::VIEW_PRIVATE
         };
 
-        if (isYDBOperationEnabled && !ev->Get()->OldConnectionContent) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeDiscoverYDBConnectionContentActor(
-                ControlPlaneProxyActorId(), ev, Counters, Config.RequestTimeout, permissions));
-            return;
-        }
-        if (isYDBOperationEnabled && !ev->Get()->OldBindingNamesDiscoveryFinished) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeListBindingIdsActor(
-                ControlPlaneProxyActorId(), ev, Counters, Config.RequestTimeout, permissions));
-            return;
-        }
-        if (isYDBOperationEnabled && ev->Get()->OldBindingIds.size() != ev->Get()->OldBindingContents.size()) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeDescribeListedBindingActor(
-                ControlPlaneProxyActorId(), ev, Counters, Config.RequestTimeout, permissions));
-            return;
-        }
-        if (!ev->Get()->ControlPlaneYDBOperationWasPerformed) {
-            Register(new TRequestActor<FederatedQuery::ModifyConnectionRequest,
-                                       TEvControlPlaneStorage::TEvModifyConnectionRequest,
-                                       TEvControlPlaneStorage::TEvModifyConnectionResponse,
-                                       TEvControlPlaneProxy::TEvModifyConnectionRequest,
-                                       TEvControlPlaneProxy::TEvModifyConnectionResponse>(
-                ev,
-                Config,
-                ControlPlaneStorageServiceActorId(),
-                requestCounters,
-                probe,
-                availablePermissions,
-                !isYDBOperationEnabled));
-            return;
-        }
-
-        if (isYDBOperationEnabled) {
-            if (!ev->Get()->YDBClient) {
-                ev->Get()->YDBClient = CreateNewTableClient(ev,
-                                                            Config.ComputeConfig,
-                                                            YqSharedResources,
-                                                            CredentialsProviderFactory);
-            }
-
-            if (!ev->Get()->ComputeYDBOperationWasPerformed) {
-                Register(MakeModifyConnectionActor(
-                    ControlPlaneProxyActorId(),
-                    ev,
-                    Config.RequestTimeout,
-                    Counters,
-                    Config.CommonConfig,
-                    Config.ComputeConfig,
-                    Signer));
-                return;
-            }
-
-            Send(sender, ev->Get()->Response.release());
-            return;
-        }
+        Register(new TRequestActor<FederatedQuery::ModifyConnectionRequest,
+                                   TEvControlPlaneStorage::TEvModifyConnectionRequest,
+                                   TEvControlPlaneStorage::TEvModifyConnectionResponse,
+                                   TEvControlPlaneProxy::TEvModifyConnectionResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDeleteConnectionRequest::TPtr& ev) {
@@ -1762,8 +1929,9 @@ private:
         FederatedQuery::DeleteConnectionRequest request = ev->Get()->Request;
         CPP_LOG_T("DeleteConnectionRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString connectionId = request.connection_id();
@@ -1779,7 +1947,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDeleteConnectionRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDeleteConnectionResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1805,72 +1973,21 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvDeleteConnectionRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvDeleteConnectionResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::MANAGE_PUBLIC
             | TPermissions::TPermission::MANAGE_PRIVATE
-            | TPermissions::TPermission::VIEW_PUBLIC
-            | TPermissions::TPermission::VIEW_PRIVATE
         };
 
-        if (Config.ComputeConfig.YdbComputeControlPlaneEnabled(ev->Get()->Scope) && !ev->Get()->ConnectionContent) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeDiscoverYDBConnectionContentActor(
-                ControlPlaneProxyActorId(), ev, Counters, Config.RequestTimeout, permissions));
-            return;
-        }
-
-        const auto isYDBOperationEnabled =
-            ev->Get()->ConnectionContent
-                ? Config.ComputeConfig.IsYDBSchemaOperationsEnabled(
-                      ev->Get()->Scope,
-                      ev->Get()->ConnectionContent->setting().connection_case())
-                : false;
-
-        if (!ev->Get()->ControlPlaneYDBOperationWasPerformed) {
-            Register(new TRequestActor<FederatedQuery::DeleteConnectionRequest,
-                                       TEvControlPlaneStorage::TEvDeleteConnectionRequest,
-                                       TEvControlPlaneStorage::TEvDeleteConnectionResponse,
-                                       TEvControlPlaneProxy::TEvDeleteConnectionRequest,
-                                       TEvControlPlaneProxy::TEvDeleteConnectionResponse>(
-                ev,
-                Config,
-                ControlPlaneStorageServiceActorId(),
-                requestCounters,
-                probe,
-                availablePermissions,
-                !isYDBOperationEnabled));
-            return;
-        }
-
-        if (isYDBOperationEnabled) {
-            if (!ev->Get()->YDBClient) {
-                ev->Get()->YDBClient = CreateNewTableClient(ev,
-                                                            Config.ComputeConfig,
-                                                            YqSharedResources,
-                                                            CredentialsProviderFactory);
-            }
-
-            if (!ev->Get()->ComputeYDBOperationWasPerformed) {
-                Register(MakeDeleteConnectionActor(ControlPlaneProxyActorId(),
-                                                   ev,
-                                                   Config.RequestTimeout,
-                                                   Counters,
-                                                   Config.CommonConfig,
-                                                   Signer));
-                return;
-            }
-
-            Send(sender, ev->Get()->Response.release());
-        }
+        Register(new TRequestActor<FederatedQuery::DeleteConnectionRequest,
+                                   TEvControlPlaneStorage::TEvDeleteConnectionRequest,
+                                   TEvControlPlaneStorage::TEvDeleteConnectionResponse,
+                                   TEvControlPlaneProxy::TEvDeleteConnectionResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvTestConnectionRequest::TPtr& ev) {
@@ -1878,9 +1995,9 @@ private:
         FederatedQuery::TestConnectionRequest request = ev->Get()->Request;
         CPP_LOG_T("TestConnectionRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
-
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -1895,7 +2012,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvTestConnectionRequest::TPtr,
                                              TEvControlPlaneProxy::TEvTestConnectionResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -1929,9 +2046,12 @@ private:
         Register(new TRequestActor<FederatedQuery::TestConnectionRequest,
                                    TEvTestConnection::TEvTestConnectionRequest,
                                    TEvTestConnection::TEvTestConnectionResponse,
-                                   TEvControlPlaneProxy::TEvTestConnectionRequest,
-                                   TEvControlPlaneProxy::TEvTestConnectionResponse>(
-            ev, Config, TestConnectionActorId(), requestCounters, probe, {}));
+                                   TEvControlPlaneProxy::TEvTestConnectionResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    TestConnectionActorId(),
+                                    requestCounters,
+                                    probe, ExtractPermissions(ev, {}), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvCreateBindingRequest::TPtr& ev) {
@@ -1939,9 +2059,9 @@ private:
         FederatedQuery::CreateBindingRequest request = ev->Get()->Request;
         CPP_LOG_T("CreateBindingRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const bool ydbOperationWasPerformed = ev->Get()->ComputeYDBOperationWasPerformed;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -1956,16 +2076,13 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvCreateBindingRequest::TPtr,
                                              TEvControlPlaneProxy::TEvCreateBindingResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
 
         TRequestCounters requestCounters = Counters.GetCounters(cloudId, scope, RTS_CREATE_BINDING, RTC_CREATE_BINDING);
-
-        auto requiredParams = TVector<TString>{"yq.bindings.create@as", "yq.connections.get@as"};
-
-        NYql::TIssues issues = ValidatePermissions(ev, requiredParams);
+        NYql::TIssues issues = ValidatePermissions(ev, {"yq.bindings.create@as"});
         if (issues) {
             CPS_LOG_E("CreateBindingRequest, validation failed: " << scope << " " << user << " " << NKikimr::MaskTicket(token) << " " << request.DebugString() << " error: " << issues.ToString());
             Send(ev->Sender, new TEvControlPlaneProxy::TEvCreateBindingResponse(issues, subjectType), 0, ev->Cookie);
@@ -1985,112 +2102,19 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvCreateBindingRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvCreateBindingResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
-        if (Config.ComputeConfig.YdbComputeControlPlaneEnabled(ev->Get()->Scope) &&
-            !ev->Get()->RequestValidationPassed) {
-            auto requestValidationIssues =
-                ::NFq::ValidateBinding(ev,
-                                       Config.StorageConfig.Proto.GetMaxRequestSize(),
-                                       Config.StorageConfig.AvailableBindings,
-                                       Config.StorageConfig.GeneratorPathsLimit);
-            if (requestValidationIssues) {
-                CPS_LOG_E("CreateBindingRequest, validation failed: "
-                          << scope << " " << user << " " << NKikimr::MaskTicket(token)
-                          << " " << request.DebugString()
-                          << " error: " << requestValidationIssues.ToString());
-                Send(ev->Sender,
-                     new TEvControlPlaneProxy::TEvCreateBindingResponse(
-                         requestValidationIssues, subjectType),
-                     0,
-                     ev->Cookie);
-                requestCounters.IncError();
-                TDuration delta = TInstant::Now() - startTime;
-                requestCounters.Common->LatencyMs->Collect(delta.MilliSeconds());
-                probe(delta, false, false);
-                return;
-            }
-            ev->Get()->RequestValidationPassed = true;
-        }
-
         static const TPermissions availablePermissions {
-            TPermissions::TPermission::VIEW_PUBLIC
-            | TPermissions::TPermission::MANAGE_PUBLIC
+            TPermissions::TPermission::MANAGE_PUBLIC
         };
-
-        bool isYDBOperationEnabled = Config.ComputeConfig.IsYDBSchemaOperationsEnabled(
-            ev->Get()->Scope,
-            ev->Get()->Request.content().setting().binding_case());
-
-        if (isYDBOperationEnabled) {
-            if (!ev->Get()->ConnectionsWithSameNameWereListed) {
-                Register(MakeListConnectionIdsActor(ControlPlaneProxyActorId(),
-                                                    ev,
-                                                    Counters,
-                                                    Config.RequestTimeout,
-                                                    availablePermissions));
-                return;
-            }
-            if (!ev->Get()->BindingWithSameNameWereListed) {
-                Register(MakeListBindingIdsActor(ControlPlaneProxyActorId(),
-                                                 ev,
-                                                 Counters,
-                                                 Config.RequestTimeout,
-                                                 availablePermissions));
-                return;
-            }
-            if (!ValidateNameUniquenessConstraint<TEvControlPlaneProxy::TEvCreateBindingRequest,
-                                                  TEvControlPlaneProxy::TEvCreateBindingResponse>(
-                    ev, requestCounters, startTime, probe, "TEvCreateBindingRequest")) {
-                return;
-            }
-        }
-
-        if (isYDBOperationEnabled && !ydbOperationWasPerformed) {
-            if (!ev->Get()->ConnectionContent) {
-                auto permissions = ExtractPermissions(ev, availablePermissions);
-                Register(MakeDiscoverYDBConnectionContentActor(ControlPlaneProxyActorId(),
-                                                               std::move(ev),
-                                                               Counters,
-                                                               Config.RequestTimeout,
-                                                               permissions));
-                return;
-            }
-
-            if (!ev->Get()->YDBClient) {
-                ev->Get()->YDBClient = CreateNewTableClient(ev,
-                                                            Config.ComputeConfig,
-                                                            YqSharedResources,
-                                                            CredentialsProviderFactory);
-            }
-
-            Register(MakeCreateBindingActor(ControlPlaneProxyActorId(),
-                                            std::move(ev),
-                                            Config.RequestTimeout,
-                                            Counters,
-                                            availablePermissions,
-                                            Config.ComputeConfig));
-            return;
-        }
 
         Register(new TRequestActor<FederatedQuery::CreateBindingRequest,
                                    TEvControlPlaneStorage::TEvCreateBindingRequest,
                                    TEvControlPlaneStorage::TEvCreateBindingResponse,
-                                   TEvControlPlaneProxy::TEvCreateBindingRequest,
-                                   TEvControlPlaneProxy::TEvCreateBindingResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvCreateBindingResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe, ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvListBindingsRequest::TPtr& ev) {
@@ -2098,8 +2122,9 @@ private:
         FederatedQuery::ListBindingsRequest request = ev->Get()->Request;
         CPP_LOG_T("ListBindingsRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const int byteSize = request.ByteSize();
@@ -2114,7 +2139,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvListBindingsRequest::TPtr,
                                              TEvControlPlaneProxy::TEvListBindingsResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -2148,14 +2173,13 @@ private:
         Register(new TRequestActor<FederatedQuery::ListBindingsRequest,
                                    TEvControlPlaneStorage::TEvListBindingsRequest,
                                    TEvControlPlaneStorage::TEvListBindingsResponse,
-                                   TEvControlPlaneProxy::TEvListBindingsRequest,
-                                   TEvControlPlaneProxy::TEvListBindingsResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvListBindingsResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDescribeBindingRequest::TPtr& ev) {
@@ -2163,8 +2187,9 @@ private:
         FederatedQuery::DescribeBindingRequest request = ev->Get()->Request;
         CPP_LOG_T("DescribeBindingRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString bindingId = request.binding_id();
@@ -2180,7 +2205,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDescribeBindingRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDescribeBindingResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -2214,14 +2239,13 @@ private:
         Register(new TRequestActor<FederatedQuery::DescribeBindingRequest,
                                    TEvControlPlaneStorage::TEvDescribeBindingRequest,
                                    TEvControlPlaneStorage::TEvDescribeBindingResponse,
-                                   TEvControlPlaneProxy::TEvDescribeBindingRequest,
-                                   TEvControlPlaneProxy::TEvDescribeBindingResponse>(
-            ev,
-            Config,
-            ControlPlaneStorageServiceActorId(),
-            requestCounters,
-            probe,
-            availablePermissions));
+                                   TEvControlPlaneProxy::TEvDescribeBindingResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvModifyBindingRequest::TPtr& ev) {
@@ -2229,8 +2253,9 @@ private:
         FederatedQuery::ModifyBindingRequest request = ev->Get()->Request;
         CPP_LOG_T("ModifyBindingRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString bindingId = request.binding_id();
@@ -2246,7 +2271,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvModifyBindingRequest::TPtr,
                                              TEvControlPlaneProxy::TEvModifyBindingResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -2272,103 +2297,21 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvModifyBindingRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvModifyBindingResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
-        if (Config.ComputeConfig.YdbComputeControlPlaneEnabled(ev->Get()->Scope) &&
-            !ev->Get()->RequestValidationPassed) {
-            auto requestValidationIssues =
-                ::NFq::ValidateBinding(ev,
-                                       Config.StorageConfig.Proto.GetMaxRequestSize(),
-                                       Config.StorageConfig.AvailableBindings,
-                                       Config.StorageConfig.GeneratorPathsLimit);
-            if (requestValidationIssues) {
-                CPS_LOG_E("ModifyBindingRequest, validation failed: "
-                          << scope << " " << user << " " << NKikimr::MaskTicket(token)
-                          << " " << request.DebugString()
-                          << " error: " << requestValidationIssues.ToString());
-                Send(ev->Sender,
-                     new TEvControlPlaneProxy::TEvModifyBindingResponse(
-                         requestValidationIssues, subjectType),
-                     0,
-                     ev->Cookie);
-                requestCounters.IncError();
-                TDuration delta = TInstant::Now() - startTime;
-                requestCounters.Common->LatencyMs->Collect(delta.MilliSeconds());
-                probe(delta, false, false);
-                return;
-            }
-            ev->Get()->RequestValidationPassed = true;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::MANAGE_PUBLIC
             | TPermissions::TPermission::MANAGE_PRIVATE
-            | TPermissions::TPermission::VIEW_PUBLIC
-            | TPermissions::TPermission::VIEW_PRIVATE
         };
 
-        auto isComputeYDBSyncEnabled = Config.ComputeConfig.IsYDBSchemaOperationsEnabled(
-            ev->Get()->Scope, ev->Get()->Request.content().setting().binding_case());
-
-        if (isComputeYDBSyncEnabled && !ev->Get()->OldBindingContent) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeDiscoverYDBBindingContentActor(ControlPlaneProxyActorId(),
-                                                        ev,
-                                                        Counters,
-                                                        Config.RequestTimeout,
-                                                        permissions));
-            return;
-        }
-        if (isComputeYDBSyncEnabled && !ev->Get()->ConnectionContent) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeDiscoverYDBConnectionContentActor(ControlPlaneProxyActorId(),
-                                                           ev,
-                                                           Counters,
-                                                           Config.RequestTimeout,
-                                                           permissions));
-            return;
-        }
-
-        if (!ev->Get()->ControlPlaneYDBOperationWasPerformed) {
-            Register(new TRequestActor<FederatedQuery::ModifyBindingRequest,
-                                       TEvControlPlaneStorage::TEvModifyBindingRequest,
-                                       TEvControlPlaneStorage::TEvModifyBindingResponse,
-                                       TEvControlPlaneProxy::TEvModifyBindingRequest,
-                                       TEvControlPlaneProxy::TEvModifyBindingResponse>(
-                ev,
-                Config,
-                ControlPlaneStorageServiceActorId(),
-                requestCounters,
-                probe,
-                availablePermissions,
-                !isComputeYDBSyncEnabled));
-            return;
-        }
-
-        if (isComputeYDBSyncEnabled) {
-            if (!ev->Get()->YDBClient) {
-                ev->Get()->YDBClient = CreateNewTableClient(ev,
-                                                            Config.ComputeConfig,
-                                                            YqSharedResources,
-                                                            CredentialsProviderFactory);
-            }
-            if (!ev->Get()->ComputeYDBOperationWasPerformed) {
-                Register(MakeModifyBindingActor(ControlPlaneProxyActorId(),
-                                                std::move(ev),
-                                                Config.RequestTimeout,
-                                                Counters,
-                                                Config.ComputeConfig));
-                return;
-            }
-            Send(sender, ev->Get()->Response.release());
-        }
+        Register(new TRequestActor<FederatedQuery::ModifyBindingRequest,
+                                   TEvControlPlaneStorage::TEvModifyBindingRequest,
+                                   TEvControlPlaneStorage::TEvModifyBindingResponse,
+                                   TEvControlPlaneProxy::TEvModifyBindingResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(TEvControlPlaneProxy::TEvDeleteBindingRequest::TPtr& ev) {
@@ -2376,8 +2319,9 @@ private:
         FederatedQuery::DeleteBindingRequest request = ev->Get()->Request;
         CPP_LOG_T("DeleteBindingRequest: " << request.DebugString());
         const TString cloudId = ev->Get()->CloudId;
+        const TString folderId = ev->Get()->FolderId;
         const TString subjectType = ev->Get()->SubjectType;
-        const TString scope = ev->Get()->Scope;
+        const TString scope = "yandexcloud://" + folderId;
         TString user = ev->Get()->User;
         TString token = ev->Get()->Token;
         const TString bindingId = request.binding_id();
@@ -2393,7 +2337,7 @@ private:
             Register(new TResolveFolderActor<TEvControlPlaneProxy::TEvDeleteBindingRequest::TPtr,
                                              TEvControlPlaneProxy::TEvDeleteBindingResponse>
                                              (Counters.GetCommonCounters(RTC_RESOLVE_FOLDER), sender,
-                                              Config, scope, token,
+                                              Config, folderId, token,
                                               probe, ev, cookie, QuotaManagerEnabled));
             return;
         }
@@ -2419,70 +2363,21 @@ private:
             return;
         }
 
-        if (!ev->Get()->ComputeDatabase) {
-            Register(new TCreateComputeDatabaseActor<TEvControlPlaneProxy::TEvDeleteBindingRequest::TPtr,
-                                                TEvControlPlaneProxy::TEvDeleteBindingResponse>
-                                                (Counters.GetCommonCounters(RTC_CREATE_COMPUTE_DATABASE),
-                                                 sender, Config, Config.ComputeConfig, cloudId,
-                                                 scope, probe, ev, cookie));
-            return;
-        }
-
         static const TPermissions availablePermissions {
             TPermissions::TPermission::MANAGE_PUBLIC
             | TPermissions::TPermission::MANAGE_PRIVATE
-            | TPermissions::TPermission::VIEW_PUBLIC
-            | TPermissions::TPermission::VIEW_PRIVATE
         };
 
-        if (Config.ComputeConfig.YdbComputeControlPlaneEnabled(ev->Get()->Scope) &&
-            !ev->Get()->OldBindingContent) {
-            auto permissions = ExtractPermissions(ev, availablePermissions);
-            Register(MakeDiscoverYDBBindingContentActor(
-                ControlPlaneProxyActorId(), ev, Counters, Config.RequestTimeout, permissions));
-            return;
-        }
-
-        auto bindingCase = ev->Get()->OldBindingContent
-                               ? ev->Get()->OldBindingContent->setting().binding_case()
-                               : FederatedQuery::BindingSetting::BINDING_NOT_SET;
-        auto isComputeYDBSyncEnabled =
-            Config.ComputeConfig.IsYDBSchemaOperationsEnabled(ev->Get()->Scope,
-                                                              bindingCase);
-        if (!ev->Get()->ControlPlaneYDBOperationWasPerformed) {
-            Register(new TRequestActor<FederatedQuery::DeleteBindingRequest,
-                                       TEvControlPlaneStorage::TEvDeleteBindingRequest,
-                                       TEvControlPlaneStorage::TEvDeleteBindingResponse,
-                                       TEvControlPlaneProxy::TEvDeleteBindingRequest,
-                                       TEvControlPlaneProxy::TEvDeleteBindingResponse>(
-                ev,
-                Config,
-                ControlPlaneStorageServiceActorId(),
-                requestCounters,
-                probe,
-                availablePermissions,
-                !isComputeYDBSyncEnabled));
-            return;
-        }
-
-        if (isComputeYDBSyncEnabled) {
-            if (!ev->Get()->YDBClient) {
-                ev->Get()->YDBClient = CreateNewTableClient(ev,
-                                                            Config.ComputeConfig,
-                                                            YqSharedResources,
-                                                            CredentialsProviderFactory);
-            }
-
-            if (!ev->Get()->ComputeYDBOperationWasPerformed) {
-                Register(MakeDeleteBindingActor(ControlPlaneProxyActorId(),
-                                                std::move(ev),
-                                                Config.RequestTimeout,
-                                                Counters));
-                return;
-            }
-
-            Send(sender, ev->Get()->Response.release());
-        }
+        Register(new TRequestActor<FederatedQuery::DeleteBindingRequest,
+                                   TEvControlPlaneStorage::TEvDeleteBindingRequest,
+                                   TEvControlPlaneStorage::TEvDeleteBindingResponse,
+                                   TEvControlPlaneProxy::TEvDeleteBindingResponse>
+                                   (Config, ev->Sender, ev->Cookie, scope, folderId,
+                                    std::move(request), std::move(user), std::move(token),
+                                    ControlPlaneStorageServiceActorId(),
+                                    requestCounters,
+                                    probe,
+                                    ExtractPermissions(ev, availablePermissions), cloudId, subjectType));
     }
 
     void Handle(NMon::TEvHttpInfo::TPtr& ev) {
@@ -2505,28 +2400,8 @@ TActorId ControlPlaneProxyActorId() {
     return NActors::TActorId(0, name);
 }
 
-IActor* CreateControlPlaneProxyActor(
-    const NConfig::TControlPlaneProxyConfig& config,
-    const NConfig::TControlPlaneStorageConfig& storageConfig,
-    const NConfig::TComputeConfig& computeConfig,
-    const NConfig::TCommonConfig& commonConfig,
-    const NYql::TS3GatewayConfig& s3Config,
-    const ::NFq::TSigner::TPtr& signer,
-    const TYqSharedResources::TPtr& yqSharedResources,
-    const NKikimr::TYdbCredentialsProviderFactory& credentialsProviderFactory,
-    const ::NMonitoring::TDynamicCounterPtr& counters,
-    bool quotaManagerEnabled) {
-    return new TControlPlaneProxyActor(
-        config,
-        storageConfig,
-        computeConfig,
-        commonConfig,
-        s3Config,
-        signer,
-        yqSharedResources,
-        credentialsProviderFactory,
-        counters,
-        quotaManagerEnabled);
+IActor* CreateControlPlaneProxyActor(const NConfig::TControlPlaneProxyConfig& config, const ::NMonitoring::TDynamicCounterPtr& counters, bool quotaManagerEnabled) {
+    return new TControlPlaneProxyActor(config, counters, quotaManagerEnabled);
 }
 
 }  // namespace NFq

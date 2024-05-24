@@ -1,14 +1,9 @@
 #include "pretty_table.h"
+#include "common.h"
 
-#include <library/cpp/colorizer/colors.h>
 #include <util/generic/algorithm.h>
 #include <util/generic/xrange.h>
 #include <util/stream/format.h>
-#include <util/charset/utf8.h>
-
-#include <contrib/restricted/patched/replxx/src/utf8string.hxx>
-#include <ydb/public/lib/ydb_cli/common/interactive.h>
-
 
 namespace NYdb {
 namespace NConsoleClient {
@@ -18,131 +13,54 @@ TPrettyTable::TRow::TRow(size_t nColumns)
 {
 }
 
-enum {
-    COLOR_BEGIN = '\033',
-    COLOR_END = 'm',
-};
-
 size_t TPrettyTable::TRow::ColumnWidth(size_t columnIndex) const {
-    Y_ABORT_UNLESS(columnIndex < Columns.size());
+    Y_VERIFY(columnIndex < Columns.size());
 
     size_t width = 0;
-
-    for (const auto& column: Columns.at(columnIndex)) {
-        size_t printableSymbols = 0;
-
-        for (size_t i = 0; i < column.size();) {
-            if (column[i] == COLOR_BEGIN) {
-                while (i < column.size() && column[i] != COLOR_END) {
-                    ++i;
-                }
-                continue;
-            }
-
-
-            ++i;
-            while (i < column.size() && IsUTF8ContinuationByte(column[i])) {
-                ++i;
-            }
-            ++printableSymbols;
-        }
-
-        width = Max(width, printableSymbols);
+    for (const auto& line : Columns.at(columnIndex)) {
+        width = Max(width, line.size());
     }
 
     return width;
 }
 
-class TColumnLinesPrinter {
-public:
-    TColumnLinesPrinter(
-        IOutputStream& o,
-        const TVector<TVector<TString>>& columns,
-        const TVector<size_t>& widths
-    )
-        : Output_(o)
-        , Columns_(columns)
-        , Widths_(widths)
-        , PrintedIndexByColumnIndex_(columns.size())
-    {}
+bool TPrettyTable::TRow::PrintColumns(IOutputStream& o, const TVector<size_t>& widths, size_t lineNumber) const {
+    bool next = false;
 
-    bool HasNext() {
-        bool allColumnsPrinted = true; 
-
-        for (size_t i = 0; i < PrintedIndexByColumnIndex_.size(); ++i) {
-            if (!Columns_[i].empty() && Columns_[i][0].size() > PrintedIndexByColumnIndex_[i]) {
-                allColumnsPrinted = false;
-            }
+    for (size_t columnIndex : xrange(Columns.size())) {
+        if (columnIndex == 0) {
+            o << "| ";
+        } else {
+            o << " | ";
         }
 
-        return !allColumnsPrinted;
-    }
+        if (const size_t width = widths.at(columnIndex)) {
+            const auto& column = Columns.at(columnIndex);
 
-    void Print() {        
-        NColorizer::TColors colors = NColorizer::AutoColors(Cout);
-        
-        Output_ << colors.Default();
-        Output_ << "│ ";
-
-        for (size_t columnIndex : xrange(Columns_.size())) {
-            Output_ << colors.Default();
-            if (columnIndex != 0) {
-                Output_ << " │ ";
-            }
-
-            size_t printedSymbols = PrintColumnLine(columnIndex);
-            Output_ << TString(Widths_[columnIndex] - printedSymbols, ' ');
-        }
-        
-        Output_ << colors.Default();
-        Output_ << " │" << Endl;
-    }
-
-private:
-    /* return's printed symbols cnt */
-    size_t PrintColumnLine(size_t columnIndex) {
-        if (Columns_[columnIndex].empty()) {
-            return 0;
-        }
-
-        size_t printedSymbols = 0;
-        const auto& column = Columns_[columnIndex][0];
-
-        size_t i = PrintedIndexByColumnIndex_[columnIndex];
-
-        for (; i < column.size() && printedSymbols < Widths_[columnIndex];) {
-            if (column[i] == COLOR_BEGIN) {
-                while (i < column.size() && column[i] != COLOR_END) {
-                    Output_ << column[i++];
+            TStringBuf data;
+            size_t l = 0;
+            for (const auto& line : column) {
+                data = line;
+                while (data && l < lineNumber) {
+                    data.Skip(width);
+                    ++l;
                 }
-                continue;
             }
 
-
-            Output_ << column[i++];
-            while (i < column.size() && IsUTF8ContinuationByte(column[i])) {
-                Output_ << column[i++];
+            if (data) {
+                o << RightPad(data.SubStr(0, width), width);
+            } else {
+                o << RightPad(' ', width);
             }
-            ++printedSymbols;
+
+            if (data.size() > width) {
+                next = true;
+            }
         }
-
-        PrintedIndexByColumnIndex_[columnIndex] = i;
-        return printedSymbols;
     }
+    o << " |" << Endl;
 
-private:
-    IOutputStream& Output_;
-    const TVector<TVector<TString>>& Columns_;
-    const TVector<size_t>& Widths_;
-    TVector<size_t> PrintedIndexByColumnIndex_;
-};
-
-void TPrettyTable::TRow::PrintColumns(IOutputStream& o, const TVector<size_t>& widths) const {
-    TColumnLinesPrinter printer(o, Columns, widths);
-
-    while (printer.HasNext()) {
-        printer.Print();
-    }
+    return next;
 }
 
 bool TPrettyTable::TRow::HasFreeText() const {
@@ -150,13 +68,13 @@ bool TPrettyTable::TRow::HasFreeText() const {
 }
 
 void TPrettyTable::TRow::PrintFreeText(IOutputStream& o, size_t width) const {
-    Y_ABORT_UNLESS(HasFreeText());
+    Y_VERIFY(HasFreeText());
 
     for (auto& line : StringSplitter(Text).Split('\n')) {
         TStringBuf token = line.Token();
 
         while (token) {
-            o << "│ " << RightPad(token.SubStr(0, width), width) << " │" << Endl;
+            o << "| " << RightPad(token.SubStr(0, width), width) << " |" << Endl;
             token.Skip(width);
         }
     }
@@ -196,7 +114,11 @@ void TPrettyTable::Print(IOutputStream& o) const {
     PrintDelim(o, widths, "┌", "┬", "┐");
     for (auto i : xrange(Rows.size())) {
         const auto& row = Rows.at(i);
-        row.PrintColumns(o, widths);
+
+        size_t line = 0;
+        while (row.PrintColumns(o, widths, line)) {
+            ++line;
+        }
 
         if (row.HasFreeText()) {
             PrintDelim(o, widths, "├", "┴", "┤", true);
@@ -221,9 +143,7 @@ TVector<size_t> TPrettyTable::CalcWidths() const {
     }
 
     // adjust
-    auto terminalWidth = GetTerminalWidth();
-    size_t lineLength = terminalWidth ? *terminalWidth : Max<size_t>();
-    const size_t maxWidth = Max(Config.Width, lineLength) - ((Columns * 3) + 1);
+    const size_t maxWidth = Max(Config.Width, TermWidth()) - ((Columns * 3) + 1);
     size_t totalWidth = Accumulate(widths, (size_t)0);
     while (totalWidth > maxWidth) {
         auto it = MaxElement(widths.begin(), widths.end());

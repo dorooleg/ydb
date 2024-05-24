@@ -7,8 +7,6 @@
 #include <ydb/core/fq/libs/control_plane_storage/schema.h>
 #include <ydb/core/fq/libs/db_schema/db_schema.h>
 
-#include <ydb/public/lib/fq/scope.h>
-
 #include <library/cpp/protobuf/interop/cast.h>
 
 namespace NFq {
@@ -28,6 +26,36 @@ struct TTaskInternal {
     TString TenantName;
     TString NewTenantName;
 };
+
+    TString GetServiceAccountId(const FederatedQuery::IamAuth& auth) {
+        return auth.has_service_account()
+                ? auth.service_account().id()
+                : TString{};
+    }
+
+    TString ExtractServiceAccountId(const FederatedQuery::Connection& c) {
+        switch (c.content().setting().connection_case()) {
+        case FederatedQuery::ConnectionSetting::kYdbDatabase: {
+            return GetServiceAccountId(c.content().setting().ydb_database().auth());
+        }
+        case FederatedQuery::ConnectionSetting::kDataStreams: {
+            return GetServiceAccountId(c.content().setting().data_streams().auth());
+        }
+        case FederatedQuery::ConnectionSetting::kObjectStorage: {
+            return GetServiceAccountId(c.content().setting().object_storage().auth());
+        }
+        case FederatedQuery::ConnectionSetting::kMonitoring: {
+            return GetServiceAccountId(c.content().setting().monitoring().auth());
+        }
+        case FederatedQuery::ConnectionSetting::kClickhouseCluster: {
+            return GetServiceAccountId(c.content().setting().clickhouse_cluster().auth());
+        }
+        // Do not replace with default. Adding a new connection should cause a compilation error
+        case FederatedQuery::ConnectionSetting::CONNECTION_NOT_SET:
+        break;
+        }
+        return {};
+    }
 
 std::pair<TString, NYdb::TParams> MakeSql(const TTaskInternal& taskInternal, const TInstant& nowTimestamp, const TInstant& taskLeaseUntil) {
 
@@ -124,8 +152,7 @@ std::tuple<TString, NYdb::TParams, std::function<std::pair<TString, NYdb::TParam
     bool disableCurrentIam,
     const TDuration& automaticQueriesTtl,
     const TDuration& resultSetsTtl,
-    std::shared_ptr<TTenantInfo> tenantInfo,
-    const TRequestCommonCountersPtr& commonCounters)
+    std::shared_ptr<TTenantInfo> tenantInfo)
 {
     const auto& task = taskInternal.Task;
 
@@ -159,17 +186,13 @@ std::tuple<TString, NYdb::TParams, std::function<std::pair<TString, NYdb::TParam
                 task.Generation = parser.ColumnParser(GENERATION_COLUMN_NAME).GetOptionalUint64().GetOrElse(0) + 1;
 
                 if (!task.Query.ParseFromString(*parser.ColumnParser(QUERY_COLUMN_NAME).GetOptionalString())) {
-                    commonCounters->ParseProtobufError->Inc();
                     throw TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for query. Please contact internal support";
                 }
                 const TInstant deadline = TInstant::Now() + (task.Query.content().automatic() ? std::min(automaticQueriesTtl, resultSetsTtl) : resultSetsTtl);
                 task.Deadline = deadline;
                 if (!task.Internal.ParseFromString(*parser.ColumnParser(INTERNAL_COLUMN_NAME).GetOptionalString())) {
-                    commonCounters->ParseProtobufError->Inc();
                     throw TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for query internal. Please contact internal support";
                 }
-
-                *task.Internal.mutable_result_ttl() = NProtoInterop::CastToProto(resultSetsTtl);
 
                 if (disableCurrentIam) {
                     task.Internal.clear_token();
@@ -191,7 +214,7 @@ std::tuple<TString, NYdb::TParams, std::function<std::pair<TString, NYdb::TParam
         }
 
         if (tenantInfo) {
-            auto tenant = tenantInfo->Assign(taskInternal.Task.Internal.cloud_id(), task.Scope, taskInternal.Task.Query.content().type(), taskInternal.TenantName);
+            auto tenant = tenantInfo->Assign(taskInternal.Task.Internal.cloud_id(), task.Scope, taskInternal.TenantName);
             if (tenant != taskInternal.TenantName) {
                 // mapping changed, reassign tenant
                 taskInternal.ShouldSkipTask = true;
@@ -293,7 +316,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvGetTaskRequ
 
     auto responseTasks = std::make_shared<TResponseTasks>();
 
-    auto prepareParams = [=, commonCounters=requestCounters.Common,
+    auto prepareParams = [=, rootCounters=Counters.Counters,
                              actorSystem=NActors::TActivationContext::ActorSystem(),
                              responseTasks=responseTasks,
                              tenantInfo=ev->Get()->TenantInfo
@@ -338,13 +361,13 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvGetTaskRequ
                 << (taskInternal.ShouldAbortTask ? " ABORTED" : ""));
         }
 
-        std::shuffle(tasks.begin(), tasks.end(), std::default_random_engine(TInstant::Now().MicroSeconds()));
+        std::shuffle(tasks.begin(), tasks.end(), std::default_random_engine());
         const size_t numTasks = (std::min(tasks.size(), tasksBatchSize) + numTasksProportion - 1) / numTasksProportion;
 
         for (size_t i = 0; i < numTasks; ++i) {
             auto tupleParams = MakeGetTaskUpdateQuery(tasks[i],
                 responseTasks, now, now + Config->TaskLeaseTtl, Config->Proto.GetDisableCurrentIam(),
-                Config->AutomaticQueriesTtl, Config->ResultSetsTtl, tenantInfo, commonCounters); // using for win32 build
+                Config->AutomaticQueriesTtl, Config->ResultSetsTtl, tenantInfo); // using for win32 build
             auto readQuery = std::get<0>(tupleParams);
             auto readParams = std::get<1>(tupleParams);
             auto prepareParams = std::get<2>(tupleParams);
@@ -455,7 +478,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvGetTaskRequ
             for (const auto& connection: task.Internal.connection()) {
                 const auto serviceAccountId = ExtractServiceAccountId(connection);
                 if (!serviceAccountId) {
-                    continue;
+                        continue;
                 }
                 auto* account = newTask->add_service_accounts();
                 account->set_value(serviceAccountId);
@@ -468,12 +491,6 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvGetTaskRequ
             *newTask->mutable_result_set_meta() = task.Query.result_set_meta();
             newTask->set_scope(task.Scope);
             *newTask->mutable_resources() = task.Internal.resources();
-
-            newTask->set_execution_id(task.Internal.execution_id());
-            newTask->set_operation_id(task.Internal.operation_id());
-            *newTask->mutable_compute_connection() = task.Internal.compute_connection();
-            *newTask->mutable_result_ttl() = task.Internal.result_ttl();
-            *newTask->mutable_parameters() = task.Query.content().parameters();
         }
 
         return result;

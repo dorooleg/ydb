@@ -8,7 +8,6 @@
 #include <ydb/core/base/ticket_parser.h>
 #include <ydb/core/tx/datashard/datashard.h>
 #include <ydb/core/tx/tx_processing.h>
-#include <ydb/core/protos/query_stats.pb.h>
 
 #include <ydb/library/yql/minikql/mkql_node_serialization.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
@@ -198,7 +197,7 @@ void TMessageBusServerRequest::Handle(TMiniKQLCompileServiceEvents::TEvCompileSt
     const bool need2CompileProgram = (bool)TextProgramForCompilation;
     const bool need2CompileParams = mkqlTx->HasParams() && mkqlTx->GetParams().HasText();
     const TString& pgm = ev->Get()->Program;
-    Y_ABORT_UNLESS((need2CompileProgram && TextProgramForCompilation == pgm) // TODO: do not check texts, trust cookies
+    Y_VERIFY((need2CompileProgram && TextProgramForCompilation == pgm) // TODO: do not check texts, trust cookies
         || (need2CompileParams && mkqlTx->GetParams().GetText() == pgm));
 
     if (need2CompileProgram && TextProgramForCompilation == pgm) {
@@ -238,7 +237,7 @@ bool TMessageBusServerRequest::AllRequestsCompleted(const TActorContext& ctx) {
     if (transaction.HasMiniKQLTransaction())
         return AllRequestsCompletedMKQL(ctx);
     else
-        Y_ABORT("Unexpected transaction type");
+        Y_FAIL("Unexpected transaction type");
 }
 
 bool TMessageBusServerRequest::AllRequestsCompletedMKQL(const TActorContext& ctx) {
@@ -273,7 +272,7 @@ bool TMessageBusServerRequest::AllRequestsCompletedMKQL(const TActorContext& ctx
             return true;
         }
         default:
-            Y_ABORT("Unknown mkqlTxMode.");
+            Y_FAIL("Unknown mkqlTxMode.");
     }
 }
 

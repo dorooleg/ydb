@@ -1,11 +1,12 @@
+#include "events.h"
 #include "ut_helpers.h"
 
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 #include <ydb/core/base/tablet_types.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/ut_helpers/helpers.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/map.h>
@@ -84,18 +85,18 @@ public:
     }
 
     TTestContext::TEventObserver ObserverFunc() override {
-        return [this](TAutoPtr<IEventHandle>& ev) {
+        return [this](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TSchemeBoardEvents::EvHandshakeRequest:
                 ReplicaPopulators.emplace(ev->Sender, false);
-                Context->EnableScheduleForActor(ev->Sender, true);
+                runtime.EnableScheduleForActor(ev->Sender, true);
                 break;
 
             case TSchemeBoardEvents::EvUpdateAck:
                 auto it = ReplicaPopulators.find(ev->Recipient);
                 if (DropFirstAcks && it != ReplicaPopulators.end() && !it->second) {
                     it->second = true;
-                    Context->Send(ev->Recipient, ev->Sender, new TEvInterconnect::TEvNodeDisconnected(ev->Sender.NodeId()));
+                    runtime.Send(new IEventHandle(ev->Recipient, ev->Sender, new TEvInterconnect::TEvNodeDisconnected(ev->Sender.NodeId())));
 
                     return TTestContext::EEventAction::DROP;
                 }

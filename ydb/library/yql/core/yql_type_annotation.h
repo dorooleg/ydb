@@ -5,12 +5,9 @@
 #include "yql_udf_resolver.h"
 #include "yql_user_data_storage.h"
 #include "yql_arrow_resolver.h"
-#include "yql_statistics.h"
 
 #include <ydb/library/yql/public/udf/udf_validate.h>
 #include <ydb/library/yql/core/credentials/yql_credentials.h>
-#include <ydb/library/yql/core/url_lister/interface/url_lister_manager.h>
-#include <ydb/library/yql/core/qplayer/storage/interface/yql_qstorage.h>
 #include <ydb/library/yql/ast/yql_expr.h>
 
 #include <library/cpp/yson/node/node.h>
@@ -54,8 +51,7 @@ public:
     }
 
     TModuleResolver(const TModulesTable* parentModules, ui64 nextUniqueId, const THashMap<TString, TString>& clusterMapping,
-        const THashSet<TString>& sqlFlags, bool optimizeLibraries, const TSet<TString>& knownPackages, const THashMap<TString,
-        THashMap<int, TLibraryCohesion>>& libs, const TString& fileAliasPrefix)
+        const THashSet<TString>& sqlFlags, bool optimizeLibraries, const TSet<TString>& knownPackages, const THashMap<TString, THashMap<int, TLibraryCohesion>>& libs)
         : ParentModules(parentModules)
         , LibsContext(nextUniqueId)
         , KnownPackages(knownPackages)
@@ -63,7 +59,6 @@ public:
         , ClusterMapping(clusterMapping)
         , SqlFlags(sqlFlags)
         , OptimizeLibraries(optimizeLibraries)
-        , FileAliasPrefix(fileAliasPrefix)
     {
     }
 
@@ -85,10 +80,6 @@ public:
         Credentials = std::move(credentials);
     }
 
-    void SetQContext(const TQContext& qContext) {
-        QContext = qContext;
-    }
-
     void RegisterPackage(const TString& package) override;
     bool SetPackageDefaultVersion(const TString& package, ui32 version) override;
     const TExportTable* GetModule(const TString& module) const override;
@@ -100,8 +91,6 @@ public:
     void UpdateNextUniqueId(TExprContext& ctx) const override;
     ui64 GetNextUniqueId() const override;
     IModuleResolver::TPtr CreateMutableChild() const override;
-    void SetFileAliasPrefix(TString&& prefix) override;
-    TString GetFileAliasPrefix() const override;
 
 private:
     bool AddFromMemory(const TString& fullName, const TString& moduleName, bool isYql, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos, std::vector<TString>* exports = nullptr, std::vector<TString>* imports = nullptr);
@@ -116,7 +105,6 @@ private:
     IUrlLoader::TPtr UrlLoader;
     TMaybe<NYT::TNode> Parameters;
     TCredentials::TPtr Credentials;
-    TQContext QContext;
     TExprContext LibsContext;
     TSet<TString> KnownPackages;
     THashMap<TString, ui32> PackageVersions;
@@ -126,7 +114,6 @@ private:
     const THashSet<TString> SqlFlags;
     const bool OptimizeLibraries;
     THolder<TExprContext::TFreezeGuard> FreezeGuard;
-    TString FileAliasPrefix;
 };
 
 bool SplitUdfName(TStringBuf name, TStringBuf& moduleName, TStringBuf& funcName);
@@ -151,7 +138,7 @@ struct TYqlOperationOptions {
 };
 
 using TColumnOrder = TVector<TString>;
-TString FormatColumnOrder(const TMaybe<TColumnOrder>& columnOrder, TMaybe<size_t> maxColumns = {});
+TString FormatColumnOrder(const TMaybe<TColumnOrder>& columnOrder);
 ui64 AddColumnOrderHash(const TMaybe<TColumnOrder>& columnOrder, ui64 hash);
 
 class TColumnOrderStorage: public TThrRefBase {
@@ -187,24 +174,6 @@ enum class EFallbackPolicy {
     Always      /* "always" */
 };
 
-enum class ECostBasedOptimizerType {
-    Disable /* "disable" */,
-    PG /* "pg" */,
-    Native /* "native" */
-}; 
-
-enum class EMatchRecognizeStreamingMode {
-    Disable,
-    Auto,
-    Force,
-};
-
-enum class EBlockEngineMode {
-    Disable /* "disable" */,
-    Auto /* "auto" */,
-    Force /* "force" */,
-};
-
 struct TUdfCachedInfo {
     const TTypeAnnotationNode* FunctionType = nullptr;
     const TTypeAnnotationNode* RunConfigType = nullptr;
@@ -214,7 +183,6 @@ struct TUdfCachedInfo {
 };
 
 struct TTypeAnnotationContext: public TThrRefBase {
-    THashMap<const TExprNode*, std::shared_ptr<TOptimizerStatistics>> StatisticsMap;
     TIntrusivePtr<ITimeProvider> TimeProvider;
     TIntrusivePtr<IRandomProvider> RandomProvider;
     THashMap<TString, TIntrusivePtr<IDataProvider>> DataSourceMap;
@@ -234,7 +202,6 @@ struct TTypeAnnotationContext: public TThrRefBase {
     TYqlOperationOptions OperationOptions;
     TCredentials::TPtr Credentials = MakeIntrusive<TCredentials>();
     IModuleResolver::TPtr Modules;
-    IUrlListerManagerPtr UrlListerManager;
     NUdf::EValidateMode ValidateMode = NUdf::EValidateMode::None;
     bool DisableNativeUdfSupport = false;
     TMaybe<TString> OptLLVM;
@@ -249,7 +216,6 @@ struct TTypeAnnotationContext: public TThrRefBase {
     THashSet<TString> DisableConstraintCheck;
     bool UdfSupportsYield = false;
     ui32 EvaluateForLimit = 500;
-    ui32 EvaluateParallelForLimit = 5000;
     ui32 EvaluateOrderByColumnLimit = 100;
     bool PullUpFlatMapOverJoin = true;
     bool DeprecatedSQL = false;
@@ -264,22 +230,11 @@ struct TTypeAnnotationContext: public TThrRefBase {
     bool YsonCastToString = true;
     ui32 FolderSubDirsLimit = 1000;
     bool UseBlocks = false;
-    EBlockEngineMode BlockEngineMode = EBlockEngineMode::Disable;
-    TMaybe<bool> PgEmitAggApply;
     IArrowResolver::TPtr ArrowResolver;
-    TFileStoragePtr FileStorage;
-    TQContext QContext;
-    ECostBasedOptimizerType CostBasedOptimizer = ECostBasedOptimizerType::Disable;
-    bool MatchRecognize = false;
-    EMatchRecognizeStreamingMode MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Force;
-    i64 TimeOrderRecoverDelay = -10'000'000; //microseconds
-    i64 TimeOrderRecoverAhead = 10'000'000; //microseconds
-    ui32 TimeOrderRecoverRowLimit = 1'000'000;
+
     // compatibility with v0 or raw s-expression code
     bool OrderedColumns = false;
     TColumnOrderStorage::TPtr ColumnOrderStorage = new TColumnOrderStorage;
-    THashSet<TString> OptimizerFlags;
-    bool StreamLookupJoin = false;
 
     TMaybe<TColumnOrder> LookupColumnOrder(const TExprNode& node) const;
     IGraphTransformer::TStatus SetColumnOrder(const TExprNode& node, const TColumnOrder& columnOrder, TExprContext& ctx);
@@ -351,26 +306,6 @@ struct TTypeAnnotationContext: public TThrRefBase {
     template <class TConstraint>
     bool IsConstraintCheckEnabled() const {
         return DisableConstraintCheck.find(TConstraint::Name()) == DisableConstraintCheck.end();
-    }
-
-    void Reset();
-
-    /**
-     * Helper method to fetch statistics from type annotation context
-     */
-    std::shared_ptr<TOptimizerStatistics> GetStats(const TExprNode* input) {
-        return StatisticsMap.Value(input, std::shared_ptr<TOptimizerStatistics>(nullptr));
-    }
-
-    /**
-     * Helper method to set statistics in type annotation context
-     */
-    void SetStats(const TExprNode* input, std::shared_ptr<TOptimizerStatistics> stats) {
-        StatisticsMap[input] = stats;
-    }
-
-    bool IsBlockEngineEnabled() const {
-        return BlockEngineMode != EBlockEngineMode::Disable || UseBlocks;
     }
 };
 

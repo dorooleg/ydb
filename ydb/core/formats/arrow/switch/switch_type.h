@@ -1,15 +1,8 @@
 #pragma once
-#include <ydb/core/scheme_types/scheme_type_info.h>
-#include <ydb/core/scheme/scheme_type_id.h>
-#include <ydb/core/formats/arrow/common/validation.h>
-#include <ydb/library/yql/parser/pg_wrapper/interface/type_desc.h>
-
 #include <contrib/libs/apache/arrow/cpp/src/arrow/api.h>
 #include <util/system/yassert.h>
-
-extern "C" {
-#include <ydb/library/yql/parser/pg_wrapper/postgresql/src/include/catalog/pg_type_d.h>
-}
+#include <ydb/core/scheme_types/scheme_type_info.h>
+#include <ydb/core/scheme/scheme_type_id.h>
 
 namespace NKikimr::NArrow {
 
@@ -109,7 +102,7 @@ bool SwitchTypeWithNull(arrow::Type::type typeId, TFunc&& f) {
 template <typename TFunc>
 bool SwitchArrayType(const arrow::Datum& column, TFunc&& f) {
     auto type = column.type();
-    Y_ABORT_UNLESS(type);
+    Y_VERIFY(type);
     return SwitchType(type->id(), std::forward<TFunc>(f));
 }
 
@@ -122,7 +115,7 @@ bool SwitchArrayType(const arrow::Datum& column, TFunc&& f) {
  * @return Result of execution of callback or false if the type typeId is not supported.
  */
 template <typename TFunc>
-[[nodiscard]] bool SwitchYqlTypeToArrowType(const NScheme::TTypeInfo& typeInfo, TFunc&& callback) {
+bool SwitchYqlTypeToArrowType(const NScheme::TTypeInfo& typeInfo, TFunc&& callback) {
     switch (typeInfo.GetTypeId()) {
         case NScheme::NTypeIds::Bool:
             return callback(TTypeWrapper<arrow::BooleanType>());
@@ -136,7 +129,6 @@ template <typename TFunc>
         case NScheme::NTypeIds::Uint16:
             return callback(TTypeWrapper<arrow::UInt16Type>());
         case NScheme::NTypeIds::Int32:
-        case NScheme::NTypeIds::Date32:
             return callback(TTypeWrapper<arrow::Int32Type>());
         case NScheme::NTypeIds::Datetime:
         case NScheme::NTypeIds::Uint32:
@@ -150,12 +142,12 @@ template <typename TFunc>
         case NScheme::NTypeIds::Double:
             return callback(TTypeWrapper<arrow::DoubleType>());
         case NScheme::NTypeIds::Utf8:
-        case NScheme::NTypeIds::Json:
             return callback(TTypeWrapper<arrow::StringType>());
         case NScheme::NTypeIds::String:
         case NScheme::NTypeIds::String4k:
         case NScheme::NTypeIds::String2m:
         case NScheme::NTypeIds::Yson:
+        case NScheme::NTypeIds::Json:
         case NScheme::NTypeIds::DyNumber:
         case NScheme::NTypeIds::JsonDocument:
             return callback(TTypeWrapper<arrow::BinaryType>());
@@ -166,35 +158,12 @@ template <typename TFunc>
         case NScheme::NTypeIds::Decimal:
             return callback(TTypeWrapper<arrow::Decimal128Type>());
 
-        case NScheme::NTypeIds::Datetime64:
-        case NScheme::NTypeIds::Timestamp64:
-        case NScheme::NTypeIds::Interval64:
-            return callback(TTypeWrapper<arrow::Int64Type>());
-
         case NScheme::NTypeIds::PairUi64Ui64:
         case NScheme::NTypeIds::ActorId:
         case NScheme::NTypeIds::StepOrderId:
             break; // Deprecated types
 
         case NScheme::NTypeIds::Pg:
-            switch (NPg::PgTypeIdFromTypeDesc(typeInfo.GetTypeDesc())) {
-                case INT2OID:
-                    return callback(TTypeWrapper<arrow::Int16Type>());
-                case INT4OID:
-                    return callback(TTypeWrapper<arrow::Int32Type>());
-                case INT8OID:
-                    return callback(TTypeWrapper<arrow::Int64Type>());
-                case FLOAT4OID:
-                    return callback(TTypeWrapper<arrow::FloatType>());
-                case FLOAT8OID:
-                    return callback(TTypeWrapper<arrow::DoubleType>());
-                case BYTEAOID:
-                    return callback(TTypeWrapper<arrow::BinaryType>());
-                case TEXTOID:
-                    return callback(TTypeWrapper<arrow::StringType>());
-                default:
-                    break;
-            }
             break; // TODO: support pg types
     }
     return false;
@@ -216,10 +185,6 @@ inline bool IsPrimitiveYqlType(const NScheme::TTypeInfo& typeInfo) {
         case NScheme::NTypeIds::Double:
         case NScheme::NTypeIds::Timestamp:
         case NScheme::NTypeIds::Interval:
-        case NScheme::NTypeIds::Date32:
-        case NScheme::NTypeIds::Datetime64:
-        case NScheme::NTypeIds::Timestamp64:
-        case NScheme::NTypeIds::Interval64:
             return true;
         default:
             break;
@@ -231,36 +196,36 @@ template <typename T>
 bool Append(arrow::ArrayBuilder& builder, const typename T::c_type& value) {
     using TBuilder = typename arrow::TypeTraits<T>::BuilderType;
 
-    TStatusValidator::Validate(static_cast<TBuilder&>(builder).Append(value));
-    return true;
+    auto status = static_cast<TBuilder&>(builder).Append(value);
+    return status.ok();
 }
 
 template <typename T>
 bool Append(arrow::ArrayBuilder& builder, arrow::util::string_view value) {
     using TBuilder = typename arrow::TypeTraits<T>::BuilderType;
 
-    TStatusValidator::Validate(static_cast<TBuilder&>(builder).Append(value));
-    return true;
+    auto status = static_cast<TBuilder&>(builder).Append(value);
+    return status.ok();
 }
 
 template <typename T>
 bool Append(arrow::ArrayBuilder& builder, const typename T::c_type* values, size_t size) {
     using TBuilder = typename arrow::NumericBuilder<T>;
 
-    TStatusValidator::Validate(static_cast<TBuilder&>(builder).AppendValues(values, size));
-    return true;
+    auto status = static_cast<TBuilder&>(builder).AppendValues(values, size);
+    return status.ok();
 }
 
 template <typename T>
 bool Append(arrow::ArrayBuilder& builder, const std::vector<typename T::c_type>& values) {
     using TBuilder = typename arrow::NumericBuilder<T>;
 
-    TStatusValidator::Validate(static_cast<TBuilder&>(builder).AppendValues(values.data(), values.size()));
-    return true;
+    auto status = static_cast<TBuilder&>(builder).AppendValues(values.data(), values.size());
+    return status.ok();
 }
 
 template <typename T>
-[[nodiscard]] bool Append(T& builder, const arrow::Array& array, int position, ui64* recordSize = nullptr) {
+bool Append(T& builder, const arrow::Array& array, int position) {
     return SwitchType(array.type_id(), [&](const auto& type) {
         using TWrap = std::decay_t<decltype(type)>;
         using TArray = typename arrow::TypeTraits<typename TWrap::T>::ArrayType;
@@ -270,29 +235,12 @@ template <typename T>
         auto& typedBuilder = static_cast<TBuilder&>(builder);
 
         if (typedArray.IsNull(position)) {
-            TStatusValidator::Validate(typedBuilder.AppendNull());
-            if (recordSize) {
-                *recordSize += 4;
-            }
-            return true;
+            auto status = typedBuilder.AppendNull();
+            return status.ok();
         } else {
-            if constexpr (!arrow::has_string_view<typename TWrap::T>::value) {
-                TStatusValidator::Validate(typedBuilder.Append(typedArray.GetView(position)));
-                if (recordSize) {
-                    *recordSize += sizeof(typedArray.GetView(position));
-                }
-                return true;
-            }
-            if constexpr (arrow::has_string_view<typename TWrap::T>::value) {
-                TStatusValidator::Validate(typedBuilder.Append(typedArray.GetView(position)));
-                if (recordSize) {
-                    *recordSize += typedArray.GetView(position).size();
-                }
-                return true;
-            }
+            auto status = typedBuilder.Append(typedArray.GetView(position));
+            return status.ok();
         }
-        Y_ABORT_UNLESS(false, "unpredictable variant");
-        return false;
     });
 }
 

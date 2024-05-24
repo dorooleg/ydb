@@ -92,65 +92,14 @@
 
 - Node.js
 
-  {% include [auth-metadata](../../../_includes/nodejs/auth-metadata.md) %}
+  {% include [auth-metadata](../../../../_includes/nodejs/auth-metadata.md) %}
 
 - Python
 
-  {% include [auth-metadata](../../../_includes/python/auth-metadata.md) %}
+  {% include [auth-metadata](../../../../_includes/python/auth-metadata.md) %}
 
 - Python (asyncio)
 
-  {% include [auth-metadata](../../../_includes/python/async/auth-metadata.md) %}
-
-- C# (.NET)
-
-  ```C#
-  using Ydb.Sdk;
-  using Ydb.Sdk.Yc;
-
-  var metadataProvider = new MetadataProvider();
-
-  // Await initial IAM token.
-  await metadataProvider.Initialize();
-
-  var config = new DriverConfig(
-      endpoint: endpoint, // Database endpoint, "grpcs://host:port"
-      database: database, // Full database path
-      credentials: metadataProvider
-  );
-
-  await using var driver = await Driver.CreateInitialized(config);
-  ```
-
-- PHP
-
-  ```php
-  <?php
-
-  use YdbPlatform\Ydb\Ydb;
-  use YdbPlatform\Ydb\Auth\Implement\MetadataAuthentication;
-
-  $config = [
-
-      // Database path
-      'database'    => '/local',
-
-      // Database endpoint
-      'endpoint'    => 'localhost:2136',
-
-      // Auto discovery (dedicated server only)
-      'discovery'   => false,
-
-      // IAM config
-      'iam_config'  => [
-          'insecure' => true,
-          // 'root_cert_file' => './CA.pem', // Root CA file (uncomment for dedicated server)
-      ],
-      
-      'credentials' => new MetadataAuthentication()
-  ];
-
-  $ydb = new Ydb($config);
-  ```
+  {% include [auth-metadata](../../../../_includes/python/async/auth-metadata.md) %}
 
 {% endlist %}

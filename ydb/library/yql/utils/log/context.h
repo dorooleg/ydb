@@ -84,7 +84,7 @@ public:
     }
 
     void LinkBefore(TLogContextListItem* item) {
-        Y_DEBUG_ABORT_UNLESS(!HasNext());
+        Y_VERIFY_DEBUG(!HasNext());
         Next = item;
         Prev = item->Prev;
         Prev->Next = this;

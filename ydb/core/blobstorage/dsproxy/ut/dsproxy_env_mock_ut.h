@@ -118,12 +118,12 @@ struct TDSProxyEnv {
     }
 
     std::unique_ptr<IActor> CreateGetRequestActor(TEvBlobStorage::TEvGet::TPtr &ev,
-            NKikimrBlobStorage::EPutHandleClass handleClass)
+            NKikimrBlobStorage::EPutHandleClass handleClass, bool withMultiPut)
     {
         TMaybe<TGroupStat::EKind> kind = PutHandleClassToGroupStatKind(handleClass);
         return std::unique_ptr<IActor>(CreateBlobStorageGroupGetRequest(Info, GroupQueues, ev->Sender, Mon,
                 ev->Get(), ev->Cookie, std::move(ev->TraceId), TNodeLayoutInfoPtr(NodeLayoutInfo),
-                kind, TInstant::Now(), StoragePoolCounters));
+                kind, TInstant::Now(), StoragePoolCounters, withMultiPut));
     }
 
     std::unique_ptr<IActor> CreatePatchRequestActor(TEvBlobStorage::TEvPatch::TPtr &ev, bool useVPatch = false) {

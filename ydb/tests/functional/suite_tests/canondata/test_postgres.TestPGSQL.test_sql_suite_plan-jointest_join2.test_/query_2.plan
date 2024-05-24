@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 10
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -29,52 +24,23 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "CTE Name": "precompute_1_0",
-                                        "Node Type": "TopSort-InnerJoin (MapJoin)-ConstantExpr-Filter-TableRangeScan-ConstantExpr",
+                                        "CTE Name": "tx_result_binding_2_0",
+                                        "Node Type": "TopSort-InnerJoin (MapJoin)-Filter-TablePointLookup-ConstantExpr",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
-                                                "TopSortBy": "argument.s2.name"
+                                                "TopSortBy": "row.name"
                                             },
                                             {
-                                                "Condition": "name = name",
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 3
-                                                    },
-                                                    {
-                                                        "InternalOperatorId": 2
-                                                    }
-                                                ],
                                                 "Name": "InnerJoin (MapJoin)"
                                             },
                                             {
-                                                "Inputs": [],
-                                                "Name": "ToFlow",
-                                                "ToFlow": "precompute_0_0"
-                                            },
-                                            {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 4
-                                                    }
-                                                ],
                                                 "Name": "Filter",
                                                 "Predicate": "Exist(item.name)"
                                             },
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 5
-                                                    }
-                                                ],
-                                                "Name": "TableRangeScan",
+                                                "Name": "TablePointLookup",
                                                 "ReadColumns": [
                                                     "n",
                                                     "name"
@@ -82,8 +48,7 @@
                                                 "Table": "postgres_jointest/join2.test_plan/t3"
                                             },
                                             {
-                                                "Inputs": [],
-                                                "Iterator": "precompute_1_0",
+                                                "Iterator": "%kqp%tx_result_binding_1_0",
                                                 "Name": "Iterator"
                                             }
                                         ],
@@ -94,7 +59,7 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "s2.name (Asc)"
+                                    "name (Asc)"
                                 ]
                             }
                         ]
@@ -108,19 +73,21 @@
                 "PlanNodeType": "Materialize",
                 "Plans": [
                     {
-                        "CTE Name": "precompute_0_0",
-                        "Node Type": "Aggregate",
+                        "Node Type": "Filter-Limit",
                         "Operators": [
                             {
-                                "Input": "precompute_0_0",
-                                "Inputs": [],
-                                "Name": "PartitionByKey"
+                                "Name": "Filter",
+                                "Predicate": "Exist(item.name)"
+                            },
+                            {
+                                "Limit": "1",
+                                "Name": "Limit"
                             }
                         ],
                         "PlanNodeId": 6
                     }
                 ],
-                "Subplan Name": "CTE precompute_1_0"
+                "Subplan Name": "CTE tx_result_binding_1_0"
             },
             {
                 "Node Type": "Precompute_0",
@@ -141,7 +108,6 @@
                                         "Node Type": "TableFullScan",
                                         "Operators": [
                                             {
-                                                "Inputs": [],
                                                 "Name": "TableFullScan",
                                                 "ReadColumns": [
                                                     "n",
@@ -164,7 +130,7 @@
                         ]
                     }
                 ],
-                "Subplan Name": "CTE precompute_0_0"
+                "Subplan Name": "CTE tx_result_binding_0_0"
             }
         ]
     },
@@ -197,7 +163,7 @@
                         "n",
                         "name"
                     ],
-                    "type": "Scan"
+                    "type": "Lookup"
                 }
             ]
         }

@@ -22,7 +22,7 @@ namespace NKikimr {
 
     TString TPutRecoveryLogRecOpt::Serialize(const TBlobStorageGroupType &gtype, const TLogoBlobID &id,
             const TRope &rope) {
-        Y_ABORT_UNLESS(id.PartId() && rope.GetSize() == gtype.PartSize(id),
+        Y_VERIFY(id.PartId() && rope.GetSize() == gtype.PartSize(id),
             "id# %s rope.GetSize()# %zu", id.ToString().data(), rope.GetSize());
 
         TString res = TString::Uninitialized(sizeof(id) + rope.GetSize());
@@ -40,7 +40,7 @@ namespace NKikimr {
 
     TRcBuf TPutRecoveryLogRecOpt::SerializeZeroCopy(const TBlobStorageGroupType &gtype, const TLogoBlobID &id,
             TRcBuf &&data) {
-        Y_ABORT_UNLESS(id.PartId() && data.GetSize() == gtype.PartSize(id),
+        Y_VERIFY(id.PartId() && data.GetSize() == gtype.PartSize(id),
             "id# %s rope.GetSize()# %zu", id.ToString().data(), data.GetSize());
 
         data.GrowFront(sizeof(id));
@@ -84,32 +84,5 @@ namespace NKikimr {
     void TPutRecoveryLogRecOpt::Output(IOutputStream &str) const {
         str << "{Id# " << Id << "}";
     }
-
-    THullCtx::THullCtx(TVDiskContextPtr vctx, ui32 chunkSize, ui32 compWorthReadSize, bool freshCompaction,
-            bool gcOnlySynced, bool allowKeepFlags, bool barrierValidation, ui32 hullSstSizeInChunksFresh,
-            ui32 hullSstSizeInChunksLevel, double hullCompFreeSpaceThreshold, ui32 freshCompMaxInFlightWrites,
-            ui32 hullCompMaxInFlightWrites, ui32 hullCompMaxInFlightReads, double hullCompReadBatchEfficiencyThreshold,
-            TDuration hullCompStorageRatioCalcPeriod, TDuration hullCompStorageRatioMaxCalcDuration, bool addHeader)
-        : VCtx(std::move(vctx))
-        , IngressCache(TIngressCache::Create(VCtx->Top, VCtx->ShortSelfVDisk))
-        , ChunkSize(chunkSize)
-        , CompWorthReadSize(compWorthReadSize)
-        , FreshCompaction(freshCompaction)
-        , GCOnlySynced(gcOnlySynced)
-        , AllowKeepFlags(allowKeepFlags)
-        , BarrierValidation(barrierValidation)
-        , HullSstSizeInChunksFresh(hullSstSizeInChunksFresh)
-        , HullSstSizeInChunksLevel(hullSstSizeInChunksLevel)
-        , HullCompFreeSpaceThreshold(hullCompFreeSpaceThreshold)
-        , FreshCompMaxInFlightWrites(freshCompMaxInFlightWrites)
-        , HullCompMaxInFlightWrites(hullCompMaxInFlightWrites)
-        , HullCompMaxInFlightReads(hullCompMaxInFlightReads)
-        , HullCompReadBatchEfficiencyThreshold(hullCompReadBatchEfficiencyThreshold)
-        , HullCompStorageRatioCalcPeriod(hullCompStorageRatioCalcPeriod)
-        , HullCompStorageRatioMaxCalcDuration(hullCompStorageRatioMaxCalcDuration)
-        , AddHeader(addHeader)
-        , LsmHullGroup(VCtx->VDiskCounters, "subsystem", "lsmhull")
-        , LsmHullSpaceGroup(VCtx->VDiskCounters, "subsystem", "outofspace")
-    {}
 
 } // NKikimr

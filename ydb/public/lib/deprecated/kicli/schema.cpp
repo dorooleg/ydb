@@ -128,9 +128,6 @@ void TSchemaObject::Drop() {
     case EPathType::ExternalDataSource:
         drop.SetOperationType(NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalDataSource);
         break;
-    case EPathType::View:
-        drop.SetOperationType(NKikimrSchemeOp::EOperationType::ESchemeOpDropView);
-        break;
     case EPathType::Unknown:
     case EPathType::SubDomain:
     case EPathType::RtmrVolume:
@@ -150,7 +147,7 @@ TSchemaObject TSchemaObject::MakeDirectory(const TString& name) {
 
     const NKikimrClient::TResponse& response = result.GetResult<NKikimrClient::TResponse>();
     ui64 pathId = response.GetFlatTxId().GetPathId();
-    Y_ABORT_UNLESS(pathId);
+    Y_VERIFY(pathId);
     return TSchemaObject(Kikimr, Path, name, pathId, EPathType::Directory);
 }
 
@@ -173,7 +170,7 @@ TSchemaObject TSchemaObject::DoCreateTable(const TString& name, const TVector<TC
 
     const NKikimrClient::TResponse& response = result.GetResult<NKikimrClient::TResponse>();
     ui64 pathId = response.GetFlatTxId().GetPathId();
-    Y_ABORT_UNLESS(pathId);
+    Y_VERIFY(pathId);
     return TSchemaObject(Kikimr, Path, name, pathId, EPathType::Table);
 }
 
@@ -220,8 +217,6 @@ static TSchemaObject::EPathType GetType(const NKikimrSchemeOp::TDirEntry& entry)
         return TSchemaObject::EPathType::ExternalTable;
     case NKikimrSchemeOp::EPathTypeExternalDataSource:
         return TSchemaObject::EPathType::ExternalDataSource;
-    case NKikimrSchemeOp::EPathTypeView:
-        return TSchemaObject::EPathType::View;
     case NKikimrSchemeOp::EPathTypeTableIndex:
     case NKikimrSchemeOp::EPathTypeExtSubDomain:
     case NKikimrSchemeOp::EPathTypeCdcStream:
@@ -249,7 +244,7 @@ TVector<TColumn> TSchemaObject::GetColumns() const {
     TResult result = future.GetValue(TDuration::Max());
     result.GetError().Throw();
     const NKikimrClient::TResponse& objects = result.GetResult<NKikimrClient::TResponse>();
-    Y_ABORT_UNLESS(objects.GetPathDescription().HasTable());
+    Y_VERIFY(objects.GetPathDescription().HasTable());
     const auto& table = objects.GetPathDescription().GetTable();
 
     TMap<ui32, NKikimrSchemeOp::TColumnDescription> columnsMap;
@@ -261,7 +256,7 @@ TVector<TColumn> TSchemaObject::GetColumns() const {
     columns.reserve(table.ColumnsSize());
     for (ui32 keyColumnId : table.GetKeyColumnIds()) {
         auto column = columnsMap.FindPtr(keyColumnId);
-        Y_ABORT_UNLESS(column);
+        Y_VERIFY(column);
         columns.push_back(TKeyColumn(column->GetName(), TType(column->GetType(), column->GetTypeId())));
         columnsMap.erase(keyColumnId);
     }
@@ -278,7 +273,7 @@ TSchemaObjectStats TSchemaObject::GetStats() const {
     TResult result = future.GetValue(TDuration::Max());
     result.GetError().Throw();
     const NKikimrClient::TResponse& objects = result.GetResult<NKikimrClient::TResponse>();
-    Y_ABORT_UNLESS(objects.GetPathDescription().HasTable());
+    Y_VERIFY(objects.GetPathDescription().HasTable());
     TSchemaObjectStats stats;
     stats.PartitionsCount = objects.GetPathDescription().TablePartitionsSize();
     return stats;

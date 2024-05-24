@@ -57,14 +57,14 @@
 #include <string>
 #include <vector>
 
-#include "absl/container/fixed_array.h"
-#include "absl/container/inlined_vector.h"
-#include "absl/strings/str_format.h"
+#include "util/util.h"
 #include "util/logging.h"
+#include "util/strutil.h"
 #include "util/utf.h"
 #include "re2/pod_array.h"
 #include "re2/prog.h"
 #include "re2/sparse_set.h"
+#include "re2/stringpiece.h"
 
 // Silence "zero-sized array in struct/union" warning for OneState::action.
 #ifdef _MSC_VER
@@ -189,7 +189,7 @@ void OnePass_Checks() {
                 "kMaxCap disagrees with kMaxOnePassCapture");
 }
 
-static bool Satisfy(uint32_t cond, absl::string_view context, const char* p) {
+static bool Satisfy(uint32_t cond, const StringPiece& context, const char* p) {
   uint32_t satisfied = Prog::EmptyFlags(context, p);
   if (cond & kEmptyAllFlags & ~satisfied)
     return false;
@@ -211,9 +211,10 @@ static inline OneState* IndexToNode(uint8_t* nodes, int statesize,
   return reinterpret_cast<OneState*>(nodes + statesize*nodeindex);
 }
 
-bool Prog::SearchOnePass(absl::string_view text, absl::string_view context,
+bool Prog::SearchOnePass(const StringPiece& text,
+                         const StringPiece& const_context,
                          Anchor anchor, MatchKind kind,
-                         absl::string_view* match, int nmatch) {
+                         StringPiece* match, int nmatch) {
   if (anchor != kAnchored && kind != kFullMatch) {
     LOG(DFATAL) << "Cannot use SearchOnePass for unanchored matches.";
     return false;
@@ -233,6 +234,7 @@ bool Prog::SearchOnePass(absl::string_view text, absl::string_view context,
   for (int i = 0; i < ncap; i++)
     matchcap[i] = NULL;
 
+  StringPiece context = const_context;
   if (context.data() == NULL)
     context = text;
   if (anchor_start() && BeginPtr(context) != BeginPtr(text))
@@ -337,11 +339,12 @@ done:
   if (!matched)
     return false;
   for (int i = 0; i < nmatch; i++)
-    match[i] = absl::string_view(
-        matchcap[2 * i],
-        static_cast<size_t>(matchcap[2 * i + 1] - matchcap[2 * i]));
+    match[i] =
+        StringPiece(matchcap[2 * i],
+                    static_cast<size_t>(matchcap[2 * i + 1] - matchcap[2 * i]));
   return true;
 }
+
 
 // Analysis to determine whether a given regexp program is one-pass.
 
@@ -401,17 +404,16 @@ bool Prog::IsOnePass() {
   int stacksize = inst_count(kInstCapture) +
                   inst_count(kInstEmptyWidth) +
                   inst_count(kInstNop) + 1;  // + 1 for start inst
-  absl::FixedArray<InstCond, 64> stack_storage(stacksize);
-  InstCond* stack = stack_storage.data();
+  PODArray<InstCond> stack(stacksize);
 
   int size = this->size();
-  absl::FixedArray<int, 128> nodebyid_storage(size, -1);  // indexed by ip
-  int* nodebyid = nodebyid_storage.data();
+  PODArray<int> nodebyid(size);  // indexed by ip
+  memset(nodebyid.data(), 0xFF, size*sizeof nodebyid[0]);
 
   // Originally, nodes was a uint8_t[maxnodes*statesize], but that was
   // unnecessarily optimistic: why allocate a large amount of memory
   // upfront for a large program when it is unlikely to be one-pass?
-  absl::InlinedVector<uint8_t, 2048> nodes;
+  std::vector<uint8_t> nodes;
 
   Instq tovisit(size), workq(size);
   AddQ(&tovisit, start());
@@ -460,7 +462,7 @@ bool Prog::IsOnePass() {
           if (nextindex == -1) {
             if (nalloc >= maxnodes) {
               if (ExtraDebug)
-                LOG(ERROR) << absl::StrFormat(
+                LOG(ERROR) << StringPrintf(
                     "Not OnePass: hit node limit %d >= %d", nalloc, maxnodes);
               goto fail;
             }
@@ -485,7 +487,7 @@ bool Prog::IsOnePass() {
               node->action[b] = newact;
             } else if (act != newact) {
               if (ExtraDebug)
-                LOG(ERROR) << absl::StrFormat(
+                LOG(ERROR) << StringPrintf(
                     "Not OnePass: conflict on byte %#x at state %d", c, *it);
               goto fail;
             }
@@ -506,7 +508,7 @@ bool Prog::IsOnePass() {
                 node->action[b] = newact;
               } else if (act != newact) {
                 if (ExtraDebug)
-                  LOG(ERROR) << absl::StrFormat(
+                  LOG(ERROR) << StringPrintf(
                       "Not OnePass: conflict on byte %#x at state %d", c, *it);
                 goto fail;
               }
@@ -547,7 +549,7 @@ bool Prog::IsOnePass() {
           // If already on work queue, (1) is violated: bail out.
           if (!AddQ(&workq, ip->out())) {
             if (ExtraDebug)
-              LOG(ERROR) << absl::StrFormat(
+              LOG(ERROR) << StringPrintf(
                   "Not OnePass: multiple paths %d -> %d", *it, ip->out());
             goto fail;
           }
@@ -558,7 +560,7 @@ bool Prog::IsOnePass() {
           if (matched) {
             // (3) is violated
             if (ExtraDebug)
-              LOG(ERROR) << absl::StrFormat(
+              LOG(ERROR) << StringPrintf(
                   "Not OnePass: multiple matches from %d", *it);
             goto fail;
           }
@@ -595,15 +597,15 @@ bool Prog::IsOnePass() {
       if (nodeindex == -1)
         continue;
       OneState* node = IndexToNode(nodes.data(), statesize, nodeindex);
-      dump += absl::StrFormat("node %d id=%d: matchcond=%#x\n",
-                              nodeindex, id, node->matchcond);
+      dump += StringPrintf("node %d id=%d: matchcond=%#x\n",
+                           nodeindex, id, node->matchcond);
       for (int i = 0; i < bytemap_range_; i++) {
         if ((node->action[i] & kImpossible) == kImpossible)
           continue;
-        dump += absl::StrFormat("  %d cond %#x -> %d id=%d\n",
-                                i, node->action[i] & 0xFFFF,
-                                node->action[i] >> kIndexShift,
-                                idmap[node->action[i] >> kIndexShift]);
+        dump += StringPrintf("  %d cond %#x -> %d id=%d\n",
+                             i, node->action[i] & 0xFFFF,
+                             node->action[i] >> kIndexShift,
+                             idmap[node->action[i] >> kIndexShift]);
       }
     }
     LOG(ERROR) << "nodes:\n" << dump;

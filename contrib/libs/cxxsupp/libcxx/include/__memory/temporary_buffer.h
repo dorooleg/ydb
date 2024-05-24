@@ -11,7 +11,6 @@
 #define _LIBCPP___MEMORY_TEMPORARY_BUFFER_H
 
 #include <__config>
-#include <__type_traits/alignment_of.h>
 #include <__utility/pair.h>
 #include <cstddef>
 #include <new>
@@ -23,7 +22,7 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _Tp>
-_LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI _LIBCPP_NO_CFI _LIBCPP_DEPRECATED_IN_CXX17
+_LIBCPP_NODISCARD_EXT _LIBCPP_NO_CFI
 pair<_Tp*, ptrdiff_t>
 get_temporary_buffer(ptrdiff_t __n) _NOEXCEPT
 {
@@ -68,7 +67,7 @@ get_temporary_buffer(ptrdiff_t __n) _NOEXCEPT
 }
 
 template <class _Tp>
-inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_DEPRECATED_IN_CXX17
+inline _LIBCPP_INLINE_VISIBILITY
 void return_temporary_buffer(_Tp* __p) _NOEXCEPT
 {
   _VSTD::__libcpp_deallocate_unsized((void*)__p, _LIBCPP_ALIGNOF(_Tp));
@@ -76,10 +75,8 @@ void return_temporary_buffer(_Tp* __p) _NOEXCEPT
 
 struct __return_temporary_buffer
 {
-_LIBCPP_SUPPRESS_DEPRECATED_PUSH
     template <class _Tp>
     _LIBCPP_INLINE_VISIBILITY void operator()(_Tp* __p) const {_VSTD::return_temporary_buffer(__p);}
-_LIBCPP_SUPPRESS_DEPRECATED_POP
 };
 
 _LIBCPP_END_NAMESPACE_STD

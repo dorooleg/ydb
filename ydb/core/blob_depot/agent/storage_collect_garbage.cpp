@@ -11,6 +11,7 @@ namespace NKikimr::NBlobDepot {
             ui32 NumKeep;
             ui32 DoNotKeepIndex = 0;
             ui32 NumDoNotKeep;
+            ui32 CounterShift = 0;
             bool IsLast;
             bool QueryInFlight = false;
 
@@ -51,10 +52,10 @@ namespace NKikimr::NBlobDepot {
 
                 record.SetTabletId(Request.TabletId);
                 record.SetGeneration(Request.RecordGeneration);
+                record.SetPerGenerationCounter(Request.PerGenerationCounter + CounterShift);
+                record.SetChannel(Request.Channel);
 
                 if (Request.Collect && IsLast) {
-                    record.SetPerGenerationCounter(Request.PerGenerationCounter);
-                    record.SetChannel(Request.Channel);
                     record.SetHard(Request.Hard);
                     record.SetCollectGeneration(Request.CollectGeneration);
                     record.SetCollectStep(Request.CollectStep);
@@ -67,8 +68,10 @@ namespace NKikimr::NBlobDepot {
 
                 Agent.Issue(std::move(record), this, nullptr);
 
-                Y_ABORT_UNLESS(!QueryInFlight);
+                Y_VERIFY(!QueryInFlight);
                 QueryInFlight = true;
+
+                ++CounterShift;
             }
 
             void OnUpdateBlock() override {
@@ -81,12 +84,12 @@ namespace NKikimr::NBlobDepot {
                 } else if (auto *p = std::get_if<TEvBlobDepot::TEvCollectGarbageResult*>(&response)) {
                     HandleCollectGarbageResult(std::move(context), (*p)->Record);
                 } else {
-                    Y_ABORT();
+                    Y_FAIL();
                 }
             }
 
             void HandleCollectGarbageResult(TRequestContext::TPtr /*context*/, NKikimrBlobDepot::TEvCollectGarbageResult& msg) {
-                Y_ABORT_UNLESS(QueryInFlight);
+                Y_VERIFY(QueryInFlight);
                 QueryInFlight = false;
 
                 if (!msg.HasStatus()) {

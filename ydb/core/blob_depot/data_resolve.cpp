@@ -70,13 +70,13 @@ namespace NKikimr::NBlobDepot {
 
     void TData::TResolveResultAccumulator::AddKeyWithNoData(const TKey& key) {
         const auto it = KeyToIndex.find(key);
-        Y_ABORT_UNLESS(it != KeyToIndex.end());
+        Y_VERIFY(it != KeyToIndex.end());
         KeysToFilterOut[it->second] = true;
     }
 
     void TData::TResolveResultAccumulator::AddKeyWithError(const TKey& key, const TString& errorReason) {
         const auto it = KeyToIndex.find(key);
-        Y_ABORT_UNLESS(it != KeyToIndex.end());
+        Y_VERIFY(it != KeyToIndex.end());
         auto& item = Items[it->second];
         item.SetErrorReason(item.HasErrorReason() ? TStringBuilder() << item.GetErrorReason() << ", " << errorReason : errorReason);
     }
@@ -132,7 +132,7 @@ namespace NKikimr::NBlobDepot {
                         break;
 
                     case NKikimrBlobDepot::TEvResolve::TItem::KEYDESIGNATOR_NOT_SET:
-                        Y_DEBUG_ABORT("incorrect query field");
+                        Y_VERIFY_DEBUG(false, "incorrect query field");
                         break;
                 }
                 if (status) {
@@ -209,7 +209,7 @@ namespace NKikimr::NBlobDepot {
             }
             item.SetKey(key.MakeBinaryKey());
             if (value.GoingToAssimilate && Self->Config.GetIsDecommittingGroup()) {
-                Y_ABORT_UNLESS(!value.UncertainWrite);
+                Y_VERIFY(!value.UncertainWrite);
                 auto *out = item.AddValueChain();
                 out->SetGroupId(Self->Config.GetVirtualGroupId());
                 LogoBlobIDFromLogoBlobID(key.GetBlobId(), out->MutableBlobId());

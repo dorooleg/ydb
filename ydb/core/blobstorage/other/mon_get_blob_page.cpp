@@ -7,32 +7,93 @@ namespace NKikimr {
 
 namespace {
 
-    class TMonGetBlobActor
-        : public TActor<TMonGetBlobActor>
+    class TMonGetBlobPage
+        : public NMonitoring::IMonPage
     {
-        ui64 LastCookie = 0;
-        THashMap<ui64, std::tuple<TActorId, ui64, int, ui32, bool, bool>> RequestsInFlight;
+        struct TRequestResult {
+            TLogoBlobID LogoBlobId;
+            NKikimrProto::EReplyStatus Status;
+            TString Buffer;
+            TString DebugInfo;
+            TVector<TEvBlobStorage::TEvGetResult::TPartMapItem> PartMap;
+        };
+
+        class TRequestActor
+            : public TActorBootstrapped<TRequestActor>
+        {
+            const ui32 GroupId;
+            const TLogoBlobID LogoBlobId;
+            const bool CollectDebugInfo;
+            NThreading::TPromise<TRequestResult> Promise;
+
+        public:
+            static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+                return NKikimrServices::TActivity::BS_GET_ACTOR;
+            }
+
+            TRequestActor(ui32 groupId, const TLogoBlobID& logoBlobId, bool collectDebugInfo,
+                    NThreading::TPromise<TRequestResult> promise)
+                : GroupId(groupId)
+                , LogoBlobId(logoBlobId)
+                , CollectDebugInfo(collectDebugInfo)
+                , Promise(promise)
+            {}
+
+            void Bootstrap(const TActorContext& ctx) {
+                auto query = std::make_unique<TEvBlobStorage::TEvGet>(LogoBlobId, 0, 0, TInstant::Max(),
+                    NKikimrBlobStorage::AsyncRead);
+                query->CollectDebugInfo = CollectDebugInfo;
+                query->ReportDetailedPartMap = true;
+                SendToBSProxy(ctx, GroupId, query.release());
+                Become(&TRequestActor::StateFunc);
+            }
+
+            void Handle(TEvBlobStorage::TEvGetResult::TPtr& ev, const TActorContext& ctx) {
+                TEvBlobStorage::TEvGetResult *msg = ev->Get();
+
+                TRequestResult result;
+                if (msg->Status != NKikimrProto::OK) {
+                    result.Status = msg->Status;
+                } else if (msg->ResponseSz != 1) {
+                    result.Status = NKikimrProto::ERROR;
+                } else {
+                    result.LogoBlobId = msg->Responses[0].Id;
+                    result.Status = msg->Responses[0].Status;
+                    result.Buffer = msg->Responses[0].Buffer;
+                    result.PartMap = std::move(msg->Responses[0].PartMap);
+                }
+                result.DebugInfo = std::move(msg->DebugInfo);
+
+                Promise.SetValue(result);
+                Die(ctx);
+            }
+
+            STRICT_STFUNC(StateFunc,
+                HFunc(TEvBlobStorage::TEvGetResult, Handle)
+            )
+        };
+
+    private:
+        TActorSystem *ActorSystem;
 
     public:
-        TMonGetBlobActor()
-            : TActor(&TThis::StateFunc)
+        TMonGetBlobPage(const TString& path, TActorSystem *actorSystem)
+            : IMonPage(path)
+            , ActorSystem(actorSystem)
         {}
 
-        void Handle(NMon::TEvHttpInfo::TPtr ev) {
+        void Output(NMonitoring::IMonHttpRequest& request) override {
+            IOutputStream& out = request.Output();
+
             // parse HTTP request
-            const TCgiParameters& params = ev->Get()->Request.GetParams();
+            const TCgiParameters& params = request.GetParams();
 
             auto generateError = [&](const TString& msg) {
-                TStringStream out;
-
                 out << "HTTP/1.1 400 Bad Request\r\n"
                     << "Content-Type: text/plain\r\n"
                     << "Connection: close\r\n"
                     << "\r\n"
                     << msg << "\r\n";
-
-                Send(ev->Sender, new NMon::TEvHttpInfoRes(out.Str(), ev->Get()->SubRequestId, NMon::TEvHttpInfoRes::Custom), 0,
-                    ev->Cookie);
             };
 
             ui32 groupId = 0;
@@ -78,48 +139,30 @@ namespace {
                 }
             }
 
-            const ui64 cookie = ++LastCookie;
-            auto query = std::make_unique<TEvBlobStorage::TEvGet>(logoBlobId, 0, 0, TInstant::Max(),
-                NKikimrBlobStorage::AsyncRead);
-            query->CollectDebugInfo = collectDebugInfo;
-            query->ReportDetailedPartMap = true;
-            SendToBSProxy(SelfId(), groupId, query.release(), cookie);
-            RequestsInFlight[cookie] = {ev->Sender, ev->Cookie, ev->Get()->SubRequestId, groupId, binary, collectDebugInfo};
-        }
+            // create promise & future to obtain query result
+            auto promise = NThreading::NewPromise<TRequestResult>();
+            auto future = promise.GetFuture();
 
-        void Handle(TEvBlobStorage::TEvGetResult::TPtr ev) {
-            const auto it = RequestsInFlight.find(ev->Cookie);
-            Y_ABORT_UNLESS(it != RequestsInFlight.end());
-            const auto& [sender, senderCookie, subRequestId, groupId, binary, collectDebugInfo] = it->second;
+            // register and start actor
+            ActorSystem->Register(new TRequestActor(groupId, logoBlobId, collectDebugInfo, promise));
 
-            TEvBlobStorage::TEvGetResult& msg = *ev->Get();
-            if (msg.Status == NKikimrProto::OK && msg.ResponseSz != 1) {
-                msg.Status = NKikimrProto::ERROR;
-            }
+            // wait for query to complete
+            future.Wait();
 
-            NKikimrProto::EReplyStatus status = msg.Status;
-            TLogoBlobID id;
-            TString buffer;
-
-            if (msg.ResponseSz == 1) {
-                status = msg.Responses[0].Status;
-                id = msg.Responses[0].Id;
-                buffer = msg.Responses[0].Buffer.ConvertToString();
-            }
-
-            TStringStream out;
+            // obtain result
+            const TRequestResult& result = future.GetValue();
 
             if (binary) {
                 // generate data stream depending on result status
-                if (status == NKikimrProto::OK) {
+                if (result.Status == NKikimrProto::OK) {
                     out << "HTTP/1.1 200 OK\r\n"
                         << "Content-Type: application/octet-stream\r\n"
-                        << "Content-Disposition: attachment; filename=\"" << id.ToString() << "\"\r\n"
+                        << "Content-Disposition: attachment; filename=\"" << result.LogoBlobId.ToString() << "\"\r\n"
                         << "Connection: close\r\n"
                         << "\r\n";
-                    out.Write(buffer);
+                    out.Write(result.Buffer);
                 } else {
-                    if (status == NKikimrProto::NODATA) {
+                    if (result.Status == NKikimrProto::NODATA) {
                         out << "HTTP/1.1 204 No Content\r\n";
                     } else {
                         out << "HTTP/1.1 500 Error\r\n";
@@ -129,7 +172,7 @@ namespace {
                         << "\r\n";
 
                     out << "{\n"
-                        << "  \"Status\": \"" << NKikimrProto::EReplyStatus_Name(status) << "\"\n"
+                        << "  \"Status\": \"" << NKikimrProto::EReplyStatus_Name(result.Status) << "\"\n"
                         << "}\n";
                 }
             } else {
@@ -140,9 +183,9 @@ namespace {
                     HTML_TAG() {
                         HEAD() {
                             out << "<title>Blob Query</title>\n";
-                            out << "<link rel='stylesheet' href='../static/css/bootstrap.min.css'>\n";
-                            out << "<script language='javascript' type='text/javascript' src='../static/js/jquery.min.js'></script>\n";
-                            out << "<script language='javascript' type='text/javascript' src='../static/js/bootstrap.min.js'></script>\n";
+                            out << "<link rel='stylesheet' href='https://yastatic.net/bootstrap/3.3.1/css/bootstrap.min.css'>\n";
+                            out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/jquery/2.1.3/jquery.min.js'></script>\n";
+                            out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/bootstrap/3.3.1/js/bootstrap.min.js'></script>\n";
                             out << "<style type=\"text/css\">\n";
                             out << ".table-nonfluid { width: auto; }\n";
                             out << ".narrow-line50 {line-height: 50%}\n";
@@ -161,14 +204,14 @@ namespace {
                                     DIV() {
                                         out << "LogoBlobId: ";
                                         STRONG() {
-                                            out << id.ToString();
+                                            out << logoBlobId.ToString();
                                         }
                                     }
 
                                     DIV() {
                                         out << "Status: ";
                                         STRONG() {
-                                            out << NKikimrProto::EReplyStatus_Name(status);
+                                            out << NKikimrProto::EReplyStatus_Name(result.Status);
                                         }
                                     }
 
@@ -177,7 +220,7 @@ namespace {
                                             out << "Debug Info:";
                                             DIV() {
                                                 out << "<pre><small>";
-                                                out << msg.DebugInfo;
+                                                out << result.DebugInfo;
                                                 out << "</small></pre>";
                                             }
                                         }
@@ -198,28 +241,26 @@ namespace {
                                                     }
                                                 }
                                                 TABLEBODY() {
-                                                    if (msg.ResponseSz == 1) {
-                                                        for (const auto& item : msg.Responses[0].PartMap) {
-                                                            auto prefix = [&] {
-                                                                TABLED() { out << item.DiskOrderNumber; }
-                                                                TABLED() { out << item.PartIdRequested; }
-                                                                TABLED() { out << item.RequestIndex; }
-                                                                TABLED() { out << item.ResponseIndex; }
-                                                            };
-                                                            if (item.Status) {
-                                                                for (const auto& x : item.Status) {
-                                                                    TABLER() {
-                                                                        prefix();
-                                                                        TABLED() { out << x.first; }
-                                                                        TABLED() { out << NKikimrProto::EReplyStatus_Name(x.second); }
-                                                                    }
-                                                                }
-                                                            } else {
+                                                    for (const auto& item : result.PartMap) {
+                                                        auto prefix = [&] {
+                                                            TABLED() { out << item.DiskOrderNumber; }
+                                                            TABLED() { out << item.PartIdRequested; }
+                                                            TABLED() { out << item.RequestIndex; }
+                                                            TABLED() { out << item.ResponseIndex; }
+                                                        };
+                                                        if (item.Status) {
+                                                            for (const auto& x : item.Status) {
                                                                 TABLER() {
                                                                     prefix();
-                                                                    TABLED() { out << "-"; }
-                                                                    TABLED() { out << "-"; }
+                                                                    TABLED() { out << x.first; }
+                                                                    TABLED() { out << NKikimrProto::EReplyStatus_Name(x.second); }
                                                                 }
+                                                            }
+                                                        } else {
+                                                            TABLER() {
+                                                                prefix();
+                                                                TABLED() { out << "-"; }
+                                                                TABLED() { out << "-"; }
                                                             }
                                                         }
                                                     }
@@ -228,15 +269,16 @@ namespace {
                                         }
                                     }
 
-                                    if (status == NKikimrProto::OK) {
+                                    if (result.Status == NKikimrProto::OK) {
                                         DIV() {
                                             TCgiParameters params;
-                                            params.InsertEscaped("blob", id.ToString());
+                                            params.InsertEscaped("blob", logoBlobId.ToString());
                                             params.InsertEscaped("groupId", ToString(groupId));
                                             params.InsertEscaped("binary", "1");
                                             out << "<a href=\"?" << params() << "\">Data</a>";
                                             DIV() {
                                                 out << "<pre><small>";
+                                                const TString& buffer = result.Buffer;
                                                 const size_t rowSize = 64;
                                                 for (size_t offset = 0; offset < buffer.size(); offset += rowSize) {
                                                     out << Sprintf("0x%06zx | ", offset);
@@ -277,21 +319,13 @@ namespace {
                     }
                 }
             }
-
-            Send(sender, new NMon::TEvHttpInfoRes(out.Str(), subRequestId, NMon::TEvHttpInfoRes::Custom), 0, senderCookie);
-            RequestsInFlight.erase(it);
         }
-
-        STRICT_STFUNC(StateFunc,
-            hFunc(NMon::TEvHttpInfo, Handle);
-            hFunc(TEvBlobStorage::TEvGetResult, Handle);
-        )
     };
 
 } // anon
 
-IActor *CreateMonGetBlobActor() {
-    return new TMonGetBlobActor;
+NMonitoring::IMonPage *CreateMonGetBlobPage(const TString& path, TActorSystem *actorSystem) {
+    return new TMonGetBlobPage(path, actorSystem);
 }
 
 } // NKikimr

@@ -80,7 +80,7 @@ TString TOperation::ToJsonString() const {
 
     TString json;
     auto status = MessageToJsonString(GetProto(), &json, JsonPrintOptions());
-    Y_ABORT_UNLESS(status.ok());
+    Y_VERIFY(status.ok());
     return json;
 }
 

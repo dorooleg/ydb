@@ -9,24 +9,17 @@
                 "PlanNodeType": "ResultSet",
                 "Plans": [
                     {
-                        "Node Type": "Aggregate-Limit",
+                        "Node Type": "Aggregate-Limit-Aggregate",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "InternalOperatorId": 1
-                                    }
-                                ],
                                 "Name": "Aggregate"
                             },
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 2
-                                    }
-                                ],
                                 "Limit": "1",
                                 "Name": "Limit"
+                            },
+                            {
+                                "Name": "Aggregate"
                             }
                         ],
                         "PlanNodeId": 3,
@@ -40,15 +33,9 @@
                                         "Node Type": "Aggregate-TableFullScan",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Name": "Aggregate"
                                             },
                                             {
-                                                "Inputs": [],
                                                 "Name": "TableFullScan",
                                                 "ReadColumns": null,
                                                 "ReadRanges": [

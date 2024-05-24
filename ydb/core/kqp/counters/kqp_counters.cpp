@@ -1,18 +1,16 @@
 #include "kqp_counters.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
+#include <ydb/core/protos/issue_id.pb.h>
 #include <ydb/core/sys_view/service/db_counters.h>
 #include <ydb/core/sys_view/service/sysview_service.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/size_literals.h>
 
 #include <ydb/library/yql/core/issue/protos/issue_id.pb.h>
-#include <ydb/public/api/protos/ydb_issue_message.pb.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -75,7 +73,6 @@ void TKqpCountersBase::Init() {
     CloseSessionRequests = KqpGroup->GetCounter("Requests/CloseSession", true);
     CreateSessionRequests = KqpGroup->GetCounter("Requests/CreateSession", true);
     PingSessionRequests = KqpGroup->GetCounter("Requests/PingSession", true);
-    CancelQueryRequests = KqpGroup->GetCounter("Requests/CancelQuery", true);
 
     RequestBytes = KqpGroup->GetCounter("Requests/Bytes", true);
     YdbRequestBytes = YdbGroup->GetNamedCounter("name", "table.query.request.bytes", true);
@@ -107,8 +104,6 @@ void TKqpCountersBase::Init() {
         KqpGroup->GetCounter("Request/QueryTypeAstScan", true);
     QueryTypes[NKikimrKqp::EQueryType::QUERY_TYPE_SQL_GENERIC_QUERY] =
         KqpGroup->GetCounter("Request/QueryTypeGenericQuery", true);
-    QueryTypes[NKikimrKqp::EQueryType::QUERY_TYPE_SQL_GENERIC_CONCURRENT_QUERY] =
-        KqpGroup->GetCounter("Request/QueryTypeGenericConcurrentQuery", true);
     QueryTypes[NKikimrKqp::EQueryType::QUERY_TYPE_SQL_GENERIC_SCRIPT] =
         KqpGroup->GetCounter("Request/QueryTypeGenericScript", true);
     OtherQueryTypes = KqpGroup->GetCounter("Requests/QueryTypeOther", true);
@@ -311,12 +306,6 @@ void TKqpCountersBase::ReportQueryRequest(ui64 requestBytes, ui64 parametersByte
     *YdbParametersBytes += parametersBytes;
 }
 
-void TKqpCountersBase::ReportCancelQuery(ui64 requestSize) {
-    CancelQueryRequests->Inc();
-    *RequestBytes += requestSize;
-    *YdbRequestBytes += requestSize;
-}
-
 void TKqpCountersBase::ReportQueryWithRangeScan() {
     QueriesWithRangeScan->Inc();
 }
@@ -385,16 +374,13 @@ TString TKqpCountersBase::GetIssueName(ui32 issueCode) {
     return TStringBuilder() << "CODE:" << ToString(issueCode);
 }
 
-void TKqpCountersBase::ReportIssues(
-    THashMap<ui32, ::NMonitoring::TDynamicCounters::TCounterPtr>& issueCounters,
-    const Ydb::Issue::IssueMessage& issue)
-{
-    auto issueCounter = issueCounters.FindPtr(issue.issue_code());
+void TKqpCountersBase::ReportIssues(const Ydb::Issue::IssueMessage& issue) {
+    auto issueCounter = IssueCounters.FindPtr(issue.issue_code());
     if (!issueCounter) {
         auto counterName = TStringBuilder() << "Issues/" << GetIssueName(issue.issue_code());
         auto counter = KqpGroup->GetCounter(counterName , true);
 
-        auto result = issueCounters.emplace(issue.issue_code(), counter);
+        auto result = IssueCounters.emplace(issue.issue_code(), counter);
         issueCounter = &result.first->second;
     }
 
@@ -405,7 +391,7 @@ void TKqpCountersBase::ReportIssues(
     }
 
     for (auto& childIssue : issue.issues()) {
-        ReportIssues(issueCounters, childIssue);
+        ReportIssues(childIssue);
     }
 }
 
@@ -726,8 +712,7 @@ void TKqpCounters::UpdateTxCounters(const TKqpTransactionInfo& txInfo,
 }
 
 TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, const TActorContext* ctx)
-    : NYql::NDq::TSpillingCounters(counters)
-    , AllocCounters(counters, "kqp")
+    : AllocCounters(counters, "kqp")
 {
     Counters = counters;
     KqpGroup = GetServiceCounters(counters, "kqp");
@@ -744,19 +729,11 @@ TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, co
         }
     }
 
-    /* Lease updates counters */
-    LeaseUpdateLatency = KqpGroup->GetHistogram(
-        "LeaseUpdatesLatencyMs", NMonitoring::ExponentialHistogram(20, 2, 1));
-    RunActorLeaseUpdateBacklog = KqpGroup->GetHistogram(
-        "LeaseUpdatesBacklogMs", NMonitoring::LinearHistogram(30, 0, 1000));
-
     /* Transactions */
     CreateTxKindCounters(TKqpTransactionInfo::EKind::Pure, "Pure");
     CreateTxKindCounters(TKqpTransactionInfo::EKind::ReadOnly, "ReadOnly");
     CreateTxKindCounters(TKqpTransactionInfo::EKind::WriteOnly, "WriteOnly");
     CreateTxKindCounters(TKqpTransactionInfo::EKind::ReadWrite, "ReadWrite");
-    TxReplySizeExceededError = KqpGroup->GetCounter("Tx/TxReplySizeExceededErrorCount", true);
-    DataShardTxReplySizeExceededError = KqpGroup->GetCounter("Tx/DataShardTxReplySizeExceededErrorCount", true);
 
     /* Compile service */
     CompileQueryCacheSize = YdbGroup->GetNamedCounter("name", "table.query.compilation.cached_query_count", false);
@@ -764,10 +741,6 @@ TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, co
     CompileQueryCacheEvicted = YdbGroup->GetNamedCounter("name", "table.query.compilation.cache_evictions", true);
 
     CompileQueueSize = KqpGroup->GetCounter("Compilation/QueueSize", false);
-
-    /* Compile computation pattern service */
-    CompiledComputationPatterns = KqpGroup->GetCounter("ComputationPatternCompilation/CompiledComputationPatterns");
-    CompileComputationPatternsQueueSize = KqpGroup->GetCounter("ComputationPatternCompilation/CompileComputationPatternsQueueSize");
 
     /* Resource Manager */
     RmComputeActors = KqpGroup->GetCounter("RM/ComputeActors", false);
@@ -777,17 +750,15 @@ TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, co
     RmNotEnoughComputeActors = KqpGroup->GetCounter("RM/NotEnoughComputeActors", true);
     RmExtraMemAllocs = KqpGroup->GetCounter("RM/ExtraMemAllocs", true);
     RmInternalError = KqpGroup->GetCounter("RM/InternalError", true);
-    RmSnapshotLatency = KqpGroup->GetHistogram(
-        "RM/SnapshotLatency", NMonitoring::ExponentialHistogram(20, 2, 1));
 
-    NodeServiceStartEventDelivery = KqpGroup->GetHistogram(
-        "NodeService/StartEventDeliveryUs", NMonitoring::ExponentialHistogram(20, 2, 1));
-    NodeServiceProcessTime = KqpGroup->GetHistogram(
-        "NodeService/ProcessStartEventUs", NMonitoring::ExponentialHistogram(20, 2, 1));
-    NodeServiceProcessCancelTime = KqpGroup->GetHistogram(
-        "NodeService/ProcessCancelEventUs", NMonitoring::ExponentialHistogram(20, 2, 1));
-    RmMaxSnapshotLatency = KqpGroup->GetCounter("RM/MaxSnapshotLatency", false);
-    RmNodeNumberInSnapshot = KqpGroup->GetCounter("RM/NodeNumberInSnapshot", false);
+    /* Spilling */
+    SpillingWriteBlobs = KqpGroup->GetCounter("Spilling/WriteBlobs", true);
+    SpillingReadBlobs = KqpGroup->GetCounter("Spilling/ReadBlobs", true);
+    SpillingStoredBlobs = KqpGroup->GetCounter("Spilling/StoredBlobs", false);
+    SpillingTotalSpaceUsed = KqpGroup->GetCounter("Spilling/TotalSpaceUsed", false);
+    SpillingTooBigFileErrors = KqpGroup->GetCounter("Spilling/TooBigFileErrors", true);
+    SpillingNoSpaceErrors = KqpGroup->GetCounter("Spilling/NoSpaceErrors", true);
+    SpillingIoErrors = KqpGroup->GetCounter("Spilling/IoErrors", true);
 
     /* Scan queries */
     ScanQueryShardDisconnect = KqpGroup->GetCounter("ScanQuery/ShardDisconnect", true);
@@ -802,20 +773,11 @@ TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, co
     SentIteratorCancels = KqpGroup->GetCounter("IteratorReads/SentCancels", true);
     CreatedIterators = KqpGroup->GetCounter("IteratorReads/Created", true);
     ReadActorsCount = KqpGroup->GetCounter("IteratorReads/ReadActorCount", false);
-    ReadActorRemoteFetch = KqpGroup->GetCounter("IteratorReads/ReadActorRemoteFetch", true);
-    ReadActorRemoteFirstFetch = KqpGroup->GetCounter("IteratorReads/ReadActorRemoteFirstFetch", true);
-    ReadActorAbsentNodeId = KqpGroup->GetCounter("IteratorReads/AbsentNodeId", true);
     StreamLookupActorsCount = KqpGroup->GetCounter("IteratorReads/StreamLookupActorCount", false);
     ReadActorRetries = KqpGroup->GetCounter("IteratorReads/Retries", true);
     DataShardIteratorFails = KqpGroup->GetCounter("IteratorReads/DatashardFails", true);
     DataShardIteratorMessages = KqpGroup->GetCounter("IteratorReads/DatashardMessages", true);
     IteratorDeliveryProblems = KqpGroup->GetCounter("IteratorReads/DeliveryProblems", true);
-
-    /* sequencers */
-
-    SequencerActorsCount = KqpGroup->GetCounter("Sequencer/ActorCount", false);
-    SequencerErrors = KqpGroup->GetCounter("Sequencer/Errors", true);
-    SequencerOk = KqpGroup->GetCounter("Sequencer/Ok", true);
 
     LiteralTxTotalTimeHistogram = KqpGroup->GetHistogram(
         "PhyTx/LiteralTxTotalTimeMs", NMonitoring::ExponentialHistogram(10, 2, 1));
@@ -823,8 +785,6 @@ TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, co
         "PhyTx/DataTxTotalTimeMs", NMonitoring::ExponentialHistogram(20, 2, 1));
     ScanTxTotalTimeHistogram = KqpGroup->GetHistogram(
         "PhyTx/ScanTxTotalTimeMs", NMonitoring::ExponentialHistogram(20, 2, 1));
-
-    FullScansExecuted = KqpGroup->GetCounter("FullScans", true);
 }
 
 ::NMonitoring::TDynamicCounterPtr TKqpCounters::GetKqpCounters() const {
@@ -900,13 +860,6 @@ void TKqpCounters::ReportQueryRequest(TKqpDbCountersPtr dbCounters, ui64 request
     }
 }
 
-void TKqpCounters::ReportCancelQuery(TKqpDbCountersPtr dbCounters, ui64 requestSize) {
-    TKqpCountersBase::ReportCancelQuery(requestSize);
-    if (dbCounters) {
-        dbCounters->ReportCancelQuery(requestSize);
-    }
-}
-
 void TKqpCounters::ReportQueryWithRangeScan(TKqpDbCountersPtr dbCounters) {
     TKqpCountersBase::ReportQueryWithRangeScan();
     if (dbCounters) {
@@ -979,13 +932,10 @@ void TKqpCounters::ReportResultsBytes(TKqpDbCountersPtr dbCounters, ui64 results
     }
 }
 
-void TKqpCounters::ReportIssues(TKqpDbCountersPtr dbCounters,
-    THashMap<ui32, ::NMonitoring::TDynamicCounters::TCounterPtr>& issueCounters,
-    const Ydb::Issue::IssueMessage& issue)
-{
-    TKqpCountersBase::ReportIssues(issueCounters, issue);
+void TKqpCounters::ReportIssues(TKqpDbCountersPtr dbCounters, const Ydb::Issue::IssueMessage& issue) {
+    TKqpCountersBase::ReportIssues(issue);
     if (dbCounters) {
-        dbCounters->ReportIssues(issueCounters, issue);
+        dbCounters->ReportIssues(issue);
     }
 }
 
@@ -1006,14 +956,6 @@ void TKqpCounters::ReportTransaction(TKqpDbCountersPtr dbCounters, const TKqpTra
     if (txInfo.Status == TKqpTransactionInfo::EStatus::Committed) {
         UpdateTxCounters(txInfo, TxByKind);
     }
-}
-
-void TKqpCounters::ReportLeaseUpdateLatency(const TDuration& duration) {
-    LeaseUpdateLatency->Collect(duration.MilliSeconds());
-}
-
-void TKqpCounters::ReportRunActorLeaseUpdateBacklog(const TDuration& duration) {
-    RunActorLeaseUpdateBacklog->Collect(duration.MilliSeconds());
 }
 
 void TKqpCounters::ReportSqlVersion(TKqpDbCountersPtr dbCounters, ui16 sqlVersion) {
@@ -1227,14 +1169,6 @@ const ::NMonitoring::TDynamicCounters::TCounterPtr TKqpCounters::RecompileReques
 
 const ::NMonitoring::TDynamicCounters::TCounterPtr TKqpCounters::GetActiveSessionActors() const {
     return TKqpCountersBase::ActiveSessionActors;
-}
-
-const ::NMonitoring::TDynamicCounters::TCounterPtr TKqpCounters::GetTxReplySizeExceededError() const {
-    return TxReplySizeExceededError;
-}
-
-const ::NMonitoring::TDynamicCounters::TCounterPtr TKqpCounters::GetDataShardTxReplySizeExceededError() const {
-    return DataShardTxReplySizeExceededError;
 }
 
 ::NMonitoring::TDynamicCounters::TCounterPtr TKqpCounters::GetQueryTypeCounter(

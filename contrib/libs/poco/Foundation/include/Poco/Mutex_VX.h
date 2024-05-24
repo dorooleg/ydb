@@ -20,7 +20,7 @@
 
 #include "Poco/Foundation.h"
 #include "Poco/Exception.h"
-#error #include <semLib.h>
+#include <semLib.h>
 #include <errno.h>
 
 

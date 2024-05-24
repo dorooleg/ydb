@@ -111,18 +111,11 @@ UPB_INLINE envoy_type_v3_HttpStatus* envoy_type_v3_HttpStatus_parse_ex(const cha
   return ret;
 }
 UPB_INLINE char* envoy_type_v3_HttpStatus_serialize(const envoy_type_v3_HttpStatus* msg, upb_Arena* arena, size_t* len) {
-  char* ptr;
-  (void)upb_Encode(msg, &envoy_type_v3_HttpStatus_msginit, 0, arena, &ptr, len);
-  return ptr;
+  return upb_Encode(msg, &envoy_type_v3_HttpStatus_msginit, 0, arena, len);
 }
 UPB_INLINE char* envoy_type_v3_HttpStatus_serialize_ex(const envoy_type_v3_HttpStatus* msg, int options,
                                  upb_Arena* arena, size_t* len) {
-  char* ptr;
-  (void)upb_Encode(msg, &envoy_type_v3_HttpStatus_msginit, options, arena, &ptr, len);
-  return ptr;
-}
-UPB_INLINE void envoy_type_v3_HttpStatus_clear_code(const envoy_type_v3_HttpStatus* msg) {
-  *UPB_PTR_AT(msg, UPB_SIZE(0, 0), int32_t) = 0;
+  return upb_Encode(msg, &envoy_type_v3_HttpStatus_msginit, options, arena, len);
 }
 UPB_INLINE int32_t envoy_type_v3_HttpStatus_code(const envoy_type_v3_HttpStatus* msg) {
   return *UPB_PTR_AT(msg, UPB_SIZE(0, 0), int32_t);

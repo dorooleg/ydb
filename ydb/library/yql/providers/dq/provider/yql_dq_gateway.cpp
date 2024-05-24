@@ -9,14 +9,11 @@
 
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
-
+#include <library/cpp/grpc/client/grpc_client_low.h>
 #include <library/cpp/yson/node/node_io.h>
 #include <library/cpp/threading/task_scheduler/task_scheduler.h>
 
-#include <util/system/mutex.h>
-#include <util/generic/hash.h>
-#include <util/string/builder.h>
+#include <util/system/thread.h>
 
 #include <utility>
 
@@ -24,59 +21,36 @@ namespace NYql {
 
 using namespace NThreading;
 
-class TDqTaskScheduler : public TTaskScheduler {
-private:
-    struct TDelay: public TTaskScheduler::ITask {
-        TDelay(TPromise<void> p)
-            : Promise(std::move(p))
-        { }
-
-        TInstant Process() override {
-            Promise.SetValue();
-            return TInstant::Max();
-        }
-
-        TPromise<void> Promise;
-    };
-
-public:
-    TDqTaskScheduler()
-        : TTaskScheduler(1) // threads
-    {}
-
-    TFuture<void> Delay(TDuration duration) {
-        TPromise<void> promise = NewPromise();
-
-        auto future = promise.GetFuture();
-
-        if (!Add(MakeIntrusive<TDelay>(promise), TInstant::Now() + duration)) {
-            promise.SetException("cannot delay");
-        }
-
-        return future;
-    }
-};
-
-class TDqGatewaySession: public std::enable_shared_from_this<TDqGatewaySession> {
+class TDqGatewayImpl: public std::enable_shared_from_this<TDqGatewayImpl>
+{
 public:
     using TResult = IDqGateway::TResult;
     using TDqProgressWriter = IDqGateway::TDqProgressWriter;
 
-    TDqGatewaySession(const TString& sessionId, TDqTaskScheduler& taskScheduler, NYdbGrpc::TServiceConnection<Yql::DqsProto::DqService>& service, TFuture<void>&& openSessionFuture)
-        : SessionId(sessionId)
-        , TaskScheduler(taskScheduler)
-        , Service(service)
-        , OpenSessionFuture(std::move(openSessionFuture))
+    TDqGatewayImpl(const TString& host, int port, const TString& vanillaJobPath, const TString& vanillaJobMd5, TDuration timeout, TDuration requestTimeout)
+        : GrpcConf(TStringBuilder() << host << ":" << port, requestTimeout)
+        , GrpcClient(1)
+        , Service(GrpcClient.CreateGRpcServiceConnection<Yql::DqsProto::DqService>(GrpcConf))
+        , VanillaJobPath(vanillaJobPath)
+        , VanillaJobMd5(vanillaJobMd5)
+        , TaskScheduler(1)
+        , OpenSessionTimeout(timeout)
     {
+        TaskScheduler.Start();
     }
 
-    const TString& GetSessionId() const {
-        return SessionId;
+    TString GetVanillaJobPath() {
+        return VanillaJobPath;
+    }
+
+    TString GetVanillaJobMd5() {
+        return VanillaJobMd5;
     }
 
     template<typename RespType>
-    void OnResponse(TPromise<TResult> promise, NYdbGrpc::TGrpcStatus&& status, RespType&& resp, const THashMap<TString, TString>& modulesMapping, bool alwaysFallback = false) {
-        YQL_LOG_CTX_ROOT_SESSION_SCOPE(SessionId);
+    void OnResponse(TPromise<TResult> promise, TString sessionId, NGrpc::TGrpcStatus&& status, RespType&& resp, const THashMap<TString, TString>& modulesMapping, bool alwaysFallback = false)
+    {
+        YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
         YQL_CLOG(TRACE, ProviderDq) << "TDqGateway::callback";
 
         TResult result;
@@ -115,7 +89,7 @@ public:
                     auto& message = *queue.front();
                     queue.pop_front();
                     message.Setmessage(NBacktrace::Symbolize(message.Getmessage(), modulesMapping));
-                    for (auto& subMsg : *message.Mutableissues()) {
+                    for (auto &subMsg : *message.Mutableissues()) {
                         queue.push_back(&subMsg);
                     }
                 }
@@ -156,7 +130,6 @@ public:
             if ((status.GRpcStatusCode == grpc::UNAVAILABLE /* terminating state */
                 || status.GRpcStatusCode == grpc::CANCELLED /* server crashed or stopped before task process */)
                 || status.GRpcStatusCode == grpc::RESOURCE_EXHAUSTED /* send message limit */
-                || status.GRpcStatusCode == grpc::INVALID_ARGUMENT /* Bad session */
                 )
             {
                 YQL_CLOG(ERROR, ProviderDq) << "Fallback " << status.GRpcStatusCode;
@@ -179,34 +152,56 @@ public:
         promise.SetValue(result);
     }
 
+    TFuture<void> Delay(TDuration duration) {
+        TPromise<void> promise = NewPromise();
+
+        auto future = promise.GetFuture();
+
+        if (!TaskScheduler.Add(MakeIntrusive<TDelay>(promise), TInstant::Now() + duration)) {
+            promise.SetException("cannot delay");
+        }
+
+        return future;
+    }
+
     template <typename TResponse, typename TRequest, typename TStub>
     TFuture<TResult> WithRetry(
+        const TString& sessionId,
         const TRequest& queryPB,
         TStub stub,
         int retry,
         const TDqSettings::TPtr& settings,
-        const THashMap<TString, TString>& modulesMapping,
-        const TDqProgressWriter& progressWriter
+        const THashMap<TString, TString>& modulesMapping
     ) {
         auto backoff = TDuration::MilliSeconds(settings->RetryBackoffMs.Get().GetOrElse(1000));
         auto promise = NewPromise<TResult>();
         const auto fallbackPolicy = settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default);
         const auto alwaysFallback = EFallbackPolicy::Always == fallbackPolicy;
         auto self = weak_from_this();
-        auto callback = [self, promise, sessionId = SessionId, alwaysFallback, modulesMapping](NYdbGrpc::TGrpcStatus&& status, TResponse&& resp) mutable {
+        auto callback = [self, promise, sessionId, alwaysFallback, modulesMapping](NGrpc::TGrpcStatus&& status, TResponse&& resp) mutable {
             auto this_ = self.lock();
             if (!this_) {
-                YQL_CLOG(DEBUG, ProviderDq) << "Session was closed: " << sessionId;
-                promise.SetException("Session was closed");
+                YQL_CLOG(DEBUG, ProviderDq) << "Gateway was closed: " << sessionId;
+                promise.SetException("Gateway was closed");
                 return;
             }
 
-            this_->OnResponse(std::move(promise), std::move(status), std::move(resp), modulesMapping, alwaysFallback);
+            this_->OnResponse(std::move(promise), std::move(sessionId), std::move(status), std::move(resp), modulesMapping, alwaysFallback);
         };
 
-        Service.DoRequest<TRequest, TResponse>(queryPB, callback, stub);
+        Service->DoRequest<TRequest, TResponse>(queryPB, callback, stub);
 
-        ScheduleQueryStatusRequest(progressWriter);
+        {
+            TGuard<TMutex> lock(ProgressMutex);
+            auto i = RunningQueries.find(sessionId);
+            if (i != RunningQueries.end()) {
+                if (i->second.ProgressWriter) {
+                    ScheduleQueryStatusRequest(sessionId);
+                }
+            } else {
+                return MakeFuture(TResult());
+            }
+        }
 
         return promise.GetFuture().Apply([=](const TFuture<TResult>& result) {
             if (result.HasException()) {
@@ -219,31 +214,31 @@ public:
                 return result;
             }
 
-            return this_->TaskScheduler.Delay(backoff)
-                .Apply([=, sessionId = this_->GetSessionId()](const TFuture<void>& result) {
+            return this_->Delay(backoff)
+                .Apply([=](const TFuture<void>& result) {
                     auto this_ = self.lock();
                     try {
                         result.TryRethrow();
                         if (!this_) {
-                            YQL_CLOG(DEBUG, ProviderDq) << "Session was closed: " << sessionId;
-                            throw std::runtime_error("Session was closed");
+                            YQL_CLOG(DEBUG, ProviderDq) << "Gateway was closed: " << sessionId;
+                            throw std::runtime_error("Gateway was closed");
                         }
                     } catch (...) {
                         return MakeErrorFuture<TResult>(std::current_exception());
                     }
-                    return this_->WithRetry<TResponse>(queryPB, stub, retry - 1, settings, modulesMapping, progressWriter);
+                    return this_->WithRetry<TResponse>(sessionId, queryPB, stub, retry - 1, settings, modulesMapping);
                 });
         });
     }
 
     TFuture<TResult>
-    ExecutePlan(NDqs::TPlan&& plan, const TVector<TString>& columns,
+    ExecutePlan(const TString& sessionId, NDqs::TPlan&& plan, const TVector<TString>& columns,
                 const THashMap<TString, TString>& secureParams, const THashMap<TString, TString>& graphParams,
                 const TDqSettings::TPtr& settings,
                 const TDqProgressWriter& progressWriter, const THashMap<TString, TString>& modulesMapping,
                 bool discard)
     {
-        YQL_LOG_CTX_ROOT_SESSION_SCOPE(SessionId);
+        YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
 
         Yql::DqsProto::ExecuteGraphRequest queryPB;
         for (const auto& task : plan.Tasks) {
@@ -257,7 +252,7 @@ public:
                 YQL_ENSURE(!file.GetObjectId().empty());
             }
         }
-        queryPB.SetSession(SessionId);
+        queryPB.SetSession(sessionId);
         queryPB.SetResultType(plan.ResultType);
         queryPB.SetSourceId(plan.SourceID.NodeId()-1);
         for (const auto& column : columns) {
@@ -283,175 +278,64 @@ public:
 
         int retry = settings->MaxRetries.Get().GetOrElse(5);
 
-        YQL_CLOG(DEBUG, ProviderDq) << "Send query of size " << queryPB.ByteSizeLong();
-
-        auto self = weak_from_this();
-        return OpenSessionFuture.Apply([self, sessionId = SessionId, queryPB, retry, settings, modulesMapping, progressWriter](const TFuture<void>& f) {
-            f.TryRethrow();
-            auto this_ = self.lock();
-            if (!this_) {
+        TFuture<void> sessionFuture;
+        {
+            TGuard<TMutex> lock(ProgressMutex);
+            auto it = RunningQueries.find(sessionId);
+            if (it == RunningQueries.end()) {
                 YQL_CLOG(DEBUG, ProviderDq) << "Session was closed: " << sessionId;
                 return MakeErrorFuture<TResult>(std::make_exception_ptr(std::runtime_error("Session was closed")));
             }
+            it->second.ProgressWriter = progressWriter;
+            sessionFuture = it->second.OpenSessionFuture;
+        }
+
+        YQL_CLOG(DEBUG, ProviderDq) << "Send query of size " << queryPB.ByteSizeLong();
+
+        auto self = weak_from_this();
+        return sessionFuture.Apply([self, sessionId, queryPB, retry, settings, modulesMapping](const TFuture<void>& ) {
+            auto this_ = self.lock();
+            if (!this_) {
+                YQL_CLOG(DEBUG, ProviderDq) << "Gateway was closed: " << sessionId;
+                return MakeErrorFuture<TResult>(std::make_exception_ptr(std::runtime_error("Gateway was closed")));
+            }
 
             return this_->WithRetry<Yql::DqsProto::ExecuteGraphResponse>(
+                sessionId,
                 queryPB,
                 &Yql::DqsProto::DqService::Stub::AsyncExecuteGraph,
                 retry,
                 settings,
-                modulesMapping,
-                progressWriter);
+                modulesMapping);
         });
-    }
-
-    TFuture<void> Close() {
-        Yql::DqsProto::CloseSessionRequest request;
-        request.SetSession(SessionId);
-
-        auto promise = NewPromise<void>();
-        auto callback = [promise, sessionId = SessionId](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::CloseSessionResponse&& resp) mutable {
-            Y_UNUSED(resp);
-            YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
-            if (status.Ok()) {
-                YQL_CLOG(DEBUG, ProviderDq) << "Async close session OK";
-                promise.SetValue();
-            } else {
-                YQL_CLOG(ERROR, ProviderDq) << "Async close session error: " << status.GRpcStatusCode << ", message: " << status.Msg;
-                promise.SetException(TStringBuilder() << "Async close session error: " << status.GRpcStatusCode << ", message: " << status.Msg);
-            }
-        };
-
-        Service.DoRequest<Yql::DqsProto::CloseSessionRequest, Yql::DqsProto::CloseSessionResponse>(
-            request, callback, &Yql::DqsProto::DqService::Stub::AsyncCloseSession);
-        return promise.GetFuture();
-    }
-
-    void OnRequestQueryStatus(const TDqProgressWriter& progressWriter, const TString& status, bool ok) {
-        if (ok) {
-            ScheduleQueryStatusRequest(progressWriter);
-            if (!status.empty()) {
-                progressWriter(status);
-            }
-        }
-    }
-
-    void RequestQueryStatus(const TDqProgressWriter& progressWriter) {
-        Yql::DqsProto::QueryStatusRequest request;
-        request.SetSession(SessionId);
-        auto self = weak_from_this();
-        auto callback = [self, progressWriter](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::QueryStatusResponse&& resp) {
-            auto this_ = self.lock();
-            if (!this_) {
-                return;
-            }
-
-            this_->OnRequestQueryStatus(progressWriter, resp.GetStatus(), status.Ok());
-        };
-
-        Service.DoRequest<Yql::DqsProto::QueryStatusRequest, Yql::DqsProto::QueryStatusResponse>(
-            request, callback, &Yql::DqsProto::DqService::Stub::AsyncQueryStatus, {}, nullptr);
-    }
-
-    void ScheduleQueryStatusRequest(const TDqProgressWriter& progressWriter) {
-        auto self = weak_from_this();
-        TaskScheduler.Delay(TDuration::MilliSeconds(1000)).Subscribe([self, progressWriter](const TFuture<void>& f) {
-            auto this_ = self.lock();
-            if (!this_) {
-                return;
-            }
-
-            if (!f.HasException()) {
-                this_->RequestQueryStatus(progressWriter);
-            }
-        });
-    }
-
-private:
-    const TString SessionId;
-    TDqTaskScheduler& TaskScheduler;
-    NYdbGrpc::TServiceConnection<Yql::DqsProto::DqService>& Service;
-
-    TMutex ProgressMutex;
-
-    std::optional<TDqProgressWriter> ProgressWriter;
-    TString Status;
-    TFuture<void> OpenSessionFuture;
-};
-
-class TDqGatewayImpl: public std::enable_shared_from_this<TDqGatewayImpl> {
-    using TResult = IDqGateway::TResult;
-    using TDqProgressWriter = IDqGateway::TDqProgressWriter;
-
-public:
-    TDqGatewayImpl(const TString& host, int port, TDuration timeout = TDuration::Minutes(60), TDuration requestTimeout = TDuration::Max())
-        : GrpcConf(TStringBuilder() << host << ":" << port, requestTimeout)
-        , GrpcClient(1)
-        , Service(GrpcClient.CreateGRpcServiceConnection<Yql::DqsProto::DqService>(GrpcConf))
-        , TaskScheduler()
-        , OpenSessionTimeout(timeout)
-    {
-        TaskScheduler.Start();
-    }
-
-    ~TDqGatewayImpl() {
-        Stop();
-    }
-
-    void Stop() {
-        decltype(Sessions) sessions;
-        with_lock (Mutex) {
-            sessions = std::move(Sessions);
-        }
-        for (auto& pair: sessions) {
-            try {
-                pair.second->Close().GetValueSync();
-            } catch (...) {
-                YQL_LOG_CTX_ROOT_SESSION_SCOPE(pair.first);
-                YQL_CLOG(ERROR, ProviderDq) << "Error closing session " << pair.first << ": " << CurrentExceptionMessage();
-            }
-        }
-        sessions.clear(); // Destroy session objects explicitly before stopping grpc
-        TaskScheduler.Stop();
-        try {
-            GrpcClient.Stop(/* wait = */ true);
-        } catch (...) {
-            YQL_CLOG(ERROR, ProviderDq) << "Error while stopping GRPC client: " << CurrentExceptionMessage();
-        }
-    }
-
-    void DropSession(const TString& sessionId) {
-        with_lock (Mutex) {
-            Sessions.erase(sessionId);
-        }
     }
 
     TFuture<void> OpenSession(const TString& sessionId, const TString& username) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
         YQL_CLOG(INFO, ProviderDq) << "OpenSession";
-
-        auto promise = NewPromise<void>();
-        std::shared_ptr<TDqGatewaySession> session = std::make_shared<TDqGatewaySession>(sessionId, TaskScheduler, *Service, promise.GetFuture());
-        with_lock (Mutex) {
-            if (!Sessions.emplace(sessionId, session).second) {
-                return MakeErrorFuture<void>(std::make_exception_ptr(yexception() << "Duplicate session id: " << sessionId));
-            }
-        }
-
         Yql::DqsProto::OpenSessionRequest request;
         request.SetSession(sessionId);
         request.SetUsername(username);
 
-        NYdbGrpc::TCallMeta meta;
+        {
+            TGuard<TMutex> lock(ProgressMutex);
+            if (RunningQueries.find(sessionId) != RunningQueries.end()) {
+                return MakeFuture();
+            }
+        }
+
+        NGrpc::TCallMeta meta;
         meta.Timeout = OpenSessionTimeout;
 
+        auto promise = NewPromise<void>();
         auto self = weak_from_this();
-        auto callback = [self, promise, sessionId](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::OpenSessionResponse&& resp) mutable {
+        auto callback = [self, promise, sessionId](NGrpc::TGrpcStatus&& status, Yql::DqsProto::OpenSessionResponse&& resp) mutable {
             Y_UNUSED(resp);
             YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
             auto this_ = self.lock();
             if (!this_) {
-                YQL_CLOG(ERROR, ProviderDq) << "Session was closed: " << sessionId;
-                promise.SetException("Session was closed");
+                YQL_CLOG(DEBUG, ProviderDq) << "Gateway was closed: " << sessionId;
+                promise.SetException("Gateway was closed");
                 return;
             }
             if (status.Ok()) {
@@ -460,7 +344,6 @@ public:
                 promise.SetValue();
             } else {
                 YQL_CLOG(ERROR, ProviderDq) << "OpenSession error: " << status.Msg;
-                this_->DropSession(sessionId);
                 promise.SetException(status.Msg);
             }
         };
@@ -468,25 +351,116 @@ public:
         Service->DoRequest<Yql::DqsProto::OpenSessionRequest, Yql::DqsProto::OpenSessionResponse>(
             request, callback, &Yql::DqsProto::DqService::Stub::AsyncOpenSession, meta);
 
-       return MakeFuture();
+        {
+            TGuard<TMutex> lock(ProgressMutex);
+            RunningQueries.emplace(sessionId, TSession {
+                    std::optional<TDqProgressWriter> {},
+                        "",
+                        promise.GetFuture()
+                        });
+        }
+
+        return MakeFuture();
     }
 
-    void SchedulePingSessionRequest(const TString& sessionId) {
+    void CloseSession(const TString& sessionId) {
+        Yql::DqsProto::CloseSessionRequest request;
+        request.SetSession(sessionId);
+
+        auto callback = [](NGrpc::TGrpcStatus&& status, Yql::DqsProto::CloseSessionResponse&& resp) {
+            Y_UNUSED(resp);
+            Y_UNUSED(status);
+        };
+
+        {
+            TGuard<TMutex> lock(ProgressMutex);
+            RunningQueries.erase(sessionId);
+        }
+
+        Service->DoRequest<Yql::DqsProto::CloseSessionRequest, Yql::DqsProto::CloseSessionResponse>(
+            request, callback, &Yql::DqsProto::DqService::Stub::AsyncCloseSession);
+    }
+
+    void OnRequestQueryStatus(const TString& sessionId, const TString& status, bool ok) {
+        TGuard<TMutex> lock(ProgressMutex);
+        TString stage;
+        TDqProgressWriter* dqProgressWriter = nullptr;
+        auto it = RunningQueries.find(sessionId);
+        if (it != RunningQueries.end() && ok) {
+            dqProgressWriter = it->second.ProgressWriter ? &*it->second.ProgressWriter:nullptr;
+            auto lastStatus = it->second.Status;
+            if (dqProgressWriter && lastStatus != status) {
+                stage = status;
+                it->second.Status = stage;
+            }
+
+            ScheduleQueryStatusRequest(sessionId);
+        } else if (it != RunningQueries.end()) {
+            it->second.ProgressWriter = {};
+        }
+
+        if (!stage.empty() && dqProgressWriter) {
+            (*dqProgressWriter)(stage);
+        }
+    }
+
+    void RequestQueryStatus(const TString& sessionId) {
+        Yql::DqsProto::QueryStatusRequest request;
+        request.SetSession(sessionId);
         auto self = weak_from_this();
-        auto callback = [self, sessionId] (NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::PingSessionResponse&&) mutable {
+        auto callback = [self, sessionId](NGrpc::TGrpcStatus&& status, Yql::DqsProto::QueryStatusResponse&& resp) {
             auto this_ = self.lock();
             if (!this_) {
                 return;
             }
 
-            if (status.GRpcStatusCode == grpc::INVALID_ARGUMENT || status.GRpcStatusCode == grpc::CANCELLED) {
+            this_->OnRequestQueryStatus(sessionId, resp.GetStatus(), status.Ok());
+        };
+
+        Service->DoRequest<Yql::DqsProto::QueryStatusRequest, Yql::DqsProto::QueryStatusResponse>(
+            request, callback, &Yql::DqsProto::DqService::Stub::AsyncQueryStatus, {}, nullptr);
+    }
+
+    void StartQueryStatusRequest(const TString& sessionId, bool ok) {
+        TGuard<TMutex> lock(ProgressMutex);
+        auto it = RunningQueries.find(sessionId);
+        if (it != RunningQueries.end() && ok) {
+            RequestQueryStatus(sessionId);
+        } else if (it != RunningQueries.end()) {
+            it->second.ProgressWriter = {};
+        }
+    }
+
+    void ScheduleQueryStatusRequest(const TString& sessionId) {
+        auto self = weak_from_this();
+        Delay(TDuration::MilliSeconds(1000)).Subscribe([self, sessionId](TFuture<void> fut) {
+            auto this_ = self.lock();
+            if (!this_) {
+                return;
+            }
+
+            this_->StartQueryStatusRequest(sessionId, !fut.HasException());
+        });
+    }
+
+    void SchedulePingSessionRequest(const TString& sessionId) {
+        auto self = weak_from_this();
+        auto callback = [self, sessionId](
+            NGrpc::TGrpcStatus&& status,
+            Yql::DqsProto::PingSessionResponse&&) mutable
+        {
+            auto this_ = self.lock();
+            if (!this_) {
+                return;
+            }
+
+            if (status.GRpcStatusCode == grpc::INVALID_ARGUMENT) {
                 YQL_CLOG(INFO, ProviderDq) << "Session closed " << sessionId;
-                this_->DropSession(sessionId);
             } else {
                 this_->SchedulePingSessionRequest(sessionId);
             }
         };
-        TaskScheduler.Delay(TDuration::Seconds(10)).Subscribe([self, callback, sessionId](const TFuture<void>&) {
+        Delay(TDuration::Seconds(10)).Subscribe([self, callback, sessionId](const TFuture<void>&) {
             auto this_ = self.lock();
             if (!this_) {
                 return;
@@ -502,107 +476,75 @@ public:
         });
     }
 
-    TFuture<void> CloseSessionAsync(const TString& sessionId) {
-        std::shared_ptr<TDqGatewaySession> session;
-        with_lock (Mutex) {
-            auto it = Sessions.find(sessionId);
-            if (it != Sessions.end()) {
-                session = it->second;
-                Sessions.erase(it);
-            }
-        }
-        if (session) {
-            return session->Close();
-        }
-        return MakeFuture();
-    }
+    struct TDelay: public TTaskScheduler::ITask {
+        TDelay(TPromise<void> p)
+            : Promise(std::move(p))
+        { }
 
-    TFuture<TResult> ExecutePlan(const TString& sessionId, NDqs::TPlan&& plan, const TVector<TString>& columns,
-        const THashMap<TString, TString>& secureParams, const THashMap<TString, TString>& graphParams,
-        const TDqSettings::TPtr& settings,
-        const TDqProgressWriter& progressWriter, const THashMap<TString, TString>& modulesMapping,
-        bool discard)
-    {
-        std::shared_ptr<TDqGatewaySession> session;
-        with_lock(Mutex) {
-            auto it = Sessions.find(sessionId);
-            if (it != Sessions.end()) {
-                session = it->second;
-            }
+        TInstant Process() override {
+            Promise.SetValue();
+            return TInstant::Max();
         }
-        if (!session) {
-            YQL_CLOG(ERROR, ProviderDq) << "Session was closed: " << sessionId;
-            return MakeFuture(NCommon::ResultFromException<TResult>(yexception() << "Session was closed"));
-        }
-        return session->ExecutePlan(std::move(plan), columns, secureParams, graphParams, settings, progressWriter, modulesMapping, discard)
-            .Apply([](const TFuture<TResult>& f) {
-                try {
-                    f.TryRethrow();
-                } catch (const std::exception& e) {
-                    YQL_CLOG(ERROR, ProviderDq) << e.what();
-                    return MakeFuture(NCommon::ResultFromException<TResult>(e));
-                }
-                return f;
-            });
-    }
+
+        TPromise<void> Promise;
+    };
 
 private:
-    NYdbGrpc::TGRpcClientConfig GrpcConf;
-    NYdbGrpc::TGRpcClientLow GrpcClient;
-    std::unique_ptr<NYdbGrpc::TServiceConnection<Yql::DqsProto::DqService>> Service;
+    NGrpc::TGRpcClientConfig GrpcConf;
+    NGrpc::TGRpcClientLow GrpcClient;
+    std::unique_ptr<NGrpc::TServiceConnection<Yql::DqsProto::DqService>> Service;
 
-    TDqTaskScheduler TaskScheduler;
-    const TDuration OpenSessionTimeout;
-
+    TMutex ProgressMutex;
     TMutex Mutex;
-    THashMap<TString, std::shared_ptr<TDqGatewaySession>> Sessions;
+
+    struct TSession {
+        std::optional<TDqProgressWriter> ProgressWriter;
+        TString Status;
+        TFuture<void> OpenSessionFuture;
+    };
+    THashMap<TString, TSession> RunningQueries;
+    TString VanillaJobPath;
+    TString VanillaJobMd5;
+
+    TTaskScheduler TaskScheduler;
+    const TDuration OpenSessionTimeout;
 };
 
 class TDqGateway: public IDqGateway {
 public:
     TDqGateway(const TString& host, int port, const TString& vanillaJobPath, const TString& vanillaJobMd5, TDuration timeout = TDuration::Minutes(60), TDuration requestTimeout = TDuration::Max())
-        : Impl(std::make_shared<TDqGatewayImpl>(host, port, timeout, requestTimeout))
-        , VanillaJobPath(vanillaJobPath)
-        , VanillaJobMd5(vanillaJobMd5)
+        : Impl(std::make_shared<TDqGatewayImpl>(host, port, vanillaJobPath, vanillaJobMd5, timeout, requestTimeout))
+    { }
+
+    TFuture<void> OpenSession(const TString& sessionId, const TString& username) override
     {
-    }
-
-    ~TDqGateway() {
-    }
-
-    void Stop() override {
-        Impl->Stop();
-    }
-
-    TFuture<void> OpenSession(const TString& sessionId, const TString& username) override {
         return Impl->OpenSession(sessionId, username);
     }
 
-    TFuture<void> CloseSessionAsync(const TString& sessionId) override {
-        return Impl->CloseSessionAsync(sessionId);
+    void CloseSession(const TString& sessionId) override
+    {
+        Impl->CloseSession(sessionId);
     }
 
     TFuture<TResult> ExecutePlan(const TString& sessionId, NDqs::TPlan&& plan, const TVector<TString>& columns,
-        const THashMap<TString, TString>& secureParams, const THashMap<TString, TString>& graphParams,
-        const TDqSettings::TPtr& settings,
-        const TDqProgressWriter& progressWriter, const THashMap<TString, TString>& modulesMapping,
-        bool discard) override
+                const THashMap<TString, TString>& secureParams, const THashMap<TString, TString>& graphParams,
+                const TDqSettings::TPtr& settings,
+                const TDqProgressWriter& progressWriter, const THashMap<TString, TString>& modulesMapping,
+                bool discard) override
     {
         return Impl->ExecutePlan(sessionId, std::move(plan), columns, secureParams, graphParams, settings, progressWriter, modulesMapping, discard);
     }
 
     TString GetVanillaJobPath() override {
-        return VanillaJobPath;
+        return Impl->GetVanillaJobPath();
     }
 
     TString GetVanillaJobMd5() override {
-        return VanillaJobMd5;
+        return Impl->GetVanillaJobMd5();
     }
 
 private:
     std::shared_ptr<TDqGatewayImpl> Impl;
-    TString VanillaJobPath;
-    TString VanillaJobMd5;
 };
 
 TIntrusivePtr<IDqGateway> CreateDqGateway(const TString& host, int port) {
@@ -611,8 +553,8 @@ TIntrusivePtr<IDqGateway> CreateDqGateway(const TString& host, int port) {
 
 TIntrusivePtr<IDqGateway> CreateDqGateway(const NProto::TDqConfig& config) {
     return new TDqGateway("localhost", config.GetPort(),
-        config.GetYtBackends()[0].GetVanillaJobLite(),
-        config.GetYtBackends()[0].GetVanillaJobLiteMd5(),
+        config.GetYtBackends()[0].GetVanillaJob(),
+        config.GetYtBackends()[0].GetVanillaJobMd5(),
         TDuration::MilliSeconds(config.GetOpenSessionTimeoutMs()),
         TDuration::MilliSeconds(config.GetRequestTimeoutMs()));
 }

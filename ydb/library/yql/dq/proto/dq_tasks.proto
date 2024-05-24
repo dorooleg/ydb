@@ -4,7 +4,7 @@ option cc_enable_arenas = true;
 package NYql.NDqProto;
 
 import "google/protobuf/any.proto";
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/library/yql/dq/proto/dq_transport.proto";
 
 enum ERuntimeVersion {
@@ -72,8 +72,6 @@ message TChannel {
     uint64 Id = 1;
     EDataTransportVersion TransportVersion = 2;
 
-    uint32 SrcStageId = 11;
-    uint32 DstStageId = 12;
     uint64 SrcTaskId = 3;
     uint64 DstTaskId = 4;
     TEndpoint SrcEndpoint = 5;
@@ -83,7 +81,6 @@ message TChannel {
     bool InMemory = 8;
     ECheckpointingMode CheckpointingMode = 9;
     EWatermarksMode WatermarksMode = 10;
-    bool EnableSpilling = 13;
 }
 
 message TUnionAllInput {
@@ -168,21 +165,6 @@ message TDqTransform {
     google.protobuf.Any Settings = 4;
 }
 
-message TDqStreamLookupSource {
-    bytes SerializedRowType = 1; //Serialized TStructType
-    //TODO Add provider-specific data source info
-}
-
-message TDqInputTransformLookupSettings {
-    string LeftLabel = 1;
-    TDqStreamLookupSource RightSource = 2;
-    string RightLabel = 3;
-    string JoinType = 4; //Inner, Left, LeftSemi
-    repeated string LeftJoinKeyNames = 5; //Join column names in the left hand, in the same order as the next
-    repeated string RightJoinKeyNames = 6; //Join column names in the right hand, in the same order as previous
-    //TODO add lookup timings and cache paramters
-}
-
 message TDqTask {
     uint64 Id = 1;
     uint32 StageId = 9;
@@ -200,7 +182,4 @@ message TDqTask {
     map<string, string> SecureParams = 14;
     optional uint32 MetaId = 15;
     optional bool UseLlvm = 16;
-    repeated bytes ReadRanges = 17;
-    map<string, string> RequestContext = 18;
-    optional bool EnableSpilling = 19;
 }

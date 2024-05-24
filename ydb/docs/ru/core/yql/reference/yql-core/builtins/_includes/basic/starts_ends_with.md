@@ -4,9 +4,15 @@
 
 **Сигнатуры**
 ```
-StartsWith(T str, U prefix)->Bool[?]
+StartsWith(Utf8, Utf8)->Bool
+StartsWith(Utf8[?], Utf8[?])->Bool?
+StartsWith(String, String)->Bool
+StartsWith(String[?], String[?])->Bool?
 
-EndsWith(T str, U suffix)->Bool[?]
+EndsWith(Utf8, Utf8)->Bool
+EndsWith(Utf8[?], Utf8[?])->Bool?
+EndsWith(String, String)->Bool
+EndsWith(String[?], String[?])->Bool?
 ```
 
 Обязательные аргументы:
@@ -14,8 +20,7 @@ EndsWith(T str, U suffix)->Bool[?]
 * Исходная строка;
 * Искомая подстрока.
 
-Аргументы должны иметь тип `String`/`Utf8` (или опциональный `String`/`Utf8`) либо строковый PostgreSQL тип (`PgText`/`PgBytea`/`PgVarchar`).
-Результатом функции является опциональный Bool, за исключением случая, когда оба аргумента неопциональные – в этом случае возвращается Bool.
+Аргументы могут быть типов `String` или `Utf8` и могут быть опциональными.
 
 **Примеры**
 ``` yql
@@ -29,7 +34,4 @@ SELECT StartsWith("abcd", NULL); -- null
 ```
 ``` yql
 SELECT EndsWith(NULL, Utf8("")); -- null
-```
-``` yql
-SELECT StartsWith("abc_efg"u, "abc"p) AND EndsWith("abc_efg", "efg"pv); -- true
 ```

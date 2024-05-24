@@ -72,7 +72,6 @@ public:
     TExprNode::TPtr WrapRead(const TDqSettings& dqSettings, const TExprNode::TPtr& read, TExprContext& ctx) override {
         if (const auto& maybePqReadTopic = TMaybeNode<TPqReadTopic>(read)) {
             const auto& pqReadTopic = maybePqReadTopic.Cast();
-            YQL_ENSURE(pqReadTopic.Ref().GetTypeAnn(), "No type annotation for node " << pqReadTopic.Ref().Content());
 
             const auto rowType = pqReadTopic.Ref().GetTypeAnn()
                 ->Cast<TTupleExprType>()->GetItems().back()->Cast<TListExprType>()
@@ -146,7 +145,7 @@ public:
         return read;
     }
 
-    TMaybe<bool> CanWrite(const TExprNode&, TExprContext&) override {
+    TMaybe<bool> CanWrite(const TDqSettings&, const TExprNode&, TExprContext&) override {
         YQL_ENSURE(false, "Unimplemented");
     }
 
@@ -179,7 +178,7 @@ public:
         }
     }
 
-    void FillSourceSettings(const TExprNode& node, ::google::protobuf::Any& protoSettings, TString& sourceType, size_t) override {
+    void FillSourceSettings(const TExprNode& node, ::google::protobuf::Any& protoSettings, TString& sourceType) override {
         if (auto maybeDqSource = TMaybeNode<TDqSource>(&node)) {
             auto settings = maybeDqSource.Cast().Settings();
             if (auto maybeTopicSource = TMaybeNode<TDqPqTopicSource>(settings.Raw())) {

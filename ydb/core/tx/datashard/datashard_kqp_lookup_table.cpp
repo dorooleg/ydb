@@ -267,7 +267,7 @@ private:
     TSmallVec<TTag> SystemColumnTags;
     TKqpTableStats& ShardTableStats;
     TKqpTableStats& TaskTableStats;
-    mutable TAutoPtr<NTable::TTableIter> Iterator;
+    mutable TAutoPtr<NTable::TTableIt> Iterator;
 };
 
 IComputationNode* WrapKqpLookupTableInternal(TCallable& callable, const TComputationNodeFactoryContext& ctx,

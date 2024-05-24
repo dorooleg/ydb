@@ -2,18 +2,18 @@
 #include "immediate_control_board_actor.h"
 #include "immediate_control_board_wrapper.h"
 
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <ydb/core/mon/mon.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include <ydb/core/base/tablet.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
 
@@ -97,19 +97,19 @@ static void Run(i64 instances = 1) {
 
         const TActorId nameserviceId = GetNameserviceActorId();
         TActorSetupCmd nameserviceSetup(CreateNameserverTable(nameserverTable), TMailboxType::Simple, 0);
-        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(nameserviceId, std::move(nameserviceSetup)));
+        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(nameserviceId, nameserviceSetup));
 
         // ICB Actor creation
         TActorId IcbActorId = MakeIcbId(setup->NodeId);
         TActorSetupCmd testSetup(CreateImmediateControlActor(appData.Icb, Counters), TMailboxType::Revolving, 0);
-        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(IcbActorId, std::move(testSetup)));
+        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(IcbActorId, testSetup));
 
 
         THolder<TTestConfig> testConfig(new TTestConfig(IcbActorId, appData.Icb.Get()));
         for (ui32 i = 0; i < instances; ++i) {
             testIds[i] = MakeBlobStorageProxyID(1 + i);
             TActorSetupCmd testSetup(new T(testConfig.Get()), TMailboxType::Revolving, 0);
-            setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(testIds[i], std::move(testSetup)));
+            setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(testIds[i], testSetup));
         }
 
         AtomicSet(DoneCounter, 0);
@@ -119,12 +119,12 @@ static void Run(i64 instances = 1) {
 
         NActors::TActorId loggerActorId = NActors::TActorId(1, "logger");
         TIntrusivePtr<NActors::NLog::TSettings> logSettings(
-            new NActors::NLog::TSettings(loggerActorId, NActorsServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, 0));
-        logSettings->Append(
-            NActorsServices::EServiceCommon_MIN,
-            NActorsServices::EServiceCommon_MAX,
-            NActorsServices::EServiceCommon_Name
-        );
+            new NActors::NLog::TSettings(loggerActorId, NKikimrServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, 0));
+        //logSettings->Append(
+        //    NActorsServices::EServiceCommon_MIN,
+        //    NActorsServices::EServiceCommon_MAX,
+        //    NActorsServices::EServiceCommon_Name
+        //);
         logSettings->Append(
             NKikimrServices::EServiceKikimr_MIN,
             NKikimrServices::EServiceKikimr_MAX,
@@ -137,8 +137,8 @@ static void Run(i64 instances = 1) {
         NActors::TLoggerActor *loggerActor = new NActors::TLoggerActor(logSettings, NActors::CreateStderrBackend(),
             GetServiceCounters(Counters, "utils"));
         NActors::TActorSetupCmd loggerActorCmd(loggerActor, NActors::TMailboxType::Simple, 2);
-        std::pair<NActors::TActorId, NActors::TActorSetupCmd> loggerActorPair(loggerActorId, std::move(loggerActorCmd));
-        setup->LocalServices.push_back(std::move(loggerActorPair));
+        std::pair<NActors::TActorId, NActors::TActorSetupCmd> loggerActorPair(loggerActorId, loggerActorCmd);
+        setup->LocalServices.push_back(loggerActorPair);
         //////////////////////////////////////////////////////////////////////////////
 
         ActorSystem.Reset(new TActorSystem(setup, &appData, logSettings));
@@ -147,7 +147,7 @@ static void Run(i64 instances = 1) {
 
         VERBOSE_COUT("Sending TEvBoot to test");
         for (ui32 i = 0; i < instances; ++i) {
-            ActorSystem->Send(testIds[i], new TEvTablet::TEvBoot(MakeTabletID(false, 1), 0, nullptr, TActorId(), nullptr));
+            ActorSystem->Send(testIds[i], new TEvTablet::TEvBoot(MakeTabletID(0, 0, 1), 0, nullptr, TActorId(), nullptr));
         }
 
         TAtomicBase doneCount = 0;

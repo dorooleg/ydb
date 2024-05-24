@@ -1,12 +1,9 @@
 #include "console_configs_manager.h"
-
-#include "configs_dispatcher.h"
 #include "console_configs_provider.h"
 #include "console_impl.h"
 #include "http.h"
 
 #include <ydb/core/cms/console/validators/registry.h>
-#include <ydb/core/base/feature_flags.h>
 
 #include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
 
@@ -78,20 +75,12 @@ void TConfigsManager::Bootstrap(const TActorContext &ctx)
                                                          NKikimrServices::CMS_CONFIGS);
     ConfigsProvider = ctx.Register(new TConfigsProvider(ctx.SelfID));
 
-    ui32 item = (ui32)NKikimrConsole::TConfigItem::AllowEditYamlInUiItem;
-    ctx.Send(MakeConfigsDispatcherID(SelfId().NodeId()),
-             new TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest(item));
-}
-
-void TConfigsManager::Handle(TEvConsole::TEvConfigNotificationRequest::TPtr &ev,
-                                            const TActorContext &ctx)
-{
-    auto &rec = ev->Get()->Record;
-
-    YamlReadOnly = !rec.GetConfig().GetAllowEditYamlInUi();
-
-    auto resp = MakeHolder<TEvConsole::TEvConfigNotificationResponse>(rec);
-    ctx.Send(ev->Sender, resp.Release(), 0, ev->Cookie);
+    if (!YamlConfig.empty()) {
+        auto resp = MakeHolder<TConfigsProvider::TEvPrivate::TEvUpdateYamlConfig>(
+            YamlConfig,
+            VolatileYamlConfigs);
+        ctx.Send(ConfigsProvider, resp.Release());
+    }
 }
 
 void TConfigsManager::Detach()
@@ -627,14 +616,9 @@ void TConfigsManager::Handle(TEvConsole::TEvToggleConfigValidatorRequest::TPtr &
     TxProcessor->ProcessTx(CreateTxToggleConfigValidator(ev), ctx);
 }
 
-void TConfigsManager::Handle(TEvConsole::TEvReplaceYamlConfigRequest::TPtr &ev, const TActorContext &ctx)
+void TConfigsManager::Handle(TEvConsole::TEvApplyConfigRequest::TPtr &ev, const TActorContext &ctx)
 {
-    TxProcessor->ProcessTx(CreateTxReplaceYamlConfig(ev), ctx);
-}
-
-void TConfigsManager::Handle(TEvConsole::TEvSetYamlConfigRequest::TPtr &ev, const TActorContext &ctx)
-{
-    TxProcessor->ProcessTx(CreateTxSetYamlConfig(ev), ctx);
+    TxProcessor->ProcessTx(CreateTxApplyYamlConfig(ev), ctx);
 }
 
 void TConfigsManager::Handle(TEvConsole::TEvDropConfigRequest::TPtr &ev, const TActorContext &ctx)
@@ -642,31 +626,9 @@ void TConfigsManager::Handle(TEvConsole::TEvDropConfigRequest::TPtr &ev, const T
     TxProcessor->ProcessTx(CreateTxDropYamlConfig(ev), ctx);
 }
 
-void TConfigsManager::Handle(TEvConsole::TEvIsYamlReadOnlyRequest::TPtr &ev, const TActorContext &ctx)
-{
-    auto response = MakeHolder<TEvConsole::TEvIsYamlReadOnlyResponse>();
-    response->Record.SetReadOnly(YamlReadOnly);
-    ctx.Send(ev->Sender, response.Release());
-}
-
 void TConfigsManager::Handle(TEvConsole::TEvGetAllConfigsRequest::TPtr &ev, const TActorContext &ctx)
 {
     TxProcessor->ProcessTx(CreateTxGetYamlConfig(ev), ctx);
-}
-
-void TConfigsManager::Handle(TEvConsole::TEvGetNodeLabelsRequest::TPtr &ev, const TActorContext &ctx)
-{
-    if (!AppData()->FeatureFlags.GetEnableGetNodeLabels()) {
-        auto response = MakeHolder<TEvConsole::TEvDisabled>();
-        ctx.Send(ev->Sender, response.Release());
-    } else {
-        ctx.Send(ev->Forward(MakeConfigsDispatcherID(ev->Get()->Record.GetRequest().node_id())));
-    }
-}
-
-void TConfigsManager::Handle(TEvConsole::TEvGetAllMetadataRequest::TPtr &ev, const TActorContext &ctx)
-{
-    TxProcessor->ProcessTx(CreateTxGetYamlMetadata(ev), ctx);
 }
 
 void TConfigsManager::Handle(TEvConsole::TEvResolveConfigRequest::TPtr &ev, const TActorContext &ctx)
@@ -679,12 +641,7 @@ void TConfigsManager::Handle(TEvConsole::TEvResolveConfigRequest::TPtr &ev, cons
         for (auto &volatileConfig : rec.volatile_configs()) {
             auto str = volatileConfig.config();
             auto d = NFyaml::TDocument::Parse(str);
-            if (d.Root().Type() != NFyaml::ENodeType::Sequence) {
-                auto node = d.Root().Map().at("selector_config");
-                NYamlConfig::AppendVolatileConfigs(tree, node);
-            } else {
-                NYamlConfig::AppendVolatileConfigs(tree, d);
-            }
+            NYamlConfig::AppendVolatileConfigs(tree, d);
         }
 
         TSet<NYamlConfig::TNamedLabel> namedLabels;
@@ -694,21 +651,26 @@ void TConfigsManager::Handle(TEvConsole::TEvResolveConfigRequest::TPtr &ev, cons
 
         auto resolved = NYamlConfig::Resolve(tree, namedLabels);
 
-        auto response = MakeHolder<TEvConsole::TEvResolveConfigResponse>();
+        auto Response = MakeHolder<TEvConsole::TEvResolveConfigResponse>();
+        auto *op = Response->Record.MutableResponse()->mutable_operation();
+        op->set_status(Ydb::StatusIds::SUCCESS);
+        op->set_ready(true);
 
         TStringStream resolvedStr;
         resolvedStr << resolved.second;
 
-        response->Record.MutableResponse()->set_config(resolvedStr.Str());
+        Response->Record.MutableResponse()->set_config(resolvedStr.Str());
 
-        ctx.Send(ev->Sender, response.Release());
+        ctx.Send(ev->Sender, Response.Release());
     } catch (const yexception& ex) {
-        auto response = MakeHolder<TEvConsole::TEvGenericError>();
-        response->Record.SetYdbStatus(Ydb::StatusIds::BAD_REQUEST);
-        auto *issue = response->Record.AddIssues();
+        auto Response = MakeHolder<TEvConsole::TEvResolveConfigResponse>();
+        auto *op = Response->Record.MutableResponse()->mutable_operation();
+        op->set_status(Ydb::StatusIds::BAD_REQUEST);
+        op->set_ready(true);
+        auto *issue = op->add_issues();
         issue->set_severity(NYql::TSeverityIds::S_ERROR);
         issue->set_message(ex.what());
-        ctx.Send(ev->Sender, response.Release());
+        ctx.Send(ev->Sender, Response.Release());
     }
 }
 
@@ -722,185 +684,145 @@ void TConfigsManager::Handle(TEvConsole::TEvResolveAllConfigRequest::TPtr &ev, c
         for (auto &volatileConfig : rec.volatile_configs()) {
             auto str = volatileConfig.config();
             auto d = NFyaml::TDocument::Parse(str);
-            if (d.Root().Type() != NFyaml::ENodeType::Sequence) {
-                auto node = d.Root().Map().at("selector_config");
-                NYamlConfig::AppendVolatileConfigs(tree, node);
-            } else {
-                NYamlConfig::AppendVolatileConfigs(tree, d);
-            }
+            NYamlConfig::AppendVolatileConfigs(tree, d);
         }
 
         auto resolved = NYamlConfig::ResolveAll(tree);
 
         auto Response = MakeHolder<TEvConsole::TEvResolveAllConfigResponse>();
+        auto *op = Response->Record.MutableResponse()->mutable_operation();
+        op->set_status(Ydb::StatusIds::SUCCESS);
+        op->set_ready(true);
 
-        auto convert = [] (const NYamlConfig::TLabel::EType& label) -> Ydb::DynamicConfig::YamlLabelExt::LabelType {
-            switch(label) {
-            case NYamlConfig::TLabel::EType::Negative:
-                return Ydb::DynamicConfig::YamlLabelExt::NOT_SET;
-            case NYamlConfig::TLabel::EType::Common:
-                return Ydb::DynamicConfig::YamlLabelExt::COMMON;
-            case NYamlConfig::TLabel::EType::Empty:
-                return Ydb::DynamicConfig::YamlLabelExt::EMPTY;
-            default:
-                Y_ABORT("unexpected enum value");
+        TStringStream resolvedStr;
+
+        bool first = true;
+
+        for (auto &[labelSets, config] : resolved.Configs) {
+            if (!first) {
+                resolvedStr << "\n";
             }
-        };
-
-        if (!rec.verbose_response()) {
-            TStringStream resolvedStr;
-
-            bool first = true;
-
-            for (auto &[labelSets, config] : resolved.Configs) {
-                if (!first) {
-                    resolvedStr << "\n";
+            resolvedStr << "---\n";
+            resolvedStr << "# applicable to: \n";
+            for (auto &labelSet : labelSets) {
+                resolvedStr << "# [";
+                for (size_t i = 0; i < labelSet.size(); ++i) {
+                    auto &label = labelSet[i];
+                    resolvedStr << resolved.Labels[i] << ":" << (
+                        label.Type == NYamlConfig::TLabel::EType::Common   ? label.Value.Quote() :
+                        label.Type == NYamlConfig::TLabel::EType::Negative ? " - "               :
+                                                                             " _ "               )
+                            << ", ";
                 }
-                resolvedStr << "---\n";
-                resolvedStr << "# applicable to: \n";
-                for (auto &labelSet : labelSets) {
-                    resolvedStr << "# [";
-                    for (size_t i = 0; i < labelSet.size(); ++i) {
-                        auto &label = labelSet[i];
-                        resolvedStr << resolved.Labels[i] << ":" << (
-                            label.Type == NYamlConfig::TLabel::EType::Common   ? label.Value.Quote() :
-                            label.Type == NYamlConfig::TLabel::EType::Negative ? " - "               :
-                                                                                 " _ "               )
-                                << ", ";
-                    }
-                    resolvedStr << "] \n";
-                }
-                resolvedStr << config.second << Endl;
-                first = false;
+                resolvedStr << "] \n";
             }
-
-            Response->Record.MutableResponse()->set_config(resolvedStr.Str());
-        } else {
-            for (auto &[labelSets, config] : resolved.Configs) {
-                auto *serConfig = Response->Record.MutableResponse()->add_configs();
-                for (auto &labelSet : labelSets) {
-                    auto *serLabelSet = serConfig->add_label_sets();
-                    for (size_t i = 0; i < labelSet.size(); ++i) {
-                        auto &label = labelSet[i];
-                        auto &name = resolved.Labels[i];
-                        auto* serLabel = serLabelSet->add_labels();
-                        serLabel->set_label(name);
-                        serLabel->set_type(convert(label.Type));
-                        serLabel->set_value(label.Value);
-                    }
-                }
-                TStringStream configStr;
-                configStr << config.second;
-                serConfig->set_config(configStr.Str());
-            }
+            resolvedStr << config.second << Endl;
+            first = false;
         }
+
+        Response->Record.MutableResponse()->set_config(resolvedStr.Str());
 
         ctx.Send(ev->Sender, Response.Release());
     } catch (const yexception& ex) {
-        auto response = MakeHolder<TEvConsole::TEvGenericError>();
-        response->Record.SetYdbStatus(Ydb::StatusIds::BAD_REQUEST);
-        auto *issue = response->Record.AddIssues();
+        auto Response = MakeHolder<TEvConsole::TEvResolveAllConfigResponse>();
+        auto *op = Response->Record.MutableResponse()->mutable_operation();
+        op->set_status(Ydb::StatusIds::BAD_REQUEST);
+        op->set_ready(true);
+        auto *issue = op->add_issues();
         issue->set_severity(NYql::TSeverityIds::S_ERROR);
         issue->set_message(ex.what());
-        ctx.Send(ev->Sender, response.Release());
+        ctx.Send(ev->Sender, Response.Release());
     }
 }
 
 void TConfigsManager::Handle(TEvConsole::TEvAddVolatileConfigRequest::TPtr &ev, const TActorContext &ctx)
 {
     auto &rec = ev->Get()->Record.GetRequest();
+    auto Response = MakeHolder<TEvConsole::TEvAddVolatileConfigResponse>();
+    auto *op = Response->Record.MutableResponse()->mutable_operation();
+    if (VolatileYamlConfigs.empty() || VolatileYamlConfigs.rbegin()->first + 1 == rec.id()) {
+        try {
+            auto cfg = rec.config();
+            auto doc = NFyaml::TDocument::Parse(cfg);
+            NYamlConfig::ValidateVolatileConfig(doc);
 
-    try {
-        auto response = MakeHolder<TEvConsole::TEvAddVolatileConfigResponse>();
-        auto cfg = rec.config();
-        auto metadata = NYamlConfig::GetVolatileMetadata(cfg);
-
-        if (!metadata.Id || !metadata.Cluster || !metadata.Version) {
-            ythrow yexception() << "Invalid metadata";
-        }
-
-        cfg = NYamlConfig::ReplaceMetadata(cfg, metadata);
-
-        auto clusterName = metadata.Cluster.value();
-        auto id = metadata.Id.value();
-        auto version = metadata.Version.value();
-
-        auto doc = NFyaml::TDocument::Parse(cfg);
-        NYamlConfig::ValidateVolatileConfig(doc);
-        auto node = doc.Root().Map().at("selector_config");
-
-        if (VolatileYamlConfigs.empty() || VolatileYamlConfigs.rbegin()->first + 1 == id) {
             auto config = YamlConfig;
             auto tree = NFyaml::TDocument::Parse(config);
 
             for (auto &[_, config] : VolatileYamlConfigs) {
-                auto doc = NFyaml::TDocument::Parse(config);
-                auto node = doc.Root().Map().at("selector_config");
-                NYamlConfig::AppendVolatileConfigs(tree, node);
+                auto d = NFyaml::TDocument::Parse(config);
+                NYamlConfig::AppendVolatileConfigs(tree, d);
             }
 
-            NYamlConfig::AppendVolatileConfigs(tree, node);
+            NYamlConfig::AppendVolatileConfigs(tree, doc);
 
             auto resolved = NYamlConfig::ResolveAll(tree);
 
             for (auto &[_, config] : resolved.Configs) {
-                auto cfg = NYamlConfig::YamlToProto(config.second, true);
+                auto cfg = NYamlConfig::YamlToProto(config.second);
             }
 
-            if (ClusterName != clusterName) {
+            if (ClusterName != rec.cluster()) {
                 ythrow yexception() << "ClusterName mismatch";
             }
 
-            if (YamlVersion != version) {
+            if (YamlVersion != rec.version()) {
                 ythrow yexception() << "Version mismatch";
             }
 
-            VolatileYamlConfigs.try_emplace(id, cfg);
+            VolatileYamlConfigs.try_emplace(rec.id(), rec.config());
+
+            op->set_status(Ydb::StatusIds::SUCCESS);
+            op->set_ready(true);
 
             auto resp = MakeHolder<TConfigsProvider::TEvPrivate::TEvUpdateYamlConfig>(
                 YamlConfig,
                 VolatileYamlConfigs);
             ctx.Send(ConfigsProvider, resp.Release());
-        } else if (auto it = VolatileYamlConfigs.find(id); it == VolatileYamlConfigs.end() || it->second != cfg) {
-            ythrow yexception() << "Config already exists";
+        } catch (const yexception& ex) {
+            op->set_status(Ydb::StatusIds::BAD_REQUEST);
+            op->set_ready(true);
+            auto *issue = op->add_issues();
+            issue->set_severity(NYql::TSeverityIds::S_ERROR);
+            issue->set_message(ex.what());
         }
-
-        ctx.Send(ev->Sender, response.Release());
-    } catch (const yexception& ex) {
-        auto response = MakeHolder<TEvConsole::TEvGenericError>();
-        response->Record.SetYdbStatus(Ydb::StatusIds::BAD_REQUEST);
-        auto *issue = response->Record.AddIssues();
-        issue->set_severity(NYql::TSeverityIds::S_ERROR);
-        issue->set_message(ex.what());
-        ctx.Send(ev->Sender, response.Release());
+    } else if (auto it = VolatileYamlConfigs.find(rec.id()); it != VolatileYamlConfigs.end() && it->second == rec.config()) {
+        op->set_status(Ydb::StatusIds::SUCCESS);
+        op->set_ready(true);
+    } else {
+        op->set_status(Ydb::StatusIds::BAD_REQUEST);
+        op->set_ready(true);
     }
+
+    ctx.Send(ev->Sender, Response.Release());
 }
 
 void TConfigsManager::Handle(TEvConsole::TEvRemoveVolatileConfigRequest::TPtr &ev, const TActorContext &ctx)
 {
     auto &rec = ev->Get()->Record.GetRequest();
+    auto Response = MakeHolder<TEvConsole::TEvRemoveVolatileConfigResponse>();
+    auto *op = Response->Record.MutableResponse()->mutable_operation();
 
     try {
-        if (!rec.force()) {
-            if (ClusterName != rec.identity().cluster()) {
-                ythrow yexception() << "ClusterName mismatch";
-            }
-
-            if (YamlVersion != rec.identity().version()) {
-                ythrow yexception() << "Version mismatch";
-            }
+        if (ClusterName != rec.cluster()) {
+            ythrow yexception() << "ClusterName mismatch";
         }
+
+        if (YamlVersion != rec.version()) {
+            ythrow yexception() << "Version mismatch";
+        }
+
 
         int toRemove = 0;
 
-        for (auto &id : rec.ids().ids()) {
+        for (auto &id : rec.ids()) {
             toRemove += (VolatileYamlConfigs.find(id) != VolatileYamlConfigs.end()) ? 1 : 0;
         }
 
-        if (rec.all()) {
+        if (!rec.ids_size()) {
             VolatileYamlConfigs.clear();
-        } else if (rec.ids().ids_size() == toRemove) {
-            for (auto &id : rec.ids().ids()) {
+        } else if (rec.ids_size() == toRemove) {
+            for (auto &id : rec.ids()) {
                 VolatileYamlConfigs.erase(id);
             }
         } else {
@@ -912,16 +834,17 @@ void TConfigsManager::Handle(TEvConsole::TEvRemoveVolatileConfigRequest::TPtr &e
             VolatileYamlConfigs);
         ctx.Send(ConfigsProvider, resp.Release());
 
-        auto response = MakeHolder<TEvConsole::TEvRemoveVolatileConfigResponse>();
-        ctx.Send(ev->Sender, response.Release());
+        op->set_status(Ydb::StatusIds::SUCCESS);
+        op->set_ready(true);
     } catch (const yexception& ex) {
-        auto response = MakeHolder<TEvConsole::TEvGenericError>();
-        response->Record.SetYdbStatus(Ydb::StatusIds::BAD_REQUEST);
-        auto *issue = response->Record.AddIssues();
+        op->set_status(Ydb::StatusIds::BAD_REQUEST);
+        op->set_ready(true);
+        auto *issue = op->add_issues();
         issue->set_severity(NYql::TSeverityIds::S_ERROR);
         issue->set_message(ex.what());
-        ctx.Send(ev->Sender, response.Release());
     }
+
+    ctx.Send(ev->Sender, Response.Release());
 }
 
 void TConfigsManager::Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev, const TActorContext &ctx)
@@ -934,9 +857,6 @@ void TConfigsManager::Handle(TEvPrivate::TEvStateLoaded::TPtr &/*ev*/, const TAc
     ctx.Send(ConfigsProvider, new TConfigsProvider::TEvPrivate::TEvSetConfigs(ConfigIndex.GetConfigItems()));
     ctx.Send(ConfigsProvider, new TConfigsProvider::TEvPrivate::TEvSetSubscriptions(SubscriptionIndex.GetSubscriptions()));
     ctx.Send(GetNameserviceActorId(), new TEvInterconnect::TEvListNodes());
-    if (!YamlConfig.empty()) {
-        ctx.Send(ConfigsProvider, new TConfigsProvider::TEvPrivate::TEvUpdateYamlConfig(YamlConfig, VolatileYamlConfigs));
-    }
     ScheduleLogCleanup(ctx);
 }
 

@@ -1,7 +1,7 @@
 #include "query_readbatch.h"
 #include <ydb/core/blobstorage/base/vdisk_priorities.h>
-#include <ydb/library/wilson_ids/wilson.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
+#include <ydb/core/base/wilson.h>
+#include <library/cpp/actors/wilson/wilson_span.h>
 #include <util/generic/algorithm.h>
 
 using namespace NKikimrServices;
@@ -26,7 +26,7 @@ namespace NKikimr {
 
         void Bootstrap(const TActorContext &ctx) {
             Become(&TThis::StateFunc);
-            Y_DEBUG_ABORT_UNLESS(!Result->GlueReads.empty());
+            Y_VERIFY_DEBUG(!Result->GlueReads.empty());
 
             TReplQuoter::TPtr quoter;
             if (IsRepl) {
@@ -60,7 +60,6 @@ namespace NKikimr {
                     " origReadN# %" PRIu32, this, ui32(Result->GlueReads.size()),
                     ui32(Result->DiskDataItemPtrs.size())));
             ctx.Send(NotifyID, new TEvents::TEvCompleted);
-            Span.EndOk();
             Die(ctx);
         }
 
@@ -97,7 +96,6 @@ namespace NKikimr {
 
         void HandlePoison(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
             Y_UNUSED(ev);
-            Span.EndError("EvPoisonPill");
             TThis::Die(ctx);
         }
 

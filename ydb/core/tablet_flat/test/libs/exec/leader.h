@@ -6,7 +6,7 @@
 #include <ydb/core/tablet_flat/util_fmt_abort.h>
 #include <ydb/core/tablet_flat/util_fmt_desc.h>
 #include <ydb/core/tablet_flat/util_fmt_basic.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NKikimr {
 namespace NFake {
@@ -28,7 +28,7 @@ namespace NFake {
             , Edge(head) /* Live until this runlevel exists */
             , Stopped(stopped)
         {
-             Y_ABORT_UNLESS(Edge < Levels.size(), "Out of runlevels slots");
+             Y_VERIFY(Edge < Levels.size(), "Out of runlevels slots");
         }
 
     private:
@@ -47,7 +47,7 @@ namespace NFake {
         void Inbox(TAutoPtr<::NActors::IEventHandle> &eh)
         {
             if (auto *fire = eh->CastAsLocal<NFake::TEvFire>()) {
-                DoFire(fire->Level, fire->Alias, std::move(fire->Cmd));
+                DoFire(fire->Level, fire->Alias, fire->Cmd);
             } else if (eh->CastAsLocal<TEvents::TEvGone>()) {
                 HandleGone(eh->Sender);
             } else if (eh->CastAsLocal<TEvents::TEvPoison>()) {
@@ -94,13 +94,13 @@ namespace NFake {
             }
         }
 
-        void DoFire(ui32 level, const TActorId &alias, TActorSetupCmd cmd)
+        void DoFire(ui32 level, const TActorId &alias, TActorSetupCmd &cmd)
         {
             if (level <= Edge && Levels[level].Alive) {
-                auto actor = Register(cmd.Actor.release(), cmd.MailboxType, 0);
+                auto actor = Register(cmd.Actor, cmd.MailboxType, 0);
                 auto result = Childs.emplace(actor, level);
 
-                Y_ABORT_UNLESS(result.second, "Cannot register same actor twice");
+                Y_VERIFY(result.second, "Cannot register same actor twice");
 
                 Levels[level].Left += 1, Total += 1, Head = Max(Head, level);
 

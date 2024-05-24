@@ -1,9 +1,10 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
+#include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include "viewer.h"
 #include "json_pipe_req.h"
 #include <ydb/core/viewer/json/json.h>

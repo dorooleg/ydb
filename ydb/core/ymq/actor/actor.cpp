@@ -34,7 +34,7 @@ private:
 };
 
 IActor* CreateActionActor(const NKikimrClient::TSqsRequest& req, THolder<IReplyCallback> cb) {
-    Y_ABORT_UNLESS(req.GetRequestId());
+    Y_VERIFY(req.GetRequestId());
 
 #define REQUEST_CASE(action) \
     case NKikimrClient::TSqsRequest::Y_CAT(k, action): {                \
@@ -74,7 +74,7 @@ IActor* CreateActionActor(const NKikimrClient::TSqsRequest& req, THolder<IReplyC
             return new TUnimplementedRequestActor(req, std::move(cb));
     }
 
-    Y_ABORT();
+    Y_FAIL();
 }
 
 IActor* CreateProxyActionActor(const NKikimrClient::TSqsRequest& req, THolder<IReplyCallback> cb, bool enableQueueLeader) {

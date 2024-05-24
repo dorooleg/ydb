@@ -36,7 +36,7 @@ public:
     }
 
     THolder<TProposeResponse> Propose(const TString&, TOperationContext& context) override {
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
 
         const auto ssId = context.SS->SelfTabletId();
 
@@ -52,15 +52,15 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TReject");
+        Y_FAIL("no AbortPropose for TReject");
     }
 
     bool ProgressState(TOperationContext&) override {
-        Y_ABORT("no ProgressState for TReject");
+        Y_FAIL("no ProgressState for TReject");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_ABORT("no AbortUnsafe for TReject");
+        Y_FAIL("no AbortUnsafe for TReject");
     }
 };
 

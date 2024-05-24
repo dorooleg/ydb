@@ -40,7 +40,7 @@ bool TSchemaSnapshotManager::Load(NIceDb::TNiceDb& db) {
 
         NKikimrSchemeOp::TTableDescription desc;
         const bool ok = ParseFromStringNoSizeLimit(desc, schema);
-        Y_ABORT_UNLESS(ok);
+        Y_VERIFY(ok);
 
         const auto res = Snapshots.emplace(
             std::piecewise_construct,
@@ -133,7 +133,7 @@ bool TSchemaSnapshotManager::ReleaseReference(const TSchemaSnapshotKey& key) {
     auto refIt = References.find(key);
 
     if (refIt == References.end() || refIt->second <= 0) {
-        Y_DEBUG_ABORT("ReleaseReference underflow, check acquire/release pairs");
+        Y_VERIFY_DEBUG(false, "ReleaseReference underflow, check acquire/release pairs");
         return false;
     }
 
@@ -145,7 +145,7 @@ bool TSchemaSnapshotManager::ReleaseReference(const TSchemaSnapshotKey& key) {
 
     auto it = Snapshots.find(key);
     if (it == Snapshots.end()) {
-        Y_DEBUG_ABORT("ReleaseReference on an already removed snapshot");
+        Y_VERIFY_DEBUG(false, "ReleaseReference on an already removed snapshot");
         return false;
     }
 

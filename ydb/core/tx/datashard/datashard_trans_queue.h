@@ -26,7 +26,6 @@ class TTransQueue {
 public:
     friend class TPipeline;
     friend class TActiveTransaction;
-    friend class TWriteOperation;
 
     TTransQueue(TDataShard * self)
         : Self(self)
@@ -46,7 +45,7 @@ public:
     const THashMap<ui64, TOperation::TPtr> &GetTxsInFly() const { return TxsInFly; }
     ui64 TxInFly() const { return TxsInFly.size(); }
     void AddTxInFly(TOperation::TPtr op);
-    void RemoveTxInFly(ui64 txId, std::vector<std::unique_ptr<IEventHandle>> *cleanupReplies = nullptr);
+    void RemoveTxInFly(ui64 txId);
     TOperation::TPtr FindTxInFly(ui64 txId) const
     {
         auto it = TxsInFly.find(txId);
@@ -86,9 +85,8 @@ private: // for pipeline only
     void UpdateTxFlags(NIceDb::TNiceDb& db, ui64 txId, ui64 flags);
     void UpdateTxBody(NIceDb::TNiceDb& db, ui64 txId, const TStringBuf& txBody);
     void ProposeSchemaTx(NIceDb::TNiceDb& db, const TSchemaOperation& op);
-    bool CancelPropose(NIceDb::TNiceDb& db, ui64 txId, std::vector<std::unique_ptr<IEventHandle>>& replies);
+    bool CancelPropose(NIceDb::TNiceDb& db, ui64 txId);
     ECleanupStatus CleanupOutdated(NIceDb::TNiceDb& db, ui64 outdatedStep, ui32 batchSize, TVector<ui64>& outdatedTxs);
-    bool CleanupVolatile(ui64 txId);
 
     // Plan
 

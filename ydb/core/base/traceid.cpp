@@ -20,15 +20,16 @@ TTraceID TTraceID::GenerateNew() {
 }
 
 TString TTraceID::ToString() const {
-    TString str;
-    str.reserve(128);
-    TStringOutput outStr(str);
-    Out(outStr);
-    return str;
+    TString result;
+    TStringOutput out(result);
+    Out(out);
+    return result;
 }
 
 void TTraceID::Out(IOutputStream &o) const {
-    o << "[ID: " << RandomID << ", " << "Created: " << TInstant::MicroSeconds(CreationTime).ToRfc822StringLocal() << "]";
+    char buf[240];
+    sprintf(buf, "[ID:%" PRIu64 ", Created: %s]", RandomID, TInstant::MicroSeconds(CreationTime).ToRfc822StringLocal().data());
+    o << buf;
 }
 
 bool TTraceID::operator<(const TTraceID &x) const {
@@ -56,7 +57,7 @@ bool TTraceID::operator!=(const TTraceID &x) const {
 }
 
 void TraceIDFromTraceID(const TTraceID& src, NKikimrTracing::TTraceID* dest) {
-    Y_DEBUG_ABORT_UNLESS(dest);
+    Y_VERIFY_DEBUG(dest);
     dest->SetCreationTime(src.CreationTime);
     dest->SetRandomID(src.RandomID);
 }

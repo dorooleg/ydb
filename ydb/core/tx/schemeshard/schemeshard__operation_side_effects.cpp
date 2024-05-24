@@ -53,24 +53,6 @@ void TSideEffects::UnbindMsgFromPipe(TOperationId opId, TTabletId dst, TPipeMess
     BindedMessageAcks.push_back(TBindMsgAck(opId, dst, cookie));
 }
 
-void  TSideEffects::UpdateTempTablesToCreateState(const TActorId& ownerActorId, const TPathId& pathId) {
-    auto it = TempTablesToCreateState.find(ownerActorId);
-    if (it == TempTablesToCreateState.end()) {
-        TempTablesToCreateState[ownerActorId] = { pathId };
-    } else {
-        it->second.push_back(pathId);
-    }
-}
-
-void  TSideEffects::UpdateTempTablesToDropState(const TActorId& ownerActorId, const TPathId& pathId) {
-    auto it = TempTablesToDropState.find(ownerActorId);
-    if (it == TempTablesToDropState.end()) {
-        TempTablesToDropState[ownerActorId] = { pathId };
-    } else {
-        it->second.push_back(pathId);
-    }
-}
-
 void TSideEffects::RouteByTabletsFromOperation(TOperationId opId) {
     RelationsByTabletsFromOperation.push_back(opId);
 }
@@ -211,9 +193,6 @@ void TSideEffects::ApplyOnComplete(TSchemeShard* ss, const TActorContext& ctx) {
     DoWaitPublication(ss, ctx);
     DoPublishToSchemeBoard(ss, ctx);
 
-    DoUpdateTempTablesToCreateState(ss, ctx);
-    DoUpdateTempTablesToDropState(ss, ctx);
-
     DoSend(ss, ctx);
     DoBindMsg(ss, ctx);
 
@@ -299,7 +278,7 @@ bool TSideEffects::CheckDecouplingProposes(TString& errExpl) const {
 
 void TSideEffects::ExpandCoordinatorProposes(TSchemeShard* ss, const TActorContext& ctx) {
     TString errExpl;
-    Y_ABORT_UNLESS(CheckDecouplingProposes(errExpl), "check decoupling: %s", errExpl.c_str());
+    Y_VERIFY(CheckDecouplingProposes(errExpl), "check decoupling: %s", errExpl.c_str());
 
     TSet<TTxId> touchedTxIds;
     for (auto& rec: CoordinatorProposes) {
@@ -390,7 +369,7 @@ void TSideEffects::DoCoordinatorAck(TSchemeShard* ss, const TActorContext& ctx) 
 
 void TSideEffects::DoUpdateTenant(TSchemeShard* ss, NTabletFlatExecutor::TTransactionContext &txc, const TActorContext& ctx) {
     for (const TPathId pathId : TenantsToUpdate) {
-        Y_ABORT_UNLESS(ss->PathsById.contains(pathId));
+        Y_VERIFY(ss->PathsById.contains(pathId));
 
         if (!ss->PathsById.at(pathId)->IsExternalSubDomainRoot()) {
             LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -401,7 +380,7 @@ void TSideEffects::DoUpdateTenant(TSchemeShard* ss, NTabletFlatExecutor::TTransa
         }
 
         TPath tenantRoot = TPath::Init(pathId, ss);
-        Y_ABORT_UNLESS(tenantRoot.Base()->IsExternalSubDomainRoot());
+        Y_VERIFY(tenantRoot.Base()->IsExternalSubDomainRoot());
 
         TSubDomainInfo::TPtr& subDomain = ss->SubDomains.at(pathId);
 
@@ -414,7 +393,7 @@ void TSideEffects::DoUpdateTenant(TSchemeShard* ss, NTabletFlatExecutor::TTransa
         }
 
         auto& tenantLink = ss->SubDomainsLinks.GetLink(pathId);
-        Y_ABORT_UNLESS(tenantLink.DomainKey == pathId);
+        Y_VERIFY(tenantLink.DomainKey == pathId);
 
         auto message = MakeHolder<TEvSchemeShard::TEvUpdateTenantSchemeShard>(ss->TabletID(), ss->Generation());
 
@@ -474,12 +453,6 @@ void TSideEffects::DoUpdateTenant(TSchemeShard* ss, NTabletFlatExecutor::TTransa
             if (subDomain->GetDatabaseQuotas()) {
                 message->Record.MutableDatabaseQuotas()->CopyFrom(*subDomain->GetDatabaseQuotas());
             }
-            if (const auto& auditSettings = subDomain->GetAuditSettings()) {
-                message->Record.MutableAuditSettings()->CopyFrom(*auditSettings);
-            }
-            if (const auto& serverlessComputeResourcesMode = subDomain->GetServerlessComputeResourcesMode()) {
-                message->Record.SetServerlessComputeResourcesMode(*serverlessComputeResourcesMode);
-            }
             hasChanges = true;
         }
 
@@ -527,30 +500,6 @@ void TSideEffects::DoUpdateTenant(TSchemeShard* ss, NTabletFlatExecutor::TTransa
             }
         }
 
-        if (!tenantLink.TenantStatisticsAggregator && subDomain->GetTenantStatisticsAggregatorID()) {
-            message->SetTenantStatisticsAggregator(ui64(subDomain->GetTenantStatisticsAggregatorID()));
-            hasChanges = true;
-        }
-
-        if (tenantLink.TenantStatisticsAggregator) {
-            if (subDomain->GetAlter()) {
-                Y_VERIFY_S(tenantLink.TenantStatisticsAggregator == subDomain->GetAlter()->GetTenantStatisticsAggregatorID(),
-                           "tenant SA is inconsistent"
-                               << " on tss: " << tenantLink.TenantStatisticsAggregator
-                               << " on gss: " << subDomain->GetAlter()->GetTenantStatisticsAggregatorID());
-            } else {
-                Y_VERIFY_S(tenantLink.TenantStatisticsAggregator == subDomain->GetTenantStatisticsAggregatorID(),
-                           "tenant SA is inconsistent"
-                               << " on tss: " << tenantLink.TenantStatisticsAggregator
-                               << " on gss: " << subDomain->GetTenantStatisticsAggregatorID());
-            }
-        }
-
-        if (!tenantLink.TenantGraphShard && subDomain->GetTenantGraphShardID()) {
-            message->SetTenantGraphShard(ui64(subDomain->GetTenantGraphShardID()));
-            hasChanges = true;
-        }
-
         if (!hasChanges) {
             LOG_INFO_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                        "DoUpdateTenant no hasChanges"
@@ -590,7 +539,7 @@ void TSideEffects::DoPersistPublishPaths(TSchemeShard* ss, NTabletFlatExecutor::
 
         const auto& paths = kv.second;
         for (TPathId pathId : paths) {
-            Y_ABORT_UNLESS(ss->PathsById.contains(pathId));
+            Y_VERIFY(ss->PathsById.contains(pathId));
 
             const ui64 version = ss->GetPathVersion(TPath::Init(pathId, ss)).GetGeneralVersion();
             if (operation->AddPublishingPath(pathId, version)) {
@@ -648,7 +597,7 @@ void TSideEffects::DoBindMsg(TSchemeShard *ss, const TActorContext &ctx) {
                         << " cookie: " << cookie
                         << " msg type: " << msgType);
 
-        Y_ABORT_UNLESS(message->IsSerializable());
+        Y_VERIFY(message->IsSerializable());
 
         if (!ss->Operations.contains(opId.GetTxId())) {
             LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -662,12 +611,12 @@ void TSideEffects::DoBindMsg(TSchemeShard *ss, const TActorContext &ctx) {
             return;
         }
 
-        Y_ABORT_UNLESS(ss->Operations.contains(opId.GetTxId()));
+        Y_VERIFY(ss->Operations.contains(opId.GetTxId()));
         TOperation::TPtr operation = ss->Operations.at(opId.GetTxId());
 
         TAllocChunkSerializer serializer;
         const bool success = message->SerializeToArcadiaStream(&serializer);
-        Y_ABORT_UNLESS(success);
+        Y_VERIFY(success);
         TIntrusivePtr<TEventSerializedData> data = serializer.Release(message->CreateSerializationInfo());
         operation->PipeBindedMessages[tablet][cookie] = TOperation::TPreSerializedMessage(msgType, data, opId);
 
@@ -763,7 +712,7 @@ void TSideEffects::DoReleasePathState(TSchemeShard *ss, const TActorContext &) {
 
         TOperation::TPtr operation = ss->Operations.at(opId.GetTxId());
         if (operation->ReleasePathAtDone.contains(pathId)) {
-            Y_ABORT_UNLESS(operation->ReleasePathAtDone.at(pathId) == state);
+            Y_VERIFY(operation->ReleasePathAtDone.at(pathId) == state);
             continue;
         }
 
@@ -774,86 +723,6 @@ void TSideEffects::DoReleasePathState(TSchemeShard *ss, const TActorContext &) {
 void TSideEffects::DoPersistDeleteShards(TSchemeShard *ss, NTabletFlatExecutor::TTransactionContext &txc, const TActorContext &) {
     NIceDb::TNiceDb db(txc.DB);
     ss->PersistShardsToDelete(db, ToDeleteShards);
-}
-
-void TSideEffects::DoUpdateTempTablesToCreateState(TSchemeShard* ss, const TActorContext &ctx) {
-    for (auto& [ownerActorId, tempTables]: TempTablesToCreateState) {
-
-        auto& tempTablesByOwner = ss->TempTablesState.TempTablesByOwner;
-        auto& nodeStates = ss->TempTablesState.NodeStates;
-
-        auto it = tempTablesByOwner.find(ownerActorId);
-
-        auto nodeId = ownerActorId.NodeId();
-
-        auto itNodeStates = nodeStates.find(nodeId);
-        if (itNodeStates == nodeStates.end()) {
-            auto& nodeState = nodeStates[nodeId];
-            nodeState.Owners.insert(ownerActorId);
-            nodeState.RetryState.CurrentDelay =
-                TDuration::MilliSeconds(ss->BackgroundCleaningRetrySettings.GetStartDelayMs());
-        } else {
-            itNodeStates->second.Owners.insert(ownerActorId);
-        }
-
-        if (it == tempTablesByOwner.end()) {
-            ctx.Send(new IEventHandle(ownerActorId, ss->SelfId(),
-                new TEvSchemeShard::TEvOwnerActorAck(),
-                IEventHandle::FlagTrackDelivery | IEventHandle::FlagSubscribeOnSession));
-
-            auto& currentTempTables = tempTablesByOwner[ownerActorId];
-
-            for (auto& pathId : tempTables) {
-                currentTempTables.insert(std::move(pathId));
-            }
-            continue;
-        }
-
-        for (auto& pathId : tempTables) {
-            it->second.insert(std::move(pathId));
-        }
-    }
-}
-
-void TSideEffects::DoUpdateTempTablesToDropState(TSchemeShard* ss, const TActorContext& ctx) {
-    for (auto& [ownerActorId, tempTables]: TempTablesToDropState) {
-        auto& tempTablesByOwner = ss->TempTablesState.TempTablesByOwner;
-
-        auto it = tempTablesByOwner.find(ownerActorId);
-        if (it == tempTablesByOwner.end()) {
-            continue;
-        }
-
-        for (auto& pathId : tempTables) {
-            auto tempTableIt = it->second.find(std::move(pathId));
-            if (tempTableIt == it->second.end()) {
-                continue;
-            }
-
-            it->second.erase(tempTableIt);
-            ss->RemoveBackgroundCleaning(pathId);
-        }
-
-        if (it->second.empty()) {
-            tempTablesByOwner.erase(it);
-
-            auto& nodeStates = ss->TempTablesState.NodeStates;
-
-            auto nodeId = ownerActorId.NodeId();
-            auto itStates = nodeStates.find(nodeId);
-            if (itStates != nodeStates.end()) {
-                auto itOwner = itStates->second.Owners.find(ownerActorId);
-                if (itOwner != itStates->second.Owners.end()) {
-                    itStates->second.Owners.erase(itOwner);
-                }
-                if (itStates->second.Owners.empty()) {
-                    nodeStates.erase(itStates);
-                    ctx.Send(new IEventHandle(TActivationContext::InterconnectProxy(nodeId), ss->SelfId(),
-                        new TEvents::TEvUnsubscribe, 0));
-                }
-            }
-        }
-    }
 }
 
 void TSideEffects::ResumeLongOps(TSchemeShard *ss, const TActorContext &ctx) {
@@ -877,7 +746,7 @@ void TSideEffects::DoPersistDependencies(TSchemeShard *ss, NTabletFlatExecutor::
                            << ", dependent tx " << child);
                 ss->Operations.at(parent)->DependentOperations.insert(child);
 
-                Y_ABORT_UNLESS(ss->Operations.contains(child));
+                Y_VERIFY(ss->Operations.contains(child));
                 ss->Operations.at(child)->WaitOperations.insert(parent);
 
                 ss->PersistAddTxDependency(db, parent, child);
@@ -929,7 +798,7 @@ void TSideEffects::DoDoneTransactions(TSchemeShard *ss, NTabletFlatExecutor::TTr
             TPathId pathId = item.first;
             NKikimrSchemeOp::EPathState state = item.second;
 
-            Y_ABORT_UNLESS(ss->PathsById.contains(pathId));
+            Y_VERIFY(ss->PathsById.contains(pathId));
             TPathElement::TPtr path = ss->PathsById.at(pathId);
             path->PathState = state;
         }

@@ -12,6 +12,5 @@
 namespace NKikimr::NKqp::NOpt {
 
 NYql::NNodes::TExprBase KqpBuildWideReadTable(const NYql::NNodes::TExprBase& node, NYql::TExprContext& ctx, NYql::TTypeAnnotationContext& typesCtx);
-NYql::NNodes::TExprBase KqpRewriteWriteConstraint(const NYql::NNodes::TExprBase& node, NYql::TExprContext& ctx);
 
 } // namespace NKikimr::NKqp::NOpt

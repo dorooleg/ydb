@@ -20,7 +20,7 @@
 
 #include <util/string/join.h>
 
-#include <grpcpp/client_context.h>
+#include <grpc++/client_context.h>
 
 #include <ydb/public/api/grpc/draft/ydb_persqueue_v1.grpc.pb.h>
 #include <ydb/public/api/protos/persqueue_error_codes_v1.pb.h>
@@ -51,7 +51,7 @@ public:
     {}
 
     TPersQueueV1TestServer CreateServer() {
-        return TPersQueueV1TestServer({.TenantModeEnabled=TenantModeEnabled});
+        return TPersQueueV1TestServer(false, TenantModeEnabled);
     }
 
     TPersQueueV1TestServerWithRateLimiter CreateServerWithRateLimiter() {
@@ -94,12 +94,12 @@ public:
         TPersQueueV1TestServer server = CreateServer();
 
         const int iterations = 10;
-        TVector<std::pair<TString, TVector<TString>>> permissions;
+        NACLib::TDiffACL acl;
         for (int i = 0; i != iterations; ++i) {
-            permissions.push_back({GenerateValidToken(i), {"ydb.generic.write"}});
+            acl.AddAccess(NACLib::EAccessType::Allow, NACLib::UpdateRow, GenerateValidToken(i));
         }
 
-        server.ModifyTopicACL(server.GetFullTopicPath(), permissions);
+        server.ModifyTopicACL(server.GetTopic(), acl);
 
         MAKE_WRITE_STREAM(GenerateValidToken(0));
 
@@ -126,9 +126,10 @@ public:
     void WriteSessionWithValidTokenAndACEAndThenRemoveACEAndSendWriteRequest() {
         TPersQueueV1TestServer server = CreateServer();
 
+        NACLib::TDiffACL acl;
         const auto token = GenerateValidToken();
-
-        server.ModifyTopicACL(server.GetFullTopicPath(), {{token, {"ydb.generic.write"}}});
+        acl.AddAccess(NACLib::EAccessType::Allow, NACLib::UpdateRow, token);
+        server.ModifyTopicACL(server.GetTopic(), acl);
         Cerr << "===Make write stream\n";
 
         MAKE_WRITE_STREAM(token);
@@ -162,9 +163,9 @@ public:
         AssertSuccessfullStreamingOperation(stream->Read(&serverMessage), stream);
         UNIT_ASSERT_C(serverMessage.server_message_case() == StreamingWriteServerMessage::kBatchWriteResponse,
                       serverMessage);
+        acl.ClearAccess();
         Cerr << "===ModifyAcl\n";
-
-        server.ModifyTopicACL(server.GetFullTopicPath(), {{token, {}}});
+        server.ModifyTopicACL(server.GetTopic(), acl);
 
         Cerr << "===Wait for session created with token with removed ACE to die";
         AssertStreamingSessionDead(stream, Ydb::StatusIds::UNAUTHORIZED,
@@ -176,13 +177,12 @@ public:
         TPersQueueV1TestServer server = CreateServer();
         SET_LOCALS;
         const int iterations = 3;
-        TVector<std::pair<TString, TVector<TString>>> permissions;
+        NACLib::TDiffACL acl;
         for (int i = 0; i != iterations; ++i) {
-            permissions.push_back({GenerateValidToken(i), {"ydb.generic.write"}});
+            acl.AddAccess(NACLib::EAccessType::Allow, NACLib::UpdateRow, GenerateValidToken(i));
         }
 
-
-        server.ModifyTopicACL(server.GetFullTopicPath(), permissions);
+        server.ModifyTopicACL(server.GetTopic(), acl);
         MAKE_WRITE_STREAM(GenerateValidToken(0));
 
         StreamingWriteClientMessage clientMessage;
@@ -223,7 +223,9 @@ public:
         const TString validToken = "test_user@" BUILTIN_ACL_DOMAIN;
         // TODO: Why test fails with 'BUILTIN_ACL_DOMAIN' as domain in invalid token?
         TVector<TString> invalidTokens = {TString(), "test_user", "test_user@invalid_domain"};
-        server.ModifyTopicACL(server.GetFullTopicPath(), {{validToken, {"ydb.generic.write"}}});
+        NACLib::TDiffACL acl;
+        acl.AddAccess(NACLib::EAccessType::Allow, NACLib::UpdateRow, validToken);
+        server.ModifyTopicACL(server.GetTopic(), acl);
 
         for (const auto &invalidToken : invalidTokens) {
             Cerr << "Invalid token under test is '" << invalidToken << "'" << Endl;
@@ -256,8 +258,10 @@ public:
                                    BUILTIN_ACL_DOMAIN;
         const TString invalidToken = "test_user_2@"
                                      BUILTIN_ACL_DOMAIN;
+        NACLib::TDiffACL acl;
+        acl.AddAccess(NACLib::EAccessType::Allow, NACLib::UpdateRow, validToken);
 
-        server.ModifyTopicACL(server.GetFullTopicPath(), {{validToken, {"ydb.generic.write"}}});
+        server.ModifyTopicACL(server.GetTopic(), acl);
 
         MAKE_WRITE_STREAM(validToken);
 
@@ -285,7 +289,7 @@ public:
         TPersQueueV1TestServerWithRateLimiter server = CreateServerWithRateLimiter();
         server.InitAll(limitedEntity);
         server.EnablePQLogs({NKikimrServices::PERSQUEUE}, NLog::EPriority::PRI_DEBUG);
-
+        
         const std::vector<TString> differentTopicPathsTypes = {
                 "account1/topic", // without folder
                 "account2/folder/topic", // with folder
@@ -358,7 +362,7 @@ public:
     }
 
     void WriteWithBlobsRateLimit() {
-        //TestWriteWithRateLimiter(NKikimrPQ::TPQConfig::TQuotingConfig::WRITTEN_BLOB_SIZE, TDuration::MilliSeconds(5200));
+        TestWriteWithRateLimiter(NKikimrPQ::TPQConfig::TQuotingConfig::WRITTEN_BLOB_SIZE, TDuration::MilliSeconds(5200));
     }
 
     void WriteWithUserPayloadRateLimit() {

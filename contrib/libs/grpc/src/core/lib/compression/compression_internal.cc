@@ -1,41 +1,39 @@
-//
-//
-// Copyright 2015 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2015 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 #include <grpc/support/port_platform.h>
 
 #include "src/core/lib/compression/compression_internal.h"
 
 #include <stdlib.h>
+#include <string.h>
 
-#include <util/generic/string.h>
-#include <util/string/cast.h>
+#include <cstdint>
 
 #include "y_absl/container/inlined_vector.h"
-#include "y_absl/strings/ascii.h"
-#include "y_absl/strings/str_format.h"
+#include "y_absl/strings/str_join.h"
 #include "y_absl/strings/str_split.h"
-#include "y_absl/types/variant.h"
 
-#include <grpc/support/log.h>
+#include <grpc/compression.h>
 
 #include "src/core/lib/channel/channel_args.h"
-#include "src/core/lib/debug/trace.h"
-#include "src/core/lib/gprpp/crash.h"
+#include "src/core/lib/gpr/useful.h"
+#include "src/core/lib/slice/slice_internal.h"
 #include "src/core/lib/surface/api_trace.h"
 
 namespace grpc_core {
@@ -53,48 +51,6 @@ const char* CompressionAlgorithmAsString(grpc_compression_algorithm algorithm) {
       return nullptr;
   }
 }
-
-namespace {
-class CommaSeparatedLists {
- public:
-  CommaSeparatedLists() : lists_{}, text_buffer_{} {
-    char* text_buffer = text_buffer_;
-    auto add_char = [&text_buffer, this](char c) {
-      if (text_buffer - text_buffer_ == kTextBufferSize) abort();
-      *text_buffer++ = c;
-    };
-    for (size_t list = 0; list < kNumLists; ++list) {
-      char* start = text_buffer;
-      for (size_t algorithm = 0; algorithm < GRPC_COMPRESS_ALGORITHMS_COUNT;
-           ++algorithm) {
-        if ((list & (1 << algorithm)) == 0) continue;
-        if (start != text_buffer) {
-          add_char(',');
-          add_char(' ');
-        }
-        const char* name = CompressionAlgorithmAsString(
-            static_cast<grpc_compression_algorithm>(algorithm));
-        for (const char* p = name; *p != '\0'; ++p) {
-          add_char(*p);
-        }
-      }
-      lists_[list] = y_absl::string_view(start, text_buffer - start);
-    }
-    if (text_buffer - text_buffer_ != kTextBufferSize) abort();
-  }
-
-  y_absl::string_view operator[](size_t list) const { return lists_[list]; }
-
- private:
-  static constexpr size_t kNumLists = 1 << GRPC_COMPRESS_ALGORITHMS_COUNT;
-  // Experimentally determined (tweak things until it runs).
-  static constexpr size_t kTextBufferSize = 86;
-  y_absl::string_view lists_[kNumLists];
-  char text_buffer_[kTextBufferSize];
-};
-
-const CommaSeparatedLists kCommaSeparatedLists;
-}  // namespace
 
 y_absl::optional<grpc_compression_algorithm> ParseCompressionAlgorithm(
     y_absl::string_view algorithm) {
@@ -115,8 +71,9 @@ CompressionAlgorithmSet::CompressionAlgorithmForLevel(
   GRPC_API_TRACE("grpc_message_compression_algorithm_for_level(level=%d)", 1,
                  ((int)level));
   if (level > GRPC_COMPRESS_LEVEL_HIGH) {
-    Crash(y_absl::StrFormat("Unknown message compression level %d.",
-                          static_cast<int>(level)));
+    gpr_log(GPR_ERROR, "Unknown message compression level %d.",
+            static_cast<int>(level));
+    abort();
   }
 
   if (level == GRPC_COMPRESS_LEVEL_NONE) {
@@ -125,10 +82,10 @@ CompressionAlgorithmSet::CompressionAlgorithmForLevel(
 
   GPR_ASSERT(level > 0);
 
-  // Establish a "ranking" or compression algorithms in increasing order of
-  // compression.
-  // This is simplistic and we will probably want to introduce other dimensions
-  // in the future (cpu/memory cost, etc).
+  /* Establish a "ranking" or compression algorithms in increasing order of
+   * compression.
+   * This is simplistic and we will probably want to introduce other dimensions
+   * in the future (cpu/memory cost, etc). */
   y_absl::InlinedVector<grpc_compression_algorithm,
                       GRPC_COMPRESS_ALGORITHMS_COUNT>
       algos;
@@ -144,7 +101,7 @@ CompressionAlgorithmSet::CompressionAlgorithmForLevel(
 
   switch (level) {
     case GRPC_COMPRESS_LEVEL_NONE:
-      abort();  // should have been handled already
+      abort(); /* should have been handled already */
     case GRPC_COMPRESS_LEVEL_LOW:
       return algos[0];
     case GRPC_COMPRESS_LEVEL_MED:
@@ -167,13 +124,19 @@ CompressionAlgorithmSet CompressionAlgorithmSet::FromUint32(uint32_t value) {
 }
 
 CompressionAlgorithmSet CompressionAlgorithmSet::FromChannelArgs(
-    const ChannelArgs& args) {
+    const grpc_channel_args* args) {
   CompressionAlgorithmSet set;
   static const uint32_t kEverything =
       (1u << GRPC_COMPRESS_ALGORITHMS_COUNT) - 1;
-  return CompressionAlgorithmSet::FromUint32(
-      args.GetInt(GRPC_COMPRESSION_CHANNEL_ENABLED_ALGORITHMS_BITSET)
-          .value_or(kEverything));
+  if (args != nullptr) {
+    set = CompressionAlgorithmSet::FromUint32(grpc_channel_args_find_integer(
+        args, GRPC_COMPRESSION_CHANNEL_ENABLED_ALGORITHMS_BITSET,
+        grpc_integer_options{kEverything, 0, kEverything}));
+    set.Set(GRPC_COMPRESS_NONE);
+  } else {
+    set = CompressionAlgorithmSet::FromUint32(kEverything);
+  }
+  return set;
 }
 
 CompressionAlgorithmSet::CompressionAlgorithmSet() = default;
@@ -202,12 +165,19 @@ void CompressionAlgorithmSet::Set(grpc_compression_algorithm algorithm) {
   }
 }
 
-y_absl::string_view CompressionAlgorithmSet::ToString() const {
-  return kCommaSeparatedLists[ToLegacyBitmask()];
+TString CompressionAlgorithmSet::ToString() const {
+  y_absl::InlinedVector<const char*, GRPC_COMPRESS_ALGORITHMS_COUNT> segments;
+  for (size_t i = 0; i < GRPC_COMPRESS_ALGORITHMS_COUNT; i++) {
+    if (set_.is_set(i)) {
+      segments.push_back(CompressionAlgorithmAsString(
+          static_cast<grpc_compression_algorithm>(i)));
+    }
+  }
+  return y_absl::StrJoin(segments, ", ");
 }
 
 Slice CompressionAlgorithmSet::ToSlice() const {
-  return Slice::FromStaticString(ToString());
+  return Slice::FromCopiedString(ToString());
 }
 
 CompressionAlgorithmSet CompressionAlgorithmSet::FromString(
@@ -224,18 +194,28 @@ CompressionAlgorithmSet CompressionAlgorithmSet::FromString(
 }
 
 uint32_t CompressionAlgorithmSet::ToLegacyBitmask() const {
-  return set_.ToInt<uint32_t>();
+  uint32_t x = 0;
+  for (size_t i = 0; i < GRPC_COMPRESS_ALGORITHMS_COUNT; i++) {
+    if (set_.is_set(i)) {
+      x |= (1u << i);
+    }
+  }
+  return x;
 }
 
 y_absl::optional<grpc_compression_algorithm>
-DefaultCompressionAlgorithmFromChannelArgs(const ChannelArgs& args) {
-  auto* value = args.Get(GRPC_COMPRESSION_CHANNEL_DEFAULT_ALGORITHM);
-  if (value == nullptr) return y_absl::nullopt;
-  if (auto* p = y_absl::get_if<int>(value)) {
-    return static_cast<grpc_compression_algorithm>(*p);
-  }
-  if (auto* p = y_absl::get_if<TString>(value)) {
-    return ParseCompressionAlgorithm(*p);
+DefaultCompressionAlgorithmFromChannelArgs(const grpc_channel_args* args) {
+  if (args == nullptr) return y_absl::nullopt;
+  for (size_t i = 0; i < args->num_args; i++) {
+    if (strcmp(args->args[i].key, GRPC_COMPRESSION_CHANNEL_DEFAULT_ALGORITHM) ==
+        0) {
+      if (args->args[i].type == GRPC_ARG_INTEGER) {
+        return static_cast<grpc_compression_algorithm>(
+            args->args[i].value.integer);
+      } else if (args->args[i].type == GRPC_ARG_STRING) {
+        return ParseCompressionAlgorithm(args->args[i].value.string);
+      }
+    }
   }
   return y_absl::nullopt;
 }

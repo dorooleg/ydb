@@ -52,20 +52,16 @@ void TPQTabletMock::OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev, const TActo
     Die(ctx);
 }
 
-void TPQTabletMock::DefaultSignalTabletActive(const TActorContext &)
-{
-    // must be empty
-}
-
 void TPQTabletMock::OnActivateExecutor(const TActorContext &ctx)
 {
+    Y_UNUSED(ctx);
+
     Become(&TThis::StateWork);
-    SignalTabletActive(ctx);
 }
 
 void TPQTabletMock::Handle(TEvTabletPipe::TEvClientConnected::TPtr& ev, const TActorContext& ctx)
 {
-    Y_ABORT_UNLESS(ev->Get()->Leader, "Unexpectedly connected to follower of tablet %" PRIu64, ev->Get()->TabletId);
+    Y_VERIFY(ev->Get()->Leader, "Unexpectedly connected to follower of tablet %" PRIu64, ev->Get()->TabletId);
 
     if (PipeClientCache->OnConnect(ev)) {
         LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE,
@@ -112,7 +108,7 @@ void TPQTabletMock::Handle(TEvPQTablet::TEvSendReadSet::TPtr& ev, const TActorCo
     payload.SetDecision(params.Decision);
 
     TString body;
-    Y_ABORT_UNLESS(payload.SerializeToString(&body));
+    Y_VERIFY(payload.SerializeToString(&body));
 
     auto event = std::make_unique<TEvTxProcessing::TEvReadSet>(params.Step,
                                                                params.TxId,

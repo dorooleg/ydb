@@ -2,14 +2,14 @@
 #include "proxy_private.h"
 #include "proxy.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 
 #include <library/cpp/yson/node/node_io.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <ydb/core/fq/libs/common/entity_id.h>
 
@@ -34,19 +34,23 @@ class TGetTaskRequestActor
 public:
     TGetTaskRequestActor(
         const NActors::TActorId& sender,
-        const ::NFq::TSigner::TPtr& signer,
+        const NConfig::TTokenAccessorConfig& tokenAccessorConfig,
         TIntrusivePtr<ITimeProvider> timeProvider,
         TAutoPtr<TEvents::TEvGetTaskRequest> ev,
         TDynamicCounterPtr counters)
-        : Sender(sender)
+        : TokenAccessorConfig(tokenAccessorConfig)
+        , Sender(sender)
         , TimeProvider(timeProvider)
         , Ev(std::move(ev))
         , Counters(std::move(counters->GetSubgroup("subsystem", "private_api")->GetSubgroup("subcomponent", "GetTask")))
         , LifetimeDuration(Counters->GetHistogram("LifetimeDurationMs",  ExponentialHistogram(10, 2, 50)))
         , RequestedMBytes(Counters->GetHistogram("RequestedMB",  ExponentialHistogram(6, 2, 3)))
         , StartTime(TInstant::Now())
-        , Signer(signer)
-    {}
+    {
+        if (TokenAccessorConfig.GetHmacSecretFile()) {
+            Signer = ::NFq::CreateSignerFromFile(TokenAccessorConfig.GetHmacSecretFile());
+        }
+    }
 
     static constexpr char ActorName[] = "YQ_PRIVATE_GET_TASK";
 
@@ -140,6 +144,7 @@ private:
         hFunc(TEvControlPlaneConfig::TEvGetTenantInfoResponse, Handle)
     )
 
+    const NConfig::TTokenAccessorConfig TokenAccessorConfig;
     const TActorId Sender;
     TIntrusivePtr<ITimeProvider> TimeProvider;
     TAutoPtr<TEvents::TEvGetTaskRequest> Ev;
@@ -158,13 +163,13 @@ private:
 
 IActor* CreateGetTaskRequestActor(
     const NActors::TActorId& sender,
-    const ::NFq::TSigner::TPtr& signer,
+    const NConfig::TTokenAccessorConfig& tokenAccessorConfig,
     TIntrusivePtr<ITimeProvider> timeProvider,
     TAutoPtr<TEvents::TEvGetTaskRequest> ev,
     TDynamicCounterPtr counters) {
     return new TGetTaskRequestActor(
         sender,
-        signer,
+        tokenAccessorConfig,
         timeProvider,
         std::move(ev),
         counters);

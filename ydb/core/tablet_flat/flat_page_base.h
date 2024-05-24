@@ -166,7 +166,7 @@ struct TDataRef {
 } Y_PACKED;
 
 struct TRecordsHeader {
-    TRecIdx Count;
+    TRecIdx Records;
 } Y_PACKED;
 
 struct TRecordsEntry {
@@ -249,22 +249,22 @@ struct TBlockWithRecords {
 
     const TRecord* Record(TRecIdx idx) const noexcept
     {
-        return TDeref<TRecord>::At(Base, Offsets[idx].Offset);
+        return TDeref<TRecord>::At(Base, Array[idx].Offset);
     }
 
     TIterator Begin() const noexcept
     {
-        return TIterator(this, 0, Count);
+        return TIterator(this, 0, Records);
     }
 
     TIterator End() const noexcept
     {
-        return TIterator(this, Count, Count);
+        return TIterator(this, Records, Records);
     }
 
     const void *Base  = nullptr;
-    const TRecordsEntry *Offsets = nullptr;
-    ui32 Count = 0;
+    const TRecordsEntry *Array = nullptr;
+    ui32 Records = 0;
 };
 
 using TCells = TArrayRef<const TCell>;
@@ -277,7 +277,7 @@ struct TCompare {
         : Info(keys)
         , KeyCellDefaults(keyDefaults)
     {
-        Y_ABORT_UNLESS(KeyCellDefaults->size() >= Info.size());
+        Y_VERIFY(KeyCellDefaults->size() >= Info.size());
     }
 
     bool operator()(const TRecord &record, TCells key) const noexcept

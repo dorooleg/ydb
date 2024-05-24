@@ -34,36 +34,34 @@ namespace NKikimr {
         bool Started = false;
         TRopeArena& Arena;
         const TBlobStorageGroupType GType;
-        const bool AddHeader;
 
     public:
-        TDeferredItemQueueBase(TRopeArena& arena, TBlobStorageGroupType gtype, bool addHeader)
+        TDeferredItemQueueBase(TRopeArena& arena, TBlobStorageGroupType gtype)
             : Arena(arena)
             , GType(gtype)
-            , AddHeader(addHeader)
         {}
 
         template<typename... TArgs>
         void Put(TArgs&&... args) {
-            Y_ABORT_UNLESS(!Started);
+            Y_VERIFY(!Started);
             ItemQueue.emplace(std::forward<TArgs>(args)...);
         }
 
         template<typename... TArgs>
         void Start(TArgs&&... args) {
-            Y_ABORT_UNLESS(!Started);
+            Y_VERIFY(!Started);
             Started = true;
             static_cast<TDerived&>(*this).StartImpl(std::forward<TArgs>(args)...);
             ProcessItemQueue();
         }
 
         void AddReadDiskBlob(ui64 id, TRope&& buffer, NMatrix::TVectorType expectedParts) {
-            Y_ABORT_UNLESS(Started);
-            Y_ABORT_UNLESS(ItemQueue);
+            Y_VERIFY(Started);
+            Y_VERIFY(ItemQueue);
             TItem& item = ItemQueue.front();
-            Y_ABORT_UNLESS(item.Id == id);
+            Y_VERIFY(item.Id == id);
             item.Merger.Add(TDiskBlob(&buffer, expectedParts, GType, item.BlobId));
-            Y_ABORT_UNLESS(item.NumReads > 0);
+            Y_VERIFY(item.NumReads > 0);
             if (!--item.NumReads) {
                 ProcessItemQueue();
             }
@@ -74,8 +72,8 @@ namespace NKikimr {
         }
 
         void Finish() {
-            Y_ABORT_UNLESS(Started);
-            Y_ABORT_UNLESS(ItemQueue.empty());
+            Y_VERIFY(Started);
+            Y_VERIFY(ItemQueue.empty());
             Started = false;
             static_cast<TDerived&>(*this).FinishImpl();
         }
@@ -90,11 +88,10 @@ namespace NKikimr {
 
         void ProcessItem(TItem& item) {
             // ensure that we have all the parts we must have
-            Y_ABORT_UNLESS(item.Merger.GetDiskBlob().GetParts() == item.PartsToStore);
+            Y_VERIFY(item.Merger.GetDiskBlob().GetParts() == item.PartsToStore);
 
             // get newly generated blob raw content and put it into writer queue
-            static_cast<TDerived&>(*this).ProcessItemImpl(item.PreallocatedLocation, item.Merger.CreateDiskBlob(Arena,
-                AddHeader));
+            static_cast<TDerived&>(*this).ProcessItemImpl(item.PreallocatedLocation, item.Merger.CreateDiskBlob(Arena));
         }
     };
 

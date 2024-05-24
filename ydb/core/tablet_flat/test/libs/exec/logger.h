@@ -4,8 +4,8 @@
 
 #include <ydb/core/tablet_flat/util_basics.h>
 #include <ydb/core/tablet_flat/util_fmt_line.h>
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/log_iface.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/log_iface.h>
 
 namespace NKikimr {
 namespace NFake {
@@ -23,7 +23,7 @@ namespace NFake {
 
         void Put(TInstant stamp, ui32 level, EComp comp, TArrayRef<const char> line) noexcept
         {
-            Y_ABORT_UNLESS(line.size() < 8192 * 16, "Too large log line");
+            Y_VERIFY(line.size() < 8192 * 16, "Too large log line");
 
             static const char scaleMajor[] = "^^*CEWNIDT.";
             static const char scaleMinor[] = "0123456789.";
@@ -118,7 +118,7 @@ namespace NFake {
         using ELnLev = NUtil::ELnLev;
 
         TLogFwd(TIntrusivePtr<TSink> sink)
-            : ::NActors::IActorCallback(static_cast<TReceiveFunc>(&TLogFwd::Inbox), IActor::EActivityType::LOG_ACTOR)
+            : ::NActors::IActorCallback(static_cast<TReceiveFunc>(&TLogFwd::Inbox), IActor::LOG_ACTOR)
             , Sink(std::move(sink))
         {
         }
@@ -133,7 +133,7 @@ namespace NFake {
                     Send(TWorld::Where(EPath::Root), new NFake::TEvTerm);
 
             } else {
-                Y_ABORT("Test runtime env logger got an unknown event");
+                Y_FAIL("Test runtime env logger got an unknown event");
             }
         }
 

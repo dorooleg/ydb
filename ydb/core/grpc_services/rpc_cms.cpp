@@ -44,16 +44,13 @@ public:
     {
         TBase::Bootstrap(ctx);
 
-        if (this->GetProtoRequest()->operation_params().has_forget_after() && this->GetProtoRequest()->operation_params().operation_mode() != Ydb::Operations::OperationParams::SYNC) {
-            this->Request_->RaiseIssue(NYql::TIssue("forget_after is not supported for this type of operation"));
-            this->Request_->ReplyWithYdbStatus(Ydb::StatusIds::UNSUPPORTED);
-            Die(ctx);
-            return;
-        }
+        auto dinfo = AppData(ctx)->DomainsInfo;
+        auto domain = dinfo->Domains.begin()->second;
+        ui32 group = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
 
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = {.RetryLimitCount = 10};
-        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeConsoleID(), pipeConfig);
+        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeConsoleID(group), pipeConfig);
         CmsPipe = ctx.RegisterWithSameMailbox(pipe);
 
         SendRequest(ctx);
@@ -187,48 +184,6 @@ void DoDescribeTenantOptionsRequest(std::unique_ptr<IRequestOpCtx> p, const IFac
         new TCmsRPC<TEvDescribeTenantOptionsRequest,
                     TEvConsole::TEvDescribeTenantOptionsRequest,
                     TEvConsole::TEvDescribeTenantOptionsResponse>(p.release()));
-}
-
-template<>
-IActor* TEvCreateTenantRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCmsRPC<TEvCreateTenantRequest,
-                       TEvConsole::TEvCreateTenantRequest,
-                       TEvConsole::TEvCreateTenantResponse>(msg);
-}
-
-template<>
-IActor* TEvAlterTenantRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCmsRPC<TEvAlterTenantRequest,
-                       TEvConsole::TEvAlterTenantRequest,
-                       TEvConsole::TEvAlterTenantResponse>(msg);
-}
-
-template<>
-IActor* TEvGetTenantStatusRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCmsRPC<TEvGetTenantStatusRequest,
-                       TEvConsole::TEvGetTenantStatusRequest,
-                       TEvConsole::TEvGetTenantStatusResponse>(msg);
-}
-
-template<>
-IActor* TEvListTenantsRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCmsRPC<TEvListTenantsRequest,
-                       TEvConsole::TEvListTenantsRequest,
-                       TEvConsole::TEvListTenantsResponse>(msg);
-}
-
-template<>
-IActor* TEvRemoveTenantRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCmsRPC<TEvRemoveTenantRequest,
-                       TEvConsole::TEvRemoveTenantRequest,
-                       TEvConsole::TEvRemoveTenantResponse>(msg);
-}
-
-template<>
-IActor* TEvDescribeTenantOptionsRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCmsRPC<TEvDescribeTenantOptionsRequest,
-                       TEvConsole::TEvDescribeTenantOptionsRequest,
-                       TEvConsole::TEvDescribeTenantOptionsResponse>(msg);
 }
 
 } // namespace NGRpcService

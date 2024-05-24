@@ -1464,30 +1464,6 @@ TExprNode::TPtr OptimizeFlatMap(const TExprNode::TPtr& node, TExprContext& ctx, 
         }
     }
 
-    if (node->Head().IsCallable(Ordered ? "OrderedExtend" : "Extend") &&
-        // constraints below can not be derived for (Ordered)Extend
-        !node->GetConstraint<TSortedConstraintNode>() &&
-        !node->GetConstraint<TPartOfSortedConstraintNode>() &&
-        !node->GetConstraint<TUniqueConstraintNode>() &&
-        !node->GetConstraint<TPartOfUniqueConstraintNode>() &&
-        !node->GetConstraint<TDistinctConstraintNode>() &&
-        !node->GetConstraint<TPartOfDistinctConstraintNode>())
-    {
-        auto canPush = [&](const auto& child) {
-            // we push FlatMap over Extend only if it can later be fused with child
-            return child->IsCallable({Ordered ? "OrderedFlatMap" : "FlatMap", "GroupByKey", "CombineByKey", "PartitionByKey", "PartitionsByKeys",
-                                      "ListIf", "FlatListIf", "AsList", "ToList"}) && optCtx.IsSingleUsage(*child);
-        };
-        if (AllOf(node->Head().ChildrenList(), canPush)) {
-            TExprNodeList newChildren;
-            for (auto child : node->Head().ChildrenList()) {
-                newChildren.push_back(ctx.ChangeChild(*node, TCoFlatMapBase::idx_Input, std::move(child)));
-            }
-            YQL_CLOG(DEBUG, Core) << "Swap " << node->Content() << " with " << node->Head().Content();
-            return ctx.ChangeChildren(node->Head(), std::move(newChildren));
-        }
-    }
-
     return node;
 }
 
@@ -1506,11 +1482,6 @@ void RegisterCoFlowCallables1(TCallableOptimizerMap& map) {
     map["Skip"] = [](const TExprNode::TPtr& node, TExprContext& ctx, TOptimizeContext& optCtx) {
         if (!optCtx.IsSingleUsage(node->Head()) && !optCtx.IsPersistentNode(node->Head())) {
             return node;
-        }
-
-        if (node->Head().IsCallable({"ForwardList", "FromFlow"})) {
-            YQL_CLOG(DEBUG, Core) << "Swap " << node->Content() << " with " << node->Head().Content();
-            return ctx.SwapWithHead(*node);
         }
 
         if (TCoSkip::Match(&node->Head())) {
@@ -1537,12 +1508,7 @@ void RegisterCoFlowCallables1(TCallableOptimizerMap& map) {
         if (!optCtx.IsSingleUsage(node->Head()) && !optCtx.IsPersistentNode(node->Head())) {
             return node;
         }
-
-        if (node->Head().IsCallable({"ForwardList", "FromFlow"})) {
-            YQL_CLOG(DEBUG, Core) << "Swap " << node->Content() << " with " << node->Head().Content();
-            return ctx.SwapWithHead(*node);
-        }
-
+/*TODO: Enable later. Providers is not ready right now.
         if (node->Head().IsCallable("Sort")) {
             YQL_CLOG(DEBUG, Core) << "Fuse " << node->Content() << " over " << node->Head().Content();
             auto children = node->Head().ChildrenList();
@@ -1550,15 +1516,7 @@ void RegisterCoFlowCallables1(TCallableOptimizerMap& map) {
             children.emplace(++it, node->TailPtr());
             return ctx.NewCallable(node->Pos(), "TopSort", std::move(children));
         }
-
-        if (node->Head().IsCallable("ExtractMembers") && node->Head().Head().IsCallable("Sort") && optCtx.IsSingleUsage(node->Head().Head())) {
-            YQL_CLOG(DEBUG, Core) << "Fuse " << node->Content() << " over " << node->Head().Content() << " over " <<  node->Head().Head().Content();
-            auto children =  node->Head().Head().ChildrenList();
-            auto it = children.cbegin();
-            children.emplace(++it, node->TailPtr());
-            return ctx.ChangeChild(node->Head(), 0U, ctx.NewCallable(node->Pos(), "TopSort", std::move(children)));
-        }
-
+*/
         if (node->Head().IsCallable({"Top", "TopSort"})) {
             YQL_CLOG(DEBUG, Core) << "Fuse " << node->Content() << " over " << node->Head().Content();
             return ctx.ChangeChild(node->Head(), 1U, ctx.NewCallable(node->Pos(), "Min", {node->TailPtr(), node->Head().ChildPtr(1)}));

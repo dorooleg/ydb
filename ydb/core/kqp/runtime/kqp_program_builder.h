@@ -62,15 +62,13 @@ public:
         const TArrayRef<TKqpTableColumn>& keyColumns, const TArrayRef<TKqpTableColumn>& columns);
 
     TRuntimeNode KqpUpsertRows(const TTableId& tableId, const TRuntimeNode& rows,
-        const TArrayRef<TKqpTableColumn>& upsertColumns, bool isUpdate);
+        const TArrayRef<TKqpTableColumn>& upsertColumns);
 
     TRuntimeNode KqpDeleteRows(const TTableId& tableId, const TRuntimeNode& rows);
 
     TRuntimeNode KqpEffects(const TArrayRef<const TRuntimeNode>& effects);
 
     TRuntimeNode KqpEnsure(TRuntimeNode value, TRuntimeNode predicate, TRuntimeNode issueCode, TRuntimeNode message);
-
-    TRuntimeNode KqpIndexLookupJoin(const TRuntimeNode& input, const TString& joinType, const TString& leftLabel, const TString& rightLabel);
 };
 
 } // namespace NMiniKQL

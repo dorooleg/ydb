@@ -127,7 +127,7 @@ struct TResponseStatusGroup : TThrRefBase {
             ENUM_STATUS(XX)
 #undef XX
             default:
-                Y_ABORT("unexpected Status# %s", NKikimrProto::EReplyStatus_Name(status).data());
+                Y_FAIL("unexpected Status# %s", NKikimrProto::EReplyStatus_Name(status).data());
         }
     }
 #undef ENUM_STATUS
@@ -257,7 +257,7 @@ public:
             case ERequestType::Range: return RangeGroup;
             case ERequestType::Patch: return PatchGroup;
         }
-        Y_ABORT();
+        Y_FAIL();
     }
 
     template<typename T>
@@ -283,7 +283,7 @@ public:
         ++*EventPut;
         *EventPutBytes += size;
         auto bucketIt = EventPutBytesBuckets.upper_bound(size);
-        Y_ABORT_UNLESS(bucketIt != EventPutBytesBuckets.begin());
+        Y_VERIFY(bucketIt != EventPutBytesBuckets.begin());
         ++*std::prev(bucketIt)->second;
     }
 
@@ -322,7 +322,7 @@ public:
                 PutUserDataResponseTime.Increment(durationMs);
                 break;
             default:
-                Y_ABORT("Unexpected case, HandleClass# %" PRIu64, (ui64)cls);
+                Y_FAIL("Unexpected case, HandleClass# %" PRIu64, (ui64)cls);
         }
         NodeMon->CountPutPesponseTime(type, cls, size, duration);
     }

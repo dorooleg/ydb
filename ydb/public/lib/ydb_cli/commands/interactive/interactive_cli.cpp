@@ -1,198 +1,453 @@
+#include <string>
+#include <memory>
+#include <deque>
+#include <vector>
+#include <sstream>
 #include "interactive_cli.h"
 
-#include <vector>
+using namespace std;
 
-#include <util/folder/path.h>
-#include <util/folder/dirut.h>
-
-#include <ydb/public/lib/ydb_cli/common/query_stats.h>
-#include <ydb/public/lib/ydb_cli/commands/interactive/line_reader.h>
-#include <ydb/public/lib/ydb_cli/commands/ydb_service_scheme.h>
-#include <ydb/public/lib/ydb_cli/commands/ydb_service_table.h>
-#include <ydb/public/lib/ydb_cli/commands/ydb_yql.h>
-
-namespace NYdb {
-namespace NConsoleClient {
-
-
-namespace {
-
-std::string ToLower(std::string_view value) {
-    size_t value_size = value.size();
-    std::string result;
-    result.resize(value_size);
-
-    for (size_t i = 0; i < value_size; ++i) {
-        result[i] = std::tolower(value[i]);
-    }
-
-    return result;
+/////////////////////////////////////////////////////////////////////////////////
+// TInteractiveCli::TConfig
+/////////////////////////////////////////////////////////////////////////////////
+TInteractiveCli::TConfig TInteractiveCli::TConfig::Default() {
+    return TConfig();
 }
 
-struct Token {
-    std::string_view data;
-};
+TInteractiveCli::TConfig TInteractiveCli::TConfig::LittleColor() {
+    TConfig cfg;
+    cfg.Prompt = "\033[33m=> \033[0m";
+    return cfg;
+}
 
-class Lexer {
+TInteractiveCli::TConfig TInteractiveCli::TConfig::FunnyTest() {
+    TConfig cfg;
+    cfg.Prompt = "\033[36my\033[35md\033[33mb> \033[0m";
+    cfg.HistorySize = 5;
+    return cfg;
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////
+// TLine
+/////////////////////////////////////////////////////////////////////////////////
+class TLine {
 public:
-    Lexer(std::string_view input);
+    void Insert(char c) {
+        if (Data.size() == CursorPos) {
+            Data.append(1, c);
+            ++CursorPos;
+            TTerminalOutput::Print(c);
+        } else {
+            string m = Data.substr(CursorPos, string::npos);
+            Data.insert(CursorPos, 1, c);
+            TTerminalOutput::Print(c);
+            ++CursorPos;
+            TTerminalOutput::Print(m.c_str());
+            for (size_t i = 0; i < m.size(); ++i)
+                TTerminalOutput::MoveCursorLeft();
+        }
+    }
 
-    std::optional<Token> GetNextToken();
+    bool Backspace() {
+        if (CursorPos > 0) {
+            string m = Data.substr(CursorPos, string::npos);
+            Data.erase(CursorPos-1, 1);
+            --CursorPos;
+            TTerminalOutput::MoveCursorLeft();
 
-    static bool IsSeparatedTokenSymbol(char c);
+            TTerminalOutput::Print(m.c_str());
+            TTerminalOutput::Print(' ');
+
+            for (size_t i = 0; i < m.size() + 1; ++i)
+                TTerminalOutput::MoveCursorLeft();
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    bool MoveCursorRight() {
+        if (CursorPos < Data.size()) {
+            ++CursorPos;
+            TTerminalOutput::MoveCursorRight();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    bool MoveCursorLeft() {
+        if (CursorPos > 0) {
+            --CursorPos;
+            TTerminalOutput::MoveCursorLeft();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    string GetCommand() const {
+        return Data;
+    }
+
+    void ClearScreenArea() {
+        for (size_t i = 0; i < CursorPos; ++i)
+            TTerminalOutput::MoveCursorLeft();
+
+        for (size_t i = 0; i < Data.size(); ++i)
+            TTerminalOutput::Print(' ');
+
+        for (size_t i = 0; i < Data.size(); ++i)
+            TTerminalOutput::MoveCursorLeft();
+
+        CursorPos = 0;
+    }
+
+    void DrawScreenArea() {
+        for (size_t i = 0; i < Data.size(); ++i)
+            TTerminalOutput::Print(Data[i]);
+
+        CursorPos = Data.size();
+    }
+
+    void GoToEnd() {
+        for (size_t i = CursorPos; i < Data.size(); ++i)
+            TTerminalOutput::MoveCursorRight();
+
+        CursorPos = Data.size();
+    }
+
+    const string &GetData() const {
+        return Data;
+    }
+
+    bool CursorAtTheEnd() const {
+        return CursorPos == Data.size();
+    }
+
+    bool CursorAtTheBeginning() const {
+        return CursorPos == 0;
+    }
+
+    void SetCursorPosToZero() {
+        CursorPos = 0;
+    }
 
 private:
-    std::string_view Input;
-    const char * Position = nullptr;
+    string Data;
+    size_t CursorPos = 0;
 };
 
-Lexer::Lexer(std::string_view input)
-    : Input(input)
-    , Position(Input.data())
-{}
-
-std::optional<Token> Lexer::GetNextToken() {
-    while (Position < Input.end() && std::isspace(*Position)) {
-        ++Position;
-    }
-
-    if (Position == Input.end()) {
-        return {};
-    }
-
-    const char * tokenStart = Position;
-    if (IsSeparatedTokenSymbol(*Position)) {
-        ++Position;
-    } else {
-        while (Position < Input.end() && !std::isspace(*Position) && !IsSeparatedTokenSymbol(*Position)) {
-            ++Position;
-        }
-    }
-
-    std::string_view TokenData(tokenStart, Position);
-    return Token{TokenData};
-}
-
-bool Lexer::IsSeparatedTokenSymbol(char c) {
-    return c == '=' || c == ';';
-}
-
-std::vector<Token> Tokenize(std::string_view input) {
-    std::vector<Token> tokens;
-    Lexer lexer(input);
-
-    while (auto token = lexer.GetNextToken()) {
-        tokens.push_back(*token);
-    }
-
-    return tokens;
-}
-
-struct InteractiveCLIState {
-    NTable::ECollectQueryStatsMode CollectStatsMode = NTable::ECollectQueryStatsMode::None;
-};
-
-std::optional<NTable::ECollectQueryStatsMode> TryParseCollectStatsMode(const std::vector<Token> & tokens) {
-    size_t tokensSize = tokens.size();
-
-    if (tokensSize > 4) {
-        Cerr << "Variable value for \"SET stats\" special command should contain exactly one token." << Endl;
-        return {};
-    }
-
-    auto statsMode = NTable::ParseQueryStatsMode(tokens[3].data);
-    if (!statsMode) {
-        Cerr << "Unknown stats collection mode: \"" << tokens[3].data << "\"." << Endl;
-    }
-    return statsMode;
-}
-
-void ParseSetCommand(const std::vector<Token> & tokens, InteractiveCLIState & interactiveCLIState) {
-    if (tokens.size() == 1) {
-        Cerr << "Missing variable name for \"SET\" special command." << Endl;
-    } else if (tokens.size() == 2 || tokens[2].data != "=") {
-        Cerr << "Missing \"=\" symbol for \"SET\" special command." << Endl;
-    } else if (tokens.size() == 3) {
-        Cerr << "Missing variable value for \"SET\" special command." << Endl;
-    } else if (ToLower(tokens[1].data) == "stats") {
-        if (auto statsMode = TryParseCollectStatsMode(tokens)) {
-            interactiveCLIState.CollectStatsMode = *statsMode;
-        }
-    } else {
-        Cerr << "Unknown variable name \"" << tokens[1].data << "\" for \"SET\" special command." << Endl;
-    }
-}
-
-}
-
-TInteractiveCLI::TInteractiveCLI(TClientCommand::TConfig & config, std::string prompt)
-    : Config(config)
-    , Prompt(std::move(prompt))
-{}
-
-void TInteractiveCLI::Run() {
-    std::vector<std::string> SQLWords = {"SELECT", "FROM", "WHERE", "GROUP", "ORDER", "BY", "LIMIT", "OFFSET", 
-        "EXPLAIN", "AST", "SET"};
-    std::vector<std::string> Words;
-    for (auto & word : SQLWords) {
-        Words.push_back(word);
-        Words.push_back(ToLower(word));
-    }
-
-    TFsPath homeDirPath(HomeDir);
-    TString historyFilePath(homeDirPath / ".ydb_history");
-    std::unique_ptr<ILineReader> lineReader = CreateLineReader(Prompt, historyFilePath, Suggest{std::move(Words)});
-
-    InteractiveCLIState interactiveCLIState;
-
-    while (auto lineOptional = lineReader->ReadLine())
+/////////////////////////////////////////////////////////////////////////////////
+// TCommand
+/////////////////////////////////////////////////////////////////////////////////
+class TCommand {
+public:
+    TCommand(std::shared_ptr<TInteractiveCli::ILogic> logic, shared_ptr<TInteractiveCli::TConfig> config)
+        : Logic(std::move(logic))
+        , Config(std::move(config))
     {
-        auto & line = *lineOptional;
-        if (line.empty()) {
-            continue;
-        }
+        Lines.push_back(TLine());
+    }
 
-        try {
-            auto tokens = Tokenize(line);
-            size_t tokensSize = tokens.size();
-            if (tokens.empty()) {
-                continue;
-            }
+    void Insert(char c) {
+        Lines[CurLine].Insert(c);
+    }
 
-            if (ToLower(tokens[0].data) == "set") {
-                ParseSetCommand(tokens, interactiveCLIState);
-                continue;
-            }
-
-            if (ToLower(tokens[0].data) == "explain") {
-                bool printAst = tokensSize >= 2 && ToLower(tokens[1].data) == "ast";
-                size_t skipTokens = 1 + printAst;
-                TString explainQuery;
-
-                for (size_t i = skipTokens; i < tokensSize; ++i) {
-                    explainQuery += tokens[i].data;
-                    explainQuery += ' ';
+    void MoveCursorLeft() {
+        if (Lines[CurLine].CursorAtTheBeginning()) {
+            if (CurLine != 0) {
+                TTerminalOutput::MoveCursorUpAtBeginningOfTheLine();
+                --CurLine;
+                if (CurLine == 0) {
+                    TTerminalOutput::Print(Config->Prompt.c_str());
                 }
 
-                TCommandExplain explainCommand(explainQuery, "data", printAst);
-                explainCommand.Run(Config);
-                continue;
+                Lines[CurLine].DrawScreenArea();
             }
-
-            TString queryStatsMode(NTable::QueryStatsModeToString(interactiveCLIState.CollectStatsMode));
-            TCommandYql yqlCommand(TString(line), queryStatsMode);
-            yqlCommand.Run(Config);
-        } catch (TYdbErrorException &error) {
-            Cerr << error;
-        } catch (yexception & error) {
-            Cerr << error;
-        } catch (std::exception & error) {
-            Cerr << error.what();
+        } else {
+            Lines[CurLine].MoveCursorLeft();
         }
     }
 
-    std::cout << "Bye" << '\n';
+    void MoveCursorRight() {
+        if (Lines[CurLine].CursorAtTheEnd()) {
+            if (CurLine + 1 < Lines.size()) {
+                ++CurLine;
+                TTerminalOutput::MoveCursorDownAtBeginningOfTheLine();
+                Lines[CurLine].SetCursorPosToZero();
+            }
+        } else {
+            Lines[CurLine].MoveCursorRight();
+        }
+    }
+
+    bool EnterPressed() {
+        if (QueryIsReady()) {
+            for (; CurLine < Lines.size() - 1; ++CurLine) {
+                TTerminalOutput::MoveCursorDown();
+            }
+            TTerminalOutput::Print('\n');
+            return true;
+        } else {
+            for (size_t i = 1; i < (Lines.size() - CurLine); ++i)
+                TTerminalOutput::MoveCursorDownAtBeginningOfTheLine();
+
+            CurLine = Lines.size() - 1;
+            Lines[CurLine].GoToEnd();
+
+            Lines.push_back(TLine());
+            ++CurLine;
+            TTerminalOutput::Print('\n');
+            return false;
+        }
+    }
+
+    void Backspace() {
+        bool res = Lines[CurLine].Backspace();
+        if (!res) {
+            if (CurLine != 0) {
+                // what is left from the line being deleted
+                //int deletedLine = CurLine;
+                string m = Lines[CurLine].GetData();
+
+
+                // erase all lines below
+                TTerminalOutput::EraseEntireLine();
+                for (size_t i = CurLine + 1; i < Lines.size(); ++i) {
+                    TTerminalOutput::MoveCursorDownAtBeginningOfTheLine();
+                    TTerminalOutput::EraseEntireLine();
+                }
+
+                // return cursor back
+                for (size_t i = CurLine + 1; i < Lines.size(); ++i) {
+                    TTerminalOutput::MoveCursorUpAtBeginningOfTheLine();
+                }
+
+                // draw lines below the erased line
+                for (size_t i = CurLine + 1; i < Lines.size(); ++i) {
+                    Lines[i].DrawScreenArea();
+                    TTerminalOutput::Print('\n');
+                }
+
+                // return cursor back
+                for (size_t i = CurLine + 1; i < Lines.size(); ++i) {
+                    TTerminalOutput::MoveCursorUpAtBeginningOfTheLine();
+                }
+
+                // erase deleted line from the vector
+                Lines.erase(Lines.begin() + CurLine);
+
+                // go to the line up
+                TTerminalOutput::MoveCursorUpAtBeginningOfTheLine();
+                --CurLine;
+                if (CurLine == 0) {
+                    TTerminalOutput::Print(Config->Prompt.c_str());
+                }
+
+                Lines[CurLine].DrawScreenArea();
+
+                // append data from removed line
+                for (size_t i = 0; i < m.size(); ++i) {
+                    Lines[CurLine].Insert(m[i]);
+                }
+                for (size_t i = 0; i < m.size(); ++i) {
+                    Lines[CurLine].MoveCursorLeft();
+                }
+            }
+        }
+    }
+
+    string GetCommand() {
+        string res;
+        for (size_t i = 0; i < Lines.size() - 1; ++i) {
+            res += Lines[i].GetCommand();
+            res += '\n';
+        }
+        res += Lines[Lines.size() - 1].GetCommand();
+
+        return res;
+    }
+
+    void ClearScreenArea() {
+        for (size_t i = CurLine; i < Lines.size() - 1; ++i) {
+            TTerminalOutput::MoveCursorDown();
+        }
+
+        for (size_t i = 0; i < Lines.size() - 1; ++i) {
+            TTerminalOutput::EraseEntireLine();
+            TTerminalOutput::MoveCursorUp();
+        }
+
+        TTerminalOutput::EraseEntireLine();
+        TTerminalOutput::MoveCursorToColumn0();
+        TTerminalOutput::Print(Config->Prompt.c_str());
+
+        CurLine = 0;
+    }
+
+    void DrawScreenArea() {
+        for (size_t i = 0; i < Lines.size() - 1; ++i) {
+            Lines[i].DrawScreenArea();
+            TTerminalOutput::Print('\n');
+        }
+        CurLine = Lines.size() - 1;
+        Lines[CurLine].DrawScreenArea();
+    }
+
+private:
+    shared_ptr<TInteractiveCli::ILogic> Logic;
+    shared_ptr<TInteractiveCli::TConfig> Config;
+    vector<TLine> Lines;
+    size_t CurLine = 0;
+
+    bool QueryIsReady() {
+        return Logic->Ready(GetCommand());
+    }
+};
+
+
+/////////////////////////////////////////////////////////////////////////////////
+// TInteractiveCli::TState
+/////////////////////////////////////////////////////////////////////////////////
+class TInteractiveCli::TState {
+public:
+    TState(std::shared_ptr<TInteractiveCli::ILogic> logic, TInteractiveCli::TConfig&& cfg)
+        : Logic(std::move(logic))
+        , Config(make_shared<TConfig>(std::move(cfg)))
+        , CurCmd(Logic, Config)
+    {
+        StartNewCommand();
+    }
+
+    void Insert(char c) {
+        CurCmd.Insert(c);
+    }
+
+    void MoveCursorLeft() {
+        CurCmd.MoveCursorLeft();
+    }
+
+    void MoveCursorRight() {
+        CurCmd.MoveCursorRight();
+    }
+
+    void Backspace() {
+        CurCmd.Backspace();
+    }
+
+    void MoveCursorUp() {
+        if (History.size() == 1)
+            return;
+
+        if (HistoryPosition > 1) {
+            CurCmd.ClearScreenArea();
+
+            if (HistoryPosition == History.size()) {
+                History[HistoryPosition - 1] = CurCmd;
+            }
+
+            --HistoryPosition;
+            History[HistoryPosition - 1].DrawScreenArea();
+            CurCmd = History[HistoryPosition - 1];
+        }
+    }
+
+    void MoveCursorDown() {
+        if (HistoryPosition == History.size())
+            return;
+
+        CurCmd.ClearScreenArea();
+
+        ++HistoryPosition;
+        History[HistoryPosition - 1].DrawScreenArea();
+        CurCmd = History[HistoryPosition - 1];
+    }
+
+    void Enter() {
+        bool completed = CurCmd.EnterPressed();
+        if (completed) {
+            History[History.size() - 1] = CurCmd;
+
+            const auto &text = History[History.size() - 1].GetCommand();
+            stringstream stat;
+            stat << "HistoryPosition=" << HistoryPosition << " History.size()=" << History.size();
+            Logic->Run(text, stat.str());
+
+            CurCmd = TCommand(Logic, Config);
+            StartNewCommand();
+            Prompt();
+        }
+    }
+
+    void Welcome() {
+        Prompt();
+    }
+
+private:
+    std::shared_ptr<ILogic> Logic;
+    std::shared_ptr<TConfig> Config;
+    size_t HistoryPosition = 0;
+    TCommand CurCmd;
+    deque<TCommand> History;
+
+    void Prompt() {
+        TTerminalOutput::Print(Config->Prompt.c_str());
+    }
+
+    void StartNewCommand() {
+        if (History.size() < Config->HistorySize) {
+            History.push_back(TCommand(Logic, Config));
+        } else {
+            History.pop_front();
+            History.push_back(TCommand(Logic, Config));
+        }
+        HistoryPosition = History.size();
+    }
+};
+
+
+/////////////////////////////////////////////////////////////////////////////////
+// TInteractiveCli
+/////////////////////////////////////////////////////////////////////////////////
+TInteractiveCli::TInteractiveCli(std::shared_ptr<TInteractiveCli::ILogic> logic, TInteractiveCli::TConfig&& cfg)
+    : State(make_unique<TInteractiveCli::TState>(std::move(logic), std::move(cfg)))
+{
 }
 
+TInteractiveCli::~TInteractiveCli() {
 }
+
+void TInteractiveCli::Run() {
+    State->Welcome();
+}
+
+void TInteractiveCli::HandleInput(TKeyboardAction action) {
+    switch(action.Control) {
+        case TKeyboardAction::Symbol:
+            State->Insert((char)(action.Char));
+            break;
+        case TKeyboardAction::KeyLeft:
+            State->MoveCursorLeft();
+            break;
+        case TKeyboardAction::KeyRight:
+            State->MoveCursorRight();
+            break;
+        case TKeyboardAction::KeyUp:
+            State->MoveCursorUp();
+            break;
+        case TKeyboardAction::KeyDown:
+            State->MoveCursorDown();
+            break;
+        case TKeyboardAction::KeyEnter:
+            State->Enter();
+            break;
+        case TKeyboardAction::KeyBackspace:
+            State->Backspace();
+            break;
+        default:
+            break;
+    }
 }

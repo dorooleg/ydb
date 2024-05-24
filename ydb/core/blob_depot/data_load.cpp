@@ -72,21 +72,8 @@ namespace NKikimr::NBlobDepot {
             Loaded = true;
             return true;
         });
-        Y_ABORT_UNLESS(Loaded);
+        Y_VERIFY(Loaded);
         Self->OnDataLoadComplete();
-
-        // prepare records for all groups in history
-        for (const auto& channel : Self->Info()->Channels) {
-            Y_ABORT_UNLESS(channel.Channel < Self->Channels.size());
-            if (Self->Channels[channel.Channel].ChannelKind != NKikimrBlobDepot::TChannelKind::Data) {
-                continue; // skip non-data channels
-            }
-            for (const auto& entry : channel.History) {
-                RecordsPerChannelGroup.try_emplace(std::make_tuple(channel.Channel, entry.GroupID), channel.Channel,
-                    entry.GroupID);
-            }
-        }
-
         for (auto& [key, record] : RecordsPerChannelGroup) {
             record.CollectIfPossible(this);
         }

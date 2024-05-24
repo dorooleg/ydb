@@ -1,16 +1,15 @@
 #include "service_query.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/grpc_services/rpc_kqp_base.h>
-#include <ydb/core/grpc_services/audit_dml_operations.h>
 #include <ydb/core/kqp/common/kqp.h>
-#include <ydb/public/api/protos/ydb_query.pb.h>
+#include <ydb/public/api/protos/draft/ydb_query.pb.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NGRpcService {
 
@@ -24,43 +23,48 @@ using TEvExecuteScriptRequest = TGrpcRequestNoOperationCall<Ydb::Query::ExecuteS
 bool FillQueryContent(const Ydb::Query::ExecuteScriptRequest& req, NKikimrKqp::TEvQueryRequest& kqpRequest,
     NYql::TIssues& issues)
 {
-    if (!CheckQuery(req.script_content().text(), issues)) {
-        return false;
-    }
+    switch (req.script_case()) {
+        case Ydb::Query::ExecuteScriptRequest::kScriptContent:
+            if (!CheckQuery(req.script_content().text(), issues)) {
+                return false;
+            }
 
-    kqpRequest.MutableRequest()->SetQuery(req.script_content().text());
-    return true;
+            kqpRequest.MutableRequest()->SetQuery(req.script_content().text());
+            return true;
+
+        case Ydb::Query::ExecuteScriptRequest::kScriptId:
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
+                "Execution by script id is not supported yet"));
+            return false;
+
+        default:
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
+                "Unexpected query option"));
+            return false;
+    }
 }
 
 std::tuple<Ydb::StatusIds::StatusCode, NYql::TIssues> FillKqpRequest(
     const Ydb::Query::ExecuteScriptRequest& req, NKikimrKqp::TEvQueryRequest& kqpRequest)
 {
     kqpRequest.MutableRequest()->MutableYdbParameters()->insert(req.parameters().begin(), req.parameters().end());
-
     switch (req.exec_mode()) {
         case Ydb::Query::EXEC_MODE_EXECUTE:
             kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
             break;
-        case Ydb::Query::EXEC_MODE_EXPLAIN:
-            kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXPLAIN);
-            break;
-        // TODO: other modes
         default: {
             NYql::TIssues issues;
-            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
-                            req.exec_mode() == Ydb::Query::EXEC_MODE_UNSPECIFIED ? "Query mode is not specified" : "Query mode is not supported yet"));
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Unexpected query mode"));
             return {Ydb::StatusIds::BAD_REQUEST, std::move(issues)};
         }
     }
 
-    kqpRequest.MutableRequest()->SetCollectStats(GetCollectStatsMode(req.stats_mode()));
-    kqpRequest.MutableRequest()->SetSyntax(req.script_content().syntax());
-
     kqpRequest.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_GENERIC_SCRIPT);
     kqpRequest.MutableRequest()->SetKeepSession(false);
 
-    kqpRequest.MutableRequest()->SetCancelAfterMs(GetDuration(req.operation_params().cancel_after()).MilliSeconds());
-    kqpRequest.MutableRequest()->SetTimeoutMs(GetDuration(req.operation_params().operation_timeout()).MilliSeconds());
+    // TODO: Avoid explicit tx_control for script queries.
+    kqpRequest.MutableRequest()->MutableTxControl()->mutable_begin_tx()->mutable_serializable_read_write();
+    kqpRequest.MutableRequest()->MutableTxControl()->set_commit_tx(true);
 
     NYql::TIssues issues;
     if (!FillQueryContent(req, kqpRequest, issues)) {
@@ -82,15 +86,6 @@ public:
 
     void Bootstrap() {
         NYql::TIssues issues;
-        const auto& request = *Request_->GetProtoRequest();
-
-        if (request.operation_params().operation_mode() == Ydb::Operations::OperationParams::SYNC) {
-            issues.AddIssue("ExecuteScript must be asyncronous operation");
-            return Reply(Ydb::StatusIds::BAD_REQUEST, issues);
-        }
-
-        AuditContextAppend(Request_.get(), request);
-
         Ydb::StatusIds::StatusCode status = Ydb::StatusIds::SUCCESS;
         if (auto scriptRequest = MakeScriptRequest(issues, status)) {
             if (Send(NKqp::MakeKqpProxyID(SelfId().NodeId()), scriptRequest.Release())) {
@@ -134,14 +129,6 @@ private:
             ev->Record.SetTraceId(traceId.GetRef());
         }
 
-        if (req->operation_params().has_forget_after()) {
-            ev->ForgetAfter = GetDuration(req->operation_params().forget_after());
-        }
-
-        if (req->has_results_ttl()) {
-            ev->ResultsTtl = GetDuration(req->results_ttl());
-        }
-
         std::tie(status, issues) = FillKqpRequest(*req, ev->Record);
         if (status != Ydb::StatusIds::SUCCESS) {
             return nullptr;
@@ -160,8 +147,6 @@ private:
         }
 
         result.set_status(status);
-
-        AuditContextAppend(Request_.get(), *Request_->GetProtoRequest(), result);
 
         TString serializedResult;
         Y_PROTOBUF_SUPPRESS_NODISCARD result.SerializeToString(&serializedResult);
@@ -183,15 +168,11 @@ private:
 
 } // namespace
 
-namespace NQuery {
-
-void DoExecuteScript(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
+void DoExecuteScriptRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
     Y_UNUSED(f);
     auto* req = dynamic_cast<TEvExecuteScriptRequest*>(p.release());
-    Y_ABORT_UNLESS(req != nullptr, "Wrong using of TGRpcRequestWrapper");
+    Y_VERIFY(req != nullptr, "Wrong using of TGRpcRequestWrapper");
     f.RegisterActor(new TExecuteScriptRPC(req));
-}
-
 }
 
 } // namespace NKikimr::NGRpcService

@@ -8,7 +8,6 @@
 #include <util/generic/serialized_enum.h>
 #include <library/cpp/testing/unittest/registar.h>
 
-#include <util/generic/algorithm.h>
 #include <util/generic/ptr.h>
 #include <util/generic/singleton.h>
 
@@ -198,11 +197,4 @@ Y_UNIT_TEST_SUITE(TEnumGeneratorTest) {
     Y_UNIT_TEST(EnumSerializerDestructionPriority) {
         Singleton<TEnumSerializationInitializerHolder>()->Init();
     }
-
-    Y_UNIT_TEST(ValuesSortTest) {
-        const auto& allValues = GetEnumAllValues<ENontrivialValues>();
-        UNIT_ASSERT_VALUES_EQUAL(allValues.size(), 4u);
-        UNIT_ASSERT(IsSorted(allValues.begin(), allValues.end()));
-    }
-
 };

@@ -26,7 +26,7 @@ NInitializer::IInitializationBehaviour::TPtr IClassBehaviour::GetInitializer() c
     if (!Initializer) {
         Initializer = ConstructInitializer();
     }
-    Y_ABORT_UNLESS(Initializer);
+    Y_VERIFY(Initializer);
     return Initializer;
 }
 

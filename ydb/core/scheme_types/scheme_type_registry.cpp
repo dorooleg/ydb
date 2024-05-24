@@ -39,11 +39,6 @@ TTypeRegistry::TTypeRegistry()
     RegisterType<TTimestamp>();
     RegisterType<TInterval>();
     RegisterType<TDyNumber>();
-    RegisterType<TUuid>();
-    RegisterType<TDate32>();
-    RegisterType<TDatetime64>();
-    RegisterType<TTimestamp64>();
-    RegisterType<TInterval64>();
 }
 
 void TTypeRegistry::CalculateMetadataEtag() {

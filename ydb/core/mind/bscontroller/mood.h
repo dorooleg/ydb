@@ -10,7 +10,6 @@ struct TMood {
         Wipe = 1,
         Delete = 2,
         Donor = 3,
-        ReadOnly = 4,
     };
 
     static TString Name(const EValue value) {
@@ -23,25 +22,6 @@ struct TMood {
                 return "Delete";
             case Donor:
                 return "Donor";
-            case ReadOnly:
-                return "ReadOnly";
-        }
-        return Sprintf("Unknown%" PRIu64, (ui64)value);
-    }
-};
-
-struct TPDiskMood {
-    enum EValue : ui8 {
-        Normal = 0,
-        Restarting = 1
-    };
-
-    static TString Name(const EValue value) {
-        switch (value) {
-            case Normal:
-                return "Normal";
-            case Restarting:
-                return "Restarting";
         }
         return Sprintf("Unknown%" PRIu64, (ui64)value);
     }

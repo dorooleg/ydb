@@ -1,8 +1,7 @@
 #pragma once
 #include "defs.h"
-#include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 namespace NKikimr {
 
@@ -92,7 +91,7 @@ namespace NKikimr {
                 return;
             }
 
-            Y_ABORT_UNLESS(record.GetStatus() == NKikimrProto::OK);
+            Y_VERIFY(record.GetStatus() == NKikimrProto::OK);
             HandleReply(ctx, record);
             Die(ctx);
         }

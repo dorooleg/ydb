@@ -32,19 +32,9 @@ struct TKqpEvents {
         EvRecompileRequest,
         EvScriptRequest,
         EvScriptResponse,
+        EvFetchScriptResultsRequest,
         EvFetchScriptResultsResponse,
         EvKqpProxyPublishRequest,
-        EvCancelScriptExecutionRequest,
-        EvCancelScriptExecutionResponse,
-        EvCancelQueryRequest,
-        EvCancelQueryResponse,
-        EvParseRequest,
-        EvParseResponse,
-        EvSplitResponse,
-        EvListSessionsRequest,
-        EvListSessionsResponse,
-        EvListProxyNodesRequest,
-        EvListProxyNodesResponse
     };
 
     static_assert (EvCompileInvalidateRequest + 1 == EvAbortExecution);
@@ -138,32 +128,6 @@ struct TKqpScriptExecutionEvents {
         EvGetScriptExecutionOperationResponse,
         EvListScriptExecutionOperations,
         EvListScriptExecutionOperationsResponse,
-        EvScriptLeaseUpdateResponse,
-        EvCancelScriptExecutionOperation,
-        EvCancelScriptExecutionOperationResponse,
-        EvScriptExecutionFinished,
-        EvForgetScriptExecutionOperation,
-        EvForgetScriptExecutionOperationResponse,
-        EvSaveScriptResultMetaFinished,
-        EvSaveScriptResultFinished,
-        EvCheckAliveRequest,
-        EvCheckAliveResponse,
-        EvFetchScriptResultsQueryResponse,
-        EvSaveScriptExternalEffectRequest,
-        EvSaveScriptExternalEffectResponse,
-        EvScriptFinalizeRequest,
-        EvScriptFinalizeResponse,
-        EvSaveScriptFinalStatusResponse,
-        EvGetScriptExecutionOperationQueryResponse,
-        EvDescribeSecretsResponse,
-        EvSaveScriptResultPartFinished,
-    };
-};
-
-struct TKqpResourceInfoExchangerEvents {
-    enum EKqpResourceInfoExchangerEvents {
-        EvPublishResource = EventSpaceBegin(TKikimrEvents::ES_KQP) + 600,
-        EvSendResources,
     };
 };
 

@@ -22,7 +22,6 @@ namespace NKikimr::NBlobDepot {
         , BarrierServer(new TBarrierServer(this))
         , Data(new TData(this))
         , SpaceMonitor(new TSpaceMonitor(this))
-        , JsonHandler(std::bind(&TBlobDepot::RenderJson, this, std::placeholders::_1), TEvPrivate::EvJsonTimer, TEvPrivate::EvJsonUpdate)
     {}
 
     TBlobDepot::~TBlobDepot()
@@ -41,64 +40,40 @@ namespace NKikimr::NBlobDepot {
             hFunc(TEvBlobDepot::TEvPushNotifyResult, Handle);
 
             default:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 
     STFUNC(TBlobDepot::StateWork) {
         try {
-            auto handleDelivery = [this](auto& ev) {
-                const auto it = PipeServers.find(ev->Recipient);
-                if (it == PipeServers.end()) {
-                    STLOG(PRI_DEBUG, BLOB_DEPOT, BDT29, "HandleDelivery dropped", (Id, GetLogId()),
-                        (RequestId, ev->Cookie), (Sender, ev->Sender), (PipeServerId, ev->Recipient), (Type, ev->Type));
-                    return;
-                }
-                auto& info = it->second;
-
-                Y_ABORT_UNLESS(info.InFlightDeliveries);
-                --info.InFlightDeliveries;
-
-                // return original event type
-                ev->Rewrite(ev->Type, ev->GetRecipientRewrite());
-
-                // ensure correct ordering of incoming messages
-                Y_VERIFY_S(ev->Cookie == info.NextExpectedMsgId, "message reordering detected Cookie# " << ev->Cookie
-                    << " NextExpectedMsgId# " << info.NextExpectedMsgId << " Type# " << Sprintf("%08" PRIx32,
-                    ev->GetTypeRewrite()) << " Id# " << GetLogId());
-                ++info.NextExpectedMsgId;
-                HandleFromAgent(ev);
-            };
-
             auto handleFromAgentPipe = [this](auto& ev) {
                 const auto it = PipeServers.find(ev->Recipient);
                 if (it == PipeServers.end()) {
-                    STLOG(PRI_DEBUG, BLOB_DEPOT, BDT23, "HandleFromAgentPipe dropped", (Id, GetLogId()),
-                        (RequestId, ev->Cookie), (Sender, ev->Sender), (PipeServerId, ev->Recipient), (Type, ev->Type));
                     return; // this may be a race with TEvServerDisconnected and postpone queue; it's okay to have this
                 }
                 auto& info = it->second;
 
                 STLOG(PRI_DEBUG, BLOB_DEPOT, BDT69, "HandleFromAgentPipe", (Id, GetLogId()), (RequestId, ev->Cookie),
-                    (Sender, ev->Sender), (PipeServerId, ev->Recipient), (NextExpectedMsgId, info.NextExpectedMsgId),
-                    (PostponeQ.size, info.PostponeQ.size()), (InFlightDeliveries, info.InFlightDeliveries),
-                    (ReadyForAgentQueries, ReadyForAgentQueries()), (Type, ev->Type));
+                    (Sender, ev->Sender), (PipeServerId, ev->Recipient), (ProcessThroughQueue, info.ProcessThroughQueue),
+                    (NextExpectedMsgId, info.NextExpectedMsgId), (PostponeQ.size, info.PostponeQ.size()));
 
-                Y_ABORT_UNLESS(ev->Type == ev->GetTypeRewrite());
-                ev->Rewrite(TEvPrivate::EvDeliver, ev->GetRecipientRewrite());
-
-                if (!ReadyForAgentQueries()) { // we can't handle agent queries now -- enqueue this message
+                if (info.ProcessThroughQueue || !ReadyForAgentQueries()) {
                     info.PostponeQ.emplace_back(ev.Release());
-                } else if (!info.PostponeQ.empty()) {
-                    Y_ABORT("PostponeQ can't be nonempty while agent is running");
-                } else if (info.InFlightDeliveries++) {
-                    TActivationContext::Send(ev.Release());
-                } else { // handle event as delivery one
-                    StateWork(ev);
+                    info.ProcessThroughQueue = true;
+                } else {
+                    // ensure correct ordering of incoming messages
+                    Y_VERIFY_S(ev->Cookie == info.NextExpectedMsgId, "message reordering detected Cookie# " << ev->Cookie
+                        << " NextExpectedMsgId# " << info.NextExpectedMsgId << " Type# " << Sprintf("%08" PRIx32,
+                        ev->GetTypeRewrite()) << " Id# " << GetLogId());
+                    ++info.NextExpectedMsgId;
+
+                    HandleFromAgent(ev);
                 }
             };
 
             switch (const ui32 type = ev->GetTypeRewrite()) {
+                cFunc(TEvents::TSystem::Poison, HandlePoison);
+
                 hFunc(TEvBlobDepot::TEvApplyConfig, Handle);
 
                 fFunc(TEvBlobDepot::EvRegisterAgent, handleFromAgentPipe);
@@ -111,9 +86,9 @@ namespace NKikimr::NBlobDepot {
                 fFunc(TEvBlobDepot::EvPushNotifyResult, handleFromAgentPipe);
                 fFunc(TEvBlobDepot::EvCollectGarbage, handleFromAgentPipe);
 
-                fFunc(TEvPrivate::EvDeliver, handleDelivery);
-
                 hFunc(TEvBlobDepot::TEvPushMetrics, Handle);
+
+                cFunc(TEvPrivate::EvProcessRegisterAgentQ, ProcessRegisterAgentQ);
 
                 hFunc(TEvBlobStorage::TEvCollectGarbageResult, Data->Handle);
                 hFunc(TEvBlobStorage::TEvGetResult, Data->UncertaintyResolver->Handle);
@@ -129,12 +104,9 @@ namespace NKikimr::NBlobDepot {
                 hFunc(TEvBlobStorage::TEvControllerGroupMetricsExchange, Handle);
                 cFunc(TEvPrivate::EvUpdateThroughputs, UpdateThroughputs);
 
-                cFunc(TEvPrivate::EvJsonTimer, JsonHandler.HandleTimer);
-                cFunc(TEvPrivate::EvJsonUpdate, JsonHandler.HandleUpdate);
-
                 default:
                     if (!HandleDefaultEvents(ev, SelfId())) {
-                        Y_ABORT("unexpected event Type# 0x%08" PRIx32, type);
+                        Y_FAIL("unexpected event Type# 0x%08" PRIx32, type);
                     }
                     break;
             }
@@ -159,7 +131,7 @@ namespace NKikimr::NBlobDepot {
         TTabletStorageInfo *info = Info();
         const ui32 generation = Executor()->Generation();
 
-        Y_ABORT_UNLESS(Channels.empty());
+        Y_VERIFY(Channels.empty());
 
         ui32 channel = 0;
         for (const auto& profile : Config.GetChannelProfiles()) {
@@ -201,11 +173,11 @@ namespace NKikimr::NBlobDepot {
 
     void TBlobDepot::InvalidateGroupForAllocation(ui32 groupId) {
         const auto groupIt = Groups.find(groupId);
-        Y_ABORT_UNLESS(groupIt != Groups.end());
+        Y_VERIFY(groupIt != Groups.end());
         const auto& group = groupIt->second;
         for (const auto& [kind, channels] : group.Channels) {
             const auto kindIt = ChannelKinds.find(kind);
-            Y_ABORT_UNLESS(kindIt != ChannelKinds.end());
+            Y_VERIFY(kindIt != ChannelKinds.end());
             auto& kindv = kindIt->second;
             kindv.GroupAccumWeights.clear(); // invalidate
         }
@@ -213,7 +185,7 @@ namespace NKikimr::NBlobDepot {
 
     bool TBlobDepot::PickChannels(NKikimrBlobDepot::TChannelKind::E kind, std::vector<ui8>& channels) {
         const auto kindIt = ChannelKinds.find(kind);
-        Y_ABORT_UNLESS(kindIt != ChannelKinds.end());
+        Y_VERIFY(kindIt != ChannelKinds.end());
         auto& kindv = kindIt->second;
 
         if (kindv.GroupAccumWeights.empty()) {
@@ -243,15 +215,15 @@ namespace NKikimr::NBlobDepot {
             const ui64 random = RandomNumber(accum);
             const auto comp = [](ui64 x, const auto& y) { return x < std::get<1>(y); };
             const auto it = std::upper_bound(kindv.GroupAccumWeights.begin(), kindv.GroupAccumWeights.end(), random, comp);
-            Y_ABORT_UNLESS(it != kindv.GroupAccumWeights.end());
+            Y_VERIFY(it != kindv.GroupAccumWeights.end());
             const auto [groupId, _] = *it;
 
             const auto groupIt = Groups.find(groupId);
-            Y_ABORT_UNLESS(groupIt != Groups.end());
+            Y_VERIFY(groupIt != Groups.end());
             auto& group = groupIt->second;
 
             const auto channelsIt = group.Channels.find(kind);
-            Y_ABORT_UNLESS(channelsIt != group.Channels.end());
+            Y_VERIFY(channelsIt != group.Channels.end());
             const auto& channels = channelsIt->second;
 
             const size_t channelIndex = RandomNumber(channels.size());

@@ -5,7 +5,7 @@
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/actorlib_impl/long_timer.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #define TXLOG_LOG(priority, stream) \
     LOG_LOG_S(*TlsActivationContext, priority, NKikimrServices::LONG_TX_SERVICE, LogPrefix << stream)
@@ -94,7 +94,7 @@ namespace NLongTxService {
                     writeIds.emplace_back(wId);
                 }
                 TString txBody;
-                Y_ABORT_UNLESS(tx.SerializeToString(&txBody));
+                Y_VERIFY(tx.SerializeToString(&txBody));
 
                 WaitingShards.emplace(tabletId, TRetryData{ writeIds, txBody, 0 });
                 SendPrepareTransaction(tabletId);
@@ -211,7 +211,7 @@ namespace NLongTxService {
         void HandlePrepare(TEvPipeCache::TEvDeliveryProblem::TPtr& ev) {
             const auto* msg = ev->Get();
             const ui64 tabletId = msg->TabletId;
-            Y_ABORT_UNLESS(tabletId != SelectedCoordinator);
+            Y_VERIFY(tabletId != SelectedCoordinator);
 
             TXLOG_DEBUG("Delivery problem"
                 << " TabletId# " << tabletId
@@ -244,8 +244,8 @@ namespace NLongTxService {
 
     private:
         void PlanTransaction() {
-            Y_ABORT_UNLESS(SelectedCoordinator);
-            Y_ABORT_UNLESS(WaitingShards.empty());
+            Y_VERIFY(SelectedCoordinator);
+            Y_VERIFY(WaitingShards.empty());
             ToRetry.clear();
 
             auto req = MakeHolder<TEvTxProxy::TEvProposeTransaction>(
@@ -401,7 +401,7 @@ namespace NLongTxService {
         }
 
         bool SendCheckPlannedTransaction(ui64 tabletId, bool delayed = false) {
-            Y_ABORT_UNLESS(PlanStep);
+            Y_VERIFY(PlanStep);
 
             if (delayed) {
                 auto it = WaitingShards.find(tabletId);

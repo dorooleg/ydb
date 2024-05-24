@@ -456,7 +456,7 @@ public:
         }
 
         auto handle = Pop();
-        do {
+        while (result.size() + handle.mapped().size() < maxSize) {
             result << handle.mapped() << "\n";
 
             if (Empty()) {
@@ -464,7 +464,7 @@ public:
             }
 
             handle = Pop();
-        } while (result.size() + handle.mapped().size() < maxSize);
+        }
 
         Add(std::move(handle.key()), std::move(handle.mapped()));
         return result;

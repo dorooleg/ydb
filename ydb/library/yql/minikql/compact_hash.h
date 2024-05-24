@@ -305,7 +305,7 @@ public:
         case LARGE_MARK:
             return GetLargeListHeader(list)->Size;
         default:
-            Y_ABORT("Bad list address");
+            Y_FAIL("Bad list address");
         }
         return 0;
     }
@@ -328,7 +328,7 @@ public:
                 return size;
             }
         default:
-            Y_ABORT("Bad list address");
+            Y_FAIL("Bad list address");
         }
         return 0;
     }
@@ -341,7 +341,7 @@ public:
         case LARGE_MARK:
             return GetLargeListHeader(list)->Capacity;
         default:
-            Y_ABORT("Bad list address");
+            Y_FAIL("Bad list address");
         }
         return 0;
     }
@@ -355,7 +355,7 @@ public:
             GetLargeListHeader(list)->Size = size;
             break;
         default:
-            Y_ABORT("Bad list address");
+            Y_FAIL("Bad list address");
         }
     }
 
@@ -389,12 +389,12 @@ public:
     ~TListPool() {
         for (auto& p: Pools) {
             for (auto& list: p.SmallPages) {
-                Y_ABORT_UNLESS(list.Empty(), "%s", DebugInfo().data());
+                Y_VERIFY(list.Empty(), "%s", DebugInfo().data());
             }
             for (auto& list: p.MediumPages) {
-                Y_ABORT_UNLESS(list.Empty(), "%s", DebugInfo().data());
+                Y_VERIFY(list.Empty(), "%s", DebugInfo().data());
             }
-            Y_ABORT_UNLESS(p.FullPages.Empty(), "%s", DebugInfo().data());
+            Y_VERIFY(p.FullPages.Empty(), "%s", DebugInfo().data());
         }
     }
 
@@ -408,7 +408,7 @@ public:
     T* GetList(size_t size) {
         static_assert(std::is_same<TPrimary, T>::value || std::is_same<TSecondary, T>::value, "Bad requested list type");
         static constexpr size_t PoolNdx = static_cast<size_t>(!std::is_same<TPrimary, T>::value);
-        Y_ABORT_UNLESS(size >= 2);
+        Y_VERIFY(size >= 2);
         T* res = nullptr;
 
         if (Y_LIKELY(size <= TListPoolBase::GetMaxListSize<T>())) {
@@ -439,7 +439,7 @@ public:
                 // Convert to large list
                 header = GetLargeListPage<T>();
                 list = header->GetList<T>();
-                Y_ABORT_UNLESS(header->Capacity >= oldSize);
+                Y_VERIFY(header->Capacity >= oldSize);
                 header->Size = oldSize;
             }
 
@@ -516,7 +516,7 @@ public:
             ReturnLargeList<T>(list);
             break;
         default:
-            Y_ABORT("Bad list address");
+            Y_FAIL("Bad list address");
         }
     }
 
@@ -770,17 +770,17 @@ struct TNode {
     }
 
     T Get() const {
-        Y_ABORT_UNLESS(FlagSingle == Flag);
+        Y_VERIFY(FlagSingle == Flag);
         return ::ReadUnaligned<T>(&Storage);
     }
 
     T* GetList() {
-        Y_ABORT_UNLESS(FlagList == Flag);
+        Y_VERIFY(FlagList == Flag);
         return *reinterpret_cast<T**>(&Storage);
     }
 
     const T* GetList() const {
-        Y_ABORT_UNLESS(FlagList == Flag);
+        Y_VERIFY(FlagList == Flag);
         return *reinterpret_cast<const T* const*>(&Storage);
     }
 
@@ -982,6 +982,15 @@ public:
         }
 
     public:
+        TIteratorImpl& operator=(const TIteratorImpl& rhs) {
+            Hash = rhs.Hash;
+            Bucket = rhs.Bucket;
+            EndBucket = rhs.EndBucket;
+            Pos = rhs.Pos;
+            SubPos = rhs.SubPos;
+            return *this;
+        }
+
         bool Ok() const {
             return Bucket < EndBucket;
         }
@@ -1159,7 +1168,7 @@ public:
     }
 
     void SetMaxLoadFactor(float factor) {
-        Y_ABORT_UNLESS(factor > 0);
+        Y_VERIFY(factor > 0);
         MaxLoadFactor_ = factor;
     }
 

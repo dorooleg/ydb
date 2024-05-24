@@ -13,7 +13,7 @@
 #include <util/generic/guid.h>
 #include <util/system/yassert.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/protobuf/interop/cast.h>
@@ -36,10 +36,11 @@
 #include <ydb/core/fq/libs/db_schema/db_schema.h>
 #include <ydb/core/fq/libs/events/events.h>
 #include <ydb/core/fq/libs/exceptions/exceptions.h>
-#include <ydb/core/fq/libs/metrics/status_code_counters.h>
 #include <ydb/core/fq/libs/quota_manager/events/events.h>
 #include <ydb/core/fq/libs/ydb/util.h>
 #include <ydb/core/fq/libs/ydb/ydb.h>
+
+#include <type_traits>
 
 namespace NFq {
 
@@ -175,24 +176,18 @@ struct TRequestCounters {
 };
 
 template<typename T>
-THashMap<TString, T> GetEntitiesWithVisibilityPriority(const TResultSet& resultSet, const TString& columnName, bool ignorePrivateSources, const TRequestCommonCountersPtr& commonCounters)
+THashMap<TString, T> GetEntitiesWithVisibilityPriority(const TResultSet& resultSet, const TString& columnName)
 {
     THashMap<TString, T> entities;
     TResultSetParser parser(resultSet);
     while (parser.TryNextRow()) {
         T entity;
-        if (!entity.ParseFromString(*parser.ColumnParser(columnName).GetOptionalString())) {
-            commonCounters->ParseProtobufError->Inc();
-            ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for GetEntitiesWithVisibilityPriority. Please contact internal support";
-        }
-        const auto visibility = entity.content().acl().visibility();
-        if (ignorePrivateSources && visibility == FederatedQuery::Acl::PRIVATE) {
-            continue;
-        }
+        Y_VERIFY(entity.ParseFromString(*parser.ColumnParser(columnName).GetOptionalString()));
         const TString name = entity.content().name();
         if (auto it = entities.find(name); it != entities.end()) {
+            const auto visibility = entity.content().acl().visibility();
             if (visibility == FederatedQuery::Acl::PRIVATE) {
-                it->second = std::move(entity);
+                entities[name] = std::move(entity);
             }
         } else {
             entities[name] = std::move(entity);
@@ -203,21 +198,12 @@ THashMap<TString, T> GetEntitiesWithVisibilityPriority(const TResultSet& resultS
 }
 
 template<typename T>
-TVector<T> GetEntities(const TResultSet& resultSet, const TString& columnName, bool ignorePrivateSources, const TRequestCommonCountersPtr& commonCounters)
+TVector<T> GetEntities(const TResultSet& resultSet, const TString& columnName)
 {
     TVector<T> entities;
     TResultSetParser parser(resultSet);
     while (parser.TryNextRow()) {
-        T entity;
-        if (!entity.ParseFromString(*parser.ColumnParser(columnName).GetOptionalString())) {
-            commonCounters->ParseProtobufError->Inc();
-            ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for GetEntities. Please contact internal support";
-        }
-        const auto visibility = entity.content().acl().visibility();
-        if (ignorePrivateSources && visibility == FederatedQuery::Acl::PRIVATE) {
-            continue;
-        }
-        entities.emplace_back(std::move(entity));
+        Y_VERIFY(entities.emplace_back().ParseFromString(*parser.ColumnParser(columnName).GetOptionalString()));
     }
     return entities;
 }
@@ -298,9 +284,8 @@ protected:
     TControlPlaneStorageUtils(
         const NConfig::TControlPlaneStorageConfig& config,
         const NYql::TS3GatewayConfig& s3Config,
-        const NConfig::TCommonConfig& common,
-        const NConfig::TComputeConfig& computeConfig)
-    : Config(std::make_shared<::NFq::TControlPlaneStorageConfig>(config, s3Config, common, computeConfig))
+        const NConfig::TCommonConfig& common)
+    : Config(std::make_shared<::NFq::TControlPlaneStorageConfig>(config, s3Config, common))
     {
     }
 
@@ -315,11 +300,11 @@ protected:
     bool IsSuperUser(const TString& user);
 
     template<typename T>
-    NYql::TIssues ValidateConnection(T& ev, bool passwordRequired = true)
+    NYql::TIssues ValidateConnection(T& ev, bool clickHousePasswordRequire = true)
     {
         return ::NFq::ValidateConnection<T>(ev, Config->Proto.GetMaxRequestSize(),
                                   Config->AvailableConnections, Config->Proto.GetDisableCurrentIam(),
-                                  passwordRequired);
+                                  clickHousePasswordRequire);
     }
 
     template<typename T>
@@ -396,9 +381,6 @@ class TYdbControlPlaneStorageActor : public NActors::TActorBootstrapped<TYdbCont
         RTS_MODIFY_BINDING,
         RTS_DELETE_BINDING,
         RTS_PING_TASK,
-        RTS_CREATE_DATABASE,
-        RTS_DESCRIBE_DATABASE,
-        RTS_MODIFY_DATABASE,
         RTS_MAX,
     };
 
@@ -423,10 +405,7 @@ class TYdbControlPlaneStorageActor : public NActors::TActorBootstrapped<TYdbCont
         "DescribeBinding",
         "ModifyBinding",
         "DeleteBinding",
-        "PingTask",
-        "CreateDatabase",
-        "DescribeDatabase",
-        "ModifyDatabase"
+        "PingTask"
     };
 
     enum ERequestTypeCommon {
@@ -457,9 +436,6 @@ class TYdbControlPlaneStorageActor : public NActors::TActorBootstrapped<TYdbCont
         RTC_MODIFY_BINDING,
         RTC_DELETE_BINDING,
         RTC_PING_TASK,
-        RTC_CREATE_DATABASE,
-        RTC_DESCRIBE_DATABASE,
-        RTC_MODIFY_DATABASE,
         RTC_MAX,
     };
 
@@ -511,9 +487,6 @@ class TYdbControlPlaneStorageActor : public NActors::TActorBootstrapped<TYdbCont
             { MakeIntrusive<TRequestCommonCounters>("ModifyBinding") },
             { MakeIntrusive<TRequestCommonCounters>("DeleteBinding") },
             { MakeIntrusive<TRequestCommonCounters>("PingTask") },
-            { MakeIntrusive<TRequestCommonCounters>("CreateDatabase") },
-            { MakeIntrusive<TRequestCommonCounters>("DescribeDatabase") },
-            { MakeIntrusive<TRequestCommonCounters>("ModifyDatabase") }
         });
 
         TTtlCache<TMetricsScope, TScopeCountersPtr, TMap> ScopeCounters{TTtlCacheSettings{}.SetTtl(TDuration::Days(1))};
@@ -581,7 +554,6 @@ class TYdbControlPlaneStorageActor : public NActors::TActorBootstrapped<TYdbCont
     };
 
     TCounters Counters;
-    TStatusCodeByScopeCounters::TPtr FailedStatusCodeCounters;
 
     ::NFq::TYqSharedResources::TPtr YqSharedResources;
 
@@ -601,14 +573,12 @@ public:
         const NConfig::TControlPlaneStorageConfig& config,
         const NYql::TS3GatewayConfig& s3Config,
         const NConfig::TCommonConfig& common,
-        const NConfig::TComputeConfig& computeConfig,
         const ::NMonitoring::TDynamicCounterPtr& counters,
         const ::NFq::TYqSharedResources::TPtr& yqSharedResources,
         const NKikimr::TYdbCredentialsProviderFactory& credProviderFactory,
         const TString& tenantName)
-        : TControlPlaneStorageUtils(config, s3Config, common, computeConfig)
+        : TControlPlaneStorageUtils(config, s3Config, common)
         , Counters(counters, *Config)
-        , FailedStatusCodeCounters(MakeIntrusive<TStatusCodeByScopeCounters>("FinalFailedStatusCode", counters->GetSubgroup("component", "QueryDiagnostic")))
         , YqSharedResources(yqSharedResources)
         , CredProviderFactory(credProviderFactory)
         , TenantName(tenantName)
@@ -651,10 +621,6 @@ public:
         hFunc(TEvQuotaService::TQuotaLimitChangeRequest, Handle);
         hFunc(TEvents::TEvCallback, [](TEvents::TEvCallback::TPtr& ev) { ev->Get()->Callback(); } );
         hFunc(TEvents::TEvSchemaCreated, Handle);
-        hFunc(TEvControlPlaneStorage::TEvCreateDatabaseRequest, Handle);
-        hFunc(TEvControlPlaneStorage::TEvDescribeDatabaseRequest, Handle);
-        hFunc(TEvControlPlaneStorage::TEvModifyDatabaseRequest, Handle);
-        hFunc(TEvControlPlaneStorage::TEvFinalStatusReport, Handle);
     )
 
     void Handle(TEvControlPlaneStorage::TEvCreateQueryRequest::TPtr& ev);
@@ -693,12 +659,6 @@ public:
     void Handle(TEvQuotaService::TQuotaUsageRequest::TPtr& ev);
     void Handle(TEvQuotaService::TQuotaLimitChangeRequest::TPtr& ev);
 
-    void Handle(TEvControlPlaneStorage::TEvCreateDatabaseRequest::TPtr& ev);
-    void Handle(TEvControlPlaneStorage::TEvDescribeDatabaseRequest::TPtr& ev);
-    void Handle(TEvControlPlaneStorage::TEvModifyDatabaseRequest::TPtr& ev);
-
-    void Handle(TEvControlPlaneStorage::TEvFinalStatusReport::TPtr& ev);
-
     template <class TEventPtr, class TRequestActor, ERequestTypeCommon requestType>
     void HandleRateLimiterImpl(TEventPtr& ev);
 
@@ -730,7 +690,6 @@ public:
     void CreateTenantsTable();
     void CreateTenantAcksTable();
     void CreateMappingsTable();
-    void CreateComputeDatabasesTable();
 
     void RunCreateTableActor(const TString& path, NYdb::NTable::TTableDescription desc);
     void AfterTablesCreated();
@@ -882,7 +841,7 @@ private:
                 actorSystem->Send(new IEventHandle(ev->Sender, self, event.release(), 0, ev->Cookie));
                 requestCounters.IncOk();
             }
-            requestCounters.DecInFly();
+            requestCounters.IncInFly();
             requestCounters.Common->ResponseBytes->Add(responseByteSize);
             TDuration delta = TInstant::Now() - startTime;
             requestCounters.Common->LatencyMs->Collect(delta.MilliSeconds());
@@ -919,10 +878,6 @@ private:
         std::shared_ptr<TResponseTasks> responseTasks,
         const TVector<TValidationQuery>& validators = {},
         TTxSettings transactionMode = TTxSettings::SerializableRW());
-
-    ui64 GetExecutionLimitMills(
-        FederatedQuery::QueryContent_QueryType queryType,
-        const TMaybe<TQuotaMap>& quotas);
 };
 
 }

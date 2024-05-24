@@ -2,14 +2,13 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/cms/cms.h>
 #include <ydb/core/mon/mon.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
 
@@ -307,14 +306,15 @@ private:
     }
 
     void SendToCms(IEventBase *ev, const TActorContext &ctx) {
-        Y_ABORT_UNLESS(!CmsPipe);
+        Y_VERIFY(!CmsPipe);
 
+        ui32 domain = AppData(ctx)->DomainsInfo->Domains.begin()->first;
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = {
             .MinRetryTime = TDuration::MilliSeconds(10),
             .MaxRetryTime = TDuration::Seconds(10),
         };
-        CmsPipe = ctx.RegisterWithSameMailbox(NTabletPipe::CreateClient(ctx.SelfID, MakeCmsID(), pipeConfig));
+        CmsPipe = ctx.RegisterWithSameMailbox(NTabletPipe::CreateClient(ctx.SelfID, MakeCmsID(domain), pipeConfig));
         NTabletPipe::SendData(ctx, CmsPipe, ev);
     }
 

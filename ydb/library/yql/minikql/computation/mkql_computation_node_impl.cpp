@@ -12,7 +12,7 @@ void TRefCountedComputationNode<IComputationNodeInterface>::Ref() {
 
 template <class IComputationNodeInterface>
 void TRefCountedComputationNode<IComputationNodeInterface>::UnRef() {
-    Y_ABORT_UNLESS(Refs_ > 0);
+    Y_VERIFY(Refs_ > 0);
     if (--Refs_ == 0) {
         delete this;
     }
@@ -146,7 +146,7 @@ TString TExternalComputationNode::DebugString() const {
 void TExternalComputationNode::RegisterDependencies() const {}
 
 void TExternalComputationNode::SetOwner(const IComputationNode* owner) {
-    Y_DEBUG_ABORT_UNLESS(!Owner);
+    Y_VERIFY_DEBUG(!Owner);
     Owner = owner;
 }
 
@@ -205,7 +205,7 @@ ui32 TWideFlowProxyComputationNode::GetDependencesCount() const {
 }
 
 IComputationNode* TWideFlowProxyComputationNode::AddDependence(const IComputationNode* node) {
-    Y_DEBUG_ABORT_UNLESS(!Dependence);
+    Y_VERIFY_DEBUG(!Dependence);
     Dependence = node;
     return this;
 }
@@ -227,7 +227,7 @@ void TWideFlowProxyComputationNode::PrepareStageTwo() {
 }
 
 void TWideFlowProxyComputationNode::SetOwner(const IComputationNode* owner) {
-    Y_DEBUG_ABORT_UNLESS(!Owner);
+    Y_VERIFY_DEBUG(!Owner);
     Owner = owner;
 }
 
@@ -261,12 +261,11 @@ IComputationExternalNode* LocateExternalNode(const TNodeLocator& nodeLocator, TC
     return dynamic_cast<IComputationExternalNode*>(LocateNode(nodeLocator, callable, index, pop));
 }
 
-template<class TContainerOne, class TContainerTwo>
-TPasstroughtMap GetPasstroughtMap(const TContainerOne& from, const TContainerTwo& to) {
-    TPasstroughtMap map(from.size());
+TPasstroughtMap GetPasstroughtMap(const TComputationExternalNodePtrVector& args, const TComputationNodePtrVector& roots) {
+    TPasstroughtMap map(args.size());
     for (size_t i = 0U; i < map.size(); ++i) {
-        for (size_t j = 0U; j < to.size(); ++j) {
-            if (from[i] == to[j]) {
+        for (size_t j = 0U; j < roots.size(); ++j) {
+            if (args[i] == roots[j]) {
                 map[i].emplace(j);
                 break;
             }
@@ -275,32 +274,18 @@ TPasstroughtMap GetPasstroughtMap(const TContainerOne& from, const TContainerTwo
     return map;
 }
 
-template<class TContainerOne, class TContainerTwo>
-TPasstroughtMap GetPasstroughtMapOneToOne(const TContainerOne& from, const TContainerTwo& to) {
-    TPasstroughtMap map(from.size());
-    std::unordered_map<typename TContainerOne::value_type, size_t> unique(map.size());
+TPasstroughtMap GetPasstroughtMap(const TComputationNodePtrVector& roots, const TComputationExternalNodePtrVector& args) {
+    TPasstroughtMap map(roots.size());
     for (size_t i = 0U; i < map.size(); ++i) {
-        if (const auto ins = unique.emplace(from[i], i); ins.second) {
-            for (size_t j = 0U; j < to.size(); ++j) {
-                if (from[i] == to[j]) {
-                    if (auto& item = map[i]) {
-                        item.reset();
-                        break;
-                    } else
-                        item.emplace(j);
-
-                }
+        for (size_t j = 0U; j < args.size(); ++j) {
+            if (roots[i] == args[j]) {
+                map[i].emplace(j);
+                break;
             }
-        } else
-            map[ins.first->second].reset();
+        }
     }
     return map;
 }
-
-template TPasstroughtMap GetPasstroughtMap(const TComputationExternalNodePtrVector& from, const TComputationNodePtrVector& to);
-template TPasstroughtMap GetPasstroughtMap(const TComputationNodePtrVector& from, const TComputationExternalNodePtrVector& to);
-template TPasstroughtMap GetPasstroughtMapOneToOne(const TComputationExternalNodePtrVector& from, const TComputationNodePtrVector& to);
-template TPasstroughtMap GetPasstroughtMapOneToOne(const TComputationNodePtrVector& from, const TComputationExternalNodePtrVector& to);
 
 std::optional<size_t> IsPasstrought(const IComputationNode* root, const TComputationExternalNodePtrVector& args) {
     for (size_t i = 0U; i < args.size(); ++i)

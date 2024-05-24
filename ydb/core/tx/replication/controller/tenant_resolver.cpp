@@ -5,8 +5,8 @@
 #include <ydb/core/base/path.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NReplication::NController {
 
@@ -26,7 +26,7 @@ class TTenantResolver: public TActorBootstrapped<TTenantResolver> {
     void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
         const auto* response = ev->Get()->Request.Get();
 
-        Y_ABORT_UNLESS(response->ResultSet.size() == 1);
+        Y_VERIFY(response->ResultSet.size() == 1);
         const auto& entry = response->ResultSet.front();
 
         LOG_T("Handle " << ev->Get()->ToString()

@@ -28,7 +28,7 @@ public:
         for (TTabletId tabletId : request.GetTabletIDs()) {
             TLeaderTabletInfo* tablet = Self->FindTablet(tabletId);
             if (tablet != nullptr) {
-                Y_ABORT_UNLESS(tablet->SeizedByChild);
+                Y_VERIFY(tablet->SeizedByChild);
 
                 if (tablet->IsAlive() && tablet->Node != nullptr) {
                     tablet->SendStopTablet(tablet->Node->Local, SideEffects);

@@ -974,7 +974,7 @@ void TTestChunkLock::TestFSM(const TActorContext &ctx) {
         break;
     case 30:
         TEST_RESPONSE(EvChunkLockResult, OK);
-        ASSERT_YTHROW(LastResponse.ChunkIds.size() == 5,
+        ASSERT_YTHROW(LastResponse.ChunkIds.size() == 5, 
             "Unexpected LockedChunks.size() == " << LastResponse.ChunkIds.size());
         VERBOSE_COUT(" Sending TEvChunkLock from PERSONAL_QUOTA");
         ctx.Send(Yard, new NPDisk::TEvChunkLock(EFrom::PERSONAL_QUOTA, Owner, 0, TColor::RED));
@@ -1029,13 +1029,13 @@ void TTestChunkUnlock::TestFSM(const TActorContext &ctx) {
         break;
     case 40:
         TEST_RESPONSE(EvChunkUnlockResult, OK);
-        ASSERT_YTHROW(LastResponse.UnlockedChunks == LockedNumLog, "Expected" << LockedNumLog <<
+        ASSERT_YTHROW(LastResponse.UnlockedChunks == LockedNumLog, "Expected" << LockedNumLog << 
             " unlocked chunks, got " << LastResponse.UnlockedChunks);
         ctx.Send(Yard, new NPDisk::TEvChunkUnlock(EFrom::PERSONAL_QUOTA, Owner));
         break;
     case 50:
         TEST_RESPONSE(EvChunkUnlockResult, OK);
-        ASSERT_YTHROW(LastResponse.UnlockedChunks == LockedNumPersonal, "Expected" << LockedNumPersonal <<
+        ASSERT_YTHROW(LastResponse.UnlockedChunks == LockedNumPersonal, "Expected" << LockedNumPersonal << 
             " unlocked chunks, got " << LastResponse.UnlockedChunks);
         ctx.Send(Yard, new NPDisk::TEvChunkReserve(Owner, OwnerRound, 10));
         break;
@@ -1136,7 +1136,7 @@ void TTestChunkUnlockRestart::TestFSM(const TActorContext &ctx) {
             SignalDoneEvent();
             break;
         }
-        ctx.Send(NodeWardenId, new TEvBlobStorage::TEvAskWardenRestartPDisk(LastResponse.whiteboardPDiskResult->Record.GetPDiskId()));
+        ctx.Send(NodeWardenId, new TEvBlobStorage::TEvAskRestartPDisk(LastResponse.whiteboardPDiskResult->Record.GetPDiskId()));
         break;
     case 30:
         TEST_RESPONSE(EvHarakiri, OK);
@@ -2758,7 +2758,14 @@ void TTestRedZoneSurvivability::TestFSM(const TActorContext &ctx) {
     case 30:
     {
         //TEST_RESPONSE(EvLogResult, ERROR);
-        TEST_PDISK_STATUS(ui32(NKikimrBlobStorage::StatusIsValid));
+        TEST_PDISK_STATUS(ui32(NKikimrBlobStorage::StatusIsValid)
+            | ui32(NKikimrBlobStorage::StatusDiskSpaceCyan)
+            | ui32(NKikimrBlobStorage::StatusDiskSpaceRed)
+            | ui32(NKikimrBlobStorage::StatusDiskSpaceOrange)
+            | ui32(NKikimrBlobStorage::StatusDiskSpacePreOrange)
+            | ui32(NKikimrBlobStorage::StatusDiskSpaceLightOrange)
+            | ui32(NKikimrBlobStorage::StatusDiskSpaceYellowStop)
+            | ui32(NKikimrBlobStorage::StatusDiskSpaceLightYellowMove));
         VERBOSE_COUT(" Sending TEvLog to delete a chunk");
         NPDisk::TCommitRecord commitRecord;
         TRcBuf commitData = TRcBuf(TString("hello"));
@@ -2776,17 +2783,14 @@ void TTestRedZoneSurvivability::TestFSM(const TActorContext &ctx) {
         TEST_RESPONSE(EvLogResult, OK);
 
         VERBOSE_COUT(" Sending TEvLog to log ChunkSize bytes");
-        TRcBuf largeData = TRcBuf(PrepareData(ChunkSize * 130));
+        TRcBuf largeData = TRcBuf(PrepareData(ChunkSize * 20));
         ctx.Send(Yard, new NPDisk::TEvLog(Owner, OwnerRound, 0, largeData, TLsnSeg(3, 3), (void*)43));
         break;
     }
     case 50:
     {
         TEST_RESPONSE(EvLogResult, OK);
-        TEST_PDISK_STATUS(ui32(NKikimrBlobStorage::StatusIsValid)
-            | ui32(NKikimrBlobStorage::StatusDiskSpaceCyan)
-            | ui32(NKikimrBlobStorage::StatusDiskSpaceLightYellowMove)
-            | ui32(NKikimrBlobStorage::StatusDiskSpaceYellowStop));
+        TEST_PDISK_STATUS(ui32(NKikimrBlobStorage::StatusIsValid));
 
         VERBOSE_COUT(" Sending TEvLog to log 3 * ChunkSize bytes");
         TRcBuf largeData = TRcBuf(PrepareData(ChunkSize * 3));
@@ -2796,10 +2800,7 @@ void TTestRedZoneSurvivability::TestFSM(const TActorContext &ctx) {
     case 60:
     {
         TEST_RESPONSE(EvLogResult, OK);
-        TEST_PDISK_STATUS(ui32(NKikimrBlobStorage::StatusIsValid)
-            | ui32(NKikimrBlobStorage::StatusDiskSpaceCyan)
-            | ui32(NKikimrBlobStorage::StatusDiskSpaceLightYellowMove)
-            | ui32(NKikimrBlobStorage::StatusDiskSpaceYellowStop));
+        TEST_PDISK_STATUS(ui32(NKikimrBlobStorage::StatusIsValid));
 
         VERBOSE_COUT(" Sending TEvLog to cut log");
         NPDisk::TCommitRecord commitRecord;

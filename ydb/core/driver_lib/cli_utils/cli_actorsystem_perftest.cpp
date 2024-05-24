@@ -1,8 +1,8 @@
 #include "cli.h"
 #include <ydb/core/actorlib_impl/mad_squirrel.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
 
 namespace NKikimr {
 namespace NDriverClient {
@@ -45,7 +45,6 @@ int ActorsysPerfTest(TCommandConfig &cmdConf, int argc, char **argv) {
 
     TActorSystem actorSys(setup, nullptr);
     TVector<TExecutorThreadStats> stats(1);
-    TVector<TExecutorThreadStats> sharedStats;
     TExecutorPoolStats poolStats;
 
     TVector<std::pair<ui32, double>> lineProfile = {{ 0, .0 }, { 0, .0 }, { 0, .0 }, { 0, .0 }, { 0, .0 }, { 0, .0 }, { 0, 0 }, { 0, .0 }};
@@ -53,13 +52,11 @@ int ActorsysPerfTest(TCommandConfig &cmdConf, int argc, char **argv) {
     actorSys.Start();
     actorSys.Register(CreateGopherMother(lineProfile, 1000, 2));
     Sleep(TDuration::Seconds(config.Duration));
-    actorSys.GetPoolStats(0, poolStats, stats, sharedStats);
+    actorSys.GetPoolStats(0, poolStats, stats);
     actorSys.Stop();
 
     ui64 sentEvents = 0;
     for (auto &x : stats)
-        sentEvents += x.SentEvents;
-    for (auto &x : sharedStats)
         sentEvents += x.SentEvents;
 
     Cerr << "Produced " << sentEvents << " signals at rate " << sentEvents/config.Duration << " per second " << sentEvents/config.Duration/config.Threads << " per thread" << Endl;

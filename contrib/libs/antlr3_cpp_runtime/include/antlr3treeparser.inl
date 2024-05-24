@@ -161,6 +161,7 @@ TreeParser<ImplTraits>::getMissingSymbol( IntStreamType* istream, ExceptionBaseT
 	TreeTypePtr				current;
 	CommonTokenType*		token;
 	StringType				text;
+        ANTLR_INT32             i;
 
 	// Dereference the standard pointers
 	//
@@ -169,10 +170,12 @@ TreeParser<ImplTraits>::getMissingSymbol( IntStreamType* istream, ExceptionBaseT
 	// Create a new empty node, by stealing the current one, or the previous one if the current one is EOF
 	//
 	current	= tns->LT(1);
+    i       = -1;
 
 	if	(current == tns->get_EOF_NODE_p())
 	{
 		current = tns->LT(-1);
+        i--;
 	}
 	node	= current->dupNode();
 

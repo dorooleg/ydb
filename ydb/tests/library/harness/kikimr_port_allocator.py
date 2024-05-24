@@ -160,12 +160,9 @@ class KikimrPortManagerPortAllocator(KikimrPortAllocatorInterface):
 #
 
 class KikimrFixedNodePortAllocator(KikimrNodePortAllocatorInterface):
-
-    def __init__(self, base_port_offset, mon_port=8765, grpc_port=2135, mbus_port=2134, ic_port=19001, sqs_port=8771, grpc_ssl_port=2137,
+    def __init__(self, mon_port=8765, grpc_port=2135, mbus_port=2134, ic_port=19001, sqs_port=8771, grpc_ssl_port=2137,
                  ext_port=2237, public_http_port=8766):
         super(KikimrFixedNodePortAllocator, self).__init__()
-
-        self.base_port_offset = base_port_offset
         if os.getenv('MON_PORT') is not None:
             self.__mon_port = int(os.getenv('MON_PORT'))
         else:
@@ -195,45 +192,44 @@ class KikimrFixedNodePortAllocator(KikimrNodePortAllocatorInterface):
 
     @property
     def mon_port(self):
-        return self.__mon_port + self.base_port_offset
+        return self.__mon_port
 
     @property
     def grpc_ssl_port(self):
-        return self.__grpc_ssl_port + self.base_port_offset
+        return self.__grpc_ssl_port
 
     @property
     def grpc_port(self):
-        return self.__grpc_port + self.base_port_offset
+        return self.__grpc_port
 
     @property
     def mbus_port(self):
-        return self.__mbus_port + self.base_port_offset
+        return self.__mbus_port
 
     @property
     def ic_port(self):
-        return self.__ic_port + self.base_port_offset
+        return self.__ic_port
 
     @property
     def sqs_port(self):
-        return self.__sqs_port + self.base_port_offset
+        return self.__sqs_port
 
     @property
     def ext_port(self):
-        return self.__ext_port + self.base_port_offset
+        return self.__ext_port
 
     def public_http_port(self):
-        return self.__public_http_port + self.base_port_offset
+        return self.__public_http_port
 
 
 class KikimrFixedPortAllocator(KikimrPortAllocatorInterface):
     def __init__(self,
-                 base_port_offset,
                  nodes_port_allocators_list=(),
                  slots_port_allocators_list=()):
         super(KikimrFixedPortAllocator, self).__init__()
         self.__nodes_port_allocators_list = nodes_port_allocators_list
         self.__slots_port_allocators_list = slots_port_allocators_list
-        self.__default_value = KikimrFixedNodePortAllocator(base_port_offset)
+        self.__default_value = KikimrFixedNodePortAllocator()
 
     def get_node_port_allocator(self, node_index):
         if node_index <= len(self.__nodes_port_allocators_list):

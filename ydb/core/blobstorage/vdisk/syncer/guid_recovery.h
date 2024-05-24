@@ -144,7 +144,6 @@ namespace NKikimr {
                                          TIntrusivePtr<TBlobStorageGroupInfo> info,
                                          const TActorId &committerId,
                                          const TActorId &notifyId,
-                                         const NSyncer::TLocalSyncerState &localState,
-                                         bool readOnly);
+                                         const NSyncer::TLocalSyncerState &localState);
 
 } // NKikimr

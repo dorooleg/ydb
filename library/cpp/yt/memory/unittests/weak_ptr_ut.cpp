@@ -63,8 +63,8 @@ private:
     TIntricateObject& operator=(TIntricateObject&&);
 };
 
-using TIntricateObjectPtr = TIntrusivePtr<TIntricateObject>;
-using TIntricateObjectWkPtr = TWeakPtr<TIntricateObject>;
+typedef TIntrusivePtr<TIntricateObject> TIntricateObjectPtr;
+typedef TWeakPtr<TIntricateObject> TIntricateObjectWkPtr;
 
 class TDerivedIntricateObject
     : public TIntricateObject
@@ -74,8 +74,8 @@ private:
     [[maybe_unused]] std::array<char, 32> Payload;
 };
 
-using TDerivedIntricateObjectPtr = TIntrusivePtr<TDerivedIntricateObject>;
-using TDerivedIntricateObjectWkPtr = TWeakPtr<TDerivedIntricateObject>;
+typedef TIntrusivePtr<TDerivedIntricateObject> TDerivedIntricateObjectPtr;
+typedef TWeakPtr<TDerivedIntricateObject> TDerivedIntricateObjectWkPtr;
 
 MATCHER_P2(HasRefCounts, strongRefs, weakRefs,
     "The object has "
@@ -300,13 +300,6 @@ TEST_F(TWeakPtrTest, IsExpired)
     EXPECT_TRUE(ptr.IsExpired());
 }
 
-TEST_F(TWeakPtrTest, IsEmpty)
-{
-    TIntricateObjectWkPtr ptr;
-
-    EXPECT_TRUE(ptr == nullptr);
-}
-
 TEST_F(TWeakPtrTest, UpCast)
 {
     TDerivedIntricateObjectPtr object = New<TDerivedIntricateObject>();
@@ -383,8 +376,8 @@ void PrintTo(const TSlowlyDyingObject& arg, ::std::ostream* os)
     PrintExtrinsicRefCounted(arg, os);
 }
 
-using TSlowlyDyingObjectPtr = TIntrusivePtr<TSlowlyDyingObject>;
-using TSlowlyDyingObjectWkPtr = TWeakPtr<TSlowlyDyingObject>;
+typedef TIntrusivePtr<TSlowlyDyingObject> TSlowlyDyingObjectPtr;
+typedef TWeakPtr<TSlowlyDyingObject> TSlowlyDyingObjectWkPtr;
 
 static void* AsynchronousDeleter(void* param)
 {

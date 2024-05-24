@@ -1,5 +1,3 @@
-#include <ydb/core/blobstorage/base/blobstorage_events.h>
-
 #include "json_handlers.h"
 
 #include "json_nodelist.h"
@@ -20,7 +18,6 @@
 #include "json_pqconsumerinfo.h"
 #include "json_tabletcounters.h"
 #include "json_storage.h"
-#include "json_storage_usage.h"
 #include "json_metainfo.h"
 #include "json_browse.h"
 #include "json_cluster.h"
@@ -36,9 +33,6 @@
 #include "json_healthcheck.h"
 #include "json_nodes.h"
 #include "json_acl.h"
-#include "json_graph.h"
-#include "json_render.h"
-#include "json_autocomplete.h"
 
 namespace NKikimr::NViewer {
 
@@ -63,7 +57,6 @@ void TViewerJsonHandlers::Init() {
     JsonHandlers["/json/pqconsumerinfo"] = new TJsonHandler<TJsonPQConsumerInfo>();
     JsonHandlers["/json/tabletcounters"] = new TJsonHandler<TJsonTabletCounters>;
     JsonHandlers["/json/storage"] = new TJsonHandler<TJsonStorage>;
-    JsonHandlers["/json/storage_usage"] = new TJsonHandler<TJsonStorageUsage>;
     JsonHandlers["/json/metainfo"] = new TJsonHandler<TJsonMetaInfo>;
     JsonHandlers["/json/browse"] = new TJsonHandler<TJsonBrowse>;
     JsonHandlers["/json/cluster"] = new TJsonHandler<TJsonCluster>;
@@ -79,7 +72,4 @@ void TViewerJsonHandlers::Init() {
     JsonHandlers["/json/healthcheck"] = new TJsonHandler<TJsonHealthCheck>;
     JsonHandlers["/json/nodes"] = new TJsonHandler<TJsonNodes>;
     JsonHandlers["/json/acl"] = new TJsonHandler<TJsonACL>;
-    JsonHandlers["/json/graph"] = new TJsonHandler<TJsonGraph>;
-    JsonHandlers["/json/render"] = new TJsonHandler<TJsonRender>;
-    JsonHandlers["/json/autocomplete"] = new TJsonHandler<TJsonAutocomplete>;
 }}

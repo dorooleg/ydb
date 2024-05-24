@@ -6,7 +6,7 @@
 #include <ydb/library/aclib/aclib.h>
 #include <ydb/services/metadata/request/request_actor.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NMetadata::NModifications {
 
@@ -19,8 +19,8 @@ private:
     const TString TransactionId;
     const NACLib::TUserToken SystemUserToken;
     const std::optional<NACLib::TUserToken> UserToken;
-protected:
     std::deque<NRequest::TDialogYQLRequest::TRequest> Requests;
+protected:
     NInternal::TTableRecords Objects;
     virtual Ydb::Table::ExecuteDataQueryRequest BuildModifyQuery() const = 0;
     virtual TString GetModifyType() const = 0;
@@ -58,7 +58,7 @@ protected:
         }
     }
 
-    virtual void Handle(NRequest::TEvRequestFailed::TPtr& ev) {
+    void Handle(NRequest::TEvRequestFailed::TPtr& ev) {
         auto g = TBase::PassAwayGuard();
         Controller->OnModificationProblem("cannot execute yql request for " + GetModifyType() +
             " objects: " + ev->Get()->GetErrorMessage());
@@ -75,7 +75,7 @@ public:
         , Objects(std::move(objects))
 
     {
-        Y_ABORT_UNLESS(SessionId);
+        Y_VERIFY(SessionId);
     }
 
     STATEFN(StateMain) {
@@ -91,7 +91,7 @@ public:
         TBase::Become(&TModifyObjectsActor::StateMain);
         BuildRequestDirect();
         BuildRequestHistory();
-        Y_ABORT_UNLESS(Requests.size());
+        Y_VERIFY(Requests.size());
         Requests.back().mutable_tx_control()->set_commit_tx(true);
 
         TBase::Register(new NRequest::TYDBCallbackRequest<NRequest::TDialogYQLRequest>(
@@ -137,7 +137,7 @@ private:
 protected:
     virtual Ydb::Table::ExecuteDataQueryRequest BuildModifyQuery() const override {
         auto manager = TObject::GetBehaviour()->GetOperationsManager();
-        Y_ABORT_UNLESS(manager);
+        Y_VERIFY(manager);
         auto objectIds = TBase::Objects.SelectColumns(manager->GetSchema().GetPKColumnIds());
         return objectIds.BuildDeleteQuery(TObject::GetBehaviour()->GetStorageTablePath());
     }
@@ -152,7 +152,6 @@ template <class TObject>
 class TInsertObjectsActor: public TModifyObjectsActor<TObject> {
 private:
     using TBase = TModifyObjectsActor<TObject>;
-    bool ExistingOk = false;
 protected:
     virtual Ydb::Table::ExecuteDataQueryRequest BuildModifyQuery() const override {
         return TBase::Objects.BuildInsertQuery(TObject::GetBehaviour()->GetStorageTablePath());
@@ -160,23 +159,8 @@ protected:
     virtual TString GetModifyType() const override {
         return "insert";
     }
-
-    void Handle(NRequest::TEvRequestFailed::TPtr& ev) override {
-        if (ev->Get()->GetStatus() == Ydb::StatusIds::PRECONDITION_FAILED && ExistingOk) {
-            NRequest::TDialogYQLRequest::TResponse resp;
-            this->Send(this->SelfId(), new NRequest::TEvRequestResult<NRequest::TDialogYQLRequest>(std::move(resp)));
-            this->Requests.clear(); // Remove history request
-            return;
-        }
-        TBase::Handle(ev);
-    }
 public:
-    TInsertObjectsActor(NInternal::TTableRecords&& objects, const NACLib::TUserToken& systemUserToken, IModificationObjectsController::TPtr controller, const TString& sessionId,
-        const TString& transactionId, const std::optional<NACLib::TUserToken>& userToken, bool existingOk)
-        : TBase(std::move(objects), systemUserToken, std::move(controller), sessionId, transactionId, userToken)
-        , ExistingOk(existingOk)
-    {
-    }
+    using TBase::TBase;
 };
 
 }

@@ -12,11 +12,11 @@
 
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/event_pb.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/event_pb.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 #include <library/cpp/threading/future/future.h>
 #include <library/cpp/protobuf/util/pb_io.h>
 
@@ -72,12 +72,7 @@ private:
         if (!FinishCalled) {
             const auto messageId = GetMessageId(ev);
             const auto hasData = ev->Get()->Record.GetChannelData().HasData();
-            NDq::TDqSerializedBatch batch;
-            batch.Proto = std::move(*ev->Get()->Record.MutableChannelData()->MutableData());
-            if (batch.Proto.HasPayloadId()) {
-                batch.Payload = ev->Get()->GetPayload(batch.Proto.GetPayloadId());
-            }
-            OnReceiveData(std::move(batch), messageId, !hasData);
+            OnReceiveData(std::move(*ev->Get()->Record.MutableChannelData()->MutableData()), messageId, !hasData);
             const auto [it, inserted] = PendingMessages.insert({messageId, std::move(ev)});
             Y_ENSURE(inserted);
         }
@@ -97,13 +92,13 @@ private:
 
     void SendAck(const TString& messageId) {
         const auto messageIt = PendingMessages.find(messageId);
-        Y_ABORT_UNLESS(messageIt != PendingMessages.end());
+        Y_VERIFY(messageIt != PendingMessages.end());
         const auto& message = messageIt->second;
 
         auto req = MakeHolder<NDq::TEvDqCompute::TEvChannelDataAck>();
         req->Record.SetChannelId(message->Get()->Record.GetChannelData().GetChannelId());
         req->Record.SetSeqNo(message->Get()->Record.GetSeqNo());
-        req->Record.SetFreeSpace((i64)256_MB - (i64)InflightBytes());
+        req->Record.SetFreeSpace(256_MB);
         req->Record.SetFinish(EarlyFinish);  // set if premature finish started (when response limit reached and FullResultTable not enabled)
 
         Send(message->Sender, req.Release());

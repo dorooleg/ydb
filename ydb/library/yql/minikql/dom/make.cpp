@@ -32,7 +32,7 @@ TUnboxedValuePod MakeData(const TDataTypeId nodeType, const TUnboxedValuePod val
         default: break;
     }
 
-    Y_ABORT("Unsupported data type.");
+    Y_FAIL("Unsupported data type.");
 }
 
 TUnboxedValuePod MakeList(const ITypeInfoHelper* typeHelper, const TType* itemType, const TUnboxedValuePod value, const IValueBuilder* valueBuilder) {
@@ -125,7 +125,7 @@ TUnboxedValuePod MakeVariant(const ITypeInfoHelper* typeHelper, const TType* sha
         default:
             break;
     }
-    Y_ABORT("Unsupported underlying type.");
+    Y_FAIL("Unsupported underlying type.");
 }
 
 }
@@ -147,9 +147,9 @@ TUnboxedValuePod MakeDom(const ITypeInfoHelper* typeHelper, const TType* shape, 
         case ETypeKind::Dict: {
             const auto dictTypeInspector = TDictTypeInspector(*typeHelper, shape);
             const auto keyType = dictTypeInspector.GetKeyType();
-            Y_ABORT_UNLESS(ETypeKind::Data == typeHelper->GetTypeKind(keyType), "Unsupported dict key type kind.");
+            Y_VERIFY(ETypeKind::Data == typeHelper->GetTypeKind(keyType), "Unsupported dict key type kind.");
             const auto keyId = TDataTypeInspector(*typeHelper, keyType).GetTypeId();
-            Y_ABORT_UNLESS(keyId == TDataType<char*>::Id || keyId == TDataType<TUtf8>::Id, "Unsupported dict key data type.");
+            Y_VERIFY(keyId == TDataType<char*>::Id || keyId == TDataType<TUtf8>::Id, "Unsupported dict key data type.");
             return MakeDict(typeHelper, dictTypeInspector.GetValueType(), value, valueBuilder);
         }
         case ETypeKind::Tuple:
@@ -163,7 +163,7 @@ TUnboxedValuePod MakeDom(const ITypeInfoHelper* typeHelper, const TType* shape, 
                 return value;
             [[fallthrough]];
         default:
-            Y_ABORT("Unsupported data kind: %s", ToCString(kind));
+            Y_FAIL("Unsupported data kind: %s", ToCString(kind));
     }
 }
 

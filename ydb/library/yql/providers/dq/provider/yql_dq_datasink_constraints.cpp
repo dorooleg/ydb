@@ -39,7 +39,6 @@ public:
             TDqCnUnionAll::CallableName(),
             TDqCnBroadcast::CallableName(),
             TDqCnMap::CallableName(),
-            TDqCnStreamLookup::CallableName(),
             TDqCnHashShuffle::CallableName(),
             TDqCnResult::CallableName(),
             TDqCnValue::CallableName()
@@ -140,18 +139,6 @@ public:
             input.Ptr()->AddConstraint(ctx.MakeConstraint<TEmptyConstraintNode>());
         }
 
-        bool leftAny = false, rightAny = false;
-        if (const auto maybeJoin = join.Maybe<TDqJoin>()) {
-            if (const auto maybeFlags = maybeJoin.Cast().Flags()) {
-                maybeFlags.Cast().Ref().ForEachChild([&](const TExprNode& flag) {
-                    if (flag.IsAtom("LeftAny"))
-                        leftAny = true;
-                    else if (flag.IsAtom("RightAny"))
-                        rightAny = true;
-                });
-            }
-        }
-
         const auto lUnique = join.LeftInput().Ref().GetConstraint<TUniqueConstraintNode>();
         const auto rUnique = join.RightInput().Ref().GetConstraint<TUniqueConstraintNode>();
 
@@ -186,13 +173,13 @@ public:
             const bool leftSide = joinType.Content().starts_with("Left");
             const bool rightSide = joinType.Content().starts_with("Right");
 
-            const bool lOneRow = leftAny || lUnique && lUnique->ContainsCompleteSet(leftJoinKeys);
-            const bool rOneRow = rightAny || rUnique && rUnique->ContainsCompleteSet(rightJoinKeys);
+            const bool lOneRow = lUnique && lUnique->HasEqualColumns(leftJoinKeys);
+            const bool rOneRow = rUnique && rUnique->HasEqualColumns(rightJoinKeys);
 
-            const auto makeRename = [&ctx](const TExprBase& label) -> TPartOfConstraintBase::TPathReduce {
+            const auto makeRename = [&ctx](const TExprBase& label) -> TConstraintNode::TPathReduce {
                 if (label.Ref().IsAtom()) {
                     const auto table = label.Cast<TCoAtom>().Value();
-                    return [table, &ctx](const TPartOfConstraintBase::TPathType& path) -> std::vector<TPartOfConstraintBase::TPathType> {
+                    return [table, &ctx](const TConstraintNode::TPathType& path) -> std::vector<TConstraintNode::TPathType> {
                         if (path.empty())
                             return {path};
                         auto out = path;

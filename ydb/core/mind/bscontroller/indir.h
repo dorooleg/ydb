@@ -28,14 +28,14 @@ public:
 
         const TValue& operator *() const {
             const TValue *ptr = Get();
-            Y_DEBUG_ABORT_UNLESS(ptr);
+            Y_VERIFY_DEBUG(ptr);
             return *ptr;
         }
 
         // MUST be called from OnCommit() only
         TValue& Mutable() const {
             TValue *ptr = Get();
-            Y_DEBUG_ABORT_UNLESS(ptr);
+            Y_VERIFY_DEBUG(ptr);
             return *ptr;
         }
 
@@ -59,12 +59,12 @@ public:
 
     // TOverlayMap machinery
     void OnClone(const THolder<TValue>& clone) {
-        Y_DEBUG_ABORT_UNLESS(Current == this);
+        Y_VERIFY_DEBUG(Current == this);
         Current = clone.Get();
     }
 
     std::pair<void**, void*> Preserve() {
-        Y_DEBUG_ABORT_UNLESS(Current != this);
+        Y_VERIFY_DEBUG(Current != this);
         return std::make_pair((void**)&Current, (void*)std::exchange(Current, static_cast<TValue*>(this)));
     }
 

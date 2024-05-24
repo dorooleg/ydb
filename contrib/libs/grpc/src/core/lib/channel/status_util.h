@@ -1,31 +1,28 @@
-//
-//
-// Copyright 2017 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2017 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-#ifndef GRPC_SRC_CORE_LIB_CHANNEL_STATUS_UTIL_H
-#define GRPC_SRC_CORE_LIB_CHANNEL_STATUS_UTIL_H
+#ifndef GRPC_CORE_LIB_CHANNEL_STATUS_UTIL_H
+#define GRPC_CORE_LIB_CHANNEL_STATUS_UTIL_H
 
 #include <grpc/support/port_platform.h>
 
-#include <util/generic/string.h>
-#include <util/string/cast.h>
-
-#include "y_absl/status/status.h"
-#include "y_absl/strings/string_view.h"
+#include <stdbool.h>
+#include <string.h>
 
 #include <grpc/status.h>
 
@@ -50,10 +47,7 @@ class StatusCodeSet {
  public:
   bool Empty() const { return status_code_mask_ == 0; }
 
-  StatusCodeSet& Add(grpc_status_code status) {
-    status_code_mask_ |= (1 << status);
-    return *this;
-  }
+  void Add(grpc_status_code status) { status_code_mask_ |= (1 << status); }
 
   bool Contains(grpc_status_code status) const {
     return status_code_mask_ & (1 << status);
@@ -63,20 +57,11 @@ class StatusCodeSet {
     return status_code_mask_ == other.status_code_mask_;
   }
 
-  TString ToString() const;
-
  private:
   int status_code_mask_ = 0;  // A bitfield of status codes in the set.
 };
 
 }  // namespace internal
-
-// Optionally rewrites a status as per
-// https://github.com/grpc/proposal/blob/master/A54-restrict-control-plane-status-codes.md.
-// The source parameter indicates where the status came from.
-y_absl::Status MaybeRewriteIllegalStatusCode(y_absl::Status status,
-                                           y_absl::string_view source);
-
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_CHANNEL_STATUS_UTIL_H
+#endif /* GRPC_CORE_LIB_CHANNEL_STATUS_UTIL_H */

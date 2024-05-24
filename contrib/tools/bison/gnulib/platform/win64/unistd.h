@@ -1082,7 +1082,7 @@ _GL_CXXALIAS_RPL (getpagesize, int, (void));
 #    endif
 /* This is for BeOS.  */
 #    if !defined _gl_getpagesize && 0
-#     error #include <OS.h>
+#     include <OS.h>
 #     if defined B_PAGE_SIZE
 #      define _gl_getpagesize() B_PAGE_SIZE
 #     endif

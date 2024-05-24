@@ -3,8 +3,8 @@
 #include "defs.h"
 #include "scheme_tablecell.h"
 
-#include <ydb/core/scheme/scheme_pathid.h>
-#include <ydb/core/scheme/protos/key_range.pb.h>
+#include <ydb/core/base/pathid.h>
+#include <ydb/core/protos/tx.pb.h>
 #include <ydb/core/scheme_types/scheme_types.h>
 #include <ydb/library/aclib/aclib.h>
 
@@ -180,7 +180,7 @@ public:
         , Point(point)
     {
         if (Point) {
-            Y_DEBUG_ABORT_UNLESS(toValues.empty() || fromValues.size() == toValues.size());
+            Y_VERIFY_DEBUG(toValues.empty() || fromValues.size() == toValues.size());
         }
     }
 
@@ -212,8 +212,8 @@ public:
 
     TSerializedTableRange(TConstArrayRef<TCell> fromValues, bool inclusiveFrom, TConstArrayRef<TCell> toValues,
         bool inclusiveTo)
-        : From(fromValues)
-        , To(toValues)
+        : From(TSerializedCellVec::Serialize(fromValues))
+        , To(TSerializedCellVec::Serialize(toValues))
         , FromInclusive(inclusiveFrom)
         , ToInclusive(inclusiveTo) {}
 
@@ -244,7 +244,7 @@ public:
         range.SetFrom(From.GetBuffer());
         range.SetFromInclusive(FromInclusive);
         if (Point) {
-            Y_DEBUG_ABORT_UNLESS(FromInclusive);
+            Y_VERIFY_DEBUG(FromInclusive);
             range.SetTo(From.GetBuffer());
             range.SetToInclusive(true);
         } else {
@@ -264,10 +264,10 @@ template <typename T>
 int ComparePointAndRange(const TConstArrayRef<TCell>& point, const TTableRange& range,
                          const T& pointTypes, const T& rangeTypes)
 {
-    Y_ABORT_UNLESS(!range.Point);
-    Y_ABORT_UNLESS(rangeTypes.size() <= pointTypes.size());
-    Y_ABORT_UNLESS(range.From.size() <= rangeTypes.size());
-    Y_ABORT_UNLESS(range.To.size() <= rangeTypes.size());
+    Y_VERIFY(!range.Point);
+    Y_VERIFY(rangeTypes.size() <= pointTypes.size());
+    Y_VERIFY(range.From.size() <= rangeTypes.size());
+    Y_VERIFY(range.To.size() <= rangeTypes.size());
 
     int cmpFrom = CompareTypedCellVectors(point.data(), range.From.data(), pointTypes.data(), range.From.size());
     if (!range.InclusiveFrom && cmpFrom == 0) {
@@ -353,8 +353,8 @@ int CompareBorders(TConstArrayRef<TCell> first, TConstArrayRef<TCell> second, bo
 inline int CompareRanges(const TTableRange& rangeX, const TTableRange& rangeY,
                          const TConstArrayRef<NScheme::TTypeInfo> types)
 {
-    Y_ABORT_UNLESS(!rangeX.Point);
-    Y_ABORT_UNLESS(!rangeY.Point);
+    Y_VERIFY(!rangeX.Point);
+    Y_VERIFY(!rangeY.Point);
 
     int xStart_yEnd = CompareBorders<true, false>(
         rangeX.From, rangeY.To, rangeX.InclusiveFrom, rangeY.InclusiveTo, types);
@@ -583,7 +583,7 @@ struct TSecurityObject : TAtomicRefCount<TSecurityObject>, NACLib::TSecurityObje
 
     static NACLib::TSecurityObject FromByteStream(const NACLibProto::TSecurityObject* parent, const TString& owner, const TString& acl, bool isContainer) {
         NACLib::TSecurityObject object(owner, isContainer);
-        Y_ABORT_UNLESS(object.MutableACL()->ParseFromString(acl));
+        Y_VERIFY(object.MutableACL()->ParseFromString(acl));
         return parent != nullptr ? object.MergeWithParent(*parent) : object;
     }
 
@@ -695,7 +695,7 @@ public:
     std::shared_ptr<const TVector<TKeyDesc::TPartitionInfo>> Partitioning;
     TIntrusivePtr<TSecurityObject> SecurityObject;
 
-    const TVector<TKeyDesc::TPartitionInfo>& GetPartitions() const { Y_ABORT_UNLESS(Partitioning); return *Partitioning; }
+    const TVector<TKeyDesc::TPartitionInfo>& GetPartitions() const { Y_VERIFY(Partitioning); return *Partitioning; }
     bool IsSystemView() const { return GetPartitions().empty(); }
 
     template<typename TKeyColumnTypes, typename TColumns>
@@ -725,14 +725,14 @@ bool IsSystemColumn(ui32 columnId);
 bool IsSystemColumn(const TStringBuf columnName);
 
 inline int ComparePointKeys(const TKeyDesc& point1, const TKeyDesc& point2) {
-    Y_ABORT_UNLESS(point1.Range.Point);
-    Y_ABORT_UNLESS(point2.Range.Point);
+    Y_VERIFY(point1.Range.Point);
+    Y_VERIFY(point2.Range.Point);
     return CompareTypedCellVectors(
         point1.Range.From.data(), point2.Range.From.data(), point1.KeyColumnTypes.data(), point1.KeyColumnTypes.size());
 }
 
 inline int ComparePointAndRangeKeys(const TKeyDesc& point, const TKeyDesc& range) {
-    Y_ABORT_UNLESS(point.Range.Point);
+    Y_VERIFY(point.Range.Point);
     return ComparePointAndRange(point.Range.From, range.Range, point.KeyColumnTypes, range.KeyColumnTypes);
 }
 

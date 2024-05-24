@@ -1,8 +1,5 @@
 #include "table_description.h"
 #include "table_settings.h"
-#include "column_families.h"
-
-#include <ydb/core/protos/follower_group.pb.h>
 
 #include <util/generic/list.h>
 #include <util/string/builder.h>
@@ -202,15 +199,6 @@ bool FillCreateTableSettingsDesc(NKikimrSchemeOp::TTableDescription& tableDesc,
     if (proto.tiering().size()) {
         tableDesc.MutableTTLSettings()->SetUseTiering(proto.tiering());
     }
-
-    if (proto.has_storage_settings()) {
-        TColumnFamilyManager families(tableDesc.MutablePartitionConfig());
-        if (!families.ApplyStorageSettings(proto.storage_settings(), &code, &error)) {
-            return false;
-        }
-    }
-
-    tableDesc.SetTemporary(proto.Gettemporary());
 
     return true;
 }

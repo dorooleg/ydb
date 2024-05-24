@@ -41,30 +41,17 @@ public:
             } else {
                 Sort(servicedDomains);
             }
-            const TString& name = Record.GetName();
-            db.Table<Schema::Node>().Key(nodeId).Update(
-                NIceDb::TUpdate<Schema::Node::Local>(Local),
-                NIceDb::TUpdate<Schema::Node::ServicedDomains>(servicedDomains),
-                NIceDb::TUpdate<Schema::Node::Statistics>(node.Statistics),
-                NIceDb::TUpdate<Schema::Node::Name>(name)
-            );
- 
+            db.Table<Schema::Node>().Key(nodeId).Update<Schema::Node::Local, Schema::Node::ServicedDomains, Schema::Node::Statistics>(Local, servicedDomains, node.Statistics);
             node.BecomeDisconnected();
             if (node.LastSeenServicedDomains != servicedDomains) {
                 // new tenant - new rules
-                node.SetDown(false);
-                node.SetFreeze(false);
+                node.Down = false;
+                node.Freeze = false;
                 db.Table<Schema::Node>().Key(nodeId).Update<Schema::Node::Down, Schema::Node::Freeze>(false, false);
-            }
-            if (node.BecomeUpOnRestart) {
-                node.SetDown(false);
-                node.BecomeUpOnRestart = false;
-                db.Table<Schema::Node>().Key(nodeId).Update<Schema::Node::Down, Schema::Node::BecomeUpOnRestart>(false, false);
             }
             node.Local = Local;
             node.ServicedDomains.swap(servicedDomains);
             node.LastSeenServicedDomains = node.ServicedDomains;
-            node.Name = name;
         }
         if (Record.HasSystemLocation() && Record.GetSystemLocation().HasDataCenter()) {
             node.Location = TNodeLocation(Record.GetSystemLocation());
@@ -72,12 +59,7 @@ public:
         }
         node.TabletAvailability.clear();
         for (const NKikimrLocal::TTabletAvailability& tabletAvailability : Record.GetTabletAvailability()) {
-            auto tabletType = tabletAvailability.GetType();
-            auto [itAvail, _] = node.TabletAvailability.emplace(tabletType, tabletAvailability);
-            auto itRestr = node.TabletAvailabilityRestrictions.find(tabletType);
-            if (itRestr != node.TabletAvailabilityRestrictions.end()) {
-                itAvail->second.UpdateRestriction(itRestr->second);
-            }
+            node.TabletAvailability.emplace(tabletAvailability.GetType(), tabletAvailability);
         }
         node.BecomeConnecting();
         return true;

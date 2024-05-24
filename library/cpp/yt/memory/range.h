@@ -55,9 +55,9 @@ template <class T>
 class TRange
 {
 public:
-    using iterator = const T*;
-    using const_iterator = const T*;
-    using size_type = size_t;
+    typedef const T* iterator;
+    typedef const T* const_iterator;
+    typedef size_t size_type;
 
     //! Constructs a null TRange.
     TRange()
@@ -163,16 +163,6 @@ public:
     size_t size() const
     {
         return Size();
-    }
-
-    const T* Data() const
-    {
-        return Data_;
-    }
-
-    const T* data() const
-    {
-        return Data();
     }
 
     const T& operator[](size_t index) const
@@ -321,7 +311,7 @@ class TMutableRange
     : public TRange<T>
 {
 public:
-    using iterator = T*;
+    typedef T* iterator;
 
     //! Constructs a null TMutableRange.
     TMutableRange()

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actorsystem.h>
 #include <ydb/core/base/appdata.h>
 
 namespace IC_Load {

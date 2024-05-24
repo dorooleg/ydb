@@ -5,9 +5,6 @@
 #include <ydb/core/testlib/basics/helpers.h>
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/testlib/test_client.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
-#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -150,7 +147,7 @@ Y_UNIT_TEST_SUITE(TQuoterServiceTest) {
         // request
         TAutoPtr<NKesus::TEvKesus::TEvAddQuoterResource> request(new NKesus::TEvKesus::TEvAddQuoterResource());
         request->Record.MutableResource()->SetResourcePath("/Res");
-        request->Record.MutableResource()->MutableHierarchicalDRRResourceConfig()->SetMaxUnitsPerSecond(rate);
+        request->Record.MutableResource()->MutableHierarhicalDRRResourceConfig()->SetMaxUnitsPerSecond(rate);
 
         // Get tablet id
         TAutoPtr<NMsgBusProxy::TBusResponse> resp = client.Ls(TStringBuilder() << Tests::TestDomainName << "/KesusQuoter");

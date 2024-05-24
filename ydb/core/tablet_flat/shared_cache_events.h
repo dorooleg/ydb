@@ -3,7 +3,6 @@
 #include "defs.h"
 #include "flat_bio_events.h"
 #include "shared_handle.h"
-#include "shared_cache_memtable.h"
 
 #include <util/generic/map.h>
 #include <util/generic/set.h>
@@ -27,12 +26,6 @@ namespace NSharedCache {
         EvRequest,
         EvResult,
         EvUpdated,
-        EvMem,
-        EvMemTableRegister,
-        EvMemTableRegistered,
-        EvMemTableCompact,
-        EvMemTableCompacted,
-        EvMemTableUnregister,
 
         EvEnd
 
@@ -68,7 +61,7 @@ namespace NSharedCache {
             : PageCollection(std::move(pageCollection))
             , Owner(owner)
         {
-            Y_ABORT_UNLESS(Owner, "Cannot send request with empty owner");
+            Y_VERIFY(Owner, "Cannot send request with empty owner");
         }
     };
 
@@ -82,7 +75,7 @@ namespace NSharedCache {
             , Fetch(fetch)
             , Owner(owner)
         {
-            Y_ABORT_UNLESS(Owner, "Cannot sent request with empty owner");
+            Y_VERIFY(Owner, "Cannot sent request with empty owner");
         }
     };
 
@@ -137,52 +130,6 @@ namespace NSharedCache {
         THashMap<TLogoBlobID, TActions> Actions;
     };
 
-    struct TEvMem : public TEventLocal<TEvMem, EvMem> {
-    };
-
-    struct TEvMemTableRegister : public TEventLocal<TEvMemTableRegister, EvMemTableRegister> {
-        const ui32 Table;
-
-        TEvMemTableRegister(ui32 table)
-            : Table(table)
-        {}
-    };
-
-    struct TEvMemTableRegistered : public TEventLocal<TEvMemTableRegistered, EvMemTableRegistered> {
-        const ui32 Table;
-        TIntrusivePtr<ISharedPageCacheMemTableRegistration> Registration;
-
-        TEvMemTableRegistered(ui32 table, TIntrusivePtr<ISharedPageCacheMemTableRegistration> registration)
-            : Table(table)
-            , Registration(std::move(registration))
-        {}
-    };
-
-    struct TEvMemTableCompact : public TEventLocal<TEvMemTableCompact, EvMemTableCompact> {
-        const ui32 Table;
-        const ui64 ExpectedSize;
-
-        TEvMemTableCompact(ui32 table, ui64 expectedSize)
-            : Table(table)
-            , ExpectedSize(expectedSize)
-        {}
-    };
-
-    struct TEvMemTableCompacted : public TEventLocal<TEvMemTableCompacted, EvMemTableCompacted> {
-        const TIntrusivePtr<ISharedPageCacheMemTableRegistration> Registration;
-
-        TEvMemTableCompacted(TIntrusivePtr<ISharedPageCacheMemTableRegistration> registration)
-            : Registration(registration)
-        {}
-    };
-
-    struct TEvMemTableUnregister : public TEventLocal<TEvMemTableUnregister, EvMemTableUnregister> {
-        const ui32 Table;
-
-        TEvMemTableUnregister(ui32 table)
-            : Table(table)
-        {}
-    };
 }
 }
 

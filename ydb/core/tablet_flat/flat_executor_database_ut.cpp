@@ -68,7 +68,7 @@ public:
                 return Fuzzy.EraseRowTx(testDb, txc, table, key);
             };
         } else {
-            Y_ABORT("Random generator produced unexpected action value");
+            Y_FAIL("Random generator produced unexpected action value");
         }
 
         QueueTx(func);
@@ -102,7 +102,7 @@ public:
     explicit TDbTestPlayerActor(const TVector<NFake::TFuncTx::TCall>& actions)
         : Actions(actions)
     {
-        Y_ABORT_UNLESS(actions.size(), "Have to pass at least one action");
+        Y_VERIFY(actions.size(), "Have to pass at least one action");
     }
 
     EDo Run() override
@@ -219,7 +219,7 @@ private:
     }
 
     ui64 RandomNumber(ui64 limit) {
-        Y_ABORT_UNLESS(limit > 0, "Invalid limit specified [0,%" PRIu64 ")", limit);
+        Y_VERIFY(limit > 0, "Invalid limit specified [0,%" PRIu64 ")", limit);
         return RandomProvider->GenRand64() % limit;
     }
 
@@ -262,7 +262,7 @@ private:
         } else if (RowCount ==  Rows + 1) {
             QueueTx([this](ITestDb& testDb, TTransactionContext&){ TDbWrapper db(testDb); return this->DoFullScanTx(db); });
         } else if (RowCount > Rows + 1) {
-            Y_ABORT("Shouldn't request more task after EDo::Stop");
+            Y_FAIL("Shouldn't request more task after EDo::Stop");
         }
 
         return RowCount <= Rows ? EDo::More : EDo::Stop;
@@ -323,29 +323,25 @@ private:
     }
 
     bool DoFullScanTx(TDbWrapper& db) {
-        const std::array<ui32, 2> tags{{ 1 /* Id */, 2 /* value */ }};
-
         try {
+            const std::array<ui32, 2> tags{{ 1 /* Id */, 2 /* value */ }};
+
             db->Precharge(Table, { }, { }, tags, 0);
-        } catch (NTable::TIteratorNotReady&) {
-            Restarts++;
-            Cerr << "Precharge restarts " << Restarts << " times" << Endl;
-            Y_ABORT_UNLESS(Restarts < 5, "Too many precharge restarts");
-            return false;
-        }
 
-        try {
             TAutoPtr<NTable::ITestIterator> it = db->Iterate(Table, { }, tags, ELookup::GreaterOrEqualThan);
 
             while (it->Next(NTable::ENext::All) == NTable::EReady::Data) {
                 LastKey = it->GetValues().Columns[0].AsValue<ui32>();
             }
 
-            Y_ABORT_UNLESS(LastKey + 1 == RowCount /* incomplete read */);
+            Y_VERIFY(LastKey + 1 == RowCount /* incomplete read */);
+            Y_VERIFY(Restarts == 1 /* exactly one precharge */);
 
             return true;
         } catch (NTable::TIteratorNotReady&) {
-            Y_ABORT_UNLESS(false, "All the data should be precharged");
+            Restarts++;
+            Cerr << "Full scan restart at id = " << LastKey << Endl;
+            return false;
         }
     }
 

@@ -7,8 +7,6 @@
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/ticket_parser.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
-#include <ydb/public/api/protos/draft/persqueue_error_codes.pb.h> // double check
 
 namespace NKikimr::NGRpcProxy::V1 {
 
@@ -16,9 +14,6 @@ namespace NKikimr::NGRpcProxy::V1 {
 #undef PQ_LOG_PREFIX
 #endif
 #define PQ_LOG_PREFIX "session cookie " << Cookie << " consumer " << ClientPath << " session " << Session
-
-static constexpr char KafkaPlainAuthPermission[] = "ydb.api.kafkaPlainAuth";
-static constexpr char KafkaPlainAuthSid[] = "ydb.api.kafkaPlainAuth@as";
 
 // moved to ydb/core/client/server/msgbus_server_persqueue.h?
 // const TString& TopicPrefix(const TActorContext& ctx);
@@ -60,6 +55,7 @@ Ydb::PersQueue::ErrorCode::ErrorCode ConvertOldCode(const NPersQueue::NErrorCode
 static inline bool InternalErrorCode(Ydb::PersQueue::ErrorCode::ErrorCode errorCode) {
     switch(errorCode) {
         // TODO: check list
+        case Ydb::PersQueue::ErrorCode::UNKNOWN_TOPIC:
         case Ydb::PersQueue::ErrorCode::ERROR:
         case Ydb::PersQueue::ErrorCode::INITIALIZING:
         case Ydb::PersQueue::ErrorCode::OVERLOAD:
@@ -76,18 +72,9 @@ static inline bool InternalErrorCode(Ydb::PersQueue::ErrorCode::ErrorCode errorC
 void FillIssue(Ydb::Issue::IssueMessage* issue, const Ydb::PersQueue::ErrorCode::ErrorCode errorCode, const TString& errorReason);
 
 
-static inline TVector<TEvTicketParser::TEvAuthorizeTicket::TEntry>  GetTicketParserEntries(const TString& dbId, const TString& folderId, bool useKafkaApi = false) {
-    TVector<TString> permissions = {
-        "ydb.databases.list",
-        "ydb.databases.create",
-        "ydb.databases.connect",
-        "ydb.tables.select",
-        "ydb.schemas.getMetadata",
-        "ydb.streams.write"
-    };
-    if (useKafkaApi) {
-        permissions.push_back(KafkaPlainAuthPermission);
-    }
+static inline TVector<TEvTicketParser::TEvAuthorizeTicket::TEntry>  GetTicketParserEntries(const TString& dbId, const TString& folderId) {
+    static const TVector<TString> permissions = {"ydb.streams.write", "ydb.databases.list",
+                                                 "ydb.databases.create", "ydb.databases.connect"};
     TVector<std::pair<TString, TString>> attributes;
     if (!dbId.empty()) attributes.push_back({"database_id", dbId});
     if (!folderId.empty()) attributes.push_back({"folder_id", folderId});

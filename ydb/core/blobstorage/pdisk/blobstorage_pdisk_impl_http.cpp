@@ -1,7 +1,6 @@
 #include "blobstorage_pdisk_impl.h"
 
 #include <ydb/core/blobstorage/base/html.h>
-#include <ydb/core/base/feature_flags.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -100,15 +99,11 @@ void TPDisk::RenderState(IOutputStream &str, THttpInfo &httpInfo) {
         DIV() {
             str << R"___(
                 <script>
-                    function reloadPage(data) {
-                        if (data.result) {
-                            window.location.replace(window.location.href);
-                        } else {
-                            alert(data.error);
-                        }
+                    function reloadPage() {
+                        window.location.replace(window.location.href);
                     }
 
-                    function sendRestartRequest() {
+                    function sendReloadRequest() {
                         $.ajax({
                             url: "",
                             data: "restartPDisk=",
@@ -127,14 +122,19 @@ void TPDisk::RenderState(IOutputStream &str, THttpInfo &httpInfo) {
                     }
                 </script>
             )___";
-            str << "<button onclick='sendRestartRequest()' name='restartPDisk' class='btn btn-default' ";
-            str << "style='background:LightGray; margin:5px' ";
+            str << "<button onClick='sendReloadRequest()' name='restartPDisk' class='btn btn-default' ";
+            if (Cfg->SectorMap || Mon.PDiskBriefState->Val() == TPDiskMon::TPDisk::Error) {
+                str << "style='background:Tomato; margin:5px' ";
+            } else {
+                str << "disabled ";
+                str << "style='background:LightGray; margin:5px' ";
+            }
             str << ">";
             str << "Restart";
             str << "</button>";
 
             if (Cfg->SectorMap) {
-                str << "<button onclick='sendStopRequest()' name='stopPDisk' class='btn btn-default' ";
+                str << "<button onClick='sendStopRequest()' name='stopPDisk' class='btn btn-default' ";
                 str << "style='background:Tomato; margin:5px'>";
                 str << "Stop";
                 str << "</button>";
@@ -199,9 +199,6 @@ void TPDisk::OutputHtmlOwners(TStringStream &str) {
                     TABLEH() { str << "CutLogId"; }
                     TABLEH() { str << "WhiteboardProxyId"; }
                     TABLEH() { str << "CurLsnToKeep"; }
-                    TABLEH() { str << "AskedFreeUpToLsn"; }
-                    TABLEH() { str << "AskedLogChunkToCut"; }
-                    TABLEH() { str << "LogChunkCountBeforeCut"; }
                     TABLEH() { str << "FirstNonceToKeep"; }
                     TABLEH() { str << "AskedToCutLogAt"; }
                     TABLEH() { str << "CutLogAt"; }
@@ -214,14 +211,11 @@ void TPDisk::OutputHtmlOwners(TStringStream &str) {
                     if (data.VDiskId != TVDiskID::InvalidId) {
                         TABLER() {
                             TABLED() { str << (ui32) owner;}
-                            TABLED() { str << data.VDiskId.ToStringWOGeneration() << "<br/>(" << data.VDiskId.GroupID << ")"; }
+                            TABLED() { str << data.VDiskId.ToStringWOGeneration(); }
                             TABLED() { str << chunksOwned[owner]; }
                             TABLED() { str << data.CutLogId.ToString(); }
                             TABLED() { str << data.WhiteboardProxyId; }
                             TABLED() { str << data.CurrentFirstLsnToKeep; }
-                            TABLED() { str << data.AskedFreeUpToLsn; }
-                            TABLED() { str << data.AskedLogChunkToCut; }
-                            TABLED() { str << data.LogChunkCountBeforeCut; }
                             TABLED() { str << SysLogFirstNoncesToKeep.FirstNonceToKeep[owner]; }
                             TABLED() { str << data.AskedToCutLogAt; }
                             TABLED() {
@@ -236,13 +230,13 @@ void TPDisk::OutputHtmlOwners(TStringStream &str) {
                             TABLED() {
                                 ui32 logSize = OwnerData[owner].OperationLog.Size();
                                 str << "<button type='button' class='btn btn-default' data-toggle='collapse' style='margin:5px' \
-                                    data-target='#operationLogCollapse" << owner <<
+                                    data-target='#operationLogCollapse" << owner << 
                                     "'>Show last " << logSize << " operations</button>";
 
                                 str << "<div id='operationLogCollapse" << owner << "' class='collapse'>";
                                 for (ui32 i = 0; i < logSize; ++i) {
                                     auto record = OwnerData[owner].OperationLog.BorrowByIdx(i);
-                                    str << *record << "<br><br>";
+                                    str << *record << "<br>";
                                     OwnerData[owner].OperationLog.ReturnBorrowedRecord(record);
                                 }
                                 str << "</div>";
@@ -275,7 +269,7 @@ void TPDisk::OutputHtmlLogChunksDetails(TStringStream &str) {
                         if (id == TVDiskID::InvalidId) {
                             TABLEH() {str << "o" << owner << "v--"; }
                         } else {
-                            TABLEH() {str << "o" << owner << "v" << id.ToStringWOGeneration() << "<br/>(" << id.GroupID << ")"; }
+                            TABLEH() {str << "o" << owner << "v" << id.ToStringWOGeneration(); }
                         }
                     }
                 }
@@ -293,12 +287,9 @@ void TPDisk::OutputHtmlLogChunksDetails(TStringStream &str) {
                         for (ui32 owner : activeOwners) {
                             if (owner < it->OwnerLsnRange.size()) {
                                 const TLogChunkInfo::TLsnRange &range = it->OwnerLsnRange[owner];
-                                const auto askedFreeUpToLsn = OwnerData[owner].AskedFreeUpToLsn;
                                 if (range.IsPresent) {
                                     TABLED() {
-                                        str << "<font color=\"" << (range.LastLsn < askedFreeUpToLsn ? "red" : "black") <<"\">"
-                                            << "[" << range.FirstLsn << ", " << range.LastLsn << "]"
-                                            << "</font>";
+                                        str << "[" << range.FirstLsn << ", " << range.LastLsn << "]";
                                     }
                                 } else {
                                     TABLED() {str << "-";}
@@ -334,7 +325,7 @@ void TPDisk::OutputHtmlChunkLockUnlockInfo(TStringStream &str) {
 
     auto commonParams = [&] (TStringStream &str, TString requestName) {
         for (TEvChunkLock::ELockFrom from : { TEvChunkLock::ELockFrom::LOG, TEvChunkLock::ELockFrom::PERSONAL_QUOTA } ) {
-            str << "<input id='" << requestName << "LockFrom_" << TEvChunkLock::ELockFrom_Name(from) <<
+            str << "<input id='" << requestName << "LockFrom_" << TEvChunkLock::ELockFrom_Name(from) << 
                 "' name='lockFrom' type='radio' value='" << TEvChunkLock::ELockFrom_Name(from) << "'";
             if (from == TEvChunkLock::ELockFrom::PERSONAL_QUOTA) {
                 str << " checked";
@@ -369,7 +360,7 @@ void TPDisk::OutputHtmlChunkLockUnlockInfo(TStringStream &str) {
             LABEL_CLASS_FOR("control-label", "color") { str << "Color"; }
             for (TColor::E color : { TColor::CYAN, TColor::LIGHT_YELLOW, TColor::YELLOW, TColor::LIGHT_ORANGE,
                     TColor::ORANGE, TColor::RED, TColor::BLACK} ) {
-                str << "<input id='inputColor_" << TPDiskSpaceColor_Name(color) << "' name='spaceColor' type='radio' value='"
+                str << "<input id='inputColor_" << TPDiskSpaceColor_Name(color) << "' name='spaceColor' type='radio' value='" 
                     << TPDiskSpaceColor_Name(color) << "'";
                 if (color == TColor::CYAN) {
                     str << " checked";
@@ -414,11 +405,6 @@ void TPDisk::OutputHtmlChunkLockUnlockInfo(TStringStream &str) {
         }
 
         COLLAPSED_BUTTON_CONTENT("chunksStateTable", "Chunks State") {
-            str << "<style>";
-            str << "#chunksStateTable th, #chunksStateTable td { border: 1px solid #000; padding: 1px; }";
-            str << "#chunksStateTable th { position: sticky; top: 0; }";
-            str << "#chunksStateTable table { width: 100%; }";
-            str << "</style>";
             TABLE_CLASS ("") {
                 const size_t columns = 50;
                 TABLEHEAD() {
@@ -486,7 +472,6 @@ void TPDisk::HttpInfo(THttpInfo &httpInfo) {
         TStringStream str = httpInfo.OutputString;
         TGuard<TMutex> guard(StateMutex);
         HTML(str) {
-            str << "<style>@media (min-width: 1600px) {.container { width: 1560px;}} </style>"; // Make this page's container wider on big screens.
             DIV_CLASS("row") {
                 DIV_CLASS("col-md-7") { RenderState(str, httpInfo); }
                 DIV_CLASS("col-md-5") {
@@ -511,7 +496,7 @@ void TPDisk::HttpInfo(THttpInfo &httpInfo) {
                 DIV_CLASS("panel-heading") {
                     str << "Owners";
                 }
-                TAG_CLASS_STYLE(TDiv, "panel-body", "overflow-x: scroll;") {
+                DIV_CLASS("panel-body") {
                     OutputHtmlOwners(str);
                 }
             } // Owners

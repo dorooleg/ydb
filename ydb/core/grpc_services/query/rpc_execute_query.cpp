@@ -2,15 +2,13 @@
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/grpc_services/audit_dml_operations.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/grpc_services/base/base.h>
-#include <ydb/core/grpc_services/cancelation/cancelation_event.h>
 #include <ydb/core/grpc_services/rpc_kqp_base.h>
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
-#include <ydb/public/api/protos/ydb_query.pb.h>
+#include <ydb/public/api/protos/draft/ydb_query.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NGRpcService {
 
@@ -24,7 +22,6 @@ using TEvExecuteQueryRequest = TGrpcRequestNoOperationCall<Ydb::Query::ExecuteQu
 struct TProducerState {
     TMaybe<ui64> LastSeqNo;
     ui64 AckedFreeSpaceBytes = 0;
-    TActorId ActorId;
 };
 
 class TRpcFlowControlState {
@@ -67,6 +64,24 @@ private:
     TQueue<ui64> ResponseSizeQueue_;
     ui64 TotalResponsesSize_ = 0;
 };
+
+bool FillQueryContent(const Ydb::Query::ExecuteQueryRequest& req, NKikimrKqp::TEvQueryRequest& kqpRequest,
+    NYql::TIssues& issues)
+{
+    switch (req.query_case()) {
+        case Ydb::Query::ExecuteQueryRequest::kQueryContent:
+            if (!CheckQuery(req.query_content().text(), issues)) {
+                return false;
+            }
+
+            kqpRequest.MutableRequest()->SetQuery(req.query_content().text());
+            return true;
+
+        default:
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Unexpected query option"));
+            return false;
+    }
+}
 
 bool FillTxSettings(const Ydb::Query::TransactionSettings& from, Ydb::Table::TransactionSettings& to,
     NYql::TIssues& issues)
@@ -116,84 +131,53 @@ bool FillTxControl(const Ydb::Query::TransactionControl& from, Ydb::Table::Trans
     return true;
 }
 
-bool ParseQueryAction(const Ydb::Query::ExecuteQueryRequest& req, NKikimrKqp::EQueryAction& queryAction,
-    NYql::TIssues& issues)
-{
-    switch (req.exec_mode()) {
-        case Ydb::Query::EXEC_MODE_VALIDATE:
-            queryAction = NKikimrKqp::QUERY_ACTION_VALIDATE;
-            return true;
-
-        case Ydb::Query::EXEC_MODE_EXPLAIN:
-            queryAction = NKikimrKqp::QUERY_ACTION_EXPLAIN;
-            return true;
-
-        case Ydb::Query::EXEC_MODE_EXECUTE:
-            queryAction = NKikimrKqp::QUERY_ACTION_EXECUTE;
-            return true;
-
-        default:
-            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Unexpected query mode"));
-            return false;
-    }
-}
-
-bool ParseQueryContent(const Ydb::Query::ExecuteQueryRequest& req, TString& query, Ydb::Query::Syntax& syntax,
-    NYql::TIssues& issues)
-{
-    switch (req.query_case()) {
-        case Ydb::Query::ExecuteQueryRequest::kQueryContent:
-            if (!CheckQuery(req.query_content().text(), issues)) {
-                return false;
-            }
-
-            query = req.query_content().text();
-            syntax = req.query_content().syntax();
-            return true;
-
-        default:
-            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Unexpected query option"));
-            return false;
-    }
-}
-
 bool NeedReportStats(const Ydb::Query::ExecuteQueryRequest& req) {
     switch (req.exec_mode()) {
         case Ydb::Query::EXEC_MODE_EXPLAIN:
             return true;
 
-        case Ydb::Query::EXEC_MODE_EXECUTE:
-            switch (req.stats_mode()) {
-                case Ydb::Query::StatsMode::STATS_MODE_BASIC:
-                case Ydb::Query::StatsMode::STATS_MODE_FULL:
-                case Ydb::Query::StatsMode::STATS_MODE_PROFILE:
-                    return true;
-                default:
-                    return false;
-            }
-
         default:
             return false;
     }
 }
 
-bool NeedReportAst(const Ydb::Query::ExecuteQueryRequest& req) {
+std::tuple<Ydb::StatusIds::StatusCode, NYql::TIssues> FillKqpRequest(
+    const Ydb::Query::ExecuteQueryRequest& req, NKikimrKqp::TEvQueryRequest& kqpRequest)
+{
+    kqpRequest.MutableRequest()->MutableYdbParameters()->insert(req.parameters().begin(), req.parameters().end());
     switch (req.exec_mode()) {
+        case Ydb::Query::EXEC_MODE_VALIDATE:
+            kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_VALIDATE);
+            break;
         case Ydb::Query::EXEC_MODE_EXPLAIN:
-            return true;
-
+            kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXPLAIN);
+            break;
         case Ydb::Query::EXEC_MODE_EXECUTE:
-            switch (req.stats_mode()) {
-                case Ydb::Query::StatsMode::STATS_MODE_FULL:
-                case Ydb::Query::StatsMode::STATS_MODE_PROFILE:
-                    return true;
-                default:
-                    return false;
-            }
-
-        default:
-            return false;
+            kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
+            break;
+        default: {
+            NYql::TIssues issues;
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Unexpected query mode"));
+            return {Ydb::StatusIds::BAD_REQUEST, std::move(issues)};
+        }
     }
+
+    kqpRequest.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_GENERIC_QUERY);
+    kqpRequest.MutableRequest()->SetKeepSession(false);
+
+    if (req.has_tx_control()) {
+        NYql::TIssues issues;
+        if (!FillTxControl(req.tx_control(), *kqpRequest.MutableRequest()->MutableTxControl(), issues)) {
+            return {Ydb::StatusIds::BAD_REQUEST, std::move(issues)};
+        }
+    }
+
+    NYql::TIssues issues;
+    if (!FillQueryContent(req, kqpRequest, issues)) {
+        return {Ydb::StatusIds::BAD_REQUEST, std::move(issues)};
+    }
+
+    return {Ydb::StatusIds::SUCCESS, {}};
 }
 
 class TExecuteQueryRPC : public TActorBootstrapped<TExecuteQueryRPC> {
@@ -231,7 +215,7 @@ private:
                 HFunc(TRpcServices::TEvGrpcNextReply, Handle);
                 HFunc(NKqp::TEvKqpExecuter::TEvStreamData, Handle);
                 HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-                hFunc(NKikimr::NGRpcService::TEvSubscribeGrpcCancel, Handle);
+                HFunc(NKqp::TEvKqp::TEvProcessResponse, Handle);
                 default:
                     UnexpectedEvent(__func__, ev);
             }
@@ -244,67 +228,27 @@ private:
         const auto req = Request_->GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
-        NYql::TIssues issues;
-        if (!ParseQueryAction(*req, QueryAction, issues)) {
-            return ReplyFinishStream(Ydb::StatusIds::BAD_REQUEST, std::move(issues));
+        auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
+        SetAuthToken(ev, *Request_);
+        SetDatabase(ev, *Request_);
+        SetRlPath(ev, *Request_);
+
+        if (traceId) {
+            ev->Record.SetTraceId(traceId.GetRef());
         }
 
-        TString query;
-        Ydb::Query::Syntax syntax;
-        if (!ParseQueryContent(*req, query, syntax, issues)) {
-            return ReplyFinishStream(Ydb::StatusIds::BAD_REQUEST, std::move(issues));
+        ActorIdToProto(this->SelfId(), ev->Record.MutableRequestActorId());
+
+        auto [fillStatus, fillIssues] = FillKqpRequest(*req, ev->Record);
+        if (fillStatus != Ydb::StatusIds::SUCCESS) {
+            return ReplyFinishStream(fillStatus, std::move(fillIssues));
         }
-
-        Ydb::Table::TransactionControl* txControl = nullptr;
-        if (req->has_tx_control()) {
-            txControl = google::protobuf::Arena::CreateMessage<Ydb::Table::TransactionControl>(Request_->GetArena());
-            if (!FillTxControl(req->tx_control(), *txControl, issues)) {
-                return ReplyFinishStream(Ydb::StatusIds::BAD_REQUEST, std::move(issues));
-            }
-        }
-
-        AuditContextAppend(Request_.get(), *req);
-
-        auto queryType = req->concurrent_result_sets()
-            ? NKikimrKqp::QUERY_TYPE_SQL_GENERIC_CONCURRENT_QUERY
-            : NKikimrKqp::QUERY_TYPE_SQL_GENERIC_QUERY;
-
-
-        auto cachePolicy = google::protobuf::Arena::CreateMessage<Ydb::Table::QueryCachePolicy>(Request_->GetArena());
-        cachePolicy->set_keep_in_cache(true);
-
-        auto settings = NKqp::NPrivateEvents::TQueryRequestSettings()
-            .SetKeepSession(false)
-            .SetUseCancelAfter(false)
-            .SetSyntax(syntax)
-            .SetSupportStreamTrailingResult(true)
-            .SetOutputChunkMaxSize(req->response_part_limit_bytes());
-
-        auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>(
-            QueryAction,
-            queryType,
-            SelfId(),
-            Request_,
-            req->session_id(),
-            std::move(query),
-            "", // queryId
-            txControl,
-            &req->parameters(),
-            GetCollectStatsMode(req->stats_mode()),
-            cachePolicy,
-            nullptr, // operationParams
-            settings);
 
         if (!ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release())) {
             NYql::TIssues issues;
             issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Internal error"));
             ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, std::move(issues));
         }
-    }
-
-    void Handle(NKikimr::NGRpcService::TEvSubscribeGrpcCancel::TPtr& ev) {
-        auto as = TActivationContext::ActorSystem();
-        PassSubscription(ev->Get(), Request_.get(), as);
     }
 
     void Handle(TEvents::TEvWakeup::TPtr& ev, const TActorContext& ctx) {
@@ -327,24 +271,23 @@ private:
 
         ui64 freeSpaceBytes = FlowControl_.FreeSpaceBytes();
 
-        for (auto& pair : StreamChannels_) {
-            const auto& channelId = pair.first;
-            auto& channel = pair.second;
+        for (auto& pair : StreamProducers_) {
+            const auto& producerId = pair.first;
+            auto& producer = pair.second;
 
-            if (freeSpaceBytes > 0 && channel.LastSeqNo && channel.AckedFreeSpaceBytes == 0) {
+            if (freeSpaceBytes > 0 && producer.LastSeqNo && producer.AckedFreeSpaceBytes == 0) {
                 LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, this->SelfId() << "Resume execution, "
-                    << ", channel: " << channelId
-                    << ", seqNo: " << channel.LastSeqNo
+                    << ", producer: " << producerId
+                    << ", seqNo: " << producer.LastSeqNo
                     << ", freeSpace: " << freeSpaceBytes);
 
                 auto resp = MakeHolder<NKqp::TEvKqpExecuter::TEvStreamDataAck>();
-                resp->Record.SetSeqNo(*channel.LastSeqNo);
+                resp->Record.SetSeqNo(*producer.LastSeqNo);
                 resp->Record.SetFreeSpace(freeSpaceBytes);
-                resp->Record.SetChannelId(channelId);
 
-                ctx.Send(channel.ActorId, resp.Release());
+                ctx.Send(producerId, resp.Release());
 
-                channel.AckedFreeSpaceBytes = freeSpaceBytes;
+                producer.AckedFreeSpaceBytes = freeSpaceBytes;
             }
         }
 
@@ -364,10 +307,9 @@ private:
 
         Request_->SendSerializedResult(std::move(out), Ydb::StatusIds::SUCCESS);
 
-        auto& channel = StreamChannels_[ev->Get()->Record.GetChannelId()];
-        channel.ActorId = ev->Sender;
-        channel.LastSeqNo = ev->Get()->Record.GetSeqNo();
-        channel.AckedFreeSpaceBytes = freeSpaceBytes;
+        auto& producer = StreamProducers_[ev->Sender];
+        producer.LastSeqNo = ev->Get()->Record.GetSeqNo();
+        producer.AckedFreeSpaceBytes = freeSpaceBytes;
 
         LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, this->SelfId() << "Send stream data ack"
             << ", seqNo: " << ev->Get()->Record.GetSeqNo()
@@ -378,84 +320,47 @@ private:
         auto resp = MakeHolder<NKqp::TEvKqpExecuter::TEvStreamDataAck>();
         resp->Record.SetSeqNo(ev->Get()->Record.GetSeqNo());
         resp->Record.SetFreeSpace(freeSpaceBytes);
-        resp->Record.SetChannelId(ev->Get()->Record.GetChannelId());
 
-        ctx.Send(channel.ActorId, resp.Release());
+        ctx.Send(ev->Sender, resp.Release());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext&) {
         auto& record = ev->Get()->Record.GetRef();
 
+        NYql::TIssues issues;
         const auto& issueMessage = record.GetResponse().GetQueryIssues();
+        NYql::IssuesFromMessage(issueMessage, issues);
 
-        bool hasTrailingMessage = false;
+        if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS && NeedReportStats(*Request_->GetProtoRequest())) {
+            Ydb::Query::ExecuteQueryResponsePart response;
+            response.set_status(Ydb::StatusIds::SUCCESS);
 
-        auto& kqpResponse = record.GetResponse();
-        if (kqpResponse.GetYdbResults().size() > 1) {
-            auto issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
-                "Unexpected trailing message with multiple result sets.");
-            ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, issue);
-            return;
-        }
-
-        Ydb::Query::ExecuteQueryResponsePart response;
-
-        if (NeedReportStats(*Request_->GetProtoRequest())) {
-            hasTrailingMessage = true;
+            auto& kqpResponse = record.GetResponse();
             FillQueryStats(*response.mutable_exec_stats(), kqpResponse);
-            if (NeedReportAst(*Request_->GetProtoRequest())) {
-                response.mutable_exec_stats()->set_query_ast(kqpResponse.GetQueryAst());
-            }
-        }
 
-        if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
-            Request_->SetRuHeader(record.GetConsumedRu());
-
-            if (QueryAction == NKikimrKqp::QUERY_ACTION_EXECUTE) {
-                for(int i = 0; i < kqpResponse.GetYdbResults().size(); i++) {
-                    hasTrailingMessage = true;
-                    response.set_result_set_index(i);
-                    response.mutable_result_set()->Swap(record.MutableResponse()->MutableYdbResults(i));
-                }
-            }
-
-            AuditContextAppend(Request_.get(), *Request_->GetProtoRequest(), response);
-
-            if (kqpResponse.HasTxMeta()) {
-                hasTrailingMessage = true;
-                response.mutable_tx_meta()->set_id(kqpResponse.GetTxMeta().id());
-            }
-        }
-
-        if (hasTrailingMessage) {
-            response.set_status(record.GetYdbStatus());
-            response.mutable_issues()->CopyFrom(issueMessage);
             TString out;
             Y_PROTOBUF_SUPPRESS_NODISCARD response.SerializeToString(&out);
-            ReplySerializedAndFinishStream(record.GetYdbStatus(), std::move(out));
-        } else {
-            NYql::TIssues issues;
-            NYql::IssuesFromMessage(issueMessage, issues);
-            ReplyFinishStream(record.GetYdbStatus(), issueMessage);
+            Request_->SendSerializedResult(std::move(out), record.GetYdbStatus());
         }
+
+        ReplyFinishStream(record.GetYdbStatus(), issues);
+    }
+
+    void Handle(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext&) {
+        auto& record = ev->Get()->Record;
+
+        NYql::TIssues issues;
+        if (record.HasError()) {
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, record.GetError()));
+        }
+
+        ReplyFinishStream(record.GetYdbStatus(), issues);
     }
 
 private:
     void HandleClientLost(const TActorContext& ctx) {
-        LOG_WARN_S(ctx, NKikimrServices::RPC_REQUEST, "Client lost");
-
-        // We must try to finish stream otherwise grpc will not free allocated memory
-        // If stream already scheduled to be finished (ReplyFinishStream already called)
-        // this call do nothing but Die will be called after reply to grpc
-        auto issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
-            "Client should not see this message, if so... may the force be with you");
-        ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, issue);
-    }
-
-    void ReplySerializedAndFinishStream(Ydb::StatusIds::StatusCode status, TString&& buf) {
-        const auto finishStreamFlag = NYdbGrpc::IRequestContextBase::EStreamCtrl::FINISH;
-        Request_->SendSerializedResult(std::move(buf), status, finishStreamFlag);
-        this->PassAway();
+        // TODO: Abort query execution.
+        Y_UNUSED(ctx);
     }
 
     void ReplyFinishStream(Ydb::StatusIds::StatusCode status, const NYql::TIssue& issue) {
@@ -482,17 +387,16 @@ private:
             << Ydb::StatusIds::StatusCode_Name(status));
 
         // Skip sending empty result in case of success status - simplify client logic
-        if (status != Ydb::StatusIds::SUCCESS || message.size() > 0) {
+        if (status != Ydb::StatusIds::SUCCESS) {
             TString out;
             Ydb::Query::ExecuteQueryResponsePart response;
             response.set_status(status);
             response.mutable_issues()->CopyFrom(message);
             Y_PROTOBUF_SUPPRESS_NODISCARD response.SerializeToString(&out);
-            const auto finishStreamFlag = NYdbGrpc::IRequestContextBase::EStreamCtrl::FINISH;
-            Request_->SendSerializedResult(std::move(out), status, finishStreamFlag);
-        } else {
-            Request_->FinishStream(status);
+            Request_->SendSerializedResult(std::move(out), status);
         }
+
+        Request_->FinishStream();
         this->PassAway();
     }
 
@@ -514,26 +418,21 @@ private:
     };
 
 private:
-    std::shared_ptr<TEvExecuteQueryRequest> Request_;
+    std::unique_ptr<TEvExecuteQueryRequest> Request_;
 
-    NKikimrKqp::EQueryAction QueryAction;
     TRpcFlowControlState FlowControl_;
-    TMap<ui64, TProducerState> StreamChannels_;
+    TMap<TActorId, TProducerState> StreamProducers_;
 };
 
 } // namespace
 
-namespace NQuery {
-
-void DoExecuteQuery(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
+void DoExecuteQueryRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
     // Use default channel buffer size as inflight limit
-    ui64 inflightLimitBytes = f.GetChannelBufferSize();
+    ui64 inflightLimitBytes = f.GetAppConfig()->GetTableServiceConfig().GetResourceManager().GetChannelBufferSize();
 
     auto* req = dynamic_cast<TEvExecuteQueryRequest*>(p.release());
-    Y_ABORT_UNLESS(req != nullptr, "Wrong using of TGRpcRequestWrapper");
+    Y_VERIFY(req != nullptr, "Wrong using of TGRpcRequestWrapper");
     f.RegisterActor(new TExecuteQueryRPC(req, inflightLimitBytes));
-}
-
 }
 
 } // namespace NKikimr::NGRpcService

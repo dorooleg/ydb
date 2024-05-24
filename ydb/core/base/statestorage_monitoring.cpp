@@ -1,11 +1,11 @@
 #include "statestorage_impl.h"
 #include "tabletid.h"
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/core/protos/services.pb.h>
+#include <library/cpp/actors/core/interconnect.h>
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr {
 
@@ -150,7 +150,7 @@ class TStateStorageMonitoringActor : public TActorBootstrapped<TStateStorageMoni
     void Handle(TEvStateStorage::TEvReplicaInfo::TPtr &ev, const TActorContext &ctx) {
         const NKikimrStateStorage::TEvInfo &record = ev->Get()->Record;
         const ui64 cookie = record.GetCookie();
-        Y_ABORT_UNLESS(cookie < ReplicasInfo.size());
+        Y_VERIFY(cookie < ReplicasInfo.size());
 
         auto &xinfo = ReplicasInfo[cookie];
 
@@ -208,12 +208,12 @@ public:
         , Query(query)
         , ProxyReplyTime(TDuration::MicroSeconds(Max<ui64>()))
         , WaitingForReplicas(0)
-        , SelfConfigContentHash(0)
     {}
 
     void Bootstrap(const TActorContext &ctx) {
         // try to send monitoring request to proxy
-        const TActorId proxyActorID = MakeStateStorageProxyID();
+        const ui64 stateStorageGroup = StateStorageGroupFromTabletID(TabletID);
+        const TActorId proxyActorID = MakeStateStorageProxyID(stateStorageGroup);
 
         BeginMoment = ctx.Now();
 

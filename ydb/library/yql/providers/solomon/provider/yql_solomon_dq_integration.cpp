@@ -46,12 +46,9 @@ void FillScheme(const TTypeAnnotationNode& itemType, NSo::NProto::TDqSolomonShar
     int index = 0;
     for (const TItemExprType* structItem : itemType.Cast<TStructExprType>()->GetItems()) {
         const auto itemName = structItem->GetName();
-        const TDataExprType* itemType = nullptr;
+        const auto* itemType = structItem->GetItemType();
 
-        bool isOptionalUnused = false;
-        YQL_ENSURE(IsDataOrOptionalOfData(structItem->GetItemType(), isOptionalUnused, itemType), "Failed to unwrap optional type");
-
-        const auto dataType = NUdf::GetDataTypeInfo(itemType->GetSlot());
+        const auto dataType = NUdf::GetDataTypeInfo(itemType->Cast<TDataExprType>()->GetSlot());
 
         NSo::NProto::TDqSolomonSchemeItem schemeItem;
         schemeItem.SetKey(TString(itemName));
@@ -65,7 +62,7 @@ void FillScheme(const TTypeAnnotationNode& itemType, NSo::NProto::TDqSolomonShar
         } else if (dataType.Features & NUdf::StringType) {
             scheme.MutableLabels()->Add(std::move(schemeItem));
         } else {
-            YQL_ENSURE(false, "Invalid data type for monitoring sink: " << dataType.Name);
+            YQL_ENSURE(false, "Ivalid data type for monitoing sink: " << dataType.Name);
         }
     }
 }
@@ -81,7 +78,7 @@ public:
         YQL_ENSURE(false, "Unimplemented");
     }
 
-    TMaybe<ui64> EstimateReadSize(ui64 /*dataSizePerJob*/, ui32 /*maxTasksPerStage*/, const TVector<const TExprNode*>&, TExprContext&) override {
+    TMaybe<ui64> EstimateReadSize(ui64 /*dataSizePerJob*/, ui32 /*maxTasksPerStage*/, const TExprNode&, TExprContext&) override {
         YQL_ENSURE(false, "Unimplemented");
     }
 
@@ -90,11 +87,11 @@ public:
         YQL_ENSURE(false, "Unimplemented");
     }
 
-    TMaybe<bool> CanWrite(const TExprNode&, TExprContext&) override {
+    TMaybe<bool> CanWrite(const TDqSettings&, const TExprNode&, TExprContext&) override {
         YQL_ENSURE(false, "Unimplemented");
     }
 
-    void FillSourceSettings(const TExprNode&, ::google::protobuf::Any&, TString&, size_t) override {
+    void FillSourceSettings(const TExprNode&, ::google::protobuf::Any&, TString& ) override {
         YQL_ENSURE(false, "Unimplemented");
     }
 

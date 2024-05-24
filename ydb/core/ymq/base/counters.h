@@ -123,7 +123,6 @@ namespace NDetails {
 
 template <class TTargetCounterType, class TDerived>
 struct TLazyCachedCounterBase {
-public:
     // Facade for counters aggregation.
     class TAggregatingCounterFacade {
         friend struct TLazyCachedCounterBase;
@@ -214,10 +213,9 @@ public:
         if (counter) {
             counter->Ref();
         } else {
-            Impl = nullptr;
-            if (other.Impl) {
-                Impl = new TImpl(*other.Impl);
-            }
+            RootCounters = other.RootCounters;
+            Value = other.Value;
+            Lifetime = other.Lifetime;
         }
     }
 
@@ -233,11 +231,10 @@ public:
     }
 
     void Init(const TIntrusivePtr<::NMonitoring::TDynamicCounters>& rootCounters, ELifetime lifetime, const TString& name, const TString& value, ELaziness laziness) {
-        Impl = new TImpl();
-        Impl->RootCounters = rootCounters;
-        Impl->Name = name;
-        Impl->Value = value;
-        Impl->Lifetime = lifetime;
+        RootCounters = rootCounters;
+        Name = name;
+        Value = value;
+        Lifetime = lifetime;
         if (laziness == ELaziness::OnStart) {
             EnsureCreated();
         }
@@ -293,42 +290,11 @@ protected:
     }
 
 protected:
-    TIntrusivePtr<NMonitoring::TCounterForPtr> CreateImpl(bool derivative) {
-        if (Impl && Impl->RootCounters && Impl->Name && Impl->Value) {
-            return Impl->Create(derivative);
-        } else {
-            return nullptr;
-        }
-    }   
-
-    TIntrusivePtr<NMonitoring::THistogramCounter> CreateHistogramImpl(const NMonitoring::TBucketBounds* buckets) {
-        if (Impl && Impl->RootCounters && Impl->Name && Impl->Value && buckets) {
-            return Impl->CreateHistogram(buckets);
-        } else {
-            return nullptr;
-        }
-    }      
-
-private:
-    class TImpl : public TAtomicRefCount<TImpl> {
-    public:
-        TIntrusivePtr<::NMonitoring::TDynamicCounters> RootCounters;
-        TString Name;
-        TString Value;
-        ELifetime Lifetime = ELifetime::Persistent;
-
-        TIntrusivePtr<NMonitoring::TCounterForPtr> Create(bool derivative) {
-            return Lifetime == ELifetime::Expiring ? RootCounters->GetExpiringNamedCounter(Name, Value, derivative) : RootCounters->GetNamedCounter(Name, Value, derivative);
-        }
-
-        TIntrusivePtr<NMonitoring::THistogramCounter> CreateHistogram(const NMonitoring::TBucketBounds* buckets) {
-            return Lifetime == ELifetime::Expiring ? RootCounters->GetExpiringNamedHistogram(Name, Value, NMonitoring::ExplicitHistogram(*buckets)) : RootCounters->GetNamedHistogram(Name, Value, NMonitoring::ExplicitHistogram(*buckets));
-        }  
-    };
-
-protected:
-    TIntrusivePtr<TImpl> Impl;
     TLazyCachedCounterBase* AggregatedParent = nullptr;
+    TIntrusivePtr<::NMonitoring::TDynamicCounters> RootCounters;
+    TString Name;
+    TString Value;
+    ELifetime Lifetime = ELifetime::Persistent;
     std::atomic<TTargetCounterType*> Counter;
 };
 
@@ -351,8 +317,12 @@ struct TLazyCachedCounter : public NDetails::TLazyCachedCounterBase<NMonitoring:
     }
 
     TIntrusivePtr<NMonitoring::TCounterForPtr> Create() {
-        const bool derivative = ValueType == EValueType::Derivative;
-        return CreateImpl(derivative);
+        if (RootCounters && Name && Value) {
+            const bool derivative = ValueType == EValueType::Derivative;
+            return Lifetime == ELifetime::Expiring ? RootCounters->GetExpiringNamedCounter(Name, Value, derivative) : RootCounters->GetNamedCounter(Name, Value, derivative);
+        } else {
+            return nullptr;
+        }
     }
 
     static TIntrusivePtr<NMonitoring::TCounterForPtr> Default() {
@@ -381,7 +351,11 @@ struct TLazyCachedHistogram : public NDetails::TLazyCachedCounterBase<NMonitorin
     }
 
     TIntrusivePtr<NMonitoring::THistogramCounter> Create() {
-        return CreateHistogramImpl(Buckets);
+        if (RootCounters && Name && Value && Buckets) {
+            return Lifetime == ELifetime::Expiring ? RootCounters->GetExpiringNamedHistogram(Name, Value, NMonitoring::ExplicitHistogram(*Buckets)) : RootCounters->GetNamedHistogram(Name, Value, NMonitoring::ExplicitHistogram(*Buckets));
+        } else {
+            return nullptr;
+        }
     }
 
     static TIntrusivePtr<NMonitoring::THistogramCounter> Default() {
@@ -864,10 +838,6 @@ struct TMonitoringCounters : public TAtomicRefCount<TMonitoringCounters> {
     TLazyCachedCounter CleanupRemovedQueuesDone;
     TLazyCachedCounter CleanupRemovedQueuesRows;
     TLazyCachedCounter CleanupRemovedQueuesErrors;
-
-    TLazyCachedCounter LocalLeaderStartInflight;
-    TLazyCachedCounter LocalLeaderStartQueue;
-    TLazyCachedHistogram LocalLeaderStartAwaitMs;
 
     TMonitoringCounters(const NKikimrConfig::TSqsConfig& config, const TIntrusivePtr<::NMonitoring::TDynamicCounters>& monitoringCounters)
         : MonitoringCounters(monitoringCounters)

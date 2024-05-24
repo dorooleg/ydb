@@ -1,4 +1,4 @@
-import "ydb/library/actors/protos/interconnect.proto";
+import "library/cpp/actors/protos/interconnect.proto";
 
 package NKikimrNodeBroker;
 option java_package = "ru.yandex.kikimr.proto";
@@ -20,7 +20,6 @@ message TNodeInfo {
     optional string Address = 5;
     optional NActorsInterconnect.TNodeLocation Location = 6;
     optional uint64 Expire = 7;
-    optional string Name = 8;
 }
 
 message TEpoch {
@@ -102,7 +101,6 @@ message TConfig {
     optional uint64 EpochDuration = 1 [default = 3600000000];
     // Don't allocate and extend lease for IDs from banned intervals.
     repeated TNodeIds BannedNodeIds = 2;
-    optional string NodeNamePrefix = 3 [default = "slot-"];
 }
 
 message TGetConfigRequest {

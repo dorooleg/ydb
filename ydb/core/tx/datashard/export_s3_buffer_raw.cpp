@@ -25,23 +25,23 @@ TS3BufferRaw::TS3BufferRaw(const TTagToColumn& columns, ui64 rowsLimit, ui64 byt
 }
 
 void TS3BufferRaw::ColumnsOrder(const TVector<ui32>& tags) {
-    Y_ABORT_UNLESS(tags.size() == Columns.size());
+    Y_VERIFY(tags.size() == Columns.size());
 
     Indices.clear();
     for (ui32 i = 0; i < tags.size(); ++i) {
         const ui32 tag = tags.at(i);
         auto it = Columns.find(tag);
-        Y_ABORT_UNLESS(it != Columns.end());
-        Y_ABORT_UNLESS(Indices.emplace(tag, i).second);
+        Y_VERIFY(it != Columns.end());
+        Y_VERIFY(Indices.emplace(tag, i).second);
     }
 }
 
-bool TS3BufferRaw::Collect(const NTable::IScan::TRow& row, IOutputStream& out) {
+void TS3BufferRaw::Collect(const NTable::IScan::TRow& row, IOutputStream& out) {
     bool needsComma = false;
     for (const auto& [tag, column] : Columns) {
         auto it = Indices.find(tag);
-        Y_ABORT_UNLESS(it != Indices.end());
-        Y_ABORT_UNLESS(it->second < (*row).size());
+        Y_VERIFY(it != Indices.end());
+        Y_VERIFY(it->second < (*row).size());
         const auto& cell = (*row)[it->second];
 
         BytesRead += cell.Size();
@@ -57,19 +57,18 @@ bool TS3BufferRaw::Collect(const NTable::IScan::TRow& row, IOutputStream& out) {
             continue;
         }
 
-        bool serialized = true;
         switch (column.Type.GetTypeId()) {
         case NScheme::NTypeIds::Int32:
-            serialized = cell.ToStream<i32>(out, ErrorString);
+            out << cell.AsValue<i32>();
             break;
         case NScheme::NTypeIds::Uint32:
-            serialized = cell.ToStream<ui32>(out, ErrorString);
+            out << cell.AsValue<ui32>();
             break;
         case NScheme::NTypeIds::Int64:
-            serialized = cell.ToStream<i64>(out, ErrorString);
+            out << cell.AsValue<i64>();
             break;
         case NScheme::NTypeIds::Uint64:
-            serialized = cell.ToStream<ui64>(out, ErrorString);
+            out << cell.AsValue<ui64>();
             break;
         case NScheme::NTypeIds::Uint8:
         //case NScheme::NTypeIds::Byte:
@@ -79,19 +78,19 @@ bool TS3BufferRaw::Collect(const NTable::IScan::TRow& row, IOutputStream& out) {
             out << static_cast<i32>(cell.AsValue<i8>());
             break;
         case NScheme::NTypeIds::Int16:
-            serialized = cell.ToStream<i16>(out, ErrorString);
+            out << cell.AsValue<i16>();
             break;
         case NScheme::NTypeIds::Uint16:
-            serialized = cell.ToStream<ui16>(out, ErrorString);
+            out << cell.AsValue<ui16>();
             break;
         case NScheme::NTypeIds::Bool:
-            serialized = cell.ToStream<bool>(out, ErrorString);
+            out << cell.AsValue<bool>();
             break;
         case NScheme::NTypeIds::Double:
-            serialized = cell.ToStream<double>(out, ErrorString);
+            out << cell.AsValue<double>();
             break;
         case NScheme::NTypeIds::Float:
-            serialized = cell.ToStream<float>(out, ErrorString);
+            out << cell.AsValue<float>();
             break;
         case NScheme::NTypeIds::Date:
             out << TInstant::Days(cell.AsValue<ui16>());
@@ -103,13 +102,13 @@ bool TS3BufferRaw::Collect(const NTable::IScan::TRow& row, IOutputStream& out) {
             out << TInstant::MicroSeconds(cell.AsValue<ui64>());
             break;
         case NScheme::NTypeIds::Interval:
-            serialized = cell.ToStream<i64>(out, ErrorString);
+            out << cell.AsValue<i64>();
             break;
         case NScheme::NTypeIds::Decimal:
-            serialized = DecimalToStream(cell.AsValue<std::pair<ui64, i64>>(), out, ErrorString);
+            out << DecimalToString(cell.AsValue<std::pair<ui64, i64>>());
             break;
         case NScheme::NTypeIds::DyNumber:
-            serialized = DyNumberToStream(cell.AsBuf(), out, ErrorString);
+            out << DyNumberToString(cell.AsBuf());
             break;
         case NScheme::NTypeIds::String:
         case NScheme::NTypeIds::String4k:
@@ -123,30 +122,21 @@ bool TS3BufferRaw::Collect(const NTable::IScan::TRow& row, IOutputStream& out) {
             out << '"' << CGIEscapeRet(NBinaryJson::SerializeToJson(cell.AsBuf())) << '"';
             break;
         case NScheme::NTypeIds::Pg:
-            serialized = PgToStream(cell.AsBuf(), column.Type.GetTypeDesc(), out, ErrorString);
-            break;
-        case NScheme::NTypeIds::Uuid:
-            serialized = UuidToStream(cell.AsValue<std::pair<ui64, ui64>>(), out, ErrorString);
-            break;
+            // TODO: support pg types
+            Y_FAIL("Unsupported pg type");
         default:
-            Y_ABORT("Unsupported type");
-        }
-
-        if (!serialized) {
-            return false;
+            Y_FAIL("Unsupported type");
         }
     }
 
     out << "\n";
     ++Rows;
-
-    return true;
 }
 
 bool TS3BufferRaw::Collect(const NTable::IScan::TRow& row) {
     TBufferOutput out(Buffer);
-    ErrorString.clear();
-    return Collect(row, out);
+    Collect(row, out);
+    return true;
 }
 
 IEventBase* TS3BufferRaw::PrepareEvent(bool last, NExportScan::IBuffer::TStats& stats) {
@@ -163,7 +153,7 @@ IEventBase* TS3BufferRaw::PrepareEvent(bool last, NExportScan::IBuffer::TStats& 
 }
 
 void TS3BufferRaw::Clear() {
-    Y_ABORT_UNLESS(Flush(false));
+    Y_VERIFY(Flush(false));
 }
 
 bool TS3BufferRaw::IsFilled() const {
@@ -171,7 +161,7 @@ bool TS3BufferRaw::IsFilled() const {
 }
 
 TString TS3BufferRaw::GetError() const {
-    return ErrorString;
+    Y_FAIL("unreachable");
 }
 
 TMaybe<TBuffer> TS3BufferRaw::Flush(bool) {

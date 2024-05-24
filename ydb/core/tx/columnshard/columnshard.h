@@ -1,12 +1,10 @@
 #pragma once
 #include "defs.h"
-#include "blob.h"
+#include "blob_manager.h"
 
 #include <ydb/core/tx/tx.h>
 #include <ydb/core/tx/message_seqno.h>
 #include <ydb/core/protos/tx_columnshard.pb.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
-#include <ydb/core/tx/data_events/write_data.h>
 
 #include <ydb/core/tx/long_tx_service/public/types.h>
 
@@ -16,6 +14,7 @@
 namespace NKikimr {
 
 namespace NColumnShard {
+class TBlobGroupSelector;
 
 inline Ydb::StatusIds::StatusCode ConvertToYdbStatus(NKikimrTxColumnShard::EResultStatus columnShardStatus) {
     switch (columnShardStatus) {
@@ -67,22 +66,6 @@ struct TEvColumnShard {
         EvWriteResult,
         EvReadResult,
 
-        EvDeleteSharedBlobs,
-        EvDeleteSharedBlobsFinished,
-
-        EvDataSharingProposeFromInitiator,
-        EvDataSharingConfirmFromInitiator,
-        EvDataSharingAckFinishFromInitiator,
-        EvDataSharingStartToSource,
-        EvDataSharingSendDataFromSource,
-        EvDataSharingAckDataToSource,
-        EvDataSharingFinishedFromSource,
-        EvDataSharingAckFinishToSource,
-        EvDataSharingCheckStatusFromInitiator,
-        EvDataSharingCheckStatusResult,
-        EvApplyLinksModification,
-        EvApplyLinksModificationFinished,
-
         EvEnd
     };
 
@@ -110,18 +93,15 @@ struct TEvColumnShard {
                 ui64 txId, TString txBody, const ui32 flags = 0)
             : TEvProposeTransaction(txKind, source, txId, std::move(txBody), flags)
         {
-            Y_ABORT_UNLESS(txKind == NKikimrTxColumnShard::TX_KIND_SCHEMA);
+            Y_VERIFY(txKind == NKikimrTxColumnShard::TX_KIND_SCHEMA);
             Record.SetSchemeShardId(ssId);
         }
 
         TEvProposeTransaction(NKikimrTxColumnShard::ETransactionKind txKind, ui64 ssId, const TActorId& source,
-            ui64 txId, TString txBody, const NKikimrSubDomains::TProcessingParams& processingParams, const std::optional<TMessageSeqNo>& seqNo = {}, const ui32 flags = 0)
+                ui64 txId, TString txBody, const NKikimrSubDomains::TProcessingParams& processingParams, const ui32 flags = 0)
             : TEvProposeTransaction(txKind, ssId, source, txId, std::move(txBody), flags)
         {
             Record.MutableProcessingParams()->CopyFrom(processingParams);
-            if (seqNo) {
-                *Record.MutableSeqNo() = seqNo->SerializeToProto();
-            }
         }
 
         TActorId GetSource() const {
@@ -204,8 +184,63 @@ struct TEvColumnShard {
         }
     };
 
+    // Fallback read BlobCache read to tablet (small blobs or S3)
+    struct TEvReadBlobRanges : public TEventPB<TEvReadBlobRanges,
+                                                NKikimrTxColumnShard::TEvReadBlobRanges,
+                                                TEvColumnShard::EvReadBlobRanges>
+    {
+        std::vector<NOlap::TBlobRange> BlobRanges;
+
+        TEvReadBlobRanges() = default;
+
+        TEvReadBlobRanges(const std::vector<NOlap::TBlobRange>& blobRanges)
+            : BlobRanges(blobRanges)
+        {
+            for (const auto& r : BlobRanges) {
+                auto* range = Record.AddBlobRanges();
+                range->SetBlobId(r.BlobId.ToStringNew());
+                range->SetOffset(r.Offset);
+                range->SetSize(r.Size);
+            }
+        }
+
+        void RestoreFromProto(NColumnShard::TBlobGroupSelector* dsGroupSelector, TString& errString) {
+            BlobRanges.clear();
+            BlobRanges.reserve(Record.BlobRangesSize());
+
+            for (const auto& range : Record.GetBlobRanges()) {
+                auto blobId = NColumnShard::TUnifiedBlobId::ParseFromString(range.GetBlobId(), dsGroupSelector,
+                                                                            errString);
+                if (!errString.empty()) {
+                    return;
+                }
+                BlobRanges.push_back(NOlap::TBlobRange{blobId, (ui32)range.GetOffset(), (ui32)range.GetSize()});
+            }
+        }
+    };
+
+    struct TEvReadBlobRangesResult : public TEventPB<TEvReadBlobRangesResult,
+                                                NKikimrTxColumnShard::TEvReadBlobRangesResult,
+                                                TEvColumnShard::EvReadBlobRangesResult>
+    {
+        explicit TEvReadBlobRangesResult(ui64 tabletId = 0) {
+            Record.SetTabletId(tabletId);
+        }
+    };
+
     struct TEvWrite : public TEventPB<TEvWrite, NKikimrTxColumnShard::TEvWrite, TEvColumnShard::EvWrite> {
         TEvWrite() = default;
+
+        TEvWrite(const TActorId& source, ui64 metaShard, ui64 writeId, ui64 tableId,
+                 const TString& dedupId, const TString& data, const ui32 writePartId) {
+            ActorIdToProto(source, Record.MutableSource());
+            Record.SetTxInitiator(metaShard);
+            Record.SetWriteId(writeId);
+            Record.SetTableId(tableId);
+            Record.SetDedupId(dedupId);
+            Record.SetData(data);
+            Record.SetWritePartId(writePartId);
+        }
 
         TEvWrite(const TActorId& source, const NLongTxService::TLongTxId& longTxId, ui64 tableId,
                  const TString& dedupId, const TString& data, const ui32 writePartId) {
@@ -223,38 +258,72 @@ struct TEvColumnShard {
             Record.MutableMeta()->SetSchema(arrowSchema);
         }
 
-        void SetArrowData(const TString& arrowSchema, const TString& arrowData) {
-            Record.MutableMeta()->SetFormat(NKikimrTxColumnShard::FORMAT_ARROW);
-            Record.MutableMeta()->SetSchema(arrowSchema);
-            Record.SetData(arrowData);
+        TActorId GetSource() const {
+            return ActorIdFromProto(Record.GetSource());
+        }
+
+        NKikimrProto::EReplyStatus PutStatus = NKikimrProto::UNKNOWN;
+        NColumnShard::TUnifiedBlobId BlobId;
+        std::shared_ptr<arrow::RecordBatch> WrittenBatch;
+        NColumnShard::TBlobBatch BlobBatch;
+        NColumnShard::TUsage ResourceUsage;
+        TVector<ui32> YellowMoveChannels;
+        TVector<ui32> YellowStopChannels;
+        ui64 MaxSmallBlobSize;
+    };
+
+    struct TEvWriteResult : public TEventPB<TEvWriteResult, NKikimrTxColumnShard::TEvWriteResult,
+                            TEvColumnShard::EvWriteResult> {
+        TEvWriteResult() = default;
+
+        TEvWriteResult(ui64 origin, ui64 metaShard, ui64 writeId, ui64 tableId, const TString& dedupId, ui32 status) {
+            Record.SetOrigin(origin);
+            Record.SetTxInitiator(metaShard);
+            Record.SetWriteId(writeId);
+            Record.SetTableId(tableId);
+            Record.SetDedupId(dedupId);
+            Record.SetStatus(status);
         }
     };
 
-    struct TEvWriteResult : public TEventPB<TEvWriteResult, NKikimrTxColumnShard::TEvWriteResult, TEvColumnShard::EvWriteResult> {
-        TEvWriteResult() = default;
+    struct TEvRead : public TEventPB<TEvRead, NKikimrTxColumnShard::TEvRead, TEvColumnShard::EvRead> {
+        TEvRead() = default;
 
-        TEvWriteResult(ui64 origin, const NEvWrite::TWriteMeta& writeMeta, ui32 status)
-            : TEvWriteResult(origin, writeMeta, writeMeta.GetWriteId(), status)
-        {
+        TEvRead(const TActorId& source, ui64 metaShard, ui64 planStep, ui64 txId, ui64 tableId = 0) {
+            ActorIdToProto(source, Record.MutableSource());
+            Record.SetTxInitiator(metaShard);
+            Record.SetPlanStep(planStep);
+            Record.SetTxId(txId);
+            Record.SetTableId(tableId);
         }
 
-        TEvWriteResult(ui64 origin, const NEvWrite::TWriteMeta& writeMeta, const i64 writeId, ui32 status) {
+        TActorId GetSource() const {
+            return ActorIdFromProto(Record.GetSource());
+        }
+    };
+
+    struct TEvReadResult : public TEventPB<TEvReadResult, NKikimrTxColumnShard::TEvReadResult,
+                            TEvColumnShard::EvReadResult> {
+        TEvReadResult() = default;
+
+        TEvReadResult(ui64 origin, ui64 metaShard, ui64 planStep, ui64 txId, ui64 tableId, ui32 batch,
+                      bool finished, ui32 status) {
             Record.SetOrigin(origin);
-            Record.SetTxInitiator(0);
-            Record.SetWriteId(writeId);
-            Record.SetTableId(writeMeta.GetTableId());
-            Record.SetDedupId(writeMeta.GetDedupId());
+            Record.SetTxInitiator(metaShard);
+            Record.SetPlanStep(planStep);
+            Record.SetTxId(txId);
+            Record.SetTableId(tableId);
+            Record.SetBatch(batch);
+            Record.SetFinished(finished);
             Record.SetStatus(status);
         }
 
-        Ydb::StatusIds::StatusCode GetYdbStatus() const  {
-            const auto status = (NKikimrTxColumnShard::EResultStatus)Record.GetStatus();
-            return NColumnShard::ConvertToYdbStatus(status);
+        TEvReadResult(const TEvReadResult& ev) {
+            Record.CopyFrom(ev.Record);
         }
     };
 
     using TEvScan = TEvDataShard::TEvKqpScan;
-
 };
 
 inline auto& Proto(TEvColumnShard::TEvProposeTransaction* ev) {
@@ -273,7 +342,15 @@ inline auto& Proto(TEvColumnShard::TEvWrite* ev) {
     return ev->Record;
 }
 
+inline auto& Proto(TEvColumnShard::TEvRead* ev) {
+    return ev->Record;
+}
+
 inline auto& Proto(TEvColumnShard::TEvWriteResult* ev) {
+    return ev->Record;
+}
+
+inline auto& Proto(TEvColumnShard::TEvReadResult* ev) {
     return ev->Record;
 }
 

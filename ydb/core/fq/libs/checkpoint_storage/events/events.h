@@ -5,11 +5,9 @@
 
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_pb.h>
-#include <ydb/library/actors/interconnect/events_local.h>
-
-#include <ydb/library/yql/dq/actors/protos/dq_events.pb.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_pb.h>
+#include <library/cpp/actors/interconnect/events_local.h>
 
 namespace NFq {
 
@@ -60,22 +58,14 @@ struct TEvCheckpointStorage {
     };
 
     struct TEvCreateCheckpointRequest : NActors::TEventLocal<TEvCreateCheckpointRequest, EvCreateCheckpointRequest> {
-        TEvCreateCheckpointRequest(
-            TCoordinatorId coordinatorId,
-            TCheckpointId checkpointId,
-            ui64 nodeCount,
-            const NProto::TCheckpointGraphDescription& graphDesc)
+        TEvCreateCheckpointRequest(TCoordinatorId coordinatorId, TCheckpointId checkpointId, ui64 nodeCount, const NProto::TCheckpointGraphDescription& graphDesc)
             : CoordinatorId(std::move(coordinatorId))
             , CheckpointId(std::move(checkpointId))
             , NodeCount(nodeCount)
             , GraphDescription(graphDesc) {
         }
 
-        TEvCreateCheckpointRequest(
-            TCoordinatorId coordinatorId,
-            TCheckpointId checkpointId,
-            ui64 nodeCount,
-            const TString& graphDescId)
+        TEvCreateCheckpointRequest(TCoordinatorId coordinatorId, TCheckpointId checkpointId, ui64 nodeCount, const TString& graphDescId)
             : CoordinatorId(std::move(coordinatorId))
             , CheckpointId(std::move(checkpointId))
             , NodeCount(nodeCount)
@@ -102,15 +92,13 @@ struct TEvCheckpointStorage {
 
     struct TEvSetCheckpointPendingCommitStatusRequest
         : NActors::TEventLocal<TEvSetCheckpointPendingCommitStatusRequest, EvSetCheckpointStatusPendingCommitRequest> {
-        TEvSetCheckpointPendingCommitStatusRequest(TCoordinatorId coordinatorId, TCheckpointId checkpointId, ui64 stateSizeBytes)
+        TEvSetCheckpointPendingCommitStatusRequest(TCoordinatorId coordinatorId, TCheckpointId checkpointId)
             : CoordinatorId(std::move(coordinatorId))
-            , CheckpointId(std::move(checkpointId))
-            , StateSizeBytes(stateSizeBytes) {
+            , CheckpointId(std::move(checkpointId)) {
         }
 
         TCoordinatorId CoordinatorId;
         TCheckpointId CheckpointId;
-        ui64 StateSizeBytes;
     };
 
     struct TEvSetCheckpointPendingCommitStatusResponse
@@ -126,21 +114,13 @@ struct TEvCheckpointStorage {
 
     struct TEvCompleteCheckpointRequest
         : NActors::TEventLocal<TEvCompleteCheckpointRequest, EvCompleteCheckpointRequest> {
-        TEvCompleteCheckpointRequest(
-            TCoordinatorId coordinatorId,
-            TCheckpointId checkpointId,
-            ui64 stateSizeBytes,
-            NYql::NDqProto::ECheckpointType type)
+        TEvCompleteCheckpointRequest(TCoordinatorId coordinatorId, TCheckpointId checkpointId)
             : CoordinatorId(std::move(coordinatorId))
-            , CheckpointId(std::move(checkpointId))
-            , StateSizeBytes(stateSizeBytes)
-            , Type(type) {
+            , CheckpointId(std::move(checkpointId)) {
         }
 
         TCoordinatorId CoordinatorId;
         TCheckpointId CheckpointId;
-        ui64 StateSizeBytes;
-        NYql::NDqProto::ECheckpointType Type;
     };
 
     struct TEvCompleteCheckpointResponse
@@ -206,19 +186,14 @@ struct TEvCheckpointStorage {
 
     // note that no response exists
     struct TEvNewCheckpointSucceeded : NActors::TEventLocal<TEvNewCheckpointSucceeded, EvNewCheckpointSucceeded> {
-        TEvNewCheckpointSucceeded(
-            TCoordinatorId coordinatorId,
-            TCheckpointId checkpointId,
-            NYql::NDqProto::ECheckpointType type)
+        TEvNewCheckpointSucceeded(TCoordinatorId coordinatorId, TCheckpointId checkpointId)
             : CoordinatorId(std::move(coordinatorId))
             , CheckpointId(std::move(checkpointId))
-            , Type(type)
         {
         }
 
         TCoordinatorId CoordinatorId;
         TCheckpointId CheckpointId;
-        NYql::NDqProto::ECheckpointType Type;
     };
 };
 

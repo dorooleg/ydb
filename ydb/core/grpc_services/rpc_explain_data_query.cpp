@@ -3,7 +3,7 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
 
 #include <ydb/core/protos/console_config.pb.h>
@@ -55,22 +55,22 @@ public:
             ev->Record.SetTraceId(traceId.GetRef());
         }
 
-        if (CheckSession(req->session_id(), Request_.get())) {
+        NYql::TIssues issues;
+        if (CheckSession(req->session_id(), issues)) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
-        if (!CheckQuery(req->yql_text(), Request_.get())) {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+        if (!CheckQuery(req->yql_text(), issues)) {
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         ev->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXPLAIN);
         ev->Record.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_DML);
         ev->Record.MutableRequest()->SetQuery(req->yql_text());
-        ev->Record.MutableRequest()->SetCollectDiagnostics(req->Getcollect_full_diagnostics());
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -84,7 +84,6 @@ public:
             Ydb::Table::ExplainQueryResult queryResult;
             queryResult.set_query_ast(kqpResponse.GetQueryAst());
             queryResult.set_query_plan(kqpResponse.GetQueryPlan());
-            queryResult.set_query_full_diagnostics(kqpResponse.GetQueryDiagnostics());
 
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, queryResult, ctx);
         } else {

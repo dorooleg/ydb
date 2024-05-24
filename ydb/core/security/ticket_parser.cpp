@@ -17,7 +17,6 @@ class TTicketParser : public TTicketParserImpl<TTicketParser> {
         AccessService,
         Builtin,
         Login,
-        ApiKey, // IAM api_key
     };
 
     THashMap<TString, TTokenRecord> UserTokens;

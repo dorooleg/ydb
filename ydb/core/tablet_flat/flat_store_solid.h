@@ -24,7 +24,7 @@ namespace NTabletFlatExecutor {
 
         static void Put(TProto &proto, const TLargeGlobId &largeGlobId)
         {
-            Y_ABORT_UNLESS(largeGlobId.Group != TLargeGlobId::InvalidGroup, "Please, set BS group");
+            Y_VERIFY(largeGlobId.Group != TLargeGlobId::InvalidGroup, "Please, set BS group");
 
             proto.SetGroup(largeGlobId.Group);
             proto.SetBytes(largeGlobId.Bytes);
@@ -41,7 +41,7 @@ namespace NTabletFlatExecutor {
 
         static TLargeGlobId Get(const TRep &rep, const TLookup &lookup)
         {
-            Y_ABORT_UNLESS(rep.size(), "TLargeGlobId accepts only non-empty sequence");
+            Y_VERIFY(rep.size(), "TLargeGlobId accepts only non-empty sequence");
 
             const auto lead = LogoBlobIDFromLogoBlobID(rep.Get(0));
             ui32 bytes = lead.BlobSize();
@@ -50,9 +50,9 @@ namespace NTabletFlatExecutor {
                 auto logo = LogoBlobIDFromLogoBlobID(rep.Get(it));
 
                 if (bytes > Max<ui32>() - logo.BlobSize())
-                    Y_ABORT("Got too large TLargeGlobId in ids sequence");
+                    Y_FAIL("Got too large TLargeGlobId in ids sequence");
                 if (lead.Cookie() + it != logo.Cookie())
-                    Y_ABORT("Got an invalid sequence of logo ids");
+                    Y_FAIL("Got an invalid sequence of logo ids");
 
                 bytes += logo.BlobSize();
             }

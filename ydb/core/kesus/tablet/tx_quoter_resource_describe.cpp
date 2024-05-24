@@ -47,7 +47,7 @@ struct TKesusTablet::TTxQuoterResourceDescribe : public TTxBase {
     }
 
     void AddToResult(const TQuoterResourceTree* resource) {
-        Y_ABORT_UNLESS(resource);
+        Y_VERIFY(resource);
         *Reply->Record.AddResources() = resource->GetProps();
     }
 
@@ -114,7 +114,7 @@ struct TKesusTablet::TTxQuoterResourceDescribe : public TTxBase {
             "[" << Self->TabletID() << "] TTxQuoterResourceDescribe::Complete (sender=" << Sender
                 << ", cookie=" << Cookie << ")");
 
-        Y_ABORT_UNLESS(Reply);
+        Y_VERIFY(Reply);
         ctx.Send(Sender, std::move(Reply), 0, Cookie);
     }
 };

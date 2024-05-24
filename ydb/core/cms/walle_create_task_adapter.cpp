@@ -2,10 +2,8 @@
 #include "info_collector.h"
 #include "walle.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-
-#include <optional>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NCms {
 
@@ -29,7 +27,19 @@ public:
         LOG_INFO(ctx, NKikimrServices::CMS, "Processing Wall-E request: %s",
                   rec.ShortDebugString().data());
 
-        if (!Actions.contains(rec.GetAction())) {
+        if (rec.GetAction() != "reboot"
+            && rec.GetAction() != "power-off"
+            && rec.GetAction() != "change-disk"
+            && rec.GetAction() != "change-memory"
+            && rec.GetAction() != "profile"
+            && rec.GetAction() != "redeploy"
+            && rec.GetAction() != "prepare"
+            && rec.GetAction() != "repair-link"
+            && rec.GetAction() != "repair-bmc"
+            && rec.GetAction() != "repair-overheat"
+            && rec.GetAction() != "repair-capping"
+            && rec.GetAction() != "deactivate"
+            && rec.GetAction() != "temporary-unreachable") {
             ReplyWithErrorAndDie(TStatus::WRONG_REQUEST, "Unsupported action", ctx);
             return;
         }
@@ -121,17 +131,10 @@ private:
         request->Record.SetUser(WALLE_CMS_USER);
         request->Record.SetSchedule(true);
         request->Record.SetDryRun(task.GetDryRun());
-        const auto &action = task.GetAction();
-        if (action == "temporary-unreachable") {
-            request->Record.SetPriority(WALLE_SOFT_MAINTAINANCE_PRIORITY);
-        } else {
-            request->Record.SetPriority(WALLE_DEFAULT_PRIORITY);
-        }
-        
-        auto it = Actions.find(action);
-        Y_ABORT_UNLESS(it != Actions.end());
 
-        if (!it->second) {
+        TAction action;
+        if (task.GetAction() == "prepare"
+            || task.GetAction() == "deactivate") {
             TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> resp = new TEvCms::TEvWalleCreateTaskResponse;
             resp->Record.SetTaskId(task.GetTaskId());
             resp->Record.MutableHosts()->CopyFrom(task.GetHosts());
@@ -139,17 +142,52 @@ private:
             ReplyAndDie(resp.Release(), ctx);
             return;
         } else {
-            for (auto &host : task.GetHosts()) {
-                auto &action = *request->Record.AddActions();
-                action.SetHost(host);
-                action.SetType(*it->second);
-                // We always use infinite duration.
-                // Wall-E MUST delete processed tasks.
+            // We always use infinite duration.
+            // Wall-E MUST delete processed tasks.
+            if (task.GetAction() == "reboot") {
+                action.SetType(TAction::SHUTDOWN_HOST);
                 action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "power-off") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "change-disk") {
+                action.SetType(TAction::REPLACE_DEVICES);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "change-memory") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "profile") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "redeploy") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-link") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-bmc") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-overheat") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-capping") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "temporary-unreachable") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else
+                Y_FAIL("Unknown action");
+
+            for (auto &host : task.GetHosts()) {
+                auto &hostAction = *request->Record.AddActions();
+                hostAction.CopyFrom(action);
+                hostAction.SetHost(host);
                 if (action.GetType() == TAction::REPLACE_DEVICES) {
                     for (const auto node : cluster->HostNodes(host)) {
                         for (auto &pdiskId : node->PDisks)
-                            *action.AddDevices() = cluster->PDisk(pdiskId).GetDeviceName();
+                            *hostAction.AddDevices() = cluster->PDisk(pdiskId).GetDeviceName();
                     }
                 }
             }
@@ -166,26 +204,9 @@ private:
         ReplyAndDie(Response, ctx);
     }
 
-    static const THashMap<TString, std::optional<TAction::EType>> Actions;
     TEvCms::TEvWalleCreateTaskRequest::TPtr RequestEvent;
     TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> Response;
     TActorId Cms;
-};
-
-const THashMap<TString, std::optional<TAction::EType>> TWalleCreateTaskAdapter::Actions = {
-    {"reboot", TAction::REBOOT_HOST},
-    {"power-off", TAction::SHUTDOWN_HOST},
-    {"change-disk", TAction::REPLACE_DEVICES},
-    {"change-memory", TAction::SHUTDOWN_HOST},
-    {"profile", TAction::SHUTDOWN_HOST},
-    {"redeploy", TAction::SHUTDOWN_HOST},
-    {"repair-link", TAction::SHUTDOWN_HOST},
-    {"repair-bmc", TAction::SHUTDOWN_HOST},
-    {"repair-overheat", TAction::SHUTDOWN_HOST},
-    {"repair-capping", TAction::SHUTDOWN_HOST},
-    {"temporary-unreachable", TAction::SHUTDOWN_HOST},
-    {"prepare", std::nullopt},
-    {"deactivate", std::nullopt},
 };
 
 IActor *CreateWalleAdapter(TEvCms::TEvWalleCreateTaskRequest::TPtr &ev, TActorId cms) {

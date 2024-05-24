@@ -4,9 +4,8 @@
 #include "subscriber.h"
 #include "percentile_counter.h"
 #include "quota_tracker.h"
-#include "account_read_quoter.h"
+#include "read_speed_limiter.h"
 #include "metering_sink.h"
-#include "dread_cache_service/caching_service.h"
 
 #include <ydb/core/base/counters.h>
 #include <ydb/core/protos/counters_pq.pb.h>
@@ -37,6 +36,17 @@ static const TString CLIENTID_WITHOUT_CONSUMER = "$without_consumer";
 
 typedef TProtobufTabletLabeledCounters<EClientLabeledCounters_descriptor> TUserLabeledCounters;
 
+struct TReadSpeedLimiterHolder {
+    TReadSpeedLimiterHolder(const TActorId& actor, const TTabletCountersBase& baseline)
+        : Actor(actor)
+    {
+        Baseline.Populate(baseline);
+    }
+
+    TActorId Actor;
+    TTabletCountersBase Baseline;
+};
+
 struct TUserInfoBase {
     TString User;
     ui64 ReadRuleGeneration = 0;
@@ -48,12 +58,11 @@ struct TUserInfoBase {
 
     bool Important = false;
     TInstant ReadFromTimestamp;
-
-    ui64 PartitionSessionId = 0;
-    TActorId PipeClient;
 };
 
 struct TUserInfo: public TUserInfoBase {
+    THolder<TReadSpeedLimiterHolder> ReadSpeedLimiter;
+
     TInstant WriteTimestamp;
     TInstant CreateTimestamp;
     TInstant ReadTimestamp;
@@ -74,15 +83,16 @@ struct TUserInfo: public TUserInfoBase {
     THolder<TUserLabeledCounters> LabeledCounters;
     NPersQueue::TTopicConverterPtr TopicConverter;
 
+    std::deque<std::pair<TReadInfo, ui64>> ReadRequests;
+
+    TQuotaTracker ReadQuota;
+
     TWorkingTimeCounter Counter;
     NKikimr::NPQ::TMultiCounter BytesRead;
     NKikimr::NPQ::TMultiCounter MsgsRead;
-    NKikimr::NPQ::TMultiCounter BytesReadGrpc;
-    NKikimr::NPQ::TMultiCounter MsgsReadGrpc;
     TMap<TString, NKikimr::NPQ::TMultiCounter> BytesReadFromDC;
 
     ui32 ActiveReads;
-    ui32 ReadsInQuotaQueue;
     ui32 Subscriptions;
     i64 EndOffset;
 
@@ -91,8 +101,6 @@ struct TUserInfo: public TUserInfoBase {
     NSlidingWindow::TSlidingWindow<NSlidingWindow::TMaxOperation<ui64>> WriteLagMs;
 
     std::shared_ptr<TPercentileCounter> ReadTimeLag;
-    bool NoConsumer = false;
-
     bool DoInternalRead = false;
     bool MeterRead = true;
 
@@ -105,7 +113,7 @@ struct TUserInfo: public TUserInfoBase {
     }
 
     void UpdateReadingState() {
-        Counter.UpdateState(Subscriptions > 0 || ActiveReads > 0 || ReadsInQuotaQueue > 0); //no data for read or got read requests from client
+        Counter.UpdateState(Subscriptions > 0 || ActiveReads > 0 || ReadRequests.size() > 0); //no data for read or got read requests from client
     }
 
     void UpdateReadingTimeAndState(TInstant now) {
@@ -121,21 +129,13 @@ struct TUserInfo: public TUserInfoBase {
     }
 
     void ReadDone(const TActorContext& ctx, const TInstant& now, ui64 readSize, ui32 readCount,
-                  const TString& clientDC, const TActorId& tablet, bool isExternalRead) {
+                  const TString& clientDC, const TActorId& tablet) {
         Y_UNUSED(tablet);
         if (BytesRead && !clientDC.empty()) {
-            BytesRead.Inc(readSize);
-            if (!isExternalRead && BytesReadGrpc) {
-                BytesReadGrpc.Inc(readSize);
-            }
-
-            if (MsgsRead) {
+            if (BytesRead)
+                BytesRead.Inc(readSize);
+            if (MsgsRead)
                 MsgsRead.Inc(readCount);
-                if (!isExternalRead && MsgsReadGrpc) {
-                    MsgsReadGrpc.Inc(readCount);
-                }
-            }
-
             auto it = BytesReadFromDC.find(clientDC);
             if (it == BytesReadFromDC.end()) {
                 auto pos = TopicConverter->GetFederationPath().find("/");
@@ -155,10 +155,11 @@ struct TUserInfo: public TUserInfoBase {
             if (it != BytesReadFromDC.end())
                 it->second.Inc(readSize);
         }
+        ReadQuota.Exaust(readSize, now);
         for (auto& avg : AvgReadBytes) {
             avg.Update(readSize, now);
         }
-        Y_ABORT_UNLESS(ActiveReads > 0);
+        Y_VERIFY(ActiveReads > 0);
         --ActiveReads;
         UpdateReadingTimeAndState(now);
         ReadTimestamp = now;
@@ -166,15 +167,15 @@ struct TUserInfo: public TUserInfoBase {
 
     TUserInfo(
         const TActorContext& ctx,
-        NMonitoring::TDynamicCounterPtr streamCountersSubgroup,
-        const TString& user,
+        NMonitoring::TDynamicCounterPtr streamCountersSubgroup, THolder<TReadSpeedLimiterHolder> readSpeedLimiter, const TString& user,
         const ui64 readRuleGeneration, const bool important, const NPersQueue::TTopicConverterPtr& topicConverter,
-        const ui32 partition, const TString& session, ui64 partitionSession, ui32 gen, ui32 step, i64 offset,
+        const ui32 partition, const TString &session, ui32 gen, ui32 step, i64 offset,
         const ui64 readOffsetRewindSum, const TString& dcId, TInstant readFromTimestamp,
-        const TString& dbPath, bool meterRead, const TActorId& pipeClient
+        const TString& dbPath, bool meterRead,
+        ui64 burst = 1'000'000'000, ui64 speed = 1'000'000'000
     )
-        : TUserInfoBase{user, readRuleGeneration, session, gen, step, offset, important,
-                        readFromTimestamp, partitionSession, pipeClient}
+        : TUserInfoBase{user, readRuleGeneration, session, gen, step, offset, important, readFromTimestamp}
+        , ReadSpeedLimiter(std::move(readSpeedLimiter))
         , WriteTimestamp(TAppData::TimeProvider->Now())
         , CreateTimestamp(TAppData::TimeProvider->Now())
         , ReadTimestamp(TAppData::TimeProvider->Now())
@@ -186,15 +187,15 @@ struct TUserInfo: public TUserInfoBase {
         , ReadScheduled(false)
         , HasReadRule(false)
         , TopicConverter(topicConverter)
+        , ReadQuota(burst, speed, TAppData::TimeProvider->Now())
         , Counter(nullptr)
         , ActiveReads(0)
-        , ReadsInQuotaQueue(0)
         , Subscriptions(0)
         , EndOffset(0)
         , AvgReadBytes{{TDuration::Seconds(1), 1000}, {TDuration::Minutes(1), 1000},
                        {TDuration::Hours(1), 2000}, {TDuration::Days(1), 2000}}
         , WriteLagMs(TDuration::Minutes(1), 100)
-        , NoConsumer(user == CLIENTID_WITHOUT_CONSUMER)
+        , DoInternalRead(user != CLIENTID_WITHOUT_CONSUMER)
         , MeterRead(meterRead)
     {
         if (AppData(ctx)->Counters) {
@@ -214,16 +215,23 @@ struct TUserInfo: public TUserInfoBase {
     }
 
     void SetupStreamCounters(NMonitoring::TDynamicCounterPtr subgroup) {
-        Y_ABORT_UNLESS(subgroup);
+        Y_VERIFY(subgroup);
         TVector<std::pair<TString, TString>> subgroups;
-        if (!NoConsumer) {
+        if (DoInternalRead) {
             subgroups.push_back({"consumer", User});
-        }
 
-        BytesRead = TMultiCounter(subgroup, {}, subgroups, {"topic.read.bytes"}, true, "name");
-        MsgsRead = TMultiCounter(subgroup, {}, subgroups,{"topic.read.messages"}, true, "name");
-        BytesReadGrpc = TMultiCounter(subgroup, {}, subgroups, {"api.grpc.topic.stream_read.bytes"}, true, "name");
-        MsgsReadGrpc = TMultiCounter(subgroup, {}, subgroups, {"api.grpc.topic.stream_read.messages"}, true, "name");
+            BytesRead = TMultiCounter(subgroup, {}, subgroups,
+                                      {"api.grpc.topic.stream_read.bytes",
+                                       "topic.read.bytes"}, true, "name");
+            MsgsRead = TMultiCounter(subgroup, {}, subgroups,
+                                     {"api.grpc.topic.stream_read.messages",
+                                      "topic.read.messages"}, true, "name");
+        } else {
+            BytesRead = TMultiCounter(subgroup, {}, subgroups,
+                                      {"topic.read.bytes"}, true, "name");
+            MsgsRead = TMultiCounter(subgroup, {}, subgroups,
+                                      {"topic.read.messages"}, true, "name");
+        }
 
         subgroups.emplace_back("name", "topic.read.lag_milliseconds");
         ReadTimeLag.reset(new TPercentileCounter(
@@ -268,6 +276,12 @@ struct TUserInfo: public TUserInfoBase {
                         true));
 
     }
+
+    void SetQuota(const ui64 maxBurst, const ui64 speed) {
+        ReadQuota.UpdateConfig(maxBurst, speed);
+    }
+
+    void Clear(const TActorContext& ctx);
 
     void UpdateReadOffset(const i64 offset, TInstant writeTimestamp, TInstant createTimestamp, TInstant now) {
         ReadOffset = offset;
@@ -363,16 +377,9 @@ struct TUserInfo: public TUserInfoBase {
 
 class TUsersInfoStorage {
 public:
-    TUsersInfoStorage(
-        TString dcId,
-        const NPersQueue::TTopicConverterPtr& topicConverter,
-        ui32 partition,
-        const NKikimrPQ::TPQTabletConfig& config,
-        const TString& CloudId,
-        const TString& DbId,
-        const TString& DbPath,
-        const bool isServerless,
-        const TString& FolderId);
+    TUsersInfoStorage(TString dcId, ui64 tabletId, const NPersQueue::TTopicConverterPtr& topicConverter, ui32 partition,
+                      const TTabletCountersBase& counters, const NKikimrPQ::TPQTabletConfig& config,
+                      const TString& CloudId, const TString& DbId, const TString& DbPath, const bool isServerless, const TString& FolderId);
 
     void Init(TActorId tabletActor, TActorId partitionActor, const TActorContext& ctx);
 
@@ -380,17 +387,19 @@ public:
     void Parse(const TString& key, const TString& data, const TActorContext& ctx);
 
     TUserInfo& GetOrCreate(const TString& user, const TActorContext& ctx, TMaybe<ui64> readRuleGeneration = {});
-    const TUserInfo* GetIfExists(const TString& user) const;
     TUserInfo* GetIfExists(const TString& user);
+
+    void UpdateConfig(const NKikimrPQ::TPQTabletConfig& config) {
+        Config = config;
+    }
 
     THashMap<TString, TUserInfo>& GetAll();
 
     TUserInfoBase CreateUserInfo(const TString& user,
                              TMaybe<ui64> readRuleGeneration = {}) const;
     TUserInfo& Create(
-        const TActorContext& ctx, const TString& user, const ui64 readRuleGeneration, bool important, const TString& session,
-        ui64 partitionSessionId, ui32 gen, ui32 step, i64 offset, ui64 readOffsetRewindSum,
-        TInstant readFromTimestamp, const TActorId& pipeClient
+        const TActorContext& ctx, const TString& user, const ui64 readRuleGeneration, bool important, const TString &session,
+        ui32 gen, ui32 step, i64 offset, ui64 readOffsetRewindSum, TInstant readFromTimestamp
     );
 
     void Clear(const TActorContext& ctx);
@@ -398,27 +407,29 @@ public:
     void Remove(const TString& user, const TActorContext& ctx);
 
 private:
+    THolder<TReadSpeedLimiterHolder> CreateReadSpeedLimiter(const TString& user) const;
 
     TUserInfo CreateUserInfo(const TActorContext& ctx,
                              const TString& user,
                              const ui64 readRuleGeneration,
                              bool important,
                              const TString& session,
-                             ui64 partitionSessionId,
                              ui32 gen, ui32 step, i64 offset, ui64 readOffsetRewindSum,
-                             TInstant readFromTimestamp, const TActorId& pipeClient) const;
+                             TInstant readFromTimestamp) const;
 
 private:
     THashMap<TString, TUserInfo> UsersInfo;
 
     const TString DCId;
+    ui64 TabletId;
     NPersQueue::TTopicConverterPtr TopicConverter;
     const ui32 Partition;
+    TTabletCountersBase Counters;
     NMonitoring::TDynamicCounterPtr StreamCountersSubgroup;
 
     TMaybe<TActorId> TabletActor;
     TMaybe<TActorId> PartitionActor;
-    const NKikimrPQ::TPQTabletConfig& Config;
+    NKikimrPQ::TPQTabletConfig Config;
 
     TString CloudId;
     TString DbId;

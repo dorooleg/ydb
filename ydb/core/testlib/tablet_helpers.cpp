@@ -36,15 +36,13 @@
 #include <util/string/subst.h>
 #include <util/system/env.h>
 #include <util/system/sanitizers.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 #include <ydb/core/kesus/tablet/tablet.h>
 #include <ydb/core/keyvalue/keyvalue.h>
 #include <ydb/core/persqueue/pq.h>
 #include <ydb/core/sys_view/processor/processor.h>
-#include <ydb/core/statistics/aggregator/aggregator.h>
-#include <ydb/core/graph/api/shard.h>
 
 #include <ydb/core/testlib/basics/storage.h>
 #include <ydb/core/testlib/basics/appdata.h>
@@ -62,7 +60,7 @@ static NActors::TTestActorRuntime& AsKikimrRuntime(NActors::TTestActorRuntimeBas
         return dynamic_cast<NActors::TTestBasicRuntime&>(r);
     } catch (const std::bad_cast& e) {
         Cerr << e.what() << Endl;
-        Y_ABORT("Failed to cast to TTestActorRuntime: %s", e.what());
+        Y_FAIL("Failed to cast to TTestActorRuntime: %s", e.what());
     }
 }
 
@@ -133,12 +131,15 @@ namespace NKikimr {
             }
 
             const auto& domainsInfo = app->Domains;
-            if (!domainsInfo || !domainsInfo->Domain) {
+            if (!domainsInfo || domainsInfo->Domains.size() == 0) {
                 return;
             }
 
-            const TDomainsInfo::TDomain *domain = domainsInfo->GetDomain();
-            UseFakeTimeCast |= domain->Mediators.size() == 0;
+            Y_VERIFY(domainsInfo->Domains.size() == 1);
+            for (const auto &xpair : domainsInfo->Domains) {
+                const TDomainsInfo::TDomain *domain = xpair.second.Get();
+                UseFakeTimeCast |= domain->Mediators.size() == 0;
+            }
         }
 
         void Birth(ui32 node) noexcept override
@@ -171,9 +172,6 @@ namespace NKikimr {
                     if (ENABLE_REBOOT_DISPATCH_LOG) {
                         Cerr << "Leader for TabletID " << info->TabletID << " is " << info->CurrentLeaderTablet << " sender: " << event->Sender << " recipient: " << event->Recipient << Endl;
                     }
-                    if (info->CurrentLeader) {
-                        TabletSys[info->TabletID] = info->CurrentLeader;
-                    }
                     if (info->CurrentLeaderTablet) {
                         TabletLeaders[info->TabletID] = info->CurrentLeaderTablet;
                     } else {
@@ -199,10 +197,6 @@ namespace NKikimr {
             if (it != TabletRelatedActors.end()) {
                 TabletRelatedActors.insert(std::make_pair(actorId, it->second));
             }
-        }
-
-        const TMap<ui64, TActorId>& GetTabletSys() const {
-            return TabletSys;
         }
 
         const TMap<ui64, TActorId>& GetTabletLeaders() const {
@@ -261,7 +255,6 @@ namespace NKikimr {
         }
 
     protected:
-        TMap<ui64, TActorId> TabletSys;
         TMap<ui64, TActorId> TabletLeaders;
         TMap<TActorId, ui64> TabletRelatedActors;
         TSet<ui64> DeletedTablets;
@@ -332,10 +325,8 @@ namespace NKikimr {
             if (ENABLE_REBOOT_DISPATCH_LOG)
                 Cerr << "!Reboot " << TabletId << " (actor " << targetActorId << ") on event " << eventType << " !\n";
 
-            // We synchronously kill user part of the tablet to stop user-level logic at current event
-            // However we don't kill the system part because tests historically expect pending commits to finish
-            runtime.Send(new IEventHandle(targetActorId, TActorId(), new TEvents::TEvPoisonPill()));
             // Wait for the tablet to boot or to become deleted
+            runtime.Send(new IEventHandle(targetActorId, TActorId(), new TEvents::TEvPoisonPill()));
             TDispatchOptions rebootOptions;
             rebootOptions.FinalEvents.push_back(TDispatchOptions::TFinalEventCondition(TEvTablet::EvRestored, 2));
             rebootOptions.CustomFinalCondition = [this]() -> bool {
@@ -476,7 +467,7 @@ namespace NKikimr {
                     if (currentItem->DelayedExecution) {
                         if (TRACE_DELAY_TIMING)
                             Cout << "= ";
-                        Y_ABORT_UNLESS(currentItem->DelayedExecution->Complete);
+                        Y_VERIFY(currentItem->DelayedExecution->Complete);
                     } else {
                         if (TRACE_DELAY_TIMING)
                             Cout << "+ ";
@@ -495,7 +486,7 @@ namespace NKikimr {
                 CurrentItems.push_back(currentItem->DelayedExecution.Get());
                 return TTestActorRuntime::EEventAction::RESCHEDULE;
             } else {
-                Y_ABORT();
+                Y_FAIL();
             }
         }
 
@@ -587,7 +578,7 @@ namespace NKikimr {
             new TEvTabletResolver::TEvForward(tabletId, nullptr)),
             nodeIndex, true);
         auto ev = runtime.GrabEdgeEventRethrow<TEvTabletResolver::TEvForwardResult>(sender);
-        Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK, "Failed to resolve tablet %" PRIu64, tabletId);
+        Y_VERIFY(ev->Get()->Status == NKikimrProto::OK, "Failed to resolve tablet %" PRIu64, tabletId);
         if (sysTablet) {
             return ev->Get()->Tablet;
         } else {
@@ -613,8 +604,7 @@ namespace NKikimr {
         runtime.DispatchEvents(rebootOptions);
 
         InvalidateTabletResolverCache(runtime, tabletId, nodeIndex);
-        // FIXME: there's at least one nbs test that weirdly depends on this sleeping for at least ~50ms, unclear why
-        WaitScheduledEvents(runtime, TDuration::MilliSeconds(50), sender, nodeIndex);
+        WaitScheduledEvents(runtime, TDuration::Seconds(1), sender, nodeIndex);
     }
 
     void GracefulRestartTablet(TTestActorRuntime &runtime, ui64 tabletId, const TActorId &sender, ui32 nodeIndex) {
@@ -624,17 +614,17 @@ namespace NKikimr {
         runtime.DispatchEvents(rebootOptions);
 
         InvalidateTabletResolverCache(runtime, tabletId, nodeIndex);
-        WaitScheduledEvents(runtime, TDuration::MilliSeconds(50), sender, nodeIndex);
+        WaitScheduledEvents(runtime, TDuration::Seconds(1), sender, nodeIndex);
     }
 
     void SetupTabletServices(TTestActorRuntime &runtime, TAppPrepare *app, bool mockDisk, NFake::TStorage storage,
-                            NFake::TCaches caches, bool forceFollowers) {
+                            NFake::TCaches caches) {
         TAutoPtr<TAppPrepare> dummy;
         if (app == nullptr) {
             dummy = app = new TAppPrepare;
         }
         TUltimateNodes nodes(runtime, app);
-        SetupBasicServices(runtime, *app, mockDisk, &nodes, storage, caches, forceFollowers);
+        SetupBasicServices(runtime, *app, mockDisk, &nodes, storage, caches);
     }
 
     TDomainsInfo::TDomain::TStoragePoolKinds DefaultPoolKinds(ui32 count) {
@@ -667,9 +657,10 @@ namespace NKikimr {
         return prev;
     }
 
-    void SetupChannelProfiles(TAppPrepare &app, ui32 nchannels) {
-        auto& poolKinds = app.Domains->GetDomain()->StoragePoolTypes;
-        Y_ABORT_UNLESS(!poolKinds.empty());
+    void SetupChannelProfiles(TAppPrepare &app, ui32 domainId, ui32 nchannels) {
+        Y_VERIFY(app.Domains && app.Domains->Domains.contains(domainId));
+        auto& poolKinds = app.Domains->GetDomain(domainId).StoragePoolTypes;
+        Y_VERIFY(!poolKinds.empty());
 
         TIntrusivePtr<TChannelProfiles> channelProfiles = new TChannelProfiles;
 
@@ -713,7 +704,7 @@ namespace NKikimr {
         app.SetChannels(std::move(channelProfiles));
     }
 
-    void SetupBoxAndStoragePool(TTestActorRuntime &runtime, const TActorId& sender, ui32 nGroups) {
+    void SetupBoxAndStoragePool(TTestActorRuntime &runtime, const TActorId& sender, ui32 domainId, ui32 nGroups) {
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = NTabletPipe::TClientRetryPolicy::WithRetries();
 
@@ -727,7 +718,7 @@ namespace NKikimr {
         boxConfig.SetBoxId(1);
 
         ui32 nodeId = runtime.GetNodeId(0);
-        Y_ABORT_UNLESS(nodesInfo->Nodes[0].NodeId == nodeId);
+        Y_VERIFY(nodesInfo->Nodes[0].NodeId == nodeId);
         auto& nodeInfo = nodesInfo->Nodes[0];
 
         NKikimrBlobStorage::TDefineHostConfig hostConfig;
@@ -743,13 +734,13 @@ namespace NKikimr {
         host.SetHostConfigId(hostConfig.GetHostConfigId());
         bsConfigureRequest->Record.MutableRequest()->AddCommand()->MutableDefineBox()->CopyFrom(boxConfig);
 
-        for (const auto& [kind, pool] : runtime.GetAppData().DomainsInfo->GetDomain()->StoragePoolTypes) {
+        for (const auto& [kind, pool] : runtime.GetAppData().DomainsInfo->Domains[domainId]->StoragePoolTypes) {
             NKikimrBlobStorage::TDefineStoragePool storagePool(pool);
             storagePool.SetNumGroups(nGroups);
             bsConfigureRequest->Record.MutableRequest()->AddCommand()->MutableDefineStoragePool()->CopyFrom(storagePool);
         }
 
-        runtime.SendToPipe(MakeBSControllerID(), sender, bsConfigureRequest.Release(), 0, GetPipeConfigWithRetries());
+        runtime.SendToPipe(MakeBSControllerID(domainId), sender, bsConfigureRequest.Release(), 0, GetPipeConfigWithRetries());
 
         TAutoPtr<IEventHandle> handleConfigureResponse;
         auto configureResponse = runtime.GrabEdgeEventRethrow<TEvBlobStorage::TEvControllerConfigResponse>(handleConfigureResponse);
@@ -770,7 +761,7 @@ namespace NKikimr {
             TTabletScheduledFilter scheduledFilter(tabletTracer);
             try {
                 testFunc(INITIAL_TEST_DISPATCH_NAME, [&](TTestActorRuntimeBase& runtime) {
-                    runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+                    runtime.SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
                         tabletTracer.OnEvent(AsKikimrRuntime(runtime), event);
                         return TTestActorRuntime::EEventAction::PROCESS;
                     });
@@ -827,7 +818,7 @@ namespace NKikimr {
                     TTabletScheduledFilter scheduledFilter(rebootingObserver);
                     testFunc(dispatchName,
                         [&](TTestActorRuntime& runtime) {
-                            runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+                            runtime.SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
                                 return rebootingObserver.OnEvent(AsKikimrRuntime(runtime), event);
                             });
 
@@ -870,7 +861,7 @@ namespace NKikimr {
             TTabletScheduledFilter scheduledFilter(tabletTracer);
 
             testFunc(INITIAL_TEST_DISPATCH_NAME, [&](TTestActorRuntime& runtime) {
-                runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+                runtime.SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
                     tabletTracer.OnEvent(AsKikimrRuntime(runtime), event);
                     return TTestActorRuntime::EEventAction::PROCESS;
                 });
@@ -892,6 +883,7 @@ namespace NKikimr {
         if (SUPPRESS_REBOOTS || GetEnv("FAST_UT")=="1")
             return;
 
+        ui32 runCount = 0;
         ui32 eventCountBeforeReboot = 0;
         if (selectedReboot != Max<ui32>()) {
             eventCountBeforeReboot = selectedReboot;
@@ -909,6 +901,7 @@ namespace NKikimr {
                 Cout << "===> BEGIN dispatch: " << dispatchName << "\n";
 
             try {
+                ++runCount;
                 activeZone = false;
                 TTestActorRuntime::TEventFilter filter = filterFactory();
                 TPipeResetObserver pipeResetingObserver(eventCountBeforeReboot, activeZone, filter, tabletIds);
@@ -916,7 +909,7 @@ namespace NKikimr {
 
                 testFunc(dispatchName,
                     [&](TTestActorRuntime& runtime) {
-                    runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+                    runtime.SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
                         return pipeResetingObserver.OnEvent(AsKikimrRuntime(runtime), event);
                     });
 
@@ -965,7 +958,7 @@ namespace NKikimr {
                     Cout << dispatchName << "\n";
                 testFunc(dispatchName,
                     [&](TTestActorRuntime& runtime) {
-                    runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+                    runtime.SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
                         return delayingObserver.OnEvent(AsKikimrRuntime(runtime), event);
                     });
 
@@ -1003,7 +996,7 @@ namespace NKikimr {
             , TabletTracer(TracingActive, tabletIds)
             , ScheduledFilter(TabletTracer)
         {
-            PrevObserverFunc = Runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+            PrevObserverFunc = Runtime.SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
                 TabletTracer.OnEvent(AsKikimrRuntime(runtime), event);
                 return TTestActorRuntime::EEventAction::PROCESS;
             });
@@ -1106,13 +1099,14 @@ namespace NKikimr {
         {
         }
 
-        void DefaultSignalTabletActive(const TActorContext &) override {
-            // must be empty
-        }
-
         void OnActivateExecutor(const TActorContext &ctx) final {
             Become(&TFakeHive::StateWork);
-            SignalTabletActive(ctx);
+
+            while (!InitialEventsQueue.empty()) {
+                TAutoPtr<IEventHandle> &ev = InitialEventsQueue.front();
+                ctx.ExecutorThread.Send(ev.Release());
+                InitialEventsQueue.pop_front();
+            }
 
             LOG_INFO_S(ctx, NKikimrServices::HIVE, "[" << TabletID() << "] started, primary subdomain " << PrimarySubDomainKey);
         }
@@ -1124,6 +1118,10 @@ namespace NKikimr {
         void OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev, const TActorContext &ctx) override {
             Y_UNUSED(ev);
             Die(ctx);
+        }
+
+        void Enqueue(STFUNC_SIG) override {
+            InitialEventsQueue.push_back(ev);
         }
 
         void StateInit(STFUNC_SIG) {
@@ -1140,10 +1138,7 @@ namespace NKikimr {
                 HFunc(TEvHive::TEvDeleteOwnerTablets, Handle);
                 HFunc(TEvHive::TEvRequestHiveInfo, Handle);
                 HFunc(TEvHive::TEvInitiateTabletExternalBoot, Handle);
-                HFunc(TEvHive::TEvUpdateTabletsObject, Handle);
                 HFunc(TEvFakeHive::TEvSubscribeToTabletDeletion, Handle);
-                HFunc(TEvHive::TEvUpdateDomain, Handle);
-                HFunc(TEvFakeHive::TEvRequestDomainInfo, Handle);
                 HFunc(TEvents::TEvPoisonPill, Handle);
             }
         }
@@ -1216,10 +1211,6 @@ namespace NKikimr {
                     bootstrapperActorId = Boot(ctx, type, &NReplication::CreateController, DataGroupErasure);
                 } else if (type == TTabletTypes::PersQueue) {
                     bootstrapperActorId = Boot(ctx, type, &CreatePersQueue, DataGroupErasure);
-                } else if (type == TTabletTypes::StatisticsAggregator) {
-                    bootstrapperActorId = Boot(ctx, type, &NStat::CreateStatisticsAggregator, DataGroupErasure);
-                } else if (type == TTabletTypes::GraphShard) {
-                    bootstrapperActorId = Boot(ctx, type, &NGraph::CreateGraphShard, DataGroupErasure);
                 } else {
                     status = NKikimrProto::ERROR;
                 }
@@ -1418,45 +1409,10 @@ namespace NKikimr {
 
             auto key = State->TabletIdToOwner[tabletId];
             auto it = State->Tablets.find(key);
-            Y_ABORT_UNLESS(it != State->Tablets.end());
+            Y_VERIFY(it != State->Tablets.end());
 
             THolder<TTabletStorageInfo> tabletInfo(CreateTestTabletInfo(tabletId, it->second.Type));
             ctx.Send(ev->Sender, new TEvLocal::TEvBootTablet(*tabletInfo.Get(), 0), 0, ev->Cookie);
-        }
-
-        void Handle(TEvHive::TEvUpdateTabletsObject::TPtr &ev, const TActorContext &ctx) {
-            LOG_INFO_S(ctx, NKikimrServices::HIVE, "[" << TabletID() << "] TEvUpdateTabletsObject, msg: " << ev->Get()->Record.ShortDebugString());
-
-            // Fake Hive does not care about objects, do nothing
-
-
-            auto response = std::make_unique<TEvHive::TEvUpdateTabletsObjectReply>(NKikimrProto::OK);
-            response->Record.SetTxId(ev->Get()->Record.GetTxId());
-            response->Record.SetTxPartId(ev->Get()->Record.GetTxPartId());
-            ctx.Send(ev->Sender, response.release(), 0, ev->Cookie);
-        }
-
-        void Handle(TEvHive::TEvUpdateDomain::TPtr &ev, const TActorContext &ctx) {
-            LOG_INFO_S(ctx, NKikimrServices::HIVE, "[" << TabletID() << "] TEvUpdateDomain, msg: " << ev->Get()->Record.ShortDebugString());
-            
-            const TSubDomainKey subdomainKey(ev->Get()->Record.GetDomainKey());
-            NHive::TDomainInfo& domainInfo = State->Domains[subdomainKey];
-            if (ev->Get()->Record.HasServerlessComputeResourcesMode()) {
-                domainInfo.ServerlessComputeResourcesMode = ev->Get()->Record.GetServerlessComputeResourcesMode();
-            } else {
-                domainInfo.ServerlessComputeResourcesMode.Clear();
-            }
-            
-            auto response = std::make_unique<TEvHive::TEvUpdateDomainReply>();
-            response->Record.SetTxId(ev->Get()->Record.GetTxId());
-            response->Record.SetOrigin(TabletID());
-            ctx.Send(ev->Sender, response.release(), 0, ev->Cookie);
-        }
-
-        void Handle(TEvFakeHive::TEvRequestDomainInfo::TPtr &ev, const TActorContext &ctx) {
-            LOG_INFO_S(ctx, NKikimrServices::HIVE, "[" << TabletID() << "] TEvRequestDomainInfo, " << ev->Get()->DomainKey);
-            auto response = std::make_unique<TEvFakeHive::TEvRequestDomainInfoReply>(State->Domains[ev->Get()->DomainKey]);
-            ctx.Send(ev->Sender, response.release());
         }
 
         void Handle(TEvFakeHive::TEvSubscribeToTabletDeletion::TPtr &ev, const TActorContext &ctx) {
@@ -1507,6 +1463,7 @@ namespace NKikimr {
     private:
         TState::TPtr State;
         TGetTabletCreationFunc GetTabletCreationFunc;
+        TDeque<TAutoPtr<IEventHandle>> InitialEventsQueue;
         TSubDomainKey PrimarySubDomainKey;
     };
 

@@ -5,7 +5,7 @@
 #include <ydb/core/base/counters.h>
 #include <ydb/core/tablet_flat/flat_row_state.h>
 #include <ydb/core/tablet_flat/flat_scan_spent.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/bitmap.h>
 #include <util/string/builder.h>
@@ -112,7 +112,7 @@ class TExportScan: private NActors::IActorCallback, public NTable::IScan {
     }
 
     void Handle(TEvExportScan::TEvReset::TPtr&) {
-        Y_ABORT_UNLESS(IsReady());
+        Y_VERIFY(IsReady());
 
         EXPORT_LOG_D("Handle TEvExportScan::TEvReset"
             << ": self# " << SelfId());
@@ -124,7 +124,7 @@ class TExportScan: private NActors::IActorCallback, public NTable::IScan {
     }
 
     void Handle(TEvExportScan::TEvFeed::TPtr&) {
-        Y_ABORT_UNLESS(IsReady());
+        Y_VERIFY(IsReady());
 
         EXPORT_LOG_D("Handle TEvExportScan::TEvFeed"
             << ": self# " << SelfId());
@@ -137,7 +137,7 @@ class TExportScan: private NActors::IActorCallback, public NTable::IScan {
     }
 
     void Handle(TEvExportScan::TEvFinish::TPtr& ev) {
-        Y_ABORT_UNLESS(IsReady());
+        Y_VERIFY(IsReady());
 
         EXPORT_LOG_D("Handle TEvExportScan::TEvFinish"
             << ": self# " << SelfId()
@@ -205,7 +205,6 @@ public:
         if (!Buffer->Collect(row)) {
             Success = false;
             Error = Buffer->GetError();
-            EXPORT_LOG_E("Error read data from table: " << Error);
             return EScan::Final;
         }
 

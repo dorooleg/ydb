@@ -14,9 +14,9 @@ namespace NKikimr::NBlobDepot {
     void TSpaceMonitor::Handle(TEvBlobStorage::TEvStatusResult::TPtr ev) {
         const ui32 groupId = ev->Cookie;
         const auto it = Groups.find(groupId);
-        Y_ABORT_UNLESS(it != Groups.end());
+        Y_VERIFY(it != Groups.end());
         TGroupRecord& group = it->second;
-        Y_ABORT_UNLESS(group.StatusRequestInFlight);
+        Y_VERIFY(group.StatusRequestInFlight);
         group.StatusRequestInFlight = false;
         auto& msg = *ev->Get();
         if (msg.Status == NKikimrProto::OK) {
@@ -37,11 +37,11 @@ namespace NKikimr::NBlobDepot {
             if (group.StatusFlags.Check(NKikimrBlobStorage::StatusDiskSpaceLightYellowMove)) {
                 yellowMove.insert(yellowMove.end(), group.Channels.begin(), group.Channels.end());
             } else if (group.StatusFlags.Check(NKikimrBlobStorage::StatusDiskSpaceYellowStop)) {
-                yellowStop.insert(yellowStop.end(), group.Channels.begin(), group.Channels.end());
+                yellowStop.insert(yellowMove.end(), group.Channels.begin(), group.Channels.end());
             }
         }
 
-        Y_ABORT_UNLESS(yellowMove || yellowStop);
+        Y_VERIFY(yellowMove || yellowStop);
         STLOG(PRI_INFO, BLOB_DEPOT, BDT28, "asking to reassign channels", (Id, Self->GetLogId()),
             (YellowMove, FormatList(yellowMove)),
             (YellowStop, FormatList(yellowStop)));
@@ -78,7 +78,7 @@ namespace NKikimr::NBlobDepot {
     ui64 TSpaceMonitor::GetGroupAllocationWeight(ui32 groupId, bool stopOnLightYellow) const {
         const auto it = Groups.find(groupId);
         if (it == Groups.end()) {
-            Y_DEBUG_ABORT_UNLESS(false);
+            Y_VERIFY_DEBUG(false);
             return 0;
         }
 

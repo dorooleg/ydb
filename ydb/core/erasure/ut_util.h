@@ -5,7 +5,6 @@
 #include <util/random/mersenne64.h>
 #include <util/stream/null.h>
 #include <util/string/printf.h>
-#include <util/system/unaligned_mem.h>
 
 IOutputStream& Ctest = Cnull;
 
@@ -57,15 +56,15 @@ inline void GenNextCombination(ui32 *variants, ui32 const k, ui32 const n) {
 inline TString GenerateRandomString(NPrivate::TMersenne64 &randGen, size_t dataSize) {
     TString testString;
     testString.resize(dataSize);
-    char *p = testString.Detach();
-    while (dataSize >= sizeof(ui64)) {
-        WriteUnaligned<ui64>(p, randGen.GenRand());
-        p += sizeof(ui64);
-        dataSize -= sizeof(ui64);
+    char *writePosChar = (char *)testString.data();
+    ui32 charParts = testString.size() % sizeof(ui64);
+    for (ui32 i = 0; i < charParts; ++i) {
+        writePosChar[i] = (char)randGen.GenRand();
     }
-    while (dataSize > 0) {
-        *p++ = (char)randGen.GenRand();
-        --dataSize;
+    ui64 *writePos64 = (ui64 *)writePosChar;
+    ui32 ui64Parts = testString.size() / sizeof(ui64);
+    for (ui32 i = 0; i < ui64Parts; ++i) {
+        writePos64[i] = randGen.GenRand();
     }
     return testString;
 }

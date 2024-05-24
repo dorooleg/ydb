@@ -20,68 +20,59 @@
 
 namespace orc {
 
-  NotImplementedYet::NotImplementedYet(const std::string& what_arg) : logic_error(what_arg) {
+  NotImplementedYet::NotImplementedYet(const std::string& what_arg
+                                       ) : logic_error(what_arg) {
     // PASS
   }
 
-  NotImplementedYet::NotImplementedYet(const char* what_arg) : logic_error(what_arg) {
+  NotImplementedYet::NotImplementedYet(const char* what_arg
+                                       ) :logic_error(what_arg) {
     // PASS
   }
 
-  NotImplementedYet::NotImplementedYet(const NotImplementedYet& error) : logic_error(error) {
+  NotImplementedYet::NotImplementedYet(const NotImplementedYet& error
+                                       ): logic_error(error) {
     // PASS
   }
 
-  NotImplementedYet::~NotImplementedYet() noexcept {
+  NotImplementedYet::~NotImplementedYet() ORC_NOEXCEPT {
     // PASS
   }
 
-  ParseError::ParseError(const std::string& what_arg) : runtime_error(what_arg) {
+  ParseError::ParseError(const std::string& what_arg
+                         ): runtime_error(what_arg) {
     // PASS
   }
 
-  ParseError::ParseError(const char* what_arg) : runtime_error(what_arg) {
+  ParseError::ParseError(const char* what_arg
+                         ): runtime_error(what_arg) {
     // PASS
   }
 
-  ParseError::ParseError(const ParseError& error) : runtime_error(error) {
+  ParseError::ParseError(const ParseError& error): runtime_error(error) {
     // PASS
   }
 
-  ParseError::~ParseError() noexcept {
+  ParseError::~ParseError() ORC_NOEXCEPT {
     // PASS
   }
 
-  InvalidArgument::InvalidArgument(const std::string& what_arg) : runtime_error(what_arg) {
+  InvalidArgument::InvalidArgument(const std::string& what_arg
+                                   ): runtime_error(what_arg) {
     // PASS
   }
 
-  InvalidArgument::InvalidArgument(const char* what_arg) : runtime_error(what_arg) {
+  InvalidArgument::InvalidArgument(const char* what_arg
+                                   ): runtime_error(what_arg) {
     // PASS
   }
 
-  InvalidArgument::InvalidArgument(const InvalidArgument& error) : runtime_error(error) {
+  InvalidArgument::InvalidArgument(const InvalidArgument& error
+                                   ): runtime_error(error) {
     // PASS
   }
 
-  InvalidArgument::~InvalidArgument() noexcept {
+  InvalidArgument::~InvalidArgument() ORC_NOEXCEPT {
     // PASS
   }
-
-  SchemaEvolutionError::SchemaEvolutionError(const std::string& what_arg) : logic_error(what_arg) {
-    // PASS
-  }
-
-  SchemaEvolutionError::SchemaEvolutionError(const char* what_arg) : logic_error(what_arg) {
-    // PASS
-  }
-
-  SchemaEvolutionError::SchemaEvolutionError(const SchemaEvolutionError& error)
-      : logic_error(error) {
-    // PASS
-  }
-
-  SchemaEvolutionError::~SchemaEvolutionError() noexcept {
-    // PASS
-  }
-}  // namespace orc
+}

@@ -20,18 +20,13 @@ struct TS3Settings {
     NCommon::TConfSetting<ui64, false> ArrowParallelRowGroupCount; // Number of parquet row groups to read in parallel, min == 1
     NCommon::TConfSetting<bool, false> ArrowRowGroupReordering;    // Allow to push rows from file in any order, default false, but usually it is OK
     NCommon::TConfSetting<ui64, false> ParallelDownloadCount;      // Number of files to read in parallel, min == 1
-    NCommon::TConfSetting<bool, false> UseBlocksSource;            // Deprecated and has to be removed after config cleanup
+    NCommon::TConfSetting<bool, false> UseBlocksSource;            // Use blocks source (if exists) for scalar MKQL mode
     NCommon::TConfSetting<bool, false> AtomicUploadCommit;         // Commit each file independently, w/o transaction semantic over all files
     NCommon::TConfSetting<bool, false> UseConcurrentDirectoryLister;
-    NCommon::TConfSetting<ui64, false> MaxDiscoveryFilesPerDirectory;
-    NCommon::TConfSetting<bool, false> UseRuntimeListing; // Enables runtime listing
-    NCommon::TConfSetting<ui64, false> FileQueueBatchSizeLimit; // Limits total size of files in one PathBatch from FileQueue
-    NCommon::TConfSetting<ui64, false> FileQueueBatchObjectCountLimit; // Limits count of files in one PathBatch from FileQueue
-    NCommon::TConfSetting<ui64, false> FileQueuePrefetchSize;
 };
 
 struct TS3ClusterSettings {
-    TString Url;
+    TString Url, Token;
 };
 
 struct TS3Configuration : public TS3Settings, public NCommon::TSettingDispatcher {
@@ -48,24 +43,21 @@ struct TS3Configuration : public TS3Settings, public NCommon::TSettingDispatcher
     THashMap<TString, TString> Tokens;
     std::unordered_map<TString, TS3ClusterSettings> Clusters;
 
-    ui64 FileSizeLimit = 0;
-    ui64 BlockFileSizeLimit = 0;
+    ui64 FileSizeLimit;
+    ui64 BlockFileSizeLimit;
     std::unordered_map<TString, ui64> FormatSizeLimits;
-    ui64 MaxFilesPerQuery = 0;
-    ui64 MaxDiscoveryFilesPerQuery = 0;
-    ui64 MaxDirectoriesAndFilesPerQuery = 0;
-    ui64 MinDesiredDirectoriesOfFilesPerQuery = 0;
-    ui64 MaxReadSizePerQuery = 0;
-    ui64 MaxInflightListsPerQuery = 0;
-    ui64 ListingCallbackThreadCount = 0;
-    ui64 ListingCallbackPerThreadQueueSize = 0;
-    ui64 RegexpCacheSize = 0;
-    bool AllowLocalFiles = false;
-    bool AllowConcurrentListings = false;
-    ui64 GeneratorPathsLimit = 0;
-    bool WriteThroughDqIntegration = false;
-    ui64 MaxListingResultSizePerPhysicalPartition;
-    bool AllowAtomicUploadCommit = true;
+    ui64 MaxFilesPerQuery;
+    ui64 MaxDiscoveryFilesPerQuery;
+    ui64 MaxDirectoriesAndFilesPerQuery;
+    ui64 MinDesiredDirectoriesOfFilesPerQuery;
+    ui64 MaxReadSizePerQuery;
+    ui64 MaxInflightListsPerQuery;
+    ui64 ListingCallbackThreadCount;
+    ui64 ListingCallbackPerThreadQueueSize;
+    ui64 RegexpCacheSize;
+    bool AllowLocalFiles;
+    bool AllowConcurrentListings;
+    ui64 GeneratorPathsLimit;
 };
 
 } // NYql

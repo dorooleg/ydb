@@ -19,7 +19,7 @@ void TSendDataProtocol::ProtocolFunc(
         break;
 
     default:
-        Y_ABORT("Unknown message type dispatched");
+        Y_FAIL("Unknown message type dispatched");
     }
 }
 
@@ -39,7 +39,7 @@ void TSendDataProtocol::TryAgain(const TActorContext& ctx) noexcept {
         sendResult = Socket->Send(Data, Len);
 
         if (sendResult > 0) {
-            Y_ABORT_UNLESS(Len >= (size_t)sendResult);
+            Y_VERIFY(Len >= (size_t)sendResult);
             MemLogPrintF("TSendDataProtocol::TryAgain, sent %d bytes",
                          sendResult);
 
@@ -93,7 +93,7 @@ void TSendDataProtocol::TryAgain(const TActorContext& ctx) noexcept {
     case ENOTSOCK:
     case EOPNOTSUPP:
         {
-            Y_ABORT("Very bad socket error");
+            Y_FAIL("Very bad socket error");
         }
     }
 }

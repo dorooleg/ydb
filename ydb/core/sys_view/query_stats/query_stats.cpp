@@ -1,7 +1,6 @@
 #include "query_stats.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/sys_view/common/common.h>
 #include <ydb/core/sys_view/common/events.h>
 #include <ydb/core/sys_view/common/keys.h>
@@ -12,10 +11,10 @@
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 namespace NKikimr {
 namespace NSysView {
@@ -96,7 +95,7 @@ public:
         return NKikimrServices::TActivity::KQP_SYSTEM_VIEW_SCAN;
     }
 
-    TQueryStatsScan(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+    TQueryStatsScan(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
         const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns,
         NKikimrSysView::EStatsType statsType,
         ui64 bucketCount, const TDuration& bucketSize)
@@ -404,7 +403,7 @@ private:
         this->template ReplyBatch<TEvSysView::TEvGetQueryStatsResponse, TEntry, TExtractorsMap, true>(ev);
 
         if (!record.GetLastBatch()) {
-            Y_ABORT_UNLESS(record.HasNext());
+            Y_VERIFY(record.HasNext());
             Request.MutableFrom()->CopyFrom(record.GetNext());
             Request.SetInclusiveFrom(true);
         }
@@ -507,7 +506,7 @@ private:
     NKikimrSysView::TEvGetQueryMetricsRequest Request;
 };
 
-THolder<NActors::IActor> CreateQueryStatsScan(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+THolder<IActor> CreateQueryStatsScan(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
     const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
 {
     auto viewName = tableId.SysViewInfo;

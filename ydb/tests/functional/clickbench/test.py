@@ -9,16 +9,10 @@ from hamcrest import assert_that, is_
 encoder.FLOAT_REPR = lambda o: format(o, '{:e}')
 
 
-def ydb_bin():
-    if os.getenv("YDB_CLI_BINARY"):
-        return yatest.common.binary_path(os.getenv("YDB_CLI_BINARY"))
-    raise RuntimeError("YDB_CLI_BINARY enviroment variable is not specified")
-
-
 def run_cli(argv):
     return yatest.common.execute(
         [
-            ydb_bin(),
+            yatest.common.binary_path("ydb/apps/ydb/ydb"),
             "--endpoint",
             "grpc://" + os.getenv("YDB_ENDPOINT"),
             "--database",
@@ -28,8 +22,7 @@ def run_cli(argv):
 
 
 def get_queries(filename):
-    arcadia_root = yatest.common.source_path('')
-    path = os.path.join(arcadia_root, yatest.common.test_source_path(''), filename)
+    path = os.path.join(yatest.common.source_path("ydb/tests/functional/clickbench"), filename)
     with open(path, "r") as r:
         data = r.read()
     for query in data.split('\n'):
@@ -53,9 +46,6 @@ def execute_scan_query(driver, yql_text, table_path):
     while retries > 0 and not success:
         retries -= 1
 
-        if yql_text.startswith('--'):
-            return []
-
         it = driver.table_client.scan_query(yql_text)
         result = []
         while True:
@@ -70,8 +60,6 @@ def execute_scan_query(driver, yql_text, table_path):
             except Exception:
                 if retries == 0:
                     raise
-
-                break
 
 
 def explain_scan_query(driver, yql_text, table_path):
@@ -103,8 +91,7 @@ def save_canonical_data(data, fname):
 
 
 @pytest.mark.parametrize("store", ["row", "column"])
-@pytest.mark.parametrize("executer", ["scan", "generic"])
-def test_run_benchmark(store, executer):
+def test_run_benchmark(store):
     path = "clickbench/benchmark/{}/hits".format(store)
     ret = run_cli(["workload", "clickbench", "init", "--store", store, "--path", path])
     assert_that(ret.exit_code, is_(0))
@@ -120,7 +107,7 @@ def test_run_benchmark(store, executer):
 
     # just validating that benchmark can be executed successfully on this data.
     out_fpath = os.path.join(yatest.common.output_path(), 'click_bench.{}.results'.format(store))
-    ret = run_cli(["workload", "clickbench", "run", "--output", out_fpath, "--table", path, "--executer", executer])
+    ret = run_cli(["workload", "clickbench", "run", "--output", out_fpath, "--table", path])
     assert_that(ret.exit_code, is_(0))
 
 

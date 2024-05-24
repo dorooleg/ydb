@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -35,10 +35,10 @@
 #  if defined(__amigaos4__)
 #    error #include <bsdsocket/socketbasetags.h>
 #  elif !defined(USE_AMISSL)
-#    error #include <amitcp/socketbasetags.h>
+#    include <amitcp/socketbasetags.h>
 #  endif
 #  ifdef __libnix__
-#    error #include <stabs.h>
+#    include <stabs.h>
 #  endif
 #endif
 
@@ -178,7 +178,6 @@ struct Curl_addrinfo *Curl_ipv4_resolve_r(const char *hostname,
 #endif /* CURLRES_AMIGA */
 
 #ifdef USE_AMISSL
-#include <signal.h>
 int Curl_amiga_select(int nfds, fd_set *readfds, fd_set *writefds,
                       fd_set *errorfds, struct timeval *timeout)
 {

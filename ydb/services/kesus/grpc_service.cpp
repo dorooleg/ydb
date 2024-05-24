@@ -12,12 +12,12 @@
 #include <ydb/core/grpc_streaming/grpc_streaming.h>
 #include <ydb/core/base/ticket_parser.h>
 
-#include <ydb/library/grpc/server/event_callback.h>
-#include <ydb/library/grpc/server/grpc_async_ctx_base.h>
+#include <library/cpp/grpc/server/event_callback.h>
+#include <library/cpp/grpc/server/grpc_async_ctx_base.h>
 #include <ydb/public/sdk/cpp/client/resources/ydb_resources.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NKesus {
@@ -27,9 +27,6 @@ namespace NKesus {
 class TGRpcSessionActor
     : public TActorBootstrapped<TGRpcSessionActor>
 {
-    static constexpr TDuration MinPingPeriod = TDuration::MilliSeconds(10);
-    static constexpr TDuration MaxPingPeriod = TDuration::Seconds(5);
-
 public:
     using TRequest = Ydb::Coordination::SessionRequest;
     using TResponse = Ydb::Coordination::SessionResponse;
@@ -127,19 +124,12 @@ private:
             return PassAway();
         }
 
-        Y_ABORT_UNLESS(!StartRequest);
+        Y_VERIFY(!StartRequest);
         StartRequest.Reset(ev->Release());
         if (StartRequest->Record.request_case() != TRequest::kSessionStart) {
             Context->Finish(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                 "First message must be a SessionStart"));
             return PassAway();
-        }
-
-        PingPeriod = TDuration::MilliSeconds(StartRequest->Record.session_start().timeout_millis() / 3);
-        if (PingPeriod > MaxPingPeriod) {
-            PingPeriod = MaxPingPeriod;
-        } else if (PingPeriod < MinPingPeriod) {
-            PingPeriod = MinPingPeriod;
         }
 
         KesusPath = StartRequest->Record.session_start().path();
@@ -160,7 +150,7 @@ private:
             cFunc(IContext::TEvNotifiedWhenDone::EventType, PassAway);
 
             default:
-                Y_ABORT("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
+                Y_FAIL("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
         }
     }
 
@@ -186,7 +176,7 @@ private:
     }
 
     void HandleResolve(const TEvKesusProxy::TEvAttachProxyActor::TPtr& ev) {
-        Y_ABORT_UNLESS(!ProxyActor);
+        Y_VERIFY(!ProxyActor);
         ProxyActor = ev->Get()->ProxyActor;
         SecurityObject = ev->Get()->SecurityObject;
 
@@ -200,8 +190,8 @@ private:
                 "User has no access to the coordination node");
         }
 
-        Y_ABORT_UNLESS(StartRequest);
-        Y_ABORT_UNLESS(!AttachSessionSent);
+        Y_VERIFY(StartRequest);
+        Y_VERIFY(!AttachSessionSent);
         const auto& source = StartRequest->Record.session_start();
         Send(ProxyActor,
             new TEvKesus::TEvAttachSession(
@@ -225,13 +215,13 @@ private:
             hFunc(TEvKesusProxy::TEvAttachProxyActor, HandleResolve);
 
             default:
-                Y_ABORT("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
+                Y_FAIL("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
         }
     }
 
 private:
     void HandleAttach(const TEvKesus::TEvAttachSessionResult::TPtr& ev) {
-        Y_ABORT_UNLESS(AttachSessionSent);
+        Y_VERIFY(AttachSessionSent);
         const auto& record = ev->Get()->Record;
         if (record.GetError().GetStatus() != Ydb::StatusIds::SUCCESS) {
             return ReplyError(record.GetError());
@@ -258,7 +248,7 @@ private:
             hFunc(TEvKesus::TEvAttachSessionResult, HandleAttach);
 
             default:
-                Y_ABORT("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
+                Y_FAIL("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
         }
     }
 
@@ -540,7 +530,7 @@ private:
     }
 
     void SendPing() {
-        Y_ABORT_UNLESS(CurrentPingData == 0);
+        Y_VERIFY(CurrentPingData == 0);
         while (CurrentPingData == 0) {
             CurrentPingData = RandomNumber<ui64>();
         }
@@ -550,7 +540,8 @@ private:
         ping->set_opaque(CurrentPingData);
         Reply(std::move(response));
 
-        Schedule(PingPeriod, new TEvPrivate::TEvPingScheduled());
+        // TODO: configure timeout
+        Schedule(TDuration::MilliSeconds(5000), new TEvPrivate::TEvPingScheduled());
     }
 
     void Handle(const TEvPrivate::TEvPingScheduled::TPtr& ev) {
@@ -583,7 +574,7 @@ private:
             hFunc(TEvPrivate::TEvPingScheduled, Handle);
 
             default:
-                Y_ABORT("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
+                Y_FAIL("Unexpected event 0x%x for TGRpcSessionActor", ev->GetTypeRewrite());
         }
     }
 
@@ -608,12 +599,11 @@ private:
     ui64 SessionId = 0;
     bool SessionEstablished = false;
     ui64 CurrentPingData = 0;
-    TDuration PingPeriod;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TKesusGRpcService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TKesusGRpcService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = NGRpcService::CreateCounterCb(Counters_, ActorSystem_);
     using NGRpcService::TRateLimiterMode;
 
@@ -626,7 +616,7 @@ void TKesusGRpcService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
         this, \
         &Service_, \
         CQ_, \
-        [this](NYdbGrpc::IRequestContextBase* reqCtx) { \
+        [this](NGrpc::IRequestContextBase* reqCtx) { \
             NGRpcService::ReportGrpcReqToMon(*ActorSystem_, reqCtx->GetPeer()); \
             ActorSystem_->Send(GRpcRequestProxyId_, \
                 new NGRpcService::TGrpcRequestOperationCall<Ydb::Coordination::IN, Ydb::Coordination::OUT> \
@@ -655,7 +645,7 @@ void TKesusGRpcService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
         },
         *ActorSystem_,
         "Coordination/Session",
-        getCounterBlock("coordination", "Session", true),
+        getCounterBlock("coordination", "Session", true, true),
         /* TODO: limiter */ nullptr);
 }
 

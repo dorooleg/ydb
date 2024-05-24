@@ -87,23 +87,23 @@ namespace NKikimr {
         bool Keep(const TLogoBlobID& id) {
             if (!KeepData) {
                 // seek to the desired key; the key MUST exist in the whole database
-                Y_ABORT_UNLESS(Iter.Valid());
-                Y_ABORT_UNLESS(Iter.GetCurKey() <= id);
+                Y_VERIFY(Iter.Valid());
+                Y_VERIFY(Iter.GetCurKey() <= id);
                 if (Iter.GetCurKey() < id) {
                     Iter.Next();
-                    Y_ABORT_UNLESS(Iter.Valid());
+                    Y_VERIFY(Iter.Valid());
                     if (Iter.GetCurKey() < id) {
                         Iter.Seek(id);
                     }
                 }
-                Y_ABORT_UNLESS(Iter.Valid() && Iter.GetCurKey() == id);
+                Y_VERIFY(Iter.Valid() && Iter.GetCurKey() == id);
 
                 // put iterator value to merger
                 Iter.PutToMerger(&Merger);
                 Merger.Finish();
 
                 // obtain keep status
-                NGc::TKeepStatus status = Essence->Keep(id, Merger.GetMemRec(), {}, AllowKeepFlags, true /*allowGarbageCollection*/);
+                NGc::TKeepStatus status = Essence->Keep(id, Merger.GetMemRec(), Merger.GetMemRecsMerged(), AllowKeepFlags);
 
                 // clear merger for next operation
                 Merger.Clear();

@@ -14,33 +14,33 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CLIENT_CHANNEL_FACTORY_H
-#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CLIENT_CHANNEL_FACTORY_H
+#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CLIENT_CHANNEL_FACTORY_H
+#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CLIENT_CHANNEL_FACTORY_H
 
 #include <grpc/support/port_platform.h>
 
-#include "y_absl/strings/string_view.h"
+#include <grpc/impl/codegen/grpc_types.h>
 
 #include "src/core/ext/filters/client_channel/subchannel.h"
-#include "src/core/lib/channel/channel_args.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/iomgr/resolved_address.h"
 
 namespace grpc_core {
 
 class ClientChannelFactory {
  public:
-  struct RawPointerChannelArgTag {};
-
   virtual ~ClientChannelFactory() = default;
 
   // Creates a subchannel with the specified args.
   virtual RefCountedPtr<Subchannel> CreateSubchannel(
-      const grpc_resolved_address& address, const ChannelArgs& args) = 0;
+      const grpc_resolved_address& address, const grpc_channel_args* args) = 0;
 
-  static y_absl::string_view ChannelArgName();
+  // Returns a channel arg containing the specified factory.
+  static grpc_arg CreateChannelArg(ClientChannelFactory* factory);
+
+  // Returns the factory from args, or null if not found.
+  static ClientChannelFactory* GetFromChannelArgs(
+      const grpc_channel_args* args);
 };
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CLIENT_CHANNEL_FACTORY_H
+#endif  // GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CLIENT_CHANNEL_FACTORY_H

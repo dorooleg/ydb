@@ -6,7 +6,7 @@
 
 #include <ydb/core/base/tablet_pipecache.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NSysView {
 
@@ -26,7 +26,7 @@ public:
     }
 
     TProcessorScan(
-        const NActors::TActorId& ownerId,
+        const TActorId& ownerId,
         ui32 scanId,
         const TTableId& tableId,
         const TTableRange& tableRange,
@@ -101,7 +101,7 @@ private:
         this->template ReplyBatch<TEvResponse, TEntry, TExtractorMap, true>(ev);
 
         if (!record.GetLastBatch()) {
-            Y_ABORT_UNLESS(record.HasNext());
+            Y_VERIFY(record.HasNext());
             Request.MutableFrom()->CopyFrom(record.GetNext());
             Request.SetInclusiveFrom(true);
         }

@@ -1,28 +1,11 @@
-import "ydb/core/scheme/protos/pathid.proto";
-import "ydb/public/api/protos/annotations/sensitive.proto";
+import "ydb/core/protos/base.proto";
 
 package NKikimrReplication;
 option java_package = "ru.yandex.kikimr.proto";
 
 message TStaticCredentials {
     optional string User = 1;
-    optional string Password = 2 [(Ydb.sensitive) = true];
-    optional string PasswordSecretName = 3;
-}
-
-message TOAuthToken {
-    optional string Token = 1 [(Ydb.sensitive) = true];
-    optional string TokenSecretName = 2;
-}
-
-message TConnectionParams {
-    optional string Endpoint = 1;
-    optional string Database = 2;
-    // credentials
-    oneof Credentials {
-        TStaticCredentials StaticCredentials = 3;
-        TOAuthToken OAuthToken = 4;
-    }
+    optional string Password = 2;
 }
 
 message TReplicationConfig {
@@ -39,7 +22,13 @@ message TReplicationConfig {
         repeated TTarget Targets = 1;
     }
 
-    optional TConnectionParams SrcConnectionParams = 1;
+    // endpoint (host + port) and database of source cluster
+    optional string SrcEndpoint = 1;
+    optional string SrcDatabase = 2;
+    // credentials
+    oneof Credentials {
+        TStaticCredentials StaticCredentials = 3;
+    }
 
     // targets to be replicated
     // Currently, only OLTP tables are supported.
@@ -51,30 +40,6 @@ message TReplicationConfig {
     }
 
     optional bool InitialSync = 6;
-}
-
-message TReplicationState {
-    message TStandBy {
-    }
-
-    message TPaused {
-    }
-
-    message TDone {
-        enum EFailoverMode {
-            FAILOVER_MODE_UNSPECIFIED = 0;
-            FAILOVER_MODE_CONSISTENT = 1;
-            FAILOVER_MODE_FORCE = 2;
-        }
-
-        optional EFailoverMode FailoverMode = 1;
-    }
-
-    oneof State {
-        TStandBy StandBy = 1;
-        TPaused Paused = 2;
-        TDone Done = 3;
-    }
 }
 
 message TOperationId {
@@ -100,27 +65,9 @@ message TEvCreateReplicationResult {
     optional EStatus Status = 3;
 }
 
-message TEvAlterReplication {
-    optional NKikimrProto.TPathID PathId = 1;
-    optional TOperationId OperationId = 2;
-    optional TReplicationState SwitchState = 3;
-}
-
-message TEvAlterReplicationResult {
-    enum EStatus {
-        UNKNOWN = 0;
-        SUCCESS = 1;
-    }
-
-    optional TOperationId OperationId = 1;
-    optional uint64 Origin = 2;
-    optional EStatus Status = 3;
-}
-
 message TEvDropReplication {
     optional NKikimrProto.TPathID PathId = 1;
     optional TOperationId OperationId = 2;
-    optional bool Cascade = 3 [default = true];
 }
 
 message TEvDropReplicationResult {
@@ -129,59 +76,7 @@ message TEvDropReplicationResult {
         SUCCESS = 1;
         NOT_FOUND = 2;
     }
-
     optional TOperationId OperationId = 1;
     optional uint64 Origin = 2;
     optional EStatus Status = 3;
-}
-
-message TControllerIdentity {
-    optional uint64 TabletId = 1;
-    optional uint64 Generation = 2;
-}
-
-message TWorkerIdentity {
-    optional uint64 ReplicationId = 1;
-    optional uint64 TargetId = 2;
-    optional uint64 WorkerId = 3;
-}
-
-message TEvHandshake {
-    optional TControllerIdentity Controller = 1;
-}
-
-message TEvStatus {
-    repeated TWorkerIdentity Workers = 1;
-}
-
-message TRemoteTopicReaderSettings {
-    optional TConnectionParams ConnectionParams = 1;
-    optional string TopicPath = 2;
-    optional uint64 TopicPartitionId = 3;
-    optional string ConsumerName = 4;
-}
-
-message TLocalTableWriterSettings {
-    optional NKikimrProto.TPathID PathId = 1;
-}
-
-message TRunWorkerCommand {
-    oneof Reader {
-        TRemoteTopicReaderSettings RemoteTopicReader = 1;
-    }
-
-    oneof Writer {
-        TLocalTableWriterSettings LocalTableWriter = 2;
-    }
-}
-
-message TEvRunWorker {
-    optional TControllerIdentity Controller = 1;
-    optional TWorkerIdentity Worker = 2;
-    optional TRunWorkerCommand Command = 3;
-}
-
-message TEvStopWorker {
-    optional TControllerIdentity Controller = 1;
-    optional TWorkerIdentity Worker = 2;
 }

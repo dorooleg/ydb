@@ -4,7 +4,7 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_mon.h>
 
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
 
@@ -41,7 +41,7 @@ namespace NKikimr {
             }
 
             void Handle(TEvSyncLogSnapshotResult::TPtr &ev, const TActorContext &ctx) {
-                Y_ABORT_UNLESS(!SnapPtr);
+                Y_VERIFY(!SnapPtr);
                 SnapPtr = std::move(ev->Get()->SnapshotPtr);
                 SublogContent = std::move(ev->Get()->SublogContent);
                 if (NodesInfoMsg)
@@ -49,7 +49,7 @@ namespace NKikimr {
             }
 
             void Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev, const TActorContext &ctx) {
-                Y_ABORT_UNLESS(!NodesInfoMsg);
+                Y_VERIFY(!NodesInfoMsg);
                 NodesInfoMsg = ev;
                 if (SnapPtr)
                     Finish(ctx);
@@ -118,7 +118,7 @@ namespace NKikimr {
                 , KeeperId(keeperId)
                 , NeighborsPtr(neighborsPtr)
             {
-                Y_DEBUG_ABORT_UNLESS(Ev->Get()->SubRequestId == TDbMon::SyncLogId);
+                Y_VERIFY_DEBUG(Ev->Get()->SubRequestId == TDbMon::SyncLogId);
             }
         };
 

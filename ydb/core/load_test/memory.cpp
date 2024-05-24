@@ -3,8 +3,6 @@
 #include <ydb/core/base/appdata.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/time_provider/time_provider.h>
-
 
 namespace NKikimr {
 

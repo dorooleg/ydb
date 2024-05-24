@@ -1,6 +1,6 @@
 #include "mkql_invoke.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
@@ -27,7 +27,7 @@ protected:
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenGetValue(const TCodegenContext& ctx, Value* arg, BasicBlock*& block) const {
         if (IsOptional) {
-            auto& context = ctx.Codegen.GetContext();
+            auto& context = ctx.Codegen->GetContext();
 
             const auto good = BasicBlock::Create(context, "good", ctx.Func);
             const auto done = BasicBlock::Create(context, "done", ctx.Func);
@@ -215,7 +215,7 @@ IComputationNode* WrapInvoke(TCallable& callable, const TComputationNodeFactoryC
     case 3U:
         return new TInvokeWrapper<3U>(ctx.Mutables, returnKind, funcName, funcDesc, std::move(argNodes));
     default:
-        Y_ABORT("Too wide invoke.");
+        Y_FAIL("Too wide invoke.");
     }
 }
 

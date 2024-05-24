@@ -85,15 +85,15 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAssignBlockStoreVolume");
+        Y_FAIL("no AbortPropose for TAssignBlockStoreVolume");
     }
 
     bool ProgressState(TOperationContext&) override {
-        Y_ABORT("no progress state for assign bsc");
+        Y_FAIL("no progress state for assign bsc");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_ABORT("no AbortUnsafe for assign bsc");
+        Y_FAIL("no AbortUnsafe for assign bsc");
     }
 };
 
@@ -106,7 +106,7 @@ ISubOperation::TPtr CreateAssignBSV(TOperationId id, const TTxTransaction& tx) {
 }
 
 ISubOperation::TPtr CreateAssignBSV(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state == TTxState::Invalid || state == TTxState::Propose);
+    Y_VERIFY(state == TTxState::Invalid || state == TTxState::Propose);
     return MakeSubOperation<TAssignBlockStoreVolume>(id);
 }
 

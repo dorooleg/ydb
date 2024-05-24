@@ -7,7 +7,6 @@
 #include <ydb/core/sys_view/nodes/nodes.h>
 #include <ydb/core/sys_view/query_stats/query_stats.h>
 #include <ydb/core/sys_view/query_stats/query_metrics.h>
-#include <ydb/core/sys_view/sessions/sessions.h>
 #include <ydb/core/sys_view/storage/pdisks.h>
 #include <ydb/core/sys_view/storage/vslots.h>
 #include <ydb/core/sys_view/storage/groups.h>
@@ -16,10 +15,10 @@
 #include <ydb/core/sys_view/tablets/tablets.h>
 #include <ydb/core/sys_view/partition_stats/top_partitions.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
 
 namespace NKikimr {
 namespace NSysView {
@@ -29,7 +28,7 @@ public:
     using TBase = TActor<TSysViewRangesReader>;
 
     TSysViewRangesReader(
-        const NActors::TActorId& ownerId,
+        const TActorId& ownerId,
         ui32 scanId,
         const TTableId& tableId,
         TVector<TSerializedTableRange> ranges,
@@ -69,7 +68,7 @@ public:
     }
 
     void Handle(NKqp::TEvKqpCompute::TEvScanDataAck::TPtr& ack) {
-        Y_DEBUG_ABORT_UNLESS(ack->Sender == OwnerId);
+        Y_VERIFY_DEBUG(ack->Sender == OwnerId);
         if (!ScanActorId) {
             if (CurrentRange < Ranges.size()) {
                 auto actor = CreateSystemViewScan(
@@ -141,7 +140,7 @@ private:
     TMaybe<TActorId> ScanActorId;
 };
 
-THolder<NActors::IActor> CreateSystemViewScan(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+THolder<IActor> CreateSystemViewScan(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
     TVector<TSerializedTableRange> ranges, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
 {
     if (ranges.size() == 1) {
@@ -151,7 +150,7 @@ THolder<NActors::IActor> CreateSystemViewScan(const NActors::TActorId& ownerId, 
     }
 }
 
-THolder<NActors::IActor> CreateSystemViewScan(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+THolder<IActor> CreateSystemViewScan(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
     const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
 {
     if (tableId.SysViewInfo == PartitionStatsName) {
@@ -160,10 +159,6 @@ THolder<NActors::IActor> CreateSystemViewScan(const NActors::TActorId& ownerId, 
 
     if (tableId.SysViewInfo == NodesName) {
         return CreateNodesScan(ownerId, scanId, tableId, tableRange, columns);
-    }
-
-    if (tableId.SysViewInfo == QuerySessions) {
-        return CreateSessionsScan(ownerId, scanId, tableId, tableRange, columns);
     }
 
     if (tableId.SysViewInfo == TopQueriesByDuration1MinuteName ||

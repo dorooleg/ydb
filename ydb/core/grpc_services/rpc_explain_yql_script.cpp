@@ -1,6 +1,6 @@
 #include "service_yql_scripting.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 #include <ydb/public/api/protos/ydb_scripting.pb.h>
 
@@ -77,7 +77,7 @@ public:
         ev->Record.MutableRequest()->SetQuery(script);
         ev->Record.MutableRequest()->SetKeepSession(false);
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {

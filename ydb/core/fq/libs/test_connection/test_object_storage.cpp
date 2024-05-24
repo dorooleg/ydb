@@ -2,7 +2,7 @@
 #include "probes.h"
 #include "test_connection.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #include <ydb/core/fq/libs/actors/clusters_from_connections.h>
 #include <ydb/core/fq/libs/config/yq_issue.h>
@@ -156,8 +156,13 @@ private:
         const auto credentialsProviderFactory = CreateCredentialsProviderFactoryForStructuredToken(CredentialsFactory, structedToken);
         const auto authToken = credentialsProviderFactory->CreateProvider()->GetAuthInfo();
 
+        NYql::IHTTPGateway::THeaders headers;
+        if (authToken) {
+            headers.push_back(TString("X-YaCloud-SubjectToken:") += authToken);
+        }
+
         TString requestId = CreateGuidAsString();
-        NYql::IHTTPGateway::THeaders headers = NYql::IHTTPGateway::MakeYcHeaders(requestId, authToken, {});
+        headers.emplace_back(TString{"X-Request-ID:"} + requestId);
 
         const auto retryPolicy = NYql::IHTTPGateway::TRetryPolicy::GetExponentialBackoffPolicy(RetryS3SlowDown);
 

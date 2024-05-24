@@ -33,8 +33,7 @@ std::optional<T> TryParseEnum(TStringBuf value)
 {
     auto tryFromString = [] (TStringBuf value) -> std::optional<T> {
         if (auto decodedValue = TryDecodeEnumValue(value)) {
-            auto enumValue = TEnumTraits<T>::FindValueByLiteral(*decodedValue);
-            return enumValue ? enumValue : TEnumTraits<T>::FindValueByLiteral(value);
+            return TEnumTraits<T>::FindValueByLiteral(*decodedValue);
         }
 
         auto reportError = [value] () {

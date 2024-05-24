@@ -5,8 +5,6 @@
 
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/blobstorage.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
-#include <ydb/library/wilson_ids/wilson.h>
 #include <library/cpp/lwtrace/shuttle.h>
 #include <util/generic/maybe.h>
 #include <util/system/type_name.h>
@@ -26,7 +24,6 @@ namespace NTabletFlatExecutor {
 class TTransactionContext;
 class TExecutor;
 struct TPageCollectionTxEnv;
-struct TSeat;
 
 class TTableSnapshotContext : public TThrRefBase, TNonCopyable {
     friend class TExecutor;
@@ -132,7 +129,7 @@ public:
 
     void RequestMemory(ui64 bytes)
     {
-        Y_ABORT_UNLESS(!MemoryGCToken);
+        Y_VERIFY(!MemoryGCToken);
         RequestedMemory += bytes;
     }
 
@@ -156,16 +153,16 @@ public:
 
     TAutoPtr<TMemoryToken> HoldMemory(ui64 size)
     {
-        Y_ABORT_UNLESS(!MemoryGCToken);
-        Y_ABORT_UNLESS(size <= MemoryLimit);
-        Y_ABORT_UNLESS(size > 0);
+        Y_VERIFY(!MemoryGCToken);
+        Y_VERIFY(size <= MemoryLimit);
+        Y_VERIFY(size > 0);
         MemoryGCToken = new TMemoryGCToken(size, TaskId);
         return new TMemoryToken(MemoryGCToken);
     }
 
     void UseMemoryToken(TAutoPtr<TMemoryToken> token)
     {
-        Y_ABORT_UNLESS(!MemoryToken);
+        Y_VERIFY(!MemoryToken);
         MemoryToken = std::move(token);
     }
 
@@ -203,14 +200,13 @@ class TTransactionContext : public TTxMemoryProviderBase {
 
 public:
     TTransactionContext(ui64 tablet, ui32 gen, ui32 step, NTable::TDatabase &db, IExecuting &env,
-                        ui64 memoryLimit, ui64 taskId, NWilson::TSpan &transactionSpan)
+                        ui64 memoryLimit, ui64 taskId)
         : TTxMemoryProviderBase(memoryLimit, taskId)
         , Tablet(tablet)
         , Generation(gen)
         , Step(step)
         , Env(env)
         , DB(db)
-        , TransactionSpan(transactionSpan)
     {}
 
     ~TTransactionContext() {}
@@ -228,22 +224,12 @@ public:
         return Rescheduled_;
     }
 
-    void StartExecutionSpan() noexcept {
-        TransactionExecutionSpan = NWilson::TSpan(TWilsonTablet::TabletDetailed, TransactionSpan.GetTraceId(), "Tablet.Transaction.Execute");
-    }
-
-    void FinishExecutionSpan() noexcept {
-        TransactionExecutionSpan.EndOk();
-    }
-
 public:
     const ui64 Tablet = Max<ui32>();
     const ui32 Generation = Max<ui32>();
     const ui32 Step = Max<ui32>();
     IExecuting &Env;
     NTable::TDatabase &DB;
-    NWilson::TSpan &TransactionSpan;
-    NWilson::TSpan TransactionExecutionSpan;
 
 private:
     bool Rescheduled_ = false;
@@ -288,16 +274,12 @@ public:
         : Orbit(std::move(orbit))
     { }
 
-    ITransaction(NWilson::TTraceId &&traceId)
-        : TxSpan(NWilson::TSpan(TWilsonTablet::TabletBasic, std::move(traceId), "Tablet.Transaction"))
-    { }
-
     virtual ~ITransaction() = default;
     /// @return true if execution complete and transaction is ready for commit
     virtual bool Execute(TTransactionContext &txc, const TActorContext &ctx) = 0;
     virtual void Complete(const TActorContext &ctx) = 0;
     virtual void Terminate(ETerminationReason reason, const TActorContext &/*ctx*/) {
-        Y_ABORT("Unexpected transaction termination (reason %" PRIu32 ")", (ui32)reason);
+        Y_FAIL("Unexpected transaction termination (reason %" PRIu32 ")", (ui32)reason);
     }
     virtual void ReleaseTxData(TTxMemoryProvider &/*provider*/, const TActorContext &/*ctx*/) {}
     virtual TTxType GetTxType() const { return UnknownTxType; }
@@ -307,23 +289,8 @@ public:
         out << TypeName(*this);
     }
 
-    void SetupTxSpanName() noexcept {
-        if (TxSpan) {
-            TxSpan.Attribute("Type", TypeName(*this));
-        }
-    }
-
-    void SetupTxSpan(NWilson::TTraceId traceId) noexcept {
-        TxSpan = NWilson::TSpan(TWilsonTablet::TabletBasic, std::move(traceId), "Tablet.Transaction");
-        if (TxSpan) {
-            TxSpan.Attribute("Type", TypeName(*this));
-        }
-    }
-
 public:
     NLWTrace::TOrbit Orbit;
-
-    NWilson::TSpan TxSpan;
 };
 
 template<typename T>
@@ -342,11 +309,6 @@ public:
         : ITransaction(std::move(orbit))
         , Self(self)
     { }
-
-    TTransactionBase(T *self, NWilson::TTraceId &&traceId)
-        : ITransaction(std::move(traceId))
-        , Self(self)
-    { }
 };
 
 struct TExecutorStats {
@@ -361,8 +323,6 @@ struct TExecutorStats {
 
     TVector<ui32> YellowMoveChannels;
     TVector<ui32> YellowStopChannels;
-
-    ui32 FollowersCount = 0;
 
     bool IsYellowMoveChannel(ui32 channel) const {
         auto it = std::lower_bound(YellowMoveChannels.begin(), YellowMoveChannels.end(), channel);
@@ -495,8 +455,6 @@ namespace NFlatExecutorSetup {
         virtual void ScanComplete(NTable::EAbort status, TAutoPtr<IDestructable> prod, ui64 cookie, const TActorContext &ctx);
 
         virtual bool ReassignChannelsEnabled() const;
-        virtual void OnYellowChannelsChanged();
-        virtual void OnRejectProbabilityRelaxed();
 
         // memory usage excluding transactions and executor cache.
         virtual ui64 GetMemoryUsage() const { return 50 << 10; }
@@ -507,18 +465,13 @@ namespace NFlatExecutorSetup {
         virtual TDuration ReadOnlyLeaseDuration();
         virtual void ReadOnlyLeaseDropped();
 
-        virtual void OnFollowersCountChanged();
-
-        virtual void OnFollowerSchemaUpdated();
-        virtual void OnFollowerDataUpdated();
-
         // create transaction?
     protected:
         ITablet(TTabletStorageInfo *info, const TActorId &tablet)
             : TabletActorID(tablet)
             , TabletInfo(info)
         {
-            Y_ABORT_UNLESS(TTabletTypes::TypeInvalid != TabletInfo->TabletType);
+            Y_VERIFY(TTabletTypes::TypeInvalid != TabletInfo->TabletType);
         }
 
         TActorId ExecutorActorID;
@@ -548,8 +501,7 @@ namespace NFlatExecutorSetup {
         // next follower incremental update
         virtual void FollowerUpdate(THolder<TEvTablet::TFUpdateBody> upd) = 0;
         virtual void FollowerAuxUpdate(TString upd) = 0;
-        virtual void FollowerAttached(ui32 totalFollowers) = 0;
-        virtual void FollowerDetached(ui32 totalFollowers) = 0;
+        virtual void FollowerAttached() = 0;
         // all known followers are synced to us (called once)
         virtual void FollowerSyncComplete() = 0;
         // all followers had completed log with requested gc-barrier

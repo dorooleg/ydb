@@ -3,7 +3,7 @@
 #include <ydb/core/kqp/common/kqp_event_ids.h>
 #include <ydb/core/kqp/gateway/kqp_gateway.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 
 namespace NKikimr {
@@ -13,22 +13,19 @@ struct TEvKqpSnapshot {
     struct TEvCreateSnapshotRequest : public TEventLocal<TEvCreateSnapshotRequest,
         TKqpSnapshotEvents::EvCreateSnapshotRequest>
     {
-        explicit TEvCreateSnapshotRequest(const TVector<TString>& tables, ui64 cookie, NLWTrace::TOrbit&& orbit = {})
+        explicit TEvCreateSnapshotRequest(const TVector<TString>& tables, NLWTrace::TOrbit&& orbit = {})
             : Tables(tables)
             , MvccSnapshot(false)
-            , Orbit(std::move(orbit))
-            , Cookie(cookie) {}
+            , Orbit(std::move(orbit)) {}
 
-        explicit TEvCreateSnapshotRequest(ui64 cookie, NLWTrace::TOrbit&& orbit = {})
+        explicit TEvCreateSnapshotRequest(NLWTrace::TOrbit&& orbit = {})
             : Tables({})
             , MvccSnapshot(true)
-            , Orbit(std::move(orbit))
-            , Cookie(cookie) {}
+            , Orbit(std::move(orbit)) {}
 
         const TVector<TString> Tables;
         const bool MvccSnapshot;
         NLWTrace::TOrbit Orbit;
-        ui64 Cookie;
     };
 
     struct TEvCreateSnapshotResponse : public TEventLocal<TEvCreateSnapshotResponse,
@@ -48,7 +45,10 @@ struct TEvKqpSnapshot {
     };
 
     struct TEvDiscardSnapshot : public TEventLocal<TEvDiscardSnapshot, TKqpSnapshotEvents::EvDiscardSnapshot> {
-        TEvDiscardSnapshot() = default;
+        explicit TEvDiscardSnapshot(const IKqpGateway::TKqpSnapshot& snapshot)
+            : Snapshot(snapshot)
+        {}
+        const IKqpGateway::TKqpSnapshot Snapshot;
     };
 };
 

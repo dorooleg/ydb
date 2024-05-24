@@ -75,7 +75,7 @@ namespace NKikimr {
                 , AppendBlockSize(appendBlockSize)
                 , WriteBlockSize(writeBlockSize)
                 , WriterPtr(new TWriter(TestCtx.GetVCtx(), EWriterDataType::Fresh, ChunksToUse, Owner, OwnerRound,
-                        ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena, true))
+                        ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena))
                 , Arena(&TRopeArenaBackend::Allocate)
                 , ReservedChunks()
                 , Stat()
@@ -156,7 +156,7 @@ namespace NKikimr {
 
         template <>
         void TTest<TKeyLogoBlob, TMemRecLogoBlob, TWriterLogoBlob>::Test(ui32 maxStep, const TString &data) {
-            TTLogoBlobCompactRecordMerger merger(TBlobStorageGroupType::ErasureMirror3, true);
+            TTLogoBlobCompactRecordMerger merger(TBlobStorageGroupType::ErasureMirror3);
 
             for (ui32 step = 0; step < maxStep; step++) {
                 TLogoBlobID id(1, 1, step, 0, 0, 0);
@@ -167,7 +167,7 @@ namespace NKikimr {
                 TMemRecLogoBlob memRec(ingress);
 
 
-                TRope blobBuf = TDiskBlob::Create(data.size(), 1, 3, TRope(data), Arena, true);
+                TRope blobBuf = TDiskBlob::Create(data.size(), 1, 3, TRope(data), Arena);
 
                 memRec.SetDiskBlob(TDiskPart(0, 0, data.size()));
                 merger.Clear();
@@ -179,10 +179,9 @@ namespace NKikimr {
                 if (!pushRes) {
                     Finish(step);
                     WriterPtr = std::make_unique<TWriterLogoBlob>(TestCtx.GetVCtx(), EWriterDataType::Fresh, ChunksToUse,
-                        Owner, OwnerRound, ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena,
-                        true);
+                        Owner, OwnerRound, ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena);
                     pushRes = WriterPtr->Push(key, memRec, merger.GetDataMerger());
-                    Y_ABORT_UNLESS(pushRes);
+                    Y_VERIFY(pushRes);
                 }
                 while (auto msg = WriterPtr->GetPendingMessage()) {
                     Apply(msg);
@@ -194,7 +193,7 @@ namespace NKikimr {
 
         template <>
         void TTest<TKeyLogoBlob, TMemRecLogoBlob, TWriterLogoBlob>::TestOutbound(ui32 maxStep) {
-            TTLogoBlobCompactRecordMerger merger(TBlobStorageGroupType::ErasureMirror3, true);
+            TTLogoBlobCompactRecordMerger merger(TBlobStorageGroupType::ErasureMirror3);
 
             for (ui32 step = 0; step < maxStep; step++) {
                 TLogoBlobID id(1, 1, step, 0, 0, 0);
@@ -222,10 +221,9 @@ namespace NKikimr {
                     Finish(step);
 
                     WriterPtr = std::make_unique<TWriterLogoBlob>(TestCtx.GetVCtx(), EWriterDataType::Fresh, ChunksToUse,
-                        Owner, OwnerRound, ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena,
-                        true);
+                        Owner, OwnerRound, ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena);
                     pushRes = WriterPtr->Push(key, merger.GetMemRec(), merger.GetDataMerger());
-                    Y_ABORT_UNLESS(pushRes);
+                    Y_VERIFY(pushRes);
                 }
                 while (auto msg = WriterPtr->GetPendingMessage()) {
                     Apply(msg);
@@ -237,7 +235,7 @@ namespace NKikimr {
 
         template <>
         void TTest<TKeyBlock, TMemRecBlock, TWriterBlock>::Test(ui32 maxGen) {
-            TBlockCompactRecordMerger merger(TBlobStorageGroupType::ErasureMirror3, true);
+            TBlockCompactRecordMerger merger(TBlobStorageGroupType::ErasureMirror3);
 
             for (ui32 gen = 0; gen < maxGen; gen++) {
                 TKeyBlock key(34 + gen);
@@ -252,10 +250,9 @@ namespace NKikimr {
                     Finish(gen);
 
                     WriterPtr = std::make_unique<TWriterBlock>(TestCtx.GetVCtx(), EWriterDataType::Fresh, ChunksToUse,
-                        Owner, OwnerRound, ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena,
-                        true);
+                        Owner, OwnerRound, ChunkSize, AppendBlockSize, WriteBlockSize, 0, false, ReservedChunks, Arena);
                     pushRes = WriterPtr->Push(key, memRec, merger.GetDataMerger());
-                    Y_ABORT_UNLESS(pushRes);
+                    Y_VERIFY(pushRes);
                 }
                 while (auto msg = WriterPtr->GetPendingMessage()) {
                     Apply(msg);

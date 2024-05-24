@@ -26,6 +26,7 @@ public:
     FEATURE_FLAG_SETTER(EnableDataColumnForIndexTable)
     FEATURE_FLAG_SETTER(EnableClockGettimeForUserCpuAccounting)
     FEATURE_FLAG_SETTER(EnableOlapSchemaOperations)
+    FEATURE_FLAG_SETTER(EnableMvccSnapshotReads)
     FEATURE_FLAG_SETTER(EnableBackgroundCompaction)
     FEATURE_FLAG_SETTER(EnableBackgroundCompactionServerless)
     FEATURE_FLAG_SETTER(EnableBorrowedSplitCompaction)
@@ -46,18 +47,8 @@ public:
     FEATURE_FLAG_SETTER(EnableScriptExecutionOperations)
     FEATURE_FLAG_SETTER(EnableForceImmediateEffectsExecution)
     FEATURE_FLAG_SETTER(EnableTopicSplitMerge)
-    FEATURE_FLAG_SETTER(EnableTempTables)
     FEATURE_FLAG_SETTER(EnableChangefeedDynamoDBStreamsFormat)
-    FEATURE_FLAG_SETTER(EnableChangefeedDebeziumJsonFormat)
-    FEATURE_FLAG_SETTER(EnableUniqConstraint)
-    FEATURE_FLAG_SETTER(EnableTopicMessageMeta)
-    FEATURE_FLAG_SETTER(EnableUuidAsPrimaryKey)
-    FEATURE_FLAG_SETTER(EnableTablePgTypes)
-    FEATURE_FLAG_SETTER(EnableServerlessExclusiveDynamicNodes)
-    FEATURE_FLAG_SETTER(EnableAccessServiceBulkAuthorization)
-    FEATURE_FLAG_SETTER(EnableAddColumsWithDefaults)
-    FEATURE_FLAG_SETTER(EnableReplaceIfExistsForExternalEntities)
-    FEATURE_FLAG_SETTER(EnableCMSRequestPriorities)
+    FEATURE_FLAG_SETTER(ForceColumnTablesCompositeMarks)
 
     #undef FEATURE_FLAG_SETTER
 };

@@ -1,14 +1,11 @@
 #pragma once
-#include "common/blob.h"
 #include <ydb/core/base/defs.h>
 #include <ydb/core/base/events.h>
 #include <ydb/core/base/blobstorage.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 #include <ydb/core/tx/ctor_logger.h>
 #include <ydb/core/control/immediate_control_board_impl.h>
-#include <ydb/core/tx/columnshard/engines/changes/abstract/settings.h>
-#include <ydb/core/tx/columnshard/engines/defs.h>
-#include <ydb/core/tx/columnshard/engines/writer/put_status.h>
+#include <ydb/core/tx/columnshard/engines/column_engine.h>
 
 namespace NKikimr::NColumnShard {
 
@@ -50,7 +47,11 @@ struct TLimits {
     TControlWrapper MaxInsertBytes;
     TControlWrapper InsertTableSize;
 
-    TLimits();
+    TLimits()
+        : MinInsertBytes(MIN_BYTES_TO_INSERT, 1, 2 * MAX_BYTES_TO_INSERT)
+        , MaxInsertBytes(MAX_BYTES_TO_INSERT, 0, 2 * MAX_BYTES_TO_INSERT)
+        , InsertTableSize(MIN_SMALL_BLOBS_TO_INSERT, 0, 1000)
+    {}
 
     void RegisterControls(TControlBoard& icb) {
         icb.RegisterSharedControl(MinInsertBytes, "ColumnShardControls.MinBytesToIndex");
@@ -64,37 +65,36 @@ struct TCompactionLimits {
 
     TControlWrapper GoodBlobSize;
     ui32 GranuleBlobSplitSize;
+    TControlWrapper GranuleExpectedSize;
     TControlWrapper GranuleOverloadSize;
+    TControlWrapper InGranuleCompactInserts; // Trigger in-granule compaction to reduce count of portions' records
     TControlWrapper InGranuleCompactSeconds; // Trigger in-granule comcation to guarantee no PK intersections
-
-    TControlWrapper GranuleIndexedPortionsSizeLimit;
-    TControlWrapper GranuleIndexedPortionsCountLimit;
 
     TCompactionLimits()
         : GoodBlobSize(TBase::MIN_GOOD_BLOB_SIZE, TBase::MIN_GOOD_BLOB_SIZE, TBase::MAX_BLOB_SIZE)
         , GranuleBlobSplitSize(TBase::MAX_BLOB_SIZE)
+        , GranuleExpectedSize(5 * TBase::MAX_BLOB_SIZE, TBase::MAX_BLOB_SIZE, 100 * TBase::MAX_BLOB_SIZE)
         , GranuleOverloadSize(20 * TBase::MAX_BLOB_SIZE, TBase::MAX_BLOB_SIZE, 100 * TBase::MAX_BLOB_SIZE)
+        , InGranuleCompactInserts(100, 10, 1000)
         , InGranuleCompactSeconds(2 * 60, 10, 3600)
-        , GranuleIndexedPortionsSizeLimit(TBase::WARNING_INSERTED_PORTIONS_SIZE)
-        , GranuleIndexedPortionsCountLimit(TBase::WARNING_INSERTED_PORTIONS_COUNT)
     {}
 
     void RegisterControls(TControlBoard& icb) {
         icb.RegisterSharedControl(GoodBlobSize, "ColumnShardControls.IndexGoodBlobSize");
+        icb.RegisterSharedControl(GranuleExpectedSize, "ColumnShardControls.GranuleTargetBytes");
         icb.RegisterSharedControl(GranuleOverloadSize, "ColumnShardControls.GranuleOverloadBytes");
+        icb.RegisterSharedControl(InGranuleCompactInserts, "ColumnShardControls.MaxPortionsInGranule");
         icb.RegisterSharedControl(InGranuleCompactSeconds, "ColumnShardControls.CompactionDelaySec");
-        icb.RegisterSharedControl(GranuleIndexedPortionsSizeLimit, "ColumnShardControls.GranuleIndexedPortionsSizeLimit");
-        icb.RegisterSharedControl(GranuleIndexedPortionsCountLimit, "ColumnShardControls.GranuleIndexedPortionsCountLimit");
     }
 
     NOlap::TCompactionLimits Get() const {
         return NOlap::TCompactionLimits{
             .GoodBlobSize = (ui32)GoodBlobSize,
             .GranuleBlobSplitSize = GranuleBlobSplitSize,
-            .InGranuleCompactSeconds = (ui32)InGranuleCompactSeconds,
+            .GranuleExpectedSize = (ui32)GranuleExpectedSize,
             .GranuleOverloadSize = (ui32)GranuleOverloadSize,
-            .GranuleIndexedPortionsSizeLimit = (ui32)GranuleIndexedPortionsSizeLimit,
-            .GranuleIndexedPortionsCountLimit = (ui32)GranuleIndexedPortionsCountLimit
+            .InGranuleCompactInserts = (ui32)InGranuleCompactInserts,
+            .InGranuleCompactSeconds = (ui32)InGranuleCompactSeconds
         };
     }
 };
@@ -102,12 +102,10 @@ struct TCompactionLimits {
 struct TUsage {
     ui64 CPUExecTime{};
     ui64 Network{};
-    ui64 SourceMemorySize{};
 
     void Add(const TUsage& other) {
         CPUExecTime += other.CPUExecTime;
         Network += other.Network;
-        SourceMemorySize += other.SourceMemorySize;
     }
 };
 

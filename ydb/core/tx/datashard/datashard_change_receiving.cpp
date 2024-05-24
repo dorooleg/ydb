@@ -1,6 +1,7 @@
 #include "datashard_impl.h"
 
-namespace NKikimr::NDataShard {
+namespace NKikimr {
+namespace NDataShard {
 
 using namespace NTabletFlatExecutor;
 
@@ -27,7 +28,10 @@ public:
                 break;
             }
 
-            ok = ok && db.Table<Schema::ChangeSenders>().Key(req.GetOrigin()).Precharge();
+            auto it = Self->InChangeSenders.find(req.GetOrigin());
+            if (it == Self->InChangeSenders.end()) {
+                ok = ok && db.Table<Schema::ChangeSenders>().Key(req.GetOrigin()).Precharge();
+            }
         }
 
         return ok;
@@ -44,7 +48,7 @@ public:
 
             const auto& [sender, req] = Self->PendingChangeExchangeHandshakes.front();
             auto& [_, resp] = Statuses.emplace_back(sender, MakeHolder<TEvChangeExchange::TEvStatus>());
-            Y_ABORT_UNLESS(ExecuteHandshake(db, req, resp->Record));
+            Y_VERIFY(ExecuteHandshake(db, req, resp->Record));
             Self->PendingChangeExchangeHandshakes.pop_front();
         }
 
@@ -65,25 +69,29 @@ public:
             return true;
         }
 
-        auto rowset = db.Table<Schema::ChangeSenders>().Key(req.GetOrigin()).Select();
-        if (!rowset.IsReady()) {
-            return false;
+        auto it = Self->InChangeSenders.find(req.GetOrigin());
+        if (it == Self->InChangeSenders.end()) {
+            auto rowset = db.Table<Schema::ChangeSenders>().Key(req.GetOrigin()).Select();
+            if (!rowset.IsReady()) {
+                return false;
+            }
+
+            if (rowset.IsValid()) {
+                const auto generation = rowset.GetValue<Schema::ChangeSenders::Generation>();
+                const auto lastRecordOrder = rowset.GetValueOrDefault<Schema::ChangeSenders::LastRecordOrder>(0);
+                it = Self->InChangeSenders.emplace(req.GetOrigin(), TInChangeSender(generation, lastRecordOrder)).first;
+            } else {
+                it = Self->InChangeSenders.emplace(req.GetOrigin(), TInChangeSender(req.GetGeneration())).first;
+            }
         }
 
-        TInChangeSender info(req.GetGeneration());
-        if (rowset.IsValid()) {
-            info.Generation = rowset.GetValue<Schema::ChangeSenders::Generation>();
-            info.LastRecordOrder = rowset.GetValueOrDefault<Schema::ChangeSenders::LastRecordOrder>(0);
-        }
-
-        auto it = Self->InChangeSenders.emplace(req.GetOrigin(), info).first;
-        if (it->second.Generation > req.GetGeneration()) { // use in-memory Generation
+        if (it->second.Generation > req.GetGeneration()) {
             resp.SetStatus(NKikimrChangeExchange::TEvStatus::STATUS_REJECT);
             resp.SetReason(NKikimrChangeExchange::TEvStatus::REASON_STALE_ORIGIN);
         } else {
-            it->second.Generation = req.GetGeneration(); // update in-memory Generation
+            it->second.Generation = req.GetGeneration();
             resp.SetStatus(NKikimrChangeExchange::TEvStatus::STATUS_OK);
-            resp.SetLastRecordOrder(info.LastRecordOrder); // use persistent LastRecordOrder
+            resp.SetLastRecordOrder(it->second.LastRecordOrder);
         }
 
         return true;
@@ -101,12 +109,6 @@ public:
 
     void Complete(const TActorContext& ctx) override {
         for (auto& [sender, status] : Statuses) {
-            if (status->Record.GetStatus() == NKikimrChangeExchange::TEvStatus::STATUS_OK) {
-                Self->IncCounter(COUNTER_CHANGE_EXCHANGE_SUCCESSFUL_HANDSHAKES);
-            } else {
-                Self->IncCounter(COUNTER_CHANGE_EXCHANGE_REJECTED_HANDSHAKES);
-            }
-
             ctx.Send(sender, status.Release());
         }
     }
@@ -117,24 +119,24 @@ private:
 }; // TTxChangeExchangeHandshake
 
 class TDataShard::TTxApplyChangeRecords: public TTransactionBase<TDataShard> {
-    static NTable::ERowOp GetRowOperation(const NKikimrChangeExchange::TDataChange& record) {
+    static NTable::ERowOp GetRowOperation(const NKikimrChangeExchange::TChangeRecord::TDataChange& record) {
         switch (record.GetRowOperationCase()) {
-            case NKikimrChangeExchange::TDataChange::kUpsert:
+            case NKikimrChangeExchange::TChangeRecord::TDataChange::kUpsert:
                 return NTable::ERowOp::Upsert;
-            case NKikimrChangeExchange::TDataChange::kErase:
+            case NKikimrChangeExchange::TChangeRecord::TDataChange::kErase:
                 return NTable::ERowOp::Erase;
-            case NKikimrChangeExchange::TDataChange::kReset:
+            case NKikimrChangeExchange::TChangeRecord::TDataChange::kReset:
                 return NTable::ERowOp::Reset;
             default:
                 return NTable::ERowOp::Absent;
         }
     }
 
-    static auto& GetValue(const NKikimrChangeExchange::TDataChange& record) {
+    static auto& GetValue(const NKikimrChangeExchange::TChangeRecord::TDataChange& record) {
         switch (record.GetRowOperationCase()) {
-            case NKikimrChangeExchange::TDataChange::kUpsert:
+            case NKikimrChangeExchange::TChangeRecord::TDataChange::kUpsert:
                 return record.GetUpsert();
-            case NKikimrChangeExchange::TDataChange::kReset:
+            case NKikimrChangeExchange::TChangeRecord::TDataChange::kReset:
                 return record.GetReset();
             default:
                 Y_FAIL_S("Unexpected row operation: " << static_cast<ui32>(record.GetRowOperationCase()));
@@ -379,25 +381,13 @@ public:
 
         if (completeEdge) {
             Self->PromoteCompleteEdge(completeEdge, txc);
-            // NOTE: asynchronous indexes are inconsistent by their nature
-            // We just promote follower read edge to the latest version
-            // and say it's repeatable, even though we cannot possibly know
-            // which versions are consistent and repeatable.
-            Self->GetSnapshotManager().PromoteFollowerReadEdge(completeEdge, true, txc);
         }
 
         return true;
     }
 
     void Complete(const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(Status);
-
-        if (Status->Record.GetStatus() == NKikimrChangeExchange::TEvStatus::STATUS_OK) {
-            Self->IncCounter(COUNTER_CHANGE_EXCHANGE_SUCCESSFUL_APPLY);
-        } else {
-            Self->IncCounter(COUNTER_CHANGE_EXCHANGE_REJECTED_APPLY);
-        }
-
+        Y_VERIFY(Status);
         ctx.Send(Ev->Sender, Status.Release());
     }
 
@@ -449,4 +439,5 @@ void TDataShard::Handle(TEvChangeExchange::TEvApplyRecords::TPtr& ev, const TAct
     Execute(new TTxApplyChangeRecords(this, ev), ctx);
 }
 
-}
+} // NDataShard
+} // NKikimr

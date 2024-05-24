@@ -2,7 +2,6 @@
 
 #include "actors/read_info_actor.h"
 #include "actors/commit_offset_actor.h"
-#include "actors/schema_actors.h"
 
 #include <ydb/core/grpc_services/grpc_helper.h>
 #include <ydb/core/tx/scheme_board/cache.h>
@@ -21,13 +20,6 @@ namespace V1 {
 ///////////////////////////////////////////////////////////////////////////////
 
 using namespace PersQueue::V1;
-
-Topic::StreamDirectReadMessage::FromServer FillDirectReadResponse(const TString& errorReason, const PersQueue::ErrorCode::ErrorCode code) {
-    Topic::StreamDirectReadMessage::FromServer res;
-    FillIssue(res.add_issues(), code, errorReason);
-    res.set_status(ConvertPersQueueInternalCodeToStatus(code));
-    return res;
-}
 
 
 
@@ -52,8 +44,6 @@ TPQReadService::TPQReadService(const TActorId& schemeCache, const TActorId& newS
 void TPQReadService::Bootstrap(const TActorContext& ctx) {
     HaveClusters = !AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen(); // ToDo[migration] - proper condition
     if (HaveClusters) {
-        LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "TPQReadService: send TEvClusterTracker::TEvSubscribe");
-
         ctx.Send(NPQ::NClusterTracker::MakeClusterTrackerID(),
                  new NPQ::NClusterTracker::TEvClusterTracker::TEvSubscribe);
     } else {
@@ -85,9 +75,9 @@ void TPQReadService::Handle(NNetClassifier::TEvNetClassifier::TEvClassifierUpdat
 }
 
 void TPQReadService::Handle(NPQ::NClusterTracker::TEvClusterTracker::TEvClustersUpdate::TPtr& ev, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(ev->Get()->ClustersList);
+    Y_VERIFY(ev->Get()->ClustersList);
 
-    Y_ABORT_UNLESS(ev->Get()->ClustersList->Clusters.size());
+    Y_VERIFY(ev->Get()->ClustersList->Clusters.size());
 
     const auto& clusters = ev->Get()->ClustersList->Clusters;
 
@@ -118,46 +108,15 @@ void TPQReadService::Handle(TEvPQProxy::TEvSessionDead::TPtr& ev, const TActorCo
     Sessions.erase(ev->Get()->Cookie);
 }
 
+google::protobuf::RepeatedPtrField<Ydb::Issue::IssueMessage> FillInfoResponse(const TString& errorReason, const PersQueue::ErrorCode::ErrorCode code) {
+    google::protobuf::RepeatedPtrField<Ydb::Issue::IssueMessage> res;
+    FillIssue(res.Add(), code, errorReason);
+    return res;
+}
+
 void TPQReadService::Handle(NGRpcService::TEvStreamTopicReadRequest::TPtr& ev, const TActorContext& ctx) {
     HandleStreamPQReadRequest<NGRpcService::TEvStreamTopicReadRequest>(ev, ctx);
 }
-
-void TPQReadService::Handle(NGRpcService::TEvStreamTopicDirectReadRequest::TPtr& ev, const TActorContext& ctx) {
-
-    LOG_DEBUG_S(ctx, NKikimrServices::PQ_READ_PROXY, "new grpc connection");
-
-    if (TooMuchSessions()) {
-        LOG_INFO_S(ctx, NKikimrServices::PQ_READ_PROXY, "new grpc connection failed - too much sessions");
-        ev->Get()->GetStreamCtx()->Attach(ctx.SelfID);
-        ev->Get()->GetStreamCtx()->WriteAndFinish(
-            FillDirectReadResponse("proxy overloaded", PersQueue::ErrorCode::OVERLOAD), grpc::Status::OK); //CANCELLED
-        return;
-    }
-    if (HaveClusters && (Clusters.empty() || LocalCluster.empty())) {
-        LOG_INFO_S(ctx, NKikimrServices::PQ_READ_PROXY, "new grpc connection failed - cluster is not known yet");
-
-        ev->Get()->GetStreamCtx()->Attach(ctx.SelfID);
-        ev->Get()->GetStreamCtx()->WriteAndFinish(
-            FillDirectReadResponse("cluster initializing", PersQueue::ErrorCode::INITIALIZING), grpc::Status::OK); //CANCELLED
-        // TODO: Inc SLI Errors
-        return;
-    } else {
-        Y_ABORT_UNLESS(TopicsHandler != nullptr);
-        auto ip = ev->Get()->GetStreamCtx()->GetPeerName();
-
-        const ui64 cookie = NextCookie();
- 
-        LOG_DEBUG_S(ctx, NKikimrServices::PQ_READ_PROXY, "new direct session created cookie " << cookie);
-
-        TActorId worker = ctx.Register(new TDirectReadSessionActor(
-                ev->Release().Release(), cookie, SchemeCache, NewSchemeCache, Counters,
-                DatacenterClassifier ? DatacenterClassifier->ClassifyAddress(NAddressClassifier::ExtractAddress(ip)) : "unknown",
-                *TopicsHandler
-        ));
-        Sessions[cookie] = worker;
-    }
-}
-
 
 void TPQReadService::Handle(NGRpcService::TEvStreamPQMigrationReadRequest::TPtr& ev, const TActorContext& ctx) {
     HandleStreamPQReadRequest<NGRpcService::TEvStreamPQMigrationReadRequest>(ev, ctx);
@@ -170,8 +129,7 @@ void TPQReadService::Handle(NGRpcService::TEvCommitOffsetRequest::TPtr& ev, cons
     if (HaveClusters && (Clusters.empty() || LocalCluster.empty())) {
         LOG_INFO_S(ctx, NKikimrServices::PQ_READ_PROXY, "new commit offset request failed - cluster is not known yet");
 
-        ev->Get()->RaiseIssue(FillIssue("cluster initializing", PersQueue::ErrorCode::INITIALIZING));
-        ev->Get()->ReplyWithYdbStatus(ConvertPersQueueInternalCodeToStatus(PersQueue::ErrorCode::INITIALIZING));
+        ev->Get()->SendResult(ConvertPersQueueInternalCodeToStatus(PersQueue::ErrorCode::INITIALIZING), FillInfoResponse("cluster initializing", PersQueue::ErrorCode::INITIALIZING)); //CANCELLED
         return;
     } else {
         ctx.Register(new TCommitOffsetActor(ev->Release().Release(), *TopicsHandler, SchemeCache, NewSchemeCache, Counters));
@@ -185,8 +143,7 @@ void TPQReadService::Handle(NGRpcService::TEvPQReadInfoRequest::TPtr& ev, const 
     if (HaveClusters && (Clusters.empty() || LocalCluster.empty())) {
         LOG_INFO_S(ctx, NKikimrServices::PQ_READ_PROXY, "new read info request failed - cluster is not known yet");
 
-        ev->Get()->RaiseIssue(FillIssue("cluster initializing", PersQueue::ErrorCode::INITIALIZING));
-        ev->Get()->ReplyWithYdbStatus(ConvertPersQueueInternalCodeToStatus(PersQueue::ErrorCode::INITIALIZING));
+        ev->Get()->SendResult(ConvertPersQueueInternalCodeToStatus(PersQueue::ErrorCode::INITIALIZING), FillInfoResponse("cluster initializing", PersQueue::ErrorCode::INITIALIZING)); //CANCELLED
         return;
     } else {
         //ctx.Register(new TReadInfoActor(ev->Release().Release(), Clusters, LocalCluster, SchemeCache, NewSchemeCache, Counters));
@@ -209,11 +166,6 @@ bool TPQReadService::TooMuchSessions() {
 void NKikimr::NGRpcService::TGRpcRequestProxyHandleMethods::Handle(NKikimr::NGRpcService::TEvStreamTopicReadRequest::TPtr& ev, const TActorContext& ctx) {
     ctx.Send(NKikimr::NGRpcProxy::V1::GetPQReadServiceActorID(), ev->Release().Release());
 }
-
-void NKikimr::NGRpcService::TGRpcRequestProxyHandleMethods::Handle(NKikimr::NGRpcService::TEvStreamTopicDirectReadRequest::TPtr& ev, const TActorContext& ctx) {
-    ctx.Send(NKikimr::NGRpcProxy::V1::GetPQReadServiceActorID(), ev->Release().Release());
-}
-
 
 void NKikimr::NGRpcService::TGRpcRequestProxyHandleMethods::Handle(NKikimr::NGRpcService::TEvStreamPQMigrationReadRequest::TPtr& ev, const TActorContext& ctx) {
     ctx.Send(NKikimr::NGRpcProxy::V1::GetPQReadServiceActorID(), ev->Release().Release());

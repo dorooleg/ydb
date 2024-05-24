@@ -3,7 +3,6 @@
 #include "yql_dq_datasource_type_ann.h"
 #include "yql_dq_state.h"
 #include "yql_dq_validate.h"
-#include "yql_dq_statistics.h"
 
 #include <ydb/library/yql/providers/common/config/yql_configuration_transformer.h>
 #include <ydb/library/yql/providers/common/provider/yql_data_provider_impl.h>
@@ -20,7 +19,6 @@
 
 #include <ydb/library/yql/dq/opt/dq_opt_build.h>
 #include <ydb/library/yql/dq/opt/dq_opt.h>
-#include <ydb/library/yql/dq/type_ann/dq_type_ann.h>
 
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/core/services/yql_transform_pipeline.h>
@@ -50,7 +48,6 @@ public:
         , ExecTransformer_([this, execTransformerFactory] () { return THolder<IGraphTransformer>(execTransformerFactory(State_)); })
         , TypeAnnotationTransformer_([] () { return CreateDqsDataSourceTypeAnnotationTransformer(); })
         , ConstraintsTransformer_([] () { return CreateDqDataSourceConstraintTransformer(); })
-        , StatisticsTransformer_([this]() { return CreateDqsStatisticsTransformer(State_, TDummyProviderContext::instance()); })
     { }
 
     TStringBuf GetName() const override {
@@ -71,49 +68,27 @@ public:
         return *ConfigurationTransformer_;
     }
 
-    IGraphTransformer& GetStatisticsProposalTransformer() override {
-        return *StatisticsTransformer_;
-    }
-
-    bool CanBuildResultImpl(const TExprNode& node, TNodeSet& visited) {
-        if (!visited.emplace(&node).second) {
-            return true;
-        }
-
-        if (TDqConnection::Match(&node) || TDqPhyPrecompute::Match(&node)) {
-            // Don't go deeper
-            return true;
-        }
-
-        if (auto right = TMaybeNode<TCoRight>(&node)) {
-            auto cons = right.Cast().Input().Maybe<TCoCons>();
-            if (!cons) {
-                return false;
-            }
-
-            return CanBuildResultImpl(cons.Cast().Input().Ref(), visited);
-        }
-
-        if (!node.IsComposable()) {
-            return false;
-        }
-
-        for (const auto& child : node.Children()) {
-            if (!CanBuildResultImpl(*child, visited)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     bool CanBuildResult(const TExprNode& node, TSyncMap& syncList) override {
         if (!node.IsComplete()) {
             return false;
         }
 
-        TNodeSet visited;
-        bool canBuild = CanBuildResultImpl(node, visited);
+        bool canBuild = true;
+        VisitExpr(node, [&canBuild] (const TExprNode& n) {
+            if (!canBuild) {
+                return false;
+            }
+            if (TDqConnection::Match(&n) || TDqPhyPrecompute::Match(&n)) {
+                // Don't go deeper
+                return false;
+            }
+            if (!n.IsComposable()) {
+                canBuild = false;
+                return false;
+            }
+            return true;
+        });
+
         if (canBuild) {
             for (const auto& child : node.ChildrenList()) {
                 VisitExpr(child, [&syncList] (const TExprNode::TPtr& item) {
@@ -157,31 +132,19 @@ public:
             return {};
         }
 
-        const auto newWorld = ctx.NewWorld(node->Pos());
-        TNodeOnNodeOwnedMap replaces;
-        VisitExpr(node, [&replaces, &newWorld, &ctx] (const TExprNode::TPtr& item) {
+        TExprNode::TListType worlds;
+        VisitExpr(node, [&worlds] (const TExprNode::TPtr& item) {
             if (ETypeAnnotationKind::World == item->GetTypeAnn()->GetKind()) {
-                replaces[item.Get()] = newWorld;
+                worlds.emplace_back(item);
                 return false;
             }
-
-            if (auto right = TMaybeNode<TCoRight>(item)) {
-                if (right.Cast().Input().Ref().IsCallable("PgReadTable!")) {
-                    const auto& read = right.Cast().Input().Ref();
-                    replaces[item.Get()] = ctx.Builder(item->Pos())
-                        .Callable("PgTableContent")
-                            .Add(0, read.Child(1)->TailPtr())
-                            .Add(1, read.ChildPtr(2))
-                            .Add(2, read.ChildPtr(3))
-                            .Add(3, read.ChildPtr(4))
-                        .Seal()
-                        .Build();
-                    return false;
-                }
-            }
-
             return true;
         });
+
+        const auto newWorld = ctx.NewWorld(node->Pos());
+        TNodeOnNodeOwnedMap replaces(worlds.size());
+        for (const auto& w : worlds)
+            replaces.emplace(w.Get(), newWorld);
 
         return Build<TDqCnResult>(ctx, node->Pos())
             .Output()
@@ -287,7 +250,6 @@ private:
     TLazyInitHolder<IGraphTransformer> ExecTransformer_;
     TLazyInitHolder<TVisitorTransformerBase> TypeAnnotationTransformer_;
     TLazyInitHolder<IGraphTransformer> ConstraintsTransformer_;
-    TLazyInitHolder<IGraphTransformer> StatisticsTransformer_;
 };
 
 }

@@ -9,8 +9,6 @@
 #include <openssl/sha.h>
 
 #include <util/generic/algorithm.h>
-#include <util/generic/map.h>
-#include <util/generic/vector.h>
 #include <util/stream/str.h>
 #include <util/string/builder.h>
 #include <library/cpp/cgiparam/cgiparam.h>
@@ -69,7 +67,7 @@ TAwsRequestSignV4::TAwsRequestSignV4(const TString& request) {
             inputData.ConstructInPlace();
             inputData->Resize(contentLength);
             if (input.Load(inputData->Data(), (size_t)contentLength) != contentLength) {
-                Y_ABORT_UNLESS(false);
+                Y_VERIFY(false);
             }
         }
     }

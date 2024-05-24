@@ -2,7 +2,6 @@
 
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/path.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/grpc_services/counters/counters.h>
 #include <ydb/core/grpc_services/counters/proxy_counters.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
@@ -170,7 +169,7 @@ static void ResetLabeledCounters(NKikimrLabeledCounters::TTabletLabeledCounters*
                 counter.SetValue(0);
                 break;
             default:
-                Y_ABORT("bad aggrFunc value");
+                Y_FAIL("bad aggrFunc value");
         }
     }
 }
@@ -302,26 +301,26 @@ TIntrusivePtr<IDbCounters> TSysViewProcessor::CreateCountersForService(
     switch (service) {
     case NKikimrSysView::KQP: {
         auto group = InternalGroups["kqp_serverless"];
-        Y_ABORT_UNLESS(group);
+        Y_VERIFY(group);
         result = MakeIntrusive<NKqp::TKqpDbCounters>(ExternalGroup, group);
         break;
     }
     case NKikimrSysView::TABLETS: {
         auto group = InternalGroups["tablets_serverless"];
-        Y_ABORT_UNLESS(group);
+        Y_VERIFY(group);
         THolder<TTabletCountersBase> executorCounters(new NTabletFlatExecutor::TExecutorCounters);
         result = CreateTabletDbCounters(ExternalGroup, group, std::move(executorCounters));
         break;
     }
     case NKikimrSysView::GRPC: {
         auto group = InternalGroups["grpc_serverless"];
-        Y_ABORT_UNLESS(group);
+        Y_VERIFY(group);
         result = NGRpcService::CreateGRpcDbCounters(ExternalGroup, group);
         break;
     }
     case NKikimrSysView::GRPC_PROXY: {
         auto group = InternalGroups["grpc_serverless"];
-        Y_ABORT_UNLESS(group);
+        Y_VERIFY(group);
         result = NGRpcService::CreateGRpcProxyDbCounters(ExternalGroup, group);
         break;
     }

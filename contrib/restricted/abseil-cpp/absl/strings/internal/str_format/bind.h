@@ -15,19 +15,15 @@
 #ifndef ABSL_STRINGS_INTERNAL_STR_FORMAT_BIND_H_
 #define ABSL_STRINGS_INTERNAL_STR_FORMAT_BIND_H_
 
-#include <cassert>
+#include <array>
 #include <cstdio>
-#include <ostream>
+#include <sstream>
 #include <string>
 
-#include "absl/base/config.h"
-#include "absl/container/inlined_vector.h"
+#include "absl/base/port.h"
 #include "absl/strings/internal/str_format/arg.h"
 #include "absl/strings/internal/str_format/checker.h"
-#include "absl/strings/internal/str_format/constexpr_parser.h"
-#include "absl/strings/internal/str_format/extension.h"
 #include "absl/strings/internal/str_format/parser.h"
-#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "absl/utility/utility.h"
 
@@ -181,7 +177,17 @@ class Streamable {
  public:
   Streamable(const UntypedFormatSpecImpl& format,
              absl::Span<const FormatArgImpl> args)
-      : format_(format), args_(args.begin(), args.end()) {}
+      : format_(format) {
+    if (args.size() <= ABSL_ARRAYSIZE(few_args_)) {
+      for (size_t i = 0; i < args.size(); ++i) {
+        few_args_[i] = args[i];
+      }
+      args_ = absl::MakeSpan(few_args_, args.size());
+    } else {
+      many_args_.assign(args.begin(), args.end());
+      args_ = many_args_;
+    }
+  }
 
   std::ostream& Print(std::ostream& os) const;
 
@@ -191,7 +197,12 @@ class Streamable {
 
  private:
   const UntypedFormatSpecImpl& format_;
-  absl::InlinedVector<FormatArgImpl, 4> args_;
+  absl::Span<const FormatArgImpl> args_;
+  // if args_.size() is 4 or less:
+  FormatArgImpl few_args_[4] = {FormatArgImpl(0), FormatArgImpl(0),
+                                FormatArgImpl(0), FormatArgImpl(0)};
+  // if args_.size() is more than 4:
+  std::vector<FormatArgImpl> many_args_;
 };
 
 // for testing
@@ -200,13 +211,14 @@ std::string Summarize(UntypedFormatSpecImpl format,
 bool BindWithPack(const UnboundConversion* props,
                   absl::Span<const FormatArgImpl> pack, BoundConversion* bound);
 
-bool FormatUntyped(FormatRawSinkImpl raw_sink, UntypedFormatSpecImpl format,
+bool FormatUntyped(FormatRawSinkImpl raw_sink,
+                   UntypedFormatSpecImpl format,
                    absl::Span<const FormatArgImpl> args);
 
 std::string& AppendPack(std::string* out, UntypedFormatSpecImpl format,
                         absl::Span<const FormatArgImpl> args);
 
-std::string FormatPack(UntypedFormatSpecImpl format,
+std::string FormatPack(const UntypedFormatSpecImpl format,
                        absl::Span<const FormatArgImpl> args);
 
 int FprintF(std::FILE* output, UntypedFormatSpecImpl format,
@@ -219,7 +231,7 @@ int SnprintF(char* output, size_t size, UntypedFormatSpecImpl format,
 template <typename T>
 class StreamedWrapper {
  public:
-  explicit StreamedWrapper(const T& v) : v_(v) {}
+  explicit StreamedWrapper(const T& v) : v_(v) { }
 
  private:
   template <typename S>

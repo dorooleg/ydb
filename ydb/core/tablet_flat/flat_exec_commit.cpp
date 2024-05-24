@@ -5,10 +5,10 @@ namespace NKikimr {
 namespace NTabletFlatExecutor {
 
     void TLogCommit::PushTx(TSeat* seat) noexcept {
-        Y_DEBUG_ABORT_UNLESS(!seat->NextCommitTx);
+        Y_VERIFY_DEBUG(!seat->NextCommitTx);
         if (LastTx) {
-            Y_DEBUG_ABORT_UNLESS(!LastTx->NextCommitTx);
-            Y_DEBUG_ABORT_UNLESS(LastTx != seat);
+            Y_VERIFY_DEBUG(!LastTx->NextCommitTx);
+            Y_VERIFY_DEBUG(LastTx != seat);
             LastTx->NextCommitTx = seat;
             LastTx = seat;
         } else {

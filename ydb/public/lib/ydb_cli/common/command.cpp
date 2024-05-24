@@ -1,8 +1,6 @@
 #include "command.h"
 #include "normalize_path.h"
 
-#include <ydb/public/lib/ydb_cli/common/interactive.h>
-
 namespace NYdb {
 namespace NConsoleClient {
 
@@ -87,24 +85,17 @@ namespace {
     }
 }
 
-TClientCommand::TClientCommand(
-    const TString& name,
-    const std::initializer_list<TString>& aliases,
-    const TString& description,
-    bool visible)
-        : Name(name)
-        , Aliases(aliases)
-        , Description(description)
-        , Visible(visible)
-        , Parent(nullptr)
-        , Opts(NLastGetopt::TOpts::Default())
+TClientCommand::TClientCommand(const TString& name, const std::initializer_list<TString>& aliases, const TString& description)
+    : Name(name)
+    , Aliases(aliases)
+    , Description(description)
+    , Parent(nullptr)
+    , Opts(NLastGetopt::TOpts::Default())
 {
     HideOption("svnrevision");
     Opts.AddHelpOption('h');
     ChangeOptionDescription("help", "Print usage");
-    auto terminalWidth = GetTerminalWidth();
-    size_t lineLength = terminalWidth ? *terminalWidth : Max<size_t>();
-    Opts.SetWrap(Max(Opts.Wrap_, static_cast<ui32>(lineLength)));
+    Opts.SetWrap(Max(Opts.Wrap_, static_cast<ui32>(TermWidth())));
 }
 
 ELogPriority TClientCommand::TConfig::VerbosityLevelToELogPriority(TClientCommand::TConfig::EVerbosityLevel lvl) {
@@ -311,8 +302,8 @@ TClientCommandTree::TClientCommandTree(const TString& name, const std::initializ
 }
 
 void TClientCommandTree::AddCommand(std::unique_ptr<TClientCommand> command) {
-    for (const TString& alias : command->Aliases) {
-        Aliases[alias] = command->Name;
+    for (const TString& a : command->Aliases) {
+        Aliases[a] = command->Name;
     }
     command->Parent = this;
     SubCommands[command->Name] = std::move(command);
@@ -340,11 +331,6 @@ void TClientCommandTree::SaveParseResult(TConfig& config) {
 
 void TClientCommandTree::Parse(TConfig& config) {
     TClientCommand::Parse(config);
-
-    if (config.ParseResult->GetFreeArgs().empty()) {
-        return;
-    }
-
     TString cmd = config.ParseResult->GetFreeArgs().at(0);
     config.Tokens.push_back(cmd);
     size_t count = config.ParseResult->GetFreeArgsPos();
@@ -382,6 +368,8 @@ void TClientCommandTree::Prepare(TConfig& config) {
 
     if (SelectedCommand) {
         SelectedCommand->Prepare(config);
+    } else {
+        throw yexception() << "No child command to prepare";
     }
 }
 
@@ -403,17 +391,9 @@ void TClientCommandTree::RenderCommandsDescription(
     const NColorizer::TColors& colors
 ) {
     TClientCommand::RenderOneCommandDescription(stream, colors, BEGIN);
-
-    TVector<TClientCommand*> VisibleSubCommands;
-    for (auto& [_, command] : SubCommands) {
-        if (command->Visible) {
-            VisibleSubCommands.push_back(command.get());
-        }
-    }
-
-    for (auto it = VisibleSubCommands.begin(); it != VisibleSubCommands.end(); ++it) {
-        bool lastCommand = (std::next(it) == VisibleSubCommands.end());
-        (*it)->RenderOneCommandDescription(stream, colors, lastCommand ? END : MIDDLE);
+    for (auto it = SubCommands.begin(); it != SubCommands.end(); ++it) {
+        bool lastCommand = (std::next(it) == SubCommands.end());
+        it->second->RenderOneCommandDescription(stream, colors, lastCommand ? END : MIDDLE);
     }
 }
 

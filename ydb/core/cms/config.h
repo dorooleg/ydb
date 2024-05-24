@@ -11,7 +11,7 @@
 namespace NKikimr::NCms {
 
 struct TCmsSentinelConfig {
-    bool Enable = true;
+    bool Enable = false;
     bool DryRun = false;
 
     TDuration UpdateConfigInterval;
@@ -22,6 +22,8 @@ struct TCmsSentinelConfig {
 
     TDuration RetryChangeStatus;
     ui32 ChangeStatusRetries;
+
+    TDuration BSCBatchTimeout;
 
     ui32 DefaultStateLimit;
     TMap<EPDiskState, ui32> StateLimits;

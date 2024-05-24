@@ -50,7 +50,7 @@ namespace NKikimr {
 
             template<typename TTuple, typename TKey>
             static void MapKey(TTuple *tuple, TKey &key) {
-                Y_ABORT_UNLESS(key.size() == Index);
+                Y_VERIFY(key.size() == Index);
 
                 auto &maybe = std::get<Index>(*tuple);
                 key.push_back(NIceDb::TConvertTypeValue<TColumn::ColumnType>(
@@ -140,7 +140,7 @@ namespace NKikimr {
                 } else if (MaybeCellPtr) {
                     return *(row.*MaybeCellPtr);
                 } else {
-                    Y_ABORT();
+                    Y_FAIL();
                 }
             }
 
@@ -150,7 +150,7 @@ namespace NKikimr {
                 } else if (MaybeCellPtr) {
                     return x.*MaybeCellPtr == y.*MaybeCellPtr;
                 } else {
-                    Y_ABORT();
+                    Y_FAIL();
                 }
             }
 
@@ -163,7 +163,7 @@ namespace NKikimr {
                         row.*MaybeCellPtr = rowset.template GetValue<TColumn>();
                     }
                 } else {
-                    Y_ABORT();
+                    Y_FAIL();
                 }
             }
 
@@ -182,7 +182,7 @@ namespace NKikimr {
                         value = Nothing();
                     }
                 } else {
-                    Y_ABORT();
+                    Y_FAIL();
                 }
 
                 return std::tuple_cat(tuple, std::make_tuple(std::move(value)));
@@ -444,7 +444,7 @@ namespace NKikimr {
             }
 
             TConstructFromRowset(...) {
-                Y_ABORT("table mismatch");
+                Y_FAIL("table mismatch");
             }
         };
 

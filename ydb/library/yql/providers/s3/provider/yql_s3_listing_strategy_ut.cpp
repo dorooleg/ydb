@@ -51,13 +51,12 @@ Y_UNIT_TEST_SUITE(TCollectingS3ListingStrategyTests) {
 void UnitAssertListResultEquals(
     const NS3Lister::TListResult& expected, const NS3Lister::TListResult& actual) {
     UNIT_ASSERT_VALUES_EQUAL(expected.index(), actual.index());
-    if (std::holds_alternative<TListError>(expected)) {
-        const auto& expectedError = std::get<TListError>(expected);
-        const auto& actualError = std::get<TListError>(actual);
-        UNIT_ASSERT_VALUES_EQUAL(expectedError.Type, actualError.Type);
-        UNIT_ASSERT_VALUES_EQUAL(expectedError.Issues.Size(), actualError.Issues.Size());
+    if (std::holds_alternative<TIssues>(expected)) {
+        const auto& expectedIssues = std::get<TIssues>(expected);
+        const auto& actualIssues = std::get<TIssues>(actual);
+        UNIT_ASSERT_VALUES_EQUAL(expectedIssues.Size(), actualIssues.Size());
         UNIT_ASSERT_VALUES_EQUAL(
-            expectedError.Issues.ToOneLineString(), actualError.Issues.ToOneLineString());
+            expectedIssues.ToOneLineString(), actualIssues.ToOneLineString());
         return;
     }
 
@@ -159,7 +158,7 @@ Y_UNIT_TEST(IfThereAreMoreRecordsThanSpecifiedByLimitShouldReturnError) {
 
     auto actualResultFuture = strategy.List(
         NS3Lister::TListingRequest{.Prefix = "TEST_INPUT"}, TS3ListingOptions{.MaxResultSet = 1});
-    auto expectedResult = NS3Lister::TListResult{MakeLimitExceededError("TTest", 1, 2)};
+    auto expectedResult = NS3Lister::TListResult{TIssues{MakeLimitExceededIssue()}};
     const auto& actualResult = actualResultFuture.GetValue();
     UnitAssertListResultEquals(expectedResult, actualResult);
 }
@@ -178,13 +177,13 @@ Y_UNIT_TEST(IfAnyIterationReturnIssueThanWholeStrategyShouldReturnIt) {
                                 .Path = "a/a",
                                 .Size = 10,
                             }}},
-                    MakeGenericError("TEST_ISSUE")})));
+                    TIssues{TIssue("TEST_ISSUE")}})));
         },
         "TTest"};
 
     auto actualResultFuture = strategy.List(
         NS3Lister::TListingRequest{.Prefix = "TEST_INPUT"}, TS3ListingOptions{.MaxResultSet = 1});
-    auto expectedResult = NS3Lister::TListResult{MakeGenericError("TEST_ISSUE")};
+    auto expectedResult = NS3Lister::TListResult{TIssues{TIssue("TEST_ISSUE")}};
     const auto& actualResult = actualResultFuture.GetValue();
     UnitAssertListResultEquals(expectedResult, actualResult);
 }
@@ -203,7 +202,7 @@ Y_UNIT_TEST(IfExceptionIsReturnedFromIteratorThanItShouldCovertItToIssue) {
     auto actualResultFuture = strategy.List(
         NS3Lister::TListingRequest{.Prefix = "TEST_INPUT"}, TS3ListingOptions{.MaxResultSet = 10});
     UNIT_ASSERT(actualResultFuture.HasValue());
-    auto expectedResult = NS3Lister::TListResult{MakeGenericError("EXCEPTION MESSAGE")};
+    auto expectedResult = NS3Lister::TListResult{TIssues{TIssue("EXCEPTION MESSAGE")}};
     const auto& actualResult = actualResultFuture.GetValue();
     UnitAssertListResultEquals(expectedResult, actualResult);
 }

@@ -47,7 +47,7 @@ TKqpProtoBuilder::~TKqpProtoBuilder() {
 }
 
 Ydb::ResultSet TKqpProtoBuilder::BuildYdbResultSet(
-    TVector<NYql::NDq::TDqSerializedBatch>&& data,
+    const TVector<NDqProto::TData>& data,
     NKikimr::NMiniKQL::TType* mkqlSrcRowType,
     const TVector<ui32>* columnOrder)
 {
@@ -70,16 +70,16 @@ Ydb::ResultSet TKqpProtoBuilder::BuildYdbResultSet(
 
     auto transportVersion = NDqProto::EDataTransportVersion::DATA_TRANSPORT_VERSION_UNSPECIFIED;
     if (!data.empty()) {
-        transportVersion = static_cast<NDqProto::EDataTransportVersion>(data.front().Proto.GetTransportVersion());
+        transportVersion = static_cast<NDqProto::EDataTransportVersion>(data.front().GetTransportVersion());
     }
     NDq::TDqDataSerializer dataSerializer(*TypeEnv, *HolderFactory, transportVersion);
     for (auto& part : data) {
-        if (part.RowCount()) {
-            TUnboxedValueBatch rows(mkqlSrcRowType);
-            dataSerializer.Deserialize(std::move(part), mkqlSrcRowType, rows);
-            rows.ForEachRow([&](const NUdf::TUnboxedValue& value) {
-                ExportValueToProto(mkqlSrcRowType, value, *resultSet.add_rows(), columnOrder);
-            });
+        if (part.GetRows()) {
+            TUnboxedValueVector rows;
+            dataSerializer.Deserialize(part, mkqlSrcRowType, rows);
+            for (auto& row : rows) {
+                ExportValueToProto(mkqlSrcRowType, row, *resultSet.add_rows(), columnOrder);
+            }
         }
     }
 

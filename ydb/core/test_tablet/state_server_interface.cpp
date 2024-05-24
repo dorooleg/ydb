@@ -14,7 +14,7 @@ namespace NKikimr::NTestShard {
                 , Host(host)
                 , Port(port)
             {
-                Y_ABORT_UNLESS(*Socket != INVALID_SOCKET);
+                Y_VERIFY(*Socket != INVALID_SOCKET);
                 SetNonBlock(*Socket);
                 SetNoDelay(*Socket, true);
                 Socket->Connect(NInterconnect::TAddress(host, port));
@@ -87,7 +87,7 @@ namespace NKikimr::NTestShard {
                         switch (ReadState) {
                             case EReadState::LENGTH:
                                 ReadState = EReadState::DATA;
-                                Y_ABORT_UNLESS(ReadLength <= 64 * 1024 * 1024);
+                                Y_VERIFY(ReadLength <= 64 * 1024 * 1024);
                                 ReadBuffer = TString::Uninitialized(ReadLength);
                                 ReadBufferPtr = ReadBuffer.Detach();
                                 ReadBufferEnd = ReadBufferPtr + ReadLength;
@@ -150,12 +150,12 @@ namespace NKikimr::NTestShard {
                 auto& record = ev->Get()->Record;
                 const ui32 type = record.HasWrite() ? TEvTestShard::EvStateServerWriteResult :
                     record.HasRead() ? TEvTestShard::EvStateServerReadResult : 0;
-                Y_ABORT_UNLESS(type);
+                Y_VERIFY(type);
                 ResponseQ.push_back(TResponseInfo{ev->Sender, ev->Cookie, type});
                 auto buffers = ev->ReleaseChainBuffer();
-                Y_ABORT_UNLESS(!buffers->GetSerializationInfo().IsExtendedFormat);
+                Y_VERIFY(!buffers->GetSerializationInfo().IsExtendedFormat);
                 const ui32 len = buffers->GetSize();
-                Y_ABORT_UNLESS(len <= 64 * 1024 * 1024);
+                Y_VERIFY(len <= 64 * 1024 * 1024);
                 TString w = TString::Uninitialized(sizeof(ui32) + len);
                 char *p = w.Detach();
                 auto append = [&](const void *buffer, size_t len) { memcpy(std::exchange(p, p + len), buffer, len); };
@@ -167,7 +167,7 @@ namespace NKikimr::NTestShard {
             }
 
             void ProcessPacket(TStateServerInterfaceActor *self) {
-                Y_ABORT_UNLESS(!ResponseQ.empty());
+                Y_VERIFY(!ResponseQ.empty());
                 TResponseInfo& response = ResponseQ.front();
                 TActivationContext::Send(new IEventHandle(response.Type, 0, response.Sender, self->SelfId(),
                     MakeIntrusive<TEventSerializedData>(std::move(ReadBuffer), TEventSerializationInfo{}),
@@ -217,12 +217,12 @@ namespace NKikimr::NTestShard {
                 SocketMap.emplace(*ctx->Socket, ctx);
             }
             bool inserted = Servers.emplace(ev->Sender, ctx).second;
-            Y_ABORT_UNLESS(inserted);
+            Y_VERIFY(inserted);
             if (ctx->IsConnected) {
                 Send(ev->Sender, new TEvStateServerStatus(true));
             }
             inserted = ctx->Subscribers.insert(ev->Sender).second;
-            Y_ABORT_UNLESS(inserted);
+            Y_VERIFY(inserted);
         }
 
         void Handle(TEvStateServerDisconnect::TPtr ev) {
@@ -231,9 +231,9 @@ namespace NKikimr::NTestShard {
             }
 
             const auto it = Servers.find(ev->Sender);
-            Y_ABORT_UNLESS(it != Servers.end());
+            Y_VERIFY(it != Servers.end());
             const size_t num = it->second->Subscribers.erase(ev->Sender);
-            Y_ABORT_UNLESS(num);
+            Y_VERIFY(num);
             if (it->second->Subscribers.empty()) {
                 HostMap.erase(std::make_pair(it->second->Host, it->second->Port));
                 SocketMap.erase(*it->second->Socket);
@@ -276,7 +276,7 @@ namespace NKikimr::NTestShard {
             }
 
             const auto it = Servers.find(ev->Sender);
-            Y_ABORT_UNLESS(it != Servers.end());
+            Y_VERIFY(it != Servers.end());
             it->second->Push(ev);
             Action(it->second);
         }

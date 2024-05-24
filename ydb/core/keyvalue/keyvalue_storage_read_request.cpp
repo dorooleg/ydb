@@ -2,10 +2,7 @@
 #include "keyvalue_const.h"
 
 #include <ydb/core/util/stlog.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
-#include <ydb/library/wilson_ids/wilson.h>
-#include <util/generic/overloaded.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 
 
 namespace NKikimr {
@@ -52,8 +49,6 @@ class TKeyValueStorageReadRequest : public TActorBootstrapped<TKeyValueStorageRe
 
     TStackVec<TReadItemInfo, 1> ReadItems;
 
-    NWilson::TSpan Span;
-
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::KEYVALUE_ACTOR;
@@ -65,6 +60,16 @@ public:
 
     bool IsRead() const {
         return std::holds_alternative<TIntermediate::TRead>(GetCommand());
+    }
+
+    bool IsRangeRead() const {
+        return std::holds_alternative<TIntermediate::TRangeRead>(GetCommand());
+    }
+
+    void AddRead(TIntermediate::TRead &read) {
+        for (auto &readItem : read.ReadItems) {
+            ReadItems.push_back({&read, &readItem});
+        }
     }
 
     NKikimrBlobStorage::EGetHandleClass GetHandleClass() const {
@@ -94,22 +99,19 @@ public:
         }
 
         ui32 readCount = 0;
-        auto addRead = [&](TIntermediate::TRead& read) {
-            for (auto& readItem : read.ReadItems) {
-                ReadItems.push_back({&read, &readItem});
-            }
-            ++readCount;
-        };
-        std::visit(TOverloaded{
-            [&](TIntermediate::TRead& read) {
-                addRead(read);
-            },
-            [&](TIntermediate::TRangeRead& rangeRead) {
-                for (auto& read : rangeRead.Reads) {
-                    addRead(read);
+        auto addReadItems = [&](auto &request) {
+            using Type = std::decay_t<decltype(request)>;
+            if constexpr (std::is_same_v<Type, TIntermediate::TRead>) {
+                AddRead(request);
+                readCount++;
+            } else {
+                for (auto &read : request.Reads) {
+                    AddRead(read);
+                    readCount++;
                 }
             }
-        }, GetCommand());
+        };
+        std::visit(addReadItems, GetCommand());
 
         if (ReadItems.empty()) {
             auto getStatus = [&](auto &request) {
@@ -193,7 +195,7 @@ public:
             ev->ReaderTabletData = {TabletInfo->TabletID, TabletGeneration};
 
             SendToBSProxy(TActivationContext::AsActorContext(), batch.GroupId, ev.release(),
-                    batch.Cookie, Span.GetTraceId());
+                    batch.Cookie);
             batch.SentTime = TActivationContext::Now();
         }
     }
@@ -282,6 +284,9 @@ public:
             read.Status = response.Status;
 
             if (response.Status == NKikimrProto::OK) {
+                if (read.Value.size() != read.ValueSize) {
+                    read.Value.resize(read.ValueSize);
+                }
                 Y_VERIFY_S(response.Buffer.size() == readItem.BlobSize,
                         "response.Buffer.size()# " << response.Buffer.size()
                         << " readItem.BlobSize# " << readItem.BlobSize);
@@ -289,14 +294,11 @@ public:
                         "readItem.ValueOffset# " << readItem.ValueOffset
                         << " readItem.BlobSize# " << readItem.BlobSize
                         << " read.ValueSize# " << read.ValueSize);
+                memcpy(const_cast<char *>(read.Value.data()) + readItem.ValueOffset, response.Buffer.data(), response.Buffer.size());
                 IntermediateResult->Stat.GroupReadBytes[std::make_pair(response.Id.Channel(), batch.GroupId)] += response.Buffer.size();
+                // FIXME: count distinct blobs?" keyvalue_storage_request.cpp:279
                 IntermediateResult->Stat.GroupReadIops[std::make_pair(response.Id.Channel(), batch.GroupId)] += 1;
-                read.Value.Write(readItem.ValueOffset, std::move(response.Buffer));
             } else {
-                Y_VERIFY_DEBUG_S(response.Status != NKikimrProto::NODATA, "NODATA received for TEvGet"
-                    << " TabletId# " << TabletInfo->TabletID
-                    << " Id# " << response.Id
-                    << " Key# " << read.Key);
                 STLOG_WITH_ERROR_DESCRIPTION(ErrorDescription, NLog::PRI_ERROR, NKikimrServices::KEYVALUE, KV317,
                         "Unexpected EvGetResult.",
                         (KeyValue, TabletInfo->TabletID),
@@ -311,7 +313,7 @@ public:
                 hasErrorResponses = true;
             }
 
-            Y_ABORT_UNLESS(response.Status != NKikimrProto::UNKNOWN);
+            Y_VERIFY(response.Status != NKikimrProto::UNKNOWN);
             readItem.Status = response.Status;
             readItem.InFlight = false;
         }
@@ -333,7 +335,7 @@ public:
         Send(IntermediateResult->KeyValueActorId, new TEvKeyValue::TEvNotify(
             IntermediateResult->RequestUid,
             IntermediateResult->CreatedAtGeneration, IntermediateResult->CreatedAtStep,
-            IntermediateResult->Stat, status, std::move(IntermediateResult->RefCountsIncr)));
+            IntermediateResult->Stat, status));
     }
 
     std::unique_ptr<TEvKeyValue::TEvReadResponse> CreateReadResponse(NKikimrKeyValue::Statuses::ReplyStatus status,
@@ -366,7 +368,7 @@ public:
         if (IsRead()) {
             auto response = CreateReadResponse(status, ErrorDescription);
             auto &cmd = GetCommand();
-            Y_ABORT_UNLESS(std::holds_alternative<TIntermediate::TRead>(cmd));
+            Y_VERIFY(std::holds_alternative<TIntermediate::TRead>(cmd));
             auto& intermediateRead = std::get<TIntermediate::TRead>(cmd);
             response->Record.set_requested_key(intermediateRead.Key);
             response->Record.set_requested_offset(intermediateRead.Offset);
@@ -382,7 +384,6 @@ public:
         Send(IntermediateResult->RespondTo, response.release());
         IntermediateResult->IsReplied = true;
         SendNotify(status);
-        Span.EndError(TStringBuilder() << NKikimrKeyValue::Statuses::ReplyStatus_Name(status));
         PassAway();
     }
 
@@ -399,7 +400,7 @@ public:
 
     std::unique_ptr<TEvKeyValue::TEvReadResponse> MakeReadResponse(NKikimrKeyValue::Statuses::ReplyStatus status) {
         auto &cmd = GetCommand();
-        Y_ABORT_UNLESS(std::holds_alternative<TIntermediate::TRead>(cmd));
+        Y_VERIFY(std::holds_alternative<TIntermediate::TRead>(cmd));
         TIntermediate::TRead &interRead = std::get<TIntermediate::TRead>(cmd);
 
         TString errorMsg = MakeErrorMsg(interRead.Message);
@@ -408,10 +409,7 @@ public:
         response->Record.set_requested_key(interRead.Key);
         response->Record.set_requested_offset(interRead.Offset);
         response->Record.set_requested_size(interRead.RequestedSize);
-
-        TRope value = interRead.BuildRope();
-        const TContiguousSpan span = value.GetContiguousSpan();
-        response->Record.set_value(span.data(), span.size());
+        response->Record.set_value(interRead.Value);
 
         if (IntermediateResult->RespondTo.NodeId() != SelfId().NodeId()) {
             response->Record.set_node_id(SelfId().NodeId());
@@ -432,7 +430,7 @@ public:
 
     std::unique_ptr<TEvKeyValue::TEvReadRangeResponse> MakeReadRangeResponse(NKikimrKeyValue::Statuses::ReplyStatus status) {
         auto &cmd = GetCommand();
-        Y_ABORT_UNLESS(std::holds_alternative<TIntermediate::TRangeRead>(cmd));
+        Y_VERIFY(std::holds_alternative<TIntermediate::TRangeRead>(cmd));
         TIntermediate::TRangeRead &interRange = std::get<TIntermediate::TRangeRead>(cmd);
 
         TStringBuilder msgBuilder;
@@ -452,11 +450,7 @@ public:
         for (auto &interRead : interRange.Reads) {
             auto *kvp = readRangeResult.add_pair();
             kvp->set_key(interRead.Key);
-
-            TRope value = interRead.BuildRope();
-            const TContiguousSpan span = value.GetContiguousSpan();
-            kvp->set_value(span.data(), span.size());
-
+            kvp->set_value(interRead.Value);
             kvp->set_value_size(interRead.ValueSize);
             kvp->set_creation_unix_time(interRead.CreationUnixTime);
             ui32 storageChannel = MainStorageChannelInPublicApi;
@@ -494,7 +488,6 @@ public:
         Send(IntermediateResult->RespondTo, response.release());
         IntermediateResult->IsReplied = true;
         SendNotify(status);
-        Span.EndOk();
         PassAway();
     }
 
@@ -502,7 +495,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvBlobStorage::TEvGetResult, Handle);
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
    }
 
@@ -511,7 +504,6 @@ public:
         : IntermediateResult(std::move(intermediate))
         , TabletInfo(const_cast<TTabletStorageInfo*>(tabletInfo))
         , TabletGeneration(tabletGeneration)
-        , Span(TWilsonTablet::TabletBasic, IntermediateResult->Span.GetTraceId(), "KeyValue.StorageReadRequest")
     {}
 };
 

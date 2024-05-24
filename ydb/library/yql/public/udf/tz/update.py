@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 import re
 
 
@@ -53,7 +51,3 @@ def main():
         outp.writelines(lines)
 
     print("saved %s zones" % len(zones))
-
-
-if __name__ == "__main__":
-    main()

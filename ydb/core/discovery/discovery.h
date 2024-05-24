@@ -3,9 +3,9 @@
 #include <ydb/core/base/events.h>
 #include <ydb/core/base/statestorage.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 namespace NKikimr {
 
@@ -13,8 +13,7 @@ namespace NDiscovery {
     struct TCachedMessageData {
         TString CachedMessage;
         TString CachedMessageSsl;
-        TMap<TActorId, TEvStateStorage::TBoardInfoEntry> InfoEntries; // OwnerId -> Payload
-        TEvStateStorage::TEvBoardInfo::EStatus Status = TEvStateStorage::TEvBoardInfo::EStatus::Ok;
+        THolder<TEvStateStorage::TEvBoardInfo> Info;
     };
 }
 
@@ -55,11 +54,10 @@ struct TEvDiscovery {
 };
 
 namespace NDiscovery {
-    NDiscovery::TCachedMessageData CreateCachedMessage(
-        const TMap<TActorId, TEvStateStorage::TBoardInfoEntry>&,
-        TMap<TActorId, TEvStateStorage::TBoardInfoEntry>,
-        TSet<TString>,
-        const THolder<TEvInterconnect::TEvNodeInfo>&);
+    std::pair<TString, TString> CreateSerializedMessage(
+                    const THolder<TEvStateStorage::TEvBoardInfo>&,
+                    TSet<TString>,
+                    const THolder<TEvInterconnect::TEvNodeInfo>&);
 }
 
 using TLookupPathFunc = std::function<TString(const TString&)>;

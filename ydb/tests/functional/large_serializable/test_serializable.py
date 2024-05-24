@@ -24,8 +24,8 @@ class Test(object):
                 '--endpoint=localhost:%d' % self.cluster.nodes[1].grpc_port,
                 '--database=/Root',
                 '--output-path=%s' % yatest_common.output_path(),
-                '--iterations=25',
-                '--processes=2'
+                '--iterations=500',
+                '--processes=5'
             ],
             stderr=sys.stderr,
             wait=True,

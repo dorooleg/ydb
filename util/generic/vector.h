@@ -8,10 +8,6 @@
 #include <vector>
 #include <initializer_list>
 
-#ifdef _YNDX_LIBCXX_ENABLE_VECTOR_POD_RESIZE_UNINITIALIZED
-    #include <type_traits>
-#endif
-
 template <class T, class A>
 class TVector: public std::vector<T, TReboundAllocator<A, T>> {
 public:
@@ -77,7 +73,7 @@ public:
     }
 
     inline TVector(TSelf&& src) noexcept
-        : TBase(std::move(src))
+        : TBase(std::forward<TSelf>(src))
     {
     }
 
@@ -93,7 +89,7 @@ public:
     }
 
     inline TSelf& operator=(TSelf&& src) noexcept {
-        TBase::operator=(std::move(src));
+        TBase::operator=(std::forward<TSelf>(src));
         return *this;
     }
 
@@ -111,18 +107,22 @@ public:
     }
 
     inline yssize_t ysize() const noexcept {
-        return static_cast<yssize_t>(TBase::size());
+        return (yssize_t)TBase::size();
     }
 
+#ifdef _YNDX_LIBCXX_ENABLE_VECTOR_POD_RESIZE_UNINITIALIZED
     void yresize(size_type newSize) {
-#if defined(_YNDX_LIBCXX_ENABLE_VECTOR_POD_RESIZE_UNINITIALIZED) && !defined(__CUDACC__)
-        if constexpr (std::is_standard_layout_v<T> && std::is_trivial_v<T>) {
+        if (std::is_pod<T>::value) {
             TBase::resize_uninitialized(newSize);
-            return;
+        } else {
+            TBase::resize(newSize);
         }
-#endif
+    }
+#else
+    void yresize(size_type newSize) {
         TBase::resize(newSize);
     }
+#endif
 
     inline void crop(size_type size) {
         if (this->size() > size) {

@@ -80,6 +80,7 @@ Y_UNIT_TEST_SUITE(TFstClassSrcIdPQTest) {
             UNIT_ASSERT(res);
             writer->Close();
         };
+
         alterAndCheck(2);
         alterAndCheck(4);
         alterAndCheck(12);
@@ -103,7 +104,7 @@ Y_UNIT_TEST_SUITE(TFstClassSrcIdPQTest) {
         UNIT_ASSERT(alterRes.IsSuccess());
 
         auto partExpected = NKikimr::NDataStreams::V1::CalculateShardFromSrcId(srcId, partCount);
-        Y_ABORT_UNLESS(partExpected < partCount);
+        Y_VERIFY(partExpected < partCount);
         auto writer = CreateSimpleWriter(*driver, topic, srcId);
         auto res = writer->Write("test-data", writer->GetInitSeqNo() + 1);
         UNIT_ASSERT(res);

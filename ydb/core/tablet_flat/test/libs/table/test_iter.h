@@ -61,7 +61,7 @@ namespace NTest {
             auto *origin = std::exchange(Env, env).Release();
             auto *casted = dynamic_cast<TEnv*>(origin);
 
-            Y_ABORT_UNLESS(!origin || casted, "Cannot cast IPages to given env");
+            Y_VERIFY(!origin || casted, "Cannot cast IPages to given env");
 
             return casted;
         }
@@ -69,15 +69,6 @@ namespace NTest {
         TChecker& ReplaceEnv(TAutoPtr<IPages> env)
         {
             return Displace<IPages>(env), *this;
-        }
-
-        template<typename TEnv>
-        TEnv* GetEnv() {
-            auto *casted = dynamic_cast<TEnv*>(Env.Get());
-
-            Y_ABORT_UNLESS(!Env || casted, "Cannot cast IPages to given env");
-
-            return casted;
         }
 
         template<typename ...TArgs>
@@ -222,7 +213,7 @@ namespace NTest {
 
         TChecker& Ver(TRowVersion rowVersion)
         {
-            Y_ABORT_UNLESS(Erased, "Working with versions needs Erased == true");
+            Y_VERIFY(Erased, "Working with versions needs Erased == true");
 
             for (Hoped = 0; Hoped < Retries; Hoped++) {
                 Ready = Wrap.SkipToRowVersion(rowVersion);
@@ -333,11 +324,6 @@ namespace NTest {
             }
 
             return *this;
-        }
-
-        EReady GetReady() const noexcept
-        {
-            return Ready;
         }
 
     private:

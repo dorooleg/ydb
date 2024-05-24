@@ -19,17 +19,17 @@
 #ifndef ORC_VECTOR_HH
 #define ORC_VECTOR_HH
 
-#include "Int128.hh"
-#include "MemoryPool.hh"
 #include "orc/orc-config.hh"
+#include "MemoryPool.hh"
+#include "Int128.hh"
 
-#include <cstdlib>
-#include <cstring>
 #include <list>
 #include <memory>
-#include <sstream>
-#include <stdexcept>
+#include <cstring>
 #include <vector>
+#include <stdexcept>
+#include <cstdlib>
+#include <iostream>
 
 namespace orc {
 
@@ -37,11 +37,6 @@ namespace orc {
    * The base class for each of the column vectors. This class handles
    * the generic attributes such as number of elements, capacity, and
    * notNull vector.
-   * Note: If hasNull is false, the values in the notNull buffer are not required.
-   * On the writer side, it does not read values from notNull buffer so users are
-   * not expected to write notNull buffer if hasNull is false. On the reader side,
-   * it does not set notNull buffer if hasNull is false, meaning that it is undefined
-   * behavior to consume values from notNull buffer in this case by downstream users.
    */
   struct ColumnVectorBatch {
     ColumnVectorBatch(uint64_t capacity, MemoryPool& pool);
@@ -88,128 +83,40 @@ namespace orc {
      */
     virtual bool hasVariableLength();
 
-   private:
+  private:
     ColumnVectorBatch(const ColumnVectorBatch&);
     ColumnVectorBatch& operator=(const ColumnVectorBatch&);
   };
 
-  template <typename ValueType>
-  struct IntegerVectorBatch : public ColumnVectorBatch {
-    IntegerVectorBatch(uint64_t cap, MemoryPool& pool)
-        : ColumnVectorBatch(cap, pool), data(pool, cap) {
-      // PASS
-    }
+  struct LongVectorBatch: public ColumnVectorBatch {
+    LongVectorBatch(uint64_t capacity, MemoryPool& pool);
+    virtual ~LongVectorBatch();
 
-    ~IntegerVectorBatch() override = default;
-
-    inline std::string toString() const override;
-
-    void resize(uint64_t cap) override {
-      if (capacity < cap) {
-        ColumnVectorBatch::resize(cap);
-        data.resize(cap);
-      }
-    }
-
-    void clear() override {
-      numElements = 0;
-    }
-
-    uint64_t getMemoryUsage() override {
-      return ColumnVectorBatch::getMemoryUsage() +
-             static_cast<uint64_t>(data.capacity() * sizeof(ValueType));
-    }
-
-    DataBuffer<ValueType> data;
+    DataBuffer<int64_t> data;
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
   };
 
-  using LongVectorBatch = IntegerVectorBatch<int64_t>;
-  using IntVectorBatch = IntegerVectorBatch<int32_t>;
-  using ShortVectorBatch = IntegerVectorBatch<int16_t>;
-  using ByteVectorBatch = IntegerVectorBatch<int8_t>;
+  struct DoubleVectorBatch: public ColumnVectorBatch {
+    DoubleVectorBatch(uint64_t capacity, MemoryPool& pool);
+    virtual ~DoubleVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
 
-  template <>
-  inline std::string LongVectorBatch::toString() const {
-    std::ostringstream buffer;
-    buffer << "Long vector <" << numElements << " of " << capacity << ">";
-    return buffer.str();
-  }
-
-  template <>
-  inline std::string IntVectorBatch::toString() const {
-    std::ostringstream buffer;
-    buffer << "Int vector <" << numElements << " of " << capacity << ">";
-    return buffer.str();
-  }
-
-  template <>
-  inline std::string ShortVectorBatch::toString() const {
-    std::ostringstream buffer;
-    buffer << "Short vector <" << numElements << " of " << capacity << ">";
-    return buffer.str();
-  }
-
-  template <>
-  inline std::string ByteVectorBatch::toString() const {
-    std::ostringstream buffer;
-    buffer << "Byte vector <" << numElements << " of " << capacity << ">";
-    return buffer.str();
-  }
-
-  template <typename FloatType>
-  struct FloatingVectorBatch : public ColumnVectorBatch {
-    FloatingVectorBatch(uint64_t cap, MemoryPool& pool)
-        : ColumnVectorBatch(cap, pool), data(pool, cap) {
-      // PASS
-    }
-
-    ~FloatingVectorBatch() override = default;
-
-    inline std::string toString() const override;
-
-    void resize(uint64_t cap) override {
-      if (capacity < cap) {
-        ColumnVectorBatch::resize(cap);
-        data.resize(cap);
-      }
-    }
-
-    void clear() override {
-      numElements = 0;
-    }
-
-    uint64_t getMemoryUsage() override {
-      return ColumnVectorBatch::getMemoryUsage() +
-             static_cast<uint64_t>(data.capacity() * sizeof(FloatType));
-    }
-
-    DataBuffer<FloatType> data;
+    DataBuffer<double> data;
   };
 
-  using DoubleVectorBatch = FloatingVectorBatch<double>;
-  using FloatVectorBatch = FloatingVectorBatch<float>;
-
-  template <>
-  inline std::string DoubleVectorBatch::toString() const {
-    std::ostringstream buffer;
-    buffer << "Double vector <" << numElements << " of " << capacity << ">";
-    return buffer.str();
-  }
-
-  template <>
-  inline std::string FloatVectorBatch::toString() const {
-    std::ostringstream buffer;
-    buffer << "Float vector <" << numElements << " of " << capacity << ">";
-    return buffer.str();
-  }
-
-  struct StringVectorBatch : public ColumnVectorBatch {
+  struct StringVectorBatch: public ColumnVectorBatch {
     StringVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~StringVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
+    virtual ~StringVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
 
     // pointers to the start of each string
     DataBuffer<char*> data;
@@ -245,35 +152,35 @@ namespace orc {
    */
   struct EncodedStringVectorBatch : public StringVectorBatch {
     EncodedStringVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~EncodedStringVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
+    virtual ~EncodedStringVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
     std::shared_ptr<StringDictionary> dictionary;
 
     // index for dictionary entry
     DataBuffer<int64_t> index;
   };
 
-  struct StructVectorBatch : public ColumnVectorBatch {
+  struct StructVectorBatch: public ColumnVectorBatch {
     StructVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~StructVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
-    bool hasVariableLength() override;
+    virtual ~StructVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
+    bool hasVariableLength();
 
     std::vector<ColumnVectorBatch*> fields;
   };
 
-  struct ListVectorBatch : public ColumnVectorBatch {
+  struct ListVectorBatch: public ColumnVectorBatch {
     ListVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~ListVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
-    bool hasVariableLength() override;
+    virtual ~ListVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
+    bool hasVariableLength();
 
     /**
      * The offset of the first element of each list.
@@ -282,17 +189,17 @@ namespace orc {
     DataBuffer<int64_t> offsets;
 
     // the concatenated elements
-    std::unique_ptr<ColumnVectorBatch> elements;
+    ORC_UNIQUE_PTR<ColumnVectorBatch> elements;
   };
 
-  struct MapVectorBatch : public ColumnVectorBatch {
+  struct MapVectorBatch: public ColumnVectorBatch {
     MapVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~MapVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
-    bool hasVariableLength() override;
+    virtual ~MapVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
+    bool hasVariableLength();
 
     /**
      * The offset of the first element of each map.
@@ -301,19 +208,19 @@ namespace orc {
     DataBuffer<int64_t> offsets;
 
     // the concatenated keys
-    std::unique_ptr<ColumnVectorBatch> keys;
+    ORC_UNIQUE_PTR<ColumnVectorBatch> keys;
     // the concatenated elements
-    std::unique_ptr<ColumnVectorBatch> elements;
+    ORC_UNIQUE_PTR<ColumnVectorBatch> elements;
   };
 
-  struct UnionVectorBatch : public ColumnVectorBatch {
+  struct UnionVectorBatch: public ColumnVectorBatch {
     UnionVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~UnionVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
-    bool hasVariableLength() override;
+    virtual ~UnionVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
+    bool hasVariableLength();
 
     /**
      * For each value, which element of children has the value.
@@ -339,13 +246,13 @@ namespace orc {
     int32_t scale;
   };
 
-  struct Decimal64VectorBatch : public ColumnVectorBatch {
+  struct Decimal64VectorBatch: public ColumnVectorBatch {
     Decimal64VectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~Decimal64VectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
+    virtual ~Decimal64VectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
 
     // total number of digits
     int32_t precision;
@@ -355,7 +262,7 @@ namespace orc {
     // the numeric values
     DataBuffer<int64_t> values;
 
-   protected:
+  protected:
     /**
      * Contains the scales that were read from the file. Should NOT be
      * used.
@@ -365,13 +272,13 @@ namespace orc {
     friend class Decimal64ColumnWriter;
   };
 
-  struct Decimal128VectorBatch : public ColumnVectorBatch {
+  struct Decimal128VectorBatch: public ColumnVectorBatch {
     Decimal128VectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~Decimal128VectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
+    virtual ~Decimal128VectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
 
     // total number of digits
     int32_t precision;
@@ -381,7 +288,7 @@ namespace orc {
     // the numeric values
     DataBuffer<Int128> values;
 
-   protected:
+  protected:
     /**
      * Contains the scales that were read from the file. Should NOT be
      * used.
@@ -397,13 +304,13 @@ namespace orc {
    * The timestamps are stored split into the time_t value (seconds since
    * 1 Jan 1970 00:00:00) and the nanoseconds within the time_t value.
    */
-  struct TimestampVectorBatch : public ColumnVectorBatch {
+  struct TimestampVectorBatch: public ColumnVectorBatch {
     TimestampVectorBatch(uint64_t capacity, MemoryPool& pool);
-    ~TimestampVectorBatch() override;
-    std::string toString() const override;
-    void resize(uint64_t capacity) override;
-    void clear() override;
-    uint64_t getMemoryUsage() override;
+    virtual ~TimestampVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    void clear();
+    uint64_t getMemoryUsage();
 
     // the number of seconds past 1 Jan 1970 00:00 UTC (aka time_t)
     // Note that we always assume data is in GMT timezone; therefore it is
@@ -415,6 +322,6 @@ namespace orc {
     DataBuffer<int64_t> nanoseconds;
   };
 
-}  // namespace orc
+}
 
 #endif

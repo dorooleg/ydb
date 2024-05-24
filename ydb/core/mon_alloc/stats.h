@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ydb/library/actors/core/defs.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/defs.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
@@ -18,12 +18,6 @@ namespace NKikimr {
 
     struct IAllocState {
         virtual ~IAllocState() = default;
-
-        /**
-         * @brief  Number of bytes that the application is actively using to hold data. 
-         * 
-         * This is computed by the bytes requested from the OS minus any bytes that are held in caches.
-         */
         virtual ui64 GetAllocatedMemoryEstimate() const = 0;
     };
 
@@ -49,6 +43,6 @@ namespace NKikimr {
         static std::unique_ptr<IAllocState> AllocState;
 
         static ui64 GetAllocatedMemoryEstimate();
-        static std::optional<TMemoryUsage> TryGetMemoryUsage();
+        static TMemoryUsage GetMemoryUsage();
     };
 }

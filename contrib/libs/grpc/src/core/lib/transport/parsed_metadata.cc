@@ -24,10 +24,12 @@ TString MakeDebugString(y_absl::string_view key, y_absl::string_view value) {
 }
 
 Slice SliceFromBuffer(const Buffer& buffer) {
-  return Slice(CSliceRef(buffer.slice));
+  return Slice(grpc_slice_ref_internal(buffer.slice));
 }
 
-void DestroySliceValue(const Buffer& value) { CSliceUnref(value.slice); }
+void DestroySliceValue(const Buffer& value) {
+  grpc_slice_unref_internal(value.slice);
+}
 
 void DestroyTrivialMemento(const Buffer&) {}
 

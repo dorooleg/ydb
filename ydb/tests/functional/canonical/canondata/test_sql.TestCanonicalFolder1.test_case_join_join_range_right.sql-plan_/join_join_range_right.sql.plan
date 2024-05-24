@@ -29,6 +29,12 @@
                         "Key2",
                         "Value"
                     ],
+                    "lookup_by": [
+                        "Key1 (103)"
+                    ],
+                    "scan_by": [
+                        "Key2 (-\u221e, +\u221e)"
+                    ],
                     "type": "Lookup"
                 }
             ]

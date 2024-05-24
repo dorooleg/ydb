@@ -1,7 +1,6 @@
 #include "info.h"
 
 #include "error.h"
-#include "fs.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -39,7 +38,6 @@ static int getloadavg(double* loadavg, int nelem) {
 #include <util/string/ascii.h>
 #include <util/string/cast.h>
 #include <util/string/strip.h>
-#include <util/string/split.h>
 #include <util/stream/file.h>
 #include <util/generic/yexception.h>
 
@@ -51,15 +49,15 @@ In nanny - Runtime -> Instance spec -> Advanced settings -> Cgroupfs settings: M
 
 In deploy - Stage - Edit stage - Box - Cgroupfs settings: Mount mode = Read only
 */
-static inline double CgroupV1Cpus(const TString& cpuCfsQuotaUsPath, const TString& cfsPeriodUsPath) {
+static inline double CgroupCpus() {
     try {
-        double q = FromString<int32_t>(StripString(TFileInput(cpuCfsQuotaUsPath).ReadAll()));
+        double q = FromString<int32_t>(StripString(TFileInput("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").ReadAll()));
 
         if (q <= 0) {
             return 0;
         }
 
-        double p = FromString<int32_t>(StripString(TFileInput(cfsPeriodUsPath).ReadAll()));
+        double p = FromString<int32_t>(StripString(TFileInput("/sys/fs/cgroup/cpu/cpu.cfs_period_us").ReadAll()));
 
         if (p <= 0) {
             return 0;
@@ -69,54 +67,6 @@ static inline double CgroupV1Cpus(const TString& cpuCfsQuotaUsPath, const TStrin
     } catch (...) {
         return 0;
     }
-}
-
-/*
-In cgroups v2 there isn't a dedicated "cpu" directory under /sys/fs/cgroup,
-so the approximation of the number of CPUs may use the cpu.max file.
-The format is the following:
-
-$MAX $PERIOD
-Which indicates that the group may consume up to $MAX in each $PERIOD duration.
-
-The "max" value could be either the string "max" or a number. In the first case
-our approximation doesn't work so we can bail out earlier.
-*/
-static inline double CgroupV2Cpus(const TString& cpuMaxPath) {
-    try {
-        TVector<TString> cgroupCpuMax = StringSplitter(TFileInput(cpuMaxPath).ReadAll()).Split(' ').Take(2);
-        double max = FromString<int32_t>(StripString(cgroupCpuMax[0]));
-        double period = FromString<int32_t>(StripString(cgroupCpuMax[1]));
-
-        if (max <= 0 || period <= 0) {
-            return 0;
-        }
-
-        return max / period;
-    } catch (...) {
-        return 0;
-    }
-}
-
-static inline double CgroupCpus() {
-    static const TString cpuMaxPath("/sys/fs/cgroup/cpu.max");
-    static const TString cpuCfsQuotaUsPath("/sys/fs/cgroup/cpu/cpu.cfs_quota_us");
-    static const TString cfsPeriodUsPath("/sys/fs/cgroup/cpu/cpu.cfs_period_us");
-
-    if (NFs::Exists(cpuMaxPath)) {
-        auto cgroup2Cpus = CgroupV2Cpus(cpuMaxPath);
-        if (cgroup2Cpus > 0) {
-            return cgroup2Cpus;
-        }
-    }
-
-    if (NFs::Exists(cpuCfsQuotaUsPath) && NFs::Exists(cfsPeriodUsPath)) {
-        auto cgroups1Cpus = CgroupV1Cpus(cpuCfsQuotaUsPath, cfsPeriodUsPath);
-        if (cgroups1Cpus > 0) {
-            return cgroups1Cpus;
-        }
-    }
-    return 0;
 }
 #endif
 

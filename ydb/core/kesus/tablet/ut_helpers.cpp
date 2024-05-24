@@ -2,7 +2,7 @@
 
 #include <ydb/core/metering/metering.h>
 
-#include <ydb/library/actors/core/event_pb.h>
+#include <library/cpp/actors/core/event_pb.h>
 
 #include <algorithm>
 
@@ -65,7 +65,7 @@ NActors::TActorId CreateFakeMetering(NActors::TTestActorRuntime &runtime) {
 
 TTestContext::TTestContext()
     : TabletType(TTabletTypes::Kesus)
-    , TabletId(MakeTabletID(false, 1))
+    , TabletId(MakeTabletID(0, 0, 1))
 {}
 
 void TTestContext::Setup(ui32 nodeCount, bool useRealThreads) {
@@ -126,7 +126,7 @@ TActorId TTestContext::GetTabletActorId() {
     SendFromEdge(edge, new TEvKesus::TEvDummyRequest(), cookie);
     TAutoPtr<IEventHandle> handle;
     Runtime->GrabEdgeEvent<TEvKesus::TEvDummyResponse>(handle);
-    Y_ABORT_UNLESS(handle);
+    Y_VERIFY(handle);
     UNIT_ASSERT_VALUES_EQUAL(handle->Recipient, edge);
     UNIT_ASSERT_VALUES_EQUAL(handle->Cookie, cookie);
     return handle->Sender;
@@ -298,7 +298,7 @@ void TTestContext::SendAcquireLock(
             count = 1;
             break;
         default:
-            Y_ABORT("Unexpected lock mode %d", mode);
+            Y_FAIL("Unexpected lock mode %d", mode);
     }
     SendFromProxy(proxy, generation, new TEvKesus::TEvAcquireSemaphore("", generation, sessionId, lockName, count, timeoutMillis, data, true), reqId);
 }
@@ -479,7 +479,7 @@ THashMap<ui64, TTestContext::TSimpleSessionInfo> TTestContext::DescribeSessions(
     auto result = ExpectEdgeEvent<TEvKesus::TEvDescribeSessionsResult>(edge, cookie);
     THashMap<ui64, TSimpleSessionInfo> sessions;
     for (const auto& sessionInfo : result->Record.GetSessions()) {
-        Y_ABORT_UNLESS(!sessions.contains(sessionInfo.GetSessionId()));
+        Y_VERIFY(!sessions.contains(sessionInfo.GetSessionId()));
         auto& session = sessions[sessionInfo.GetSessionId()];
         session.TimeoutMillis = sessionInfo.GetTimeoutMillis();
         session.Description = sessionInfo.GetDescription();
@@ -521,7 +521,7 @@ TTestContext::TSimpleLockDescription TTestContext::DescribeLock(const TString& l
                     result.SharedOwners.insert(owner.session_id());
                     break;
                 default:
-                    Y_ABORT("Unexpected count %lu", owner.count());
+                    Y_FAIL("Unexpected count %lu", owner.count());
             }
         }
         UNIT_ASSERT_C(result.ExclusiveOwner != 0 || !result.SharedOwners.empty(), "Lock " << lockName << " is not locked (but exists)");
@@ -536,7 +536,7 @@ TTestContext::TSimpleLockDescription TTestContext::DescribeLock(const TString& l
                     mode = LOCK_MODE_SHARED;
                     break;
                 default:
-                    Y_ABORT("Unexpected count %lu", waiter.count());
+                    Y_FAIL("Unexpected count %lu", waiter.count());
             }
             result.Waiters[waiter.session_id()] = mode;
         }
@@ -732,7 +732,7 @@ ui64 TTestContext::AddQuoterResource(const NKikimrKesus::TStreamingQuoterResourc
 ui64 TTestContext::AddQuoterResource(const TString& resourcePath, const NKikimrKesus::THierarchicalDRRResourceConfig& config, Ydb::StatusIds::StatusCode status) {
     NKikimrKesus::TStreamingQuoterResource resource;
     resource.SetResourcePath(resourcePath);
-    *resource.MutableHierarchicalDRRResourceConfig() = config;
+    *resource.MutableHierarhicalDRRResourceConfig() = config;
     return AddQuoterResource(resource, status);
 }
 
@@ -752,14 +752,14 @@ void TTestContext::UpdateQuoterResource(const NKikimrKesus::TStreamingQuoterReso
 void TTestContext::UpdateQuoterResource(const TString& resourcePath, const NKikimrKesus::THierarchicalDRRResourceConfig& config, Ydb::StatusIds::StatusCode status) {
     NKikimrKesus::TStreamingQuoterResource resource;
     resource.SetResourcePath(resourcePath);
-    *resource.MutableHierarchicalDRRResourceConfig() = config;
+    *resource.MutableHierarhicalDRRResourceConfig() = config;
     UpdateQuoterResource(resource, status);
 }
 
 void TTestContext::UpdateQuoterResource(ui64 resourceId, const NKikimrKesus::THierarchicalDRRResourceConfig& config, Ydb::StatusIds::StatusCode status) {
     NKikimrKesus::TStreamingQuoterResource resource;
     resource.SetResourceId(resourceId);
-    *resource.MutableHierarchicalDRRResourceConfig() = config;
+    *resource.MutableHierarhicalDRRResourceConfig() = config;
     UpdateQuoterResource(resource, status);
 }
 

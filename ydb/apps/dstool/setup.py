@@ -38,7 +38,7 @@ setuptools.setup(
     license="Apache 2.0",
     package_dir={"": "."},
     packages=[
-        'ydb/library/actors/protos',
+        'library/cpp/actors/protos',
         'ydb/core/protos',
         'ydb/core/fq/libs/config/protos',
         'ydb/library/folder_service/proto',

@@ -1,4 +1,4 @@
-#include "mkql_builtins_decimal.h" // Y_IGNORE
+#include "mkql_builtins_decimal.h"
 
 namespace NKikimr {
 namespace NMiniKQL {

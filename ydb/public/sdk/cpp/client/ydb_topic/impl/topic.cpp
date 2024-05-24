@@ -1,9 +1,10 @@
-#include <ydb/public/sdk/cpp/client/ydb_topic/include/client.h>
-
+#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 #include <ydb/public/sdk/cpp/client/ydb_topic/impl/topic_impl.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/impl/common.h>
-
+#include <ydb/public/sdk/cpp/client/ydb_topic/impl/executor.h>
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/scheme_helpers/helpers.h>
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/impl/common.h>
+
+#include <ydb/library/persqueue/obfuscate/obfuscate.h>
 
 #include <util/random/random.h>
 #include <util/string/cast.h>
@@ -11,14 +12,10 @@
 
 namespace NYdb::NTopic {
 
-class TCommonCodecsProvider {
-public:
-    TCommonCodecsProvider() {
-        TCodecMap::GetTheCodecMap().Set((ui32)ECodec::GZIP, MakeHolder<TGzipCodec>());
-        TCodecMap::GetTheCodecMap().Set((ui32)ECodec::ZSTD, MakeHolder<TZstdCodec>());
-    }
-};
-TCommonCodecsProvider COMMON_CODECS_PROVIDER;
+TTopicClient::TTopicClient(const TDriver& driver, const TTopicClientSettings& settings)
+    : Impl_(std::make_shared<TImpl>(CreateInternalInterface(driver), settings))
+{
+}
 
 TDescribeTopicResult::TDescribeTopicResult(TStatus&& status, Ydb::Topic::DescribeTopicResult&& result)
     : TStatus(std::move(status))
@@ -40,16 +37,6 @@ const TConsumerDescription& TDescribeConsumerResult::GetConsumerDescription() co
     return ConsumerDescription_;
 }
 
-TDescribePartitionResult::TDescribePartitionResult(TStatus&& status, Ydb::Topic::DescribePartitionResult&& result)
-    : TStatus(std::move(status))
-    , PartitionDescription_(std::move(result))
-{
-}
-
-const TPartitionDescription& TDescribePartitionResult::GetPartitionDescription() const {
-    return PartitionDescription_;
-}
-
 TTopicDescription::TTopicDescription(Ydb::Topic::DescribeTopicResult&& result)
     : Proto_(std::move(result))
     , PartitioningSettings_(Proto_.partitioning_settings())
@@ -61,7 +48,6 @@ TTopicDescription::TTopicDescription(Ydb::Topic::DescribeTopicResult&& result)
     , TopicStats_(Proto_.topic_stats())
 {
     Owner_ = Proto_.self().owner();
-    CreationTimestamp_ = NScheme::TVirtualTimestamp(Proto_.self().created_at());
     PermissionToSchemeEntry(Proto_.self().permissions(), &Permissions_);
     PermissionToSchemeEntry(Proto_.self().effective_permissions(), &EffectivePermissions_);
 
@@ -81,18 +67,13 @@ TTopicDescription::TTopicDescription(Ydb::Topic::DescribeTopicResult&& result)
 
 TConsumerDescription::TConsumerDescription(Ydb::Topic::DescribeConsumerResult&& result)
     : Proto_(std::move(result))
-    , Consumer_(Proto_.consumer())
+    , Consumer_(result.consumer())
 {
     for (const auto& part : Proto_.partitions()) {
         Partitions_.emplace_back(part);
     }
 }
 
-TPartitionDescription::TPartitionDescription(Ydb::Topic::DescribePartitionResult&& result)
-    : Proto_(std::move(result))
-    , Partition_(Proto_.partition())
-{
-}
 
 TConsumer::TConsumer(const Ydb::Topic::Consumer& consumer)
     : ConsumerName_(consumer.name())
@@ -143,10 +124,6 @@ const TVector<TPartitionInfo>& TConsumerDescription::GetPartitions() const {
     return Partitions_;
 }
 
-const TPartitionInfo& TPartitionDescription::GetPartition() const {
-    return Partition_;
-}
-
 const TConsumer& TConsumerDescription::GetConsumer() const {
     return Consumer_;
 }
@@ -185,7 +162,7 @@ const TVector<TConsumer>& TTopicDescription::GetConsumers() const {
 
 void TTopicDescription::SerializeTo(Ydb::Topic::CreateTopicRequest& request) const {
     Y_UNUSED(request);
-    Y_ABORT("Not implemented");
+    Y_FAIL("Not implemented");
 }
 
 const Ydb::Topic::DescribeTopicResult& TTopicDescription::GetProto() const {
@@ -196,16 +173,8 @@ const Ydb::Topic::DescribeConsumerResult& TConsumerDescription::GetProto() const
     return Proto_;
 }
 
-const Ydb::Topic::DescribePartitionResult& TPartitionDescription::GetProto() const {
-    return Proto_;
-}
-
 const TString& TTopicDescription::GetOwner() const {
     return Owner_;
-}
-
-const NScheme::TVirtualTimestamp& TTopicDescription::GetCreationTimestamp() const {
-    return CreationTimestamp_;
 }
 
 const TTopicStats& TTopicDescription::GetTopicStats() const {
@@ -336,19 +305,6 @@ TString TPartitionConsumerStats::GetReadSessionId() const {
     return ReadSessionId_;
 }
 
-TPartitionLocation::TPartitionLocation(const Ydb::Topic::PartitionLocation& partitionLocation)
-    : NodeId_(partitionLocation.node_id())
-    , Generation_(partitionLocation.generation())
-{
-}
-
-i32 TPartitionLocation::GetNodeId() const {
-    return NodeId_;
-}
-
-i64 TPartitionLocation::GetGeneration() const {
-    return Generation_;
-}
 
 TPartitionInfo::TPartitionInfo(const Ydb::Topic::DescribeTopicResult::PartitionInfo& partitionInfo)
     : PartitionId_(partitionInfo.partition_id())
@@ -364,10 +320,6 @@ TPartitionInfo::TPartitionInfo(const Ydb::Topic::DescribeTopicResult::PartitionI
     }
     if (partitionInfo.has_partition_stats()) {
         PartitionStats_ = TPartitionStats{partitionInfo.partition_stats()};
-    }
-
-    if (partitionInfo.has_partition_location()) {
-        PartitionLocation_ = TPartitionLocation{partitionInfo.partition_location()};
     }
 }
 
@@ -387,9 +339,6 @@ TPartitionInfo::TPartitionInfo(const Ydb::Topic::DescribeConsumerResult::Partiti
         PartitionStats_ = TPartitionStats{partitionInfo.partition_stats()};
         PartitionConsumerStats_ = TPartitionConsumerStats{partitionInfo.partition_consumer_stats()};
     }
-    if (partitionInfo.has_partition_location()) {
-        PartitionLocation_ = TPartitionLocation{partitionInfo.partition_location()};
-    }
 }
 
 const TMaybe<TPartitionStats>& TPartitionInfo::GetPartitionStats() const {
@@ -400,10 +349,6 @@ const TMaybe<TPartitionConsumerStats>& TPartitionInfo::GetPartitionConsumerStats
     return PartitionConsumerStats_;
 }
 
-const TMaybe<TPartitionLocation>& TPartitionInfo::GetPartitionLocation() const {
-    return PartitionLocation_;
-}
-
 bool TPartitionInfo::GetActive() const {
     return Active_;
 }
@@ -412,13 +357,6 @@ ui64 TPartitionInfo::GetPartitionId() const {
     return PartitionId_;
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// TTopicClient
-
-TTopicClient::TTopicClient(const TDriver& driver, const TTopicClientSettings& settings)
-    : Impl_(std::make_shared<TImpl>(CreateInternalInterface(driver), settings))
-{
-}
 
 TAsyncStatus TTopicClient::CreateTopic(const TString& path, const TCreateTopicSettings& settings) {
     return Impl_->CreateTopic(path, settings);
@@ -441,8 +379,30 @@ TAsyncDescribeConsumerResult TTopicClient::DescribeConsumer(const TString& path,
     return Impl_->DescribeConsumer(path, consumer, settings);
 }
 
-TAsyncDescribePartitionResult TTopicClient::DescribePartition(const TString& path, i64 partitionId, const TDescribePartitionSettings& settings) {
-    return Impl_->DescribePartition(path, partitionId, settings);
+IRetryPolicy::TPtr IRetryPolicy::GetDefaultPolicy() {
+    static IRetryPolicy::TPtr policy = GetExponentialBackoffPolicy();
+    return policy;
+}
+
+IRetryPolicy::TPtr IRetryPolicy::GetNoRetryPolicy() {
+    return ::IRetryPolicy<EStatus>::GetNoRetryPolicy();
+}
+
+IRetryPolicy::TPtr
+IRetryPolicy::GetExponentialBackoffPolicy(TDuration minDelay, TDuration minLongRetryDelay, TDuration maxDelay,
+                                          size_t maxRetries, TDuration maxTime, double scaleFactor,
+                                          std::function<ERetryErrorClass(EStatus)> customRetryClassFunction) {
+    return ::IRetryPolicy<EStatus>::GetExponentialBackoffPolicy(
+        customRetryClassFunction ? customRetryClassFunction : NYdb::NPersQueue::GetRetryErrorClass, minDelay,
+        minLongRetryDelay, maxDelay, maxRetries, maxTime, scaleFactor);
+}
+
+IRetryPolicy::TPtr
+IRetryPolicy::GetFixedIntervalPolicy(TDuration delay, TDuration longRetryDelay, size_t maxRetries, TDuration maxTime,
+                                     std::function<ERetryErrorClass(EStatus)> customRetryClassFunction) {
+    return ::IRetryPolicy<EStatus>::GetFixedIntervalPolicy(
+        customRetryClassFunction ? customRetryClassFunction : NYdb::NPersQueue::GetRetryErrorClass, delay,
+        longRetryDelay, maxRetries, maxTime);
 }
 
 std::shared_ptr<IReadSession> TTopicClient::CreateReadSession(const TReadSessionSettings& settings) {
@@ -463,4 +423,4 @@ TAsyncStatus TTopicClient::CommitOffset(const TString& path, ui64 partitionId, c
     return Impl_->CommitOffset(path, partitionId, consumerName, offset, settings);
 }
 
-}  // namespace NYdb::NTopic
+} // namespace NYdb::NTopic

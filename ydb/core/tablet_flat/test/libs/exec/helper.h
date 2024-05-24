@@ -21,7 +21,7 @@ namespace NFake {
             return new NFake::TOwner(user, retry, info, setup, followerId);
         }
 
-        virtual TStorageInfo* MakeTabletInfo(ui64 tablet) noexcept
+        static TStorageInfo* MakeTabletInfo(ui64 tablet) noexcept
         {
             const auto none = TErasureType::ErasureNone;
 

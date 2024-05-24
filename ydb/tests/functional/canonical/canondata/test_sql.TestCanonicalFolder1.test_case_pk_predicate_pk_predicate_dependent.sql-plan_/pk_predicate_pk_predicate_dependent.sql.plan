@@ -14,8 +14,7 @@
                         "Group",
                         "Name"
                     ],
-                    "limit": "1001",
-                    "type": "Scan"
+                    "type": "Lookup"
                 }
             ]
         },

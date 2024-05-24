@@ -1,8 +1,6 @@
 #include "yql_s3_provider_impl.h"
 #include "yql_s3_listing_strategy.h"
 
-#include <ydb/library/yql/core/yql_expr_optimize.h>
-#include <ydb/library/yql/core/yql_opt_utils.h>
 #include <ydb/library/yql/providers/common/schema/expr/yql_expr_schema.h>
 #include <ydb/library/yql/providers/dq/expr_nodes/dqs_expr_nodes.h>
 #include <ydb/library/yql/providers/s3/expr_nodes/yql_s3_expr_nodes.h>
@@ -11,6 +9,8 @@
 #include <ydb/library/yql/providers/s3/path_generator/yql_s3_path_generator.h>
 #include <ydb/library/yql/providers/s3/range_helpers/path_list_reader.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
+#include <ydb/library/yql/core/yql_expr_optimize.h>
+#include <ydb/library/yql/core/yql_opt_utils.h>
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/utils/url_builder.h>
 
@@ -63,10 +63,8 @@ struct TListRequest {
 };
 
 bool operator<(const TListRequest& a, const TListRequest& b) {
-    const auto& lhs = a.S3Request.AuthInfo;
-    const auto& rhs = b.S3Request.AuthInfo;
-    return std::tie(lhs.Token, lhs.AwsAccessKey, lhs.AwsAccessSecret, lhs.AwsRegion, a.S3Request.Url, a.S3Request.Pattern) <
-           std::tie(rhs.Token, rhs.AwsAccessKey, rhs.AwsAccessSecret, rhs.AwsRegion, b.S3Request.Url, b.S3Request.Pattern);
+    return std::tie(a.S3Request.Token, a.S3Request.Url, a.S3Request.Pattern) <
+           std::tie(b.S3Request.Token, b.S3Request.Url, b.S3Request.Pattern);
 }
 
 using TPendingRequests = TMap<TListRequest, NThreading::TFuture<NS3Lister::TListResult>>;
@@ -79,7 +77,7 @@ struct TGeneratedColumnsConfig {
 
 class TS3IODiscoveryTransformer : public TGraphTransformerBase {
 public:
-    TS3IODiscoveryTransformer(TS3State::TPtr state)
+    TS3IODiscoveryTransformer(TS3State::TPtr state, IHTTPGateway::TPtr gateway)
         : State_(std::move(state))
         , ListerFactory_(NS3Lister::MakeS3ListerFactory(
               State_->Configuration->MaxInflightListsPerQuery,
@@ -87,7 +85,7 @@ public:
               State_->Configuration->ListingCallbackPerThreadQueueSize,
               State_->Configuration->RegexpCacheSize))
         , ListingStrategy_(MakeS3ListingStrategy(
-              State_->Gateway,
+              gateway,
               ListerFactory_,
               State_->Configuration->MinDesiredDirectoriesOfFilesPerQuery,
               State_->Configuration->MaxInflightListsPerQuery,
@@ -118,7 +116,7 @@ private:
                 if (dqSource.DataSource().Category() != S3ProviderName) {
                     return false;
                 }
-                auto maybeS3ParseSettings = dqSource.Input().Maybe<TS3ParseSettings>();
+                auto maybeS3ParseSettings = dqSource.Input().Maybe<TS3ParseSettingsBase>();
                 if (!maybeS3ParseSettings) {
                     return false;
                 }
@@ -164,7 +162,7 @@ private:
     TStatus ApplyDirectoryListing(const TDqSourceWrap& source, const TPendingRequests& pendingRequests,
         const TVector<TListRequest>& requests, TNodeOnNodeOwnedMap& replaces, TExprContext& ctx)
     {
-        TS3ParseSettings parse = source.Input().Maybe<TS3ParseSettings>().Cast();
+        TS3ParseSettingsBase parse = source.Input().Maybe<TS3ParseSettingsBase>().Cast();
         TExprNodeList newPaths;
         TExprNodeList extraValuesItems;
         size_t dirIndex = 0;
@@ -186,13 +184,13 @@ private:
 
                 const auto& listResult = it->second.GetValue();
                 if (listResult.index() == 1) {
-                    const auto& error = std::get<NS3Lister::TListError>(listResult);
+                    const auto& issues = std::get<TIssues>(listResult);
                     YQL_CLOG(INFO, ProviderS3)
                         << "Discovery " << req.S3Request.Url << req.S3Request.Pattern
-                        << " error " << error.Issues.ToString();
+                        << " error " << issues.ToString();
                     std::for_each(
-                        error.Issues.begin(),
-                        error.Issues.end(),
+                        issues.begin(),
+                        issues.end(),
                         std::bind(
                             &TExprContext::AddError, std::ref(ctx), std::placeholders::_1));
                     return TStatus::Error;
@@ -201,10 +199,10 @@ private:
                 const auto& listEntries = std::get<NS3Lister::TListEntries>(listResult);
 
                 for (auto& entry : listEntries.Objects) {
-                    listedPaths.emplace_back(entry.Path, entry.Size, false, dirIndex + i);
+                    listedPaths.emplace_back(entry.Path, entry.Size, false);
                 }
                 for (auto& path : listEntries.Directories) {
-                    listedPaths.emplace_back(path.Path, 0, true, dirIndex + i);
+                    listedPaths.emplace_back(path.Path, 0, true);
                 }
             }
 
@@ -259,7 +257,8 @@ private:
         }
 
         auto newExtraValues = ctx.NewCallable(source.Pos(), "OrderedExtend", std::move(extraValuesItems));
-        auto newInput = Build<TS3ParseSettings>(ctx, parse.Pos())
+        auto newInput = Build<TS3ParseSettingsBase>(ctx, parse.Pos())
+            .CallableName(parse.Ref().Content())
             .InitFrom(parse)
             .Paths(ctx.NewList(parse.Paths().Pos(), std::move(newPaths)))
             .Settings(RemoveSetting(parse.Settings().Cast().Ref(), "directories", ctx))
@@ -327,15 +326,9 @@ private:
 
                 const NS3Lister::TListResult& listResult = it->second.GetValue();
                 if (listResult.index() == 1) {
-                    const auto& error = std::get<NS3Lister::TListError>(listResult);
-                    YQL_CLOG(INFO, ProviderS3)
-                        << "Discovery " << req.S3Request.Url << req.S3Request.Pattern
-                        << " error " << error.Issues.ToString();
-                    std::for_each(
-                        error.Issues.begin(),
-                        error.Issues.end(),
-                        std::bind(
-                            &TExprContext::AddError, std::ref(ctx), std::placeholders::_1));
+                    const auto& issues = std::get<TIssues>(listResult);
+                    YQL_CLOG(INFO, ProviderS3) << "Discovery " << req.S3Request.Url << req.S3Request.Pattern << " error " << issues.ToString();
+                    std::for_each(issues.begin(), issues.end(), std::bind(&TExprContext::AddError, std::ref(ctx), std::placeholders::_1));
                     return TStatus::Error;
                 }
 
@@ -359,7 +352,7 @@ private:
                     }
 
                     auto& pathList = pathsByExtraValues[extraValues];
-                    pathList.emplace_back(NS3Details::TPath{entry.Path, entry.Size, false, pathList.size()});
+                    pathList.emplace_back(NS3Details::TPath{entry.Path, entry.Size, false});
                     readSize += entry.Size;
                 }
                 for (auto& entry: listEntries.Directories) {
@@ -370,7 +363,7 @@ private:
                     }
 
                     auto& pathList = pathsByExtraValues[extraValues];
-                    pathList.emplace_back(NS3Details::TPath{entry.Path, 0, true, pathList.size()});
+                    pathList.emplace_back(NS3Details::TPath{entry.Path, 0, true});
                 }
 
                 YQL_CLOG(INFO, ProviderS3) << "Pattern " << req.S3Request.Pattern << " has " << listEntries.Size() << " items with total size " << readSize;
@@ -569,13 +562,15 @@ private:
         TS3DataSource dataSource = source.DataSource().Maybe<TS3DataSource>().Cast();
         const auto& connect = State_->Configuration->Clusters.at(dataSource.Cluster().StringValue());
         const auto& token = State_->Configuration->Tokens.at(dataSource.Cluster().StringValue());
+        const auto credentialsProviderFactory = CreateCredentialsProviderFactoryForStructuredToken(State_->CredentialsFactory, token);
 
-        const auto authInfo = GetAuthInfo(State_->CredentialsFactory, token);
         const TString url = connect.Url;
-        auto s3ParseSettings = source.Input().Maybe<TS3ParseSettings>().Cast();
+        const TString tokenStr = credentialsProviderFactory->CreateProvider()->GetAuthInfo();
+
+        auto s3ParseSettingsBase = source.Input().Maybe<TS3ParseSettingsBase>().Cast();
         TString filePattern;
-        if (s3ParseSettings.Ref().ChildrenSize() > TS3ParseSettings::idx_Settings) {
-            const auto& settings = *s3ParseSettings.Ref().Child(TS3ParseSettings::idx_Settings);
+        if (s3ParseSettingsBase.Ref().ChildrenSize() > TS3ParseSettingsBase::idx_Settings) {
+            const auto& settings = *s3ParseSettingsBase.Ref().Child(TS3ParseSettingsBase::idx_Settings);
             if (!FindFilePattern(settings, ctx, filePattern)) {
                 return false;
             }
@@ -583,15 +578,11 @@ private:
         const TString effectiveFilePattern = filePattern ? filePattern : "*";
 
         auto resultSetLimitPerPath = std::max(State_->Configuration->MaxDiscoveryFilesPerQuery, State_->Configuration->MaxDirectoriesAndFilesPerQuery);
-        if (!s3ParseSettings.Paths().Empty()) {
-            resultSetLimitPerPath /= s3ParseSettings.Paths().Size();
+        if (!s3ParseSettingsBase.Paths().Empty()) {
+            resultSetLimitPerPath /= s3ParseSettingsBase.Paths().Size();
         }
-        resultSetLimitPerPath =
-            std::min(resultSetLimitPerPath,
-                     State_->Configuration->MaxDiscoveryFilesPerDirectory.Get().GetOrElse(
-                         State_->Configuration->MaxListingResultSizePerPhysicalPartition));
-
-        for (auto path : s3ParseSettings.Paths()) {
+        
+        for (auto path : s3ParseSettingsBase.Paths()) {
             NS3Details::TPathList directories;
             NS3Details::UnpackPathsList(path.Data().Literal().Value(), FromString<bool>(path.IsText().Literal().Value()), directories);
 
@@ -602,7 +593,7 @@ private:
 
                 auto req = TListRequest{.S3Request{
                     .Url = url,
-                    .AuthInfo = authInfo,
+                    .Token = tokenStr,
                     .Pattern = NS3::NormalizePath(
                         TStringBuilder() << dir.Path << "/" << effectiveFilePattern),
                     .PatternType = NS3Lister::ES3PatternType::Wildcard,
@@ -616,7 +607,7 @@ private:
                             State_->Configuration->UseConcurrentDirectoryLister.Get().GetOrElse(
                                 State_->Configuration->AllowConcurrentListings),
                         .MaxResultSet = resultSetLimitPerPath});
-
+            
 
                 RequestsByNode_[source.Raw()].push_back(req);
                 PendingRequests_[req] = future;
@@ -725,9 +716,10 @@ private:
 
         const auto& connect = State_->Configuration->Clusters.at(read.DataSource().Cluster().StringValue());
         const auto& token = State_->Configuration->Tokens.at(read.DataSource().Cluster().StringValue());
+        const auto credentialsProviderFactory = CreateCredentialsProviderFactoryForStructuredToken(State_->CredentialsFactory, token);
 
-        const auto authInfo = GetAuthInfo(State_->CredentialsFactory, token);
         const TString url = connect.Url;
+        const TString tokenStr = credentialsProviderFactory->CreateProvider()->GetAuthInfo();
 
         TGeneratedColumnsConfig config;
         if (!partitionedBy.empty()) {
@@ -754,10 +746,10 @@ private:
                 State_->Configuration->UseConcurrentDirectoryLister.Get().GetOrElse(
                     State_->Configuration->AllowConcurrentListings);
             auto req = TListRequest{
-                .S3Request{.Url = url, .AuthInfo = authInfo},
+                .S3Request{.Url = url, .Token = tokenStr},
                 .FilePattern = effectiveFilePattern,
                 .Options{
-                    .IsConcurrentListing = isConcurrentListingEnabled,
+                    .IsConcurrentListing = isConcurrentListingEnabled, 
                     .MaxResultSet = std::max(State_->Configuration->MaxDiscoveryFilesPerQuery, State_->Configuration->MaxDirectoriesAndFilesPerQuery)
                 }};
 
@@ -870,8 +862,8 @@ private:
 
 }
 
-THolder<IGraphTransformer> CreateS3IODiscoveryTransformer(TS3State::TPtr state) {
-    return THolder(new TS3IODiscoveryTransformer(std::move(state)));
+THolder<IGraphTransformer> CreateS3IODiscoveryTransformer(TS3State::TPtr state, IHTTPGateway::TPtr gateway) {
+    return THolder(new TS3IODiscoveryTransformer(std::move(state), std::move(gateway)));
 }
 
 }

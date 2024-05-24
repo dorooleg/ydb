@@ -5,11 +5,9 @@
 
 namespace NYdb {
 
-using std::string;
-
 TPlainStatus::TPlainStatus(
-    const NYdbGrpc::TGrpcStatus& grpcStatus,
-    const string& endpoint,
+    const NGrpc::TGrpcStatus& grpcStatus,
+    const TStringType& endpoint,
     std::multimap<TStringType, TStringType>&& metadata)
     : Endpoint(endpoint)
     , Metadata(std::move(metadata))
@@ -55,12 +53,6 @@ TPlainStatus::TPlainStatus(
     }
     if (msg) {
         Issues.AddIssue(NYql::TIssue(msg));
-    }
-    for (const auto& [name, value] : grpcStatus.ServerTrailingMetadata) {
-        Metadata.emplace(
-            TStringType(name.begin(), name.end()),
-            TStringType(value.begin(), value.end())
-        );
     }
 }
 

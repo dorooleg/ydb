@@ -1,5 +1,5 @@
 #include "mkql_unwrap.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/public/udf/udf_terminator.h>
@@ -29,7 +29,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* value, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto kill = BasicBlock::Create(context, "kill", ctx.Func);
         const auto good = BasicBlock::Create(context, "good", ctx.Func);

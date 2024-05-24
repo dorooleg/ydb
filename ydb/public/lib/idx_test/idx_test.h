@@ -51,7 +51,6 @@ public:
     struct TRunSettings {
         size_t RunLimit;
         size_t Infly;
-        size_t OpsPerTx;
     };
 
     virtual NJson::TJsonValue Run(const TString& tableName, ui32 loadCommands, const TRunSettings& settings) = 0;

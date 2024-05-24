@@ -188,7 +188,7 @@ namespace NKikimr {
             }
 
             THolder<IActor> actor{CreateSkeletonVPatchActor(EdgeActors[nodeId], GType,
-                    ev, TInstant(), nullptr, nullptr, nullptr, nullptr, nullptr, patchCtx, VDiskIds[nodeId].ToString(), 0, nullptr)};
+                    ev, TInstant(), nullptr, nullptr, nullptr, nullptr, nullptr, patchCtx, VDiskIds[nodeId].ToString(), 0)};
 
             if constexpr (!std::is_void_v<DecoratorType>) {
                 TVPatchDecoratorArgs args{EdgeActors[nodeId], IsCheckingEventsByDecorator,
@@ -440,7 +440,7 @@ namespace NKikimr {
             std::unique_ptr<TEvBlobStorage::TEvVGetResult> evVGetResult = std::make_unique<TEvBlobStorage::TEvVGetResult>(
                     vGetStatus, testData.VDiskIds[nodeId], testData.Now, evVGet->GetCachedByteSize(), &evVGet->Record,
                     nullptr, nullptr, nullptr, evVGet->Record.GetCookie(), vGetHandle->GetChannel(), 0);
-            evVGetResult->AddResult(NKikimrProto::OK, blob.BlobId, 0, TRope(blob.Buffer));
+            evVGetResult->AddResult(NKikimrProto::OK, blob.BlobId, 0, blob.Buffer.data(), blob.Buffer.size());
 
             std::unique_ptr<IEventHandle> handle = std::make_unique<IEventHandle>(vPatchActorId, edgeActor, evVGetResult.release());
             runtime.Send(handle.release());

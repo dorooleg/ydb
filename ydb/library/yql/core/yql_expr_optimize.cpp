@@ -72,8 +72,8 @@ namespace {
         return hasRemaps ? ctx.Expr.ChangeChildren(*node, std::move(newChildren)) : node;
     }
 
-    void AddExpected(const TExprNode& src, const TExprNode& dst, TExprContext& ctx, const TOptimizeExprSettings& settings) {
-        if (!src.GetTypeAnn() || !settings.Types) {
+    void AddExpected(const TExprNode& src, const TExprNode& dst, const TOptimizeExprSettings& settings) {
+        if (!src.GetTypeAnn() || dst.GetTypeAnn() || !settings.Types) {
             return;
         }
 
@@ -81,23 +81,11 @@ namespace {
             return;
         }
 
-        settings.Types->ExpectedTypes[dst.UniqueId()] = src.GetTypeAnn();
-        if (src.GetState() >= TExprNode::EState::ConstrComplete) {
-            settings.Types->ExpectedConstraints[dst.UniqueId()] = src.GetAllConstraints();
-        } else {
-            settings.Types->ExpectedConstraints.erase(dst.UniqueId());
-        }
+        settings.Types->ExpectedTypes.emplace(dst.UniqueId(), src.GetTypeAnn());
+        settings.Types->ExpectedConstraints.emplace(dst.UniqueId(), src.GetAllConstraints());
         auto columnOrder = settings.Types->LookupColumnOrder(src);
         if (columnOrder) {
-            settings.Types->ExpectedColumnOrders[dst.UniqueId()] = *columnOrder;
-        } else {
-            settings.Types->ExpectedColumnOrders.erase(dst.UniqueId());
-        }
-
-        if (dst.GetTypeAnn()) {
-            // we should check expected types / constraints / column order immediately
-            // TODO: check constraints
-            CheckExpectedTypeAndColumnOrder(dst, ctx, *settings.Types);
+            settings.Types->ExpectedColumnOrders.emplace(dst.UniqueId(), *columnOrder);
         }
     }
 
@@ -160,7 +148,7 @@ namespace {
                 }
                 if (bodyChanged) {
                     ret = ctx.Expr.DeepCopyLambda(*current, std::move(newBody));
-                    AddExpected(*node, *ret, ctx.Expr, ctx.Settings);
+                    AddExpected(*node, *ret, ctx.Settings);
                 }
             }
         } else {
@@ -216,7 +204,7 @@ namespace {
                 }
             }
 
-            AddExpected(*node, *ret, ctx.Expr, ctx.Settings);
+            AddExpected(*node, *ret, ctx.Settings);
         }
 
         if (node == ret && ctx.Settings.ProcessedNodes) {
@@ -339,32 +327,6 @@ namespace {
         if (postFunc) {
             postFunc(node);
         }
-    }
-
-    void VisitExprLambdasLastInternal(const TExprNode::TPtr& node, 
-        const TExprVisitPtrFunc& preLambdaFunc,
-        const TExprVisitPtrFunc& postLambdaFunc,
-        TNodeSet& visitedNodes)
-    {
-        if (!visitedNodes.emplace(node.Get()).second) {
-            return;
-        }
-
-        for (auto child : node->Children()) {
-            if (!child->IsLambda()) {
-                VisitExprLambdasLastInternal(child, preLambdaFunc, postLambdaFunc, visitedNodes);
-            }
-        }
-        
-        preLambdaFunc(node);
-        
-        for (auto child : node->Children()) {
-            if (child->IsLambda()) {
-                VisitExprLambdasLastInternal(child, preLambdaFunc, postLambdaFunc, visitedNodes);
-            }
-        }
-
-        postLambdaFunc(node);
     }
 
     void VisitExprInternal(const TExprNode& node, const TExprVisitRefFunc& preFunc,
@@ -898,19 +860,8 @@ void VisitExpr(const TExprNode& root, const TExprVisitRefFunc& func) {
     VisitExprInternal(root, func, {}, visitedNodes);
 }
 
-void VisitExpr(const TExprNode& root, const TExprVisitRefFunc& preFunc, const TExprVisitRefFunc& postFunc) {
-    TNodeSet visitedNodes;
-    VisitExprInternal(root, preFunc, postFunc, visitedNodes);
-}
-
 void VisitExpr(const TExprNode::TPtr& root, const TExprVisitPtrFunc& func, TNodeSet& visitedNodes) {
     VisitExprInternal(root, func, {}, visitedNodes);
-}
-    
-void VisitExprLambdasLast(const TExprNode::TPtr& root, const TExprVisitPtrFunc& preLambdaFunc, const TExprVisitPtrFunc& postLambdaFunc)
-{
-    TNodeSet visitedNodes;
-    VisitExprLambdasLastInternal(root, preLambdaFunc, postLambdaFunc, visitedNodes);
 }
 
 void VisitExprByFirst(const TExprNode::TPtr& root, const TExprVisitPtrFunc& func) {

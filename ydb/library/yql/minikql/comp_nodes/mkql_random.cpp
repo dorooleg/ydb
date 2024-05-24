@@ -1,6 +1,5 @@
 #include "mkql_random.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
@@ -65,7 +64,7 @@ public:
 
     NUdf::TUnboxedValue DoCalculate(TComputationContext& compCtx) const {
         auto rand = Rand->GetValue(compCtx);
-        Y_DEBUG_ABORT_UNLESS(rand.GetResourceTag() == NUdf::TStringRef(RandomMTResource));
+        Y_VERIFY_DEBUG(rand.GetResourceTag() == NUdf::TStringRef(RandomMTResource));
         NUdf::TUnboxedValue *items = nullptr;
         const auto tuple = ResPair.NewArray(compCtx, 2, items);
         items[0] = NUdf::TUnboxedValuePod(static_cast<TMersenne<ui64>*>(rand.GetResource())->GenRand());
@@ -104,7 +103,7 @@ public:
         }
         }
 
-        Y_ABORT("Unexpected");
+        Y_FAIL("Unexpected");
     }
 
 private:

@@ -453,8 +453,7 @@ void TestPayloadOffset(ui64 firstSector, ui64 lastSector, ui64 currentSector, ui
     }
 
     Y_UNIT_TEST(TestDeviceList) {
-        TStringStream details;
-        for(const NPDisk::TDriveData& data : ListDevicesWithPartlabel(details)) {
+        for(const NPDisk::TDriveData& data : ListDevicesWithPartlabel()) {
             Cout << "data# " << data.ToString(false) << Endl;
         }
     }

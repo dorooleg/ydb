@@ -40,15 +40,8 @@ namespace std
  */
 
 #ifdef __cplusplus
-#if __cplusplus < 201103L
-#define _LIBCXXRT_NOEXCEPT noexcept
-#else
-#define _LIBCXXRT_NOEXCEPT noexcept
-#endif
 namespace __cxxabiv1 {
 extern "C" {
-#else
-#define _LIBCXXRT_NOEXCEPT
 #endif
 /**
  * Function type to call when an unexpected exception is encountered.
@@ -82,14 +75,7 @@ typedef void (*terminate_handler)();
  */
 struct __cxa_exception
 {
-#ifdef __LP64__
-	/**
-	 * Now _Unwind_Exception is marked with __attribute__((aligned)), which
-	 * implies __cxa_exception is also aligned.  Insert padding in the
-	 * beginning of the struct, rather than before unwindHeader.
-	 */
-	void *reserve;
-
+#if __LP64__
 	/**
 	 * Reference count.  Used to support the C++11 exception_ptr class.  This
 	 * is prepended to the structure in 64-bit mode and squeezed in to the
@@ -160,7 +146,7 @@ struct __cxa_exception
 	 * need to adjust the thrown pointer to make it all work correctly.
 	 */
 	void *adjustedPtr;
-#ifndef __LP64__
+#if !__LP64__
 	/**
 	 * Reference count.  Used to support the C++11 exception_ptr class.  This
 	 * is prepended to the structure in 64-bit mode and squeezed in to the
@@ -211,14 +197,6 @@ __cxa_eh_globals *__cxa_get_globals(void);
 __cxa_eh_globals *__cxa_get_globals_fast(void);
 
 std::type_info * __cxa_current_exception_type();
-
-
-void *__cxa_allocate_exception(size_t thrown_size) _LIBCXXRT_NOEXCEPT;
-
-void __cxa_free_exception(void* thrown_exception) _LIBCXXRT_NOEXCEPT;
-
-__cxa_exception *__cxa_init_primary_exception(
-		void *object, std::type_info* tinfo, void (*dest)(void *)) _LIBCXXRT_NOEXCEPT;
 
 /**
  * Throws an exception returned by __cxa_current_primary_exception().  This

@@ -99,11 +99,6 @@ NKikimrConfig::TTableServiceConfig MakeKqpResourceManagerConfig() {
     config.MutableResourceManager()->SetPublishStatisticsIntervalSec(0);
     config.MutableResourceManager()->SetEnableInstantMkqlMemoryAlloc(true);
 
-    auto* infoExchangerRetrySettings = config.MutableResourceManager()->MutableInfoExchangerSettings();
-    auto* exchangerSettings = infoExchangerRetrySettings->MutableExchangerSettings();
-    exchangerSettings->SetStartDelayMs(10);
-    exchangerSettings->SetMaxDelayMs(10);
-
     return config;
 }
 
@@ -125,16 +120,15 @@ struct TMockKqpComputeActorFactory : public IKqpNodeComputeActorFactory {
     TMockKqpComputeActorFactory(TTestBasicRuntime& runtime)
         : Runtime(runtime) {}
 
-    IActor* CreateKqpComputeActor(const TActorId& executerId, ui64 txId, NYql::NDqProto::TDqTask* task,
-        const NYql::NDq::TComputeRuntimeSettings& settings, const NYql::NDq::TComputeMemoryLimits& memoryLimits,
-        NWilson::TTraceId, TIntrusivePtr<NActors::TProtoArenaHolder>) override
+    IActor* CreateKqpComputeActor(const TActorId& executerId, ui64 txId, NYql::NDqProto::TDqTask&& task,
+        const NYql::NDq::TComputeRuntimeSettings& settings, const NYql::NDq::TComputeMemoryLimits& memoryLimits) override
     {
         auto actorId = Runtime.AllocateEdgeActor();
-        auto& mock = Task2Actor[task->GetId()];
+        auto& mock = Task2Actor[task.GetId()];
         mock.ActorId = actorId;
         mock.ExecuterId = executerId;
         mock.TxId = txId;
-        mock.Task.Swap(task);
+        mock.Task.Swap(&task);
         mock.Settings = settings;
         mock.MemoryLimits = memoryLimits;
         UNIT_ASSERT(mock.MemoryLimits.MemoryQuotaManager->AllocateQuota(mock.MemoryLimits.MkqlLightProgramMemoryLimit));
@@ -184,8 +178,8 @@ public:
         Runtime->EnableScheduleForActor(ResourceManagerActorId, true);
         WaitForBootstrap();
 
-        auto FederatedQuerySetup = std::make_optional<TKqpFederatedQuerySetup>({NYql::IHTTPGateway::Make(), nullptr, nullptr, nullptr, {}, {}, {}, nullptr, nullptr});
-        auto asyncIoFactory = CreateKqpAsyncIoFactory(KqpCounters, FederatedQuerySetup);
+        auto httpGateway = NYql::IHTTPGateway::Make();
+        auto asyncIoFactory = CreateKqpAsyncIoFactory(KqpCounters, httpGateway);
         auto kqpNode = CreateKqpNodeService(config, KqpCounters, CompFactory.Get(), asyncIoFactory);
         KqpNodeActorId = Runtime->Register(kqpNode);
         Runtime->EnableScheduleForActor(KqpNodeActorId, true);
@@ -482,8 +476,8 @@ void KqpNode::NotEnoughMemory() {
         UNIT_ASSERT_VALUES_EQUAL(1, record.GetTxId());
         UNIT_ASSERT_VALUES_EQUAL(1, record.GetNotStartedTasks().size());
         auto& task = record.GetNotStartedTasks()[0];
-        UNIT_ASSERT_EQUAL(NKikimrKqp::TEvStartKqpTasksResponse::NOT_ENOUGH_MEMORY, task.GetReason());
-        UNIT_ASSERT_STRING_CONTAINS(task.GetMessage(), "Not enough memory for query, requested: 201000");
+        UNIT_ASSERT_EQUAL(NKikimrKqp::TEvStartKqpTasksResponse::QUERY_MEMORY_LIMIT_EXCEEDED, task.GetReason());
+        UNIT_ASSERT_STRINGS_EQUAL("Required: 201000, limit: 30000", task.GetMessage());
     }
 
     AssertResourceBrokerSensors(0, 0, 0, 0, 0);
@@ -565,7 +559,7 @@ void KqpNode::NotEnoughComputeActors() {
         }
     }
 
-    AssertResourceBrokerSensors(0, 0, 0, 0, 0);
+    AssertResourceBrokerSensors(0, 0, 0, 4, 0);
 
     {
         NKikimr::TActorSystemStub stub;
@@ -598,7 +592,6 @@ void KqpNode::ResourceBrokerNotEnoughResources() {
         UNIT_ASSERT_VALUES_EQUAL(2, record.GetTxId());
         UNIT_ASSERT_VALUES_EQUAL(2, record.GetNotStartedTasks().size());
         for (auto& task : record.GetNotStartedTasks()) {
-            Cerr << TEvStartKqpTasksResponse_ENotStartedTaskReason_Name(task.GetReason()) << Endl;
             UNIT_ASSERT_EQUAL(NKikimrKqp::TEvStartKqpTasksResponse::NOT_ENOUGH_MEMORY, task.GetReason());
         }
     }
@@ -670,20 +663,6 @@ void KqpNode::ExecuterLost() {
         UNIT_ASSERT_VALUES_EQUAL("executer lost", abortEvent->Get()->Record.GetLegacyMessage());
     }
 
-    {
-        NKikimr::TActorSystemStub stub;
-        TMap<ui64, TMockComputeActor> Task2ActorEmpty;
-        CompFactory->Task2Actor.swap(Task2ActorEmpty);
-        Task2ActorEmpty.clear();
-    }
-
-    size_t iterations = 30;
-    while (KqpCounters->RmComputeActors->Val() != 0 && iterations > 0) {
-        Sleep(TDuration::MilliSeconds(300));
-        iterations--;
-        Cerr << "waiting compute actors to complete" << Endl;
-    }
-
     UNIT_ASSERT_VALUES_EQUAL(KqpCounters->RmComputeActors->Val(), 0);
     UNIT_ASSERT_VALUES_EQUAL(KqpCounters->RmMemory->Val(), 0);
     UNIT_ASSERT_VALUES_EQUAL(KqpCounters->RmNotEnoughMemory->Val(), 0);
@@ -737,13 +716,6 @@ void KqpNode::TerminateTx() {
         for (auto&[taskId, computeActor] : CompFactory->Task2Actor) {
             auto abortEvent = Runtime->GrabEdgeEvent<TEvKqp::TEvAbortExecution>(computeActor.ActorId);
             UNIT_ASSERT_VALUES_EQUAL("terminate", abortEvent->Get()->Record.GetLegacyMessage());
-        }
-
-        {
-            NKikimr::TActorSystemStub stub;
-            TMap<ui64, TMockComputeActor> Task2ActorEmpty;
-            CompFactory->Task2Actor.swap(Task2ActorEmpty);
-            Task2ActorEmpty.clear();
         }
     }
 

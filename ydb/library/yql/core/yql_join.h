@@ -2,7 +2,6 @@
 #include <ydb/library/yql/ast/yql_expr.h>
 #include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 #include <ydb/library/yql/core/yql_graph_transformer.h>
-#include <ydb/library/yql/core/yql_cost_function.h>
 
 #include <util/generic/set.h>
 #include <util/generic/vector.h>
@@ -26,7 +25,6 @@ struct TJoinLabel {
     TMaybe<TIssue> Parse(TExprContext& ctx, TExprNode& node, const TStructExprType* structType, const TUniqueConstraintNode* unique, const TDistinctConstraintNode* distinct);
     TMaybe<TIssue> ValidateLabel(TExprContext& ctx, const NNodes::TCoAtom& label);
     TString FullName(const TStringBuf& column) const;
-    TVector<TString> AllNames(const TStringBuf& column) const;
     TStringBuf ColumnName(const TStringBuf& column) const;
     TStringBuf TableName(const TStringBuf& column) const;
     bool HasTable(const TStringBuf& table) const;
@@ -143,9 +141,8 @@ struct TEquiJoinLinkSettings {
     TPositionHandle Pos;
     TSet<TString> LeftHints;
     TSet<TString> RightHints;
-    EJoinAlgoType JoinAlgo = EJoinAlgoType::Undefined;
     // JOIN implementation may ignore this flags if SortedMerge strategy is not supported
-    bool ForceSortedMerge = false;
+    bool ForceSortedMerge = true;
 };
 
 TEquiJoinLinkSettings GetEquiJoinLinkSettings(const TExprNode& linkSettings);

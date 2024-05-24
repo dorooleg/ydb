@@ -2,18 +2,16 @@
 
 #include "process_response.h"
 #include "query.h"
-
 #include <ydb/core/kqp/common/simple/kqp_event_ids.h>
 #include <ydb/core/protos/kqp.pb.h>
 #include <ydb/core/kqp/common/compilation/events.h>
 #include <ydb/core/kqp/common/shutdown/events.h>
-#include <ydb/public/api/protos/ydb_query.pb.h>
+#include <ydb/public/api/protos/draft/ydb_query.pb.h>
 #include <ydb/library/yql/dq/actors/dq.h>
-#include <ydb/library/yql/public/issue/yql_issue_message.h>
 
-#include <ydb/library/actors/core/event_pb.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/event_load.h>
+#include <library/cpp/actors/core/event_pb.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_load.h>
 #include <contrib/libs/protobuf/src/google/protobuf/map.h>
 
 namespace NKikimr::NKqp {
@@ -34,15 +32,10 @@ struct TEvKqp {
     struct TEvPingSessionRequest : public TEventPB<TEvPingSessionRequest,
         NKikimrKqp::TEvPingSessionRequest, TKqpEvents::EvPingSessionRequest> {};
 
-    struct TEvCancelQueryRequest : public TEventPB<TEvCancelQueryRequest,
-        NKikimrKqp::TEvCancelQueryRequest, TKqpEvents::EvCancelQueryRequest> {};
-
 
     using TEvCompileRequest = NPrivateEvents::TEvCompileRequest;
     using TEvRecompileRequest = NPrivateEvents::TEvRecompileRequest;
     using TEvCompileResponse = NPrivateEvents::TEvCompileResponse;
-    using TEvParseResponse = NPrivateEvents::TEvParseResponse;
-    using TEvSplitResponse = NPrivateEvents::TEvSplitResponse;
     using TEvCompileInvalidateRequest = NPrivateEvents::TEvCompileInvalidateRequest;
 
     using TEvInitiateSessionShutdown = NKikimr::NKqp::NPrivateEvents::TEvInitiateSessionShutdown;
@@ -56,22 +49,6 @@ struct TEvKqp {
     using TProtoArenaHolder = NPrivateEvents::TProtoArenaHolder<TProto>;
 
     using TEvQueryResponse = NPrivateEvents::TEvQueryResponse;
-
-    struct TEvListSessionsRequest: public TEventPB<TEvListSessionsRequest, NKikimrKqp::TEvListSessionsRequest,
-        TKqpEvents::EvListSessionsRequest>
-    {};
-
-    struct TEvListSessionsResponse: public TEventPB<TEvListSessionsResponse, NKikimrKqp::TEvListSessionsResponse,
-        TKqpEvents::EvListSessionsResponse>
-    {};
-
-    struct TEvListProxyNodesRequest : public TEventLocal<TEvListProxyNodesRequest, TKqpEvents::EvListProxyNodesRequest>
-    {};
-
-    struct TEvListProxyNodesResponse : public TEventLocal<TEvListProxyNodesResponse, TKqpEvents::EvListProxyNodesResponse>
-    {
-        std::vector<ui32> ProxyNodes;
-    };
 
     struct TEvCreateSessionResponse : public TEventPB<TEvCreateSessionResponse,
         NKikimrKqp::TEvCreateSessionResponse, TKqpEvents::EvCreateSessionResponse> {};
@@ -100,9 +77,6 @@ struct TEvKqp {
     struct TEvPingSessionResponse : public TEventPB<TEvPingSessionResponse,
         NKikimrKqp::TEvPingSessionResponse, TKqpEvents::EvPingSessionResponse> {};
 
-    struct TEvCancelQueryResponse : public TEventPB<TEvCancelQueryResponse,
-        NKikimrKqp::TEvCancelQueryResponse, TKqpEvents::EvCancelQueryResponse> {};
-
     struct TEvKqpProxyPublishRequest :
         public TEventLocal<TEvKqpProxyPublishRequest, TKqpEvents::EvKqpProxyPublishRequest> {};
 
@@ -112,8 +86,6 @@ struct TEvKqp {
         TEvScriptRequest() = default;
 
         mutable NKikimrKqp::TEvQueryRequest Record;
-        TDuration ForgetAfter;
-        TDuration ResultsTtl;
     };
 
     struct TEvScriptResponse : public TEventLocal<TEvScriptResponse, TKqpEvents::EvScriptResponse> {
@@ -142,30 +114,10 @@ struct TEvKqp {
 
     using TEvAbortExecution = NYql::NDq::TEvDq::TEvAbortExecution;
 
+    struct TEvFetchScriptResultsRequest : public TEventPB<TEvFetchScriptResultsRequest, NKikimrKqp::TEvFetchScriptResultsRequest, TKqpEvents::EvFetchScriptResultsRequest> {
+    };
+
     struct TEvFetchScriptResultsResponse : public TEventPB<TEvFetchScriptResultsResponse, NKikimrKqp::TEvFetchScriptResultsResponse, TKqpEvents::EvFetchScriptResultsResponse> {
-    };
-
-    struct TEvCancelScriptExecutionRequest : public TEventPB<TEvCancelScriptExecutionRequest, NKikimrKqp::TEvCancelScriptExecutionRequest, TKqpEvents::EvCancelScriptExecutionRequest> {
-    };
-
-    struct TEvCancelScriptExecutionResponse : public TEventPB<TEvCancelScriptExecutionResponse, NKikimrKqp::TEvCancelScriptExecutionResponse, TKqpEvents::EvCancelScriptExecutionResponse> {
-        TEvCancelScriptExecutionResponse() = default;
-
-        explicit TEvCancelScriptExecutionResponse(Ydb::StatusIds::StatusCode status, const NYql::TIssues& issues = {}) {
-            Record.SetStatus(status);
-            NYql::IssuesToMessage(issues, Record.MutableIssues());
-        }
-
-        TEvCancelScriptExecutionResponse(Ydb::StatusIds::StatusCode status, const TString& message)
-            : TEvCancelScriptExecutionResponse(status, TextToIssues(message))
-        {}
-
-    private:
-        static NYql::TIssues TextToIssues(const TString& message) {
-            NYql::TIssues issues;
-            issues.AddIssue(message);
-            return issues;
-        }
     };
 };
 

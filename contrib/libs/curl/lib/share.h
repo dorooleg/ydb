@@ -7,7 +7,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -31,6 +31,14 @@
 #include "urldata.h"
 #include "conncache.h"
 
+/* SalfordC says "A structure member may not be volatile". Hence:
+ */
+#ifdef __SALFORDC__
+#define CURL_VOLATILE
+#else
+#define CURL_VOLATILE volatile
+#endif
+
 #define CURL_GOOD_SHARE 0x7e117a1e
 #define GOOD_SHARE_HANDLE(x) ((x) && (x)->magic == CURL_GOOD_SHARE)
 
@@ -38,7 +46,7 @@
 struct Curl_share {
   unsigned int magic; /* CURL_GOOD_SHARE */
   unsigned int specifier;
-  volatile unsigned int dirty;
+  CURL_VOLATILE unsigned int dirty;
 
   curl_lock_function lockfunc;
   curl_unlock_function unlockfunc;
@@ -51,14 +59,10 @@ struct Curl_share {
 #ifdef USE_LIBPSL
   struct PslCache psl;
 #endif
-#ifndef CURL_DISABLE_HSTS
-  struct hsts *hsts;
-#endif
-#ifdef USE_SSL
+
   struct Curl_ssl_session *sslsession;
   size_t max_ssl_sessions;
   long sessionage;
-#endif
 };
 
 CURLSHcode Curl_share_lock(struct Curl_easy *, curl_lock_data,

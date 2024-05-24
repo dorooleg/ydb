@@ -32,7 +32,7 @@ namespace NKikimr {
             }
 
             void Push(const TRecordHdr *hdr, size_t size) {
-                Y_ABORT_UNLESS((size & 3) == 0); // ensure that size is multiple of 4
+                Y_VERIFY((size & 3) == 0); // ensure that size is multiple of 4
                 const char *d = (const char *)hdr;
                 DataSize += size;
                 while (size) {
@@ -85,7 +85,7 @@ namespace NKikimr {
             }
 
             void Push(const TRecordHdr *hdr, size_t size) {
-                Y_ABORT_UNLESS((size & 3) == 0); // ensure that size is multiple of 4
+                Y_VERIFY((size & 3) == 0); // ensure that size is multiple of 4
                 switch (hdr->RecType) {
                     case TRecordHdr::RecLogoBlob:
                         Records.LogoBlobs.emplace_back(*hdr->GetLogoBlob(), Counter);
@@ -100,7 +100,7 @@ namespace NKikimr {
                         Records.BlocksV2.emplace_back(*hdr->GetBlockV2(), Counter);
                         break;
                     default:
-                        Y_ABORT("Unexpected RecType# %" PRIu64, (ui64)hdr->RecType);
+                        Y_FAIL("Unexpected RecType# %" PRIu64, (ui64)hdr->RecType);
                 }
                 DataSize += size;
                 ++Counter;

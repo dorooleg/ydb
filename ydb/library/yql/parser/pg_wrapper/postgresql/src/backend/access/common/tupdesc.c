@@ -580,7 +580,7 @@ hashTupleDesc(TupleDesc desc)
  * TupleDescInitEntryCollation.
  */
 void
-TupleDescInitEntry_original(TupleDesc desc,
+TupleDescInitEntry(TupleDesc desc,
 				   AttrNumber attributeNumber,
 				   const char *attributeName,
 				   Oid oidtypeid,

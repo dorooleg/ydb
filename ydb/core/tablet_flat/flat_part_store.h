@@ -27,7 +27,7 @@ public:
 
 private:
     static TLogoBlobID ExtractLabel(const TVector<NPageCollection::TLargeGlobId>& largeGlobIds) {
-        Y_ABORT_UNLESS(!largeGlobIds.empty());
+        Y_VERIFY(!largeGlobIds.empty());
         return largeGlobIds[0].Lead;
     }
 
@@ -73,37 +73,10 @@ public:
         return BackingSize() - IndexesRawSize;
     }
 
-    ui64 GetPageSize(NPage::TPageId pageId, NPage::TGroupId groupId) const override
+    ui64 GetPageSize(NPage::TPageId id, NPage::TGroupId groupId) const override
     {
-        Y_ABORT_UNLESS(groupId.Index < PageCollections.size());
-        return PageCollections[groupId.Index]->PageCollection->Page(pageId).Size;
-    }
-
-    NPage::EPage GetPageType(NPage::TPageId pageId, NPage::TGroupId groupId) const override
-    {
-        Y_ABORT_UNLESS(groupId.Index < PageCollections.size());
-        return EPage(PageCollections[groupId.Index]->PageCollection->Page(pageId).Type);
-    }
-
-    ui8 GetGroupChannel(NPage::TGroupId groupId) const override
-    {
-        Y_ABORT_UNLESS(groupId.Index < PageCollections.size());
-        return PageCollections[groupId.Index]->Id.Channel();
-    }
-
-    ui8 GetPageChannel(ELargeObj lob, ui64 ref) const override
-    {
-        if ((lob != ELargeObj::Extern && lob != ELargeObj::Outer) || (ref >> 32)) {
-            Y_Fail("Invalid ref ELargeObj{" << int(lob) << ", " << ref << "}");
-        }
-
-        if (lob == ELargeObj::Extern) {
-            auto bounds = Pseudo.Get()->PageCollection->Bounds(ref);
-            auto glob = Pseudo.Get()->PageCollection->Glob(bounds.Lo.Blob);
-            return glob.Logo.Channel();
-        } else {
-            return PageCollections.at(GroupsCount).Get()->Id.Channel();
-        }
+        Y_VERIFY(groupId.Index < PageCollections.size());
+        return PageCollections[groupId.Index]->PageCollection->Page(id).Size;
     }
 
     TIntrusiveConstPtr<TPart> CloneWithEpoch(TEpoch epoch) const override
@@ -124,21 +97,20 @@ public:
             Y_Fail("Invalid ref ELargeObj{" << int(lob) << ", " << ref << "}");
         }
 
-        return (lob == ELargeObj::Extern ? Pseudo : PageCollections.at(GroupsCount)).Get();
+        return (lob == ELargeObj::Extern ? Pseudo : PageCollections.at(Groups)).Get();
     }
 
-    TAutoPtr<NPageCollection::TFetch> GetPages(ui32 room) const noexcept
+    TAutoPtr<NPageCollection::TFetch> DataPages() const noexcept
     {
-        Y_ABORT_UNLESS(room < PageCollections.size());
+        TVector<TPageId> pages;
 
-        auto total = PageCollections[room]->PageCollection->Total();
+        pages.reserve(Index->End() - Index->Begin());
 
-        TVector<TPageId> pages(total);
-        for (size_t i : xrange(total)) {
-            pages[i] = i;
-        }
+        auto it = Index.LookupKey({ }, Scheme->Groups[0], ESeek::Lower, nullptr);
 
-        return new NPageCollection::TFetch{ 0, PageCollections[room]->PageCollection, std::move(pages) };
+        for (; it; ++it) pages.emplace_back(it->GetPageId());
+
+        return new NPageCollection::TFetch{ 0, PageCollections[0]->PageCollection , std::move(pages) };
     }
 
     static TVector<TIntrusivePtr<TCache>> Construct(TVector<TPageCollectionComponents> components) noexcept
@@ -159,7 +131,7 @@ public:
     {
         auto *part = partView.As<TPartStore>();
 
-        Y_ABORT_UNLESS(!partView || part, "Got an unexpected type of TPart part");
+        Y_VERIFY(!partView || part, "Got an unexpected type of TPart part");
 
         return part ? part->PageCollections : TArrayRef<const TIntrusivePtr<TCache>> { };
     }
@@ -188,7 +160,7 @@ public:
     }
 
     void SaveAllBlobIdsTo(TVector<TLogoBlobID>& vec) const override {
-        for (const auto& blobId : DataId.Blobs()) {
+        for (auto blobId : DataId.Blobs()) {
             vec.emplace_back(blobId);
         }
     }

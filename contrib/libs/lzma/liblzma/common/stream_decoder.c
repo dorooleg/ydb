@@ -12,7 +12,6 @@
 
 #include "stream_decoder.h"
 #include "block_decoder.h"
-#include "index.h"
 
 
 typedef struct {
@@ -165,7 +164,7 @@ stream_decode(void *coder_ptr, const lzma_allocator *allocator,
 
 		if (coder->pos == 0) {
 			// Detect if it's Index.
-			if (in[*in_pos] == INDEX_INDICATOR) {
+			if (in[*in_pos] == 0x00) {
 				coder->sequence = SEQ_INDEX;
 				break;
 			}

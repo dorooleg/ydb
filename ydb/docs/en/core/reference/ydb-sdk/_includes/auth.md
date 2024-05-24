@@ -66,23 +66,9 @@ You can click any of the methods below to go to the source code of an example in
    | Anonymous | ydb::StaticToken("") |
    | Access Token | ydb::StaticToken(token) |
    | Metadata | ydb::GCEMetadata, ydb::YandexMetadata |
-   | Static Credentials | [ydb::StaticCredentialsAuth](https://github.com/ydb-platform/ydb-rs-sdk/blob/master/ydb/examples/auth-static-credentials.rs) |
    | Service Account Key | not supported |
    | Determined by environment variables | not supported |
    | Execution of an external command | ydb.CommandLineYcToken (for example, for authentication using a {{ yandex-cloud }} [IAM token]{% if lang == "ru"%}(https://cloud.yandex.ru/docs/iam/concepts/authorization/iam-token){% endif %}{% if lang == "en" %}(https://cloud.yandex.com/en/docs/iam/concepts/authorization/iam-token){% endif %} from the developer's computer ```ydb::CommandLineYcToken.from_cmd("yc iam create-token")```) |
-
-- PHP
-
-  | Mode | Method |
-  ----- | -----
-  | Anonymous | [AnonymousAuthentication()](https://github.com/ydb-platform/ydb-php-sdk#anonymous) |
-  | Access Token | [AccessTokenAuthentication( $accessToken )](https://github.com/ydb-platform/ydb-php-sdk#access-token) |
-  | Oauth Token | [OAuthTokenAuthentication( $oauthToken )](https://github.com/ydb-platform/ydb-php-sdk#oauth-token) |
-  | Metadata | [MetadataAuthentication()](https://github.com/ydb-platform/ydb-php-sdk#metadata-url) |
-  | Service Account Key | [JwtWithJsonAuthentication($jsonFilePath)](https://github.com/ydb-platform/ydb-php-sdk#jwt--json-file) or [JwtWithPrivateKeyAuthentication( $key_id, $service_account_id, $privateKeyFile )](https://github.com/ydb-platform/ydb-php-sdk#jwt--private-key) |
-  | Determined by environment variables | [EnvironCredentials()](https://github.com/ydb-platform/ydb-php-sdk#determined-by-environment-variables) |
-  | Static Credentials | [StaticAuthentication($user, $password)](https://github.com/ydb-platform/ydb-php-sdk#static-credentials) |
-
 
 {% endlist %}
 

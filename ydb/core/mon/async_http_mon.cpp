@@ -1,12 +1,12 @@
 #include "async_http_mon.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/http/http_proxy.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/ticket_parser.h>
 
 #include <library/cpp/lwtrace/all.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
-#include <ydb/library/actors/core/probes.h>
+#include <library/cpp/actors/core/probes.h>
 #include <ydb/core/base/monitoring_provider.h>
 
 #include <library/cpp/monlib/service/pages/version_mon_page.h>
@@ -16,7 +16,6 @@
 
 #include <util/system/hostname.h>
 
-#include <ydb/core/base/counters.h>
 #include <ydb/core/protos/mon.pb.h>
 
 #include "mon_impl.h"
@@ -209,16 +208,8 @@ public:
         }
         SendRequest();
     }
-    void ReplyWith(NHttp::THttpOutgoingResponsePtr response) {
-        TString url(Event->Get()->Request->URL.Before('?'));
-        TString status(response->Status);
-        NMonitoring::THistogramPtr ResponseTimeHgram = NKikimr::GetServiceCounters(NKikimr::AppData()->Counters, "utils")
-            ->GetSubgroup("subsystem", "mon")
-            ->GetSubgroup("url", url)
-            ->GetSubgroup("status", status)
-            ->GetHistogram("ResponseTimeMs", NMonitoring::ExponentialHistogram(20, 2, 1));
-        ResponseTimeHgram->Collect(Event->Get()->Request->Timer.Passed() * 1000);
 
+    void ReplyWith(NHttp::THttpOutgoingResponsePtr response) {
         Send(Event->Sender, new NHttp::TEvHttpProxy::TEvHttpOutgoingResponse(response));
     }
 
@@ -403,7 +394,6 @@ public:
     STATEFN(StateWork) {
         switch (ev->GetTypeRewrite()) {
             hFunc(NHttp::TEvHttpProxy::TEvHttpIncomingRequest, Handle);
-            cFunc(TEvents::TSystem::Poison, PassAway);
         }
     }
 
@@ -468,7 +458,6 @@ public:
     STATEFN(StateWork) {
         switch (ev->GetTypeRewrite()) {
             hFunc(NHttp::TEvHttpProxy::TEvHttpIncomingRequest, Handle);
-            cFunc(TEvents::TSystem::Poison, PassAway);
         }
     }
 
@@ -671,7 +660,6 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(NHttp::TEvHttpProxy::TEvHttpIncomingRequest, Handle);
             hFunc(TEvMon::TEvMonitoringRequest, Handle);
-            cFunc(TEvents::TSystem::Poison, PassAway);
         }
     }
 
@@ -692,15 +680,8 @@ void TAsyncHttpMon::Start(TActorSystem* actorSystem) {
         ActorSystem = actorSystem;
         Register(new TIndexRedirectMonPage(IndexMonPage));
         Register(new NMonitoring::TVersionMonPage);
-        Register(new NMonitoring::TBootstrapCssMonPage);
         Register(new NMonitoring::TTablesorterCssMonPage);
-        Register(new NMonitoring::TBootstrapJsMonPage);
-        Register(new NMonitoring::TJQueryJsMonPage);
         Register(new NMonitoring::TTablesorterJsMonPage);
-        Register(new NMonitoring::TBootstrapFontsEotMonPage);
-        Register(new NMonitoring::TBootstrapFontsSvgMonPage);
-        Register(new NMonitoring::TBootstrapFontsTtfMonPage);
-        Register(new NMonitoring::TBootstrapFontsWoffMonPage);
         NLwTraceMonPage::RegisterPages(IndexMonPage.Get());
         NLwTraceMonPage::ProbeRegistry().AddProbesList(LWTRACE_GET_PROBES(ACTORLIB_PROVIDER));
         NLwTraceMonPage::ProbeRegistry().AddProbesList(LWTRACE_GET_PROBES(MONITORING_PROVIDER));
@@ -738,11 +719,7 @@ void TAsyncHttpMon::Start(TActorSystem* actorSystem) {
         ActorSystem->Send(HttpProxyActorId, new NHttp::TEvHttpProxy::TEvRegisterHandler("/", HttpMonServiceActorId));
         ActorSystem->Send(HttpProxyActorId, new NHttp::TEvHttpProxy::TEvRegisterHandler("/node", NodeProxyServiceActorId));
         for (auto& pageInfo : ActorMonPages) {
-            if (pageInfo.Page) {
-                RegisterActorMonPage(pageInfo);
-            } else if (pageInfo.Handler) {
-                ActorSystem->Send(HttpProxyActorId, new NHttp::TEvHttpProxy::TEvRegisterHandler(pageInfo.Path, pageInfo.Handler));
-            }
+            RegisterActorMonPage(pageInfo);
         }
         ActorMonPages.clear();
     }
@@ -752,7 +729,7 @@ void TAsyncHttpMon::Stop() {
     IndexMonPage->ClearPages(); // it's required to avoid loop-reference
     if (ActorSystem) {
         TGuard<TMutex> g(Mutex);
-        for (const auto& [path, actorId] : ActorServices) {
+        for (const TActorId& actorId : ActorServices) {
             ActorSystem->Send(actorId, new TEvents::TEvPoisonPill);
         }
         ActorSystem->Send(NodeProxyServiceActorId, new TEvents::TEvPoisonPill);
@@ -775,15 +752,12 @@ NMonitoring::TIndexMonPage* TAsyncHttpMon::RegisterIndexPage(const TString& path
 void TAsyncHttpMon::RegisterActorMonPage(const TActorMonPageInfo& pageInfo) {
     if (ActorSystem) {
         TActorMonPage* actorMonPage = static_cast<TActorMonPage*>(pageInfo.Page.Get());
-        auto& actorId = ActorServices[pageInfo.Path];
-        if (actorId) {
-            ActorSystem->Send(new IEventHandle(TEvents::TSystem::Poison, 0, actorId, {}, nullptr, 0));
-        }
-        actorId = ActorSystem->Register(
+        auto actorId = ActorSystem->Register(
             new THttpMonServiceLegacyActor(actorMonPage),
             TMailboxType::ReadAsFilled,
             ActorSystem->AppData<NKikimr::TAppData>()->UserPoolId);
         ActorSystem->Send(HttpProxyActorId, new NHttp::TEvHttpProxy::TEvRegisterHandler(pageInfo.Path, actorId));
+        ActorServices.push_back(actorId);
     }
 }
 
@@ -826,18 +800,6 @@ NMonitoring::IMonPage* TAsyncHttpMon::RegisterCountersPage(const TString& path, 
         page->SetUnknownGroupPolicy(EUnknownGroupPolicy::Ignore);
         Register(page);
         return page;
-}
-
-void TAsyncHttpMon::RegisterHandler(const TString& path, const TActorId& handler) {
-    if (ActorSystem) {
-        ActorSystem->Send(HttpProxyActorId, new NHttp::TEvHttpProxy::TEvRegisterHandler(path, handler));
-    } else {
-        TGuard<TMutex> g(Mutex);
-        ActorMonPages.emplace_back(TActorMonPageInfo{
-            .Handler = handler,
-            .Path = path,
-        });
-    }
 }
 
 NMonitoring::IMonPage* TAsyncHttpMon::FindPage(const TString& relPath) {

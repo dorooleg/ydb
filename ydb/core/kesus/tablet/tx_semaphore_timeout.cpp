@@ -47,7 +47,7 @@ struct TKesusTablet::TTxSemaphoreTimeout : public TTxBase {
         }
 
         auto* semaphore = Self->Semaphores.FindPtr(SemaphoreId);
-        Y_ABORT_UNLESS(semaphore);
+        Y_VERIFY(semaphore);
 
         NIceDb::TNiceDb db(txc.DB);
 

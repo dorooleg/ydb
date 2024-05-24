@@ -28,7 +28,7 @@ namespace NKikimr {
     void TBlobsStatusMngr::UpdateStatusForVDisk(const TVDiskIdShort &vd,
                                                 const NKikimrBlobStorage::TEvVGetResult &record) {
         const TVDiskID vdiskId = VDiskIDFromVDiskID(record.GetVDiskID());
-        Y_ABORT_UNLESS(TVDiskIdShort(vdiskId) == vd);
+        Y_VERIFY(TVDiskIdShort(vdiskId) == vd);
 
         if (record.GetStatus() == NKikimrProto::OK) {
             // empty subGroup

@@ -22,7 +22,7 @@ namespace NTable {
 
         void Resume(EScan op) noexcept
         {
-            Y_DEBUG_ABORT_UNLESS(op == EScan::Feed || op == EScan::Reset);
+            Y_VERIFY_DEBUG(op == EScan::Feed || op == EScan::Reset);
 
             OnPause = false;
 
@@ -64,10 +64,10 @@ namespace NTable {
                         return EReady::Gone;
 
                     case EScan::Reset:
-                        Y_ABORT("Unexpected EScan::Reset from IScan::Seek(...)");
+                        Y_FAIL("Unexpected EScan::Reset from IScan::Seek(...)");
                 }
 
-                Y_ABORT("Unexpected EScan result from IScan::Seek(...)");
+                Y_FAIL("Unexpected EScan result from IScan::Seek(...)");
             } else if (Seek()) {
                 return NotifyPageFault();
             } else {
@@ -80,7 +80,7 @@ namespace NTable {
                         break;
 
                     case EVersionState::SkipUncommitted:
-                        Y_DEBUG_ABORT_UNLESS(VersionScan);
+                        Y_VERIFY_DEBUG(VersionScan);
                         ready = Iter->SkipUncommitted();
                         switch (ready) {
                             case EReady::Page:
@@ -100,7 +100,7 @@ namespace NTable {
                         break;
 
                     case EVersionState::SkipVersion:
-                        Y_DEBUG_ABORT_UNLESS(VersionScan);
+                        Y_VERIFY_DEBUG(VersionScan);
                         ready = Iter->SkipToRowVersion(NextRowVersion);
                         switch (ready) {
                             case EReady::Page:
@@ -122,7 +122,7 @@ namespace NTable {
                     case EVersionState::EndDeltasAndKey:
                     case EVersionState::Feed:
                     case EVersionState::EndKey:
-                        Y_DEBUG_ABORT_UNLESS(VersionScan);
+                        Y_VERIFY_DEBUG(VersionScan);
                         ready = EReady::Data;
                         break;
                 }
@@ -139,7 +139,7 @@ namespace NTable {
                                 Seen++;
                                 op = Scan->Feed(Iter->GetKey().Cells(), Iter->Row());
                             } else {
-                                Y_DEBUG_ABORT_UNLESS(!Conf.NoErased, "VersionScan with Conf.NoErased == true is unexpected");
+                                Y_VERIFY_DEBUG(!Conf.NoErased, "VersionScan with Conf.NoErased == true is unexpected");
                                 op = VersionScan->BeginKey(Iter->GetKey().Cells());
                                 if (Iter->IsUncommitted()) {
                                     VersionState = EVersionState::BeginDeltas;
@@ -150,14 +150,14 @@ namespace NTable {
                             break;
 
                         case EVersionState::BeginDeltas:
-                            Y_DEBUG_ABORT_UNLESS(Iter->IsUncommitted());
+                            Y_VERIFY_DEBUG(Iter->IsUncommitted());
                             op = VersionScan->BeginDeltas();
                             VersionState = EVersionState::FeedDelta;
                             break;
 
                         case EVersionState::FeedDelta: {
                             Seen++;
-                            Y_DEBUG_ABORT_UNLESS(Iter->IsUncommitted());
+                            Y_VERIFY_DEBUG(Iter->IsUncommitted());
                             ui64 txId = Iter->GetUncommittedTxId();
                             if (!Subset.RemovedTransactions.Contains(txId)) {
                                 op = VersionScan->Feed(Iter->Row(), txId);
@@ -197,9 +197,9 @@ namespace NTable {
                             break;
 
                         case EVersionState::SkipUncommitted:
-                            Y_ABORT("Unexpected callback state SkipUncommitted");
+                            Y_FAIL("Unexpected callback state SkipUncommitted");
                         case EVersionState::SkipVersion:
-                            Y_ABORT("Unexpected callback state SkipVersion");
+                            Y_FAIL("Unexpected callback state SkipVersion");
                     }
 
                     OnPause = (op == EScan::Sleep);
@@ -220,7 +220,7 @@ namespace NTable {
                             return EReady::Gone;
                     }
 
-                    Y_ABORT("Unexpected EScan result from IScan::Feed(...)");
+                    Y_FAIL("Unexpected EScan result from IScan::Feed(...)");
                 }
             }
         }
@@ -273,7 +273,7 @@ namespace NTable {
                     return EReady::Gone;
             }
 
-            Y_ABORT("Unexpected EScan result from IScan::PageFault(...)");
+            Y_FAIL("Unexpected EScan result from IScan::PageFault(...)");
         }
 
         EReady NotifyExhausted() noexcept
@@ -295,29 +295,29 @@ namespace NTable {
                     return EReady::Gone;
 
                 case EScan::Feed:
-                    Y_ABORT("Unexpected EScan::Feed from IScan::Exhausted(...)");
+                    Y_FAIL("Unexpected EScan::Feed from IScan::Exhausted(...)");
             }
 
-            Y_ABORT("Unexpected EScan result from IScan::Exhausted(...)");
+            Y_FAIL("Unexpected EScan result from IScan::Exhausted(...)");
         }
 
         bool Reset() noexcept
         {
             Seeks++;
 
-            Y_ABORT_UNLESS(Lead, "Cannot seek with invalid lead");
+            Y_VERIFY(Lead, "Cannot seek with invalid lead");
 
             auto keyDefaults = Subset.Scheme->Keys;
 
-            Y_ABORT_UNLESS(Lead.Key.GetCells().size() <= keyDefaults->Size(), "TLead key is too large");
+            Y_VERIFY(Lead.Key.GetCells().size() <= keyDefaults->Size(), "TLead key is too large");
 
-            Iter = new TTableIter(Subset.Scheme.Get(), Lead.Tags, -1, SnapshotVersion, Subset.CommittedTransactions);
+            Iter = new TTableIt(Subset.Scheme.Get(), Lead.Tags, -1, SnapshotVersion, Subset.CommittedTransactions);
 
             CurrentEnv = MakeEnv();
 
             for (auto &mem: Subset.Frozen)
                 Iter->Push(
-                    TMemIter::Make(
+                    TMemIt::Make(
                         *mem, mem.Snapshot, Lead.Key.GetCells(), Lead.Relation, keyDefaults, &Iter->Remap, CurrentEnv));
 
             if (Lead.StopKey.GetCells()) {
@@ -366,13 +366,13 @@ namespace NTable {
                 TVector<const TPartView*> parts;
                 parts.reserve(Subset.Flatten.size() + LoadedParts.size());
                 for (const auto& partView : Subset.Flatten) {
-                    Y_ABORT_UNLESS(partView.Part, "Missing part in subset");
-                    Y_ABORT_UNLESS(partView.Slices, "Missing part slices in subset");
+                    Y_VERIFY(partView.Part, "Missing part in subset");
+                    Y_VERIFY(partView.Slices, "Missing part slices in subset");
                     parts.push_back(&partView);
                 }
                 for (const auto& partView : LoadedParts) {
-                    Y_ABORT_UNLESS(partView.Part, "Missing part in subset");
-                    Y_ABORT_UNLESS(partView.Slices, "Missing part slices in subset");
+                    Y_VERIFY(partView.Part, "Missing part in subset");
+                    Y_VERIFY(partView.Slices, "Missing part slices in subset");
                     parts.push_back(&partView);
                 }
                 std::sort(parts.begin(), parts.end(),
@@ -389,7 +389,7 @@ namespace NTable {
                 Boots.reserve(Levels->size());
                 for (auto &run: *Levels) {
                     Boots.push_back(
-                        MakeHolder<TRunIter>(run, Lead.Tags, keyDefaults, CurrentEnv));
+                        MakeHolder<TRunIt>(run, Lead.Tags, keyDefaults, CurrentEnv));
                 }
             }
         }
@@ -421,7 +421,7 @@ namespace NTable {
                             break;
 
                         default:
-                            Y_ABORT("Unexpected Seek result");
+                            Y_FAIL("Unexpected Seek result");
                     }
                 }
 
@@ -433,9 +433,6 @@ namespace NTable {
             return Boots.empty();
         }
 
-        /**
-         * @return true on page fault
-         */
         bool Seek() noexcept
         {
             switch (SeekState) {
@@ -459,8 +456,8 @@ namespace NTable {
                     break;
             }
 
-            Y_DEBUG_ABORT_UNLESS(LoadingParts == 0);
-            Y_DEBUG_ABORT_UNLESS(Boots.empty());
+            Y_VERIFY_DEBUG(LoadingParts == 0);
+            Y_VERIFY_DEBUG(Boots.empty());
             return false;
         }
 
@@ -497,7 +494,7 @@ namespace NTable {
         TRowVersion NextRowVersion;
 
     private:
-        using TBoots = TVector<THolder<TRunIter>>;
+        using TBoots = TVector<THolder<TRunIt>>;
 
         IPages* CurrentEnv = nullptr;
 
@@ -507,7 +504,7 @@ namespace NTable {
         THolder<TLevels> Levels;
         TLead Lead;
         TBoots Boots;
-        TAutoPtr<TTableIter> Iter;
+        TAutoPtr<TTableIt> Iter;
         ui64 Seeks = Max<ui64>();
         ESeekState SeekState;
         bool OnPause = false;

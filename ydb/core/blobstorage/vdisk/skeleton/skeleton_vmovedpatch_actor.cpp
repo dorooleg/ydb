@@ -50,22 +50,22 @@ namespace NKikimr {
                 , VCtx(vCtx)
             {
                 NKikimrBlobStorage::TEvVMovedPatch &record = Event->Get()->Record;
-                Y_ABORT_UNLESS(record.HasOriginalGroupId());
+                Y_VERIFY(record.HasOriginalGroupId());
                 OriginalGroupId = record.GetOriginalGroupId();
-                Y_ABORT_UNLESS(record.HasPatchedGroupId());
+                Y_VERIFY(record.HasPatchedGroupId());
                 PatchedGroupId = record.GetPatchedGroupId();
-                Y_ABORT_UNLESS(record.HasOriginalBlobId());
+                Y_VERIFY(record.HasOriginalBlobId());
                 OriginalId = LogoBlobIDFromLogoBlobID(record.GetOriginalBlobId());
-                Y_ABORT_UNLESS(record.HasPatchedBlobId());
+                Y_VERIFY(record.HasPatchedBlobId());
                 PatchedId = LogoBlobIDFromLogoBlobID(record.GetPatchedBlobId());
 
                 DiffCount = record.DiffsSize();
                 Diffs.reset(new TEvBlobStorage::TEvPatch::TDiff[DiffCount]);
                 for (ui32 idx = 0; idx < DiffCount; ++idx) {
                     const NKikimrBlobStorage::TDiffBlock &diff = record.GetDiffs(idx);
-                    Y_ABORT_UNLESS(diff.HasOffset());
+                    Y_VERIFY(diff.HasOffset());
                     Diffs[idx].Offset = diff.GetOffset();
-                    Y_ABORT_UNLESS(diff.HasBuffer());
+                    Y_VERIFY(diff.HasBuffer());
                     Diffs[idx].Buffer = TRcBuf(diff.GetBuffer());
                 }
             }
@@ -96,7 +96,7 @@ namespace NKikimr {
                             << " ErrorReason# " << ErrorReason
                             << " Marker# BSVSP01");
                 }
-                SendVDiskResponse(ctx, Event->Sender, vMovedPatchResult.release(), Event->Cookie, VCtx);
+                SendVDiskResponse(ctx, Event->Sender, vMovedPatchResult.release(), Event->Cookie);
                 PassAway();
             }
 
@@ -136,7 +136,7 @@ namespace NKikimr {
                     return;
                 }
 
-                Buffer = result->Responses[0].Buffer.ConvertToString();
+                Buffer = result->Responses[0].Buffer;
                 ApplyDiffs();
                 TInstant deadline = TActivationContext::Now() + TDuration::MilliSeconds(SubRequestDurationMs);
 

@@ -1,6 +1,6 @@
 #include "tablet_impl.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #if defined BLOG_D || defined BLOG_I || defined BLOG_ERROR
 #error log macro definition clash
@@ -64,7 +64,7 @@ class TTabletReqFindLatestLogEntry : public TActorBootstrapped<TTabletReqFindLat
             BLOG_ERROR("Handle::TEvDiscoverResult, result status " << NKikimrProto::EReplyStatus_Name(msg->Status));
             return ReplyAndDie(msg->Status, msg->ErrorReason);
         default:
-            Y_ABORT_UNLESS(false, "default case status %s", NKikimrProto::EReplyStatus_Name(msg->Status).c_str());
+            Y_VERIFY(false, "default case status %s", NKikimrProto::EReplyStatus_Name(msg->Status).c_str());
 
             return ReplyAndDie(NKikimrProto::ERROR, msg->ErrorReason);
         }
@@ -83,7 +83,7 @@ public:
         , ChannelInfo(Info->ChannelInfo(0))
         , CurrentHistoryIndex(ChannelInfo->History.size())
     {
-        Y_ABORT_UNLESS(CurrentHistoryIndex > 0);
+        Y_VERIFY(CurrentHistoryIndex > 0);
     }
 
     void Bootstrap() {

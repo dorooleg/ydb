@@ -5,7 +5,7 @@
 #undef INCLUDE_YDB_INTERNAL_H
 
 /* Headers below used to instantiate concrete 'Get' & 'List' methods */
-#include <ydb/public/sdk/cpp/client/ydb_query/query.h>
+#include <ydb/public/sdk/cpp/client/draft/ydb_query/query.h>
 #include <ydb/public/sdk/cpp/client/ydb_export/export.h>
 #include <ydb/public/sdk/cpp/client/ydb_import/import.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
@@ -52,7 +52,8 @@ class TOperationClient::TImpl : public TClientImplCommon<TOperationClient::TImpl
             extractor,
             rpc,
             DbDriverState_,
-            rpcSettings);
+            rpcSettings,
+            TEndpointKey());
 
         return promise.GetFuture();
     }
@@ -115,7 +116,8 @@ public:
             extractor,
             &V1::OperationService::Stub::AsyncListOperations,
             DbDriverState_,
-            rpcSettings);
+            rpcSettings,
+            TEndpointKey());
 
         return promise.GetFuture();
     }

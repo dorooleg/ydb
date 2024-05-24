@@ -1,7 +1,6 @@
 /**
  * \file        lzma/index.h
  * \brief       Handling of .xz Index and related information
- * \note        Never include this file directly. Use <lzma.h> instead.
  */
 
 /*
@@ -9,6 +8,8 @@
  *
  * This file has been put into the public domain.
  * You can do whatever you want with this file.
+ *
+ * See ../lzma.h for information about liblzma as a whole.
  */
 
 #ifndef LZMA_H_INTERNAL
@@ -49,13 +50,8 @@ typedef struct {
 		 */
 		const lzma_stream_flags *flags;
 
-		/** \private     Reserved member. */
 		const void *reserved_ptr1;
-
-		/** \private     Reserved member. */
 		const void *reserved_ptr2;
-
-		/** \private     Reserved member. */
 		const void *reserved_ptr3;
 
 		/**
@@ -111,17 +107,9 @@ typedef struct {
 		 */
 		lzma_vli padding;
 
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli1;
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli2;
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli3;
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli4;
 	} stream;
 
@@ -208,46 +196,25 @@ typedef struct {
 		 */
 		lzma_vli total_size;
 
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli1;
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli2;
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli3;
-
-		/** \private     Reserved member. */
 		lzma_vli reserved_vli4;
 
-		/** \private     Reserved member. */
 		const void *reserved_ptr1;
-
-		/** \private     Reserved member. */
 		const void *reserved_ptr2;
-
-		/** \private     Reserved member. */
 		const void *reserved_ptr3;
-
-		/** \private     Reserved member. */
 		const void *reserved_ptr4;
 	} block;
 
-	/**
-	 * \private     Internal struct.
-	 *
+	/*
 	 * Internal data which is used to store the state of the iterator.
 	 * The exact format may vary between liblzma versions, so don't
 	 * touch these in any way.
 	 */
 	union {
-		/** \private     Internal member. */
 		const void *p;
-
-		/** \private     Internal member. */
 		size_t s;
-
-		/** \private     Internal member. */
 		lzma_vli v;
 	} internal[6];
 } lzma_index_iter;
@@ -305,21 +272,16 @@ typedef enum {
  * \brief       Calculate memory usage of lzma_index
  *
  * On disk, the size of the Index field depends on both the number of Records
- * stored and the size of the Records (due to variable-length integer
+ * stored and how big values the Records store (due to variable-length integer
  * encoding). When the Index is kept in lzma_index structure, the memory usage
  * depends only on the number of Records/Blocks stored in the Index(es), and
  * in case of concatenated lzma_indexes, the number of Streams. The size in
  * RAM is almost always significantly bigger than in the encoded form on disk.
  *
- * This function calculates an approximate amount of memory needed to hold
+ * This function calculates an approximate amount of memory needed hold
  * the given number of Streams and Blocks in lzma_index structure. This
  * value may vary between CPU architectures and also between liblzma versions
  * if the internal implementation is modified.
- *
- * \param       streams Number of Streams
- * \param       blocks  Number of Blocks
- *
- * \return      Approximate memory in bytes needed in a lzma_index structure.
  */
 extern LZMA_API(uint64_t) lzma_index_memusage(
 		lzma_vli streams, lzma_vli blocks) lzma_nothrow;
@@ -330,10 +292,6 @@ extern LZMA_API(uint64_t) lzma_index_memusage(
  *
  * This is a shorthand for lzma_index_memusage(lzma_index_stream_count(i),
  * lzma_index_block_count(i)).
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Approximate memory in bytes used by the lzma_index structure.
  */
 extern LZMA_API(uint64_t) lzma_index_memused(const lzma_index *i)
 		lzma_nothrow;
@@ -341,9 +299,6 @@ extern LZMA_API(uint64_t) lzma_index_memused(const lzma_index *i)
 
 /**
  * \brief       Allocate and initialize a new lzma_index structure
- *
- * \param       allocator   lzma_allocator for custom allocator functions.
- *                          Set to NULL to use malloc() and free().
  *
  * \return      On success, a pointer to an empty initialized lzma_index is
  *              returned. If allocation fails, NULL is returned.
@@ -356,10 +311,6 @@ extern LZMA_API(lzma_index *) lzma_index_init(const lzma_allocator *allocator)
  * \brief       Deallocate lzma_index
  *
  * If i is NULL, this does nothing.
- *
- * \param       i           Pointer to lzma_index structure to deallocate
- * \param       allocator   lzma_allocator for custom allocator functions.
- *                          Set to NULL to use malloc() and free().
  */
 extern LZMA_API(void) lzma_index_end(
 		lzma_index *i, const lzma_allocator *allocator) lzma_nothrow;
@@ -369,9 +320,8 @@ extern LZMA_API(void) lzma_index_end(
  * \brief       Add a new Block to lzma_index
  *
  * \param       i                 Pointer to a lzma_index structure
- * \param       allocator         lzma_allocator for custom allocator
- *                                functions. Set to NULL to use malloc()
- *                                and free().
+ * \param       allocator         Pointer to lzma_allocator, or NULL to
+ *                                use malloc()
  * \param       unpadded_size     Unpadded Size of a Block. This can be
  *                                calculated with lzma_block_unpadded_size()
  *                                after encoding or decoding the Block.
@@ -384,8 +334,7 @@ extern LZMA_API(void) lzma_index_end(
  * lzma_index_append() it is possible to read the next Block with
  * an existing iterator.
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK
+ * \return      - LZMA_OK
  *              - LZMA_MEM_ERROR
  *              - LZMA_DATA_ERROR: Compressed or uncompressed size of the
  *                Stream or size of the Index field would grow too big.
@@ -405,15 +354,11 @@ extern LZMA_API(lzma_ret) lzma_index_append(
  * lzma_index, because to decode Blocks, knowing the integrity check type
  * is needed.
  *
- * \param       i              Pointer to lzma_index structure
- * \param       stream_flags   Pointer to lzma_stream_flags structure. This
- *                             is copied into the internal preallocated
- *                             structure, so the caller doesn't need to keep
- *                             the flags' data available after calling this
- *                             function.
+ * The given Stream Flags are copied into internal preallocated structure
+ * in the lzma_index, thus the caller doesn't need to keep the *stream_flags
+ * available after calling this function.
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK
+ * \return      - LZMA_OK
  *              - LZMA_OPTIONS_ERROR: Unsupported stream_flags->version.
  *              - LZMA_PROG_ERROR
  */
@@ -431,10 +376,6 @@ extern LZMA_API(lzma_ret) lzma_index_stream_flags(
  * showing the Check types to the user.
  *
  * The bitmask is 1 << check_id, e.g. CRC32 is 1 << 1 and SHA-256 is 1 << 10.
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Bitmask indicating which Check types are used in the lzma_index
  */
 extern LZMA_API(uint32_t) lzma_index_checks(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -449,8 +390,7 @@ extern LZMA_API(uint32_t) lzma_index_checks(const lzma_index *i)
  *
  * By default, the amount of Stream Padding is assumed to be zero bytes.
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK
+ * \return      - LZMA_OK
  *              - LZMA_DATA_ERROR: The file size would grow too big.
  *              - LZMA_PROG_ERROR
  */
@@ -461,10 +401,6 @@ extern LZMA_API(lzma_ret) lzma_index_stream_padding(
 
 /**
  * \brief       Get the number of Streams
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Number of Streams in the lzma_index
  */
 extern LZMA_API(lzma_vli) lzma_index_stream_count(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -475,10 +411,6 @@ extern LZMA_API(lzma_vli) lzma_index_stream_count(const lzma_index *i)
  *
  * This returns the total number of Blocks in lzma_index. To get number
  * of Blocks in individual Streams, use lzma_index_iter.
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Number of blocks in the lzma_index
  */
 extern LZMA_API(lzma_vli) lzma_index_block_count(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -488,10 +420,6 @@ extern LZMA_API(lzma_vli) lzma_index_block_count(const lzma_index *i)
  * \brief       Get the size of the Index field as bytes
  *
  * This is needed to verify the Backward Size field in the Stream Footer.
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Size in bytes of the Index
  */
 extern LZMA_API(lzma_vli) lzma_index_size(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -503,11 +431,6 @@ extern LZMA_API(lzma_vli) lzma_index_size(const lzma_index *i)
  * If multiple lzma_indexes have been combined, this works as if the Blocks
  * were in a single Stream. This is useful if you are going to combine
  * Blocks from multiple Streams into a single new Stream.
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Size in bytes of the Stream (if all Blocks are combined
- *              into one Stream).
  */
 extern LZMA_API(lzma_vli) lzma_index_stream_size(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -518,10 +441,6 @@ extern LZMA_API(lzma_vli) lzma_index_stream_size(const lzma_index *i)
  *
  * This doesn't include the Stream Header, Stream Footer, Stream Padding,
  * or Index fields.
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Size in bytes of all Blocks in the Stream(s)
  */
 extern LZMA_API(lzma_vli) lzma_index_total_size(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -534,10 +453,6 @@ extern LZMA_API(lzma_vli) lzma_index_total_size(const lzma_index *i)
  * no Stream Padding, this function is identical to lzma_index_stream_size().
  * If multiple lzma_indexes have been combined, this includes also the headers
  * of each separate Stream and the possible Stream Padding fields.
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Total size of the .xz file in bytes
  */
 extern LZMA_API(lzma_vli) lzma_index_file_size(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -545,10 +460,6 @@ extern LZMA_API(lzma_vli) lzma_index_file_size(const lzma_index *i)
 
 /**
  * \brief       Get the uncompressed size of the file
- *
- * \param       i   Pointer to lzma_index structure
- *
- * \return      Size in bytes of the uncompressed data in the file
  */
 extern LZMA_API(lzma_vli) lzma_index_uncompressed_size(const lzma_index *i)
 		lzma_nothrow lzma_attr_pure;
@@ -556,6 +467,9 @@ extern LZMA_API(lzma_vli) lzma_index_uncompressed_size(const lzma_index *i)
 
 /**
  * \brief       Initialize an iterator
+ *
+ * \param       iter    Pointer to a lzma_index_iter structure
+ * \param       i       lzma_index to which the iterator will be associated
  *
  * This function associates the iterator with the given lzma_index, and calls
  * lzma_index_iter_rewind() on the iterator.
@@ -569,9 +483,6 @@ extern LZMA_API(lzma_vli) lzma_index_uncompressed_size(const lzma_index *i)
  *
  * It is safe to make copies of an initialized lzma_index_iter, for example,
  * to easily restart reading at some particular position.
- *
- * \param       iter    Pointer to a lzma_index_iter structure
- * \param       i       lzma_index to which the iterator will be associated
  */
 extern LZMA_API(void) lzma_index_iter_init(
 		lzma_index_iter *iter, const lzma_index *i) lzma_nothrow;
@@ -582,8 +493,6 @@ extern LZMA_API(void) lzma_index_iter_init(
  *
  * Rewind the iterator so that next call to lzma_index_iter_next() will
  * return the first Block or Stream.
- *
- * \param       iter    Pointer to a lzma_index_iter structure
  */
 extern LZMA_API(void) lzma_index_iter_rewind(lzma_index_iter *iter)
 		lzma_nothrow;
@@ -596,11 +505,11 @@ extern LZMA_API(void) lzma_index_iter_rewind(lzma_index_iter *iter)
  * \param       mode    Specify what kind of information the caller wants
  *                      to get. See lzma_index_iter_mode for details.
  *
- * \return      lzma_bool:
- *              - true if no Block or Stream matching the mode is found.
- *                *iter is not updated (failure).
- *              - false if the next Block or Stream matching the mode was
- *                found. *iter is updated (success).
+ * \return      If next Block or Stream matching the mode was found, *iter
+ *              is updated and this function returns false. If no Block or
+ *              Stream matching the mode is found, *iter is not modified
+ *              and this function returns true. If mode is set to an unknown
+ *              value, *iter is not modified and this function returns true.
  */
 extern LZMA_API(lzma_bool) lzma_index_iter_next(
 		lzma_index_iter *iter, lzma_index_iter_mode mode)
@@ -614,26 +523,21 @@ extern LZMA_API(lzma_bool) lzma_index_iter_next(
  * the Index field(s) and use lzma_index_iter_locate() to do random-access
  * reading with granularity of Block size.
  *
+ * \param       iter    Iterator that was earlier initialized with
+ *                      lzma_index_iter_init().
+ * \param       target  Uncompressed target offset which the caller would
+ *                      like to locate from the Stream
+ *
  * If the target is smaller than the uncompressed size of the Stream (can be
  * checked with lzma_index_uncompressed_size()):
  *  - Information about the Stream and Block containing the requested
  *    uncompressed offset is stored into *iter.
  *  - Internal state of the iterator is adjusted so that
  *    lzma_index_iter_next() can be used to read subsequent Blocks or Streams.
+ *  - This function returns false.
  *
- * If the target is greater than the uncompressed size of the Stream, *iter
- * is not modified.
- *
- * \param       iter    Iterator that was earlier initialized with
- *                      lzma_index_iter_init().
- * \param       target  Uncompressed target offset which the caller would
- *                      like to locate from the Stream
- *
- * \return      lzma_bool:
- *              - true if the target is greater than or equal to the
- *                uncompressed size of the Stream (failure)
- *              - false if the target is smaller than the uncompressed size
- *                of the Stream (success)
+ * If target is greater than the uncompressed size of the Stream, *iter
+ * is not modified, and this function returns true.
  */
 extern LZMA_API(lzma_bool) lzma_index_iter_locate(
 		lzma_index_iter *iter, lzma_vli target) lzma_nothrow;
@@ -646,16 +550,15 @@ extern LZMA_API(lzma_bool) lzma_index_iter_locate(
  * multi-Stream .xz file, or when combining multiple Streams into single
  * Stream.
  *
- * \param[out]  dest      lzma_index after which src is appended
+ * \param       dest      lzma_index after which src is appended
  * \param       src       lzma_index to be appended after dest. If this
  *                        function succeeds, the memory allocated for src
  *                        is freed or moved to be part of dest, and all
  *                        iterators pointing to src will become invalid.
-* \param       allocator  lzma_allocator for custom allocator functions.
- *                        Set to NULL to use malloc() and free().
+ * \param       allocator Custom memory allocator; can be NULL to use
+ *                        malloc() and free().
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK: lzma_indexes were concatenated successfully.
+ * \return      - LZMA_OK: lzma_indexes were concatenated successfully.
  *                src is now a dangling pointer.
  *              - LZMA_DATA_ERROR: *dest would grow too big.
  *              - LZMA_MEM_ERROR
@@ -668,10 +571,6 @@ extern LZMA_API(lzma_ret) lzma_index_cat(lzma_index *dest, lzma_index *src,
 
 /**
  * \brief       Duplicate lzma_index
- *
- * \param       i         Pointer to lzma_index structure to be duplicated
- * \param       allocator lzma_allocator for custom allocator functions.
- *                        Set to NULL to use malloc() and free().
  *
  * \return      A copy of the lzma_index, or NULL if memory allocation failed.
  */
@@ -689,8 +588,7 @@ extern LZMA_API(lzma_index *) lzma_index_dup(
  * The valid `action' values for lzma_code() are LZMA_RUN and LZMA_FINISH.
  * It is enough to use only one of them (you can choose freely).
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK: Initialization succeeded, continue with lzma_code().
+ * \return      - LZMA_OK: Initialization succeeded, continue with lzma_code().
  *              - LZMA_MEM_ERROR
  *              - LZMA_PROG_ERROR
  */
@@ -703,7 +601,7 @@ extern LZMA_API(lzma_ret) lzma_index_encoder(
  * \brief       Initialize .xz Index decoder
  *
  * \param       strm        Pointer to properly prepared lzma_stream
- * \param[out]  i           The decoded Index will be made available via
+ * \param       i           The decoded Index will be made available via
  *                          this pointer. Initially this function will
  *                          set *i to NULL (the old value is ignored). If
  *                          decoding succeeds (lzma_code() returns
@@ -719,12 +617,11 @@ extern LZMA_API(lzma_ret) lzma_index_encoder(
  * There is no need to use LZMA_FINISH, but it's allowed because it may
  * simplify certain types of applications.
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK: Initialization succeeded, continue with lzma_code().
+ * \return      - LZMA_OK: Initialization succeeded, continue with lzma_code().
  *              - LZMA_MEM_ERROR
  *              - LZMA_PROG_ERROR
  *
- * \note        liblzma 5.2.3 and older list also LZMA_MEMLIMIT_ERROR here
+ *              liblzma 5.2.3 and older list also LZMA_MEMLIMIT_ERROR here
  *              but that error code has never been possible from this
  *              initialization function.
  */
@@ -736,23 +633,21 @@ extern LZMA_API(lzma_ret) lzma_index_decoder(
 /**
  * \brief       Single-call .xz Index encoder
  *
- * \note        This function doesn't take allocator argument since all
- *              the internal data is allocated on stack.
- *
  * \param       i         lzma_index to be encoded
- * \param[out]  out       Beginning of the output buffer
- * \param[out]  out_pos   The next byte will be written to out[*out_pos].
+ * \param       out       Beginning of the output buffer
+ * \param       out_pos   The next byte will be written to out[*out_pos].
  *                        *out_pos is updated only if encoding succeeds.
  * \param       out_size  Size of the out buffer; the first byte into
  *                        which no data is written to is out[out_size].
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK: Encoding was successful.
+ * \return      - LZMA_OK: Encoding was successful.
  *              - LZMA_BUF_ERROR: Output buffer is too small. Use
  *                lzma_index_size() to find out how much output
  *                space is needed.
  *              - LZMA_PROG_ERROR
  *
+ * \note        This function doesn't take allocator argument since all
+ *              the internal data is allocated on stack.
  */
 extern LZMA_API(lzma_ret) lzma_index_buffer_encode(const lzma_index *i,
 		uint8_t *out, size_t *out_pos, size_t out_size) lzma_nothrow;
@@ -761,26 +656,24 @@ extern LZMA_API(lzma_ret) lzma_index_buffer_encode(const lzma_index *i,
 /**
  * \brief       Single-call .xz Index decoder
  *
- * \param[out]  i           If decoding succeeds, *i will point to a new
+ * \param       i           If decoding succeeds, *i will point to a new
  *                          lzma_index, which the application has to
  *                          later free with lzma_index_end(). If an error
  *                          occurs, *i will be NULL. The old value of *i
  *                          is always ignored and thus doesn't need to be
  *                          initialized by the caller.
- * \param[out]  memlimit    Pointer to how much memory the resulting
+ * \param       memlimit    Pointer to how much memory the resulting
  *                          lzma_index is allowed to require. The value
  *                          pointed by this pointer is modified if and only
  *                          if LZMA_MEMLIMIT_ERROR is returned.
-  * \param      allocator   lzma_allocator for custom allocator functions.
- *                          Set to NULL to use malloc() and free().
+ * \param       allocator   Pointer to lzma_allocator, or NULL to use malloc()
  * \param       in          Beginning of the input buffer
  * \param       in_pos      The next byte will be read from in[*in_pos].
  *                          *in_pos is updated only if decoding succeeds.
  * \param       in_size     Size of the input buffer; the first byte that
  *                          won't be read is in[in_size].
  *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK: Decoding was successful.
+ * \return      - LZMA_OK: Decoding was successful.
  *              - LZMA_MEM_ERROR
  *              - LZMA_MEMLIMIT_ERROR: Memory usage limit was reached.
  *                The minimum required memlimit value was stored to *memlimit.
@@ -795,6 +688,15 @@ extern LZMA_API(lzma_ret) lzma_index_buffer_decode(lzma_index **i,
 
 /**
  * \brief       Initialize a .xz file information decoder
+ *
+ * \param       strm        Pointer to a properly prepared lzma_stream
+ * \param       dest_index  Pointer to a pointer where the decoder will put
+ *                          the decoded lzma_index. The old value
+ *                          of *dest_index is ignored (not freed).
+ * \param       memlimit    How much memory the resulting lzma_index is
+ *                          allowed to require. Use UINT64_MAX to
+ *                          effectively disable the limiter.
+ * \param       file_size   Size of the input .xz file
  *
  * This decoder decodes the Stream Header, Stream Footer, Index, and
  * Stream Padding field(s) from the input .xz file and stores the resulting
@@ -840,17 +742,7 @@ extern LZMA_API(lzma_ret) lzma_index_buffer_decode(lzma_index **i,
  *   - LZMA_MEMLIMIT_ERROR
  *   - LZMA_PROG_ERROR
  *
- * \param       strm        Pointer to a properly prepared lzma_stream
- * \param[out]  dest_index  Pointer to a pointer where the decoder will put
- *                          the decoded lzma_index. The old value
- *                          of *dest_index is ignored (not freed).
- * \param       memlimit    How much memory the resulting lzma_index is
- *                          allowed to require. Use UINT64_MAX to
- *                          effectively disable the limiter.
- * \param       file_size   Size of the input .xz file
- *
- * \return      Possible lzma_ret values:
- *              - LZMA_OK
+ * \return      - LZMA_OK
  *              - LZMA_MEM_ERROR
  *              - LZMA_PROG_ERROR
  */

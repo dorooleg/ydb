@@ -6,7 +6,7 @@
 #include <ydb/core/testlib/basics/appdata.h>
 
 #include <library/cpp/testing/unittest/registar.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 namespace NKikimr {
 
@@ -91,11 +91,10 @@ void TestHeavy(const ui32 v, ui32 numWorkers) {
 Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
 
     struct TTabletWithHist {
-        TTabletWithHist(ui64 tabletId, const TTabletTypes::EType tabletType)
+        TTabletWithHist(ui64 tabletId)
             : TabletId(tabletId)
             , TenantPathId(1113, 1001)
             , CounterEventsInFlight(new TEvTabletCounters::TInFlightCookie)
-            , TabletType(tabletType)
             , ExecutorCounters(new TTabletCountersBase)
         {
             auto simpleCount = sizeof(SimpleCountersMetaInfo) / sizeof(SimpleCountersMetaInfo[0]);
@@ -158,11 +157,11 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         }
 
     public:
-        static ::NMonitoring::TDynamicCounterPtr GetAppCounters(TTestBasicRuntime& runtime, const TTabletTypes::EType tabletType) {
+        static ::NMonitoring::TDynamicCounterPtr GetAppCounters(TTestBasicRuntime& runtime) {
             ::NMonitoring::TDynamicCounterPtr counters = runtime.GetAppData(0).Counters;
             UNIT_ASSERT(counters);
 
-            TString tabletTypeStr = TTabletTypes::TypeToStr(tabletType);
+            TString tabletTypeStr = TTabletTypes::TypeToStr(TabletType);
             auto dsCounters = counters->GetSubgroup("counters", "tablets")->GetSubgroup("type", tabletTypeStr);
             return dsCounters->GetSubgroup("category", "app");
         }
@@ -186,12 +185,12 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             return StringToIndex(name, PercentileCountersMetaInfo);
         }
 
-        static NMonitoring::THistogramPtr GetHistogram(TTestBasicRuntime& runtime, const char* name, const TTabletTypes::EType tabletType) {
+        static NMonitoring::THistogramPtr GetHistogram(TTestBasicRuntime& runtime, const char* name) {
             size_t index = PercentileNameToIndex(name);
-           return GetAppCounters(runtime, tabletType)->FindHistogram(PercentileCountersMetaInfo[index]);
+           return GetAppCounters(runtime)->FindHistogram(PercentileCountersMetaInfo[index]);
         }
 
-        static std::vector<ui64> GetOldHistogram(TTestBasicRuntime& runtime, const char* name, const TTabletTypes::EType tabletType) {
+        static std::vector<ui64> GetOldHistogram(TTestBasicRuntime& runtime, const char* name) {
             size_t index = PercentileNameToIndex(name);
             auto rangesArray = RangeDefs[index].first;
             auto rangeCount = RangeDefs[index].second;
@@ -201,7 +200,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             ranges.back().RangeName = "inf";
             ranges.back().RangeVal = Max<ui64>();
 
-            auto appCounters = GetAppCounters(runtime, tabletType);
+            auto appCounters = GetAppCounters(runtime);
             std::vector<ui64> buckets;
             for (auto i: xrange(ranges.size())) {
                 auto subGroup = appCounters->GetSubgroup("range", ranges[i].RangeName);
@@ -218,12 +217,10 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             TTestBasicRuntime& runtime,
             const char* name,
             const std::vector<ui64>& goldValuesNew,
-            const std::vector<ui64>& goldValuesOld,
-            const TTabletTypes::EType tabletType
-        )
+            const std::vector<ui64>& goldValuesOld)
         {
             // new stype histogram
-            auto histogram = TTabletWithHist::GetHistogram(runtime, name, tabletType);
+            auto histogram = TTabletWithHist::GetHistogram(runtime, name);
             UNIT_ASSERT(histogram);
             auto snapshot = histogram->Snapshot();
             UNIT_ASSERT(snapshot);
@@ -239,7 +236,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             }
 
             // old histogram
-            auto values = TTabletWithHist::GetOldHistogram(runtime, name, tabletType);
+            auto values = TTabletWithHist::GetOldHistogram(runtime, name);
             UNIT_ASSERT_VALUES_EQUAL(values.size(), goldValuesOld.size());
             UNIT_ASSERT_VALUES_EQUAL(values, goldValuesOld);
         }
@@ -248,7 +245,6 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         ui64 TabletId;
         TPathId TenantPathId;
         TIntrusivePtr<TEvTabletCounters::TInFlightCookie> CounterEventsInFlight;
-        const TTabletTypes::EType TabletType;
 
         std::unique_ptr<TTabletCountersBase> ExecutorCounters;
         std::unique_ptr<TTabletCountersBase> ExecutorCountersBaseline;
@@ -257,6 +253,8 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         std::unique_ptr<TTabletCountersBase> AppCountersBaseline;
 
     public:
+        static constexpr TTabletTypes::EType TabletType = TTabletTypes::DataShard;
+
         static constexpr TTabletPercentileCounter::TRangeDef RangeDefs1[] = {
             {0,   "0"}
         };
@@ -307,12 +305,12 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
         runtime.DispatchEvents(options);
 
-        TTabletWithHist tablet1(1, TTabletTypes::DataShard);
+        TTabletWithHist tablet1(1);
 
         tablet1.SetSimpleCount("CountSingleBucket", 1);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
 
-        TTabletWithHist tablet2(2, TTabletTypes::DataShard);
+        TTabletWithHist tablet2(2);
         tablet2.SetSimpleCount("CountSingleBucket", 13);
         tablet2.SendUpdate(runtime, aggregatorId, edge);
 
@@ -320,8 +318,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(CountSingleBucket)",
             {0, 2},
-            {0, 2},
-            TTabletTypes::DataShard
+            {0, 2}
         );
 
         // sanity check we didn't mess other histograms
@@ -330,24 +327,21 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 0, 0, 0, 0},
-            {0, 0, 0, 0, 0},
-            TTabletTypes::DataShard
+            {0, 0, 0, 0, 0}
         );
 
         TTabletWithHist::CheckHistogram(
             runtime,
             "HIST(Count)",
             {2, 0, 0, 0, 0},
-            {2, 0, 0, 0, 0},
-            TTabletTypes::DataShard
+            {2, 0, 0, 0, 0}
         );
 
         TTabletWithHist::CheckHistogram(
             runtime,
             "MyHistSingleBucket",
             {0, 0},
-            {0, 0},
-            TTabletTypes::DataShard
+            {0, 0}
         );
     }
 
@@ -367,7 +361,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
         runtime.DispatchEvents(options);
 
-        TTabletWithHist tablet1(1, TTabletTypes::DataShard);
+        TTabletWithHist tablet1(1);
 
         tablet1.SetSimpleCount("Count", 1);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
@@ -376,11 +370,10 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 1, 0, 0, 0},
-            {0, 1, 0, 0, 0},
-            TTabletTypes::DataShard
+            {0, 1, 0, 0, 0}
         );
 
-        TTabletWithHist tablet2(2, TTabletTypes::DataShard);
+        TTabletWithHist tablet2(2);
         tablet2.SetSimpleCount("Count", 13);
         tablet2.SendUpdate(runtime, aggregatorId, edge);
 
@@ -388,11 +381,10 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 1, 1, 0, 0},
-            {0, 1, 1, 0, 0},
-            TTabletTypes::DataShard
+            {0, 1, 1, 0, 0}
         );
 
-        TTabletWithHist tablet3(3, TTabletTypes::DataShard);
+        TTabletWithHist tablet3(3);
         tablet3.SetSimpleCount("Count", 1);
         tablet3.SendUpdate(runtime, aggregatorId, edge);
 
@@ -400,8 +392,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 2, 1, 0, 0},
-            {0, 2, 1, 0, 0},
-            TTabletTypes::DataShard
+            {0, 2, 1, 0, 0}
         );
 
         tablet3.SetSimpleCount("Count", 13);
@@ -411,8 +402,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 1, 2, 0, 0},
-            {0, 1, 2, 0, 0},
-            TTabletTypes::DataShard
+            {0, 1, 2, 0, 0}
         );
 
         tablet3.ForgetTablet(runtime, aggregatorId, edge);
@@ -421,8 +411,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 1, 1, 0, 0},
-            {0, 1, 1, 0, 0},
-            TTabletTypes::DataShard
+            {0, 1, 1, 0, 0}
         );
 
         // sanity check we didn't mess other histograms
@@ -431,24 +420,21 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 0, 0, 0, 0},
-            {0, 0, 0, 0, 0},
-            TTabletTypes::DataShard
+            {0, 0, 0, 0, 0}
         );
 
         TTabletWithHist::CheckHistogram(
             runtime,
             "HIST(CountSingleBucket)",
             {2, 0},
-            {2, 0},
-            TTabletTypes::DataShard
+            {2, 0}
         );
 
         TTabletWithHist::CheckHistogram(
             runtime,
             "MyHistSingleBucket",
             {0, 0},
-            {0, 0},
-            TTabletTypes::DataShard
+            {0, 0}
         );
     }
 
@@ -471,7 +457,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
         runtime.DispatchEvents(options);
 
-        TTabletWithHist tablet1(1, TTabletTypes::DataShard);
+        TTabletWithHist tablet1(1);
 
         tablet1.SetSimpleCount("Count", Max<i64>() - 100UL);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
@@ -480,11 +466,10 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 0, 0, 0, 1},
-            {0, 0, 0, 0, 1},
-            TTabletTypes::DataShard
+            {0, 0, 0, 0, 1}
         );
 
-        TTabletWithHist tablet2(2, TTabletTypes::DataShard);
+        TTabletWithHist tablet2(2);
         tablet2.SetSimpleCount("Count", 100);
         tablet2.SendUpdate(runtime, aggregatorId, edge);
 
@@ -492,8 +477,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {0, 0, 0, 0, 2},
-            {0, 0, 0, 0, 2},
-            TTabletTypes::DataShard
+            {0, 0, 0, 0, 2}
         );
     }
 
@@ -514,7 +498,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
         runtime.DispatchEvents(options);
 
-        TTabletWithHist tablet1(1, TTabletTypes::DataShard);
+        TTabletWithHist tablet1(1);
         tablet1.UpdatePercentile("MyHist", 1);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
@@ -523,8 +507,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 1, 0, 0, 0},
-            {0, 1, 0, 0, 0},
-            TTabletTypes::DataShard
+            {0, 1, 0, 0, 0}
         );
 
         tablet1.UpdatePercentile("MyHist", 13);
@@ -535,8 +518,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 1, 1, 0, 0},
-            {0, 1, 1, 0, 0},
-            TTabletTypes::DataShard
+            {0, 1, 1, 0, 0}
         );
 
         tablet1.UpdatePercentile("MyHist", 1);
@@ -549,8 +531,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 3, 1, 0, 1},
-            {0, 3, 1, 0, 1},
-            TTabletTypes::DataShard
+            {0, 3, 1, 0, 1}
         );
     }
 
@@ -570,15 +551,15 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
         runtime.DispatchEvents(options);
 
-        TTabletWithHist tablet1(1, TTabletTypes::DataShard);
+        TTabletWithHist tablet1(1);
         tablet1.UpdatePercentile("MyHist", 1);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
 
-        TTabletWithHist tablet2(2, TTabletTypes::DataShard);
+        TTabletWithHist tablet2(2);
         tablet2.UpdatePercentile("MyHist", 1);
         tablet2.SendUpdate(runtime, aggregatorId, edge);
 
-        TTabletWithHist tablet3(3, TTabletTypes::DataShard);
+        TTabletWithHist tablet3(3);
         tablet3.UpdatePercentile("MyHist", 1);
         tablet3.UpdatePercentile("MyHist", 13);
         tablet3.SendUpdate(runtime, aggregatorId, edge);
@@ -587,8 +568,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 3, 1, 0, 0},
-            {0, 3, 1, 0, 0},
-            TTabletTypes::DataShard
+            {0, 3, 1, 0, 0}
         );
 
         tablet3.ForgetTablet(runtime, aggregatorId, edge);
@@ -597,8 +577,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 2, 0, 0, 0},
-            {0, 2, 0, 0, 0},
-            TTabletTypes::DataShard
+            {0, 2, 0, 0, 0}
         );
 
         // sanity check we didn't mess other histograms
@@ -607,24 +586,21 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "HIST(Count)",
             {2, 0, 0, 0, 0},
-            {2, 0, 0, 0, 0},
-            TTabletTypes::DataShard
+            {2, 0, 0, 0, 0}
         );
 
         TTabletWithHist::CheckHistogram(
             runtime,
             "MyHistSingleBucket",
             {0, 0},
-            {0, 0},
-            TTabletTypes::DataShard
+            {0, 0}
         );
 
         TTabletWithHist::CheckHistogram(
             runtime,
             "HIST(CountSingleBucket)",
             {2, 0},
-            {2, 0},
-            TTabletTypes::DataShard
+            {2, 0}
         );
     }
 
@@ -643,15 +619,15 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
         options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
         runtime.DispatchEvents(options);
 
-        TTabletWithHist tablet1(1, TTabletTypes::DataShard);
+        TTabletWithHist tablet1(1);
         tablet1.UpdatePercentile("MyHist", 10, Max<i64>() - 100);
         tablet1.SendUpdate(runtime, aggregatorId, edge);
 
-        TTabletWithHist tablet2(2, TTabletTypes::DataShard);
+        TTabletWithHist tablet2(2);
         tablet2.UpdatePercentile("MyHist", 10, 25);
         tablet2.SendUpdate(runtime, aggregatorId, edge);
 
-        TTabletWithHist tablet3(3, TTabletTypes::DataShard);
+        TTabletWithHist tablet3(3);
         tablet3.UpdatePercentile("MyHist", 10, 5);
         tablet3.SendUpdate(runtime, aggregatorId, edge);
 
@@ -660,8 +636,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 0, v, 0, 0},
-            {0, 0, v, 0, 0},
-            TTabletTypes::DataShard
+            {0, 0, v, 0, 0}
         );
 
         tablet1.ForgetTablet(runtime, aggregatorId, edge);
@@ -669,36 +644,7 @@ Y_UNIT_TEST_SUITE(TTabletCountersAggregator) {
             runtime,
             "MyHist",
             {0, 0, 30, 0, 0},
-            {0, 0, 30, 0, 0},
-            TTabletTypes::DataShard
-        );
-    }
-
-    Y_UNIT_TEST(ColumnShardCounters) {
-        TTestBasicRuntime runtime(1);
-
-        runtime.Initialize(TAppPrepare().Unwrap());
-        TActorId edge = runtime.AllocateEdgeActor();
-
-        auto aggregator = CreateTabletCountersAggregator(false);
-        auto aggregatorId = runtime.Register(aggregator);
-        runtime.EnableScheduleForActor(aggregatorId);
-
-        TDispatchOptions options;
-        options.FinalEvents.emplace_back(TEvents::TSystem::Bootstrap, 1);
-        runtime.DispatchEvents(options);
-
-        TTabletWithHist tablet1(1, TTabletTypes::ColumnShard);
-
-        tablet1.SetSimpleCount("Count", 1);
-        tablet1.SendUpdate(runtime, aggregatorId, edge);
-
-        TTabletWithHist::CheckHistogram(
-            runtime,
-            "HIST(Count)",
-            {0, 1, 0, 0, 0},
-            {0, 1, 0, 0, 0},
-            tablet1.TabletType
+            {0, 0, 30, 0, 0}
         );
     }
 }
@@ -971,12 +917,6 @@ Y_UNIT_TEST_SUITE(TTabletLabeledCountersAggregator) {
             UNIT_ASSERT_VALUES_EQUAL(pqCounters->GetAggregatedPerTablets().GetLabeledCounter().size(), 2);
             UNIT_ASSERT_VALUES_EQUAL(pqCounters->GetAggregatedPerTablets().GetLabeledCounter(0).value(), 63);
             UNIT_ASSERT_VALUES_EQUAL(pqCounters->GetAggregatedPerTablets().GetLabeledCounter(1).value(), 11);
-
-            auto additional = pqCounters->MutableAggregatedPerTablets()->AddLabeledCounter();
-            additional->SetNameId(1000);
-            additional->SetValue(13);
-            additional->SetType(TLabeledCounterOptions::CT_SIMPLE);
-            additional->SetAggregateFunc(TLabeledCounterOptions::EAF_SUM);
 
             PQCounters.FromProto(counters);
         }

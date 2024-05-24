@@ -75,11 +75,23 @@ namespace NSequenceShard {
     }
 
     STFUNC(TSequenceShard::StateInit) {
+        switch (ev->GetTypeRewrite()) {
+            hFunc(TEvents::TEvPoison, Handle);
+
+            default:
+                StateInitImpl(ev, SelfId());
+                break;
+        }
+    }
+
+    STFUNC(TSequenceShard::StateZombie) {
         StateInitImpl(ev, SelfId());
     }
 
     STFUNC(TSequenceShard::StateWork) {
         switch (ev->GetTypeRewrite()) {
+            hFunc(TEvents::TEvPoison, Handle);
+
             hFunc(TEvTabletPipe::TEvServerConnected, Handle);
             hFunc(TEvTabletPipe::TEvServerDisconnected, Handle);
 
@@ -91,11 +103,10 @@ namespace NSequenceShard {
             HFunc(TEvSequenceShard::TEvFreezeSequence, Handle);
             HFunc(TEvSequenceShard::TEvRestoreSequence, Handle);
             HFunc(TEvSequenceShard::TEvRedirectSequence, Handle);
-            HFunc(TEvSequenceShard::TEvGetSequence, Handle);
 
             default:
                 if (!HandleDefaultEvents(ev, SelfId())) {
-                    Y_ABORT("Unexpected event 0x%x", ev->GetTypeRewrite());
+                    Y_FAIL("Unexpected event 0x%x", ev->GetTypeRewrite());
                 }
                 break;
         }
@@ -106,9 +117,14 @@ namespace NSequenceShard {
         Become(&TThis::StateWork);
     }
 
+    void TSequenceShard::Handle(TEvents::TEvPoison::TPtr&) {
+        Send(Tablet(), new TEvents::TEvPoison());
+        Become(&TThis::StateZombie);
+    }
+
     void TSequenceShard::Handle(TEvTabletPipe::TEvServerConnected::TPtr& ev) {
         auto* msg = ev->Get();
-        Y_DEBUG_ABORT_UNLESS(!PipeInfos.contains(msg->ServerId), "Unexpected duplicate pipe server");
+        Y_VERIFY_DEBUG(!PipeInfos.contains(msg->ServerId), "Unexpected duplicate pipe server");
         auto& info = PipeInfos[msg->ServerId];
         info.ServerId = msg->ServerId;
         info.ClientId = msg->ClientId;
@@ -116,7 +132,7 @@ namespace NSequenceShard {
 
     void TSequenceShard::Handle(TEvTabletPipe::TEvServerDisconnected::TPtr& ev) {
         auto* msg = ev->Get();
-        Y_DEBUG_ABORT_UNLESS(PipeInfos.contains(msg->ServerId), "Unexpected missing pipe server");
+        Y_VERIFY_DEBUG(PipeInfos.contains(msg->ServerId), "Unexpected missing pipe server");
         PipeInfos.erase(msg->ServerId);
     }
 

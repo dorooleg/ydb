@@ -73,29 +73,13 @@ NUdf::TUnboxedValuePod ToValue(T value) {
     return NUdf::TUnboxedValuePod(value);
 }
 
-struct TUdfModuleInfo {
-    TString LibraryPath;
-    TString ModuleName;
-    NUdf::TUniquePtr<NUdf::IUdfModule> Module;
-};
-
 template<bool UseLLVM>
 struct TSetup {
-    explicit TSetup(TComputationNodeFactory nodeFactory = GetTestFactory(), TVector<TUdfModuleInfo>&& modules = {})
+    TSetup(TComputationNodeFactory nodeFactory = {})
         : Alloc(__LOCATION__)
-        , StatsRegistry(CreateDefaultStatsRegistry())
     {
         NodeFactory = nodeFactory;
         FunctionRegistry = CreateFunctionRegistry(CreateBuiltinRegistry());
-        if (!modules.empty()) {
-            auto mutableRegistry = FunctionRegistry->Clone();
-            for (auto& m : modules) {
-                mutableRegistry->AddModule(m.LibraryPath, m.ModuleName, std::move(m.Module));
-            }
-
-            FunctionRegistry = mutableRegistry;
-        }
-
         RandomProvider = CreateDeterministicRandomProvider(1);
         TimeProvider = CreateDeterministicTimeProvider(10000000);
 
@@ -104,19 +88,11 @@ struct TSetup {
     }
 
     THolder<IComputationGraph> BuildGraph(TRuntimeNode pgm, const std::vector<TNode*>& entryPoints = std::vector<TNode*>()) {
-       return BuildGraph(pgm, EGraphPerProcess::Multi, entryPoints);
-    }
-
-    THolder<IComputationGraph> BuildGraph(TRuntimeNode pgm, EGraphPerProcess graphPerProcess) {
-        return BuildGraph(pgm, graphPerProcess, {});
-    }
-
-    TAutoPtr<IComputationGraph> BuildGraph(TRuntimeNode pgm, EGraphPerProcess graphPerProcess, const std::vector<TNode*>& entryPoints) {
         Reset();
         Explorer.Walk(pgm.GetNode(), *Env);
-        TComputationPatternOpts opts(Alloc.Ref(), *Env, NodeFactory,
+        TComputationPatternOpts opts(Alloc.Ref(), *Env, GetTestFactory(NodeFactory),
             FunctionRegistry.Get(), NUdf::EValidateMode::None, NUdf::EValidatePolicy::Exception,
-             UseLLVM ? "" : "OFF", graphPerProcess, StatsRegistry.Get(), nullptr, nullptr);
+             UseLLVM ? "" : "OFF", EGraphPerProcess::Multi, nullptr, nullptr, nullptr);
         Pattern = MakeComputationPattern(Explorer, pgm, entryPoints, opts);
         auto graph = Pattern->Clone(opts.ToComputationOptions(*RandomProvider, *TimeProvider));
         Terminator.Reset(new TBindTerminator(graph->GetTerminator()));
@@ -128,13 +104,12 @@ struct TSetup {
         Pattern.Reset();
     }
 
-    TScopedAlloc Alloc;
     TComputationNodeFactory NodeFactory;
     TIntrusivePtr<IFunctionRegistry> FunctionRegistry;
     TIntrusivePtr<IRandomProvider> RandomProvider;
     TIntrusivePtr<ITimeProvider> TimeProvider;
-    IStatsRegistryPtr StatsRegistry;
 
+    TScopedAlloc Alloc;
     THolder<TTypeEnvironment> Env;
     THolder<TProgramBuilder> PgmBuilder;
 

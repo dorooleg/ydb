@@ -18,10 +18,6 @@
 
 #include "src/core/ext/filters/client_channel/lb_policy/grpclb/grpclb_balancer_addresses.h"
 
-#include <stddef.h>
-
-#include <utility>
-
 #include "src/core/lib/channel/channel_args.h"
 #include "src/core/lib/gpr/useful.h"
 
@@ -72,17 +68,9 @@ grpc_arg CreateGrpclbBalancerAddressesArg(
 }
 
 const ServerAddressList* FindGrpclbBalancerAddressesInChannelArgs(
-    const ChannelArgs& args) {
-  return args.GetPointer<const ServerAddressList>(
-      GRPC_ARG_GRPCLB_BALANCER_ADDRESSES);
-}
-
-ChannelArgs SetGrpcLbBalancerAddresses(const ChannelArgs& args,
-                                       ServerAddressList address_list) {
-  return args.Set(
-      GRPC_ARG_GRPCLB_BALANCER_ADDRESSES,
-      ChannelArgs::Pointer(new ServerAddressList(std::move(address_list)),
-                           &kBalancerAddressesArgVtable));
+    const grpc_channel_args& args) {
+  return grpc_channel_args_find_pointer<const ServerAddressList>(
+      &args, const_cast<char*>(GRPC_ARG_GRPCLB_BALANCER_ADDRESSES));
 }
 
 }  // namespace grpc_core

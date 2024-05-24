@@ -1,7 +1,6 @@
 #include "yql_factory.h"
 #include "yql_formatcode.h"
 #include "yql_formattype.h"
-#include "yql_formattypediff.h"
 #include "yql_makecode.h"
 #include "yql_maketype.h"
 #include "yql_parsetypehandle.h"
@@ -23,7 +22,6 @@ struct TYqlCallableComputationNodeBuilderFuncMapFiller {
     TYqlCallableComputationNodeBuilderFuncMapFiller()
     {
         Map["FormatType"] = &WrapFormatType;
-        Map["FormatTypeDiff"] = &WrapFormatTypeDiff;
         Map["ParseTypeHandle"] = &WrapParseTypeHandle;
         Map["SerializeTypeHandle"] = &WrapSerializeTypeHandle;
         Map["TypeHandle"] = &WrapTypeHandle;
@@ -54,8 +52,6 @@ struct TYqlCallableComputationNodeBuilderFuncMapFiller {
         Map["EmptyDictTypeHandle"] = &WrapMakeType<NYql::ETypeAnnotationKind::EmptyDict>;
         Map["CallableTypeComponents"] = &WrapSplitType<NYql::ETypeAnnotationKind::Callable>;
         Map["CallableTypeHandle"] = &WrapMakeType<NYql::ETypeAnnotationKind::Callable>;
-        Map["PgTypeName"] = &WrapSplitType<NYql::ETypeAnnotationKind::Pg>;
-        Map["PgTypeHandle"] = &WrapMakeType<NYql::ETypeAnnotationKind::Pg>;
         Map["FormatCode"] = &WrapFormatCode<false>;
         Map["FormatCodeWithPositions"] = &WrapFormatCode<true>;
         Map["SerializeCode"] = &WrapSerializeCode;

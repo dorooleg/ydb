@@ -1,19 +1,15 @@
 #pragma once
 
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/core/raw_socket/sock_config.h>
-#include <ydb/core/pgproxy/protos/pgproxy.pb.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include "pg_proxy_config.h"
 #include "pg_proxy_types.h"
 
 namespace NPG {
 
-using namespace NKikimr::NRawSocket;
-
 struct TEvPGEvents {
     enum EEv {
         EvConnectionOpened = EventSpaceBegin(NActors::TEvents::ES_PGWIRE),
-        EvFinishHandshake,
         EvConnectionClosed,
         EvAuth,
         EvAuthResponse,
@@ -29,7 +25,6 @@ struct TEvPGEvents {
         EvExecuteResponse,
         EvClose,
         EvCloseResponse,
-        EvCancelRequest,
         EvEnd
     };
 
@@ -40,16 +35,12 @@ struct TEvPGEvents {
         uint32_t TableId = 0;
         uint16_t ColumnId = 0;
         uint32_t DataType;
-        int16_t DataTypeSize;
-        int32_t DataTypeModifier;
-        int16_t Format = 0; // 0 = text, 1 = binary
+        uint16_t DataTypeSize;
+        //uint32_t DataTypeModifier;
+        //uint16_t Format;
     };
 
-    struct TRowValueField {
-        std::optional<std::variant<TString, std::vector<uint8_t>>> Value;
-    };
-
-    using TDataRow = std::vector<TRowValueField>;
+    using TDataRow = std::vector<TString>;
 
     struct TEvConnectionOpened : NActors::TEventLocal<TEvConnectionOpened, EvConnectionOpened> {
         std::shared_ptr<TPGInitial> Message;
@@ -59,13 +50,6 @@ struct TEvPGEvents {
             : Message(std::move(message))
             , Address(address)
         {}
-    };
-
-    struct TEvFinishHandshake : NActors::TEventLocal<TEvFinishHandshake, EvFinishHandshake> {
-        TPGInitial::TPGBackendData BackendData;
-        std::vector<std::pair<char, TString>> ErrorFields;
-
-        TEvFinishHandshake() = default;
     };
 
     struct TEvConnectionClosed : NActors::TEventLocal<TEvConnectionClosed, EvConnectionClosed> {
@@ -107,11 +91,9 @@ struct TEvPGEvents {
 
     struct TEvQuery : NActors::TEventLocal<TEvQuery, EvQuery> {
         std::unique_ptr<TPGQuery> Message;
-        char TransactionStatus;
 
-        TEvQuery(std::unique_ptr<TPGQuery> message, char transactionStatus)
+        TEvQuery(std::unique_ptr<TPGQuery> message)
             : Message(std::move(message))
-            , TransactionStatus(transactionStatus)
         {}
     };
 
@@ -119,12 +101,9 @@ struct TEvPGEvents {
         std::vector<TRowDescriptionField> DataFields;
         std::vector<TDataRow> DataRows;
         std::vector<std::pair<char, TString>> ErrorFields;
-        std::vector<std::pair<char, TString>> NoticeFields;
         TString Tag;
         bool EmptyQuery = false;
         bool CommandCompleted = true;
-        bool ReadyForQuery = true;
-        bool DropConnection = false;
         char TransactionStatus = 0;
     };
 
@@ -158,13 +137,10 @@ struct TEvPGEvents {
         */
 
     struct TEvParseResponse : NActors::TEventLocal<TEvParseResponse, EvParseResponse> {
-        std::vector<std::pair<char, TString>> ErrorFields;
-        std::vector<std::pair<char, TString>> NoticeFields;
-        TString Tag;
-        bool DropConnection = false;
-        char TransactionStatus = 0;
+        std::unique_ptr<TPGParse> OriginalMessage;
 
-        TEvParseResponse()
+        TEvParseResponse(std::unique_ptr<TPGParse> originalMessage)
+            : OriginalMessage(std::move(originalMessage))
         {}
     };
 
@@ -176,14 +152,15 @@ struct TEvPGEvents {
         {}
 
         std::unique_ptr<TEvParseResponse> Reply() {
-            return std::make_unique<TEvParseResponse>();
+            return std::make_unique<TEvParseResponse>(std::move(Message));
         }
     };
 
     struct TEvBindResponse : NActors::TEventLocal<TEvBindResponse, EvBindResponse> {
-        std::vector<std::pair<char, TString>> ErrorFields;
+        std::unique_ptr<TPGBind> OriginalMessage;
 
-        TEvBindResponse()
+        TEvBindResponse(std::unique_ptr<TPGBind> originalMessage)
+            : OriginalMessage(std::move(originalMessage))
         {}
     };
 
@@ -195,7 +172,7 @@ struct TEvPGEvents {
         {}
 
         std::unique_ptr<TEvBindResponse> Reply() {
-            return std::make_unique<TEvBindResponse>();
+            return std::make_unique<TEvBindResponse>(std::move(Message));
         }
     };
 
@@ -211,33 +188,21 @@ struct TEvPGEvents {
         std::vector<TRowDescriptionField> DataFields;
         std::vector<uint32_t> ParameterTypes;
         std::vector<std::pair<char, TString>> ErrorFields;
-        bool DropConnection = false;
+    };
+
+    struct TEvExecute : NActors::TEventLocal<TEvExecute, EvExecute> {
+        std::unique_ptr<TPGExecute> Message;
+
+        TEvExecute(std::unique_ptr<TPGExecute> message)
+            : Message(std::move(message))
+        {}
     };
 
     struct TEvExecuteResponse : NActors::TEventLocal<TEvExecuteResponse, EvExecuteResponse> {
         std::vector<TDataRow> DataRows;
         std::vector<std::pair<char, TString>> ErrorFields;
-        std::vector<std::pair<char, TString>> NoticeFields;
         TString Tag;
         bool EmptyQuery = false;
-        bool CommandCompleted = true;
-        bool ReadyForQuery = true;
-        bool DropConnection = false;
-        char TransactionStatus = 0;
-    };
-
-    struct TEvExecute : NActors::TEventLocal<TEvExecute, EvExecute> {
-        std::unique_ptr<TPGExecute> Message;
-        char TransactionStatus;
-
-        TEvExecute(std::unique_ptr<TPGExecute> message, char transactionStatus)
-            : Message(std::move(message))
-            , TransactionStatus(transactionStatus)
-        {}
-
-        static std::unique_ptr<TEvExecuteResponse> Reply() {
-            return std::make_unique<TEvExecuteResponse>();
-        }
     };
 
     struct TEvCloseResponse : NActors::TEventLocal<TEvCloseResponse, EvCloseResponse> {
@@ -257,16 +222,6 @@ struct TEvPGEvents {
 
         std::unique_ptr<TEvCloseResponse> Reply() {
             return std::make_unique<TEvCloseResponse>(std::move(Message));
-        }
-    };
-
-    struct TEvCancelRequest : NActors::TEventPB<TEvCancelRequest, NKikimrPgProxy::TEvCancelRequest, EvCancelRequest> {
-
-        TEvCancelRequest() = default;
-
-        TEvCancelRequest(int32_t pid, int32_t key) {
-            Record.SetProcessId(pid);
-            Record.SetSecretKey(key);
         }
     };
 };

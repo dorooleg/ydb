@@ -66,7 +66,7 @@ TGCLogEntry TExecutorGCLogic::SnapshotLog(ui32 step) {
     TGCLogEntry snapshot(snapshotTime);
     for (const auto& chIt : ChannelInfo) {
         for (const auto& le : chIt.second.CommittedDelta) {
-            Y_ABORT_UNLESS(le.first <= snapshotTime);
+            Y_VERIFY(le.first <= snapshotTime);
             TExecutorGCLogic::MergeVectors(snapshot.Delta.Created, le.second.Created);
             TExecutorGCLogic::MergeVectors(snapshot.Delta.Deleted, le.second.Deleted);
         }
@@ -142,11 +142,11 @@ void TExecutorGCLogic::ApplyLogSnapshot(TGCLogEntry &snapshot, const TVector<std
 }
 
 void TExecutorGCLogic::HoldBarrier(ui32 step) {
-    Y_ABORT_UNLESS(true == HoldBarriersSet.insert(TGCTime(Generation, step)).second);
+    Y_VERIFY(true == HoldBarriersSet.insert(TGCTime(Generation, step)).second);
 }
 
 void TExecutorGCLogic::ReleaseBarrier(ui32 step) {
-    Y_ABORT_UNLESS(1 == HoldBarriersSet.erase(TGCTime(Generation, step)));
+    Y_VERIFY(1 == HoldBarriersSet.erase(TGCTime(Generation, step)));
 }
 
 ui32 TExecutorGCLogic::GetActiveGcBarrier() {
@@ -164,7 +164,7 @@ void TExecutorGCLogic::ApplyDelta(TGCTime time, TGCBlobDelta &delta) {
     for (const TLogoBlobID &blobId : delta.Created) {
         auto &channel = ChannelInfo[blobId.Channel()];
         TGCTime gcTime(blobId.Generation(), blobId.Step());
-        Y_ABORT_UNLESS(channel.KnownGcBarrier < gcTime);
+        Y_VERIFY(channel.KnownGcBarrier < gcTime);
         channel.CommittedDelta[gcTime].Created.push_back(blobId);
     }
 
@@ -198,7 +198,7 @@ TExecutorGCLogic::TChannelInfo::TChannelInfo()
 void TExecutorGCLogic::TChannelInfo::ApplyDelta(TGCTime time, TGCBlobDelta& delta) {
     TGCBlobDelta& committedDelta = CommittedDelta[time];
     DoSwap(committedDelta, delta);
-    Y_DEBUG_ABORT_UNLESS(delta.Created.empty() && delta.Deleted.empty());
+    Y_VERIFY_DEBUG(delta.Created.empty() && delta.Deleted.empty());
 }
 
 void TExecutorGCLogic::MergeVectors(TVector<TLogoBlobID>& destination, const TVector<TLogoBlobID>& source) {
@@ -317,14 +317,14 @@ TExecutorGCLogic::TIntrospection TExecutorGCLogic::IntrospectStateSize() const {
 namespace {
     void ValidateGCVector(ui64 tabletId, ui32 channel, const char* name, const TVector<TLogoBlobID>& vec) {
         for (size_t i = 0; i < vec.size(); ++i) {
-            Y_ABORT_UNLESS(vec[i].TabletID() == tabletId,
+            Y_VERIFY(vec[i].TabletID() == tabletId,
                 "Foreign blob %s in %s vector (tablet %" PRIu64 ", channel %" PRIu32 ")",
                 vec[i].ToString().c_str(), name, tabletId, channel);
-            Y_ABORT_UNLESS(vec[i].Channel() == channel,
+            Y_VERIFY(vec[i].Channel() == channel,
                 "Wrong channel blob %s in %s vector (tablet %" PRIu64 ", channel %" PRIu32 ")",
                 vec[i].ToString().c_str(), name, tabletId, channel);
             if (i > 0) {
-                Y_ABORT_UNLESS(vec[i-1] < vec[i],
+                Y_VERIFY(vec[i-1] < vec[i],
                     "Out of order blobs %s and %s in %s vector (tablet %" PRIu64 ", channel %" PRIu32 ")",
                     vec[i-1].ToString().c_str(), vec[i].ToString().c_str(), name, tabletId, channel);
             }
@@ -388,7 +388,7 @@ void TExecutorGCLogic::TChannelInfo::SendCollectGarbage(TGCTime uncommittedTime,
         KnownGcBarrier = collectBarrier;
 
         const auto *channelInfo = tabletStorageInfo->ChannelInfo(channel);
-        Y_ABORT_UNLESS(channelInfo);
+        Y_VERIFY(channelInfo);
 
 
         const ui32 lastCommitedGcBarrier = CommitedGcBarrier.Generation;

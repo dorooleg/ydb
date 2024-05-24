@@ -8,11 +8,10 @@
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/path.h>
-#include <ydb/core/quoter/public/quoter.h>
+#include <ydb/core/base/quoter.h>
 #include <ydb/core/protos/counters_pq.pb.h>
 #include <ydb/core/protos/msgbus.pb.h>
 #include <ydb/library/persqueue/topic_parser/topic_parser.h>
-#include <ydb/library/protobuf_printer/security_printer.h>
 #include <ydb/public/lib/base/msgbus.h>
 #include <library/cpp/html/pcdata/pcdata.h>
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -69,11 +68,13 @@ void TPartition::HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorCo
         str = "State is StateInit";
     } else if (CurrentStateFunc() == &TThis::StateIdle) {
         str = "State is StateIdle";
+    } else if (CurrentStateFunc() == &TThis::StateWrite) {
+        str = "State is StateWrite";
     } else {
-        Y_ABORT("");
+        Y_FAIL("");
     }
     TStringStream out;
-    out << "Partition " << Partition << ": " << str;  res.push_back(out.Str()); out.Clear();
+    out << "Partition " << i32(Partition) << ": " << str;  res.push_back(out.Str()); out.Clear();
     if (DiskIsFull) {
         out << "DISK IS FULL";
         res.push_back(out.Str());
@@ -108,9 +109,9 @@ void TPartition::HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorCo
         out << "AvgWriteSize per " << avg.GetDuration().ToString() << " is " << avg.GetValue() << " bytes";
         res.push_back(out.Str()); out.Clear();
     }
-    out << SecureDebugString(Config); res.push_back(out.Str()); out.Clear();
+    out << Config.DebugString(); res.push_back(out.Str()); out.Clear();
     HTML(out) {
-        DIV_CLASS_ID("tab-pane fade", Sprintf("partition_%u", Partition.InternalPartitionId)) {
+        DIV_CLASS_ID("tab-pane fade", Sprintf("partition_%u", ui32(Partition))) {
             TABLE_SORTABLE_CLASS("table") {
                 TABLEHEAD() {
                     TABLER() {
@@ -143,7 +144,7 @@ void TPartition::HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorCo
                         ui32 size  = HeadKeys[p].Size;
                         while (currentLevel + 1 < TotalLevels && size < CompactLevelBorder[currentLevel + 1])
                             ++currentLevel;
-                        Y_ABORT_UNLESS(size < CompactLevelBorder[currentLevel]);
+                        Y_VERIFY(size < CompactLevelBorder[currentLevel]);
                         TABLER() {
                             TABLED() {out << "DataHead[" << currentLevel << "]";}
                             TABLED() {out << i++;}
@@ -200,7 +201,6 @@ void TPartition::HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorCo
                         TABLEH() {out << "CreateTimestamp";}
                         TABLEH() {out << "Explicit";}
                         TABLEH() {out << "State";}
-                        TABLEH() {out << "LastHeartbeat";}
                     }
                 }
                 TABLEBODY() {
@@ -213,11 +213,6 @@ void TPartition::HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorCo
                             TABLED() {out << ToStringLocalTimeUpToSeconds(sourceIdInfo.CreateTimestamp);}
                             TABLED() {out << (sourceIdInfo.Explicit ? "true" : "false");}
                             TABLED() {out << sourceIdInfo.State;}
-                            if (const auto& hb = sourceIdInfo.LastHeartbeat) {
-                                TABLED() {out << hb->Version;}
-                            } else {
-                                TABLED() {out << "null";}
-                            }
                         }
                     }
                 }

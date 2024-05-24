@@ -34,7 +34,7 @@ public:
         const auto scn = DB.Head().Serial + 1;
         TTxStamp txStamp(Gen, ++Step);
         DB.SnapshotToLog(table, txStamp);
-        Y_ABORT_UNLESS(scn == DB.Head().Serial);
+        Y_VERIFY(scn == DB.Head().Serial);
         auto chg = DB.Head(table);
         return { txStamp, chg.Epoch };
     }
@@ -53,7 +53,7 @@ public:
 
     const TScheme::TTableInfo* TableScheme(ui32 table) override {
         auto* info = DB.GetScheme().GetTableInfo(table);
-        Y_ABORT_UNLESS(info, "Unexpected table");
+        Y_VERIFY(info, "Unexpected table");
         return info;
     }
 
@@ -63,7 +63,7 @@ public:
 
     TPartView TablePart(ui32 table, const TLogoBlobID& label) override {
         auto partView = DB.GetPartView(table, label);
-        Y_ABORT_UNLESS(partView, "Unexpected part %s", label.ToString().c_str());
+        Y_VERIFY(partView, "Unexpected part %s", label.ToString().c_str());
         return partView;
     }
 
@@ -80,7 +80,7 @@ public:
     }
 
     ui64 BeginCompaction(THolder<TCompactionParams> params) override {
-        Y_ABORT_UNLESS(params);
+        Y_VERIFY(params);
         ui64 compactionId = NextCompactionId_++;
         StartedCompactions[compactionId] = std::move(params);
         return compactionId;
@@ -91,7 +91,7 @@ public:
     }
 
     ui64 BeginRead(THolder<ICompactionRead> read) override {
-        Y_ABORT_UNLESS(read);
+        Y_VERIFY(read);
         ui64 readId = NextReadId_++;
         PendingReads[readId] = std::move(read);
         return readId;
@@ -102,7 +102,7 @@ public:
     }
 
     void RequestChanges(ui32 table) override {
-        Y_ABORT_UNLESS(table == 1, "Unexpected table");
+        Y_VERIFY(table == 1, "Unexpected table");
         ChangesRequested_ = true;
     }
 
@@ -116,14 +116,14 @@ public:
     };
 
     TReadResult RunRead(IPages* env) {
-        Y_ABORT_UNLESS(PendingReads, "There are no pending reads");
+        Y_VERIFY(PendingReads, "There are no pending reads");
         ui64 readId = PendingReads.begin()->first;
         return RunRead(readId, env);
     }
 
     TReadResult RunRead(ui64 readId, IPages* env) {
         auto it = PendingReads.find(readId);
-        Y_ABORT_UNLESS(it != PendingReads.end());
+        Y_VERIFY(it != PendingReads.end());
         bool completed = it->second->Execute(env);
         if (completed) {
             PendingReads.erase(readId);
@@ -138,14 +138,14 @@ public:
     };
 
     TRunCompactionResult RunCompaction() {
-        Y_ABORT_UNLESS(StartedCompactions, "There are no started compactions");
+        Y_VERIFY(StartedCompactions, "There are no started compactions");
         ui64 compactionId = StartedCompactions.begin()->first;
         return RunCompaction(compactionId);
     }
 
     TRunCompactionResult RunCompaction(ui64 compactionId) {
         auto it = StartedCompactions.find(compactionId);
-        Y_ABORT_UNLESS(it != StartedCompactions.end());
+        Y_VERIFY(it != StartedCompactions.end());
         auto params = std::move(it->second);
         StartedCompactions.erase(it);
         auto result = RunCompaction(params.Get());
@@ -162,15 +162,13 @@ public:
             subset->Flatten.insert(subset->Flatten.end(), params->Parts.begin(), params->Parts.end());
         }
 
-        Y_ABORT_UNLESS(!*subset || subset->IsStickedToHead());
+        Y_VERIFY(!*subset || subset->IsStickedToHead());
 
         const auto& scheme = DB.GetScheme();
         auto* family = scheme.DefaultFamilyFor(params->Table);
         auto* policy = scheme.GetTableInfo(params->Table)->CompactionPolicy.Get();
 
         NPage::TConf conf(params->IsFinal, policy->MinDataPageSize);
-        conf.Group(0).BTreeIndexNodeTargetSize = policy->MinBTreeIndexNodeSize;
-        conf.Group(0).BTreeIndexNodeKeysMin = policy->MinBTreeIndexNodeKeys;
         conf.UnderlayMask = params->UnderlayMask.Get();
         conf.SplitKeys = params->SplitKeys.Get();
         conf.Group(0).Codec = family->Codec;
@@ -192,7 +190,7 @@ public:
         TVector<TPartView> parts(Reserve(eggs.Parts.size()));
         for (auto& part : eggs.Parts) {
             parts.push_back({ part, nullptr, part->Slices });
-            Y_ABORT_UNLESS(parts.back());
+            Y_VERIFY(parts.back());
         }
 
         auto partsCopy = parts;
@@ -213,7 +211,7 @@ public:
 
         for (auto& change : changes.SliceChanges) {
             auto partView = DB.GetPartView(table, change.Label);
-            Y_ABORT_UNLESS(partView, "Cannot find part %s", change.Label.ToString().c_str());
+            Y_VERIFY(partView, "Cannot find part %s", change.Label.ToString().c_str());
             auto replaced = TSlices::Replace(partView.Slices, change.NewSlices);
             DB.ReplaceSlices(table, {{ change.Label, std::move(replaced) }});
         }

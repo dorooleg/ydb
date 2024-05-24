@@ -45,13 +45,11 @@ namespace NKikimr {
 
             const ui64 IncarnationGuid;
 
-            TIntrusivePtr<TVDiskContext> VCtx;
-
         public:
             TBufferVMultiPutActor(TActorId leaderId, const TBatchedVec<NKikimrProto::EReplyStatus> &statuses,
                     TOutOfSpaceStatus oosStatus, TEvBlobStorage::TEvVMultiPut::TPtr &ev,
                     TActorIDPtr skeletonFrontIDPtr, ::NMonitoring::TDynamicCounters::TCounterPtr multiPutResMsgsPtr,
-                    ui64 incarnationGuid, TIntrusivePtr<TVDiskContext>& vCtx)
+                    ui64 incarnationGuid)
                 : TActorBootstrapped()
                 , Items(ev->Get()->Record.ItemsSize())
                 , ReceivedResults(0)
@@ -61,9 +59,8 @@ namespace NKikimr {
                 , LeaderId(leaderId)
                 , OOSStatus(oosStatus)
                 , IncarnationGuid(incarnationGuid)
-                , VCtx(vCtx)
             {
-                Y_ABORT_UNLESS(statuses.size() == Items.size());
+                Y_VERIFY(statuses.size() == Items.size());
                 for (ui64 idx = 0; idx < Items.size(); ++idx) {
                     Items[idx].Status = statuses[idx];
                 }
@@ -95,18 +92,18 @@ namespace NKikimr {
 
                 vMultiPutResult->Record.SetStatusFlags(OOSStatus.Flags);
 
-                SendVDiskResponse(ctx, Event->Sender, vMultiPutResult.release(), Event->Cookie, VCtx);
+                SendVDiskResponse(ctx, Event->Sender, vMultiPutResult.release(), Event->Cookie);
                 PassAway();
             }
 
             void Handle(TEvVMultiPutItemResult::TPtr &ev, const TActorContext &ctx) {
                 TLogoBlobID blobId = ev->Get()->BlobId;
                 ui64 idx = ev->Get()->ItemIdx;
-                Y_ABORT_UNLESS(idx < Items.size(), "itemIdx# %" PRIu64 " ItemsSize# %" PRIu64, idx, (ui64)Items.size());
+                Y_VERIFY(idx < Items.size(), "itemIdx# %" PRIu64 " ItemsSize# %" PRIu64, idx, (ui64)Items.size());
                 TItem &item = Items[idx];
-                Y_ABORT_UNLESS(blobId == item.BlobId, "itemIdx# %" PRIu64 " blobId# %s item# %s", idx, blobId.ToString().data(), item.ToString().data());
+                Y_VERIFY(blobId == item.BlobId, "itemIdx# %" PRIu64 " blobId# %s item# %s", idx, blobId.ToString().data(), item.ToString().data());
 
-                Y_ABORT_UNLESS(!item.Received, "itemIdx# %" PRIu64 " item# %s", idx, item.ToString().data());
+                Y_VERIFY(!item.Received, "itemIdx# %" PRIu64 " item# %s", idx, item.ToString().data());
                 item.Received = true;
                 item.Status = ev->Get()->Status;
                 item.ErrorReason = ev->Get()->ErrorReason;
@@ -119,7 +116,32 @@ namespace NKikimr {
                 }
             }
 
-            void Bootstrap() {
+            void Handle(TEvBlobStorage::TEvVPutResult::TPtr &ev, const TActorContext &ctx) {
+                NKikimrBlobStorage::TEvVPutResult &record = ev->Get()->Record;
+
+                TLogoBlobID blobId = LogoBlobIDFromLogoBlobID(record.GetBlobID());
+                Y_VERIFY(record.HasCookie());
+                ui64 idx = record.GetCookie();
+                Y_VERIFY(idx < Items.size(), "itemIdx# %" PRIu64 " ItemsSize# %" PRIu64, idx, (ui64)Items.size());
+                TItem &item = Items[idx];
+                Y_VERIFY(blobId == item.BlobId, "itemIdx# %" PRIu64 " blobId# %s item# %s", idx, blobId.ToString().data(), item.ToString().data());
+
+                Y_VERIFY(!item.Received, "itemIdx# %" PRIu64 " item# %s", idx, item.ToString().data());
+                item.Received = true;
+                Y_VERIFY(record.HasStatus());
+                item.Status = record.GetStatus();
+                item.ErrorReason = record.GetErrorReason();
+                item.WrittenBeyondBarrier = record.GetWrittenBeyondBarrier();
+
+                ReceivedResults++;
+
+                if (ReceivedResults == Items.size()) {
+                    SendResponseAndDie(ctx);
+                }
+            }
+
+            void Bootstrap(const TActorContext &ctx) {
+                Y_UNUSED(ctx);
                 NKikimrBlobStorage::TEvVMultiPut &record = Event->Get()->Record;
 
                 for (ui64 idx = 0; idx < record.ItemsSize(); ++idx) {
@@ -143,15 +165,12 @@ namespace NKikimr {
                 Become(&TThis::StateWait);
             }
 
-            void PassAway() override {
-                TActivationContext::Send(new IEventHandle(TEvents::TSystem::ActorDied, 0, LeaderId, SelfId(), nullptr, 0));
-                TActorBootstrapped::PassAway();
+            STFUNC(StateWait) {
+                switch (ev->GetTypeRewrite()) {
+                    HFunc(TEvVMultiPutItemResult, Handle);
+                    HFunc(TEvBlobStorage::TEvVPutResult, Handle);
+                }
             }
-
-            STRICT_STFUNC(StateWait,
-                HFunc(TEvVMultiPutItemResult, Handle);
-                cFunc(TEvents::TSystem::Poison, PassAway);
-            )
         };
 
     } // NPrivate
@@ -159,9 +178,9 @@ namespace NKikimr {
     IActor* CreateSkeletonVMultiPutActor(TActorId leaderId, const TBatchedVec<NKikimrProto::EReplyStatus> &statuses,
             TOutOfSpaceStatus oosStatus, TEvBlobStorage::TEvVMultiPut::TPtr &ev,
             TActorIDPtr skeletonFrontIDPtr, ::NMonitoring::TDynamicCounters::TCounterPtr counterPtr,
-            ui64 incarnationGuid, TIntrusivePtr<TVDiskContext>& vCtx) {
+            ui64 incarnationGuid) {
         return new NPrivate::TBufferVMultiPutActor(leaderId, statuses, oosStatus, ev,
-                skeletonFrontIDPtr, counterPtr, incarnationGuid, vCtx);
+                skeletonFrontIDPtr, counterPtr, incarnationGuid);
     }
 
 } // NKikimr

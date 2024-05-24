@@ -22,8 +22,6 @@ public:
     void WritePullDetails(const TExprNode& node, NYson::TYsonWriter& writer) override;
     void WritePinDetails(const TExprNode& node, NYson::TYsonWriter& writer) override;
     TString GetOperationDisplayName(const TExprNode& node) override;
-    bool WriteSchemaHeader(NYson::TYsonWriter& writer) override;
-    void WriteTypeDetails(NYson::TYsonWriter& writer, const TTypeAnnotationNode& type) override;
 };
 
 class TTrackableNodeProcessorBase : public ITrackableNodeProcessor {
@@ -60,7 +58,6 @@ public:
     void PostRewriteIO() override;
     void Reset() override;
     IGraphTransformer& GetRecaptureOptProposalTransformer() override;
-    IGraphTransformer& GetStatisticsProposalTransformer() override;
     IGraphTransformer& GetLogicalOptProposalTransformer() override;
     IGraphTransformer& GetPhysicalOptProposalTransformer() override;
     IGraphTransformer& GetPhysicalFinalizingTransformer() override;
@@ -90,14 +87,11 @@ public:
     ITrackableNodeProcessor& GetTrackableNodeProcessor() override;
     IGraphTransformer& GetPlanInfoTransformer() override;
     IDqIntegration* GetDqIntegration() override;
-    IDqOptimization* GetDqOptimization() override;
 
 protected:
     THolder<IGraphTransformer> DefConstraintTransformer_;
     TNullTransformer NullTransformer_;
     TTrackableNodeProcessorBase NullTrackableNodeProcessor_;
 };
-
-TExprNode::TPtr DefaultCleanupWorld(const TExprNode::TPtr& node, TExprContext& ctx);
 
 } // namespace NYql

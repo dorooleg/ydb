@@ -14,8 +14,6 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_XDS_XDS_RESOURCE_TYPE_H
-#define GRPC_SRC_CORE_EXT_XDS_XDS_RESOURCE_TYPE_H
 #include <grpc/support/port_platform.h>
 
 #include <memory>
@@ -24,30 +22,18 @@
 
 #include "y_absl/status/statusor.h"
 #include "y_absl/strings/string_view.h"
-#include "y_absl/types/optional.h"
-#include "upb/arena.h"
-#include "upb/def.h"
 
-#include "src/core/ext/xds/xds_bootstrap.h"
-#include "src/core/lib/debug/trace.h"
+#include "src/core/ext/xds/upb_utils.h"
+
+#ifndef GRPC_CORE_EXT_XDS_XDS_RESOURCE_TYPE_H
+#define GRPC_CORE_EXT_XDS_XDS_RESOURCE_TYPE_H
 
 namespace grpc_core {
-
-class XdsClient;
 
 // Interface for an xDS resource type.
 // Used to inject type-specific logic into XdsClient.
 class XdsResourceType {
  public:
-  // Context passed into Decode().
-  struct DecodeContext {
-    XdsClient* client;
-    const XdsBootstrap::XdsServer& server;
-    TraceFlag* tracer;
-    upb_DefPool* symtab;
-    upb_Arena* arena;
-  };
-
   // A base type for resource data.
   // Subclasses will extend this, and their DecodeResults will be
   // downcastable to their extended type.
@@ -57,11 +43,7 @@ class XdsResourceType {
 
   // Result returned by Decode().
   struct DecodeResult {
-    // The resource's name, if it can be determined.
-    // If the name is not returned, the resource field should contain a
-    // non-OK status.
-    y_absl::optional<TString> name;
-    // The parsed and validated resource, or an error status.
+    TString name;
     y_absl::StatusOr<std::unique_ptr<ResourceData>> resource;
   };
 
@@ -70,9 +52,17 @@ class XdsResourceType {
   // Returns v3 resource type.
   virtual y_absl::string_view type_url() const = 0;
 
+  // Returns v2 resource type.
+  virtual y_absl::string_view v2_type_url() const = 0;
+
   // Decodes and validates a serialized resource proto.
-  virtual DecodeResult Decode(const DecodeContext& context,
-                              y_absl::string_view serialized_resource) const = 0;
+  // If the resource fails protobuf deserialization, returns non-OK status.
+  // If the deserialized resource fails validation, returns a DecodeResult
+  // whose resource field is set to a non-OK status.
+  // Otherwise, returns a DecodeResult with a valid resource.
+  virtual y_absl::StatusOr<DecodeResult> Decode(
+      const XdsEncodingContext& context, y_absl::string_view serialized_resource,
+      bool is_v2) const = 0;
 
   // Returns true if r1 and r2 are equal.
   // Must be invoked only on resources returned by this object's Decode()
@@ -96,10 +86,14 @@ class XdsResourceType {
   // properly in logs.
   // Note: This won't actually work properly until upb adds support for
   // Any fields in textproto printing (internal b/178821188).
-  virtual void InitUpbSymtab(XdsClient* xds_client,
-                             upb_DefPool* symtab) const = 0;
+  virtual void InitUpbSymtab(upb_DefPool* symtab) const = 0;
+
+  // Convenience method for checking if resource_type matches this type.
+  // Checks against both type_url() and v2_type_url().
+  // If is_v2 is non-null, it will be set to true if matching v2_type_url().
+  bool IsType(y_absl::string_view resource_type, bool* is_v2) const;
 };
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_XDS_XDS_RESOURCE_TYPE_H
+#endif  // GRPC_CORE_EXT_XDS_XDS_RESOURCE_TYPE_H

@@ -36,26 +36,14 @@ TExprNode::TPtr BuildRangeSingle(TPositionHandle pos, const TRangeBoundary& left
     return ctx.NewCallable(pos, "AsRange", { BuildRange(pos, left, right, ctx) });
 }
 
-TMaybe<EDataSlot> GetBaseDataSlot(const TTypeAnnotationNode* keyType) {
-    auto baseType = RemoveAllOptionals(keyType);
-    TMaybe<EDataSlot> result;
-    if (baseType->GetKind() == ETypeAnnotationKind::Data) {
-        result = baseType->Cast<TDataExprType>()->GetSlot();
-    }
-    return result;
-}
-
-bool HasUncomparableNaNs(const TTypeAnnotationNode* keyType) {
-    // PostgreSQL comparison operators treat NaNs as biggest flating values
-    // this behavior matches ordering in ORDER BY, so we don't need special NaN handling for Pg types
-    auto slot = GetBaseDataSlot(keyType);
-    return slot && (NUdf::GetDataTypeInfo(*slot).Features & (NUdf::EDataTypeFeatures::FloatType | NUdf::EDataTypeFeatures::DecimalType));
+bool HasNaNs(EDataSlot slot) {
+    return NUdf::GetDataTypeInfo(slot).Features & (NUdf::EDataTypeFeatures::FloatType | NUdf::EDataTypeFeatures::DecimalType);
 }
 
 TExprNode::TPtr MakeNaNBoundary(TPositionHandle pos, const TTypeAnnotationNode* keyType, TExprContext& ctx) {
-    YQL_ENSURE(HasUncomparableNaNs(keyType));
     auto baseType = RemoveAllOptionals(keyType);
     auto keySlot = baseType->Cast<TDataExprType>()->GetSlot();
+    YQL_ENSURE(HasNaNs(keySlot));
 
     return ctx.Builder(pos)
         .Callable("SafeCast")
@@ -110,11 +98,14 @@ TExprNode::TPtr TzRound(const TExprNode::TPtr& key, const TTypeAnnotationNode* k
 TRangeBoundary BuildPlusInf(TPositionHandle pos, const TTypeAnnotationNode* keyType, TExprContext& ctx, bool excludeNaN = true) {
     TRangeBoundary result;
 
-    if (excludeNaN && HasUncomparableNaNs(keyType)) {
+    auto optKeyTypeNode = ExpandType(pos, *ctx.MakeType<TOptionalExprType>(keyType), ctx);
+
+    auto baseType = RemoveAllOptionals(keyType);
+    auto keySlot = baseType->Cast<TDataExprType>()->GetSlot();
+    if (excludeNaN && HasNaNs(keySlot)) {
         // exclude NaN value (NaN is ordered as largest floating point value)
         result.Value = MakeNaNBoundary(pos, keyType, ctx);
     } else {
-        auto optKeyTypeNode = ExpandType(pos, *ctx.MakeType<TOptionalExprType>(keyType), ctx);
         result.Value = ctx.NewCallable(pos, "Nothing", { optKeyTypeNode });
     }
 
@@ -126,25 +117,14 @@ TRangeBoundary BuildMinusInf(TPositionHandle pos, const TTypeAnnotationNode* key
     // start from first non-null value
     auto optKeyTypeNode = ExpandType(pos, *ctx.MakeType<TOptionalExprType>(keyType), ctx);
     auto optBaseKeyTypeNode = ExpandType(pos, *ctx.MakeType<TOptionalExprType>(RemoveAllOptionals(keyType)), ctx);
-    TExprNode::TPtr largestNull;
-    if (keyType->GetKind() == ETypeAnnotationKind::Pg) {
-        largestNull = ctx.Builder(pos)
-            .Callable("Just")
-                .Callable(0, "Nothing")
-                    .Add(0, ExpandType(pos, *keyType, ctx))
-                .Seal()
+    auto largestNull = ctx.Builder(pos)
+        .Callable("SafeCast")
+            .Callable(0, "Nothing")
+                .Add(0, optBaseKeyTypeNode)
             .Seal()
-            .Build();
-    } else {
-        largestNull = ctx.Builder(pos)
-            .Callable("SafeCast")
-                .Callable(0, "Nothing")
-                    .Add(0, optBaseKeyTypeNode)
-                .Seal()
-                .Add(1, optKeyTypeNode)
-            .Seal()
-            .Build();
-    }
+            .Add(1, optKeyTypeNode)
+        .Seal()
+        .Build();
 
     TRangeBoundary result;
     result.Value = largestNull;
@@ -168,14 +148,12 @@ TExprNode::TPtr MakeWidePointRangeLambda(TPositionHandle pos, const TTypeAnnotat
         case EDataSlot::Int64:  name = "Int64"; maxValueStr = ToString(Max<i64>()); break;
         case EDataSlot::Uint64: name = "Uint64"; maxValueStr = ToString(Max<ui64>()); break;
 
-        case EDataSlot::Date:        name = "Date"; maxValueStr = ToString(NUdf::MAX_DATE - 1); break;
-        case EDataSlot::Datetime:    name = "Datetime"; maxValueStr = ToString(NUdf::MAX_DATETIME - 1); break;
-        case EDataSlot::Timestamp:   name = "Timestamp"; maxValueStr = ToString(NUdf::MAX_TIMESTAMP - 1); break;
-        case EDataSlot::Date32:      name = "Date32"; maxValueStr = ToString(NUdf::MAX_DATE32); break;
-        case EDataSlot::Datetime64:  name = "Datetime64"; maxValueStr = ToString(NUdf::MAX_DATETIME64); break;
-        case EDataSlot::Timestamp64: name = "Timestamp64"; maxValueStr = ToString(NUdf::MAX_TIMESTAMP64); break;
+        case EDataSlot::Date:     name = "Date"; maxValueStr = ToString(NUdf::MAX_DATE - 1); break;
+        case EDataSlot::Datetime: name = "Datetime"; maxValueStr = ToString(NUdf::MAX_DATETIME - 1); break;
         default:
-            ythrow yexception() << "Unexpected type: " << baseKeyType->Cast<TDataExprType>()->GetName();
+            YQL_ENSURE(keySlot == EDataSlot::Timestamp);
+            name = "Timestamp";
+            maxValueStr = ToString(NUdf::MAX_TIMESTAMP - 1);
     }
 
     TExprNode::TPtr maxValue = ctx.NewCallable(pos, name, { ctx.NewAtom(pos, maxValueStr, TNodeFlags::Default) });
@@ -186,12 +164,6 @@ TExprNode::TPtr MakeWidePointRangeLambda(TPositionHandle pos, const TTypeAnnotat
         addValue = ctx.NewCallable(pos, "Interval", { ctx.NewAtom(pos, "1000000", TNodeFlags::Default) });
     } else if (keySlot == EDataSlot::Timestamp) {
         addValue = ctx.NewCallable(pos, "Interval", { ctx.NewAtom(pos, "1", TNodeFlags::Default) });
-    } else if (keySlot == EDataSlot::Date32) {
-        addValue = ctx.NewCallable(pos, "Interval64", { ctx.NewAtom(pos, "86400000000", TNodeFlags::Default) });
-    } else if (keySlot == EDataSlot::Datetime64) {
-        addValue = ctx.NewCallable(pos, "Interval64", { ctx.NewAtom(pos, "1000000", TNodeFlags::Default) });
-    } else if (keySlot == EDataSlot::Timestamp64) {
-        addValue = ctx.NewCallable(pos, "Interval64", { ctx.NewAtom(pos, "1", TNodeFlags::Default) });
     } else {
         addValue = ctx.NewCallable(pos, name, { ctx.NewAtom(pos, "1", TNodeFlags::Default) });
     }
@@ -252,10 +224,10 @@ TExprNode::TPtr BuildNormalRangeLambdaRaw(TPositionHandle pos, const TTypeAnnota
 {
     // key is argument of Optional<keyType> type
     const auto key = ctx.NewArgument(pos, "key");
-    const auto keySlot = GetBaseDataSlot(keyType);
-    const bool isTzKey = keySlot && (NUdf::GetDataTypeInfo(*keySlot).Features & NUdf::EDataTypeFeatures::TzDateType);
-    const bool isIntegralOrDateKey = keySlot && (NUdf::GetDataTypeInfo(*keySlot).Features &
-        (NUdf::EDataTypeFeatures::IntegralType | NUdf::EDataTypeFeatures::DateType));
+    const auto keySlot = RemoveAllOptionals(keyType)->Cast<TDataExprType>()->GetSlot();
+    const bool isTzKey = NUdf::GetDataTypeInfo(keySlot).Features & NUdf::EDataTypeFeatures::TzDateType;
+    const bool isIntegralOrDateKey = NUdf::GetDataTypeInfo(keySlot).Features &
+        (NUdf::EDataTypeFeatures::IntegralType | NUdf::EDataTypeFeatures::DateType);
     const auto downKey = isTzKey ? TzRound(key, keyType, true, ctx) : key;
     const auto upKey = isTzKey ? TzRound(key, keyType, false, ctx) : key;
     if (op == "!=") {
@@ -272,7 +244,7 @@ TExprNode::TPtr BuildNormalRangeLambdaRaw(TPositionHandle pos, const TTypeAnnota
         auto rightRange = BuildRange(pos, left, right, ctx);
 
         auto body = ctx.NewCallable(pos, "AsRange", { leftRange, rightRange });
-        if (HasUncomparableNaNs(keyType)) {
+        if (HasNaNs(keySlot)) {
             // NaN is not equal to any value (including NaN itself), so we must include it
             left.Included = true;
             left.Value = MakeNaNBoundary(pos, keyType, ctx);
@@ -304,7 +276,7 @@ TExprNode::TPtr BuildNormalRangeLambdaRaw(TPositionHandle pos, const TTypeAnnota
         left.Value = (op == ">=") ? downKey : upKey;
         left.Included = (op == ">=");
     } else if (op == "Exists" || op == "NotExists" ) {
-        YQL_ENSURE(keyType->GetKind() == ETypeAnnotationKind::Optional || keyType->GetKind() == ETypeAnnotationKind::Pg);
+        YQL_ENSURE(keyType->GetKind() == ETypeAnnotationKind::Optional);
         auto nullKey = ctx.Builder(pos)
             .Callable("Just")
                 .Callable(0, "Nothing")
@@ -328,7 +300,7 @@ TExprNode::TPtr BuildNormalRangeLambdaRaw(TPositionHandle pos, const TTypeAnnota
     }
 
     TExprNode::TPtr body = BuildRangeSingle(pos, left, right, ctx);
-    if (op == "==" && HasUncomparableNaNs(keyType)) {
+    if (op == "==" && HasNaNs(keySlot)) {
         auto fullRangeWithoutNaNs = BuildRangeSingle(pos,
             BuildMinusInf(pos, keyType, ctx),
             BuildPlusInf(pos, keyType, ctx), ctx);
@@ -527,51 +499,4 @@ TExprNode::TPtr ExpandRangeFor(const TExprNode::TPtr& node, TExprContext& ctx) {
     return result;
 }
 
-TExprNode::TPtr ExpandRangeToPg(const TExprNode::TPtr& node, TExprContext& ctx) {
-    YQL_ENSURE(node->IsCallable("RangeToPg"));
-    const size_t numComponents = node->Head().GetTypeAnn()->Cast<TListExprType>()->GetItemType()->
-        Cast<TTupleExprType>()->GetItems().front()->Cast<TTupleExprType>()->GetSize();
-    return ctx.Builder(node->Pos())
-        .Callable("OrderedMap")
-            .Add(0, node->HeadPtr())
-            .Lambda(1)
-                .Param("range")
-                .Callable("StaticMap")
-                    .Arg(0, "range")
-                    .Lambda(1)
-                        .Param("boundary")
-                        .List()
-                            .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                                for (size_t i = 0; i < numComponents; ++i) {
-                                    if (i % 2 == 0) {
-                                        parent
-                                            .Callable(i, "Nth")
-                                                .Arg(0, "boundary")
-                                                .Atom(1, i)
-                                            .Seal();
-                                    } else {
-                                        parent
-                                            .Callable(i, "Map")
-                                                .Callable(0, "Nth")
-                                                    .Arg(0, "boundary")
-                                                    .Atom(1, i)
-                                                .Seal()
-                                                .Lambda(1)
-                                                    .Param("unwrapped")
-                                                    .Callable("ToPg")
-                                                        .Arg(0, "unwrapped")
-                                                    .Seal()
-                                                .Seal()
-                                            .Seal();
-                                    }
-                                }
-                                return parent;
-                            })
-                        .Seal()
-                    .Seal()
-                .Seal()
-            .Seal()
-        .Seal()
-        .Build();
-}
 }

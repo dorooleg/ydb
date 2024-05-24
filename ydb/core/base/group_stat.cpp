@@ -1,4 +1,3 @@
-#include <ydb/core/protos/blobstorage.pb.h>
 #include "group_stat.h"
 
 namespace NKikimr {

@@ -12,7 +12,7 @@ namespace NKikimr::NSchemeShard {
 using namespace NTableIndex;
 
 TVector<ISubOperation::TPtr> CreateIndexedTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context) {
-    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCreateIndexedTable);
+    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCreateIndexedTable);
 
     auto indexedTable = tx.GetCreateIndexedTable();
     const NKikimrSchemeOp::TTableDescription& baseTableDescription = indexedTable.GetTableDescription();
@@ -199,15 +199,6 @@ TVector<ISubOperation::TPtr> CreateIndexedTable(TOperationId nextId, const TTxTr
             scheme.MutableAlterUserAttributes()->CopyFrom(tx.GetAlterUserAttributes());
         }
 
-        if (baseTableDescription.HasTemporary() && baseTableDescription.GetTemporary()) {
-            if (!context.SS->EnableTempTables) {
-                TString msg = TStringBuilder() << "It is not allowed to create temp table: "
-                    << baseTableDescription.GetName();
-                return {CreateReject(nextId, NKikimrScheme::EStatus::StatusPreconditionFailed, msg)};
-            }
-            *scheme.MutableTempTableOwnerActorId() = tx.GetTempTableOwnerActorId();
-        }
-
         result.push_back(CreateNewTable(NextPartId(nextId, result), scheme, sequences));
     }
 
@@ -221,11 +212,6 @@ TVector<ISubOperation::TPtr> CreateIndexedTable(TOperationId nextId, const TTxTr
             scheme.MutableCreateTableIndex()->CopyFrom(indexDescription);
             if (!indexDescription.HasType()) {
                 scheme.MutableCreateTableIndex()->SetType(NKikimrSchemeOp::EIndexTypeGlobal);
-            } else if (!AppData()->FeatureFlags.GetEnableUniqConstraint()) {
-                if (indexDescription.GetType() == NKikimrSchemeOp::EIndexTypeGlobalUnique) {
-                    TString msg = TStringBuilder() << "Unique constraint feature is disabled";
-                    return {CreateReject(nextId, NKikimrScheme::EStatus::StatusPreconditionFailed, msg)};
-                }
             }
 
             result.push_back(CreateNewTableIndex(NextPartId(nextId, result), scheme));

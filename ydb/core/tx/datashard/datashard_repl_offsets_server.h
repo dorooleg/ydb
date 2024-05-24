@@ -1,7 +1,7 @@
 #pragma once
 
 #include "datashard.h"
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 namespace NKikimr::NDataShard {
 

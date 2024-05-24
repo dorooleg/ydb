@@ -2,12 +2,23 @@
 
 #include "defs.h"
 
+#include <ydb/core/blobstorage/base/blobstorage_vdiskid.h>
+#include <ydb/core/erasure/erasure.h>
 #include <ydb/core/protos/cms.pb.h>
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/core/protos/bootstrap.pb.h>
+#include <ydb/public/api/protos/draft/ydb_maintenance.pb.h>
+
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/hash.h>
-#include <util/string/builder.h>
+#include <util/generic/hash_set.h>
+#include <util/system/compiler.h>
+#include <util/system/yassert.h>
+
+#include <bitset>
+#include <sstream>
+#include <algorithm>
+#include <string>
 
 namespace NKikimr::NCms {
 
@@ -26,6 +37,7 @@ public:
         NODE_STATE_DOWN /* "Down" */
     };
 
+
 protected:
     static ENodeState NodeState(NKikimrCms::EState state);
 
@@ -35,11 +47,15 @@ public:
     virtual void AddNode(ui32 nodeId) = 0;
     virtual void UpdateNode(ui32 nodeId, NKikimrCms::EState) = 0;
 
-    virtual bool IsNodeLocked(ui32 nodeId) const = 0;
     virtual void LockNode(ui32 nodeId) = 0;
     virtual void UnlockNode(ui32 nodeId) = 0;
 
-    virtual bool TryToLockNode(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, TString& reason) const = 0;
+    virtual void EmplaceTask(const ui32 nodeId, i32 priority, ui64 order, const std::string& taskUId) = 0;
+    virtual void RemoveTask(const std::string& taskUId) = 0;
+
+    virtual Ydb::Maintenance::ActionState::ActionReason TryToLockNode(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, i32 priority, ui64 order) const = 0;
+
+    virtual std::string ReadableReason(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, Ydb::Maintenance::ActionState::ActionReason reason) const = 0;
 };
 
 /**
@@ -47,7 +63,35 @@ public:
  */
 class TNodesCounterBase : public INodesChecker {
 protected:
-    THashMap<ui32, ENodeState> NodeToState;
+    /** Structure to hold information about vdisk state and priorities and orders of some task.
+     *
+     * Requests with equal priority are processed in the order of arrival at CMS. 
+     */
+    struct TNodeState {
+    public:
+        struct TTaskPriority {
+            i32 Priority;
+            ui64 Order;
+            std::string TaskUId;
+            
+            explicit TTaskPriority(i32 priority, ui64 order, const std::string& taskUId)
+                : Priority(priority)
+                , Order(order)
+                , TaskUId(taskUId)
+            {}
+
+            bool operator<(const TTaskPriority& rhs) const {
+                return Priority < rhs.Priority || (Priority == rhs.Priority && Order > rhs.Order);
+            }
+        };
+    public:
+        ENodeState State;
+        std::set<TTaskPriority> Priorities;
+    };
+
+protected:
+    THashMap<ui32, TNodeState> NodeToState;
+    THashSet<ui32> NodesWithScheduledTasks;
     ui32 LockedNodesCount;
     ui32 DownNodesCount;
 
@@ -55,17 +99,18 @@ public:
     TNodesCounterBase()
         : LockedNodesCount(0)
         , DownNodesCount(0)
-    {
-    }
+    {}
+
+    virtual ~TNodesCounterBase() = default;
 
     void AddNode(ui32 nodeId) override;
     void UpdateNode(ui32 nodeId, NKikimrCms::EState) override;
 
-    bool IsNodeLocked(ui32 nodeId) const override;
+    void EmplaceTask(const ui32 nodeId, i32 priority, ui64 order, const std::string& taskUId) override final;
+    virtual void RemoveTask(const std::string& taskUId) override final;
+
     void LockNode(ui32 nodeId) override;
     void UnlockNode(ui32 nodeId) override;
-
-    const THashMap<ui32, ENodeState>& GetNodeToState() const;
 };
 
 /**
@@ -80,51 +125,47 @@ protected:
     ui32 DisabledNodesLimit;
     ui32 DisabledNodesRatioLimit;
 
-    virtual TString ReasonPrefix(ui32 nodeId) const = 0;
-
 public:
-    explicit TNodesLimitsCounterBase(ui32 disabledNodesLimit, ui32 disabledNodesRatioLimit)
+    TNodesLimitsCounterBase(ui32 disabledNodesLimit, ui32 disabledNodesRatioLimit)
         : DisabledNodesLimit(disabledNodesLimit)
         , DisabledNodesRatioLimit(disabledNodesRatioLimit)
     {
     }
+
+    virtual ~TNodesLimitsCounterBase() = default;
 
     void ApplyLimits(ui32 nodesLimit, ui32 ratioLimit) {
         DisabledNodesLimit = nodesLimit;
         DisabledNodesRatioLimit = ratioLimit;
     }
 
-    bool TryToLockNode(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, TString& reason) const override final;
+    Ydb::Maintenance::ActionState::ActionReason TryToLockNode(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, i32 priority, ui64 order) const override final;
 };
 
 class TTenantLimitsCounter : public TNodesLimitsCounterBase {
 private:
-    const TString TenantName;
-
-protected:
-    TString ReasonPrefix(ui32 nodeId) const override final {
-        return TStringBuilder() << "Cannot lock node '" << nodeId << "' of tenant '" << TenantName << "'";
-    }
+    const std::string TenantName;
 
 public:
-    explicit TTenantLimitsCounter(const TString& tenantName, ui32 disabledNodesLimit, ui32 disabledNodesRatioLimit)
+    TTenantLimitsCounter(const std::string &tenantName, ui32 disabledNodesLimit, ui32 disabledNodesRatioLimit)
         : TNodesLimitsCounterBase(disabledNodesLimit, disabledNodesRatioLimit)
         , TenantName(tenantName)
     {
     }
+
+    std::string ReadableReason(ui32 nodeId, NKikimrCms::EAvailabilityMode mode,
+                               Ydb::Maintenance::ActionState::ActionReason reason) const override final;
 };
 
 class TClusterLimitsCounter : public TNodesLimitsCounterBase {
-protected:
-    TString ReasonPrefix(ui32 nodeId) const override final {
-        return TStringBuilder() << "Cannot lock node '" << nodeId << "'";
-    }
-
 public:
-    explicit TClusterLimitsCounter(ui32 disabledNodesLimit, ui32 disabledNodesRatioLimit)
+    TClusterLimitsCounter(ui32 disabledNodesLimit, ui32 disabledNodesRatioLimit)
         : TNodesLimitsCounterBase(disabledNodesLimit, disabledNodesRatioLimit)
     {
     }
+
+    std::string ReadableReason(ui32 nodeId, NKikimrCms::EAvailabilityMode mode,
+                               Ydb::Maintenance::ActionState::ActionReason reason) const override final;
 };
 
 /**
@@ -135,15 +176,17 @@ public:
  */
 class TSysTabletsNodesCounter : public TNodesCounterBase {
 private:
-    const NKikimrConfig::TBootstrap::ETabletType TabletType;
+    NKikimrConfig::TBootstrap::ETabletType TabletType;
 
 public:
     explicit TSysTabletsNodesCounter(NKikimrConfig::TBootstrap::ETabletType tabletType)
         : TabletType(tabletType)
-    {
-    }
+    {}
 
-    bool TryToLockNode(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, TString& reason) const override final;
+    Ydb::Maintenance::ActionState::ActionReason TryToLockNode(ui32 nodeId, NKikimrCms::EAvailabilityMode mode, i32 priority, ui64 order) const override final;
+
+    std::string ReadableReason(ui32 nodeId, NKikimrCms::EAvailabilityMode mode,
+                               Ydb::Maintenance::ActionState::ActionReason reason) const override final;
 };
 
 } // namespace NKikimr::NCms

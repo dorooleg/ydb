@@ -3,8 +3,6 @@
 #include <util/generic/typelist.h>
 #include <util/system/defaults.h>
 
-#include <type_traits>
-
 /*
  * original url (now dead): http://www.cris.com/~Ttwang/tech/inthash.htm
  * copy: https://gist.github.com/badboy/6267743
@@ -72,11 +70,6 @@ static constexpr T IntHash(T t) noexcept {
  */
 template <class T>
 static constexpr size_t NumericHash(T t) noexcept {
-    if constexpr (std::is_floating_point<T>::value) {
-        if (t == T(0)) { // the negative zero is equal to the positive zero, but has different bitwise representation
-            t = T(0);    // make sure that the hash will be the same for both kind of zeros
-        }
-    }
     using TCvt = TFixedWidthUnsignedInt<T>;
 
     union Y_HIDDEN {
@@ -88,6 +81,6 @@ static constexpr size_t NumericHash(T t) noexcept {
 }
 
 template <class T>
-[[nodiscard]] static constexpr T CombineHashes(T l, T r) noexcept {
+static constexpr T CombineHashes(T l, T r) noexcept {
     return IntHash(l) ^ r;
 }

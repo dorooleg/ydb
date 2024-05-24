@@ -184,7 +184,7 @@ struct TKesusTablet::THtmlRenderer {
                     for (const auto& kv : session->OwnedSemaphores) {
                         const auto* owner = &kv.second;
                         const auto* semaphore = Self->Semaphores.FindPtr(kv.first);
-                        Y_ABORT_UNLESS(semaphore);
+                        Y_VERIFY(semaphore);
                         TABLER() {
                             TABLED() { RenderSemaphoreLink(out, semaphore->Name); }
                             TABLED() { RenderCount(out, owner->Count); }
@@ -209,7 +209,7 @@ struct TKesusTablet::THtmlRenderer {
                     for (const auto& kv : session->WaitingSemaphores) {
                         const auto* waiter = &kv.second;
                         const auto* semaphore = Self->Semaphores.FindPtr(kv.first);
-                        Y_ABORT_UNLESS(semaphore);
+                        Y_VERIFY(semaphore);
                         TABLER() {
                             TABLED() { RenderSemaphoreLink(out, semaphore->Name); }
                             TABLED() { RenderCount(out, waiter->Count); }
@@ -401,7 +401,6 @@ struct TKesusTablet::THtmlRenderer {
                     props += resource->GetProps().Utf8DebugString();
                     SubstGlobal(props, "\n", "\n    "); // make indent
                     out << "Props:" << props << "\n";
-                    resource->HtmlDebugInfo(out);
                 }
 
                 TAG(TH3) { out << "Children resources"; }
@@ -423,23 +422,19 @@ struct TKesusTablet::THtmlRenderer {
                 TABLEHEAD() {
                     TABLER() {
                         TABLEH() { out << "Client"; }
-                        TABLEH() { out << "Version"; }
                         TABLEH() { out << "Active"; }
-                        TABLEH() { out << "Sent"; }
-                        TABLEH() { out << "ConsumedSinceReplicationEnabled"; }
+                        TABLEH() { out << "Consumed"; }
                         TABLEH() { out << "Requested"; }
                     }
                 }
                 TABLEBODY() {
                     const auto& clients = resource->GetSessions();
-                    for (const auto& [clientId, _] : clients) {
+                    for (const NActors::TActorId& clientId : clients) {
                         const TQuoterSession* session = Self->QuoterResources.FindSession(clientId, resource->GetResourceId());
-                        Y_ABORT_UNLESS(session);
+                        Y_VERIFY(session);
                         TABLER() {
                             TABLED() { out << clientId; }
-                            TABLED() { out << session->GetClientVersion(); }
                             TABLED() { out << (session->IsActive() ? "true" : "false"); }
-                            TABLED() { out << session->GetTotalSent(); }
                             TABLED() { out << session->GetTotalConsumed(); }
                             TABLED() { out << session->GetAmountRequested(); }
                         }

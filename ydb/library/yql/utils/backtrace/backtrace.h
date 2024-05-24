@@ -1,4 +1,5 @@
 #pragma once
+#include "symbolizer.h"
 
 #include <util/system/types.h>
 #include <util/generic/string.h>
@@ -14,7 +15,6 @@ void EnableKikimrBacktraceFormat();
 namespace NYql {
 
 namespace NBacktrace {
-const int Limit = 400;
 
 void RegisterKikimrFatalActions();
 void AddAfterFatalCallback(const std::function<void(int)>& after);
@@ -23,7 +23,6 @@ void EnableKikimrSymbolize();
 
 void KikimrBackTrace();
 void KikimrBackTraceFormatImpl(IOutputStream*);
-void KikimrBacktraceFormatImpl(IOutputStream* out, void* const* stack, size_t stackSize);
 
 void SetModulesMapping(const THashMap<TString, TString>& mapping);
 

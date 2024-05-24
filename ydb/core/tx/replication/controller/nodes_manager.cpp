@@ -3,28 +3,15 @@
 
 #include <ydb/core/tx/replication/service/service.h>
 
-#include <util/generic/vector.h>
-#include <util/random/random.h>
-
 namespace NKikimr::NReplication::NController {
 
 bool TNodesManager::HasTenant(const TString& tenant) const {
     return TenantNodes.contains(tenant);
 }
 
-bool TNodesManager::HasNodes(const TString& tenant) const {
-    return !GetNodes(tenant).empty();
-}
-
 const THashSet<ui32>& TNodesManager::GetNodes(const TString& tenant) const {
-    Y_ABORT_UNLESS(HasTenant(tenant));
+    Y_VERIFY(HasTenant(tenant));
     return TenantNodes.at(tenant);
-}
-
-ui32 TNodesManager::GetRandomNode(const TString& tenant) const {
-    const auto& nodes = GetNodes(tenant);
-    TVector<ui32> nodesVec(nodes.begin(), nodes.end());
-    return nodesVec[RandomNumber(nodesVec.size())];
 }
 
 void TNodesManager::DiscoverNodes(const TString& tenant, const TActorId& cache, const TActorContext& ctx) {
@@ -34,39 +21,24 @@ void TNodesManager::DiscoverNodes(const TString& tenant, const TActorId& cache, 
     );
 }
 
-TNodesManager::TProcessResult TNodesManager::ProcessResponse(TEvDiscovery::TEvDiscoveryData::TPtr& ev, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(ev->Get()->CachedMessageData);
-    Y_ABORT_UNLESS(!ev->Get()->CachedMessageData->InfoEntries.empty());
-    Y_ABORT_UNLESS(ev->Get()->CachedMessageData->Status == TEvStateStorage::TEvBoardInfo::EStatus::Ok);
-
-    TProcessResult result;
+void TNodesManager::ProcessResponse(TEvDiscovery::TEvDiscoveryData::TPtr& ev, const TActorContext& ctx) {
+    Y_VERIFY(ev->Get()->CachedMessageData && ev->Get()->CachedMessageData->Info);
+    Y_VERIFY(ev->Get()->CachedMessageData->Info->Status == TEvStateStorage::TEvBoardInfo::EStatus::Ok);
 
     auto it = NodeDiscoverers.find(ev->Sender);
     if (it == NodeDiscoverers.end()) {
-        return result;
+        return;
     }
 
-    THashSet<ui32> newNodes;
-    auto& curNodes = TenantNodes[it->second];
+    auto& nodes = TenantNodes[it->second];
+    nodes.clear();
 
-    for (const auto& [actorId, _] : ev->Get()->CachedMessageData->InfoEntries) {
-        const ui32 nodeId = actorId.NodeId();
-        newNodes.insert(nodeId);
-        auto it = curNodes.find(nodeId);
-        if (it != curNodes.end()) {
-            curNodes.erase(it);
-        } else {
-            result.NewNodes.insert(nodeId);
-        }
+    for (const auto& [actorId, _] : ev->Get()->CachedMessageData->Info->InfoEntries) {
+        nodes.insert(actorId.NodeId());
     }
-
-    result.RemovedNodes = std::move(curNodes);
-    curNodes = std::move(newNodes);
 
     ctx.Schedule(UpdateInternal, new TEvPrivate::TEvUpdateTenantNodes(it->second));
     NodeDiscoverers.erase(it);
-
-    return result;
 }
 
 void TNodesManager::ProcessResponse(TEvDiscovery::TEvError::TPtr& ev, const TActorContext& ctx) {

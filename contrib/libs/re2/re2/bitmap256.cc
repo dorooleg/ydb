@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-#include "absl/base/macros.h"
+#include "util/util.h"
 #include "util/logging.h"
 
 namespace re2 {
@@ -27,15 +27,15 @@ int Bitmap256::FindNextSetBit(int c) const {
     case 1:
       if (words_[1] != 0)
         return (1 * 64) + FindLSBSet(words_[1]);
-      ABSL_FALLTHROUGH_INTENDED;
+      FALLTHROUGH_INTENDED;
     case 2:
       if (words_[2] != 0)
         return (2 * 64) + FindLSBSet(words_[2]);
-      ABSL_FALLTHROUGH_INTENDED;
+      FALLTHROUGH_INTENDED;
     case 3:
       if (words_[3] != 0)
         return (3 * 64) + FindLSBSet(words_[3]);
-      ABSL_FALLTHROUGH_INTENDED;
+      FALLTHROUGH_INTENDED;
     default:
       return -1;
   }

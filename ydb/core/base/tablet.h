@@ -53,8 +53,6 @@ struct TEvTablet {
         EvCutTabletHistory,
         EvUpdateConfig,
         EvDropLease,
-        EvReady,
-        EvFollowerDetached, // from leader to user tablet when a follower is removed
 
         EvCommit = EvBoot + 512,
         EvAux,
@@ -235,7 +233,7 @@ struct TEvTablet {
         {}
     };
 
-    // tablet is restored, but may not yet be ready to accept messages
+    // tablet is ready for operation
     struct TEvRestored : public TEventLocal<TEvRestored, EvRestored> {
         const ui64 TabletID;
         const ui32 Generation;
@@ -250,31 +248,10 @@ struct TEvTablet {
         {}
     };
 
-    // tablet is ready for operation
-    struct TEvReady : public TEventLocal<TEvReady, EvReady> {
-        const ui64 TabletID;
-        const ui32 Generation;
-        const TActorId UserTabletActor;
-
-        TEvReady(ui64 tabletId, ui32 generation, const TActorId &userTabletActor)
-            : TabletID(tabletId)
-            , Generation(generation)
-            , UserTabletActor(userTabletActor)
-        {}
-    };
-
     struct TEvNewFollowerAttached : public TEventLocal<TEvNewFollowerAttached, EvNewFollowerAttached> {
         const ui32 TotalFollowers;
 
         TEvNewFollowerAttached(ui32 totalFollowers)
-            : TotalFollowers(totalFollowers)
-        {}
-    };
-
-    struct TEvFollowerDetached : public TEventLocal<TEvFollowerDetached, EvFollowerDetached> {
-        const ui32 TotalFollowers;
-
-        TEvFollowerDetached(ui32 totalFollowers)
             : TotalFollowers(totalFollowers)
         {}
     };

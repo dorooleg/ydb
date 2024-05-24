@@ -1,7 +1,5 @@
 #include "datashard_txs.h"
 
-#include <ydb/library/actors/core/monotonic_provider.h>
-
 namespace NKikimr::NDataShard {
 
     TDataShard::TTxReadSet::TTxReadSet(TDataShard *self, TEvTxProcessing::TEvReadSet::TPtr ev)
@@ -31,7 +29,7 @@ namespace NKikimr::NDataShard {
 
     void TDataShard::TTxReadSet::DoExecute(TTransactionContext &txc, const TActorContext &ctx) {
         auto state = Self->State;
-        Y_ABORT_UNLESS(state != TShardState::Unknown
+        Y_VERIFY(state != TShardState::Unknown
                  && state != TShardState::Uninitialized
                  && state != TShardState::Readonly,
                  "State %" PRIu32 " event %s", state, Ev->Get()->ToString().data());
@@ -65,7 +63,7 @@ namespace NKikimr::NDataShard {
 
         bool saved = Self->Pipeline.SaveInReadSet(msg, Ack, txc, ctx);
         if (!saved) { // delayed. Do not ack
-            Y_ABORT_UNLESS(!Ack);
+            Y_VERIFY(!Ack);
         }
     }
 

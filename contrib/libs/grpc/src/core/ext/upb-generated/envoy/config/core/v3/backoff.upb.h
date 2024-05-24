@@ -53,31 +53,17 @@ UPB_INLINE envoy_config_core_v3_BackoffStrategy* envoy_config_core_v3_BackoffStr
   return ret;
 }
 UPB_INLINE char* envoy_config_core_v3_BackoffStrategy_serialize(const envoy_config_core_v3_BackoffStrategy* msg, upb_Arena* arena, size_t* len) {
-  char* ptr;
-  (void)upb_Encode(msg, &envoy_config_core_v3_BackoffStrategy_msginit, 0, arena, &ptr, len);
-  return ptr;
+  return upb_Encode(msg, &envoy_config_core_v3_BackoffStrategy_msginit, 0, arena, len);
 }
 UPB_INLINE char* envoy_config_core_v3_BackoffStrategy_serialize_ex(const envoy_config_core_v3_BackoffStrategy* msg, int options,
                                  upb_Arena* arena, size_t* len) {
-  char* ptr;
-  (void)upb_Encode(msg, &envoy_config_core_v3_BackoffStrategy_msginit, options, arena, &ptr, len);
-  return ptr;
+  return upb_Encode(msg, &envoy_config_core_v3_BackoffStrategy_msginit, options, arena, len);
 }
-UPB_INLINE bool envoy_config_core_v3_BackoffStrategy_has_base_interval(const envoy_config_core_v3_BackoffStrategy* msg) {
-  return _upb_hasbit(msg, 1);
-}
-UPB_INLINE void envoy_config_core_v3_BackoffStrategy_clear_base_interval(const envoy_config_core_v3_BackoffStrategy* msg) {
-  *UPB_PTR_AT(msg, UPB_SIZE(4, 8), const upb_Message*) = NULL;
-}
+UPB_INLINE bool envoy_config_core_v3_BackoffStrategy_has_base_interval(const envoy_config_core_v3_BackoffStrategy *msg) { return _upb_hasbit(msg, 1); }
 UPB_INLINE const struct google_protobuf_Duration* envoy_config_core_v3_BackoffStrategy_base_interval(const envoy_config_core_v3_BackoffStrategy* msg) {
   return *UPB_PTR_AT(msg, UPB_SIZE(4, 8), const struct google_protobuf_Duration*);
 }
-UPB_INLINE bool envoy_config_core_v3_BackoffStrategy_has_max_interval(const envoy_config_core_v3_BackoffStrategy* msg) {
-  return _upb_hasbit(msg, 2);
-}
-UPB_INLINE void envoy_config_core_v3_BackoffStrategy_clear_max_interval(const envoy_config_core_v3_BackoffStrategy* msg) {
-  *UPB_PTR_AT(msg, UPB_SIZE(8, 16), const upb_Message*) = NULL;
-}
+UPB_INLINE bool envoy_config_core_v3_BackoffStrategy_has_max_interval(const envoy_config_core_v3_BackoffStrategy *msg) { return _upb_hasbit(msg, 2); }
 UPB_INLINE const struct google_protobuf_Duration* envoy_config_core_v3_BackoffStrategy_max_interval(const envoy_config_core_v3_BackoffStrategy* msg) {
   return *UPB_PTR_AT(msg, UPB_SIZE(8, 16), const struct google_protobuf_Duration*);
 }
@@ -86,7 +72,7 @@ UPB_INLINE void envoy_config_core_v3_BackoffStrategy_set_base_interval(envoy_con
   _upb_sethas(msg, 1);
   *UPB_PTR_AT(msg, UPB_SIZE(4, 8), struct google_protobuf_Duration*) = value;
 }
-UPB_INLINE struct google_protobuf_Duration* envoy_config_core_v3_BackoffStrategy_mutable_base_interval(envoy_config_core_v3_BackoffStrategy* msg, upb_Arena* arena) {
+UPB_INLINE struct google_protobuf_Duration* envoy_config_core_v3_BackoffStrategy_mutable_base_interval(envoy_config_core_v3_BackoffStrategy *msg, upb_Arena *arena) {
   struct google_protobuf_Duration* sub = (struct google_protobuf_Duration*)envoy_config_core_v3_BackoffStrategy_base_interval(msg);
   if (sub == NULL) {
     sub = (struct google_protobuf_Duration*)_upb_Message_New(&google_protobuf_Duration_msginit, arena);
@@ -99,7 +85,7 @@ UPB_INLINE void envoy_config_core_v3_BackoffStrategy_set_max_interval(envoy_conf
   _upb_sethas(msg, 2);
   *UPB_PTR_AT(msg, UPB_SIZE(8, 16), struct google_protobuf_Duration*) = value;
 }
-UPB_INLINE struct google_protobuf_Duration* envoy_config_core_v3_BackoffStrategy_mutable_max_interval(envoy_config_core_v3_BackoffStrategy* msg, upb_Arena* arena) {
+UPB_INLINE struct google_protobuf_Duration* envoy_config_core_v3_BackoffStrategy_mutable_max_interval(envoy_config_core_v3_BackoffStrategy *msg, upb_Arena *arena) {
   struct google_protobuf_Duration* sub = (struct google_protobuf_Duration*)envoy_config_core_v3_BackoffStrategy_max_interval(msg);
   if (sub == NULL) {
     sub = (struct google_protobuf_Duration*)_upb_Message_New(&google_protobuf_Duration_msginit, arena);

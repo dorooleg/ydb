@@ -21,8 +21,8 @@ namespace NKikimr {
         }
 
         auto readHugeBlob = [&](const TDiskPart& location) {
-            ++MonGroup.HugeBlobsRead();
-            MonGroup.HugeBlobBytesRead() += location.Size;
+            ++*HugeBlobsRead;
+            *HugeBlobBytesRead += location.Size;
             return Read(location);
         };
 
@@ -38,8 +38,8 @@ namespace NKikimr {
 
             iter.PutToMerger(&indexMerger);
             indexMerger.Finish();
-            auto status = essence->Keep(iter.GetCurKey(), indexMerger.GetMemRec(), {}, Snap->HullCtx->AllowKeepFlags,
-                true /*allowGarbageCollection*/);
+            auto status = essence->Keep(iter.GetCurKey(), indexMerger.GetMemRec(), indexMerger.GetMemRecsMerged(),
+                Snap->HullCtx->AllowKeepFlags);
             indexMerger.Clear();
 
             const TLogoBlobID& id = iter.GetCurKey().LogoBlobID();

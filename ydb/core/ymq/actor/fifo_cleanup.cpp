@@ -7,10 +7,9 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/ymq/queues/common/key_hashes.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/random/random.h>
-#include <util/generic/guid.h>
 
 namespace NKikimr::NSQS {
 
@@ -35,7 +34,7 @@ void TCleanupActor::Bootstrap() {
 
 TDuration TCleanupActor::RandomCleanupPeriod() {
     const ui64 cleanupPeriodMs = Cfg().GetCleanupPeriodMs();
-    Y_ABORT_UNLESS(cleanupPeriodMs > 0);
+    Y_VERIFY(cleanupPeriodMs > 0);
     return TDuration::MilliSeconds(cleanupPeriodMs) +
         TDuration::MilliSeconds(RandomNumber<ui64>(cleanupPeriodMs / 4));
 }

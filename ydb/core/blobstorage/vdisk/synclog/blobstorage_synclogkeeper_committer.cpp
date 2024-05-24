@@ -69,7 +69,7 @@ namespace NKikimr {
 
             void FillInPortion(ui32 freePagesInChunk) {
                 Parts->Clear();
-                Y_DEBUG_ABORT_UNLESS(SwapSnap->Size() > SwapSnapPos);
+                Y_VERIFY_DEBUG(SwapSnap->Size() > SwapSnapPos);
                 ui32 pagesLeft = ui32(SwapSnap->Size()) - SwapSnapPos;
                 ui32 m = Min(freePagesInChunk, pagesLeft);
                 for (ui32 i = 0; i < m; i++) {
@@ -88,7 +88,7 @@ namespace NKikimr {
                     ui32 offset = 0;
                     if (lastChunkFreePages > 0) {
                         // append to the chunk
-                        Y_DEBUG_ABORT_UNLESS(SwapSnapPos == 0);
+                        Y_VERIFY_DEBUG(SwapSnapPos == 0);
                         chunkIdx = SyncLogSnap->DiskSnapPtr->LastChunkIdx();
                         offset = (PagesInChunk - lastChunkFreePages) * PageSize;
                         FillInPortion(lastChunkFreePages);
@@ -101,7 +101,7 @@ namespace NKikimr {
 
                     // generate write
                     Parts->GenRefs();
-                    Y_DEBUG_ABORT_UNLESS(Parts->Size());
+                    Y_VERIFY_DEBUG(Parts->Size());
                     NPDisk::TEvChunkWrite::TPartsPtr p(Parts.Get());
                     ctx.Send(SlCtx->PDiskCtx->PDiskId,
                              new NPDisk::TEvChunkWrite(SlCtx->PDiskCtx->Dsk->Owner, SlCtx->PDiskCtx->Dsk->OwnerRound,
@@ -134,7 +134,7 @@ namespace NKikimr {
                     FillInPortion(PagesInChunk);
                     // generate write
                     Parts->GenRefs();
-                    Y_DEBUG_ABORT_UNLESS(Parts->Size());
+                    Y_VERIFY_DEBUG(Parts->Size());
                     NPDisk::TEvChunkWrite::TPartsPtr p(Parts.Get());
                     ctx.Send(SlCtx->PDiskCtx->PDiskId,
                              new NPDisk::TEvChunkWrite(SlCtx->PDiskCtx->Dsk->Owner, SlCtx->PDiskCtx->Dsk->OwnerRound,
@@ -148,7 +148,7 @@ namespace NKikimr {
 
             void Handle(NPDisk::TEvLogResult::TPtr &ev, const TActorContext &ctx) {
                 CHECK_PDISK_RESPONSE(SlCtx->VCtx, ev, ctx);
-                Y_ABORT_UNLESS(ev->Get()->Results.size() == 1);
+                Y_VERIFY(ev->Get()->Results.size() == 1);
                 const ui64 entryPointLsn = ev->Get()->Results[0].Lsn;
                 TCommitHistory commitHistory(TAppData::TimeProvider->Now(), entryPointLsn, EntryPointSerializer.RecoveryLogConfirmedLsn);
                 ctx.Send(NotifyID, new TEvSyncLogCommitDone(commitHistory,

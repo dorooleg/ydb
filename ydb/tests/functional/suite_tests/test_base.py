@@ -14,7 +14,6 @@ from concurrent import futures
 
 from hamcrest import assert_that, is_, equal_to, raises, none
 import ydb.tests.library.common.yatest_common as yatest_common
-from yatest.common import source_path, test_source_path
 
 from ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
 from ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
@@ -63,8 +62,7 @@ def get_token(length=10):
 
 
 def get_source_path(*args):
-    arcadia_root = source_path('')
-    return os.path.join(arcadia_root, test_source_path(os.path.join(*args)))
+    return yatest_common.source_path(os.path.join("ydb/tests/functional/suite_tests", *args))
 
 
 def is_empty_line(line):
@@ -354,8 +352,6 @@ class BaseSuiteRunner(object):
         query_name = "query_%d" % query_id
         if self.plan:
             query_plan = json.loads(self.explain(statement.text))
-            if 'SimplifiedPlan' in query_plan:
-                del query_plan['SimplifiedPlan']
             self.files[query_name + '.plan'] = write_canonical_response(
                 query_plan,
                 query_name + '.plan',

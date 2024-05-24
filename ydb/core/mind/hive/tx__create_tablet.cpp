@@ -9,6 +9,7 @@ class TTxCreateTablet : public TTransactionBase<THive> {
     const ui64 OwnerId;
     const ui64 OwnerIdx;
     const TTabletTypes::EType TabletType;
+    const ui32 AssignStateStorage;
 
     const TActorId Sender;
     const ui64 Cookie;
@@ -39,6 +40,8 @@ public:
         , OwnerId(RequestData.GetOwner())
         , OwnerIdx(RequestData.GetOwnerIdx())
         , TabletType((TTabletTypes::EType)RequestData.GetTabletType())
+        , AssignStateStorage(RequestData.HasAssignStateStorage() ? RequestData.GetAssignStateStorage() :
+            StateStorageGroupFromTabletID(hive->TabletID()))
         , Sender(sender)
         , Cookie(cookie)
         , TabletId(0)
@@ -100,7 +103,7 @@ public:
     }
 
     bool UpdateChannelsBinding(TLeaderTabletInfo& tablet, NIceDb::TNiceDb& db) {
-        Y_ABORT_UNLESS(tablet.BoundChannels.size() <= BoundChannels.size(), "only expansion channels number is allowed in Binded Channels");
+        Y_VERIFY(tablet.BoundChannels.size() <= BoundChannels.size(), "only expansion channels number is allowed in Binded Channels");
 
         std::bitset<MAX_TABLET_CHANNELS> newChannels;
 
@@ -171,7 +174,7 @@ public:
     void ReplyToSender(NKikimrProto::EReplyStatus status) {
         BLOG_D("THive::TTxCreateTablet::Execute TabletId: " << TabletId <<
             " Status: " << NKikimrProto::EReplyStatus_Name(status));
-        Y_ABORT_UNLESS(!!Sender);
+        Y_VERIFY(!!Sender);
         THolder<TEvHive::TEvCreateTabletReply> reply = MakeHolder<TEvHive::TEvCreateTabletReply>(status, OwnerId, OwnerIdx, TabletId, Self->TabletID(), ErrorReason);
         if (ForwardRequest.HasHiveTabletId()) {
             reply->Record.MutableForwardRequest()->CopyFrom(ForwardRequest);
@@ -262,12 +265,12 @@ public:
                     db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::State>(tablet->State);
                     tablet->ActorsToNotify.push_back(Sender);
                     db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::ActorsToNotify>(tablet->ActorsToNotify);
-                    tablet->NodeFilter.AllowedNodes = AllowedNodeIds;
-                    db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::AllowedNodes>(tablet->NodeFilter.AllowedNodes);
+                    tablet->AllowedNodes = AllowedNodeIds;
+                    db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::AllowedNodes>(tablet->AllowedNodes);
                     tablet->AssignDomains(ObjectDomain, AllowedDomains);
                     db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::ObjectDomain>(ObjectDomain);
                     db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::AllowedDomains>(AllowedDomains);
-                    tablet->ObjectId = {OwnerId, ObjectId};
+                    tablet->ObjectId = ObjectId;
                     db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::ObjectID>(ObjectId);
                     tablet->BootMode = BootMode;
                     db.Table<Schema::Tablet>().Key(TabletId).Update<Schema::Tablet::BootMode>(BootMode);
@@ -289,16 +292,16 @@ public:
                         *followerGroup = srcFollowerGroup;
 
                         TVector<ui32> allowedDataCenters;
-                        for (const TDataCenterId& dc : followerGroup->NodeFilter.AllowedDataCenters) {
+                        for (const TDataCenterId& dc : followerGroup->AllowedDataCenters) {
                             allowedDataCenters.push_back(DataCenterFromString(dc));
                         }
                         db.Table<Schema::TabletFollowerGroup>().Key(TabletId, followerGroup->Id).Update(
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::FollowerCount>(followerGroup->GetRawFollowerCount()),
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowLeaderPromotion>(followerGroup->AllowLeaderPromotion),
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowClientRead>(followerGroup->AllowClientRead),
-                                    NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedNodes>(followerGroup->NodeFilter.AllowedNodes),
+                                    NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedNodes>(followerGroup->AllowedNodes),
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedDataCenters>(allowedDataCenters),
-                                    NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedDataCenterIds>(followerGroup->NodeFilter.AllowedDataCenters),
+                                    NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedDataCenterIds>(followerGroup->AllowedDataCenters),
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::RequireAllDataCenters>(followerGroup->RequireAllDataCenters),
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::FollowerCountPerDataCenter>(followerGroup->FollowerCountPerDataCenter),
                                     NIceDb::TUpdate<Schema::TabletFollowerGroup::RequireDifferentNodes>(followerGroup->RequireDifferentNodes));
@@ -338,9 +341,9 @@ public:
             RequestFreeSequence();
             return true;
         } else {
-            TabletId = MakeTabletID(true, tabletIdIndex);
+            TabletId = MakeTabletID(AssignStateStorage, Self->HiveUid, tabletIdIndex);
             BLOG_D("Hive " << Self->TabletID() << " allocated TabletId " << TabletId << " from TabletIdIndex " << tabletIdIndex);
-            Y_ABORT_UNLESS(Self->Tablets.count(TabletId) == 0);
+            Y_VERIFY(Self->Tablets.count(TabletId) == 0);
             for (auto owner : modified) {
                 auto sequence = Self->Sequencer.GetSequence(owner);
                 db.Table<Schema::Sequences>().Key(owner).Update(
@@ -359,22 +362,22 @@ public:
         // insert entry for new tablet
         TLeaderTabletInfo& tablet = Self->GetTablet(TabletId);
         tablet.NodeId = 0;
-        tablet.SetType((TTabletTypes::EType)TabletType);
+        tablet.Type = (TTabletTypes::EType)TabletType;
         tablet.KnownGeneration = 0; // because we will increase it on start
         tablet.State = ETabletState::GroupAssignment;
         tablet.ActorsToNotify.push_back(Sender);
-        tablet.NodeFilter.AllowedNodes = AllowedNodeIds;
-        tablet.NodeFilter.AllowedDataCenters = AllowedDataCenterIds;
+        tablet.AllowedNodes = AllowedNodeIds;
         tablet.Owner = ownerIdx;
+        tablet.AllowedDataCenters = AllowedDataCenterIds;
         tablet.DataCentersPreference = DataCentersPreference;
         tablet.BootMode = BootMode;
-        tablet.ObjectId = {OwnerId, ObjectId};
+        tablet.ObjectId = ObjectId;
         tablet.AssignDomains(ObjectDomain, AllowedDomains);
         tablet.Statistics.SetLastAliveTimestamp(now.MilliSeconds());
         tablet.BalancerPolicy = BalancerPolicy;
 
         TVector<ui32> allowedDataCenters;
-        for (const TDataCenterId& dc : tablet.NodeFilter.AllowedDataCenters) {
+        for (const TDataCenterId& dc : tablet.AllowedDataCenters) {
             allowedDataCenters.push_back(DataCenterFromString(dc));
         }
         db.Table<Schema::Tablet>().Key(TabletId).Update(NIceDb::TUpdate<Schema::Tablet::Owner>(tablet.Owner),
@@ -383,13 +386,13 @@ public:
                                                         NIceDb::TUpdate<Schema::Tablet::KnownGeneration>(tablet.KnownGeneration),
                                                         NIceDb::TUpdate<Schema::Tablet::State>(tablet.State),
                                                         NIceDb::TUpdate<Schema::Tablet::ActorsToNotify>(TVector<TActorId>(1, Sender)),
-                                                        NIceDb::TUpdate<Schema::Tablet::AllowedNodes>(tablet.NodeFilter.AllowedNodes),
+                                                        NIceDb::TUpdate<Schema::Tablet::AllowedNodes>(tablet.AllowedNodes),
                                                         NIceDb::TUpdate<Schema::Tablet::AllowedDataCenters>(allowedDataCenters),
-                                                        NIceDb::TUpdate<Schema::Tablet::AllowedDataCenterIds>(tablet.NodeFilter.AllowedDataCenters),
+                                                        NIceDb::TUpdate<Schema::Tablet::AllowedDataCenterIds>(tablet.AllowedDataCenters),
                                                         NIceDb::TUpdate<Schema::Tablet::DataCentersPreference>(tablet.DataCentersPreference),
                                                         NIceDb::TUpdate<Schema::Tablet::AllowedDomains>(AllowedDomains),
                                                         NIceDb::TUpdate<Schema::Tablet::BootMode>(tablet.BootMode),
-                                                        NIceDb::TUpdate<Schema::Tablet::ObjectID>(tablet.ObjectId.second),
+                                                        NIceDb::TUpdate<Schema::Tablet::ObjectID>(tablet.ObjectId),
                                                         NIceDb::TUpdate<Schema::Tablet::ObjectDomain>(ObjectDomain),
                                                         NIceDb::TUpdate<Schema::Tablet::Statistics>(tablet.Statistics),
                                                         NIceDb::TUpdate<Schema::Tablet::BalancerPolicy>(tablet.BalancerPolicy));
@@ -423,7 +426,7 @@ public:
 
         resourceValues.CopyFrom(Self->GetDefaultResourceValuesForTabletType(tablet.Type));
         BLOG_D("THive::TTxCreateTablet::Execute; Default resources after merge for type " << tablet.Type << ": {" << resourceValues.ShortDebugString() << "}");
-        if (IsValidObjectId(tablet.ObjectId)) {
+        if (tablet.ObjectId != 0) {
             resourceValues.MergeFrom(Self->GetDefaultResourceValuesForObject(tablet.ObjectId));
             BLOG_D("THive::TTxCreateTablet::Execute; Default resources after merge for object " << tablet.ObjectId << ": {" << resourceValues.ShortDebugString() << "}");
         }
@@ -447,16 +450,16 @@ public:
             followerGroup = srcFollowerGroup;
 
             TVector<ui32> allowedDataCenters;
-            for (const TDataCenterId& dc : followerGroup.NodeFilter.AllowedDataCenters) {
+            for (const TDataCenterId& dc : followerGroup.AllowedDataCenters) {
                 allowedDataCenters.push_back(DataCenterFromString(dc));
             }
             db.Table<Schema::TabletFollowerGroup>().Key(TabletId, followerGroup.Id).Update(
                         NIceDb::TUpdate<Schema::TabletFollowerGroup::FollowerCount>(followerGroup.GetRawFollowerCount()),
                         NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowLeaderPromotion>(followerGroup.AllowLeaderPromotion),
                         NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowClientRead>(followerGroup.AllowClientRead),
-                        NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedNodes>(followerGroup.NodeFilter.AllowedNodes),
+                        NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedNodes>(followerGroup.AllowedNodes),
                         NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedDataCenters>(allowedDataCenters),
-                        NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedDataCenterIds>(followerGroup.NodeFilter.AllowedDataCenters),
+                        NIceDb::TUpdate<Schema::TabletFollowerGroup::AllowedDataCenterIds>(followerGroup.AllowedDataCenters),
                         NIceDb::TUpdate<Schema::TabletFollowerGroup::RequireAllDataCenters>(followerGroup.RequireAllDataCenters),
                         NIceDb::TUpdate<Schema::TabletFollowerGroup::FollowerCountPerDataCenter>(followerGroup.FollowerCountPerDataCenter));
         }

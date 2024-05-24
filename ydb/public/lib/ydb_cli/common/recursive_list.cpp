@@ -1,5 +1,4 @@
 #include "recursive_list.h"
-#include "sys.h"
 
 #include <util/string/join.h>
 
@@ -29,7 +28,7 @@ namespace {
         }
 
         for (const auto& child : list.GetChildren()) {
-            if (settings.SkipSys_ && IsSystemObject(child)) {
+            if (settings.SkipSys_ && child.Name.StartsWith(".sys")) {
                 continue;
             }
 

@@ -1,5 +1,12 @@
 items:
+- name: Kubernetes
+  include: { mode: link, path: orchestrated/toc_p.yaml }
 - name: VM / Baremetal
-  include: { mode: link, path: manual/toc_p.yaml }
+  href: manual/deploy-ydb-on-premises.md
+- name: Развертывание одноузлового кластера
+  include: { mode: link, path: ../getting_started/self_hosted/toc_p.yaml }
 - name: Конфигурация
   href: configuration/config.md
+- name: Промышленные конфигурации BlobStorage
+  href: ../administration/production-storage-config.md
+

@@ -141,12 +141,12 @@ namespace NMonitoring {
             }
 
             const ILabel* operator->() const noexcept {
-                Y_DEBUG_ABORT_UNLESS(Labels_);
+                Y_VERIFY_DEBUG(Labels_);
                 return Labels_->Get(Idx_);
             }
 
             const ILabel& operator*() const noexcept {
-                Y_DEBUG_ABORT_UNLESS(Labels_);
+                Y_VERIFY_DEBUG(Labels_);
                 return *Labels_->Get(Idx_);
             }
 
@@ -316,7 +316,7 @@ namespace NMonitoring {
 
         inline void Clear() noexcept override {
             Labels_.clear();
-        }
+        };
 
         TLabelImpl<TStringBackend>& front() {
             return Labels_.front();

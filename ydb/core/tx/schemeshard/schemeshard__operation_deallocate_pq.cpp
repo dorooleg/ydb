@@ -89,7 +89,7 @@ public:
 
         auto pathId = path.Base()->PathId;
         TTopicInfo::TPtr pqGroup = context.SS->Topics.at(pathId);
-        Y_ABORT_UNLESS(pqGroup);
+        Y_VERIFY(pqGroup);
 
         if (pqGroup->AlterData) {
             result->SetError(NKikimrScheme::StatusMultipleModifications, "Deallocate over Create/Alter");
@@ -107,9 +107,9 @@ public:
 
         auto tabletConfig = pqGroup->TabletConfig;
         NKikimrPQ::TPQTabletConfig config;
-        Y_ABORT_UNLESS(!tabletConfig.empty());
+        Y_VERIFY(!tabletConfig.empty());
         bool parseOk = ParseFromStringNoSizeLimit(config, tabletConfig);
-        Y_ABORT_UNLESS(parseOk);
+        Y_VERIFY(parseOk);
 
         const PQGroupReserve reserve(config, pqGroup->TotalPartitionCount);
 
@@ -150,15 +150,15 @@ public:
     }
 
     bool ProgressState(TOperationContext&) override {
-        Y_ABORT("no progress state for TDeallocatePQ");
+        Y_FAIL("no progress state for TDeallocatePQ");
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDeallocatePQ");
+        Y_FAIL("no AbortPropose for TDeallocatePQ");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_ABORT("no AbortUnsafe for TDeallocatePQ");
+        Y_FAIL("no AbortUnsafe for TDeallocatePQ");
     }
 };
 
@@ -171,7 +171,7 @@ ISubOperation::TPtr CreateDeallocatePQ(TOperationId id, const TTxTransaction& tx
 }
 
 ISubOperation::TPtr CreateDeallocatePQ(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state == TTxState::Invalid);
+    Y_VERIFY(state == TTxState::Invalid);
     return MakeSubOperation<TDeallocatePQ>(id);
 }
 

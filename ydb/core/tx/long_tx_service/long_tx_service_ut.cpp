@@ -7,7 +7,7 @@
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/testlib/tenant_runtime.h>
 
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 namespace NKikimr {
@@ -136,7 +136,7 @@ Y_UNIT_TEST_SUITE(LongTxService) {
             UNIT_ASSERT_VALUES_EQUAL(msg->Record.GetStatus(), Ydb::StatusIds::BAD_SESSION);
         }
 
-        auto observer = [&](auto& ev) {
+        auto observer = [&](auto& runtime, auto& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvLongTxService::TEvRollbackTxResult::EventType: {
                     ui32 node1 = ev->Sender.NodeId();
@@ -317,7 +317,7 @@ Y_UNIT_TEST_SUITE(LongTxService) {
 
         // Block all cross-node TEvSubscribeLock messages and disconnect instead
         size_t disconnectCount = 0;
-        auto observer = [&](auto& ev) {
+        auto observer = [&](auto& runtime, auto& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvLongTxService::TEvSubscribeLock::EventType: {
                     ui32 node1 = ev->Sender.NodeId();

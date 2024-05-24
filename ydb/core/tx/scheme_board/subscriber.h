@@ -2,7 +2,7 @@
 
 #include "defs.h"
 
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 
 #include <util/generic/string.h>
 
@@ -10,18 +10,15 @@ namespace NKikimr {
 
 IActor* CreateSchemeBoardSubscriber(
     const TActorId& owner,
-    const TString& path
-);
-
-IActor* CreateSchemeBoardSubscriber(
-    const TActorId& owner,
     const TString& path,
+    const ui64 stateStorageGroup,
     const ui64 domainOwnerId
 );
 
 IActor* CreateSchemeBoardSubscriber(
     const TActorId& owner,
     const TPathId& pathId,
+    const ui64 stateStorageGroup,
     const ui64 domainOwnerId
 );
 
@@ -35,12 +32,14 @@ enum class ESchemeBoardSubscriberDeletionPolicy {
 IActor* CreateSchemeBoardSubscriber(
     const TActorId& owner,
     const TString& path,
+    const ui64 stateStorageGroup,
     const ESchemeBoardSubscriberDeletionPolicy deletionPolicy
 );
 
 IActor* CreateSchemeBoardSubscriber(
     const TActorId& owner,
     const TPathId& pathId,
+    const ui64 stateStorageGroup,
     const ESchemeBoardSubscriberDeletionPolicy deletionPolicy
 );
 

@@ -41,16 +41,12 @@ Y_FORCE_INLINE void HandleKindDataExport(const TType* type, const NUdf::TUnboxed
             res.set_int32_value(value.Get<i16>());
             break;
         case NUdf::TDataType<i32>::Id:
-        case NUdf::TDataType<NUdf::TDate32>::Id:
             res.set_int32_value(value.Get<i32>());
             break;
         case NUdf::TDataType<ui32>::Id:
             res.set_uint32_value(value.Get<ui32>());
             break;
         case NUdf::TDataType<i64>::Id:
-        case NUdf::TDataType<NUdf::TDatetime64>::Id:
-        case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-        case NUdf::TDataType<NUdf::TInterval64>::Id:
             res.set_int64_value(value.Get<i64>());
             break;
         case NUdf::TDataType<ui64>::Id:
@@ -406,16 +402,12 @@ Y_FORCE_INLINE void HandleKindDataExport(const TType* type, const NUdf::TUnboxed
             res.SetInt32(value.Get<i16>());
             break;
         case NUdf::TDataType<i32>::Id:
-        case NUdf::TDataType<NUdf::TDate32>::Id:
             res.SetInt32(value.Get<i32>());
             break;
         case NUdf::TDataType<ui32>::Id:
             res.SetUint32(value.Get<ui32>());
             break;
         case NUdf::TDataType<i64>::Id:
-        case NUdf::TDataType<NUdf::TDatetime64>::Id:
-        case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-        case NUdf::TDataType<NUdf::TInterval64>::Id:
             res.SetInt64(value.Get<i64>());
             break;
         case NUdf::TDataType<ui64>::Id:
@@ -500,8 +492,8 @@ void ExportValueToProtoImpl(TType* type, const NUdf::TUnboxedValuePod& value, NK
 
         case TType::EKind::Pg: {
             if (!value) {
-                res.SetNullFlagValue(::google::protobuf::NULL_VALUE);
-                break;
+                // do not set Text field
+                return;
             }
             auto pgType = static_cast<TPgType*>(type);
             auto textValue = NYql::NCommon::PgValueToNativeText(value, pgType->GetTypeId());
@@ -607,8 +599,8 @@ void ExportValueToProtoImpl(TType* type, const NUdf::TUnboxedValuePod& value, Yd
 
         case TType::EKind::Pg: {
             if (!value) {
-                res.set_null_flag_value(::google::protobuf::NULL_VALUE);
-                break;
+                // do not set Text field
+                return;
             }
             auto pgType = static_cast<TPgType*>(type);
             auto textValue = NYql::NCommon::PgValueToNativeText(value, pgType->GetTypeId());
@@ -728,16 +720,12 @@ Y_FORCE_INLINE NUdf::TUnboxedValue HandleKindDataImport(const TType* type, const
             MKQL_ENSURE_S(oneOfCase == NKikimrMiniKQL::TValue::ValueValueCase::kInt32);
             return NUdf::TUnboxedValuePod(i16(value.GetInt32()));
         case NUdf::TDataType<i32>::Id:
-        case NUdf::TDataType<NUdf::TDate32>::Id:
             MKQL_ENSURE_S(oneOfCase == NKikimrMiniKQL::TValue::ValueValueCase::kInt32);
             return NUdf::TUnboxedValuePod(value.GetInt32());
         case NUdf::TDataType<ui32>::Id:
             MKQL_ENSURE_S(oneOfCase == NKikimrMiniKQL::TValue::ValueValueCase::kUint32);
             return NUdf::TUnboxedValuePod(value.GetUint32());
         case NUdf::TDataType<i64>::Id:
-        case NUdf::TDataType<NUdf::TDatetime64>::Id:
-        case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-        case NUdf::TDataType<NUdf::TInterval64>::Id:
             MKQL_ENSURE_S(oneOfCase == NKikimrMiniKQL::TValue::ValueValueCase::kInt64);
             return NUdf::TUnboxedValuePod(value.GetInt64());
         case NUdf::TDataType<ui64>::Id:
@@ -825,10 +813,6 @@ void ExportPrimitiveTypeToProto(ui32 schemeType, Ydb::Type& output) {
         case NYql::NProto::TypeIds::Uuid:
         case NYql::NProto::TypeIds::JsonDocument:
         case NYql::NProto::TypeIds::DyNumber:
-        case NYql::NProto::TypeIds::Date32:
-        case NYql::NProto::TypeIds::Datetime64:
-        case NYql::NProto::TypeIds::Timestamp64:
-        case NYql::NProto::TypeIds::Interval64:
             output.set_type_id(static_cast<Ydb::Type::PrimitiveTypeId>(schemeType));
             break;
 
@@ -1029,10 +1013,10 @@ TStructType* TProtoImporter::ImportStructTypeFromProto(const NKikimrMiniKQL::TSt
 TType* TProtoImporter::ImportTypeFromProto(const NKikimrMiniKQL::TType& type) {
     switch (type.GetKind()) {
         case NKikimrMiniKQL::ETypeKind::Void: {
-            return env.GetVoidLazy()->GetType();
+            return env.GetVoid()->GetType();
         }
         case NKikimrMiniKQL::ETypeKind::Null: {
-            return env.GetNullLazy()->GetType();
+            return env.GetNull()->GetType();
         }
         case NKikimrMiniKQL::ETypeKind::Data: {
             const NKikimrMiniKQL::TDataType& protoData = type.GetData();
@@ -1061,7 +1045,7 @@ TType* TProtoImporter::ImportTypeFromProto(const NKikimrMiniKQL::TType& type) {
             return TTaggedType::Create(child, protoTaggedType.GetTag(), env);
         }
         case NKikimrMiniKQL::ETypeKind::EmptyList: {
-            return env.GetTypeOfEmptyListLazy();
+            return env.GetTypeOfEmptyList();
         }
         case NKikimrMiniKQL::ETypeKind::List: {
             const NKikimrMiniKQL::TListType& protoListType = type.GetList();
@@ -1079,7 +1063,7 @@ TType* TProtoImporter::ImportTypeFromProto(const NKikimrMiniKQL::TType& type) {
             return ImportStructTypeFromProto(protoStructType);
         }
         case NKikimrMiniKQL::ETypeKind::EmptyDict: {
-            return env.GetTypeOfEmptyDictLazy();
+            return env.GetTypeOfEmptyDict();
         }
         case NKikimrMiniKQL::ETypeKind::Dict: {
             const NKikimrMiniKQL::TDictType& protoDictType = type.GetDict();
@@ -1120,10 +1104,10 @@ TType* TProtoImporter::ImportTypeFromProto(const NKikimrMiniKQL::TType& type) {
 TNode* TProtoImporter::ImportNodeFromProto(TType* type, const NKikimrMiniKQL::TValue& value) {
     switch (type->GetKind()) {
         case TType::EKind::Void: {
-            return env.GetVoidLazy();
+            return env.GetVoid();
         }
         case TType::EKind::Null: {
-            return env.GetNullLazy();
+            return env.GetNull();
         }
         case TType::EKind::Data: {
             TDataType* dataType = static_cast<TDataType*>(type);
@@ -1159,16 +1143,12 @@ TNode* TProtoImporter::ImportNodeFromProto(TType* type, const NKikimrMiniKQL::TV
                     break;
                 }
                 case NUdf::TDataType<i32>::Id:
-                case NUdf::TDataType<NUdf::TDate32>::Id:
                     dataNode = TDataLiteral::Create(NUdf::TUnboxedValuePod(value.GetInt32()), dataType, env);
                     break;
                 case NUdf::TDataType<ui32>::Id:
                     dataNode = TDataLiteral::Create(NUdf::TUnboxedValuePod(value.GetUint32()), dataType, env);
                     break;
                 case NUdf::TDataType<i64>::Id:
-                case NUdf::TDataType<NUdf::TDatetime64>::Id:
-                case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-                case NUdf::TDataType<NUdf::TInterval64>::Id:
                     dataNode = TDataLiteral::Create(NUdf::TUnboxedValuePod(value.GetInt64()), dataType, env);
                     break;
                 case NUdf::TDataType<ui64>::Id:
@@ -1358,22 +1338,18 @@ TStructType* TProtoImporter::ImportStructTypeFromProto(const Ydb::StructType& pr
 TType* TProtoImporter::ImportTypeFromProto(const Ydb::Type& input) {
     switch (input.type_case()) {
         case Ydb::Type::kVoidType:
-            return env.GetTypeOfVoidLazy();
+            return env.GetTypeOfVoid();
         case Ydb::Type::kNullType:
-            return env.GetTypeOfNullLazy();
+            return env.GetTypeOfNull();
         case Ydb::Type::kEmptyListType:
-            return env.GetTypeOfEmptyListLazy();
+            return env.GetTypeOfEmptyList();
         case Ydb::Type::kEmptyDictType:
-            return env.GetTypeOfEmptyDictLazy();
+            return env.GetTypeOfEmptyDict();
         case Ydb::Type::kPgType: {
-            if (const auto& typeName = input.pg_type().type_name()) {
-                auto* typeDesc = NKikimr::NPg::TypeDescFromPgTypeName(typeName);
-                MKQL_ENSURE(typeDesc, TStringBuilder() << "Unknown PG type name: " << typeName);
-                return TPgType::Create(NKikimr::NPg::PgTypeIdFromTypeDesc(typeDesc), env);
-            } else {
-                const auto& typeId = input.pg_type().oid();
-                return TPgType::Create(typeId, env);
-            }
+            const auto& typeName = input.pg_type().type_name();
+            auto* typeDesc = NKikimr::NPg::TypeDescFromPgTypeName(typeName);
+            MKQL_ENSURE(typeDesc, TStringBuilder() << "Unknown PG type name: " << typeName);
+            return TPgType::Create(NKikimr::NPg::PgTypeIdFromTypeDesc(typeDesc), env);
         }
         case Ydb::Type::kTypeId: {
             MKQL_ENSURE(NUdf::FindDataSlot(input.type_id()), TStringBuilder() << "unknown type id: " << ui32(input.type_id()));
@@ -1530,34 +1506,6 @@ Y_FORCE_INLINE NUdf::TUnboxedValue KindDataImport(const TType* type, const Ydb::
             CheckTypeId(value.value_case(), Ydb::Value::kInt64Value, "Interval");
             if ((ui64)std::abs(value.int64_value()) >= NUdf::MAX_TIMESTAMP) {
                 throw yexception() << "Invalid Interval value";
-            }
-            return NUdf::TUnboxedValuePod(value.int64_value());
-        }
-        case NUdf::TDataType<NUdf::TDate32>::Id: {
-            CheckTypeId(value.value_case(), Ydb::Value::kUint32Value, "Date32");
-            if (value.int32_value() < NUdf::MIN_DATE32 || value.int32_value() > NUdf::MAX_DATE32) {
-                throw yexception() << "Invalid Date value";
-            }
-            return NUdf::TUnboxedValuePod(value.int32_value());
-        }
-        case NUdf::TDataType<NUdf::TDatetime64>::Id: {
-            CheckTypeId(value.value_case(), Ydb::Value::kInt64Value, "Datetime64");
-            if (value.int64_value() < NUdf::MIN_DATETIME64 || value.int64_value() > NUdf::MAX_DATETIME64) {
-                throw yexception() << "Invalid Datetime64 value";
-            }
-            return NUdf::TUnboxedValuePod(value.int64_value());
-        }
-        case NUdf::TDataType<NUdf::TTimestamp64>::Id: {
-            CheckTypeId(value.value_case(), Ydb::Value::kInt64Value, "Timestamp64");
-            if (value.int64_value() < NUdf::MIN_TIMESTAMP64 || value.int64_value() > NUdf::MAX_TIMESTAMP64) {
-                throw yexception() << "Invalid Timestamp64 value";
-            }
-            return NUdf::TUnboxedValuePod(value.int64_value());
-        }
-        case NUdf::TDataType<NUdf::TInterval64>::Id: {
-            CheckTypeId(value.value_case(), Ydb::Value::kInt64Value, "Interval64");
-            if (std::abs(value.int64_value()) > NUdf::MAX_INTERVAL64) {
-                throw yexception() << "Invalid Interval64 value";
             }
             return NUdf::TUnboxedValuePod(value.int64_value());
         }
@@ -1746,9 +1694,6 @@ NUdf::TUnboxedValue TProtoImporter::ImportValueFromProto(const TType* type, cons
     }
 
     case TType::EKind::Pg: {
-        if (value.GetValueCase() == Ydb::Value::kNullFlagValue) {
-            return NYql::NUdf::TUnboxedValue();
-        }
         const TPgType* pgType = static_cast<const TPgType*>(type);
         NYql::NUdf::TUnboxedValue unboxedValue;
         if (value.Hastext_value()) {
@@ -1756,7 +1701,7 @@ NUdf::TUnboxedValue TProtoImporter::ImportValueFromProto(const TType* type, cons
         } else if (value.Hasbytes_value()) {
             unboxedValue = NYql::NCommon::PgValueFromNativeBinary(value.Getbytes_value(), pgType->GetTypeId());
         } else {
-            MKQL_ENSURE(false, "malformed pg value");
+            MKQL_ENSURE(false, "empty pg value proto");
         }
         return unboxedValue;
     }
@@ -1779,16 +1724,10 @@ NUdf::TUnboxedValue TProtoImporter::ImportValueFromProto(const TType* type, cons
 
         case TType::EKind::Pg: {
             auto pgType = static_cast<const TPgType*>(type);
-            if (value.GetValueValueCase() == NKikimrMiniKQL::TValue::kNullFlagValue) {
+            if (!value.HasBytes()) {
                 return NUdf::TUnboxedValue();
             }
-            if (value.HasBytes()) {
-                return NYql::NCommon::PgValueFromNativeBinary(value.GetBytes(), pgType->GetTypeId());
-            }
-            if (value.HasText()) {
-                return NYql::NCommon::PgValueFromNativeText(value.GetBytes(), pgType->GetTypeId());
-            }
-            MKQL_ENSURE(false, "malformed pg value");
+            return NYql::NCommon::PgValueFromNativeBinary(value.GetBytes(), pgType->GetTypeId());
         }
 
         case TType::EKind::Optional: {
@@ -1907,7 +1846,7 @@ TRuntimeNode ImportValueFromProto(const NKikimrMiniKQL::TParams& params, const T
     if (params.HasType() && params.HasValue()) {
         return ImportValueFromProto(params.GetType(), params.GetValue(), env);
     }
-    return TRuntimeNode(env.GetEmptyStructLazy(), true);
+    return TRuntimeNode(env.GetEmptyStruct(), true);
 }
 
 }

@@ -13,9 +13,7 @@
 
 #include <boost/config.hpp>
 
-#ifndef BOOST_PROGRAM_OPTIONS_SOURCE
-# define BOOST_PROGRAM_OPTIONS_SOURCE
-#endif
+#define BOOST_PROGRAM_OPTIONS_SOURCE
 #include <boost/program_options/config.hpp>
 #include <boost/program_options/detail/convert.hpp>
 #include <boost/program_options/detail/utf8_codecvt_facet.hpp>

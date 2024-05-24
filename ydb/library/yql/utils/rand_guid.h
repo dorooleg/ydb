@@ -1,9 +1,8 @@
 #pragma once
 
-#include <library/cpp/deprecated/atomic/atomic.h>
 #include <util/random/mersenne.h>
-
-#include <type_traits>
+#include <util/generic/ptr.h>
+#include <library/cpp/deprecated/atomic/atomic.h>
 
 namespace NYql {
 class TRandGuid {
@@ -18,13 +17,7 @@ public:
     ui64 GenNumber();
 
 private:
-    TMersenne<ui64>& GetRnd() {
-        return reinterpret_cast<TMersenne<ui64>&>(Rnd_);
-    }
-
-private:
-    std::aligned_storage<sizeof(TMersenne<ui64>) ,alignof(TMersenne<ui64>)>::type Rnd_;
-
+    THolder<TMersenne<ui64>> Rnd;
     static TAtomic Counter;
 };
 }

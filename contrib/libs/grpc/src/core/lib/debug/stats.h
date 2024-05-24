@@ -1,65 +1,72 @@
-//
-//
-// Copyright 2017 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2017 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-#ifndef GRPC_SRC_CORE_LIB_DEBUG_STATS_H
-#define GRPC_SRC_CORE_LIB_DEBUG_STATS_H
+#ifndef GRPC_CORE_LIB_DEBUG_STATS_H
+#define GRPC_CORE_LIB_DEBUG_STATS_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stdint.h>
-
 #include <util/generic/string.h>
 #include <util/string/cast.h>
-#include <vector>
 
-#include "y_absl/strings/string_view.h"
-#include "y_absl/types/span.h"
+#include <grpc/support/atm.h>
 
-#include "src/core/lib/debug/histogram_view.h"
 #include "src/core/lib/debug/stats_data.h"
-#include "src/core/lib/gprpp/no_destruct.h"
+#include "src/core/lib/iomgr/exec_ctx.h"
 
-namespace grpc_core {
+typedef struct grpc_stats_data {
+  gpr_atm counters[GRPC_STATS_COUNTER_COUNT];
+  gpr_atm histograms[GRPC_STATS_HISTOGRAM_BUCKETS];
+} grpc_stats_data;
 
-inline GlobalStatsCollector& global_stats() {
-  return *NoDestructSingleton<GlobalStatsCollector>::Get();
-}
+extern grpc_stats_data* grpc_stats_per_cpu_storage;
 
-namespace stats_detail {
-TString StatsAsJson(y_absl::Span<const uint64_t> counters,
-                        y_absl::Span<const y_absl::string_view> counter_name,
-                        y_absl::Span<const HistogramView> histograms,
-                        y_absl::Span<const y_absl::string_view> histogram_name);
-}
+#define GRPC_THREAD_STATS_DATA() \
+  (&grpc_stats_per_cpu_storage[grpc_core::ExecCtx::Get()->starting_cpu()])
 
-template <typename T>
-TString StatsAsJson(T* data) {
-  std::vector<HistogramView> histograms;
-  for (int i = 0; i < static_cast<int>(T::Histogram::COUNT); i++) {
-    histograms.push_back(
-        data->histogram(static_cast<typename T::Histogram>(i)));
-  }
-  return stats_detail::StatsAsJson(
-      y_absl::Span<const uint64_t>(data->counters,
-                                 static_cast<int>(T::Counter::COUNT)),
-      T::counter_name, histograms, T::histogram_name);
-}
+/* Only collect stats if GRPC_COLLECT_STATS is defined or it is a debug build.
+ */
+#if defined(GRPC_COLLECT_STATS) || !defined(NDEBUG)
+#define GRPC_STATS_INC_COUNTER(ctr) \
+  (gpr_atm_no_barrier_fetch_add(&GRPC_THREAD_STATS_DATA()->counters[(ctr)], 1))
 
-}  // namespace grpc_core
+#define GRPC_STATS_INC_HISTOGRAM(histogram, index)                             \
+  (gpr_atm_no_barrier_fetch_add(                                               \
+      &GRPC_THREAD_STATS_DATA()->histograms[histogram##_FIRST_SLOT + (index)], \
+      1))
+#else /* defined(GRPC_COLLECT_STATS) || !defined(NDEBUG) */
+#define GRPC_STATS_INC_COUNTER(ctr)
+#define GRPC_STATS_INC_HISTOGRAM(histogram, index)
+#endif /* defined(GRPC_COLLECT_STATS) || !defined(NDEBUG) */
 
-#endif  // GRPC_SRC_CORE_LIB_DEBUG_STATS_H
+void grpc_stats_init(void);
+void grpc_stats_shutdown(void);
+void grpc_stats_collect(grpc_stats_data* output);
+// c = b-a
+void grpc_stats_diff(const grpc_stats_data* b, const grpc_stats_data* a,
+                     grpc_stats_data* c);
+TString grpc_stats_data_as_json(const grpc_stats_data* data);
+int grpc_stats_histo_find_bucket_slow(int value, const int* table,
+                                      int table_size);
+double grpc_stats_histo_percentile(const grpc_stats_data* stats,
+                                   grpc_stats_histograms histogram,
+                                   double percentile);
+size_t grpc_stats_histo_count(const grpc_stats_data* stats,
+                              grpc_stats_histograms histogram);
+
+#endif  // GRPC_CORE_LIB_DEBUG_STATS_H

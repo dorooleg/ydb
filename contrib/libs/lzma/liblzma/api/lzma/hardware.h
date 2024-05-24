@@ -1,7 +1,6 @@
 /**
  * \file        lzma/hardware.h
  * \brief       Hardware information
- * \note        Never include this file directly. Use <lzma.h> instead.
  *
  * Since liblzma can consume a lot of system resources, it also provides
  * ways to limit the resource usage. Applications linking against liblzma
@@ -26,6 +25,8 @@
  *
  * This file has been put into the public domain.
  * You can do whatever you want with this file.
+ *
+ * See ../lzma.h for information about liblzma as a whole.
  */
 
 #ifndef LZMA_H_INTERNAL

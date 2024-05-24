@@ -16,12 +16,12 @@ public:
 
 public:
     TCodecImpl() {
-        Y_ABORT_UNLESS(TCoder::Sig() == TDecoder::Sig(), "Codecs signatures mismatch (cd: %u, dc: %u).",
+        Y_VERIFY(TCoder::Sig() == TDecoder::Sig(), "Codecs signatures mismatch (cd: %u, dc: %u).",
                ui16(TCoder::Sig()), ui16(TDecoder::Sig()));
     }
 
     TCodecSig Signature() const override {
-        Y_DEBUG_ABORT_UNLESS(TCoder::Sig() == TDecoder::Sig());
+        Y_VERIFY_DEBUG(TCoder::Sig() == TDecoder::Sig());
         return TCoder::Sig();
     }
 

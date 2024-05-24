@@ -44,17 +44,17 @@ namespace NPage {
         {
             const auto got = NPage::TLabelWrapper().Read(Raw, EPage::GarbageStats);
 
-            Y_ABORT_UNLESS(got == ECodec::Plain && got.Version == 0);
+            Y_VERIFY(got == ECodec::Plain && got.Version == 0);
 
-            Y_ABORT_UNLESS(sizeof(THeader) <= got.Page.size(),
+            Y_VERIFY(sizeof(THeader) <= got.Page.size(),
                     "NPage::TGarbageStats header is out of blob bounds");
 
             auto* header = TDeref<THeader>::At(got.Page.data(), 0);
 
-            Y_ABORT_UNLESS(header->Type == 0,
+            Y_VERIFY(header->Type == 0,
                     "NPage::TGarbageStats header has an unsupported type");
 
-            Y_ABORT_UNLESS(sizeof(THeader) + header->Items * sizeof(TItem) <= got.Page.size(),
+            Y_VERIFY(sizeof(THeader) + header->Items * sizeof(TItem) <= got.Page.size(),
                     "NPage::TGarbageStats items are out of blob bounds");
 
             auto* ptr = TDeref<TItem>::At(got.Page.data(), sizeof(THeader));
@@ -130,7 +130,7 @@ namespace NPage {
         using THeapByBytes = TIntrusiveHeap<TEntry, THeapIndexByBytes, TCompareByBytes>;
 
         bool IsLast(TEntries::iterator it) {
-            Y_DEBUG_ABORT_UNLESS(it != Entries.end());
+            Y_VERIFY_DEBUG(it != Entries.end());
             return ++it == Entries.end();
         }
 
@@ -148,7 +148,7 @@ namespace NPage {
                     it, std::piecewise_construct,
                     std::forward_as_tuple(rowVersion),
                     std::forward_as_tuple(bytes));
-                Y_DEBUG_ABORT_UNLESS(IsLast(it));
+                Y_VERIFY_DEBUG(IsLast(it));
                 return;
             }
 
@@ -166,7 +166,7 @@ namespace NPage {
                 it, std::piecewise_construct,
                 std::forward_as_tuple(rowVersion),
                 std::forward_as_tuple(bytes));
-            Y_DEBUG_ABORT_UNLESS(!IsLast(it));
+            Y_VERIFY_DEBUG(!IsLast(it));
             ByBytes.Add(&*it);
         }
 
@@ -182,9 +182,9 @@ namespace NPage {
             TEntry* top;
             while (Entries.size() > count && (top = ByBytes.Top())) {
                 auto it = Entries.find(top->first);
-                Y_DEBUG_ABORT_UNLESS(it != Entries.end());
+                Y_VERIFY_DEBUG(it != Entries.end());
                 auto next = std::next(it);
-                Y_DEBUG_ABORT_UNLESS(next != Entries.end());
+                Y_VERIFY_DEBUG(next != Entries.end());
                 ByBytes.Remove(top);
                 next->second.Bytes += top->second.Bytes;
                 if (!IsLast(next)) {
@@ -211,7 +211,9 @@ namespace NPage {
 
             NUtil::NBin::TPut out(buf.mutable_begin());
 
-            WriteUnaligned<TLabel>(out.Skip<TLabel>(), TLabel::Encode(EPage::GarbageStats, 0, pageSize));
+            if (auto* label = out.Skip<NPage::TLabel>()) {
+                label->Init(EPage::GarbageStats, 0, pageSize);
+            }
 
             if (auto* header = out.Skip<THeader>()) {
                 Zero(*header);
@@ -228,7 +230,7 @@ namespace NPage {
                 item->Bytes_ = totalGarbage;
             }
 
-            Y_ABORT_UNLESS(*out == buf.mutable_end());
+            Y_VERIFY(*out == buf.mutable_end());
             NSan::CheckMemIsInitialized(buf.data(), buf.size());
 
             return buf;

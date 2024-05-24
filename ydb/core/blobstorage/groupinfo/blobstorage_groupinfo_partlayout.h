@@ -11,28 +11,32 @@ namespace NKikimr {
     // matching the number of parts for the specific erasure type, whereas each cell in a row contains a bit indicating
     // whether a specific part (identified by row number) is present on a subgroup's disk (identified by column number)
     class TSubgroupPartLayout {
-        static constexpr ui32 MaxNodes = 9;
-        static constexpr ui64 CellMask = (1 << MaxNodes) - 1;
+        using TRowBitMask = ui16;
+        static_assert(sizeof(TRowBitMask) * CHAR_BIT >= MaxNodesPerBlob, "incorrect size of row mask");
+        using TTable = std::array<TRowBitMask, MaxTotalPartCount>;
 
-        ui64 Value = 0;
+        TTable PerPartStatus;
 
     public:
         TSubgroupPartLayout() {
-            Value = 0;
+            // clear all states to zero
+            std::fill(PerPartStatus.begin(), PerPartStatus.end(), 0);
         }
 
         void AddItem(ui32 nodeId, ui32 partIdx, const TBlobStorageGroupType &gtype) {
-            Y_ABORT_UNLESS(nodeId < gtype.BlobSubgroupSize() && partIdx < gtype.TotalPartCount() && nodeId < MaxNodes);
-            Value |= ui64(1) << partIdx * MaxNodes + nodeId;
+            Y_VERIFY(nodeId < gtype.BlobSubgroupSize() && partIdx < gtype.TotalPartCount());
+            PerPartStatus[partIdx] |= TRowBitMask(1) << nodeId;
         }
 
         void ClearItem(ui32 nodeId, ui32 partIdx, const TBlobStorageGroupType& gtype) {
-            Y_ABORT_UNLESS(nodeId < gtype.BlobSubgroupSize() && partIdx < gtype.TotalPartCount() && nodeId < MaxNodes);
-            Value &= ~(ui64(1) << partIdx * MaxNodes + nodeId);
+            Y_VERIFY(nodeId < gtype.BlobSubgroupSize() && partIdx < gtype.TotalPartCount());
+            PerPartStatus[partIdx] &= ~(TRowBitMask(1) << nodeId);
         }
 
-        void Merge(const TSubgroupPartLayout& other, const TBlobStorageGroupType& /*type*/) {
-            Value |= other.Value;
+        void Merge(const TSubgroupPartLayout& other, const TBlobStorageGroupType& type) {
+            for (ui32 partIdx = 0; partIdx < type.TotalPartCount(); ++partIdx) {
+                PerPartStatus[partIdx] |= other.PerPartStatus[partIdx];
+            }
         }
 
         // Count number of effective replicas (that is, the number of replicas written on distinct disks) using the
@@ -56,9 +60,8 @@ namespace NKikimr {
                 if (i) {
                     str << " ";
                 }
-                const ui32 disks = GetDisksWithPart(i);
                 for (ui32 j = 0; j < gtype.BlobSubgroupSize(); ++j) {
-                    str << (disks >> gtype.BlobSubgroupSize() - j - 1 & 1);
+                    str << ((PerPartStatus[i] >> (gtype.BlobSubgroupSize() - j - 1)) & 1);
                 }
             }
             str << "}";
@@ -71,26 +74,19 @@ namespace NKikimr {
         }
 
         ui32 GetDisksWithPart(ui32 partIdx) const {
-            return Value >> partIdx * MaxNodes & CellMask;
-        }
-
-        void Mask(ui32 partIdx, ui32 disks) {
-            Y_ABORT_UNLESS(disks <= CellMask);
-            const ui32 offset = partIdx * MaxNodes;
-            const ui64 partMask = CellMask << offset;
-            Value &= ui64(disks) << offset | ~partMask;
+            return PerPartStatus[partIdx];
         }
 
         std::pair<ui32, ui32> GetMirror3of4State() const {
-            const ui32 data = GetDisksWithPart(0) | GetDisksWithPart(1);
-            const ui32 meta = GetDisksWithPart(2);
+            const ui32 data = PerPartStatus[0] | PerPartStatus[1];
+            const ui32 meta = PerPartStatus[2];
             return std::make_tuple(PopCount(data), PopCount(data | meta));
         }
 
         template<typename F>
         void ForEachPartOfDisk(const TBlobStorageGroupType& gtype, F&& callback) const {
             for (ui32 partIdx = 0; partIdx < gtype.TotalPartCount(); ++partIdx) {
-                ui32 mask = GetDisksWithPart(partIdx);
+                ui32 mask = PerPartStatus[partIdx];
                 while (mask) {
                     const ui32 idxInSubgroup = CountTrailingZeroBits(mask);
                     mask &= ~(1 << idxInSubgroup);
@@ -158,11 +154,11 @@ namespace NKikimr {
         }
 
         friend bool operator ==(const TSubgroupPartLayout& x, const TSubgroupPartLayout& y) {
-            return x.Value == y.Value;
+            return x.PerPartStatus == y.PerPartStatus;
         }
 
         friend bool operator !=(const TSubgroupPartLayout& x, const TSubgroupPartLayout& y) {
-            return x.Value != y.Value;
+            return x.PerPartStatus != y.PerPartStatus;
         }
     };
 

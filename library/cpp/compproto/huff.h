@@ -190,7 +190,7 @@ namespace NCompProto {
             Max = ::Max(Max, (ui64)value);
             Total += weight;
             AddMap(value, weight);
-        }
+        };
     };
 
     struct THuffNode {
@@ -273,7 +273,7 @@ namespace NCompProto {
         }
 
         return ret;
-    }
+    };
 
     struct TCoderEntry {
         ui32 MinValue;
@@ -353,7 +353,7 @@ namespace NCompProto {
                 if (cum > (ui32)(-1)) {
                     return;
                 }
-            }
+            };
         }
 
         TCache<1024, TCoderEntry> Cache;

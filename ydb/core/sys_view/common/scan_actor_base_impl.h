@@ -12,9 +12,9 @@
 #include <ydb/library/yql/dq/actors/protos/dq_status_codes.pb.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -27,7 +27,7 @@ class TScanActorBase : public TActorBootstrapped<TDerived> {
 public:
     using TBase = TActorBootstrapped<TDerived>;
 
-    TScanActorBase(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+    TScanActorBase(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
         const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
         : OwnerActorId(ownerId)
         , ScanId(scanId)
@@ -120,7 +120,15 @@ protected:
     }
 
     ui64 GetBSControllerId() {
-        return MakeBSControllerID();
+        auto domainInfo = AppData()->DomainsInfo;
+        if (domainInfo->Domains.empty()) {
+            ReplyErrorAndDie(Ydb::StatusIds::UNAVAILABLE, "Invalid domain info");
+            return 0;
+        }
+
+        auto domain = domainInfo->Domains.begin()->second;
+        auto defaultSSGroup = domainInfo->GetDefaultStateStorageGroup(domain->DomainUid);
+        return MakeBSControllerID(defaultSSGroup);
     }
 
     template <typename TResponse, typename TEntry, typename TExtractorsMap, bool BatchSupport = false>
@@ -215,7 +223,7 @@ private:
         using TNavigate = NSchemeCache::TSchemeCacheNavigate;
 
         THolder<NSchemeCache::TSchemeCacheNavigate> request(ev->Get()->Request.Release());
-        Y_ABORT_UNLESS(request->ResultSet.size() == 1);
+        Y_VERIFY(request->ResultSet.size() == 1);
 
         auto& entry = request->ResultSet.back();
         if (entry.Status != TNavigate::EStatus::Ok) {
@@ -235,7 +243,13 @@ private:
         if (entry.DomainInfo->Params.HasHive()) {
             HiveId = entry.DomainInfo->Params.GetHive();
         } else {
-            HiveId = AppData()->DomainsInfo->GetHive();
+            auto domainInfo = AppData()->DomainsInfo;
+            if (domainInfo->Domains.empty()) {
+                ReplyErrorAndDie(Ydb::StatusIds::UNAVAILABLE, "Invalid domain info");
+                return;
+            }
+            auto domain = domainInfo->Domains.begin()->second;
+            HiveId = domainInfo->GetHive(domain->DefaultHiveUid);
         }
 
         DomainKey = entry.DomainInfo->DomainKey;
@@ -305,7 +319,7 @@ private:
 protected:
     static constexpr TDuration Timeout = TDuration::Seconds(60);
 
-    const NActors::TActorId OwnerActorId;
+    const TActorId OwnerActorId;
     const ui32 ScanId;
     const TTableId TableId;
     TSerializedTableRange TableRange;

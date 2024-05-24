@@ -6,11 +6,8 @@
 
 #include <ydb/library/yql/minikql/aligned_page_pool.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/helpers/pool_stats_collector.h>
-
-#include <ydb/core/graph/api/service.h>
-#include <ydb/core/graph/api/events.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/helpers/pool_stats_collector.h>
 
 namespace NKikimr {
 

@@ -52,7 +52,7 @@ void TRulePreparationActor::Handle(NSchemeShard::TEvSchemeShard::TEvProcessingRe
             StartChecker();
         }
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
 }
 
@@ -62,7 +62,7 @@ void TRulePreparationActor::Handle(NMetadata::NProvider::TEvRefreshSubscriberDat
     } else if (auto snapshot = ev->Get()->GetSnapshotPtrAs<NMetadata::NSecret::TSnapshot>()) {
         Secrets = snapshot;
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
     StartChecker();
 }

@@ -1,5 +1,4 @@
 #include "yql_kikimr_provider_impl.h"
-#include "yql_kikimr_type_ann_pg.h"
 
 #include <ydb/core/docapi/traits.h>
 
@@ -8,12 +7,10 @@
 #include <ydb/library/yql/core/yql_expr_optimize.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/core/yql_opt_utils.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/type_desc.h>
 #include <ydb/library/yql/providers/common/provider/yql_provider.h>
 #include <ydb/library/yql/providers/dq/provider/yql_dq_datasource_type_ann.h>
 
-#include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
 #include <util/generic/is_in.h>
 
 namespace NYql {
@@ -141,14 +138,13 @@ private:
                     return TStatus::Error;
                 }
 
-                const auto& view = key.GetView();
-                if (view && view->Name) {
+                if (const auto& view = key.GetView()) {
                     if (!ValidateTableHasIndex(tableDesc->Metadata, ctx, node.Pos())) {
                         return TStatus::Error;
                     }
-                    if (tableDesc->Metadata->GetIndexMetadata(view->Name).first == nullptr) {
+                    if (tableDesc->Metadata->GetIndexMetadata(view.GetRef()).first == nullptr) {
                         ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_SCHEME_ERROR, TStringBuilder()
-                            << "Required global index not found, index name: " << view->Name));
+                            << "Required global index not found, index name: " << view.GetRef()));
                         return TStatus::Error;
                     }
                 }
@@ -208,18 +204,6 @@ private:
                 return TStatus::Ok;
             }
             case TKikimrKey::Type::Topic:
-            {
-                return TStatus::Ok;
-            }
-            case TKikimrKey::Type::Permission:
-            {
-                return TStatus::Ok;
-            }
-            case TKikimrKey::Type::PGObject:
-            {
-                return TStatus::Ok;
-            }
-            case TKikimrKey::Type::Replication:
             {
                 return TStatus::Ok;
             }
@@ -297,120 +281,15 @@ namespace {
         }
         return true;
     }
-
-    bool ParseConstraintNode(TExprContext& ctx, TKikimrColumnMetadata& columnMeta, const TExprList& columnTuple, TCoNameValueTuple constraint,  TKikimrConfiguration& config, bool& needEval, bool isAlter = false) {
-        auto nameNode = columnTuple.Item(0).Cast<TCoAtom>();
-        auto typeNode = columnTuple.Item(1);
-
-        auto columnName = TString(nameNode.Value());
-        auto columnType = typeNode.Ref().GetTypeAnn();
-        auto type = columnType->Cast<TTypeExprType>()->GetType();
-        auto isOptional = type->GetKind() == ETypeAnnotationKind::Optional;
-        auto actualType = !isOptional ? type : type->Cast<TOptionalExprType>()->GetItemType();
-        if (constraint.Name() == "default") {
-            auto defaultType = constraint.Value().Ref().GetTypeAnn();
-            YQL_ENSURE(constraint.Value().IsValid());
-            TExprBase constrValue = constraint.Value().Cast();
-
-            if (!config.EnableColumnsWithDefault) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()),
-                    "Columns with default values are not supported yet."));
-                return false;
-            }
-
-            const bool isNull = IsPgNullExprNode(constrValue) || defaultType->HasNull();
-            if (isNull && columnMeta.NotNull) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), TStringBuilder() << "Default expr " << columnName
-                    << " is nullable or optional, but column has not null constraint. "));
-                return false;
-            }
-
-            // unwrap optional
-            if (defaultType->GetKind() == ETypeAnnotationKind::Optional) {
-                defaultType = defaultType->Cast<TOptionalExprType>()->GetItemType();
-            }
-
-            if (defaultType->GetKind() != actualType->GetKind()) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), TStringBuilder() << "Default expr " << columnName
-                    << " type mismatch, expected: " << (*actualType) << ", actual: " << *(defaultType)));
-                return false;
-            }
-
-            bool skipAnnotationValidation = false;
-            if (defaultType->GetKind() == ETypeAnnotationKind::Pg) {
-                auto defaultPgType = defaultType->Cast<TPgExprType>();
-                if (defaultPgType->GetName() == "unknown") {
-                    skipAnnotationValidation = true;
-                }
-            }
-
-            if (!skipAnnotationValidation && !IsSameAnnotation(*defaultType, *actualType)) {
-                auto constrPtr = constraint.Value().Cast().Ptr();
-                auto status = TryConvertTo(constrPtr, *type, ctx);
-                if (status == IGraphTransformer::TStatus::Error) {
-                    ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), TStringBuilder() << "Default expr " << columnName
-                        << " type mismatch, expected: " << (*actualType) << ", actual: " << *(defaultType)));
-                    return false;
-                } else if (status == IGraphTransformer::TStatus::Repeat) {
-                    auto evaluatedExpr = ctx.Builder(constrPtr->Pos())
-                        .Callable("EvaluateExpr")
-                        .Add(0, constrPtr)
-                        .Seal()
-                        .Build();
-
-                    constraint.Ptr()->ChildRef(TCoNameValueTuple::idx_Value) = evaluatedExpr;
-                    needEval = true;
-                    return true;
-                }
-            }
-
-            if (columnMeta.IsDefaultKindDefined()) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), TStringBuilder() << "Default setting for " << columnName
-                    << " column is already set: "
-                    << NKikimrKqp::TKqpColumnMetadataProto::EDefaultKind_Name(columnMeta.DefaultKind)));
-                return false;
-            }
-
-            columnMeta.SetDefaultFromLiteral();
-            auto err = FillLiteralProto(constrValue, actualType, columnMeta.DefaultFromLiteral);
-            if (err) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), err.value()));
-                return false;
-            }
-
-        } else if (constraint.Name().Value() == "serial") {
-            if (isAlter) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()),
-                     "Column addition with serial data type is unsupported"));
-                return false;
-            }
-
-            if (columnMeta.IsDefaultKindDefined()) {
-                ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), TStringBuilder() << "Default setting for "
-                    << columnName << " column is already set: "
-                    << NKikimrKqp::TKqpColumnMetadataProto::EDefaultKind_Name(columnMeta.DefaultKind)));
-                return false;
-            }
-
-            columnMeta.DefaultFromSequence = "_serial_column_" + columnMeta.Name;
-            columnMeta.SetDefaultFromSequence();
-            columnMeta.NotNull = true;
-        } else if (constraint.Name().Value() == "not_null") {
-            columnMeta.NotNull = true;
-        }
-
-        return true;
-    }
 }
 
 class TKiSinkTypeAnnotationTransformer : public TKiSinkVisitorTransformer
 {
 public:
     TKiSinkTypeAnnotationTransformer(TIntrusivePtr<IKikimrGateway> gateway,
-        TIntrusivePtr<TKikimrSessionContext> sessionCtx, TTypeAnnotationContext& types)
+        TIntrusivePtr<TKikimrSessionContext> sessionCtx)
         : Gateway(gateway)
-        , SessionCtx(sessionCtx)
-        , Types(types) {}
+        , SessionCtx(sessionCtx) {}
 
 private:
     virtual TStatus HandleWriteTable(TKiWriteTable node, TExprContext& ctx) override {
@@ -465,7 +344,6 @@ private:
                 .Add(convertedValues)
                 .Done();
 
-
             node.Ptr()->ChildRef(TKiWriteTable::idx_Input) = list.Ptr();
             return TStatus::Repeat;
         }
@@ -487,113 +365,47 @@ private:
             }
         }
 
-        auto op = GetTableOp(node);
-        if (NPgTypeAnn::IsPgInsert(node, op)) {
-            TExprNode::TPtr newInput;
-            auto ok = NCommon::RenamePgSelectColumns(node.Input().Cast<TCoPgSelect>(), newInput, table->Metadata->ColumnOrder, ctx, Types);
-            if (!ok) {
-                return TStatus::Error;
-            }
-            if (newInput != node.Input().Ptr()) {
-                node.Ptr()->ChildRef(TKiWriteTable::idx_Input) = newInput;
-                return TStatus::Repeat;
-            }
-        }
-
         if (!rowType) {
             ctx.AddError(TIssue(pos, TStringBuilder()
                 << "Expected list or stream of structs as input, but got: " << *inputType));
             return TStatus::Error;
         }
 
-        THashSet<TString> defaultConstraintColumnsSet;
         for (auto& keyColumnName : table->Metadata->KeyColumnNames) {
-            const auto& columnInfo = table->Metadata->Columns.at(keyColumnName);
-            if (rowType->FindItem(keyColumnName)) {
-                continue;
-            }
-
-            if (!columnInfo.IsDefaultKindDefined())  {
+            if (!rowType->FindItem(keyColumnName)) {
                 ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_PRECONDITION_FAILED, TStringBuilder()
                     << "Missing key column in input: " << keyColumnName
                     << " for table: " << table->Metadata->Name));
                 return TStatus::Error;
             }
-
-            defaultConstraintColumnsSet.emplace(keyColumnName);
         }
 
-        THashSet<TString> generateColumnsIfInsertColumnsSet;
-
-        for(const auto& [name, info] : table->Metadata->Columns) {
-            if (info.IsBuildInProgress && rowType->FindItem(name)) {
-                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_REQUEST, TStringBuilder()
-                    << "Column is under build operation, write operation is not allowed to column: " << name
-                    << " for table: " << table->Metadata->Name));
-                return TStatus::Error;
-            }
-
-            if (rowType->FindItem(name)) {
-                continue;
-            }
-
-            if (op == TYdbOperation::UpdateOn || op == TYdbOperation::DeleteOn) {
-                continue;
-            }
-
-            if (defaultConstraintColumnsSet.find(name) != defaultConstraintColumnsSet.end()) {
-                continue;
-            }
-
-            if (info.IsDefaultKindDefined()) {
-                if (op == TYdbOperation::Upsert && !info.IsBuildInProgress) {
-                    generateColumnsIfInsertColumnsSet.emplace(name);
-                }
-
-                defaultConstraintColumnsSet.emplace(name);
-            }
-        }
-
+        auto op = GetTableOp(node);
         if (op == TYdbOperation::InsertAbort || op == TYdbOperation::InsertRevert ||
             op == TYdbOperation::Upsert || op == TYdbOperation::Replace) {
             for (const auto& [name, meta] : table->Metadata->Columns) {
-                if (meta.NotNull) {
-                    if (!rowType->FindItem(name) && !meta.IsDefaultKindDefined()) {
-                        ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_NO_COLUMN_DEFAULT_VALUE, TStringBuilder()
-                            << "Missing not null column in input: " << name
-                            << ". All not null columns should be initialized"));
-                        return TStatus::Error;
-                    }
-
-                    const auto* itemType = rowType->FindItemType(name);
-                    if (itemType && itemType->GetKind() == ETypeAnnotationKind::Pg) {
-                        //no type-level notnull check for pg types.
-                        continue;
-                    }
-
-                    if (itemType && itemType->HasOptionalOrNull()) {
-                        ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_COLUMN_TYPE, TStringBuilder()
-                            << "Can't set NULL or optional value to not null column: " << name
-                            << ". All not null columns should be initialized"));
-                        return TStatus::Error;
-                    }
+                if (meta.NotNull && !rowType->FindItem(name)) {
+                    ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_NO_COLUMN_DEFAULT_VALUE, TStringBuilder()
+                        << "Missing not null column in input: " << name
+                        << ". All not null columns should be initialized"));
+                    return TStatus::Error;
                 }
-            }
-        } else if (op == TYdbOperation::UpdateOn) {
-            if (TCoPgSelect::Match(node.Input().Ptr().Get())) {
-                if (!NPgTypeAnn::ValidatePgUpdateKeys(node, table, ctx)) {
+
+                if (meta.NotNull && rowType->FindItemType(name)->HasOptionalOrNull()) {
+                    ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_COLUMN_TYPE, TStringBuilder()
+                        << "Can't set NULL or optional value to not null column: " << name
+                        << ". All not null columns should be initialized"));
                     return TStatus::Error;
                 }
             }
+        } else if (op == TYdbOperation::UpdateOn) {
             for (const auto& item : rowType->GetItems()) {
                 auto column = table->Metadata->Columns.FindPtr(TString(item->GetName()));
                 YQL_ENSURE(column);
-                if (item->GetItemType()->GetKind() != ETypeAnnotationKind::Pg) {
-                    if (column->NotNull && item->HasOptionalOrNull()) {
-                        ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_COLUMN_TYPE, TStringBuilder()
-                            << "Can't set NULL or optional value to not null column: " << column->Name));
-                        return TStatus::Error;
-                    }
+                if (column->NotNull && item->HasOptionalOrNull()) {
+                    ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_COLUMN_TYPE, TStringBuilder()
+                        << "Can't set NULL or optional value to not null column: " << column->Name));
+                    return TStatus::Error;
                 }
             }
         }
@@ -605,34 +417,12 @@ private:
                 columns.push_back(ctx.NewAtom(node.Pos(), item->GetName()));
             }
 
-            TExprNode::TListType defaultConstraintColumns;
-            for(auto& generatedColumn: defaultConstraintColumnsSet) {
-                defaultConstraintColumns.push_back(ctx.NewAtom(node.Pos(), generatedColumn));
-            }
-
-            TExprNode::TListType generateColumnsIfInsert;
-            for(auto& generatedColumn: generateColumnsIfInsertColumnsSet) {
-                generateColumnsIfInsert.push_back(ctx.NewAtom(node.Pos(), generatedColumn));
-            }
-
             node.Ptr()->ChildRef(TKiWriteTable::idx_Settings) = Build<TCoNameValueTupleList>(ctx, node.Pos())
                 .Add(node.Settings())
                 .Add()
                     .Name().Build("input_columns")
                     .Value<TCoAtomList>()
                         .Add(columns)
-                        .Build()
-                    .Build()
-                .Add()
-                    .Name().Build("default_constraint_columns")
-                    .Value<TCoAtomList>()
-                        .Add(defaultConstraintColumns)
-                        .Build()
-                    .Build()
-                .Add()
-                    .Name().Build("generate_columns_if_insert")
-                    .Value<TCoAtomList>()
-                        .Add(generateColumnsIfInsert)
                         .Build()
                     .Build()
                 .Done()
@@ -652,40 +442,6 @@ private:
 
         node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
         return TStatus::Ok;
-    }
-
-    template<typename KiCallable>
-    TMaybe<TStatus> DoHandleReturningList(TKiReturningList node, TExprContext& ctx) {
-        if (auto maybeWrite = node.Update().Maybe<KiCallable>()) {
-            auto write = maybeWrite.Cast();
-
-            bool sysColumnsEnabled = SessionCtx->Config().SystemColumnsEnabled();
-            auto selectType = GetReadTableRowType(
-                ctx, SessionCtx->Tables(), TString(write.DataSink().Cluster()), TString(write.Table().Value()),
-                write.ReturningColumns(), sysColumnsEnabled
-            );
-            if (!selectType) {
-                return TStatus::Error;
-            }
-
-            node.Ptr()->SetTypeAnn(ctx.MakeType<TListExprType>(selectType));
-
-            return TStatus::Ok;
-        }
-        return {};
-    }
-
-    virtual TStatus HandleReturningList(TKiReturningList node, TExprContext& ctx) override {
-        if (auto status = DoHandleReturningList<TKiWriteTable>(node, ctx)) {
-            return *status;
-        }
-        if (auto status = DoHandleReturningList<TKiUpdateTable>(node, ctx)) {
-            return *status;
-        }
-        if (auto status = DoHandleReturningList<TKiDeleteTable>(node, ctx)) {
-            return *status;
-        }
-        return TStatus::Error;
     }
 
     virtual TStatus HandleUpdateTable(TKiUpdateTable node, TExprContext& ctx) override {
@@ -743,24 +499,12 @@ private:
                     << "Column '" << item->GetName() << "' does not exist in table '" << node.Table().Value() << "'."));
                 return TStatus::Error;
             }
-
-            if (column->IsBuildInProgress) {
-                ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST, TStringBuilder()
-                    << "Column '" << item->GetName() << "' is under the build operation '" << node.Table().Value() << "'."));
-                return TStatus::Error;
-            }
-
             if (column->NotNull && item->HasOptionalOrNull()) {
-                if (item->GetItemType()->GetKind() == ETypeAnnotationKind::Pg) {
-                    //no type-level notnull check for pg types.
-                    continue;
-                }
                 ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_COLUMN_TYPE, TStringBuilder()
                     << "Can't set NULL or optional value to not null column: " << column->Name));
                 return TStatus::Error;
             }
         }
-
 
         auto updateBody = node.Update().Body().Ptr();
         auto status = ConvertTableRowType(updateBody, *table, ctx);
@@ -827,14 +571,17 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
         }
         meta->TableType = tableTypeEnum;
 
-        meta->Temporary = TString(create.Temporary()) == "true" ? true : false;
-
         for (auto atom : create.PrimaryKey()) {
             meta->KeyColumnNames.emplace_back(atom.Value());
         }
 
         for (const auto& column : create.PartitionBy()) {
             meta->TableSettings.PartitionBy.emplace_back(column.Value());
+        }
+
+        THashSet<TString> notNullColumns;
+        for (const auto& column : create.NotNullColumns()) {
+            notNullColumns.emplace(column.Value());
         }
 
         for (auto item : create.Columns()) {
@@ -851,6 +598,26 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
             auto isOptional = type->GetKind() == ETypeAnnotationKind::Optional;
             auto actualType = !isOptional ? type : type->Cast<TOptionalExprType>()->GetItemType();
 
+            bool notNull;
+            if (actualType->GetKind() == ETypeAnnotationKind::Pg) {
+                if (notNullColumns.contains(columnName)) {
+                    if (std::find(meta->KeyColumnNames.begin(), meta->KeyColumnNames.end(), columnName) == meta->KeyColumnNames.end()) {
+                        ctx.AddError(TIssue(ctx.GetPosition(create.NotNullColumns().Pos()), TStringBuilder()
+                            << "notnull option for pg column " << columnName << " is forbidden"));
+                        return TStatus::Error;
+                    } else {
+                        //TODO: KIKIMR-17471
+                        //Right now YDB ignores the constraint native Postgres enforces
+                        //on primary key values; it should be used very carefully.
+                        ctx.AddWarning(TIssue(ctx.GetPosition(create.NotNullColumns().Pos()), TStringBuilder()
+                            << "notnull option for primary key column " << columnName << " will be ignored"));
+                    }
+                }
+                //TODO: set notnull for pg types
+                notNull = false;
+            } else {
+                notNull = !isOptional;
+            }
             if (actualType->GetKind() != ETypeAnnotationKind::Data
                 && actualType->GetKind() != ETypeAnnotationKind::Pg
             ) {
@@ -869,7 +636,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
             TKikimrColumnMetadata columnMeta;
             columnMeta.Name = columnName;
             columnMeta.Type = GetColumnTypeName(actualType);
-
             if (actualType->GetKind() == ETypeAnnotationKind::Pg) {
                 auto pgTypeId = actualType->Cast<TPgExprType>()->GetId();
                 columnMeta.TypeInfo = NKikimr::NScheme::TTypeInfo(
@@ -877,24 +643,10 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                     NKikimr::NPg::TypeDescFromPgTypeId(pgTypeId)
                 );
             }
+            columnMeta.NotNull = notNull;
 
             if (columnTuple.Size() > 2) {
-                const auto& columnConstraints = columnTuple.Item(2).Cast<TCoNameValueTuple>();
-                for(const auto& constraint: columnConstraints.Value().Cast<TCoNameValueTupleList>()) {
-                    bool needEval = false;
-                    if (!ParseConstraintNode(ctx, columnMeta, columnTuple, constraint, SessionCtx->Config(), needEval)) {
-                        return TStatus::Error;
-                    }
-
-                    if (needEval) {
-                        ctx.Step.Repeat(TExprStep::ExprEval);
-                        return TStatus(TStatus::Repeat, true);
-                    }
-                }
-            }
-
-            if (columnTuple.Size() > 3) {
-                auto families = columnTuple.Item(3).Cast<TCoAtomList>();
+                auto families = columnTuple.Item(2).Cast<TCoAtomList>();
                 for (auto family : families) {
                     columnMeta.Families.push_back(TString(family.Value()));
                 }
@@ -917,8 +669,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                 indexType = TIndexDescription::EType::GlobalSync;
             } else if (type == "asyncGlobal") {
                 indexType = TIndexDescription::EType::GlobalAsync;
-            } else if (type == "syncGlobalUnique") {
-                indexType = TIndexDescription::EType::GlobalSyncUnique;
             } else {
                 YQL_ENSURE(false, "Unknown index type: " << type);
             }
@@ -1017,9 +767,7 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
         }
 
         auto& tableDesc = SessionCtx->Tables().GetTable(cluster, table);
-
-        auto existingOk = (create.ExistingOk().Value() == "1");
-        if (!existingOk && meta->TableType == ETableType::Table && tableDesc.DoesExist() && !tableDesc.Metadata->IsSameTable(*meta)) {
+        if (meta->TableType == ETableType::Table && tableDesc.DoesExist() && !tableDesc.Metadata->IsSameTable(*meta)) {
             ctx.AddError(TIssue(ctx.GetPosition(create.Pos()), TStringBuilder()
                 << "Table name conflict: " << NCommon::FullTableName(cluster, table)
                 << " is used to reference multiple tables."));
@@ -1121,10 +869,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                         if (columnName == key) {
                             auto typeNode = columnTuple.Item(1);
                             auto keyType = typeNode.Ref().GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-                            YQL_ENSURE(
-                                keyType->GetKind() != ETypeAnnotationKind::Pg,
-                                "pg types are not supported for partition at keys"
-                            );
                             if (keyType->HasOptional()) {
                                 keyType = keyType->Cast<TOptionalExprType>()->GetItemType();
                             }
@@ -1205,8 +949,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                 meta->TableSettings.PartitionByHashFunction = TString(
                     setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()
                 );
-            } else if (name == "storeExternalBlobs") {
-                meta->TableSettings.StoreExternalBlobs = TString(setting.Value().Cast<TCoAtom>().Value());
             } else {
                 ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
                     TStringBuilder() << "Unknown table profile setting: " << name));
@@ -1218,17 +960,14 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
 
 
     virtual TStatus HandleDropTable(TKiDropTable node, TExprContext& ctx) override {
-        bool missingOk = (node.MissingOk().Value() == "1");
-        if (!missingOk) {
-            auto table = SessionCtx->Tables().EnsureTableExists(TString(node.DataSink().Cluster()), TString(node.Table().Value()), node.Pos(), ctx);
-            if (!table) {
-                return TStatus::Error;
-            }
+        auto table = SessionCtx->Tables().EnsureTableExists(TString(node.DataSink().Cluster()), TString(node.Table().Value()), node.Pos(), ctx);
+        if (!table) {
+            return TStatus::Error;
+        }
 
-            if (table->GetTableType() == ETableType::Table) {
-                if (!CheckDocApiModifiation(*table->Metadata, node.Pos(), ctx)) {
-                    return TStatus::Error;
-                }
+        if (table->GetTableType() == ETableType::Table) {
+            if (!CheckDocApiModifiation(*table->Metadata, node.Pos(), ctx)) {
+                return TStatus::Error;
             }
         }
 
@@ -1269,7 +1008,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                             << " Column: \"" << name << "\" already exists"));
                         return TStatus::Error;
                     }
-
                 }
                 auto columnTypeError = GetColumnTypeErrorFn(ctx);
                 for (size_t i = 0; i < listNode.Size(); ++i) {
@@ -1296,26 +1034,8 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                         return IGraphTransformer::TStatus::Error;
                     }
 
-                    TKikimrColumnMetadata columnMeta;
-                    // columnMeta.Name = columnName;
-                    columnMeta.Type = GetColumnTypeName(actualType);
                     if (columnTuple.Size() > 2) {
-                        const auto& columnConstraints = columnTuple.Item(2).Cast<TCoNameValueTuple>();
-                        for(const auto& constraint: columnConstraints.Value().Cast<TCoNameValueTupleList>()) {
-                            bool needEval = false;
-                            if (!ParseConstraintNode(ctx, columnMeta, columnTuple, constraint, SessionCtx->Config(), needEval, true)) {
-                                return TStatus::Error;
-                            }
-
-                            if (needEval) {
-                                ctx.Step.Repeat(TExprStep::ExprEval);
-                                return TStatus(TStatus::Repeat, true);
-                            }
-                        }
-                    }
-
-                    if (columnTuple.Size() > 3) {
-                        auto families = columnTuple.Item(3);
+                        auto families = columnTuple.Item(2);
                         if (families.Cast<TCoAtomList>().Size() > 1) {
                             ctx.AddError(TIssue(ctx.GetPosition(nameNode.Pos()), TStringBuilder()
                                 << "AlterTable : " << NCommon::FullTableName(table->Metadata->Cluster, table->Metadata->Name)
@@ -1485,20 +1205,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
         return true;
     }
 
-    static bool CheckSequenceSettings(const TCoNameValueTupleList& settings, TExprContext& ctx) {
-        const static std::unordered_set<TString> sequenceSettingNames =
-            {"start", "increment", "cache", "minvalue", "maxvalue", "cycle"};
-        for (const auto& setting : settings) {
-            auto name = setting.Name().Value();
-            if (!sequenceSettingNames.contains(TString(name))) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
-                                    TStringBuilder() << "unsupported setting with name: " << name));
-                return false;
-            }
-        }
-        return true;
-    }
-
     virtual TStatus HandleCreateTopic(TKiCreateTopic node, TExprContext& ctx) override {
         if (!CheckTopicSettings(node.Settings(), ctx)) {
             return TStatus::Error;
@@ -1509,61 +1215,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
                 return TStatus::Error;
             }
         }
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleCreateSequence(TKiCreateSequence node, TExprContext& ctx) override {
-        if(!CheckSequenceSettings(node.SequenceSettings(), ctx)) {
-            return TStatus::Error;
-        }
-
-        if (!node.Settings().Empty()) {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder()
-                << "Unsupported sequence settings"));
-            return TStatus::Error;
-        }
-
-        TString valueType = TString(node.ValueType());
-        if (valueType != "int8") {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder()
-                << "Unsupported value type: " << valueType));
-            return TStatus::Error;
-        }
-
-        if (TString(node.Temporary()) == "true") {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder()
-                << "Temporary sequences is currently not supported"));
-            return TStatus::Error;
-        }
-
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleDropSequence(TKiDropSequence node, TExprContext& ctx) override {
-        for (const auto& setting : node.Settings()) {
-            auto name = setting.Name().Value();
-            ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
-                TStringBuilder() << "Unknown drop sequence setting: " << name));
-            return TStatus::Error;
-        }
-
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleAlterSequence(TKiAlterSequence node, TExprContext& ctx) override {
-        if(!CheckSequenceSettings(node.SequenceSettings(), ctx)) {
-            return TStatus::Error;
-        }
-
-        if (!node.Settings().Empty()) {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder()
-                << "Unsupported sequence settings"));
-            return TStatus::Error;
-        }
-
         node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
         return TStatus::Ok;
     }
@@ -1619,72 +1270,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
         return TStatus::Ok;
     }
 
-    static bool CheckReplicationSettings(const TCoNameValueTupleList& settings, const THashSet<TString>& supported, TExprContext& ctx) {
-        for (const auto& setting : settings) {
-            auto name = setting.Name().Value();
-            if (!supported.contains(TString(name))) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()), TStringBuilder() << "Unsupported setting"
-                    << ": " << name));
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    virtual TStatus HandleCreateReplication(TKiCreateReplication node, TExprContext& ctx) override {
-        const THashSet<TString> supportedSettings = {
-            "connection_string",
-            "endpoint",
-            "database",
-            "token",
-            "token_secret_name",
-            "user",
-            "password",
-            "password_secret_name",
-        };
-
-        if (!CheckReplicationSettings(node.ReplicationSettings(), supportedSettings, ctx)) {
-            return TStatus::Error;
-        }
-
-        if (!node.Settings().Empty()) {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), "Unsupported settings"));
-            return TStatus::Error;
-        }
-
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleAlterReplication(TKiAlterReplication node, TExprContext& ctx) override {
-        const THashSet<TString> supportedSettings = {
-            "state",
-            "failover_mode",
-        };
-
-        if (!CheckReplicationSettings(node.ReplicationSettings(), supportedSettings, ctx)) {
-            return TStatus::Error;
-        }
-
-        if (!node.Settings().Empty()) {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), "Unsupported settings"));
-            return TStatus::Error;
-        }
-
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleDropReplication(TKiDropReplication node, TExprContext&) override {
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleModifyPermissions(TKiModifyPermissions node, TExprContext&) override {
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
 
     virtual TStatus HandleCreateUser(TKiCreateUser node, TExprContext& ctx) override {
         for (const auto& setting : node.Settings()) {
@@ -1745,16 +1330,18 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
     virtual TStatus HandleDropUser(TKiDropUser node, TExprContext& ctx) override {
         for (const auto& setting : node.Settings()) {
             auto name = setting.Name().Value();
-            ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
-                TStringBuilder() << "Unknown drop user setting: " << name));
-            return TStatus::Error;
+            if (name == "force") {
+                if (setting.Value()) {
+                    ctx.AddError(TIssue(ctx.GetPosition(setting.Value().Ref().Pos()),
+                        TStringBuilder() << "force node shouldn't have value" << name));
+                }
+            } else {
+                ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
+                    TStringBuilder() << "Unknown drop user setting: " << name));
+                return TStatus::Error;
+            }
         }
 
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandleUpsertObject(TKiUpsertObject node, TExprContext& /*ctx*/) override {
         node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
         return TStatus::Ok;
     }
@@ -1786,25 +1373,21 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
         return TStatus::Ok;
     }
 
-    virtual TStatus HandleRenameGroup(TKiRenameGroup node, TExprContext& ctx) override {
-        Y_UNUSED(ctx);
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
     virtual TStatus HandleDropGroup(TKiDropGroup node, TExprContext& ctx) override {
         for (const auto& setting : node.Settings()) {
             auto name = setting.Name().Value();
-            ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
-                TStringBuilder() << "Unknown drop group setting: " << name));
-            return TStatus::Error;
+            if (name == "force") {
+                if (setting.Value()) {
+                    ctx.AddError(TIssue(ctx.GetPosition(setting.Value().Ref().Pos()),
+                        TStringBuilder() << "force node shouldn't have value" << name));
+                }
+            } else {
+                ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
+                    TStringBuilder() << "Unknown drop group setting: " << name));
+                return TStatus::Error;
+            }
         }
 
-        node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
-        return TStatus::Ok;
-    }
-
-    virtual TStatus HandlePgDropObject(TPgDropObject node, TExprContext& /*ctx*/) override {
         node.Ptr()->SetTypeAnn(node.World().Ref().GetTypeAnn());
         return TStatus::Ok;
     }
@@ -1818,7 +1401,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
         auto settings = NCommon::ParseCommitSettings(node, ctx);
 
         bool isFlushCommit = false;
-        bool isRollback = false;
         if (settings.Mode) {
             auto mode = settings.Mode.Cast().Value();
 
@@ -1829,7 +1411,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
             }
 
             isFlushCommit = (mode == KikimrCommitModeFlush());
-            isRollback = (mode == KikimrCommitModeRollback());
         }
 
         if (!settings.EnsureEpochEmpty(ctx)) {
@@ -1847,9 +1428,8 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
 
             default:
                 if (!isFlushCommit) {
-                    auto opName = isRollback ? "ROLLBACK" : "COMMIT";
                     ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_OPERATION, TStringBuilder()
-                        << opName << " not supported inside YDB query"));
+                        << "COMMIT not supported inside Kikimr query"));
 
                     return TStatus::Error;
                 }
@@ -1867,28 +1447,9 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
             }
 
             if (!KikimrSupportedEffects().contains(effect.CallableName())) {
-                bool supported = false;
-                if (effect.Ref().ChildrenSize() > 1) {
-                    TExprBase dataSinkArg(effect.Ref().Child(1));
-                    if (auto maybeDataSink = dataSinkArg.Maybe<TCoDataSink>()) {
-                        TStringBuf dataSinkCategory = maybeDataSink.Cast().Category();
-                        auto dataSinkProviderIt = Types.DataSinkMap.find(dataSinkCategory);
-                        if (dataSinkProviderIt != Types.DataSinkMap.end()) {
-                            if (auto* dqIntegration = dataSinkProviderIt->second->GetDqIntegration()) {
-                                auto canWrite = dqIntegration->CanWrite(*effect.Raw(), ctx);
-                                if (canWrite) {
-                                    supported = *canWrite; // if false, we will exit this function a few lines later
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!supported) {
-                    ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder()
-                        << "Unsupported Kikimr data query effect: " << effect.CallableName()));
-                    return TStatus::Error;
-                }
+                ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder()
+                    << "Unsupported Kikimr data query effect: " << effect.CallableName()));
+                return TStatus::Error;
             }
         }
 
@@ -1984,7 +1545,6 @@ virtual TStatus HandleCreateTable(TKiCreateTable create, TExprContext& ctx) over
 private:
     TIntrusivePtr<IKikimrGateway> Gateway;
     TIntrusivePtr<TKikimrSessionContext> SessionCtx;
-    TTypeAnnotationContext& Types;
 };
 
 } // namespace
@@ -1996,23 +1556,9 @@ TAutoPtr<IGraphTransformer> CreateKiSourceTypeAnnotationTransformer(TIntrusivePt
 }
 
 TAutoPtr<IGraphTransformer> CreateKiSinkTypeAnnotationTransformer(TIntrusivePtr<IKikimrGateway> gateway,
-    TIntrusivePtr<TKikimrSessionContext> sessionCtx, TTypeAnnotationContext& types)
+    TIntrusivePtr<TKikimrSessionContext> sessionCtx)
 {
-    return new TKiSinkTypeAnnotationTransformer(gateway, sessionCtx, types);
-}
-
-const TTypeAnnotationNode* GetReadTableRowType(TExprContext& ctx, const TKikimrTablesData& tablesData,
-    const TString& cluster, const TString& table, TPositionHandle pos, bool withSystemColumns)
-{
-    auto tableDesc = tablesData.EnsureTableExists(cluster, table, pos, ctx);
-    if (!tableDesc) {
-        return nullptr;
-    }
-    TVector<TCoAtom> columns;
-    for (auto&& [column, _] : tableDesc->Metadata->Columns) {
-        columns.push_back(Build<TCoAtom>(ctx, pos).Value(column).Done());
-    }
-    return GetReadTableRowType(ctx, tablesData, cluster, table, Build<TCoAtomList>(ctx, pos).Add(columns).Done(), withSystemColumns);
+    return new TKiSinkTypeAnnotationTransformer(gateway, sessionCtx);
 }
 
 const TTypeAnnotationNode* GetReadTableRowType(TExprContext& ctx, const TKikimrTablesData& tablesData,

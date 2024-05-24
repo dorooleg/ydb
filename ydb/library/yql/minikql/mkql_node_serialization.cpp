@@ -412,7 +412,7 @@ namespace {
 
                 Owner.Write((char)TType::EKind::Struct);
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetMembersCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetMembersCount());
                 for (ui32 i = node.GetValuesCount(); i-- > 0; ) {
                     auto value = node.GetValue(i);
                     Owner.AddChildNode(*value.GetNode());
@@ -498,7 +498,7 @@ namespace {
                     auto result = node.GetResult();
                     Owner.AddChildNode(*result.GetNode());
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(node.GetInputsCount() == type->GetArgumentsCount());
+                    Y_VERIFY_DEBUG(node.GetInputsCount() == type->GetArgumentsCount());
                     for (ui32 i = node.GetInputsCount(); i-- > 0;) {
                         auto input = node.GetInput(i);
                         Owner.AddChildNode(*input.GetNode());
@@ -537,7 +537,7 @@ namespace {
 
                 Owner.Write((char)TType::EKind::Tuple);
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetElementsCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetElementsCount());
                 for (ui32 i = node.GetValuesCount(); i-- > 0;) {
                     auto value = node.GetValue(i);
                     Owner.AddChildNode(*value.GetNode());
@@ -760,18 +760,6 @@ namespace {
                     case NUdf::TDataType<NUdf::TInterval>::Id:
                         Owner.WriteVar64(ZigZagEncode(value.Get<NUdf::TDataType<NUdf::TInterval>::TLayout>()));
                         break;
-                    case NUdf::TDataType<NUdf::TDate32>::Id:
-                        Owner.WriteVar32(ZigZagEncode(value.Get<NUdf::TDataType<NUdf::TDate32>::TLayout>()));
-                        break;
-                    case NUdf::TDataType<NUdf::TDatetime64>::Id:
-                        Owner.WriteVar64(ZigZagEncode(value.Get<NUdf::TDataType<NUdf::TDatetime64>::TLayout>()));
-                        break;
-                    case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-                        Owner.WriteVar64(ZigZagEncode(value.Get<NUdf::TDataType<NUdf::TTimestamp64>::TLayout>()));
-                        break;
-                    case NUdf::TDataType<NUdf::TInterval64>::Id:
-                        Owner.WriteVar64(ZigZagEncode(value.Get<NUdf::TDataType<NUdf::TInterval64>::TLayout>()));
-                        break;
                     case NUdf::TDataType<NUdf::TUuid>::Id: {
                         const auto v = value.AsStringRef();
                         Owner.WriteMany(v.Data(), v.Size());
@@ -793,7 +781,7 @@ namespace {
 
             void Visit(TStructLiteral& node) override {
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetMembersCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetMembersCount());
                 TStackVec<char> immediateFlags(GetBitmapBytes(node.GetValuesCount()));
                 for (ui32 i = 0, e = node.GetValuesCount(); i < e; ++i) {
                     auto value = node.GetValue(i);
@@ -845,7 +833,7 @@ namespace {
                     Owner.Write(node.GetResult().IsImmediate() ? 1 : 0);
                 } else {
                     auto type = node.GetType();
-                    Y_DEBUG_ABORT_UNLESS(node.GetInputsCount() == type->GetArgumentsCount());
+                    Y_VERIFY_DEBUG(node.GetInputsCount() == type->GetArgumentsCount());
                     TStackVec<char> immediateFlags(GetBitmapBytes(node.GetInputsCount()));
                     for (ui32 i = 0, e = node.GetInputsCount(); i < e; ++i) {
                         auto input = node.GetInput(i);
@@ -869,7 +857,7 @@ namespace {
 
             void Visit(TTupleLiteral& node) override {
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetElementsCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetElementsCount());
                 TStackVec<char> immediateFlags(GetBitmapBytes(node.GetValuesCount()));
                 for (ui32 i = 0, e = node.GetValuesCount(); i < e; ++i) {
                     auto value = node.GetValue(i);
@@ -909,16 +897,16 @@ namespace {
                     auto prevSize = Stack.size();
                     nodeAndFlag.first->Accept(preVisitor);
                     if (preVisitor.IsProcessed()) { // ref or small node, some nodes have been added
-                        Y_DEBUG_ABORT_UNLESS(prevSize == Stack.size());
+                        Y_VERIFY_DEBUG(prevSize == Stack.size());
                         Stack.pop_back();
                         continue;
                     }
 
-                    Y_DEBUG_ABORT_UNLESS(prevSize <= Stack.size());
+                    Y_VERIFY_DEBUG(prevSize <= Stack.size());
                 } else {
                     auto prevSize = Stack.size();
                     nodeAndFlag.first->Accept(postVisitor);
-                    Y_DEBUG_ABORT_UNLESS(prevSize == Stack.size());
+                    Y_VERIFY_DEBUG(prevSize == Stack.size());
                     Stack.pop_back();
                 }
             }
@@ -954,7 +942,7 @@ namespace {
                 it->second = nameIndex++;
             }
 
-            Y_DEBUG_ABORT_UNLESS(nameIndex == Names.size());
+            Y_VERIFY_DEBUG(nameIndex == Names.size());
         }
 
         void End() {
@@ -966,14 +954,14 @@ namespace {
         }
 
         void RegisterReference(TNode& node) {
-            Y_DEBUG_ABORT_UNLESS(node.GetCookie() == 0);
+            Y_VERIFY_DEBUG(node.GetCookie() == 0);
             node.SetCookie(++ReferenceCount);
         }
 
         void WriteReference(TNode& node) {
             Write(SystemMask | (char)ESystemCommand::Ref);
-            Y_DEBUG_ABORT_UNLESS(node.GetCookie() != 0);
-            Y_DEBUG_ABORT_UNLESS(node.GetCookie() <= ReferenceCount);
+            Y_VERIFY_DEBUG(node.GetCookie() != 0);
+            Y_VERIFY_DEBUG(node.GetCookie() <= ReferenceCount);
             WriteVar32(node.GetCookie() - 1);
         }
 
@@ -1048,7 +1036,7 @@ namespace {
                 }
 
                 if (last.NextPass == AllPassesDone) {
-                    Y_DEBUG_ABORT_UNLESS(last.ChildCount <= NodeStack.size());
+                    Y_VERIFY_DEBUG(last.ChildCount <= NodeStack.size());
                     Reverse(NodeStack.end() - last.ChildCount, NodeStack.end());
                     auto newNode = ReadNode();
                     if (Current > lastPos) {
@@ -1072,7 +1060,7 @@ namespace {
                 if (childCount != 0) {
                     CtxStack.insert(CtxStack.end(), childCount, TNodeContext());
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(res == 0);
+                    Y_VERIFY_DEBUG(res == 0);
                 }
             }
 
@@ -1254,22 +1242,22 @@ namespace {
         }
 
         TNode* ReadTypeType() {
-            auto node = Env.GetTypeOfTypeLazy();
+            auto node = Env.GetTypeOfType();
             return node;
         }
 
         TNode* ReadVoidOrEmptyListOrEmptyDictType(char code) {
             switch ((TType::EKind)(code & TypeMask)) {
-            case TType::EKind::Void: return Env.GetTypeOfVoidLazy();
-            case TType::EKind::EmptyList: return Env.GetTypeOfEmptyListLazy();
-            case TType::EKind::EmptyDict: return Env.GetTypeOfEmptyDictLazy();
+            case TType::EKind::Void: return Env.GetTypeOfVoid();
+            case TType::EKind::EmptyList: return Env.GetTypeOfEmptyList();
+            case TType::EKind::EmptyDict: return Env.GetTypeOfEmptyDict();
             default:
                 ThrowCorrupted();
             }
         }
 
         TNode* ReadNullType() {
-            auto node = Env.GetTypeOfNullLazy();
+            auto node = Env.GetTypeOfNull();
             return node;
         }
 
@@ -1519,7 +1507,7 @@ namespace {
         }
 
         TNode* ReadAnyType() {
-            auto node = Env.GetAnyTypeLazy();
+            auto node = Env.GetAnyType();
             return node;
         }
 
@@ -1607,16 +1595,16 @@ namespace {
 
         TNode* ReadVoid(char code) {
             switch ((TType::EKind)(code & TypeMask)) {
-            case TType::EKind::Void: return Env.GetVoidLazy();
-            case TType::EKind::EmptyList: return Env.GetEmptyListLazy();
-            case TType::EKind::EmptyDict: return Env.GetEmptyDictLazy();
+            case TType::EKind::Void: return Env.GetVoid();
+            case TType::EKind::EmptyList: return Env.GetEmptyList();
+            case TType::EKind::EmptyDict: return Env.GetEmptyDict();
             default:
                 ThrowCorrupted();
             }
         }
 
         TNode* ReadNull() {
-            auto node = Env.GetNullLazy();
+            auto node = Env.GetNull();
             return node;
         }
 
@@ -1728,26 +1716,6 @@ namespace {
                 const ui32 tzId = ReadVar32();
                 MKQL_ENSURE(tzId <= Max<ui16>() && IsValidTimezoneId((ui16)tzId), "Unknown timezone: " << tzId);
                 value.SetTimezoneId((ui16)tzId);
-                break;
-            }
-            case NUdf::TDataType<NUdf::TDate32>::Id:
-            {
-                value = NUdf::TUnboxedValuePod(static_cast<NUdf::TDataType<NUdf::TDate32>::TLayout>(ZigZagDecode(ReadVar32())));
-                break;
-            }
-            case NUdf::TDataType<NUdf::TDatetime64>::Id:
-            {
-                value = NUdf::TUnboxedValuePod(static_cast<NUdf::TDataType<NUdf::TDatetime64>::TLayout>(ZigZagDecode(ReadVar64())));
-                break;
-            }
-            case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-            {
-                value = NUdf::TUnboxedValuePod(static_cast<NUdf::TDataType<NUdf::TTimestamp64>::TLayout>(ZigZagDecode(ReadVar64())));
-                break;
-            }
-            case NUdf::TDataType<NUdf::TInterval64>::Id:
-            {
-                value = NUdf::TUnboxedValuePod(static_cast<NUdf::TDataType<NUdf::TInterval64>::TLayout>(ZigZagDecode(ReadVar64())));
                 break;
             }
             case NUdf::TDataType<NUdf::TUuid>::Id:

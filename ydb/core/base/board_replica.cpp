@@ -1,11 +1,11 @@
 #include "statestorage_impl.h"
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/core/protos/services.pb.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <util/generic/set.h>
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #if defined BLOG_D || defined BLOG_I || defined BLOG_ERROR
 #error log macro definition clash
@@ -99,7 +99,7 @@ class TBoardReplicaActor : public TActor<TBoardReplicaActor> {
                 entry.Session = ev->InterconnectSession;
             }
             entry.Payload = record.GetPayload();
-            Y_DEBUG_ABORT_UNLESS(entry.Owner == ActorIdFromProto(record.GetOwner()));
+            Y_VERIFY_DEBUG(entry.Owner == ActorIdFromProto(record.GetOwner()));
 
             if (pathSubscribeDataIt != PathToSubscribers.end()) {
                 SendUpdateToSubscribers(entry, false);
@@ -334,7 +334,7 @@ class TBoardReplicaActor : public TActor<TBoardReplicaActor> {
                 break;
             }
             default:
-                Y_ABORT("Unexpected case");
+                Y_FAIL("Unexpected case");
         }
     }
 

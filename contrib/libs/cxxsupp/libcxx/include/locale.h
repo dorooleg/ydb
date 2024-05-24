@@ -36,15 +36,17 @@ Functions:
 #include <__config>
 
 #if defined(_LIBCPP_HAS_NO_LOCALIZATION)
-#   error "<locale.h> is not supported since libc++ has been configured without support for localization."
+#   error "The Localization library is not supported since libc++ has been configured with LIBCXX_ENABLE_LOCALIZATION disabled"
 #endif
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
 #endif
 
-#if __has_include_next(<locale.h>)
-#  include_next <locale.h>
+#ifdef _LIBCPP_COMPILER_MSVC
+#include Y_UCRT_INCLUDE_NEXT(locale.h)
+#else
+#include_next <locale.h>
 #endif
 
 #endif // _LIBCPP_LOCALE_H

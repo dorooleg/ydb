@@ -78,7 +78,7 @@ namespace orc {
     mHashCode = hashCode();
   }
 
-  Literal::Literal(const char* str, size_t size) {
+  Literal::Literal(const char * str, size_t size) {
     mType = PredicateDataType::STRING;
     mValue.Buffer = new char[size];
     memcpy(mValue.Buffer, str, size);
@@ -110,8 +110,10 @@ namespace orc {
     mHashCode = hashCode();
   }
 
-  Literal::Literal(const Literal& r)
-      : mType(r.mType), mSize(r.mSize), mIsNull(r.mIsNull), mHashCode(r.mHashCode) {
+  Literal::Literal(const Literal& r): mType(r.mType)
+                                    , mSize(r.mSize)
+                                    , mIsNull(r.mIsNull)
+                                    , mHashCode(r.mHashCode) {
     if (mType == PredicateDataType::STRING) {
       mValue.Buffer = new char[r.mSize];
       memcpy(mValue.Buffer, r.mValue.Buffer, r.mSize);
@@ -132,7 +134,7 @@ namespace orc {
 
   Literal::~Literal() {
     if (mType == PredicateDataType::STRING && mValue.Buffer) {
-      delete[] mValue.Buffer;
+      delete [] mValue.Buffer;
       mValue.Buffer = nullptr;
     }
   }
@@ -140,7 +142,7 @@ namespace orc {
   Literal& Literal::operator=(const Literal& r) {
     if (this != &r) {
       if (mType == PredicateDataType::STRING && mValue.Buffer) {
-        delete[] mValue.Buffer;
+        delete [] mValue.Buffer;
         mValue.Buffer = nullptr;
       }
 
@@ -176,7 +178,8 @@ namespace orc {
         sstream << mValue.DateVal;
         break;
       case PredicateDataType::TIMESTAMP:
-        sstream << mValue.TimeStampVal.second << "." << mValue.TimeStampVal.nanos;
+        sstream << mValue.TimeStampVal.second << "."
+                << mValue.TimeStampVal.nanos;
         break;
       case PredicateDataType::FLOAT:
         sstream << mValue.DoubleVal;
@@ -206,13 +209,14 @@ namespace orc {
         return std::hash<int64_t>{}(mValue.DateVal);
       case PredicateDataType::TIMESTAMP:
         return std::hash<int64_t>{}(mValue.TimeStampVal.second) * 17 +
-               std::hash<int32_t>{}(mValue.TimeStampVal.nanos);
+          std::hash<int32_t>{}(mValue.TimeStampVal.nanos);
       case PredicateDataType::FLOAT:
         return std::hash<double>{}(mValue.DoubleVal);
       case PredicateDataType::BOOLEAN:
         return std::hash<bool>{}(mValue.BooleanVal);
       case PredicateDataType::STRING:
-        return std::hash<std::string>{}(std::string(mValue.Buffer, mSize));
+        return std::hash<std::string>{}(
+          std::string(mValue.Buffer, mSize));
       case PredicateDataType::DECIMAL:
         // current glibc does not support hash<int128_t>
         return std::hash<int64_t>{}(mValue.IntVal);
@@ -242,11 +246,12 @@ namespace orc {
         return mValue.TimeStampVal == r.mValue.TimeStampVal;
       case PredicateDataType::FLOAT:
         return std::fabs(mValue.DoubleVal - r.mValue.DoubleVal) <
-               std::numeric_limits<double>::epsilon();
+          std::numeric_limits<double>::epsilon();
       case PredicateDataType::BOOLEAN:
         return mValue.BooleanVal == r.mValue.BooleanVal;
       case PredicateDataType::STRING:
-        return mSize == r.mSize && memcmp(mValue.Buffer, r.mValue.Buffer, mSize) == 0;
+        return mSize == r.mSize && memcmp(
+          mValue.Buffer, r.mValue.Buffer, mSize) == 0;
       case PredicateDataType::DECIMAL:
         return mValue.DecimalVal == r.mValue.DecimalVal;
       default:
@@ -258,7 +263,8 @@ namespace orc {
     return !(*this == r);
   }
 
-  inline void validate(const bool& isNull, const PredicateDataType& type,
+  inline void validate(const bool& isNull,
+                       const PredicateDataType& type,
                        const PredicateDataType& expected) {
     if (isNull) {
       throw std::logic_error("cannot get value when it is null!");
@@ -303,4 +309,4 @@ namespace orc {
     return Decimal(mValue.DecimalVal, mScale);
   }
 
-}  // namespace orc
+}

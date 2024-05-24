@@ -1,8 +1,8 @@
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NLocalPgWire {
 
-inline NActors::TActorId CreateLocalPgWireProxyId(uint32_t nodeId = 0) { return NActors::TActorId(nodeId, "localpgwire"); }
+inline NActors::TActorId CreateLocalPgWireProxyId() { return NActors::TActorId(0, "localpgwire"); }
 NActors::IActor* CreateLocalPgWireProxy();
 
 }

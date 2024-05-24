@@ -53,6 +53,7 @@ expiration_time = valueof(ttl_column) + expire_after_seconds
   * миллисекунды;
   * микросекунды;
   * наносекунды.
+* Настройка TTL с использованием [YQL](../../yql/reference/index.md) возможна только для колонок типа `Date`, `Datetime`, и `Timestamp`.
 * Нельзя указать несколько TTL-колонок.
 * Нельзя удалить TTL-колонку. Если это все же требуется, сначала нужно [выключить TTL](#disable) на таблице.
 
@@ -118,19 +119,13 @@ expiration_time = valueof(ttl_column) + expire_after_seconds
 
 {% note tip %}
 
-При настройке TTL с использованием YQL, `Interval` создается из строкового литерала в формате [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) с [некоторыми ограничениями](../../yql/reference/builtins/basic#data-type-literals).
+При настройке TTL с использованием YQL, `Interval` создается из строкового литерала в формате [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601).
 
 {% endnote %}
 
 Следующий пример демонстрирует использование колонки `modified_at` с числовым типом (`Uint32`) в качестве TTL-колонки. Значение колонки интерпретируется как секунды от Unix-эпохи:
 
 {% list tabs %}
-
-- YQL
-
-  ```yql
-  ALTER TABLE `mytable` SET (TTL = Interval("PT1H") ON modified_at AS SECONDS);
-  ```
 
 - CLI
 
@@ -159,7 +154,7 @@ expiration_time = valueof(ttl_column) + expire_after_seconds
   ```go
   err := session.AlterTable(ctx, "mytable",
     options.WithSetTimeToLiveSettings(
-      options.NewTTLSettings().ColumnSeconds("modified_at").ExpireAfter(time.Hour),
+      options.NewTTLSettings().ColumnSecond("modified_at").ExpireAfter(time.Hour),
     ),
   )
   ```

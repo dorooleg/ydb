@@ -6,8 +6,8 @@
 #include <ydb/core/wrappers/s3_wrapper.h>
 #include <ydb/public/api/protos/ydb_import.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <google/protobuf/text_format.h>
 
@@ -25,7 +25,7 @@ using namespace Aws;
 
 class TSchemeGetter: public TActorBootstrapped<TSchemeGetter> {
     static TString SchemeKeyFromSettings(const Ydb::Import::ImportFromS3Settings& settings, ui32 itemIdx) {
-        Y_ABORT_UNLESS(itemIdx < (ui32)settings.items_size());
+        Y_VERIFY(itemIdx < (ui32)settings.items_size());
         return TStringBuilder() << settings.items(itemIdx).source_prefix() << "/scheme.pb";
     }
 
@@ -71,7 +71,7 @@ class TSchemeGetter: public TActorBootstrapped<TSchemeGetter> {
             return;
         }
 
-        Y_ABORT_UNLESS(ItemIdx < ImportInfo->Items.size());
+        Y_VERIFY(ItemIdx < ImportInfo->Items.size());
         auto& item = ImportInfo->Items.at(ItemIdx);
 
         LOG_T("Trying to parse"
@@ -94,17 +94,16 @@ class TSchemeGetter: public TActorBootstrapped<TSchemeGetter> {
         LOG_E("Error at '" << marker << "'"
             << ": self# " << SelfId()
             << ", error# " << result);
-        MaybeRetry(result.GetError());
+        MaybeRetry(result.GetError().GetMessage().c_str());
 
         return false;
     }
 
-    void MaybeRetry(const Aws::S3::S3Error& error) {
-        if (Attempt < Retries && error.ShouldRetry()) {
-            Delay = Min(Delay * ++Attempt, MaxDelay);
-            Schedule(Delay, new TEvents::TEvWakeup());
+    void MaybeRetry(const TString& error) {
+        if (Attempt++ < Retries) {
+            Schedule(TDuration::Minutes(1), new TEvents::TEvWakeup());
         } else {
-            Reply(false, TStringBuilder() << "S3 error: " << error.GetMessage().c_str());
+            Reply(false, error);
         }
     }
 
@@ -149,8 +148,8 @@ public:
             hFunc(TEvExternalStorage::TEvHeadObjectResponse, Handle);
             hFunc(TEvExternalStorage::TEvGetObjectResponse, Handle);
 
-            sFunc(TEvents::TEvWakeup, Bootstrap);
-            sFunc(TEvents::TEvPoisonPill, PassAway);
+            cFunc(TEvents::TEvWakeup::EventType, Bootstrap);
+            cFunc(TEvents::TEvPoisonPill::EventType, PassAway);
         }
     }
 
@@ -164,9 +163,6 @@ private:
 
     const ui32 Retries;
     ui32 Attempt = 0;
-
-    TDuration Delay = TDuration::Minutes(1);
-    static constexpr TDuration MaxDelay = TDuration::Minutes(10);
 
     TActorId Client;
 

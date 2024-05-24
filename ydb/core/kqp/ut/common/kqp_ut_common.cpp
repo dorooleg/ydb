@@ -1,6 +1,5 @@
 #include "kqp_ut_common.h"
 
-#include <ydb/core/base/backtrace.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
 #include <ydb/core/kqp/provider/yql_kikimr_results.h>
@@ -14,24 +13,10 @@
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
 #include <ydb/library/yql/utils/yql_panic.h>
 
-#include <library/cpp/testing/common/env.h>
-
 namespace NKikimr {
 namespace NKqp {
 
 using namespace NYdb::NTable;
-
-const TString EXPECTED_EIGHTSHARD_VALUE1 = R"(
-[
-    [[1];[101u];["Value1"]];
-    [[2];[201u];["Value1"]];
-    [[3];[301u];["Value1"]];
-    [[1];[401u];["Value1"]];
-    [[2];[501u];["Value1"]];
-    [[3];[601u];["Value1"]];
-    [[1];[701u];["Value1"]];
-    [[2];[801u];["Value1"]]
-])";
 
 SIMPLE_UDF(TTestFilter, bool(i64)) {
     Y_UNUSED(valueBuilder);
@@ -69,8 +54,6 @@ SIMPLE_UDF(TRandString, char*(ui32)) {
 SIMPLE_MODULE(TTestUdfsModule, TTestFilter, TTestFilterTerminate, TRandString);
 NYql::NUdf::TUniquePtr<NYql::NUdf::IUdfModule> CreateJson2Module();
 NYql::NUdf::TUniquePtr<NYql::NUdf::IUdfModule> CreateRe2Module();
-NYql::NUdf::TUniquePtr<NYql::NUdf::IUdfModule> CreateStringModule();
-NYql::NUdf::TUniquePtr<NYql::NUdf::IUdfModule> CreateDateTime2Module();
 
 NMiniKQL::IFunctionRegistry* UdfFrFactory(const NScheme::TTypeRegistry& typeRegistry) {
     Y_UNUSED(typeRegistry);
@@ -78,8 +61,6 @@ NMiniKQL::IFunctionRegistry* UdfFrFactory(const NScheme::TTypeRegistry& typeRegi
     funcRegistry->AddModule("", "TestUdfs", new TTestUdfsModule());
     funcRegistry->AddModule("", "Json2", CreateJson2Module());
     funcRegistry->AddModule("", "Re2", CreateRe2Module());
-    funcRegistry->AddModule("", "String", CreateStringModule());
-    funcRegistry->AddModule("", "DateTime", CreateDateTime2Module());
     NKikimr::NMiniKQL::FillStaticModules(*funcRegistry);
     return funcRegistry.Release();
 }
@@ -92,7 +73,7 @@ TVector<NKikimrKqp::TKqpSetting> SyntaxV1Settings() {
 }
 
 TKikimrRunner::TKikimrRunner(const TKikimrSettings& settings) {
-    EnableYDBBacktraceFormat();
+    // EnableKikimrBacktraceFormat(); // Very slow, enable only when required locally
 
     auto mbusPort = PortManager.GetPort();
     auto grpcPort = PortManager.GetPort();
@@ -112,15 +93,10 @@ TKikimrRunner::TKikimrRunner(const TKikimrSettings& settings) {
 
     effectiveKqpSettings.insert(effectiveKqpSettings.end(), settings.KqpSettings.begin(), settings.KqpSettings.end());
 
-    NKikimrProto::TAuthConfig authConfig;
-    authConfig.SetUseBuiltinDomain(true);
-    ServerSettings.Reset(MakeHolder<Tests::TServerSettings>(mbusPort, authConfig, settings.PQConfig));
+    ServerSettings.Reset(MakeHolder<Tests::TServerSettings>(mbusPort, NKikimrProto::TAuthConfig(), settings.PQConfig));
     ServerSettings->SetDomainName(settings.DomainRoot);
     ServerSettings->SetKqpSettings(effectiveKqpSettings);
-
-    NKikimrConfig::TAppConfig appConfig = settings.AppConfig;
-    appConfig.MutableColumnShardConfig()->SetDisabledOnSchemeShard(false);
-    ServerSettings->SetAppConfig(appConfig);
+    ServerSettings->SetAppConfig(settings.AppConfig);
     ServerSettings->SetFeatureFlags(settings.FeatureFlags);
     ServerSettings->SetNodeCount(settings.NodeCount);
     ServerSettings->SetEnableKqpSpilling(enableSpilling);
@@ -129,29 +105,13 @@ TKikimrRunner::TKikimrRunner(const TKikimrSettings& settings) {
     ServerSettings->SetFrFactory(&UdfFrFactory);
     ServerSettings->SetEnableNotNullColumns(true);
     ServerSettings->SetEnableMoveIndex(true);
-    ServerSettings->SetEnableUniqConstraint(true);
-    ServerSettings->SetUseRealThreads(settings.UseRealThreads);
-    ServerSettings->SetEnableTablePgTypes(true);
-
-    if (settings.Storage) {
-        ServerSettings->SetCustomDiskParams(*settings.Storage);
-        ServerSettings->SetEnableMockOnSingleNode(false);
-    }
 
     if (settings.LogStream)
         ServerSettings->SetLogBackend(new TStreamLogBackend(settings.LogStream));
 
-    if (settings.FederatedQuerySetupFactory) {
-        ServerSettings->SetFederatedQuerySetupFactory(settings.FederatedQuerySetupFactory);
-    }
-
     Server.Reset(MakeHolder<Tests::TServer>(*ServerSettings));
     Server->EnableGRpc(grpcPort);
-
-    RunCall([this, domain = settings.DomainRoot] {
-        this->Server->SetupDefaultProfiles();
-        return true;
-    });
+    Server->SetupDefaultProfiles();
 
     Client.Reset(MakeHolder<Tests::TClient>(*ServerSettings));
 
@@ -163,8 +123,6 @@ TKikimrRunner::TKikimrRunner(const TKikimrSettings& settings) {
         .SetDiscoveryMode(NYdb::EDiscoveryMode::Async)
         .SetAuthToken(settings.AuthToken);
     Driver.Reset(MakeHolder<NYdb::TDriver>(DriverConfig));
-
-    CountersRoot = settings.CountersRoot;
 
     Initialize(settings);
 }
@@ -208,10 +166,6 @@ TKikimrRunner::TKikimrRunner(const TString& authToken, const TString& domainRoot
         .SetAuthToken(authToken)
         .SetDomainRoot(domainRoot)
         .SetNodeCount(nodeCount)) {}
-
-TKikimrRunner::TKikimrRunner(const NFake::TStorage& storage)
-    : TKikimrRunner(TKikimrSettings()
-        .SetStorage(storage)) {}
 
 void TKikimrRunner::CreateSampleTables() {
     Client->CreateTable("/Root", R"(
@@ -448,87 +402,37 @@ void TKikimrRunner::CreateSampleTables() {
 
 }
 
-static TMaybe<NActors::NLog::EPriority> ParseLogLevel(const TString& level) {
-    static const THashMap<TString, NActors::NLog::EPriority> levels = {
-        { "TRACE", NActors::NLog::PRI_TRACE },
-        { "DEBUG", NActors::NLog::PRI_DEBUG },
-        { "INFO", NActors::NLog::PRI_INFO },
-        { "NOTICE", NActors::NLog::PRI_NOTICE },
-        { "WARN", NActors::NLog::PRI_WARN },
-        { "ERROR", NActors::NLog::PRI_ERROR },
-        { "CRIT", NActors::NLog::PRI_CRIT },
-        { "ALERT", NActors::NLog::PRI_ALERT },
-        { "EMERG", NActors::NLog::PRI_EMERG },
-    };
-
-    TString l = level;
-    l.to_upper();
-    const auto levelIt = levels.find(l);
-    if (levelIt != levels.end()) {
-        return levelIt->second;
-    } else {
-        Cerr << "Failed to parse test log level [" << level << "]" << Endl;
-        return Nothing();
-    }
-}
-
-void TKikimrRunner::SetupLogLevelFromTestParam(NKikimrServices::EServiceKikimr service) {
-    if (const TString paramForService = GetTestParam(TStringBuilder() << "KQP_LOG_" << NKikimrServices::EServiceKikimr_Name(service))) {
-        if (const TMaybe<NActors::NLog::EPriority> level = ParseLogLevel(paramForService)) {
-            Server->GetRuntime()->SetLogPriority(service, *level);
-            return;
-        }
-    }
-    if (const TString commonParam = GetTestParam("KQP_LOG")) {
-        if (const TMaybe<NActors::NLog::EPriority> level = ParseLogLevel(commonParam)) {
-            Server->GetRuntime()->SetLogPriority(service, *level);
-        }
-    }
-}
-
 void TKikimrRunner::Initialize(const TKikimrSettings& settings) {
-    // You can enable logging for these services in test using test option:
-    // `--test-param KQP_LOG=<level>`
-    // or `--test-param KQP_LOG_<service>=<level>`
-    // For example:
-    // --test-param KQP_LOG=TRACE
-    // --test-param KQP_LOG_FLAT_TX_SCHEMESHARD=debug
-    SetupLogLevelFromTestParam(NKikimrServices::FLAT_TX_SCHEMESHARD);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_YQL);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_YQL);
-    SetupLogLevelFromTestParam(NKikimrServices::TX_DATASHARD);
-    SetupLogLevelFromTestParam(NKikimrServices::TX_COORDINATOR);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_COMPUTE);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_TASKS_RUNNER);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_EXECUTER);
-    SetupLogLevelFromTestParam(NKikimrServices::TX_PROXY_SCHEME_CACHE);
-    SetupLogLevelFromTestParam(NKikimrServices::SCHEME_BOARD_REPLICA);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_WORKER);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_SESSION);
-    SetupLogLevelFromTestParam(NKikimrServices::TABLET_EXECUTOR);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_SLOW_LOG);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_PROXY);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_COMPILE_SERVICE);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_COMPILE_ACTOR);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_COMPILE_REQUEST);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_GATEWAY);
-    SetupLogLevelFromTestParam(NKikimrServices::RPC_REQUEST);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_RESOURCE_MANAGER);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_NODE);
-    SetupLogLevelFromTestParam(NKikimrServices::KQP_BLOBS_STORAGE);
-    SetupLogLevelFromTestParam(NKikimrServices::TX_COLUMNSHARD);
-    SetupLogLevelFromTestParam(NKikimrServices::LOCAL_PGWIRE);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::FLAT_TX_SCHEMESHARD, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_YQL, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_YQL, NActors::NLog::PRI_INFO);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::TX_DATASHARD, NActors::NLog::PRI_TRACE);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::TX_COORDINATOR, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPUTE, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_TASKS_RUNNER, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_EXECUTER, NActors::NLog::PRI_TRACE);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::TX_PROXY_SCHEME_CACHE, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::SCHEME_BOARD_REPLICA, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_WORKER, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_SESSION, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::TABLET_EXECUTOR, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_SLOW_LOG, NActors::NLog::PRI_TRACE);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_PROXY, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPILE_SERVICE, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPILE_ACTOR, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPILE_REQUEST, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_GATEWAY, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::RPC_REQUEST, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_RESOURCE_MANAGER, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_NODE, NActors::NLog::PRI_DEBUG);
+    // Server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_BLOBS_STORAGE, NActors::NLog::PRI_DEBUG);
 
-    RunCall([this, domain = settings.DomainRoot]{
-        this->Client->InitRootScheme(domain);
-        return true;
-    });
+    Client->InitRootScheme(settings.DomainRoot);
+
+    NKikimr::NKqp::WaitForKqpProxyInit(GetDriver());
 
     if (settings.WithSampleTables) {
-        RunCall([this] {
-            this->CreateSampleTables();
-            return true;
-        });
+        CreateSampleTables();
     }
 }
 
@@ -596,9 +500,9 @@ void PrintQueryStats(const TDataQueryResult& result) {
     }
 }
 
-void AssertTableStats(const Ydb::TableStats::QueryStats& stats, TStringBuf table,
-    const TExpectedTableStats& expectedStats)
-{
+void AssertTableStats(const TDataQueryResult& result, TStringBuf table, const TExpectedTableStats& expectedStats) {
+    auto stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
+
     ui64 actualReads = 0;
     ui64 actualUpdates = 0;
     ui64 actualDeletes = 0;
@@ -629,11 +533,6 @@ void AssertTableStats(const Ydb::TableStats::QueryStats& stats, TStringBuf table
     }
 }
 
-void AssertTableStats(const TDataQueryResult& result, TStringBuf table, const TExpectedTableStats& expectedStats) {
-    auto stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-    return AssertTableStats(stats, table, expectedStats);
-}
-
 TDataQueryResult ExecQueryAndTestResult(TSession& session, const TString& query, const NYdb::TParams& params,
     const TString& expectedYson)
 {
@@ -652,15 +551,6 @@ TDataQueryResult ExecQueryAndTestResult(TSession& session, const TString& query,
     return result;
 }
 
-void FillProfile(NYdb::NQuery::TExecuteQueryPart& streamPart, NYson::TYsonWriter& writer, TVector<TString>* profiles,
-    ui32 profileIndex)
-{
-    Y_UNUSED(streamPart);
-    Y_UNUSED(writer);
-    Y_UNUSED(profiles);
-    Y_UNUSED(profileIndex);
-}
-
 void FillProfile(NYdb::NTable::TScanQueryPart& streamPart, NYson::TYsonWriter& writer, TVector<TString>* profiles,
     ui32 profileIndex)
 {
@@ -668,90 +558,6 @@ void FillProfile(NYdb::NTable::TScanQueryPart& streamPart, NYson::TYsonWriter& w
     Y_UNUSED(writer);
     Y_UNUSED(profiles);
     Y_UNUSED(profileIndex);
-}
-
-void CreateLargeTable(TKikimrRunner& kikimr, ui32 rowsPerShard, ui32 keyTextSize,
-    ui32 dataTextSize, ui32 batchSizeRows, ui32 fillShardsCount, ui32 largeTableKeysPerShard)
-{
-    kikimr.GetTestClient().CreateTable("/Root", R"(
-        Name: "LargeTable"
-        Columns { Name: "Key", Type: "Uint64" }
-        Columns { Name: "KeyText", Type: "String" }
-        Columns { Name: "Data", Type: "Int64" }
-        Columns { Name: "DataText", Type: "String" }
-        KeyColumnNames: ["Key", "KeyText"],
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 1000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 2000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 3000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 4000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 5000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 6000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 7000000 } } } }
-    )");
-
-    auto client = kikimr.GetTableClient();
-
-    for (ui32 shardIdx = 0; shardIdx < fillShardsCount; ++shardIdx) {
-        ui32 rowIndex = 0;
-        while (rowIndex < rowsPerShard) {
-
-            auto rowsBuilder = NYdb::TValueBuilder();
-            rowsBuilder.BeginList();
-            for (ui32 i = 0; i < batchSizeRows; ++i) {
-                rowsBuilder.AddListItem()
-                    .BeginStruct()
-                    .AddMember("Key")
-                        .OptionalUint64(shardIdx * largeTableKeysPerShard + rowIndex)
-                    .AddMember("KeyText")
-                        .OptionalString(TString(keyTextSize, '0' + (i + shardIdx) % 10))
-                    .AddMember("Data")
-                        .OptionalInt64(rowIndex)
-                    .AddMember("DataText")
-                        .OptionalString(TString(dataTextSize, '0' + (i + shardIdx + 1) % 10))
-                    .EndStruct();
-
-                ++rowIndex;
-                if (rowIndex == rowsPerShard) {
-                    break;
-                }
-            }
-            rowsBuilder.EndList();
-
-            auto result = client.BulkUpsert("/Root/LargeTable", rowsBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
-        }
-    }
-}
-
-void CreateManyShardsTable(TKikimrRunner& kikimr, ui32 totalRows, ui32 shards, ui32 batchSizeRows)
-{
-    kikimr.GetTestClient().CreateTable("/Root", R"(
-        Name: "ManyShardsTable"
-        Columns { Name: "Key", Type: "Uint32" }
-        Columns { Name: "Data", Type: "Int32" }
-        KeyColumnNames: ["Key"]
-        UniformPartitionsCount:
-    )" + std::to_string(shards));
-
-    auto client = kikimr.GetTableClient();
-
-    for (ui32 rows = 0; rows < totalRows; rows += batchSizeRows) {
-        auto rowsBuilder = NYdb::TValueBuilder();
-        rowsBuilder.BeginList();
-        for (ui32 i = 0; i < batchSizeRows && rows + i < totalRows; ++i) {
-            rowsBuilder.AddListItem()
-                .BeginStruct()
-                .AddMember("Key")
-                    .OptionalUint32((std::numeric_limits<ui32>::max() / totalRows) * (rows + i))
-                .AddMember("Data")
-                    .OptionalInt32(i)
-                .EndStruct();
-        }
-        rowsBuilder.EndList();
-
-        auto result = client.BulkUpsert("/Root/ManyShardsTable", rowsBuilder.Build()).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
-    }
 }
 
 void PrintResultSet(const NYdb::TResultSet& resultSet, NYson::TYsonWriter& writer) {
@@ -773,9 +579,8 @@ bool IsTimeoutError(NYdb::EStatus status) {
     return status == NYdb::EStatus::CLIENT_DEADLINE_EXCEEDED || status == NYdb::EStatus::TIMEOUT || status == NYdb::EStatus::CANCELLED;
 }
 
-// IssueMessageSubString - uses only in case if !streamPart.IsSuccess()
 template<typename TIterator>
-TString StreamResultToYsonImpl(TIterator& it, TVector<TString>* profiles, bool throwOnTimeout = false, const NYdb::EStatus& opStatus = NYdb::EStatus::SUCCESS, const TString& issueMessageSubString = "") {
+TString StreamResultToYsonImpl(TIterator& it, TVector<TString>* profiles, bool throwOnTimeout = false) {
     TStringStream out;
     NYson::TYsonWriter writer(&out, NYson::EYsonFormat::Text, ::NYson::EYsonType::Node, true);
     writer.OnBeginList();
@@ -785,11 +590,6 @@ TString StreamResultToYsonImpl(TIterator& it, TVector<TString>* profiles, bool t
     for (;;) {
         auto streamPart = it.ReadNext().GetValueSync();
         if (!streamPart.IsSuccess()) {
-            if (opStatus != NYdb::EStatus::SUCCESS) {
-                UNIT_ASSERT_VALUES_EQUAL_C(streamPart.GetStatus(), opStatus, streamPart.GetIssues().ToString());
-                UNIT_ASSERT_C(streamPart.GetIssues().ToString().Contains(issueMessageSubString), TStringBuilder() << "Issue should contain '" << issueMessageSubString << "'. " << streamPart.GetIssues().ToString());
-                break;
-            }
             if (throwOnTimeout && IsTimeoutError(streamPart.GetStatus())) {
                 throw TStreamReadError(streamPart.GetStatus());
             }
@@ -811,26 +611,20 @@ TString StreamResultToYsonImpl(TIterator& it, TVector<TString>* profiles, bool t
     return out.Str();
 }
 
-TString StreamResultToYson(NYdb::NQuery::TExecuteQueryIterator& it, bool throwOnTimeout, const NYdb::EStatus& opStatus, const TString& issueMessageSubString) {
-    return StreamResultToYsonImpl(it, nullptr, throwOnTimeout, opStatus, issueMessageSubString);
+TString StreamResultToYson(NYdb::NTable::TScanQueryPartIterator& it, bool throwOnTimeout) {
+    return StreamResultToYsonImpl(it, nullptr, throwOnTimeout);
 }
 
-TString StreamResultToYson(NYdb::NTable::TScanQueryPartIterator& it, bool throwOnTimeout, const NYdb::EStatus& opStatus, const TString& issueMessageSubString) {
-    return StreamResultToYsonImpl(it, nullptr, throwOnTimeout, opStatus, issueMessageSubString);
-}
-
-TString StreamResultToYson(NYdb::NTable::TTablePartIterator& it, bool throwOnTimeout, const NYdb::EStatus& opStatus) {
+TString StreamResultToYson(NYdb::NTable::TTablePartIterator& it, bool throwOnTimeout) {
     TStringStream out;
     NYson::TYsonWriter writer(&out, NYson::EYsonFormat::Text, ::NYson::EYsonType::Node, true);
     writer.OnBeginList();
 
+    ui32 profileIndex = 0;
+
     for (;;) {
         auto streamPart = it.ReadNext().GetValueSync();
         if (!streamPart.IsSuccess()) {
-            if (opStatus != NYdb::EStatus::SUCCESS) {
-                UNIT_ASSERT_VALUES_EQUAL_C(streamPart.GetStatus(), opStatus, streamPart.GetIssues().ToString());
-                 break;
-            }
             if (throwOnTimeout && IsTimeoutError(streamPart.GetStatus())) {
                 throw TStreamReadError(streamPart.GetStatus());
             }
@@ -840,6 +634,8 @@ TString StreamResultToYson(NYdb::NTable::TTablePartIterator& it, bool throwOnTim
 
         auto resultSet = streamPart.ExtractPart();
         PrintResultSet(resultSet, writer);
+
+        profileIndex++;
     }
 
     writer.OnEndList();
@@ -847,7 +643,7 @@ TString StreamResultToYson(NYdb::NTable::TTablePartIterator& it, bool throwOnTim
     return out.Str();
 }
 
-TString StreamResultToYson(NYdb::NScripting::TYqlResultPartIterator& it, bool throwOnTimeout, const NYdb::EStatus& opStatus) {
+TString StreamResultToYson(NYdb::NScripting::TYqlResultPartIterator& it, bool throwOnTimeout) {
     TStringStream out;
     NYson::TYsonWriter writer(&out, NYson::EYsonFormat::Text, ::NYson::EYsonType::Node, true);
     writer.OnBeginList();
@@ -859,10 +655,6 @@ TString StreamResultToYson(NYdb::NScripting::TYqlResultPartIterator& it, bool th
     for (;;) {
         auto streamPart = it.ReadNext().GetValueSync();
         if (!streamPart.IsSuccess()) {
-            if (opStatus != NYdb::EStatus::SUCCESS) {
-                UNIT_ASSERT_VALUES_EQUAL_C(streamPart.GetStatus(), opStatus, streamPart.GetIssues().ToString());
-                break;
-            }
             if (throwOnTimeout && IsTimeoutError(streamPart.GetStatus())) {
                 throw TStreamReadError(streamPart.GetStatus());
             }
@@ -891,39 +683,6 @@ TString StreamResultToYson(NYdb::NScripting::TYqlResultPartIterator& it, bool th
     return out.Str();
 }
 
-static void FillPlan(const NYdb::NTable::TScanQueryPart& streamPart, TCollectedStreamResult& res) {
-    if (streamPart.HasQueryStats() ) {
-        res.QueryStats = NYdb::TProtoAccessor::GetProto(streamPart.GetQueryStats());
-
-        auto plan = res.QueryStats->query_plan();
-        if (!plan.empty()) {
-            res.PlanJson = plan;
-        }
-    }
-}
-
-static void FillPlan(const NYdb::NScripting::TYqlResultPart& streamPart, TCollectedStreamResult& res) {
-    if (streamPart.HasQueryStats() ) {
-        res.QueryStats = NYdb::TProtoAccessor::GetProto(streamPart.GetQueryStats());
-
-        auto plan = res.QueryStats->query_plan();
-        if (!plan.empty()) {
-            res.PlanJson = plan;
-        }
-    }
-}
-
-static void FillPlan(const NYdb::NQuery::TExecuteQueryPart& streamPart, TCollectedStreamResult& res) {
-    if (streamPart.GetStats() ) {
-        res.QueryStats = NYdb::TProtoAccessor::GetProto(*streamPart.GetStats());
-
-        auto plan = res.QueryStats->query_plan();
-        if (!plan.empty()) {
-            res.PlanJson = plan;
-        }
-    }
-}
-
 template<typename TIterator>
 TCollectedStreamResult CollectStreamResultImpl(TIterator& it) {
     TCollectedStreamResult res;
@@ -936,46 +695,29 @@ TCollectedStreamResult CollectStreamResultImpl(TIterator& it) {
         auto streamPart = it.ReadNext().GetValueSync();
         if (!streamPart.IsSuccess()) {
             UNIT_ASSERT_C(streamPart.EOS(), streamPart.GetIssues().ToString());
-            const auto& meta = streamPart.GetResponseMetadata();
-            auto mit = meta.find("x-ydb-consumed-units");
-            if (mit != meta.end()) {
-                res.ConsumedRuFromHeader = std::stol(mit->second);
-            }
             break;
         }
 
         if constexpr (std::is_same_v<TIterator, NYdb::NTable::TScanQueryPartIterator>) {
             UNIT_ASSERT_C(streamPart.HasResultSet() || streamPart.HasQueryStats(),
                 "Unexpected empty scan query response.");
-
-            if (streamPart.HasResultSet()) {
-                auto resultSet = streamPart.ExtractResultSet();
-                PrintResultSet(resultSet, resultSetWriter);
-                res.RowsCount += resultSet.RowsCount();
-            }
         }
 
-        if constexpr (std::is_same_v<TIterator, NYdb::NQuery::TExecuteQueryIterator>) {
-            if (streamPart.HasResultSet()) {
-                auto resultSet = streamPart.ExtractResultSet();
-                PrintResultSet(resultSet, resultSetWriter);
-                res.RowsCount += resultSet.RowsCount();
-            }
+        if (streamPart.HasResultSet()) {
+            auto resultSet = streamPart.ExtractResultSet();
+            PrintResultSet(resultSet, resultSetWriter);
+            res.RowsCount += resultSet.RowsCount();
         }
 
-        if constexpr (std::is_same_v<TIterator, NYdb::NScripting::TYqlResultPartIterator>) {
-            if (streamPart.HasPartialResult()) {
-                const auto& partialResult = streamPart.GetPartialResult();
-                const auto& resultSet = partialResult.GetResultSet();
-                PrintResultSet(resultSet, resultSetWriter);
-                res.RowsCount += resultSet.RowsCount();
-            }
-        }
+        if constexpr (std::is_same_v<TIterator, NYdb::NTable::TScanQueryPartIterator>) {
+            if (streamPart.HasQueryStats() ) {
+                res.QueryStats = NYdb::TProtoAccessor::GetProto(streamPart.GetQueryStats());
 
-        if constexpr (std::is_same_v<TIterator, NYdb::NTable::TScanQueryPartIterator>
-                || std::is_same_v<TIterator, NYdb::NScripting::TYqlResultPartIterator>
-                || std::is_same_v<TIterator, NYdb::NQuery::TExecuteQueryIterator>) {
-            FillPlan(streamPart, res);
+                auto plan = res.QueryStats->query_plan();
+                if (!plan.empty()) {
+                    res.PlanJson = plan;
+                }
+            }
         } else {
             if (streamPart.HasPlan()) {
                 res.PlanJson = streamPart.ExtractPlan();
@@ -989,14 +731,9 @@ TCollectedStreamResult CollectStreamResultImpl(TIterator& it) {
     return res;
 }
 
-template<typename TIterator>
-TCollectedStreamResult CollectStreamResult(TIterator& it) {
+TCollectedStreamResult CollectStreamResult(NYdb::NTable::TScanQueryPartIterator& it) {
     return CollectStreamResultImpl(it);
 }
-
-template TCollectedStreamResult CollectStreamResult(NYdb::NTable::TScanQueryPartIterator& it);
-template TCollectedStreamResult CollectStreamResult(NYdb::NScripting::TYqlResultPartIterator& it);
-template TCollectedStreamResult CollectStreamResult(NYdb::NQuery::TExecuteQueryIterator& it);
 
 TString ReadTableToYson(NYdb::NTable::TSession session, const TString& table) {
     TReadTableSettings settings;
@@ -1108,15 +845,6 @@ NJson::TJsonValue FindPlanNodeByKv(const NJson::TJsonValue& plan, const TString&
                 }
             }
         }
-
-        if (map.contains("queries")) {
-            for (const auto &node : map["queries"].GetArraySafe()) {
-                auto op = FindPlanNodeByKv(node, key, value);
-                if (op.IsDefined()) {
-                    return op;
-                }
-            }
-        }
     } else {
         Y_ASSERT(false);
     }
@@ -1135,11 +863,12 @@ void FindPlanNodesImpl(const NJson::TJsonValue& node, const TString& key, std::v
         return;
     }
 
-    if (auto* valueNode = node.GetValueByPath(key)) {
-        results.push_back(*valueNode);
+    auto map = node.GetMap();
+    if (map.contains(key)) {
+        results.push_back(map.at(key));
     }
 
-    for (const auto& [_, value]: node.GetMap()) {
+    for (const auto& [_, value]: map) {
         FindPlanNodesImpl(value, key, results);
     }
 }
@@ -1174,11 +903,11 @@ std::vector<NJson::TJsonValue> FindPlanNodes(const NJson::TJsonValue& plan, cons
 
 std::vector<NJson::TJsonValue> FindPlanStages(const NJson::TJsonValue& plan) {
     std::vector<NJson::TJsonValue> stages;
-    FindPlanStagesImpl(plan.GetMapSafe().at("Plan"), stages);    
+    FindPlanStagesImpl(plan, stages);
     return stages;
 }
 
-void CreateSampleTablesWithIndex(TSession& session, bool populateTables) {
+void CreateSampleTablesWithIndex(TSession& session) {
     auto res = session.ExecuteSchemeQuery(R"(
         --!syntax_v1
         CREATE TABLE `/Root/SecondaryKeys` (
@@ -1208,9 +937,6 @@ void CreateSampleTablesWithIndex(TSession& session, bool populateTables) {
 
     )").GetValueSync();
     UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
-
-    if (!populateTables)
-        return;
 
     auto result = session.ExecuteDataQuery(R"(
 
@@ -1249,6 +975,25 @@ void CreateSampleTablesWithIndex(TSession& session, bool populateTables) {
     )", TTxControl::BeginTx().CommitTx()).GetValueSync();
 
     UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+}
+
+void WaitForKqpProxyInit(const NYdb::TDriver& driver) {
+    NYdb::NTable::TTableClient client(driver);
+
+    while (true) {
+        auto it = client.RetryOperationSync([=](TSession session) {
+            return session.ExecuteDataQuery(R"(
+                        SELECT 1;
+                    )",
+                    TTxControl::BeginTx().CommitTx()
+                ).GetValueSync();
+        });
+
+        if (it.IsSuccess()) {
+            break;
+        }
+        Sleep(TDuration::MilliSeconds(100));
+    }
 }
 
 void InitRoot(Tests::TServer::TPtr server, TActorId sender) {
@@ -1306,18 +1051,6 @@ TVector<ui64> GetTableShards(Tests::TServer* server,
     auto lsResult = DescribeTable(server, sender, path);
     for (auto &part : lsResult.GetPathDescription().GetTablePartitions())
         shards.push_back(part.GetDatashardId());
-
-    return shards;
-}
-
-TVector<ui64> GetColumnTableShards(Tests::TServer* server,
-                                   TActorId sender,
-                                   const TString &path)
-{
-    TVector<ui64> shards;
-    auto lsResult = DescribeTable(server, sender, path);
-    for (auto &part : lsResult.GetPathDescription().GetColumnTableDescription().GetSharding().GetColumnShards())
-        shards.push_back(part);
 
     return shards;
 }

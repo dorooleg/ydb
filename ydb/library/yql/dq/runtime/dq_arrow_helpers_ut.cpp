@@ -1,6 +1,6 @@
 #include "dq_arrow_helpers.h"
 
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 
 #include <memory>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
@@ -29,7 +29,7 @@ using namespace NYql;
 
 namespace {
 NUdf::TUnboxedValue GetValueOfBasicType(TType* type, ui64 value) {
-    Y_ABORT_UNLESS(type->GetKind() == TType::EKind::Data);
+    Y_VERIFY(type->GetKind() == TType::EKind::Data);
     auto dataType = static_cast<const TDataType*>(type);
     auto slot = *dataType->GetDataSlot().Get();
     switch(slot) {
@@ -56,7 +56,7 @@ NUdf::TUnboxedValue GetValueOfBasicType(TType* type, ui64 value) {
         case NUdf::EDataSlot::Double:
             return NUdf::TUnboxedValuePod(static_cast<double>(value) / 12345);
         default:
-            Y_ABORT("Not implemented creation value for such type");
+            Y_FAIL("Not implemented creation value for such type");
     }
 }
 
@@ -592,7 +592,7 @@ Y_UNIT_TEST_SUITE(DqUnboxedValueToNativeArrowConversion) {
         TTestContext context;
 
         auto listType = context.GetListOfJsonsType();
-        Y_ABORT_UNLESS(NArrow::IsArrowCompatible(listType));
+        Y_VERIFY(NArrow::IsArrowCompatible(listType));
 
         auto values = context.CreateListOfJsons(100);
         auto array = NArrow::MakeArray(values, listType);
@@ -879,7 +879,7 @@ Y_UNIT_TEST_SUITE(ConvertUnboxedValueToArrowAndBack){
         TTestContext context;
 
         auto listType = context.GetListOfJsonsType();
-        Y_ABORT_UNLESS(NArrow::IsArrowCompatible(listType));
+        Y_VERIFY(NArrow::IsArrowCompatible(listType));
 
         auto values = context.CreateListOfJsons(100);
         auto array = NArrow::MakeArray(values, listType);

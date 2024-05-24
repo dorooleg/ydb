@@ -56,7 +56,7 @@ namespace NKikimr {
         }
 
         void Prepare() {
-            Y_ABORT_UNLESS(Record.ExtremeQueriesSize() > 0);
+            Y_VERIFY(Record.ExtremeQueriesSize() > 0);
             // initialize ForwardIt with a delay to avoid work in constructor
             ForwardIt = std::make_unique<TLogoBlobsSnapshot::TForwardIterator>(QueryCtx->HullCtx, &LogoBlobsSnapshot);
             Queries.reserve(Record.ExtremeQueriesSize());
@@ -66,8 +66,8 @@ namespace NKikimr {
 
         template<typename TMerger>
         bool IsBlobDeleted(const TLogoBlobID &id, const TMerger &merger) {
-            const auto &status = BarriersEssence->Keep(id, merger.GetMemRec(), {}, QueryCtx->HullCtx->AllowKeepFlags,
-                true /*allowGarbageCollection*/);
+            const auto &status = BarriersEssence->Keep(id, merger.GetMemRec(), merger.GetMemRecsMerged(),
+                QueryCtx->HullCtx->AllowKeepFlags);
             return !status.KeepData;
         }
 
@@ -78,10 +78,9 @@ namespace NKikimr {
                 TBarriersSnapshot &&barrierSnapshot,
                 TEvBlobStorage::TEvVGet::TPtr &ev,
                 std::unique_ptr<TEvBlobStorage::TEvVGetResult> result,
-                TActorId replSchedulerId,
-                const char* name)
+                TActorId replSchedulerId)
             : TLevelIndexQueryBase(queryCtx, parentId, std::move(logoBlobsSnapshot), std::move(barrierSnapshot),
-                    ev, std::move(result), replSchedulerId, name)
+                    ev, std::move(result), replSchedulerId)
         {}
     };
 
@@ -107,39 +106,34 @@ namespace NKikimr {
         void MainCycle(const TActorContext &ctx) {
             TQuery *query = nullptr;
             while ((query = FetchNextQuery()) && !ResultSize.IsOverflow()) {
-                Y_ABORT_UNLESS(query->PartId == 0); // only full blobs (w/o specifying a part) are allowed
+                Y_VERIFY(query->PartId == 0); // only full blobs (w/o specifying a part) are allowed
                 const ui64 *cookiePtr = query->HasCookie ? &query->CookieVal : nullptr;
                 ResultSize.AddLogoBlobIndex();
                 if (!BlobInIndex) {
                     // put NODATA
-                    Result->AddResult(NKikimrProto::NODATA, query->LogoBlobID, cookiePtr);
+                    Result->AddResult(NKikimrProto::NODATA, query->LogoBlobID, cookiePtr, nullptr);
                 } else {
                     // index record(s) are found
                     ForwardIt->PutToMerger(&Merger);
                     Merger.Finish();
                     TIngress ingress = Merger.GetMemRec().GetIngress();
-
                     // Find out if we have all parts locally that we must have according to ingress
                     NMatrix::TVectorType mustHave = ingress.PartsWeMustHaveLocally(QueryCtx->HullCtx->VCtx->Top.get(),
                             QueryCtx->HullCtx->VCtx->ShortSelfVDisk, query->LogoBlobID);
                     NMatrix::TVectorType actuallyHave = ingress.LocalParts(QueryCtx->HullCtx->VCtx->Top->GType);
                     NMatrix::TVectorType missingParts = mustHave - actuallyHave;
-
                     // If we don't have something locally we return NOT_YET unless that blob is going to be collected
-                    auto status = mustHave.Empty() ? NKikimrProto::NODATA : // we do not have any parts of this blob
-                        IsBlobDeleted(query->LogoBlobID, Merger) ? NKikimrProto::NODATA :
+                    auto status = IsBlobDeleted(query->LogoBlobID, Merger) ? NKikimrProto::NODATA :
                         missingParts.Empty() ? NKikimrProto::OK : NKikimrProto::NOT_YET;
-
                     // Add result
-                    const ui64 ingressRaw = ingress.Raw();
-                    const ui64 *pingr = ShowInternals ? &ingressRaw : nullptr;
+                    ui64 ingressRaw = ingress.Raw();
+                    ui64 *pingr = (ShowInternals ? &ingressRaw : nullptr);
 
                     const int mode = ingress.GetCollectMode(TIngress::IngressMode(QueryCtx->HullCtx->VCtx->Top->GType));
                     const bool keep = (mode & CollectModeKeep) && !(mode & CollectModeDoNotKeep);
                     const bool doNotKeep = mode & CollectModeDoNotKeep;
-                    const NMatrix::TVectorType local = ingress.LocalParts(QueryCtx->HullCtx->VCtx->Top->GType);
 
-                    Result->AddResult(status, query->LogoBlobID, cookiePtr, pingr, &local, keep, doNotKeep);
+                    Result->AddResult(status, query->LogoBlobID, cookiePtr, pingr, nullptr, keep, doNotKeep);
                     Merger.Clear();
                 }
             }
@@ -162,8 +156,7 @@ namespace NKikimr {
                 std::unique_ptr<TEvBlobStorage::TEvVGetResult> result,
                 TActorId replSchedulerId)
             : TLevelIndexExtremeQueryViaBatcherBase(queryCtx, parentId, std::move(logoBlobsSnapshot),
-                    std::move(barrierSnapshot), ev, std::move(result), replSchedulerId,
-                    "VDisk.LevelIndexExtremeQueryViaBatcherIndexOnly")
+                    std::move(barrierSnapshot), ev, std::move(result), replSchedulerId)
             , TActorBootstrapped<TLevelIndexExtremeQueryViaBatcherIndexOnly>()
             , Merger(QueryCtx->HullCtx->VCtx->Top->GType)
         {}
@@ -200,7 +193,7 @@ namespace NKikimr {
             for (rit.SeekToFirst(); rit.Valid(); rit.Next()) {
                 const NReadBatcher::TDataItem *it = rit.Get();
                 const TQuery *query = static_cast<const TQuery*>(it->Cookie);
-                Y_DEBUG_ABORT_UNLESS(query->LogoBlobID.PartId() == 0);
+                Y_VERIFY_DEBUG(query->LogoBlobID.PartId() == 0);
                 const ui64 *cookiePtr = query->HasCookie ? &query->CookieVal : nullptr;
 
                 ui64 ingr = it->Ingress.Raw();
@@ -213,27 +206,27 @@ namespace NKikimr {
                 NReadBatcher::TDataItem::EType t = it->GetType();
                 switch (t) {
                     case NReadBatcher::TDataItem::ET_CLEAN:
-                        Y_ABORT("Impossible case");
+                        Y_FAIL("Impossible case");
                     case NReadBatcher::TDataItem::ET_NODATA:
                         // put NODATA
                         Result->AddResult(NKikimrProto::NODATA, it->Id, cookiePtr, pingr);
                         break;
                     case NReadBatcher::TDataItem::ET_ERROR:
                         // put ERROR
-                        Y_ABORT_UNLESS(it->Id.PartId() > 0);
+                        Y_VERIFY(it->Id.PartId() > 0);
                         Result->AddResult(NKikimrProto::ERROR, it->Id, cookiePtr, pingr);
                         break;
                     case NReadBatcher::TDataItem::ET_NOT_YET:
                         // put NOT_YET
-                        Y_ABORT_UNLESS(it->Id.PartId() > 0);
-                        Result->AddResult(NKikimrProto::NOT_YET, it->Id, query->Shift, static_cast<ui32>(query->Size),
-                            cookiePtr, pingr, keep, doNotKeep);
+                        Y_VERIFY(it->Id.PartId() > 0);
+                        Result->AddResult(NKikimrProto::NOT_YET, it->Id, query->Shift, nullptr, query->Size, cookiePtr,
+                            pingr, keep, doNotKeep);
                         break;
                     case NReadBatcher::TDataItem::ET_SETDISK:
                     case NReadBatcher::TDataItem::ET_SETMEM:
                     {
                         // GOOD
-                        Y_ABORT_UNLESS(it->Id.PartId() > 0);
+                        Y_VERIFY(it->Id.PartId() > 0);
                         struct TProcessor {
                             std::unique_ptr<TEvBlobStorage::TEvVGetResult>& Result;
                             TLogoBlobID Id;
@@ -245,17 +238,17 @@ namespace NKikimr {
                             const bool DoNotKeep;
                             bool Success = true;
                             void operator()(NReadBatcher::TReadError) {
-                                Result->AddResult(NKikimrProto::CORRUPTED, Id, Shift, static_cast<ui32>(Size), CookiePtr,
-                                    IngrPtr, Keep, DoNotKeep);
+                                Result->AddResult(NKikimrProto::CORRUPTED, Id, Shift, nullptr, Size, CookiePtr, IngrPtr,
+                                    Keep, DoNotKeep);
                                 Success = false;
                             }
-                            void operator()(TRcBuf&& buffer) const {
-                                Result->AddResult(NKikimrProto::OK, Id, Shift, TRope(std::move(buffer)), CookiePtr,
-                                    IngrPtr, Keep, DoNotKeep);
+                            void operator()(const char *data, size_t size) const {
+                                Result->AddResult(NKikimrProto::OK, Id, Shift, data, size, CookiePtr, IngrPtr, Keep,
+                                    DoNotKeep);
                             }
                             void operator()(const TRope& data) const {
-                                Result->AddResult(NKikimrProto::OK, Id, Shift, TRope(data), CookiePtr,
-                                    IngrPtr, Keep, DoNotKeep);
+                                const TString s = data.ConvertToString();
+                                (*this)(s.data(), s.size());
                             }
                         } processor{Result, it->Id, query->Shift, query->Size, cookiePtr, pingr, keep, doNotKeep};
                         rit.GetData(processor);
@@ -294,13 +287,10 @@ namespace NKikimr {
                 if (res.GetStatus() == NKikimrProto::CORRUPTED) {
                     const TLogoBlobID& id = LogoBlobIDFromLogoBlobID(res.GetBlobID());
                     const auto it = map.find(id.FullID());
-                    Y_ABORT_UNLESS(it != map.end());
+                    Y_VERIFY(it != map.end());
                     if (it->second->Status == NKikimrProto::OK) {
-                        const TRope& buffer = it->second->GetPartData(id);
-                        const ui32 shift = res.GetShift();
-                        const ui32 size = res.GetSize() ? res.GetSize() : buffer.size() - shift;
-                        TRope slice = {buffer.Position(shift), buffer.Position(shift + size)};
-                        Result->SetBlobData(res, std::move(slice));
+                        const TString& buffer = it->second->GetPartData(id).ConvertToString();
+                        res.SetBuffer(buffer.substr(res.GetShift(), res.GetSize() ? res.GetSize() : buffer.size() - res.GetShift()));
                         res.SetStatus(NKikimrProto::OK);
                     }
                 }
@@ -369,10 +359,11 @@ namespace NKikimr {
                 SendResponseAndDie(ctx, this);
             } else {
                 ui8 priority = PDiskPriority();
-                std::unique_ptr<IActor> a(Batcher.CreateAsyncDataReader(ctx.SelfID, priority, Span.GetTraceId(), IsRepl()));
+                std::unique_ptr<IActor> a(Batcher.CreateAsyncDataReader(ctx.SelfID, priority, /*std::move(Result->TraceId)*/ NWilson::TTraceId(), // FIXME: trace
+                    IsRepl()));
                 if (a) {
                     auto aid = ctx.Register(a.release());
-                    ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                    ActiveActors.Insert(aid);
                     Become(&TThis::StateFunc);
                     // wait for reply
                 } else {
@@ -386,7 +377,6 @@ namespace NKikimr {
         void HandlePoison(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
             Y_UNUSED(ev);
             ActiveActors.KillAndClear(ctx);
-            Span.EndError("TEvPoisonPill");
             Die(ctx);
         }
 
@@ -411,8 +401,7 @@ namespace NKikimr {
                 std::unique_ptr<TEvBlobStorage::TEvVGetResult> result,
                 TActorId replSchedulerId)
             : TLevelIndexExtremeQueryViaBatcherBase(queryCtx, parentId, std::move(logoBlobsSnapshot),
-                    std::move(barrierSnapshot), ev, std::move(result), replSchedulerId,
-                    "VDisk.LevelIndexExtremeQueryViaBatcherMergeData")
+                    std::move(barrierSnapshot), ev, std::move(result), replSchedulerId)
             , TActorBootstrapped<TLevelIndexExtremeQueryViaBatcherMergeData>()
             , GType(QueryCtx->HullCtx->VCtx->Top->GType)
             , Batcher(BatcherCtx)

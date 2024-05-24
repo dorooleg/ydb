@@ -173,7 +173,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         UNIT_ASSERT(aggregate.IsDefined());
         UNIT_ASSERT(aggregate.GetMapSafe().at("GroupBy").GetStringSafe() == "item.App");
         UNIT_ASSERT(aggregate.GetMapSafe().at("Aggregation").GetStringSafe() ==
-            "{_yql_agg_0: MAX(item.Message,state._yql_agg_0),_yql_agg_1: MIN(item.Message,state._yql_agg_1)}");
+            "{_yql_agg_0: MIN(item.Message),_yql_agg_1: MAX(item.Message)}");
     }
 
     Y_UNIT_TEST(ComplexJoin) {
@@ -244,18 +244,13 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
         auto node = FindPlanNodeByKv(plan, "Node Type", "TopSort-TableRangesScan");
-        if (!node.IsDefined()) {
-            node = FindPlanNodeByKv(plan, "Node Type", "TopSort-TableRangeScan");
-        }
         UNIT_ASSERT(node.IsDefined());
 
         auto operators = node.GetMapSafe().at("Operators").GetArraySafe();
-        if (operators[1].GetMapSafe().at("Name") == "TableRangesScan") {
-            auto& readRanges = operators[1].GetMapSafe().at("ReadRanges").GetArraySafe();
-            UNIT_ASSERT(readRanges[0] == "Key [150, 266]");
-        } else {
-            UNIT_ASSERT(operators[1].GetMapSafe().at("Name") == "TableRangeScan");
-        }
+        UNIT_ASSERT(operators[1].GetMapSafe().at("Name") == "TableRangesScan");
+
+        auto& readRanges = operators[1].GetMapSafe().at("ReadRanges").GetArraySafe();
+        UNIT_ASSERT(readRanges[0] == "Key [150, 266]");
     }
 
     Y_UNIT_TEST(CompoundKeyRange) {
@@ -265,6 +260,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         settings.Explain(true);
 
         auto it = db.StreamExecuteScanQuery(R"(
+            PRAGMA Kikimr.OptEnablePredicateExtract = "false";
             SELECT * FROM `/Root/Logs` WHERE App = "new_app_1" AND Host < "xyz" AND Ts = (42+7) Limit 10;
         )", settings).GetValueSync();
 
@@ -277,20 +273,20 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         NJson::ReadJsonTree(*res.PlanJson, &plan, true);
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
-        auto read = FindPlanNodeByKv(plan, "Node Type", "Limit-TableRangeScan");
+        auto read = FindPlanNodeByKv(plan, "Node Type", "Limit-TablePointLookup");
         size_t operatorsCount = 2;
         size_t lookupMember = 1;
         if (!read.IsDefined()) {
-            read = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TableRangeScan");
+            read = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TablePointLookup");
             operatorsCount = 3;
             lookupMember = 2;
         }
         auto& operators = read.GetMapSafe().at("Operators").GetArraySafe();
         UNIT_ASSERT(operators.size() == operatorsCount);
 
-        auto& rangeRead = operators[lookupMember].GetMapSafe();
-        UNIT_ASSERT(rangeRead.at("Name") == "TableRangeScan");
-        UNIT_ASSERT_VALUES_EQUAL(rangeRead.at("ReadRange").GetArraySafe()[0], "App («new_app_1»)");
+        auto& lookup = operators[lookupMember].GetMapSafe();
+        UNIT_ASSERT(lookup.at("Name") == "TablePointLookup");
+        UNIT_ASSERT_VALUES_EQUAL(lookup.at("ReadRange").GetArraySafe()[0], "App («new_app_1»)");
     }
 
     Y_UNIT_TEST(SortStage) {
@@ -345,10 +341,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
     }
 
     Y_UNIT_TEST(SelfJoin3xSameLabels) {
-        auto app = NKikimrConfig::TAppConfig();
-        app.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
-
-        TKikimrRunner kikimr(app);
+        auto kikimr = DefaultKikimrRunner();
         auto db = kikimr.GetTableClient();
         TStreamExecScanQuerySettings settings;
         settings.Explain(true);
@@ -452,6 +445,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         auto db = kikimr.GetTableClient();
 
         auto query = R"(
+                PRAGMA Kikimr.OptEnablePredicateExtract = "false";
                 SELECT Key, Value FROM `/Root/KeyValue` WHERE Key IN (1, 2, 3, 42)
                 ORDER BY Key
             )";
@@ -467,11 +461,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
         auto unionNode = FindPlanNodeByKv(plan, "Node Type", "Sort-Union");
-        if (unionNode.IsDefined()) {
-            UNIT_ASSERT_EQUAL(unionNode.GetMap().at("Plans").GetArraySafe().size(), 4);
-        } else {
-            UNIT_ASSERT(FindPlanNodeByKv(plan, "Node Type", "Merge").IsDefined());
-        }
+        UNIT_ASSERT_EQUAL(unionNode.GetMap().at("Plans").GetArraySafe().size(), 4);
     }
 
     Y_UNIT_TEST(ExplainDataQuery) {
@@ -493,23 +483,12 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         NJson::ReadJsonTree(result.GetPlan(), &plan, true);
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
-        Cerr << "Plan " << result.GetPlan() << Endl;
-
         auto node = FindPlanNodeByKv(plan, "Name", "TableRangeScan");
         UNIT_ASSERT_EQUAL(node.GetMapSafe().at("Table").GetStringSafe(), "KeyValue");
         node = FindPlanNodeByKv(plan, "Name", "TableFullScan");
         UNIT_ASSERT_EQUAL(node.GetMapSafe().at("Table").GetStringSafe(), "KeyValue");
-
-
-        if (settings.AppConfig.GetTableServiceConfig().GetEnableKqpDataQueryStreamLookup()) {
-            node = FindPlanNodeByKv(plan, "Node Type", "TableLookup");
-        } else {
-            node = FindPlanNodeByKv(plan, "Name", "TablePointLookup");
-        }
-
-        if (node.IsDefined()) {
-            UNIT_ASSERT_EQUAL(node.GetMapSafe().at("Table").GetStringSafe(), "KeyValue");
-        }
+        node = FindPlanNodeByKv(plan, "Name", "TablePointLookup");
+        UNIT_ASSERT_EQUAL(node.GetMapSafe().at("Table").GetStringSafe(), "KeyValue");
     }
 
     Y_UNIT_TEST(FewEffects) {
@@ -537,11 +516,21 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         auto deletesCount = CountPlanNodesByKv(plan, "Node Type", "Delete-ConstantExpr");
         UNIT_ASSERT_VALUES_EQUAL(deletesCount, 1);
 
-        auto fullScansCount = CountPlanNodesByKv(plan, "Node Type", "TableFullScan");
+        auto fullScansCount = CountPlanNodesByKv(plan, "Node Type", "TableFullScan") +
+            CountPlanNodesByKv(plan, "Node Type", "Stage-TableFullScan");
         UNIT_ASSERT_VALUES_EQUAL(fullScansCount, 1);
 
-        auto rangeScansCount = CountPlanNodesByKv(plan, "Node Type", "TableRangeScan");
-        UNIT_ASSERT_VALUES_EQUAL(rangeScansCount, 2);
+        auto rangeScansCount = CountPlanNodesByKv(plan, "Node Type", "TableRangeScan") +
+            CountPlanNodesByKv(plan, "Name", "TableRangeScan");
+        UNIT_ASSERT_VALUES_EQUAL(rangeScansCount, 1);
+
+        ui32 lookupsCount = 0;
+        if (settings.AppConfig.GetTableServiceConfig().GetEnableKqpDataQuerySourceRead()) {
+            lookupsCount = CountPlanNodesByKv(plan, "Node Type", "Stage-TablePointLookup");
+        } else {
+            lookupsCount = CountPlanNodesByKv(plan, "Node Type", "TablePointLookup-ConstantExpr");
+        }
+        UNIT_ASSERT_VALUES_EQUAL(lookupsCount, 3);
 
         /* check tables section */
         const auto& tableInfo = plan.GetMapSafe().at("tables").GetArraySafe()[0].GetMapSafe();
@@ -561,6 +550,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         UNIT_ASSERT_VALUES_EQUAL(counter["MultiErase"], deletesCount);
         UNIT_ASSERT_VALUES_EQUAL(counter["FullScan"], fullScansCount);
         UNIT_ASSERT_VALUES_EQUAL(counter["Scan"], rangeScansCount);
+        UNIT_ASSERT_VALUES_EQUAL(counter["Lookup"], lookupsCount);
     }
 
     Y_UNIT_TEST(ExplainDataQueryWithParams) {
@@ -706,9 +696,9 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         NJson::ReadJsonTree(*res.PlanJson, &plan, true);
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
-        auto read = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan");
+        auto read = FindPlanNodeByKv(plan, "Node Type", "TableRangesScan");
         if (!read.IsDefined()) {
-            read = FindPlanNodeByKv(plan, "Name", "TableRangeScan");
+            read = FindPlanNodeByKv(plan, "Name", "TableRangesScan");
         }
         UNIT_ASSERT(read.IsDefined());
         auto keys = FindPlanNodeByKv(plan, "ReadRangesKeys", "[\"Key\"]");
@@ -850,7 +840,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         NJson::ReadJsonTree(*streamRes.PlanJson, &plan, true);
         UNIT_ASSERT(ValidatePlanNodeIds(plan));
 
-        auto readNode = FindPlanNodeByKv(plan, "Node Type", "TableFullScan");
+        auto readNode = FindPlanNodeByKv(plan, "Node Type", "Filter-TableFullScan");
         UNIT_ASSERT(readNode.IsDefined());
 
         auto& operators = readNode.GetMapSafe().at("Operators").GetArraySafe();
@@ -875,6 +865,7 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
         auto session = db.CreateSession().GetValueSync().GetSession();
 
         auto res = session.ExplainDataQuery(R"(
+            PRAGMA kikimr.OptEnablePredicateExtract = 'true';
             SELECT t.*
             FROM
                (SELECT * FROM `/Root/test_table_idx_idx`
@@ -901,40 +892,6 @@ Y_UNIT_TEST_SUITE(KqpExplain) {
             "TableFullScan"
        );
         UNIT_ASSERT(!fullscan.IsDefined());
-    }
-
-    Y_UNIT_TEST(MultiJoinCteLinks) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableKqpDataQueryStreamLookup(false);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig);
-        TKikimrRunner kikimr{settings};
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        auto result = session.ExplainDataQuery(R"(
-            select * from `/Root/KeyValue` as kv
-                inner join `/Root/EightShard` as es on kv.Key == es.Key;
-        )").ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        NJson::TJsonValue plan;
-        NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-
-        auto cteLink0 = FindPlanNodeByKv(
-            plan,
-            "CTE Name",
-            "precompute_0_0"
-        );
-        UNIT_ASSERT(cteLink0.IsDefined());
-
-        auto cteLink1 = FindPlanNodeByKv(
-            plan,
-            "CTE Name",
-            "precompute_1_0"
-        );
-
-        UNIT_ASSERT(cteLink1.IsDefined());
     }
 }
 

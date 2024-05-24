@@ -23,7 +23,7 @@ namespace NKikimr::NBlobDepot {
 
             void OnDestroy(bool success) override {
                 if (IsInFlight) {
-                    Y_ABORT_UNLESS(!success);
+                    Y_VERIFY(!success);
                     RemoveBlobSeqFromInFlight();
                     NKikimrBlobDepot::TEvDiscardSpoiledBlobSeq msg;
                     BlobSeqId.ToProto(msg.AddItems());
@@ -71,7 +71,7 @@ namespace NKikimr::NBlobDepot {
             }
 
             void IssuePuts() {
-                Y_ABORT_UNLESS(!PutsIssued);
+                Y_VERIFY(!PutsIssued);
 
                 const auto it = Agent.ChannelKinds.find(NKikimrBlobDepot::TChannelKind::Data);
                 if (it == Agent.ChannelKinds.end()) {
@@ -96,7 +96,7 @@ namespace NKikimr::NBlobDepot {
                 BDEV_QUERY(BDEV09, "TEvPut_new", (U.BlobId, Request.Id), (U.BufferSize, Request.Buffer.size()),
                     (U.HandleClass, Request.HandleClass));
 
-                Y_ABORT_UNLESS(CommitBlobSeq.ItemsSize() == 0);
+                Y_VERIFY(CommitBlobSeq.ItemsSize() == 0);
                 auto *commitItem = CommitBlobSeq.AddItems();
                 commitItem->SetKey(Request.Id.AsBinaryString());
                 auto *locator = commitItem->MutableBlobLocator();
@@ -117,7 +117,7 @@ namespace NKikimr::NBlobDepot {
 
                 auto put = [&](EBlobType type, TRcBuf&& buffer) {
                     const auto& [id, groupId] = kind.MakeBlobId(Agent, BlobSeqId, type, 0, buffer.size());
-                    Y_ABORT_UNLESS(!locator->HasGroupId() || locator->GetGroupId() == groupId);
+                    Y_VERIFY(!locator->HasGroupId() || locator->GetGroupId() == groupId);
                     locator->SetGroupId(groupId);
                     auto ev = std::make_unique<TEvBlobStorage::TEvPut>(id, std::move(buffer), Request.Deadline, Request.HandleClass, Request.Tactic);
                     ev->ExtraBlockChecks = Request.ExtraBlockChecks;
@@ -163,7 +163,7 @@ namespace NKikimr::NBlobDepot {
 
                 Agent.Issue(CommitBlobSeq, this, nullptr);
 
-                Y_ABORT_UNLESS(!WaitingForCommitBlobSeq);
+                Y_VERIFY(!WaitingForCommitBlobSeq);
                 WaitingForCommitBlobSeq = true;
             }
 
@@ -171,7 +171,7 @@ namespace NKikimr::NBlobDepot {
                 STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA32, "RemoveBlobSeqFromInFlight", (AgentId, Agent.LogId),
                     (QueryId, GetQueryId()));
 
-                Y_ABORT_UNLESS(IsInFlight);
+                Y_VERIFY(IsInFlight);
                 IsInFlight = false;
 
                 // find and remove the write in flight record to ensure it won't be reported upon TEvPushNotify
@@ -182,7 +182,7 @@ namespace NKikimr::NBlobDepot {
                 }
                 auto& kind = it->second;
                 const size_t numErased = kind.WritesInFlight.erase(BlobSeqId);
-                Y_ABORT_UNLESS(numErased || BlobSeqId.Generation < Agent.BlobDepotGeneration);
+                Y_VERIFY(numErased || BlobSeqId.Generation < Agent.BlobDepotGeneration);
             }
 
             void OnUpdateBlock() override {
@@ -205,7 +205,7 @@ namespace NKikimr::NBlobDepot {
                 } else if (std::holds_alternative<TTabletDisconnected>(response)) {
                     EndWithError(NKikimrProto::ERROR, "BlobDepot tablet disconnected");
                 } else {
-                    Y_ABORT("unexpected response");
+                    Y_FAIL("unexpected response");
                 }
             }
 
@@ -243,10 +243,10 @@ namespace NKikimr::NBlobDepot {
                 STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA31, "TEvCommitBlobSeqResult", (AgentId, Agent.LogId),
                     (QueryId, GetQueryId()), (Msg, msg));
 
-                Y_ABORT_UNLESS(WaitingForCommitBlobSeq);
+                Y_VERIFY(WaitingForCommitBlobSeq);
                 WaitingForCommitBlobSeq = false;
 
-                Y_ABORT_UNLESS(msg.ItemsSize() == 1);
+                Y_VERIFY(msg.ItemsSize() == 1);
                 auto& item = msg.GetItems(0);
                 if (const auto status = item.GetStatus(); status != NKikimrProto::OK && status != NKikimrProto::RACE) {
                     EndWithError(item.GetStatus(), item.GetErrorReason());
@@ -281,7 +281,7 @@ namespace NKikimr::NBlobDepot {
                 }
 
                 // ensure that blob was written not beyond the barrier, or it will be lost otherwise
-                Y_ABORT_UNLESS(!WrittenBeyondBarrier);
+                Y_VERIFY(!WrittenBeyondBarrier);
 
                 TBlobStorageQuery::EndWithSuccess(std::make_unique<TEvBlobStorage::TEvPutResult>(NKikimrProto::OK, Request.Id,
                     Agent.GetStorageStatusFlags(), Agent.VirtualGroupId, Agent.GetApproximateFreeSpaceShare()));

@@ -3,22 +3,20 @@
 #include "kqp_compute.h"
 #include "kqp_scan_data_meta.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 #include <ydb/core/engine/minikql/minikql_engine_host.h>
 #include <ydb/core/formats/arrow/arrow_helpers.h>
-#include <ydb/core/formats/arrow/permutations.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/tablet_flat/flat_database.h>
 
 #include <ydb/library/yql/dq/actors/protos/dq_stats.pb.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <contrib/libs/apache/arrow/cpp/src/arrow/api.h>
 #include <ydb/library/yql/utils/yql_panic.h>
-#include <contrib/libs/apache/arrow/cpp/src/arrow/compute/api_vector.h>
 
 namespace NKikimrTxDataShard {
     class TKqpTransaction_TScanTaskMeta;
@@ -59,62 +57,13 @@ struct TBytesStatistics {
 
 };
 
-class TBatchDataAccessor {
-private:
-    YDB_READONLY_DEF(std::shared_ptr<arrow::Table>, Batch);
-    YDB_READONLY_DEF(std::vector<ui32>, DataIndexes);
-    mutable std::shared_ptr<arrow::Table> FilteredBatch;
-public:
-    std::shared_ptr<arrow::Table> GetFiltered() const {
-        if (!FilteredBatch) {
-            if (DataIndexes.size()) {
-                auto permutation = NArrow::MakeFilterPermutation(DataIndexes);
-                FilteredBatch = NArrow::TStatusValidator::GetValid(arrow::compute::Take(Batch, permutation)).table();
-            } else {
-                FilteredBatch = Batch;
-            }
-        }
-        return FilteredBatch;
-    }
-
-    bool HasDataIndexes() const {
-        return DataIndexes.size();
-    }
-
-    ui32 GetRecordsCount() const {
-        return DataIndexes.size() ? DataIndexes.size() : Batch->num_rows();
-    }
-
-    TBatchDataAccessor(const std::shared_ptr<arrow::Table>& batch, std::vector<ui32>&& dataIndexes)
-        : Batch(batch)
-        , DataIndexes(std::move(dataIndexes))
-    {
-        AFL_VERIFY(Batch);
-        AFL_VERIFY(Batch->num_rows());
-    }
-
-    TBatchDataAccessor(const std::shared_ptr<arrow::Table>& batch)
-        : Batch(batch) {
-        AFL_VERIFY(Batch);
-        AFL_VERIFY(Batch->num_rows());
-
-    }
-
-    TBatchDataAccessor(const std::shared_ptr<arrow::RecordBatch>& batch)
-        : Batch(NArrow::TStatusValidator::GetValid(arrow::Table::FromRecordBatches({batch}))) {
-        AFL_VERIFY(Batch);
-        AFL_VERIFY(Batch->num_rows());
-
-    }
-};
-
 TBytesStatistics GetUnboxedValueSize(const NUdf::TUnboxedValue& value, const NScheme::TTypeInfo& type);
 TBytesStatistics WriteColumnValuesFromArrow(const TVector<NUdf::TUnboxedValue*>& editAccessors,
-    const TBatchDataAccessor& batch, i64 columnIndex, NScheme::TTypeInfo columnType);
+    const arrow::RecordBatch& batch, i64 columnIndex, NScheme::TTypeInfo columnType);
 TBytesStatistics WriteColumnValuesFromArrow(NUdf::TUnboxedValue* editAccessors,
-    const TBatchDataAccessor& batch, i64 columnIndex, const ui32 columnsCount, NScheme::TTypeInfo columnType);
+    const arrow::RecordBatch& batch, i64 columnIndex, const ui32 columnsCount, NScheme::TTypeInfo columnType);
 TBytesStatistics WriteColumnValuesFromArrow(const TVector<NUdf::TUnboxedValue*>& editAccessors,
-    const TBatchDataAccessor& batch, i64 columnIndex, i64 resultColumnIndex, NScheme::TTypeInfo columnType);
+    const arrow::RecordBatch& batch, i64 columnIndex, i64 resultColumnIndex, NScheme::TTypeInfo columnType);
 
 void FillSystemColumn(NUdf::TUnboxedValue& rowItem, TMaybe<ui64> shardId, NTable::TTag tag, NScheme::TTypeInfo type);
 
@@ -149,7 +98,7 @@ public:
         }
 
         ui64 AddData(const TVector<TOwnedCellVec>& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory);
-        ui64 AddData(const TBatchDataAccessor& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory);
+        ui64 AddData(const arrow::RecordBatch& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory);
 
         bool IsEmpty() const {
             return BatchReader->IsEmpty();
@@ -216,7 +165,7 @@ public:
             }
 
             virtual TBytesStatistics AddData(const TVector<TOwnedCellVec>& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) = 0;
-            virtual TBytesStatistics AddData(const TBatchDataAccessor& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) = 0;
+            virtual TBytesStatistics AddData(const arrow::RecordBatch& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) = 0;
             virtual ui32 FillDataValues(NUdf::TUnboxedValue* const* result) = 0;
             virtual void Clear() = 0;
             virtual bool IsEmpty() const = 0;
@@ -242,7 +191,7 @@ public:
             }
 
             TBytesStatistics AddData(const TVector<TOwnedCellVec>& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) override;
-            TBytesStatistics AddData(const TBatchDataAccessor& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) override;
+            TBytesStatistics AddData(const arrow::RecordBatch& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) override;
             ui32 FillDataValues(NUdf::TUnboxedValue* const* result) override;
 
             void Clear() override {
@@ -271,8 +220,8 @@ public:
                     , Cells(std::move(cells))
                     , AllocatedBytes(allocatedBytes)
                 {
-                    Y_ABORT_UNLESS(AllocatedBytes);
-                    Y_ABORT_UNLESS(RowsCount);
+                    Y_VERIFY(AllocatedBytes);
+                    Y_VERIFY(RowsCount);
                 }
 
                 double BytesForRecordEstimation() {
@@ -307,7 +256,7 @@ public:
             }
 
             TBytesStatistics AddData(const TVector<TOwnedCellVec>& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) override;
-            TBytesStatistics AddData(const TBatchDataAccessor& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) override;
+            TBytesStatistics AddData(const arrow::RecordBatch& batch, TMaybe<ui64> shardId, const THolderFactory& holderFactory) override;
             ui32 FillDataValues(NUdf::TUnboxedValue* const* result) override;
 
             void Clear() override {
@@ -332,8 +281,8 @@ public:
                     , BatchValues(std::move(value))
                     , AllocatedBytes(allocatedBytes)
                 {
-                    Y_ABORT_UNLESS(AllocatedBytes);
-                    Y_ABORT_UNLESS(RowsCount);
+                    Y_VERIFY(AllocatedBytes);
+                    Y_VERIFY(RowsCount);
                 }
 
                 double BytesForRecordEstimation() {

@@ -63,12 +63,7 @@ delta_encode(void *coder_ptr, const lzma_allocator *allocator,
 		const size_t out_avail = out_size - *out_pos;
 		const size_t size = my_min(in_avail, out_avail);
 
-		// in and out might be NULL. In such cases size == 0.
-		// Null pointer + 0 is undefined behavior so skip
-		// the call in that case as it would do nothing anyway.
-		if (size > 0)
-			copy_and_encode(coder, in + *in_pos, out + *out_pos,
-					size);
+		copy_and_encode(coder, in + *in_pos, out + *out_pos, size);
 
 		*in_pos += size;
 		*out_pos += size;
@@ -83,10 +78,7 @@ delta_encode(void *coder_ptr, const lzma_allocator *allocator,
 				in, in_pos, in_size, out, out_pos, out_size,
 				action);
 
-		// Like above, avoid null pointer + 0.
-		const size_t size = *out_pos - out_start;
-		if (size > 0)
-			encode_in_place(coder, out + out_start, size);
+		encode_in_place(coder, out + out_start, *out_pos - out_start);
 	}
 
 	return ret;

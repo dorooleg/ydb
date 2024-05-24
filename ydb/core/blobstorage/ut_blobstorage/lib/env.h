@@ -4,8 +4,6 @@
 
 #include "node_warden_mock.h"
 
-#include <ydb/core/driver_lib/version/version.h>
-
 #include <library/cpp/testing/unittest/registar.h>
 
 struct TEnvironmentSetup {
@@ -13,13 +11,12 @@ struct TEnvironmentSetup {
     static constexpr ui32 DrivesPerNode = 5;
     const TString DomainName = "Root";
     const ui32 DomainId = 1;
-    const ui64 TabletId = MakeBSControllerID();
+    const ui64 TabletId = MakeBSControllerID(DomainId);
     const ui32 GroupId = 0;
     const TString StoragePoolName = "test";
     const ui32 NumGroups = 1;
     TIntrusivePtr<NFake::TProxyDS> Group0 = MakeIntrusive<NFake::TProxyDS>();
     std::map<std::pair<ui32, ui32>, TIntrusivePtr<TPDiskMockState>> PDiskMockStates;
-    TVector<TActorId> PDiskActors;
     std::set<TActorId> CommencedReplication;
     std::unordered_map<ui32, TString> Cache;
 
@@ -36,13 +33,6 @@ struct TEnvironmentSetup {
         const ui32 NumDataCenters = 0;
         const std::function<TNodeLocation(ui32)> LocationGenerator;
         const bool SetupHive = false;
-        const bool SuppressCompatibilityCheck = false;
-        const TFeatureFlags FeatureFlags;
-        const NPDisk::EDeviceType DiskType = NPDisk::EDeviceType::DEVICE_TYPE_NVME;
-        const ui32 BurstThresholdNs = 0;
-        const ui32 MinHugeBlobInBytes = 0;
-        const float DiskTimeAvailableScale = 1;
-        const bool UseFakeConfigDispatcher = false;
     };
 
     const TSettings Settings;
@@ -60,58 +50,11 @@ struct TEnvironmentSetup {
             const auto key = std::make_pair(nodeId, pdiskId);
             TIntrusivePtr<TPDiskMockState>& state = Env.PDiskMockStates[key];
             if (!state) {
-                state.Reset(new TPDiskMockState(nodeId, pdiskId, cfg->PDiskGuid, ui64(10) << 40, cfg->ChunkSize,
-                        Env.Settings.DiskType));
+                state.Reset(new TPDiskMockState(nodeId, pdiskId, cfg->PDiskGuid, ui64(10) << 40, cfg->ChunkSize));
             }
             const TActorId& actorId = ctx.Register(CreatePDiskMockActor(state), TMailboxType::HTSwap, poolId);
             const TActorId& serviceId = MakeBlobStoragePDiskID(nodeId, pdiskId);
             ctx.ExecutorThread.ActorSystem->RegisterLocalService(serviceId, actorId);
-            Env.PDiskActors.push_back(actorId);
-        }
-    };
-
-
-    class TFakeConfigDispatcher : public TActor<TFakeConfigDispatcher> {
-        std::unordered_set<TActorId> Subscribers;
-        TActorId EdgeId;
-    public:
-        TFakeConfigDispatcher()
-            : TActor<TFakeConfigDispatcher>(&TFakeConfigDispatcher::StateWork)
-        {
-        }
-
-        STFUNC(StateWork) {
-            switch (ev->GetTypeRewrite()) {
-                hFunc(NConsole::TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest, Handle);
-                hFunc(NConsole::TEvConsole::TEvConfigNotificationRequest, Handle)
-                hFunc(NConsole::TEvConsole::TEvConfigNotificationResponse, Handle)
-                hFunc(NConsole::TEvConfigsDispatcher::TEvRemoveConfigSubscriptionRequest, Handle)
-            }
-        }
-
-        void Handle(NConsole::TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest::TPtr& ev) {
-            auto& items = ev->Get()->ConfigItemKinds;
-            if (items.at(0) != NKikimrConsole::TConfigItem::BlobStorageConfigItem) {
-                return;
-            }
-            Subscribers.emplace(ev->Sender);
-        }
-
-        void Handle(NConsole::TEvConsole::TEvConfigNotificationRequest::TPtr& ev) {
-            EdgeId = ev->Sender;
-            for (auto& id : Subscribers) {
-                auto update = MakeHolder<NConsole::TEvConsole::TEvConfigNotificationRequest>();
-                update->Record.CopyFrom(ev->Get()->Record);
-                Send(id, update.Release());
-            }
-        }
-
-        void Handle(NConsole::TEvConsole::TEvConfigNotificationResponse::TPtr& ev) {
-            Forward(ev, EdgeId);
-        }
-
-        void Handle(NConsole::TEvConfigsDispatcher::TEvRemoveConfigSubscriptionRequest::TPtr& ev) {
-                Send(ev->Sender, MakeHolder<NConsole::TEvConsole::TEvRemoveConfigSubscriptionResponse>().Release());
         }
     };
 
@@ -154,10 +97,6 @@ struct TEnvironmentSetup {
         Cerr << "RandomSeed# " << seed << Endl;
     }
 
-    TInstant Now() {
-        return TAppData::TimeProvider->Now();
-    }
-
     TString GenerateRandomString(ui32 len) {
         TString res = TString::Uninitialized(len);
         char *p = res.Detach();
@@ -177,27 +116,20 @@ struct TEnvironmentSetup {
             Settings.Erasure.GetErasure() == TBlobStorageGroupType::ErasureMirror3dc ? 3 : 1;
     }
 
-    std::unique_ptr<TTestActorSystem> MakeRuntime() {
-        TFeatureFlags featureFlags;
-        featureFlags.SetSuppressCompatibilityCheck(Settings.SuppressCompatibilityCheck);
-
-        auto domainsInfo = MakeIntrusive<TDomainsInfo>();
-        auto domain = TDomainsInfo::TDomain::ConstructEmptyDomain(DomainName, DomainId);
-        domainsInfo->AddDomain(domain.Get());
-        if (Settings.SetupHive) {
-            domainsInfo->AddHive(MakeDefaultHiveID());
-        }
-
-        return std::make_unique<TTestActorSystem>(Settings.NodeCount, NLog::PRI_ERROR, domainsInfo, featureFlags);
-    }
-
     void Initialize() {
-        Runtime = MakeRuntime();
+        Runtime = std::make_unique<TTestActorSystem>(Settings.NodeCount, NLog::PRI_ERROR);
         if (Settings.PrepareRuntime) {
             Settings.PrepareRuntime(*Runtime);
         }
         SetupLogging();
         Runtime->Start();
+        auto *appData = Runtime->GetAppData();
+
+        auto domain = TDomainsInfo::TDomain::ConstructEmptyDomain(DomainName, DomainId);
+        appData->DomainsInfo->AddDomain(domain.Get());
+        if (Settings.SetupHive) {
+            appData->DomainsInfo->AddHive(domain->DefaultHiveUid, MakeDefaultHiveID(domain->DefaultStateStorageGroup));
+        }
 
         if (Settings.LocationGenerator) {
             Runtime->SetupTabletRuntime(Settings.LocationGenerator, Settings.ControllerNodeId);
@@ -205,8 +137,8 @@ struct TEnvironmentSetup {
             Runtime->SetupTabletRuntime(GetNumDataCenters(), Settings.ControllerNodeId);
         }
         SetupStaticStorage();
-        SetupStorage();
         SetupTablet();
+        SetupStorage();
     }
 
     void StopNode(ui32 nodeId) {
@@ -322,19 +254,10 @@ struct TEnvironmentSetup {
 //            NKikimrServices::LOCAL,
 //            NActorsServices::INTERCONNECT,
 //            NActorsServices::INTERCONNECT_SESSION,
-//            NKikimrServices::BS_VDISK_BALANCING,
         };
         for (const auto& comp : debug) {
             Runtime->SetLogPriority(comp, NLog::PRI_DEBUG);
         }
-
-        // toggle the flag to enable logging of actor names and events
-        bool printActorNamesAndEvents = false;
-        if (printActorNamesAndEvents) {
-            Runtime->SetOwnLogPriority(NActors::NLog::EPrio::Info);
-        }
-
-        // Runtime->SetLogPriority(NKikimrServices::BS_REQUEST_COST, NLog::PRI_TRACE);
     }
 
     void SetupStaticStorage() {
@@ -356,7 +279,7 @@ struct TEnvironmentSetup {
                 warden.reset(new TNodeWardenMockActor(Settings.NodeWardenMockSetup));
             } else {
                 auto config = MakeIntrusive<TNodeWardenConfig>(new TMockPDiskServiceFactory(*this));
-                config->BlobStorageConfig.MutableServiceSet()->AddAvailabilityDomains(DomainId);
+                config->ServiceSet.AddAvailabilityDomains(DomainId);
                 config->VDiskReplPausedAtStart = Settings.VDiskReplPausedAtStart;
                 if (Settings.ConfigPreprocessor) {
                     Settings.ConfigPreprocessor(nodeId, *config);
@@ -372,33 +295,11 @@ struct TEnvironmentSetup {
                     };
                     config->CacheAccessor = std::make_unique<TAccessor>(Cache[nodeId]);
                 }
-                config->FeatureFlags = Settings.FeatureFlags;
-
-                {
-                    auto* type = config->BlobStorageConfig.MutableCostMetricsSettings()->AddVDiskTypes();
-                    type->SetPDiskType(NKikimrBlobStorage::EPDiskType::ROT);
-                    if (Settings.BurstThresholdNs) {
-                        type->SetBurstThresholdNs(Settings.BurstThresholdNs);
-                    }
-                    type->SetDiskTimeAvailableScale(Settings.DiskTimeAvailableScale);
-                }
-
-                {
-                    auto* type = config->BlobStorageConfig.MutableVDiskPerformanceSettings()->AddVDiskTypes();
-                    type->SetPDiskType(PDiskTypeToPDiskType(Settings.DiskType));
-                    if (Settings.MinHugeBlobInBytes) {
-                        type->SetMinHugeBlobSizeInBytes(Settings.MinHugeBlobInBytes);
-                    }
-                }
-
                 warden.reset(CreateBSNodeWarden(config));
             }
 
             const TActorId wardenId = Runtime->Register(warden.release(), nodeId);
             Runtime->RegisterService(MakeBlobStorageNodeWardenID(nodeId), wardenId);
-            if (Settings.UseFakeConfigDispatcher) {
-                Runtime->RegisterService(NConsole::MakeConfigsDispatcherID(nodeId), Runtime->Register(new TFakeConfigDispatcher(), nodeId));
-            }
         }
     }
 
@@ -410,10 +311,12 @@ struct TEnvironmentSetup {
             ui32 NumChannels = 3;
         };
         std::vector<TTabletInfo> tablets{
-            {MakeBSControllerID(), TTabletTypes::BSController, &CreateFlatBsController},
+            {MakeBSControllerID(DomainId), TTabletTypes::BSController, &CreateFlatBsController},
         };
 
-        if (const ui64 tabletId = Runtime->GetDomainsInfo()->GetHive(); tabletId != TDomainsInfo::BadTabletId) {
+        auto *appData = Runtime->GetAppData();
+
+        for (const auto& [uid, tabletId] : appData->DomainsInfo->HivesByHiveUid) {
             tablets.push_back(TTabletInfo{tabletId, TTabletTypes::Hive, &CreateDefaultHive});
         }
 
@@ -429,8 +332,8 @@ struct TEnvironmentSetup {
         auto localConfig = MakeIntrusive<TLocalConfig>();
 
         localConfig->TabletClassInfo[TTabletTypes::BlobDepot] = TLocalConfig::TTabletClassInfo(new TTabletSetupInfo(
-            &NBlobDepot::CreateBlobDepot, TMailboxType::ReadAsFilled, Runtime->SYSTEM_POOL_ID, TMailboxType::ReadAsFilled,
-            Runtime->SYSTEM_POOL_ID));
+            &NBlobDepot::CreateBlobDepot, TMailboxType::ReadAsFilled, appData->SystemPoolId, TMailboxType::ReadAsFilled,
+            appData->SystemPoolId));
 
         auto tenantPoolConfig = MakeIntrusive<TTenantPoolConfig>(localConfig);
         tenantPoolConfig->AddStaticSlot(DomainName);
@@ -554,17 +457,17 @@ struct TEnvironmentSetup {
                 ui32 numVDisksPerFailDomain = 0;
                 for (const auto& l : group.GetVSlotId()) {
                     const auto it = vslotToDiskMap.find(MakeBlobStorageVDiskID(l.GetNodeId(), l.GetPDiskId(), l.GetVSlotId()));
-                    Y_ABORT_UNLESS(it != vslotToDiskMap.end());
+                    Y_VERIFY(it != vslotToDiskMap.end());
                     const TVDiskID& vdiskId = it->second;
-                    Y_ABORT_UNLESS(vdiskId.GroupID == groupId);
-                    Y_ABORT_UNLESS(vdiskId.GroupGeneration == group.GetGroupGeneration());
+                    Y_VERIFY(vdiskId.GroupID == groupId);
+                    Y_VERIFY(vdiskId.GroupGeneration == group.GetGroupGeneration());
                     const bool inserted = vdisks.emplace(it->second, it->first).second;
-                    Y_ABORT_UNLESS(inserted);
+                    Y_VERIFY(inserted);
                     numFailRealms = Max<ui32>(numFailRealms, vdiskId.FailRealm + 1);
                     numFailDomainsPerFailRealm = Max<ui32>(numFailDomainsPerFailRealm, vdiskId.FailDomain + 1);
                     numVDisksPerFailDomain = Max<ui32>(numVDisksPerFailDomain, vdiskId.VDisk + 1);
                 }
-                Y_ABORT_UNLESS(numFailRealms * numFailDomainsPerFailRealm * numVDisksPerFailDomain == vdisks.size());
+                Y_VERIFY(numFailRealms * numFailDomainsPerFailRealm * numVDisksPerFailDomain == vdisks.size());
                 TBlobStorageGroupInfo::TTopology topology(TBlobStorageGroupType(
                     TBlobStorageGroupType::ErasureSpeciesByName(group.GetErasureSpecies())),
                     numFailRealms, numFailDomainsPerFailRealm, numVDisksPerFailDomain);
@@ -624,7 +527,7 @@ struct TEnvironmentSetup {
             if (res->GetTypeRewrite() == TEvents::TSystem::Undelivered) {
                 Sim(TDuration::Seconds(5));
             } else {
-                Y_ABORT_UNLESS(res->GetTypeRewrite() == TEvBlobStorage::EvCompactVDiskResult);
+                Y_VERIFY(res->GetTypeRewrite() == TEvBlobStorage::EvCompactVDiskResult);
                 Runtime->DestroyActor(edge);
                 return;
             }
@@ -665,7 +568,7 @@ struct TEnvironmentSetup {
                 const auto& res = record.GetResult(0);
                 UNIT_ASSERT_VALUES_EQUAL_C(res.GetStatus(), status, Dump(vdiskActorId, vdiskId));
                 if (status == NKikimrProto::OK) {
-                    UNIT_ASSERT_VALUES_EQUAL(r->Get()->GetBlobData(res).ConvertToString(), part.substr(1, part.size() - 2));
+                    UNIT_ASSERT_VALUES_EQUAL(res.GetBuffer(), part.substr(1, part.size() - 2));
                 }
             }
 
@@ -678,7 +581,7 @@ struct TEnvironmentSetup {
                 UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrProto::OK);
                 UNIT_ASSERT_VALUES_EQUAL(record.ResultSize(), 1);
                 const auto& res = record.GetResult(0);
-                UNIT_ASSERT(!r->Get()->HasBlob(res));
+                UNIT_ASSERT(!res.HasBuffer());
                 UNIT_ASSERT_VALUES_EQUAL(LogoBlobIDFromLogoBlobID(res.GetBlobID()), blobId.FullID());
                 UNIT_ASSERT_VALUES_EQUAL(res.GetStatus(), status);
             }
@@ -697,16 +600,6 @@ struct TEnvironmentSetup {
                 << NKikimrProto::EReplyStatus_Name(record.GetStatus()) << " ***" << Endl;
             UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrProto::OK);
         });
-    }
-
-     void PutBlob(const ui32 groupId, const TLogoBlobID& blobId, const TString& part) {
-        TActorId edge = Runtime->AllocateEdgeActor(Settings.ControllerNodeId);
-        Runtime->WrapInActorContext(edge, [&] {
-            SendToBSProxy(edge, groupId, new TEvBlobStorage::TEvPut(blobId, part, TInstant::Max(),
-                NKikimrBlobStorage::TabletLog, TEvBlobStorage::TEvPut::TacticMaxThroughput));
-        });
-        auto res = WaitForEdgeActorEvent<TEvBlobStorage::TEvPutResult>(edge);
-        Y_ABORT_UNLESS(res->Get()->Status == NKikimrProto::OK);
     }
 
     void CommenceReplication() {
@@ -775,23 +668,6 @@ struct TEnvironmentSetup {
         UNIT_ASSERT(response.GetSuccess());
     }
 
-    void FillVSlotId(ui32 nodeId, ui32 pdiskId, ui32 vslotId, NKikimrBlobStorage::TVSlotId* vslot) {
-        vslot->SetNodeId(nodeId);
-        vslot->SetPDiskId(pdiskId);
-        vslot->SetVSlotId(vslotId);
-    }
-
-    void SetVDiskReadOnly(ui32 nodeId, ui32 pdiskId, ui32 vslotId, const TVDiskID& vdiskId, bool value) {
-        NKikimrBlobStorage::TConfigRequest request;
-        auto *roCmd = request.AddCommand()->MutableSetVDiskReadOnly();
-        FillVSlotId(nodeId, pdiskId, vslotId, roCmd->MutableVSlotId());
-        VDiskIDFromVDiskID(vdiskId, roCmd->MutableVDiskId());
-        roCmd->SetValue(value);
-        Cerr << "Invoking SetVDiskReadOnly for vdisk " << vdiskId.ToString() << Endl;
-        auto response = Invoke(request);
-        UNIT_ASSERT_C(response.GetSuccess(), response.GetErrorDescription());
-    }
-
     void UpdateDriveStatus(ui32 nodeId, ui32 pdiskId, NKikimrBlobStorage::EDriveStatus status,
             NKikimrBlobStorage::EDecommitStatus decommitStatus) {
         NKikimrBlobStorage::TConfigRequest request;
@@ -833,20 +709,17 @@ struct TEnvironmentSetup {
         Sim(TDuration::Seconds(15));
     }
 
-    void Wipe(ui32 nodeId, ui32 pdiskId, ui32 vslotId, const TVDiskID& vdiskId) {
-        NKikimrBlobStorage::TConfigRequest request;
-        request.SetIgnoreGroupFailModelChecks(true);
-        request.SetIgnoreDegradedGroupsChecks(true);
-        request.SetIgnoreDisintegratedGroupsChecks(true);
-        auto *cmd = request.AddCommand();
-        auto *wipe = cmd->MutableWipeVDisk();
-        auto *vslot = wipe->MutableVSlotId();
+    void Wipe(ui32 nodeId, ui32 pdiskId, ui32 vslotId) {
+        const TActorId self = Runtime->AllocateEdgeActor(Settings.ControllerNodeId, __FILE__, __LINE__);
+        auto ev = std::make_unique<TEvBlobStorage::TEvControllerGroupReconfigureWipe>();
+        auto& record = ev->Record;
+        auto *vslot = record.MutableVSlotId();
         vslot->SetNodeId(nodeId);
         vslot->SetPDiskId(pdiskId);
         vslot->SetVSlotId(vslotId);
-        VDiskIDFromVDiskID(vdiskId, wipe->MutableVDiskId());
-        auto response = Invoke(request);
-        UNIT_ASSERT_C(response.GetSuccess(), response.GetErrorDescription());
+        Runtime->SendToPipe(TabletId, self, ev.release(), 0, TTestActorSystem::GetPipeConfigWithRetries());
+        auto response = WaitForEdgeActorEvent<TEvBlobStorage::TEvControllerGroupReconfigureWipeResult>(self);
+        UNIT_ASSERT_VALUES_EQUAL(response->Get()->Record.GetStatus(), NKikimrProto::OK);
     }
 
     void WaitForVDiskToGetRunning(const TVDiskID& vdiskId, TActorId actorId) {
@@ -862,9 +735,9 @@ struct TEnvironmentSetup {
                     break;
                 }
             } else if (auto *msg = res->CastAsLocal<TEvents::TEvUndelivered>()) {
-                Y_ABORT_UNLESS(msg->SourceType == TEvBlobStorage::EvVStatus);
+                Y_VERIFY(msg->SourceType == TEvBlobStorage::EvVStatus);
             } else {
-                Y_ABORT();
+                Y_FAIL();
             }
 
             // sleep for a while
@@ -899,29 +772,4 @@ struct TEnvironmentSetup {
         return SyncQueryFactory<TResult>(actorId, [&] { return std::make_unique<TQuery>(args...); });
     }
 
-    ui64 AggregateVDiskCounters(TString storagePool, ui32 nodesCount, ui32 groupSize, ui32 groupId,
-            const std::vector<ui32>& pdiskLayout, TString subsystem, TString counter, bool derivative = false) {
-        ui64 ctr = 0;
-
-        for (ui32 nodeId = 1; nodeId <= nodesCount; ++nodeId) {
-            auto* appData = Runtime->GetNode(nodeId)->AppData.get();
-            for (ui32 i = 0; i < groupSize; ++i) {
-                TStringStream ss;
-                ss << LeftPad(i, 2, '0');
-                TString orderNumber = ss.Str();
-                ss.Clear();
-                ss << LeftPad(pdiskLayout[i], 9, '0');
-                TString pdisk = ss.Str();
-                ctr += GetServiceCounters(appData->Counters, "vdisks")->
-                        GetSubgroup("storagePool", storagePool)->
-                        GetSubgroup("group", std::to_string(groupId))->
-                        GetSubgroup("orderNumber", orderNumber)->
-                        GetSubgroup("pdisk", pdisk)->
-                        GetSubgroup("media", "rot")->
-                        GetSubgroup("subsystem", subsystem)->
-                        GetCounter(counter, derivative)->Val();
-            }
-        }
-        return ctr;
-    };
 };

@@ -28,7 +28,7 @@ namespace NKikimr {
             , CurSegIt()
         {
             Y_UNUSED(hullCtx);
-            Y_ABORT_UNLESS(!All->Segments.empty());
+            Y_VERIFY(!All->Segments.empty());
         }
 
         bool Valid() const {
@@ -40,7 +40,7 @@ namespace NKikimr {
         }
 
         void Next() {
-            Y_DEBUG_ABORT_UNLESS(CrossSegIt != All->Segments.end());
+            Y_VERIFY_DEBUG(CrossSegIt != All->Segments.end());
             CurSegIt.Next();
             if (!CurSegIt.Valid()) {
                 ++CrossSegIt;
@@ -69,31 +69,31 @@ namespace NKikimr {
         }
 
         void SeekToFirst() {
-            Y_ABORT_UNLESS(!All->Segments.empty());
+            Y_VERIFY(!All->Segments.empty());
             CrossSegIt = All->Segments.begin();
             CurSegIt = TSegIt((*CrossSegIt).Get());
             CurSegIt.SeekToFirst();
         }
 
         void SeekToLast() {
-            Y_ABORT_UNLESS(!All->Segments.empty());
+            Y_VERIFY(!All->Segments.empty());
             CrossSegIt = All->Segments.end() - 1;
             CurSegIt = TSegIt((*CrossSegIt).Get());
             CurSegIt.SeekToLast();
         }
 
         void Seek(const TKey &key) {
-            Y_ABORT_UNLESS(!All->Segments.empty());
+            Y_VERIFY(!All->Segments.empty());
             TCrossSegIt b = All->Segments.begin();
             TCrossSegIt e = All->Segments.end();
             CrossSegIt = ::LowerBound(b, e, key, TVectorLess());
 
             if (CrossSegIt == e) {
-                Y_DEBUG_ABORT_UNLESS(b != e); // we can't have empty vector
+                Y_VERIFY_DEBUG(b != e); // we can't have empty vector
                 --CrossSegIt;
             } else {
                 const TKey firstKey = (*CrossSegIt)->FirstKey();
-                Y_DEBUG_ABORT_UNLESS(firstKey >= key);
+                Y_VERIFY_DEBUG(firstKey >= key);
                 if (firstKey > key) {
                     if (CrossSegIt == b) {
                         // good
@@ -114,7 +114,7 @@ namespace NKikimr {
 
         template <class TRecordMerger>
         void PutToMerger(TRecordMerger *merger) {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             CurSegIt.template PutToMerger<TRecordMerger>(merger);
         }
 
@@ -173,12 +173,12 @@ namespace NKikimr {
         {}
 
         void SeekToFirst() {
-            Y_DEBUG_ABORT_UNLESS(S);
+            Y_VERIFY_DEBUG(S);
             Cur = S->Segments.begin();
         }
 
         void SeekToLast() {
-            Y_DEBUG_ABORT_UNLESS(S);
+            Y_VERIFY_DEBUG(S);
             Cur = S->Segments.end();
             --Cur;
         }
@@ -197,17 +197,17 @@ namespace NKikimr {
         }
 
         void Next() {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             ++Cur;
         }
 
         void Prev() {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             --Cur;
         }
 
         TLevelSegmentPtr Get() {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             return *Cur;
         }
     };
@@ -234,7 +234,7 @@ namespace NKikimr {
         {}
 
         void SeekToFirst() {
-            Y_DEBUG_ABORT_UNLESS(S);
+            Y_VERIFY_DEBUG(S);
             if (NumLimit > 0) {
                 // for zero NumLimit we have a race of adding element into
                 // empty list and calling begin() on it
@@ -251,18 +251,18 @@ namespace NKikimr {
         }
 
         void Next() {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             ++CurNum;
             if (CurNum < NumLimit) {
                 // update Cur only if we don't stay at the last elements,
                 // otherwise we have a race
-                Y_DEBUG_ABORT_UNLESS(Cur != S->Segments.end());
+                Y_VERIFY_DEBUG(Cur != S->Segments.end());
                 ++Cur;
             }
         }
 
         TLevelSegmentPtr Get() {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             return *Cur;
         }
     };

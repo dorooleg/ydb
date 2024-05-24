@@ -5,7 +5,6 @@
 #include "yql_dq_datasource.h"
 
 #include <ydb/library/yql/providers/common/proto/gateways_config.pb.h>
-#include <ydb/library/yql/providers/common/activation/yql_activation.h>
 #include <ydb/library/yql/providers/common/provider/yql_provider.h>
 #include <ydb/library/yql/providers/common/provider/yql_provider_names.h>
 
@@ -33,11 +32,9 @@ TDataProviderInitializer GetDqDataProviderInitializer(
         TIntrusivePtr<TTypeAnnotationContext> typeCtx,
         const TOperationProgressWriter& progressWriter,
         const TYqlOperationOptions& operationOptions,
-        THiddenQueryAborter hiddenAborter,
-        const TQContext& qContext
+        THiddenQueryAborter hiddenAborter
     ) {
         Y_UNUSED(userName);
-        Y_UNUSED(qContext);
 
         auto dqTaskTransformFactory = NYql::CreateCompositeTaskTransformFactory({
             NYql::CreateCommonDqTaskTransformFactory()
@@ -80,24 +77,7 @@ TDataProviderInitializer GetDqDataProviderInitializer(
             }
 
             if (gatewaysConfig) {
-                std::unordered_set<std::string_view> groups;
-                if (state->TypeCtx->Credentials != nullptr) {
-                    groups.insert(state->TypeCtx->Credentials->GetGroups().begin(), state->TypeCtx->Credentials->GetGroups().end());
-                }
-                auto filter = [username, state, groups = std::move(groups)](const NYql::TAttr& attr) -> bool {
-                    if (!attr.HasActivation()) {
-                        return true;
-                    }
-                    if (NConfig::Allow(attr.GetActivation(), username, groups)) {
-                        with_lock(state->Mutex) {
-                            state->Statistics[Max<ui32>()].Entries.emplace_back(TStringBuilder() << "Activation:" << attr.GetName(), 0, 0, 0, 0, 1);
-                        }
-                        return true;
-                    }
-                    return false;
-                };
-
-                state->Settings->Init(gatewaysConfig->GetDq(), filter);
+                state->Settings->Init(gatewaysConfig->GetDq(), username);
             }
 
             Y_UNUSED(progressWriter);
@@ -117,7 +97,7 @@ TDataProviderInitializer GetDqDataProviderInitializer(
             }
         };
 
-        info.CloseSessionAsync = [dqGateway, metrics](const TString& sessionId) {
+        info.CloseSession = [dqGateway, metrics](const TString& sessionId) {
             if (metrics) {
                 metrics->IncCounter("dq", "CloseSession");
             }
@@ -125,11 +105,7 @@ TDataProviderInitializer GetDqDataProviderInitializer(
             if (dqGateway) { // nullptr in yqlrun
                 YQL_CLOG(DEBUG, ProviderDq) << "CloseSession " << sessionId;
                 dqGateway->CloseSession(sessionId);
-
-                return dqGateway->CloseSessionAsync(sessionId);
             }
-
-            return NThreading::MakeFuture();
         };
 
         return info;

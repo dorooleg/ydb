@@ -8,6 +8,7 @@ namespace NSchemeShard {
 
 using namespace NTabletFlatExecutor;
 
+
 struct TSchemeShard::TTxSyncTenant : public TSchemeShard::TRwTxBase {
     TPathId PathId;
     TSideEffects SideEffects;
@@ -24,7 +25,7 @@ struct TSchemeShard::TTxSyncTenant : public TSchemeShard::TRwTxBase {
                     "TTxSyncTenant DoExecute"
                         << ", pathId: " << PathId
                         << ", at schemeshard: " << Self->TabletID());
-        Y_ABORT_UNLESS(Self->IsDomainSchemeShard);
+        Y_VERIFY(Self->IsDomainSchemeShard);
 
         SideEffects.UpdateTenants({PathId});
         SideEffects.ApplyOnExecute(Self, txc, ctx);
@@ -65,7 +66,7 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
     }
 
     TEvSchemeShard::TEvSyncTenantSchemeShard* ReleaseSync() {
-        Y_ABORT_UNLESS(HasSync());
+        Y_VERIFY(HasSync());
         return SyncEv.Release();
     }
 
@@ -78,8 +79,8 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
                         << ", msg: " << record.ShortDebugString()
                         << ", at schemeshard: " << Self->TabletID());
 
-        Y_ABORT_UNLESS(!Self->IsDomainSchemeShard);
-        Y_ABORT_UNLESS(record.GetTabletId() == Self->ParentDomainId.OwnerId);
+        Y_VERIFY(!Self->IsDomainSchemeShard);
+        Y_VERIFY(record.GetTabletId() == Self->ParentDomainId.OwnerId);
 
         if (record.GetEffectiveACLVersion() > Self->ParentDomainEffectiveACLVersion) {
             Self->ParentDomainOwner = record.GetOwner();
@@ -113,16 +114,6 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
                 Self->PersistSubDomainDatabaseQuotas(db, Self->RootPathId(), *subdomain);
             }
 
-            if (record.HasAuditSettings()) {
-                subdomain->SetAuditSettings(record.GetAuditSettings());
-                Self->PersistSubDomainAuditSettings(db, Self->RootPathId(), *subdomain);
-            }
-
-            if (record.HasServerlessComputeResourcesMode()) {
-                subdomain->SetServerlessComputeResourcesMode(record.GetServerlessComputeResourcesMode());
-                Self->PersistSubDomainServerlessComputeResourcesMode(db, Self->RootPathId(), *subdomain);
-            }
-
             Self->PersistStoragePools(db, Self->RootPathId(), *subdomain);
             SideEffects.PublishToSchemeBoard(InvalidOperationId, Self->RootPathId());
             MakeSync();
@@ -151,7 +142,7 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
 
             Self->PersistShardMapping(db, shardIdx, tabletId, Self->RootPathId(), InvalidTxId, tabletType);
 
-            Y_ABORT_UNLESS(record.GetSubdomainVersion() >= subdomain->GetVersion());
+            Y_VERIFY(record.GetSubdomainVersion() >= subdomain->GetVersion());
             if (record.GetSubdomainVersion() > subdomain->GetVersion()) {
                 subdomain->SetVersion(record.GetSubdomainVersion());
             }
@@ -173,7 +164,7 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
             if (!subdomain->GetTenantHiveID()) {
                 addPrivateShard(tenantHive, ETabletType::Hive);
             }
-            Y_ABORT_UNLESS(tenantHive == subdomain->GetTenantHiveID());
+            Y_VERIFY(tenantHive == subdomain->GetTenantHiveID());
         }
 
         if (record.HasTenantSysViewProcessor()) {
@@ -181,31 +172,7 @@ struct TSchemeShard::TTxUpdateTenant : public TSchemeShard::TRwTxBase {
             if (!subdomain->GetTenantSysViewProcessorID()) {
                 addPrivateShard(tenantSVP, ETabletType::SysViewProcessor);
             }
-            Y_ABORT_UNLESS(tenantSVP == subdomain->GetTenantSysViewProcessorID());
-        }
-
-        if (record.HasTenantStatisticsAggregator()) {
-            TTabletId tenantSA = TTabletId(record.GetTenantStatisticsAggregator());
-            if (!subdomain->GetTenantStatisticsAggregatorID()) {
-                addPrivateShard(tenantSA, ETabletType::StatisticsAggregator);
-            }
-            Y_ABORT_UNLESS(tenantSA == subdomain->GetTenantStatisticsAggregatorID());
-        }
-
-        if (record.HasTenantGraphShard()) {
-            TTabletId tenantGS = TTabletId(record.GetTenantGraphShard());
-            if (!subdomain->GetTenantGraphShardID()) {
-                addPrivateShard(tenantGS, ETabletType::GraphShard);
-            }
-            Y_ABORT_UNLESS(tenantGS == subdomain->GetTenantGraphShardID());
-        }
-
-        if (record.HasTenantBackupController()) {
-            TTabletId tenantSA = TTabletId(record.GetTenantBackupController());
-            if (!subdomain->GetTenantBackupControllerID()) {
-                addPrivateShard(tenantSA, ETabletType::BackupController);
-            }
-            Y_ABORT_UNLESS(tenantSA == subdomain->GetTenantBackupControllerID());
+            Y_VERIFY(tenantSVP == subdomain->GetTenantSysViewProcessorID());
         }
 
         if (record.HasUpdateTenantRootACL()) {

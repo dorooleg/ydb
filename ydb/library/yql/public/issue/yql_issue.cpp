@@ -298,8 +298,3 @@ template <>
 void Out<NYql::TIssue>(IOutputStream& out, const NYql::TIssue& error) {
     error.PrintTo(out);
 }
-
-template <>
-void Out<NYql::TIssues>(IOutputStream& out, const NYql::TIssues& error) {
-    error.PrintTo(out);
-}

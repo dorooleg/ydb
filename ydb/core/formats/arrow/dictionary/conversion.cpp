@@ -2,12 +2,11 @@
 #include <ydb/core/formats/arrow/switch/switch_type.h>
 #include <ydb/core/formats/arrow/simple_builder/filler.h>
 #include <ydb/core/formats/arrow/simple_builder/array.h>
-#include <ydb/core/formats/arrow/size_calcer.h>
 
 namespace NKikimr::NArrow {
 
 std::shared_ptr<arrow::Array> DictionaryToArray(const std::shared_ptr<arrow::DictionaryArray>& data) {
-    Y_ABORT_UNLESS(data);
+    Y_VERIFY(data);
     return DictionaryToArray(*data);
 }
 
@@ -19,7 +18,7 @@ std::shared_ptr<arrow::Array> DictionaryToArray(const arrow::DictionaryArray& da
         using TDictionary = typename arrow::TypeTraits<TDictionaryValue>::ArrayType;
         constexpr bool noParams = arrow::TypeTraits<TDictionaryValue>::is_parameter_free;
         if constexpr (!noParams) {
-            Y_ABORT_UNLESS(false);
+            Y_VERIFY(false);
             return true;
         }
         if constexpr (noParams) {
@@ -43,13 +42,13 @@ std::shared_ptr<arrow::Array> DictionaryToArray(const arrow::DictionaryArray& da
                         return true;
                     }
                 }
-                Y_ABORT_UNLESS(false);
+                Y_VERIFY(false);
                 return true;
             });
         }
         return true;
     });
-    Y_ABORT_UNLESS(result);
+    Y_VERIFY(result);
     return result;
 }
 
@@ -82,20 +81,20 @@ std::shared_ptr<arrow::RecordBatch> DictionaryToArray(const std::shared_ptr<arro
 }
 
 std::shared_ptr<arrow::DictionaryArray> ArrayToDictionary(const std::shared_ptr<arrow::Array>& data) {
-    Y_ABORT_UNLESS(IsDictionableArray(data));
+    Y_VERIFY(IsDictionableArray(data));
     std::shared_ptr<arrow::DictionaryArray> result;
     SwitchType(data->type_id(), [&](const auto& type) {
         using TWrap = std::decay_t<decltype(type)>;
         if constexpr (arrow::has_string_view<typename TWrap::T>::value && arrow::TypeTraits<typename TWrap::T>::is_parameter_free) {
             auto resultArray = NConstruction::TDictionaryArrayConstructor<NConstruction::TLinearArrayAccessor<typename TWrap::T>>("absent", *data).BuildArray(data->length());
-            Y_ABORT_UNLESS(resultArray->type()->id() == arrow::Type::DICTIONARY);
+            Y_VERIFY(resultArray->type()->id() == arrow::Type::DICTIONARY);
             result = static_pointer_cast<arrow::DictionaryArray>(resultArray);
         } else {
-            Y_ABORT_UNLESS(false);
+            Y_VERIFY(false);
         }
         return true;
     });
-    Y_ABORT_UNLESS(result);
+    Y_VERIFY(result);
     return result;
 }
 
@@ -121,7 +120,7 @@ std::shared_ptr<arrow::RecordBatch> ArrayToDictionary(const std::shared_ptr<arro
 }
 
 bool IsDictionableArray(const std::shared_ptr<arrow::Array>& data) {
-    Y_ABORT_UNLESS(data);
+    Y_VERIFY(data);
     bool result = false;
     SwitchType(data->type_id(), [&](const auto& type) {
         using TWrap = std::decay_t<decltype(type)>;
@@ -129,13 +128,6 @@ bool IsDictionableArray(const std::shared_ptr<arrow::Array>& data) {
         return true;
     });
     return result;
-}
-
-ui64 GetDictionarySize(const std::shared_ptr<arrow::DictionaryArray>& data) {
-    if (!data) {
-        return 0;
-    }
-    return GetArrayDataSize(data->dictionary()) + GetArrayDataSize(data->indices());
 }
 
 }

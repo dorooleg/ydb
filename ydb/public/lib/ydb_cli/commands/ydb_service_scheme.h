@@ -102,7 +102,6 @@ private:
     bool AdvancedMode = false;
     bool Recursive = false;
     bool FromNewLine = false;
-    bool Multithread = false;
 };
 
 class TCommandPermissions : public TClientCommandTree {
@@ -160,14 +159,6 @@ private:
 class TCommandPermissionClear : public TYdbOperationCommand, public TCommandWithPath {
 public:
     TCommandPermissionClear();
-    virtual void Config(TConfig& config) override;
-    virtual void Parse(TConfig& config) override;
-    virtual int Run(TConfig& config) override;
-};
-
-class TCommandPermissionList : public TYdbOperationCommand, public TCommandWithPath {
-public:
-    TCommandPermissionList();
     virtual void Config(TConfig& config) override;
     virtual void Parse(TConfig& config) override;
     virtual int Run(TConfig& config) override;

@@ -2,9 +2,9 @@
 #include "options.h"
 #include "server.h"
 
-#include <ydb/core/quoter/public/quoter.h>
+#include <ydb/core/base/quoter.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #include <random>
 

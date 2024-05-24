@@ -1,21 +1,17 @@
 #include "change_exchange.h"
 #include "change_exchange_impl.h"
-#include "change_record.h"
-#include "datashard_impl.h"
+#include "change_sender_common_ops.h"
+#include "change_sender_monitoring.h"
 
 #include <ydb/core/base/tablet_pipecache.h>
-#include <ydb/core/change_exchange/change_sender_common_ops.h>
-#include <ydb/core/change_exchange/change_sender_monitoring.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tablet_flat/flat_row_eggs.h>
-#include <ydb/core/tx/scheme_cache/helpers.h>
-#include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/library/services/services.pb.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/maybe.h>
 
@@ -62,32 +58,20 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     /// Handshake
 
     void Handshake() {
-        Send(DataShard.ActorId, new TDataShard::TEvPrivate::TEvConfirmReadonlyLease, 0, ++LeaseConfirmationCookie);
+        auto ev = MakeHolder<TEvChangeExchange::TEvHandshake>();
+        ev->Record.SetOrigin(DataShard.TabletId);
+        ev->Record.SetGeneration(DataShard.Generation);
+
+        Send(LeaderPipeCache, new TEvPipeCache::TEvForward(ev.Release(), ShardId, true));
         Become(&TThis::StateHandshake);
     }
 
     STATEFN(StateHandshake) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(TDataShard::TEvPrivate::TEvReadonlyLeaseConfirmation, Handle);
             hFunc(TEvChangeExchange::TEvStatus, Handshake);
         default:
             return StateBase(ev);
         }
-    }
-
-    void Handle(TDataShard::TEvPrivate::TEvReadonlyLeaseConfirmation::TPtr& ev) {
-        if (ev->Cookie != LeaseConfirmationCookie) {
-            LOG_W("Readonly lease confirmation cookie mismatch"
-                << ": expected# " << LeaseConfirmationCookie
-                << ", got# " << ev->Cookie);
-            return;
-        }
-
-        auto handshake = MakeHolder<TEvChangeExchange::TEvHandshake>();
-        handshake->Record.SetOrigin(DataShard.TabletId);
-        handshake->Record.SetGeneration(DataShard.Generation);
-
-        Send(LeaderPipeCache, new TEvPipeCache::TEvForward(handshake.Release(), ShardId, true));
     }
 
     void Handshake(TEvChangeExchange::TEvStatus::TPtr& ev) {
@@ -107,7 +91,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     }
 
     void Ready() {
-        Send(Parent, new NChangeExchange::TEvChangeExchangePrivate::TEvReady(ShardId));
+        Send(Parent, new TEvChangeExchangePrivate::TEvReady(ShardId));
         Become(&TThis::StateWaitingRecords);
     }
 
@@ -115,28 +99,26 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
 
     STATEFN(StateWaitingRecords) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(NChangeExchange::TEvChangeExchange::TEvRecords, Handle);
+            hFunc(TEvChangeExchange::TEvRecords, Handle);
         default:
             return StateBase(ev);
         }
     }
 
-    void Handle(NChangeExchange::TEvChangeExchange::TEvRecords::TPtr& ev) {
+    void Handle(TEvChangeExchange::TEvRecords::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
 
         auto records = MakeHolder<TEvChangeExchange::TEvApplyRecords>();
         records->Record.SetOrigin(DataShard.TabletId);
         records->Record.SetGeneration(DataShard.Generation);
 
-        for (auto recordPtr : ev->Get()->Records) {
-            const auto& record = *recordPtr->Get<TChangeRecord>();
-
+        for (const auto& record : ev->Get()->Records) {
             if (record.GetOrder() <= LastRecordOrder) {
                 continue;
             }
 
             auto& proto = *records->Record.AddRecords();
-            record.Serialize(proto);
+            record.SerializeToProto(proto);
             Adjust(proto);
         }
 
@@ -152,18 +134,18 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
         record.SetPathOwnerId(IndexTablePathId.OwnerId);
         record.SetLocalPathId(IndexTablePathId.LocalPathId);
 
-        Y_ABORT_UNLESS(record.HasAsyncIndex());
+        Y_VERIFY(record.HasAsyncIndex());
         AdjustTags(*record.MutableAsyncIndex());
     }
 
-    void AdjustTags(NKikimrChangeExchange::TDataChange& record) const {
+    void AdjustTags(NKikimrChangeExchange::TChangeRecord::TDataChange& record) const {
         AdjustTags(*record.MutableKey()->MutableTags());
 
         switch (record.GetRowOperationCase()) {
-        case NKikimrChangeExchange::TDataChange::kUpsert:
+        case NKikimrChangeExchange::TChangeRecord::TDataChange::kUpsert:
             AdjustTags(*record.MutableUpsert()->MutableTags());
             break;
-        case NKikimrChangeExchange::TDataChange::kReset:
+        case NKikimrChangeExchange::TChangeRecord::TDataChange::kReset:
             AdjustTags(*record.MutableReset()->MutableTags());
             break;
         default:
@@ -174,7 +156,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     void AdjustTags(google::protobuf::RepeatedField<ui32>& tags) const {
         for (int i = 0; i < tags.size(); ++i) {
             auto it = TagMap.find(tags[i]);
-            Y_ABORT_UNLESS(it != TagMap.end());
+            Y_VERIFY(it != TagMap.end());
             tags[i] = it->second;
         }
     }
@@ -206,42 +188,15 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
         }
     }
 
-    bool CanRetry() const {
-        if (CurrentStateFunc() != static_cast<TReceiveFunc>(&TThis::StateHandshake)) {
-            return false;
-        }
-
-        return Attempt < MaxAttempts;
-    }
-
-    void Retry() {
-        ++Attempt;
-        Delay = Min(2 * Delay, MaxDelay);
-
-        LOG_N("Retry"
-            << ": attempt# " << Attempt
-            << ", delay# " << Delay);
-
-        const auto random = TDuration::FromValue(TAppData::RandomProvider->GenRand64() % Delay.MicroSeconds());
-        Schedule(Delay + random, new TEvents::TEvWakeup());
-    }
-
     void Handle(TEvPipeCache::TEvDeliveryProblem::TPtr& ev) {
         if (ShardId != ev->Get()->TabletId) {
             return;
         }
 
-        if (CanRetry()) {
-            Unlink();
-            Retry();
-        } else {
-            Leave();
-        }
+        Leave();
     }
 
     void Handle(NMon::TEvRemoteHttpInfo::TPtr& ev) {
-        using namespace NChangeExchange;
-
         TStringStream html;
 
         HTML(html) {
@@ -263,18 +218,15 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     }
 
     void Leave() {
-        Send(Parent, new NChangeExchange::TEvChangeExchangePrivate::TEvGone(ShardId));
+        Send(Parent, new TEvChangeExchangePrivate::TEvGone(ShardId));
         PassAway();
     }
 
-    void Unlink() {
+    void PassAway() override {
         if (LeaderPipeCache) {
             Send(LeaderPipeCache, new TEvPipeCache::TEvUnlink(ShardId));
         }
-    }
 
-    void PassAway() override {
-        Unlink();
         TActorBootstrapped::PassAway();
     }
 
@@ -290,7 +242,6 @@ public:
         , ShardId(shardId)
         , IndexTablePathId(indexTablePathId)
         , TagMap(tagMap)
-        , LeaseConfirmationCookie(0)
         , LastRecordOrder(0)
     {
     }
@@ -303,7 +254,6 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvPipeCache::TEvDeliveryProblem, Handle);
             hFunc(NMon::TEvRemoteHttpInfo, Handle);
-            sFunc(TEvents::TEvWakeup, Handshake);
             sFunc(TEvents::TEvPoison, PassAway);
         }
     }
@@ -317,22 +267,15 @@ private:
     mutable TMaybe<TString> LogPrefix;
 
     TActorId LeaderPipeCache;
-    ui64 LeaseConfirmationCookie;
     ui64 LastRecordOrder;
-
-    // Retry on delivery problem
-    static constexpr ui32 MaxAttempts = 3;
-    static constexpr auto MaxDelay = TDuration::MilliSeconds(50);
-    ui32 Attempt = 0;
-    TDuration Delay = TDuration::MilliSeconds(10);
 
 }; // TAsyncIndexChangeSenderShard
 
 class TAsyncIndexChangeSenderMain
     : public TActorBootstrapped<TAsyncIndexChangeSenderMain>
-    , public NChangeExchange::TBaseChangeSender
-    , public NChangeExchange::IChangeSenderResolver
-    , private NSchemeCache::TSchemeCacheHelpers
+    , public TBaseChangeSender
+    , public IChangeSenderResolver
+    , private TSchemeCacheHelpers
 {
     TStringBuf GetLogPrefix() const {
         if (!LogPrefix) {
@@ -490,7 +433,7 @@ class TAsyncIndexChangeSenderMain
         }
 
         for (const auto& [tag, column] : entry.Columns) {
-            Y_DEBUG_ABORT_UNLESS(!MainColumnToTag.contains(column.Name));
+            Y_VERIFY_DEBUG(!MainColumnToTag.contains(column.Name));
             MainColumnToTag.emplace(column.Name, tag);
         }
 
@@ -544,18 +487,10 @@ class TAsyncIndexChangeSenderMain
             return;
         }
 
-        if (entry.Self && entry.Self->Info.GetPathState() == NKikimrSchemeOp::EPathStateDrop) {
-            LOG_D("Index is planned to drop, waiting for the EvRemoveSender command");
-
-            RemoveRecords();
-            KillSenders();
-            return Become(&TThis::StatePendingRemove);
-        }
-
-        Y_ABORT_UNLESS(entry.ListNodeEntry->Children.size() == 1);
+        Y_VERIFY(entry.ListNodeEntry->Children.size() == 1);
         const auto& indexTable = entry.ListNodeEntry->Children.at(0);
 
-        Y_ABORT_UNLESS(indexTable.Kind == TNavigate::KindTable);
+        Y_VERIFY(indexTable.Kind == TNavigate::KindTable);
         IndexTablePathId = indexTable.PathId;
 
         ResolveIndexTable();
@@ -574,7 +509,7 @@ class TAsyncIndexChangeSenderMain
     STATEFN(StateResolveIndexTable) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleIndexTable);
-            sFunc(TEvents::TEvWakeup, ResolveIndex);
+            sFunc(TEvents::TEvWakeup, ResolveIndexTable);
         default:
             return StateBase(ev);
         }
@@ -613,9 +548,9 @@ class TAsyncIndexChangeSenderMain
 
         for (const auto& [tag, column] : entry.Columns) {
             auto it = MainColumnToTag.find(column.Name);
-            Y_ABORT_UNLESS(it != MainColumnToTag.end());
+            Y_VERIFY(it != MainColumnToTag.end());
 
-            Y_DEBUG_ABORT_UNLESS(!TagMap.contains(it->second));
+            Y_VERIFY_DEBUG(!TagMap.contains(it->second));
             TagMap.emplace(it->second, tag);
 
             if (column.KeyOrder < 0) {
@@ -653,7 +588,7 @@ class TAsyncIndexChangeSenderMain
     STATEFN(StateResolveKeys) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvTxProxySchemeCache::TEvResolveKeySetResult, HandleKeys);
-            sFunc(TEvents::TEvWakeup, ResolveIndex);
+            sFunc(TEvents::TEvWakeup, ResolveIndexTable);
         default:
             return StateBase(ev);
         }
@@ -689,11 +624,8 @@ class TAsyncIndexChangeSenderMain
             return Retry();
         }
 
-        const bool versionChanged = !IndexTableVersion || IndexTableVersion != entry.GeneralVersion;
-        IndexTableVersion = entry.GeneralVersion;
-
         KeyDesc = std::move(entry.KeyDescription);
-        CreateSenders(MakePartitionIds(KeyDesc->GetPartitions()), versionChanged);
+        CreateSenders(MakePartitionIds(KeyDesc->GetPartitions()));
 
         Become(&TThis::StateMain);
     }
@@ -704,24 +636,20 @@ class TAsyncIndexChangeSenderMain
         return StateBase(ev);
     }
 
-    TActorId GetChangeServer() const override {
-        return DataShard.ActorId;
-    }
-
     void Resolve() override {
-        ResolveIndex();
+        ResolveIndexTable();
     }
 
     bool IsResolved() const override {
         return KeyDesc && KeyDesc->GetPartitions();
     }
 
-    ui64 GetPartitionId(NChangeExchange::IChangeRecord::TPtr record) const override {
-        Y_ABORT_UNLESS(KeyDesc);
-        Y_ABORT_UNLESS(KeyDesc->GetPartitions());
+    ui64 GetPartitionId(const TChangeRecord& record) const override {
+        Y_VERIFY(KeyDesc);
+        Y_VERIFY(KeyDesc->GetPartitions());
 
-        const auto range = TTableRange(record->Get<TChangeRecord>()->GetKey());
-        Y_ABORT_UNLESS(range.Point);
+        const auto range = TTableRange(record.GetKey());
+        Y_VERIFY(range.Point);
 
         TVector<TKeyDesc::TPartitionInfo>::const_iterator it = LowerBound(
             KeyDesc->GetPartitions().begin(), KeyDesc->GetPartitions().end(), true,
@@ -736,7 +664,7 @@ class TAsyncIndexChangeSenderMain
             }
         );
 
-        Y_ABORT_UNLESS(it != KeyDesc->GetPartitions().end());
+        Y_VERIFY(it != KeyDesc->GetPartitions().end());
         return it->ShardId; // partition = shard
     }
 
@@ -744,46 +672,41 @@ class TAsyncIndexChangeSenderMain
         return new TAsyncIndexChangeSenderShard(SelfId(), DataShard, partitionId, IndexTablePathId, TagMap);
     }
 
-    void Handle(NChangeExchange::TEvChangeExchange::TEvEnqueueRecords::TPtr& ev) {
+    void Handle(TEvChangeExchange::TEvEnqueueRecords::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
         EnqueueRecords(std::move(ev->Get()->Records));
     }
 
-    void Handle(NChangeExchange::TEvChangeExchange::TEvRecords::TPtr& ev) {
+    void Handle(TEvChangeExchange::TEvRecords::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
         ProcessRecords(std::move(ev->Get()->Records));
     }
 
-    void Handle(NChangeExchange::TEvChangeExchange::TEvForgetRecords::TPtr& ev) {
+    void Handle(TEvChangeExchange::TEvForgetRecords::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
         ForgetRecords(std::move(ev->Get()->Records));
     }
 
-    void Handle(NChangeExchange::TEvChangeExchangePrivate::TEvReady::TPtr& ev) {
+    void Handle(TEvChangeExchangePrivate::TEvReady::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
         OnReady(ev->Get()->PartitionId);
     }
 
-    void Handle(NChangeExchange::TEvChangeExchangePrivate::TEvGone::TPtr& ev) {
+    void Handle(TEvChangeExchangePrivate::TEvGone::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
         OnGone(ev->Get()->PartitionId);
     }
 
     void Handle(TEvChangeExchange::TEvRemoveSender::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
-        Y_ABORT_UNLESS(ev->Get()->PathId == PathId);
+        Y_VERIFY(ev->Get()->PathId == PathId);
 
         RemoveRecords();
         PassAway();
     }
 
-    void AutoRemove(NChangeExchange::TEvChangeExchange::TEvEnqueueRecords::TPtr& ev) {
-        LOG_D("Handle " << ev->Get()->ToString());
-        RemoveRecords(std::move(ev->Get()->Records));
-    }
-
     void Handle(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorContext& ctx) {
-        RenderHtmlPage(DataShard.TabletId, ev, ctx);
+        RenderHtmlPage(ESenderType::AsyncIndex, ev, ctx);
     }
 
     void PassAway() override {
@@ -798,10 +721,8 @@ public:
 
     explicit TAsyncIndexChangeSenderMain(const TDataShardId& dataShard, const TTableId& userTableId, const TPathId& indexPathId)
         : TActorBootstrapped()
-        , TBaseChangeSender(this, this, indexPathId)
-        , DataShard(dataShard)
+        , TBaseChangeSender(this, this, dataShard, indexPathId)
         , UserTableId(userTableId)
-        , IndexTableVersion(0)
     {
     }
 
@@ -811,28 +732,18 @@ public:
 
     STFUNC(StateBase) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(NChangeExchange::TEvChangeExchange::TEvEnqueueRecords, Handle);
-            hFunc(NChangeExchange::TEvChangeExchange::TEvRecords, Handle);
-            hFunc(NChangeExchange::TEvChangeExchange::TEvForgetRecords, Handle);
+            hFunc(TEvChangeExchange::TEvEnqueueRecords, Handle);
+            hFunc(TEvChangeExchange::TEvRecords, Handle);
+            hFunc(TEvChangeExchange::TEvForgetRecords, Handle);
             hFunc(TEvChangeExchange::TEvRemoveSender, Handle);
-            hFunc(NChangeExchange::TEvChangeExchangePrivate::TEvReady, Handle);
-            hFunc(NChangeExchange::TEvChangeExchangePrivate::TEvGone, Handle);
-            HFunc(NMon::TEvRemoteHttpInfo, Handle);
-            sFunc(TEvents::TEvPoison, PassAway);
-        }
-    }
-
-    STFUNC(StatePendingRemove) {
-        switch (ev->GetTypeRewrite()) {
-            hFunc(NChangeExchange::TEvChangeExchange::TEvEnqueueRecords, AutoRemove);
-            hFunc(TEvChangeExchange::TEvRemoveSender, Handle);
+            hFunc(TEvChangeExchangePrivate::TEvReady, Handle);
+            hFunc(TEvChangeExchangePrivate::TEvGone, Handle);
             HFunc(NMon::TEvRemoteHttpInfo, Handle);
             sFunc(TEvents::TEvPoison, PassAway);
         }
     }
 
 private:
-    const TDataShardId DataShard;
     const TTableId UserTableId;
     mutable TMaybe<TString> LogPrefix;
 
@@ -840,7 +751,6 @@ private:
     TMap<TTag, TTag> TagMap; // from main to index
 
     TPathId IndexTablePathId;
-    ui64 IndexTableVersion;
     THolder<TKeyDesc> KeyDesc;
 
 }; // TAsyncIndexChangeSenderMain

@@ -1,5 +1,3 @@
-#pragma once
-
 namespace NKikimr::NKernels {
 
 enum class EOperation {

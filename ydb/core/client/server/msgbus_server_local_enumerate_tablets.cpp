@@ -44,7 +44,7 @@ public:
 
     void Handle(TEvLocal::TEvEnumerateTabletsResult::TPtr &ev, const TActorContext &ctx) {
         const NKikimrLocal::TEvEnumerateTabletsResult &record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
         THolder<ResponseType> response(new ResponseType());
         if (record.GetStatus() != NKikimrProto::OK) {
             response->Record.SetStatus(MSTATUS_ERROR);
@@ -68,14 +68,16 @@ public:
     }
 
     TActorId MakeServiceID(const TActorContext &ctx) {
-        auto &domainsInfo = AppData(ctx)->DomainsInfo;
-        if (!domainsInfo->Domain || domainsInfo->GetDomain()->DomainUid != DomainUid) {
+        auto &domainsInfo = *AppData(ctx)->DomainsInfo;
+        auto domainIt = domainsInfo.Domains.find(DomainUid);
+        if (domainIt == domainsInfo.Domains.end()) {
             // Report details in CreateErrorReply
             TActorId invalidId;
             return invalidId;
         }
         ui32 nodeId = IsNodeIdPresent ? NodeId : ctx.SelfID.NodeId();
-        ui64 hiveId = domainsInfo->GetHive();
+        ui32 hiveUid = domainsInfo.GetDefaultHiveUid(DomainUid);
+        ui64 hiveId = domainsInfo.GetHive(hiveUid);
         return MakeLocalRegistrarID(nodeId, hiveId);
     }
 

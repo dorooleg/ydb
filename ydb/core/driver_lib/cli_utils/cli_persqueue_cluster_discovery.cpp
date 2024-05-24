@@ -63,7 +63,7 @@ struct TCmdPersQueueDiscoverReadSessionClustersConfig final : public TCliCmdConf
 };
 
 
-static void PrintGRpcConfigAndRequest(const NYdbGrpc::TGRpcClientConfig& grpcConfig, const Ydb::PersQueue::ClusterDiscovery::DiscoverClustersRequest& request) {
+static void PrintGRpcConfigAndRequest(const NGrpc::TGRpcClientConfig& grpcConfig, const Ydb::PersQueue::ClusterDiscovery::DiscoverClustersRequest& request) {
     Cerr << "Request endpoint: " << grpcConfig.Locator << " "
          << "timeout: " << grpcConfig.Timeout << " "
          << "max message size: " << grpcConfig.MaxMessageSize << Endl;
@@ -74,8 +74,8 @@ static void PrintGRpcConfigAndRequest(const NYdbGrpc::TGRpcClientConfig& grpcCon
 template <class TConfig>
 static int MakeRequest(const TConfig& config, const Ydb::PersQueue::ClusterDiscovery::DiscoverClustersRequest& request) {
     if (config.ClientConfig.Defined()) {
-        if (std::holds_alternative<NYdbGrpc::TGRpcClientConfig>(*config.ClientConfig)) {
-            const auto& grpcConfig = std::get<NYdbGrpc::TGRpcClientConfig>(*config.ClientConfig);
+        if (std::holds_alternative<NGrpc::TGRpcClientConfig>(*config.ClientConfig)) {
+            const auto& grpcConfig = std::get<NGrpc::TGRpcClientConfig>(*config.ClientConfig);
 
             if (config.IsVerbose) {
                 PrintGRpcConfigAndRequest(grpcConfig, request);
@@ -93,9 +93,9 @@ static int MakeRequest(const TConfig& config, const Ydb::PersQueue::ClusterDisco
 
             if (res == 0) {
                 Ydb::PersQueue::ClusterDiscovery::DiscoverClustersResult discoveryResult;
-                Y_ABORT_UNLESS(response.result().UnpackTo(&discoveryResult));
+                Y_VERIFY(response.result().UnpackTo(&discoveryResult));
 
-                Y_ABORT_UNLESS(response.ready()); // there's nothing to wait for
+                Y_VERIFY(response.ready()); // there's nothing to wait for
 
                 Cerr << "Code: " << ToString(response.status()) << ". Result message: " << NProtobufJson::Proto2Json(discoveryResult, {}) << Endl;
                 return 0;
@@ -108,7 +108,7 @@ static int MakeRequest(const TConfig& config, const Ydb::PersQueue::ClusterDisco
 }
 
 int PersQueueDiscoverClustersRequest(TCommandConfig&, int argc, char** argv) {
-    Y_ABORT_UNLESS(argc > 2);
+    Y_VERIFY(argc > 2);
 
     if (argv[1] == TStringBuf("write-session")) {
         TCmdPersQueueDiscoverWriteSessionClustersConfig config;

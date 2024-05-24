@@ -237,8 +237,4 @@ ESortDirection GetSortDirection(const NYql::NNodes::TExprBase& sortDirections) {
     return direction;
 };
 
-TExprNode::TPtr MakeMessage(TStringBuf message, TPositionHandle pos, TExprContext& ctx) {
-    return ctx.NewCallable(pos, "Utf8", { ctx.NewAtom(pos, message) });
-}
-
 } // namespace NKikimr::NKqp::NOpt

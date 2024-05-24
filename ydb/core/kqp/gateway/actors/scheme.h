@@ -27,12 +27,6 @@ public:
         , FailedOnAlreadyExists(failedOnAlreadyExists)
         {}
 
-    TSchemeOpRequestHandler(TRequest* request, NThreading::TPromise<TResult> promise, bool failedOnAlreadyExists, bool successOnNotExist)
-        : TBase(request, promise, {})
-        , FailedOnAlreadyExists(failedOnAlreadyExists)
-        , SuccessOnNotExist(successOnNotExist)
-        {}
-
 
     void Bootstrap(const TActorContext& ctx) {
         TActorId txproxy = MakeTxProxyID();
@@ -56,7 +50,7 @@ public:
             case TEvTxUserProxy::TResultStatus::ExecInProgress: {
                 ui64 schemeShardTabletId = response.GetSchemeShardTabletId();
                 IActor* pipeActor = NTabletPipe::CreateClient(ctx.SelfID, schemeShardTabletId);
-                Y_ABORT_UNLESS(pipeActor);
+                Y_VERIFY(pipeActor);
                 ShemePipeActorId = ctx.ExecutorThread.RegisterActor(pipeActor);
 
                 auto request = MakeHolder<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletion>();
@@ -85,18 +79,11 @@ public:
                     (!FailedOnAlreadyExists && response.GetSchemeShardStatus() == NKikimrScheme::EStatus::StatusAlreadyExists))
                 {
                     LOG_DEBUG_S(ctx, NKikimrServices::KQP_GATEWAY, "Successful completion of scheme request"
-                        << ", TxId: " << response.GetTxId());
+                    << ", TxId: " << response.GetTxId());
 
-                    if (!response.GetIssues().empty()) {
-                        NYql::TIssues issues;
-                        NYql::IssuesFromMessage(response.GetIssues(), issues);
-                        Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::SUCCESS, "", issues));
-                    } else {
-                        TResult result;
-                        result.SetSuccess();
-                        Promise.SetValue(std::move(result));
-                    }
-
+                    TResult result;
+                    result.SetSuccess();
+                    Promise.SetValue(std::move(result));
                     this->Die(ctx);
                     return;
                 }
@@ -111,19 +98,9 @@ public:
             }
 
             case TEvTxUserProxy::TResultStatus::ResolveError: {
-                if (response.GetSchemeShardStatus() == NKikimrScheme::EStatus::StatusPathDoesNotExist
-                    && SuccessOnNotExist) {
-                    LOG_DEBUG_S(ctx, NKikimrServices::KQP_GATEWAY, "Successful completion of scheme request: path does not exist,"
-                        << "SuccessOnNotExist: true, TxId: " << response.GetTxId());
-                    TResult result;
-                    result.SetSuccess();
-                    Promise.SetValue(std::move(result));
-                    this->Die(ctx);
-                } else {
-                    Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_SCHEME_ERROR,
-                        response.GetSchemeShardReason(), {}));
-                    this->Die(ctx);
-                }
+                Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_SCHEME_ERROR,
+                    response.GetSchemeShardReason(), {}));
+                this->Die(ctx);
                 return;
             }
 
@@ -137,27 +114,6 @@ public:
                     }
                     case NKikimrScheme::EStatus::StatusPathDoesNotExist: {
                         Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_SCHEME_ERROR,
-                            response.GetSchemeShardReason(), {}));
-                        this->Die(ctx);
-                        return;
-                    }
-
-                    case NKikimrScheme::EStatus::StatusSchemeError: {
-                        Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_SCHEME_ERROR,
-                            response.GetSchemeShardReason(), {}));
-                        this->Die(ctx);
-                        return;
-                    }
-
-                    case NKikimrScheme::EStatus::StatusPreconditionFailed: {
-                        Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_PRECONDITION_FAILED,
-                            response.GetSchemeShardReason(), {}));
-                        this->Die(ctx);
-                        return;
-                    }
-
-                    case NKikimrScheme::EStatus::StatusInvalidParameter: {
-                        Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_BAD_REQUEST,
                             response.GetSchemeShardReason(), {}));
                         this->Die(ctx);
                         return;
@@ -221,7 +177,6 @@ public:
 private:
     TActorId ShemePipeActorId;
     bool FailedOnAlreadyExists = false;
-    bool SuccessOnNotExist = false;
 };
 
 } // namespace NKqp

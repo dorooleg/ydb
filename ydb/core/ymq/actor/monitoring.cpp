@@ -47,20 +47,23 @@ namespace NKikimr::NSQS {
         RetryPeriod = RETRY_PERIOD_MIN;
         auto& response = record.GetResponse();
 
-        Y_ABORT_UNLESS(response.YdbResultsSize() == 1);
-        NYdb::TResultSetParser parser(response.GetYdbResults(0));
+        Y_VERIFY(response.GetResults().size() == 1);
+        const auto& rr = response.GetResults(0).GetValue().GetStruct(0);
         TDuration removeQueuesDataLag;
         
-        if (parser.RowsCount()) {
-            parser.TryNextRow();
-            TInstant minRemoveQueueTimestamp = TInstant::MilliSeconds(*parser.ColumnParser(0).GetOptionalUint64());
+        if (!rr.GetList().empty()) {
+            TInstant minRemoveQueueTimestamp = TInstant::MilliSeconds(rr.GetList()[0].GetStruct(0).GetOptional().GetUint64());
             removeQueuesDataLag = ctx.Now() - minRemoveQueueTimestamp;
         }
         
-        LOG_DEBUG_S(ctx, NKikimrServices::SQS, "[monitoring] Report deletion queue data lag: " << removeQueuesDataLag << ", count: " << parser.RowsCount());
+        LOG_DEBUG_S(ctx, NKikimrServices::SQS, "[monitoring] Report deletion queue data lag: " << removeQueuesDataLag << ", count: " << rr.GetList().size());
         *Counters->CleanupRemovedQueuesLagSec = removeQueuesDataLag.Seconds();
-        *Counters->CleanupRemovedQueuesLagCount = parser.RowsCount();
+        *Counters->CleanupRemovedQueuesLagCount = rr.GetList().size();
         RequestMetrics(RetryPeriod, ctx);
+    }
+
+    void TMonitoringActor::HandleProcessResponse(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext& ctx) {
+        HandleError(ev->Get()->Record.DebugString(), ctx);
     }
 
 } // namespace NKikimr::NSQS

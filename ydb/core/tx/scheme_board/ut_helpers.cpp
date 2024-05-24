@@ -25,17 +25,16 @@ NKikimrScheme::TEvDescribeSchemeResult GenerateDescribe(
     return describeSchemeResult;
 }
 
-NInternalEvents::TEvUpdate* GenerateUpdate(
+TSchemeBoardEvents::TEvUpdate* GenerateUpdate(
     const NKikimrScheme::TEvDescribeSchemeResult& describe,
     ui64 owner,
     ui64 generation,
     bool isDeletion
 ) {
-    const auto& pathDescription = MakeOpaquePathDescription("", describe);
-    auto* update = new NInternalEvents::TEvUpdateBuilder(owner, generation, pathDescription, isDeletion);
+    auto* update = new TSchemeBoardEvents::TEvUpdateBuilder(owner, generation, describe, isDeletion);
 
     if (!isDeletion) {
-        update->SetDescribeSchemeResultSerialized(std::move(pathDescription.DescribeSchemeResultSerialized));
+        update->SetDescribeSchemeResult(describe);
     }
 
     return update;

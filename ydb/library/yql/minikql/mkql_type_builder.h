@@ -16,12 +16,10 @@ namespace NMiniKQL {
 class TBlockTypeHelper : public NUdf::IBlockTypeHelper {
 public:
     NUdf::IBlockItemComparator::TPtr MakeComparator(NUdf::TType* type) const final;
-    NUdf::IBlockItemHasher::TPtr MakeHasher(NUdf::TType* type) const final;
 };
 
-constexpr size_t MaxBlockSizeInBytes = 240_KB;
+constexpr size_t MaxBlockSizeInBytes = 1_MB;
 static_assert(MaxBlockSizeInBytes < (size_t)std::numeric_limits<i32>::max());
-static_assert(MaxBlockSizeInBytes % 64 == 0, "arrow buffers are allocated with buffer size aligned to next 64 byte boundary");
 
 // maximum size of block item in bytes
 size_t CalcMaxBlockItemSize(const TType* type);
@@ -163,8 +161,8 @@ public:
     void Unused2() override;
     void Unused3() override;
 
-    NUdf::IFunctionTypeInfoBuilder15& SupportsBlocksImpl() override;
-    NUdf::IFunctionTypeInfoBuilder15& IsStrictImpl() override;
+    NUdf::IFunctionTypeInfoBuilder15& SupportsBlocks() override;
+    NUdf::IFunctionTypeInfoBuilder15& IsStrict() override;
     const NUdf::IBlockTypeHelper& IBlockTypeHelper() const override;
 
     bool GetSecureParam(NUdf::TStringRef key, NUdf::TStringRef& value) const override;
@@ -224,71 +222,6 @@ bool CanHash(const NMiniKQL::TType* type);
 NUdf::IHash::TPtr MakeHashImpl(const NMiniKQL::TType* type);
 NUdf::ICompare::TPtr MakeCompareImpl(const NMiniKQL::TType* type);
 NUdf::IEquate::TPtr MakeEquateImpl(const NMiniKQL::TType* type);
-
-template<typename T>
-ui64 CalcMaxBlockLength(T beginIt, T endIt, const NUdf::ITypeInfoHelper& helper) {
-    ui64 maxBlockLen = Max<ui64>();
-    while (beginIt != endIt) {
-        const TType* itemType = *beginIt++;
-        if (itemType) {
-            maxBlockLen = std::min(maxBlockLen, helper.GetMaxBlockLength(itemType));
-        }
-    }
-    return (maxBlockLen == Max<ui64>()) ? 0 : maxBlockLen;
-}
-
-class TTypeBuilder : public TMoveOnly {
-public:
-    TTypeBuilder(const TTypeEnvironment& env) 
-        : Env(env)
-    {}
-
-    const TTypeEnvironment& GetTypeEnvironment() const {
-        return Env;
-    }
-
-    TType* NewVoidType() const;
-    TType* NewNullType() const;
-
-    TType* NewDataType(NUdf::TDataTypeId schemeType, bool optional = false) const;
-    TType* NewDataType(NUdf::EDataSlot slot, bool optional = false) const {
-        return NewDataType(NUdf::GetDataTypeInfo(slot).TypeId, optional);
-    }
-
-    TType* NewDecimalType(ui8 precision, ui8 scale) const;
-    TType* NewPgType(ui32 typeId) const;
-
-    TType* NewOptionalType(TType* itemType) const;
-
-    TType* NewEmptyStructType() const;
-    TType* NewStructType(TType* baseStructType, const std::string_view& memberName, TType* memberType) const;
-    TType* NewStructType(const TArrayRef<const std::pair<std::string_view, TType*>>& memberTypes) const;
-    TType* NewArrayType(const TArrayRef<const std::pair<std::string_view, TType*>>& memberTypes) const;
-
-    TType* NewListType(TType* itemType) const;
-
-    TType* NewDictType(TType* keyType, TType* payloadType, bool multi) const;
-
-    TType* NewStreamType(TType* itemType) const;
-    TType* NewFlowType(TType* itemType) const;
-    TType* NewTaggedType(TType* baseType, const std::string_view& tag) const;
-    TType* NewBlockType(TType* itemType, TBlockType::EShape shape) const;
-
-    TType* NewEmptyTupleType() const;
-    TType* NewTupleType(const TArrayRef<TType* const>& elements) const;
-    TType* NewArrayType(const TArrayRef<TType* const>& elements) const;
-
-    TType* NewEmptyMultiType() const;
-    TType* NewMultiType(const TArrayRef<TType* const>& elements) const;
-
-    TType* NewResourceType(const std::string_view& tag) const;
-    TType* NewVariantType(TType* underlyingType) const;
-
-protected:
-    const TTypeEnvironment& Env;
-    bool UseNullType = true;
-};
-
 
 } // namespace NMiniKQL
 } // namespace Nkikimr

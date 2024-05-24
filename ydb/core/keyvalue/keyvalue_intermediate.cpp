@@ -1,7 +1,5 @@
 #include "keyvalue_intermediate.h"
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/wilson_ids/wilson.h>
-#include <library/cpp/time_provider/time_provider.h>
 
 namespace NKikimr {
 namespace NKeyValue {
@@ -13,7 +11,6 @@ TIntermediate::TRead::TRead()
     , ValueSize(0)
     , CreationUnixTime(0)
     , StorageChannel(NKikimrClient::TKeyValueRequest::MAIN)
-    , HandleClass(NKikimrBlobStorage::AsyncRead)
     , Status(NKikimrProto::UNKNOWN)
 {}
 
@@ -25,7 +22,6 @@ TIntermediate::TRead::TRead(const TString &key, ui32 valueSize, ui64 creationUni
     , ValueSize(valueSize)
     , CreationUnixTime(creationUnixTime)
     , StorageChannel(storageChannel)
-    , HandleClass(NKikimrBlobStorage::AsyncRead)
     , Status(NKikimrProto::UNKNOWN)
 {}
 
@@ -55,14 +51,8 @@ NKikimrProto::EReplyStatus TIntermediate::TRead::CumulativeStatus() const {
     }
 }
 
-TRope TIntermediate::TRead::BuildRope() {
-    TRope rope = Value ? Value.GetMonolith() : TRope();
-    Y_ABORT_UNLESS(!Value || rope.size() == ValueSize);
-    return rope;
-}
-
 TIntermediate::TIntermediate(TActorId respondTo, TActorId keyValueActorId, ui64 channelGeneration, ui64 channelStep,
-        TRequestType::EType requestType, NWilson::TTraceId traceId)
+        TRequestType::EType requestType)
     : Cookie(0)
     , Generation(0)
     , Deadline(TInstant::Max())
@@ -80,7 +70,6 @@ TIntermediate::TIntermediate(TActorId respondTo, TActorId keyValueActorId, ui64 
     , CreatedAtGeneration(channelGeneration)
     , CreatedAtStep(channelStep)
     , IsReplied(false)
-    , Span(TWilsonTablet::TabletTopLevel, std::move(traceId), "KeyValue.Intermediate", NWilson::EFlags::AUTO_END)
 {
     Stat.IntermediateCreatedAt = TAppData::TimeProvider->Now();
     Stat.RequestType = requestType;
@@ -92,7 +81,7 @@ void TIntermediate::UpdateStat() {
             Stat.ReadNodata++;
         } else if (read.Status == NKikimrProto::OK) {
             Stat.Reads++;
-            Stat.ReadBytes += read.ValueSize;
+            Stat.ReadBytes += read.Value.size();
         }
     };
     auto checkRangeRead = [&] (const auto &range) {
@@ -102,11 +91,11 @@ void TIntermediate::UpdateStat() {
                     Stat.RangeReadItemsNodata++;
                 } else if (read.Status == NKikimrProto::OK) {
                     Stat.RangeReadItems++;
-                    Stat.RangeReadBytes += read.ValueSize;
+                    Stat.RangeReadBytes += read.Value.size();
                 }
             }
         } else {
-            Stat.IndexRangeRead++;
+        Stat.IndexRangeRead++;
         }
     };
 

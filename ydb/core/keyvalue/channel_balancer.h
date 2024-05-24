@@ -15,7 +15,7 @@ namespace NKikimr::NKeyValue {
             TWeightManager(TVector<ui64> weights)
                 : Weights(std::move(weights))
             {
-                Y_ABORT_UNLESS(0 < Weights.size() && Weights.size() <= 256);
+                Y_VERIFY(0 < Weights.size() && Weights.size() <= 256);
             }
 
             int Pick(const std::bitset<256>& enabled) const {
@@ -35,7 +35,7 @@ namespace NKikimr::NKeyValue {
                 const auto begin = accum.begin();
                 const auto end = begin + Weights.size();
                 const auto iter = std::upper_bound(begin, end, r);
-                Y_ABORT_UNLESS(iter != end);
+                Y_VERIFY(iter != end);
                 return iter - begin;
             }
         };
@@ -114,7 +114,7 @@ namespace NKikimr::NKeyValue {
                     const size_t index = (LatencyQueue.size() - 1) * 99 / 100;
                     const TDuration perc = latencies[index];
                     weight = MeanExpectedLatency.GetValue() * weight / Max(perc, TDuration::MilliSeconds(1)).GetValue();
-                    //Y_DEBUG_ABORT_UNLESS(weight);
+                    Y_VERIFY_DEBUG(weight);
                     if (!weight) {
                         weight = 1;
                     }

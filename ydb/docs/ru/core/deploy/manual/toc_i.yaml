@@ -1,9 +1,5 @@
 items:
 #- name: Обзор
 #  href: concepts.md
-- name: Развертывание YDB
+- name: Развертывание
   href: deploy-ydb-on-premises.md
-- name: Развертывание YDB с функцией Federated Query
-  href: deploy-ydb-federated-query.md
-- name: Развертывание коннектора
-  href: connector.md

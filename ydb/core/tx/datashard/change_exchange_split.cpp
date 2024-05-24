@@ -1,17 +1,16 @@
 #include "change_exchange.h"
 #include "change_exchange_helpers.h"
+#include "change_sender_common_ops.h"
 #include "datashard_impl.h"
 
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/persqueue/events/global.h>
 #include <ydb/core/persqueue/writer/source_id_encoding.h>
-#include <ydb/core/tx/scheme_cache/helpers.h>
-#include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/public/lib/base/msgbus_status.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/hash.h>
 #include <util/string/builder.h>
@@ -20,33 +19,17 @@ namespace NKikimr {
 namespace NDataShard {
 
 class TCdcPartitionWorker: public TActorBootstrapped<TCdcPartitionWorker> {
-    TStringBuf GetLogPrefix() const {
-        if (!LogPrefix) {
-            LogPrefix = TStringBuilder()
-                << "[ChangeExchangeSplitCdcPartitionWorker]"
-                << "[" << SrcTabletId << "]"
-                << "[" << PartitionId << "]"
-                << SelfId() /* contains brackets */ << " ";
-        }
-
-        return LogPrefix.GetRef();
-    }
-
     void Ack() {
-        LOG_I("Send ack");
         Send(Parent, new TEvChangeExchange::TEvSplitAck());
         PassAway();
     }
 
     void Leave() {
-        LOG_I("Leave");
         Send(Parent, new TEvents::TEvGone());
         PassAway();
     }
 
     void Handle(TEvPersQueue::TEvResponse::TPtr& ev) {
-        LOG_D("Handle " << ev->Get()->ToString());
-
         const auto& response = ev->Get()->Record;
 
         switch (response.GetStatus()) {
@@ -69,14 +52,12 @@ class TCdcPartitionWorker: public TActorBootstrapped<TCdcPartitionWorker> {
 
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr& ev) {
         if (ev->Get()->TabletId == TabletId && ev->Get()->Status != NKikimrProto::OK) {
-            LOG_W("Pipe connection error");
             Leave();
         }
     }
 
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr& ev) {
         if (ev->Get()->TabletId == TabletId) {
-            LOG_W("Pipe disconnected");
             Leave();
         }
     }
@@ -150,16 +131,12 @@ private:
     const ui64 TabletId;
     const ui64 SrcTabletId;
     const TVector<ui64> DstTabletIds;
-    mutable TMaybe<TString> LogPrefix;
 
     TActorId PipeClient;
 
 }; // TCdcPartitionWorker
 
-class TCdcWorker
-    : public TActorBootstrapped<TCdcWorker>
-    , private NSchemeCache::TSchemeCacheHelpers
-{
+class TCdcWorker: public TActorBootstrapped<TCdcWorker>, private TSchemeCacheHelpers {
     TStringBuf GetLogPrefix() const {
         if (!LogPrefix) {
             LogPrefix = TStringBuilder()
@@ -300,10 +277,10 @@ class TCdcWorker
             return Ack();
         }
 
-        Y_ABORT_UNLESS(entry.ListNodeEntry->Children.size() == 1);
+        Y_VERIFY(entry.ListNodeEntry->Children.size() == 1);
         const auto& topic = entry.ListNodeEntry->Children.at(0);
 
-        Y_ABORT_UNLESS(topic.Kind == TNavigate::KindTopic);
+        Y_VERIFY(topic.Kind == TNavigate::KindTopic);
         ResolveTopic(topic.PathId);
     }
 
@@ -398,7 +375,12 @@ class TCdcWorker
     }
 
     STATEFN(StateWork) {
-        return StateBase(ev);
+        switch (ev->GetTypeRewrite()) {
+            hFunc(TEvChangeExchange::TEvSplitAck, Handle);
+            hFunc(TEvents::TEvGone, Handle);
+        default:
+            return StateBase(ev);
+        }
     }
 
     void Handle(TEvChangeExchange::TEvSplitAck::TPtr& ev) {
@@ -418,7 +400,7 @@ class TCdcWorker
         Workers[it->second] = TActorId();
         Pending.erase(it);
 
-        if (!IsResolving() && Pending.empty()) {
+        if (Pending.empty()) {
             Ack();
         }
     }
@@ -475,8 +457,6 @@ public:
 
     STATEFN(StateBase) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(TEvChangeExchange::TEvSplitAck, Handle);
-            hFunc(TEvents::TEvGone, Handle);
             sFunc(TEvents::TEvPoison, PassAway);
         }
     }
@@ -522,12 +502,12 @@ class TChangeExchageSplit: public TActorBootstrapped<TChangeExchageSplit> {
         case EWorkerType::CdcStream:
             return Register(new TCdcWorker(SelfId(), pathId, DataShard.TabletId, DstDataShards));
         case EWorkerType::AsyncIndex:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
     }
 
     TActorId RegisterWorker(const TPathId& pathId, TWorker& worker) const {
-        Y_DEBUG_ABORT_UNLESS(!worker.ActorId);
+        Y_VERIFY_DEBUG(!worker.ActorId);
         worker.ActorId = RegisterWorker(pathId, worker.Type);
         return worker.ActorId;
     }

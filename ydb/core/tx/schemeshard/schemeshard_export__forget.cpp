@@ -60,7 +60,7 @@ struct TSchemeShard::TExport::TTxForget: public TSchemeShard::TXxport::TTxBase {
             return true;
         }
 
-        Y_ABORT_UNLESS(exportInfo->IsFinished());
+        Y_VERIFY(exportInfo->IsFinished());
         NIceDb::TNiceDb db(txc.DB);
 
         const TPath exportPath = TPath::Init(exportInfo->ExportPathId, Self);

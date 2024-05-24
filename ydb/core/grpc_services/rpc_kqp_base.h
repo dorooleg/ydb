@@ -3,7 +3,7 @@
 
 #include "rpc_deferrable.h"
 
-#include <ydb/library/ydb_issue/issue_helpers.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/kqp/common/kqp.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
@@ -65,6 +65,15 @@ inline NYql::NDqProto::EDqStatsMode GetKqpStatsMode(Ydb::Table::QueryStatsCollec
     }
 }
 
+inline bool CheckSession(const TString& sessionId, NYql::TIssues& issues) {
+    if (sessionId.empty()) {
+        issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Empty session id"));
+        return false;
+    }
+
+    return true;
+}
+
 inline bool CheckQuery(const TString& query, NYql::TIssues& issues) {
     if (query.empty()) {
         issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Empty query text"));
@@ -74,10 +83,7 @@ inline bool CheckQuery(const TString& query, NYql::TIssues& issues) {
     return true;
 }
 
-void FillQueryStats(Ydb::TableStats::QueryStats& queryStats, const NKqpProto::TKqpStatsQuery& kqpStats);
 void FillQueryStats(Ydb::TableStats::QueryStats& queryStats, const NKikimrKqp::TQueryResponse& kqpResponse);
-
-Ydb::Table::QueryStatsCollection::Mode GetCollectStatsMode(Ydb::Query::StatsMode mode);
 
 template <typename TDerived, typename TRequest>
 class TRpcKqpRequestActor : public TRpcOperationRequestActor<TDerived, TRequest> {
@@ -94,6 +100,7 @@ public:
 protected:
     void StateWork(TAutoPtr<IEventHandle>& ev) {
         switch (ev->GetTypeRewrite()) {
+            HFunc(NKqp::TEvKqp::TEvProcessResponse, Handle);
             default: TBase::StateFuncBase(ev);
         }
     }
@@ -144,6 +151,26 @@ protected:
         this->Request_->RaiseIssues(issues);
         this->Request_->ReplyWithYdbStatus(response.GetStatus());
         this->Die(ctx);
+    }
+
+    void OnProcessError(const NKikimrKqp::TEvProcessResponse& kqpResponse, const TActorContext& ctx) {
+        if (kqpResponse.HasError()) {
+            NYql::TIssues issues;
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, kqpResponse.GetError()));
+            return this->Reply(kqpResponse.GetYdbStatus(), issues, ctx);
+        } else {
+            return this->Reply(kqpResponse.GetYdbStatus(), ctx);
+        }
+    }
+
+private:
+    void Handle(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext& ctx) {
+        auto& record = ev->Get()->Record;
+        NYql::TIssues issues;
+        if (record.HasError()) {
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, record.GetError()));
+        }
+        return this->Reply(record.GetYdbStatus(), issues, ctx);
     }
 
 private:

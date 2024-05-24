@@ -11,7 +11,8 @@
 #include <util/random/random.h>
 #include <util/string/builder.h>
 
-namespace NKikimr::NCmsTest {
+namespace NKikimr {
+namespace NCmsTest {
 
 static constexpr ui32 DefaultStateLimit = 5;
 static constexpr ui32 DefaultErrorStateLimit = 60;
@@ -37,6 +38,7 @@ constexpr NCms::EPDiskState FaultyStates[] = {
 };
 
 Y_UNIT_TEST_SUITE(TSentinelBaseTests) {
+
     using namespace NCms;
     using namespace NCms::NSentinel;
     using TPDiskID = NCms::TPDiskID;
@@ -156,7 +158,7 @@ Y_UNIT_TEST_SUITE(TSentinelBaseTests) {
                     location.SetUnit(ToString(id));
 
                     state->ClusterInfo->AddNode(TEvInterconnect::TNodeInfo(id, name, name, name, 10000, TNodeLocation(location)), nullptr);
-                    sentinelState->Nodes[id] = NSentinel::TNodeInfo{name, NActors::TNodeLocation(location), {}};
+                    sentinelState->Nodes[id] = NSentinel::TNodeInfo{name, NActors::TNodeLocation(location)};
 
                     for (ui64 npdisk : xrange(pdisksPerNode)) {
                         NKikimrBlobStorage::TBaseConfig::TPDisk pdisk;
@@ -311,9 +313,11 @@ Y_UNIT_TEST_SUITE(TSentinelBaseTests) {
         }
     }
 
+
 } // TSentinelBaseTests
 
 Y_UNIT_TEST_SUITE(TSentinelTests) {
+
     using namespace NCms;
     using namespace NCms::NSentinel;
     using TPDiskID = NCms::TPDiskID;
@@ -350,10 +354,10 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
 
         void SetPDiskStateImpl(const TSet<TPDiskID>& ids, EPDiskState state) {
             for (const auto& id : ids) {
-                Y_ABORT_UNLESS(MockNodes.contains(id.NodeId));
+                Y_VERIFY(MockNodes.contains(id.NodeId));
                 auto& node = MockNodes.at(id.NodeId);
 
-                Y_ABORT_UNLESS(node.PDiskStateInfo.contains(id.DiskId));
+                Y_VERIFY(node.PDiskStateInfo.contains(id.DiskId));
                 auto& pdisk = node.PDiskStateInfo.at(id.DiskId);
 
                 pdisk.SetState(state);
@@ -366,40 +370,40 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
         explicit TTestEnv(ui32 nodeCount, ui32 pdisks)
             : TCmsTestEnv(nodeCount, pdisks)
         {
-            SetLogPriority(NKikimrServices::CMS, NLog::PRI_DEBUG);
-
             SetScheduledEventFilter([this](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev, TDuration, TInstant&) -> bool {
                 if (ev->Recipient != Sentinel) {
                     return true;
                 }
 
                 switch (ev->GetTypeRewrite()) {
-                    case TEvSentinel::TEvUpdateConfig::EventType:
-                    case TEvSentinel::TEvUpdateState::EventType:
-                    case TEvents::TEvWakeup::EventType:
-                        return false;
+                case TEvSentinel::TEvUpdateConfig::EventType:
+                case TEvSentinel::TEvUpdateState::EventType:
+                case TEvents::TEvWakeup::EventType:
+                    return false;
 
-                    default:
-                        return true;
+                default:
+                    return true;
                 }
             });
-
             auto prevObserver = SetObserverFunc(&TTestActorRuntimeBase::DefaultObserverFunc);
-            SetObserverFunc([this, prevObserver](TAutoPtr<IEventHandle>& ev) {
-                if (ev->GetTypeRewrite() == TEvCms::TEvClusterStateRequest::EventType) {
-                    auto response = MakeHolder<TEvCms::TEvClusterStateResponse>();
-                    auto& record = response->Record;
+            SetObserverFunc([this, prevObserver](TTestActorRuntimeBase& runtime,
+                                    TAutoPtr<IEventHandle> &event){
+                switch (event->GetTypeRewrite()) {
+                case TEvCms::TEvClusterStateRequest::EventType:
+                {
+                    TAutoPtr<TEvCms::TEvClusterStateResponse> resp = new TEvCms::TEvClusterStateResponse;
                     if (State) {
-                        record.MutableStatus()->SetCode(NKikimrCms::TStatus::OK);
-                        for (auto [_, nodeInfo]: State->ClusterInfo->AllNodes()) {
-                            NCms::TCms::AddHostState(State->ClusterInfo, *nodeInfo, record, State->ClusterInfo->GetTimestamp());
+                        resp->Record.MutableStatus()->SetCode(NKikimrCms::TStatus::OK);
+                        for (const auto &entry : State->ClusterInfo->AllNodes()) {
+                            NCms::TCms::AddHostState(State->ClusterInfo, *entry.second, resp->Record, State->ClusterInfo->GetTimestamp());
                         }
                     }
-                    Send(ev->Sender, TActorId(), response.Release());
-                    return TTestActorRuntime::EEventAction::DROP;
+                    Send(new IEventHandle(event->Sender, TActorId(), resp.Release()));
+                    return TTestActorRuntime::EEventAction::PROCESS;
                 }
-
-                return prevObserver(ev);
+                default:
+                    return prevObserver(runtime, event);
+                }
             });
 
             State = new TCmsState;
@@ -409,6 +413,8 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
             Sentinel = Register(CreateSentinel(State));
             EnableScheduleForActor(Sentinel, true);
             WaitForSentinelBoot();
+
+            SetLogPriority(NKikimrServices::CMS, NLog::PRI_DEBUG);
         }
 
         TPDiskID RandomPDiskID() const {
@@ -443,7 +449,7 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
             size_t idx = RandomNumber(nodes.size() - 1);
 
             auto info = std::next(nodes.begin(), idx)->second;
-            Y_ABORT_UNLESS(info);
+            Y_VERIFY(info);
             return info->PDisks;
         }
 
@@ -519,6 +525,7 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
 
     private:
         TCmsStatePtr State;
+        std::atomic<bool> NosiyBlobstoragePipe = false;
         TActorId Sentinel;
 
     }; // TTestEnv
@@ -610,12 +617,12 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
 
     Y_UNIT_TEST(BSControllerUnresponsive) {
         TTestEnv env(8, 4);
+
         env.EnableNoisyBSCPipe();
 
         const TPDiskID id1 = env.RandomPDiskID();
         const TPDiskID id2 = env.RandomPDiskID();
         const TPDiskID id3 = env.RandomPDiskID();
-
         for (size_t i = 0; i < sizeof(ErrorStates) / sizeof(ErrorStates[0]); ++i) {
             env.AddBSCFailures(id1, {false, true});
             env.AddBSCFailures(id2, {false, false, false, false, false, false});
@@ -633,7 +640,6 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
         const TPDiskID id1 = env.RandomPDiskID();
         const TPDiskID id2 = env.RandomPDiskID();
         const TPDiskID id3 = env.RandomPDiskID();
-
         for (size_t i = 0; i < sizeof(ErrorStates) / sizeof(ErrorStates[0]); ++i) {
             env.AddBSCFailures(id1, {true, false, false, true, false, false});
             // will fail for all requests assuming there is only 5 retries
@@ -646,7 +652,7 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
             env.SetPDiskState({id1, id2, id3}, NKikimrBlobStorage::TPDiskState::Normal, EPDiskStatus::ACTIVE);
         }
     }
-
 } // TSentinelTests
 
-}
+} // NCmsTest
+} // NKikimr

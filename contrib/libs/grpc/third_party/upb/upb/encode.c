@@ -32,7 +32,6 @@
 #include <setjmp.h>
 #include <string.h>
 
-#include "upb/extension_registry.h"
 #include "upb/msg_internal.h"
 #include "upb/upb.h"
 
@@ -77,9 +76,7 @@ static size_t upb_roundup_pow2(size_t bytes) {
   return ret;
 }
 
-UPB_NORETURN static void encode_err(upb_encstate* e, upb_EncodeStatus s) {
-  UPB_LONGJMP(e->err, s);
-}
+UPB_NORETURN static void encode_err(upb_encstate* e) { UPB_LONGJMP(e->err, 1); }
 
 UPB_NOINLINE
 static void encode_growbuffer(upb_encstate* e, size_t bytes) {
@@ -87,7 +84,7 @@ static void encode_growbuffer(upb_encstate* e, size_t bytes) {
   size_t new_size = upb_roundup_pow2(bytes + (e->limit - e->ptr));
   char* new_buf = upb_realloc(e->alloc, e->buf, old_size, new_size);
 
-  if (!new_buf) encode_err(e, kUpb_EncodeStatus_OutOfMemory);
+  if (!new_buf) encode_err(e);
 
   /* We want previous data at the end, realloc() put it at the beginning. */
   if (old_size > 0) {
@@ -258,7 +255,7 @@ static void encode_scalar(upb_encstate* e, const void* _field_mem,
       if (submsg == NULL) {
         return;
       }
-      if (--e->depth == 0) encode_err(e, kUpb_EncodeStatus_MaxDepthExceeded);
+      if (--e->depth == 0) encode_err(e);
       encode_tag(e, f->number, kUpb_WireType_EndGroup);
       encode_message(e, submsg, subm, &size);
       wire_type = kUpb_WireType_StartGroup;
@@ -272,7 +269,7 @@ static void encode_scalar(upb_encstate* e, const void* _field_mem,
       if (submsg == NULL) {
         return;
       }
-      if (--e->depth == 0) encode_err(e, kUpb_EncodeStatus_MaxDepthExceeded);
+      if (--e->depth == 0) encode_err(e);
       encode_message(e, submsg, subm, &size);
       encode_varint(e, size);
       wire_type = kUpb_WireType_Delimited;
@@ -291,7 +288,7 @@ static void encode_array(upb_encstate* e, const upb_Message* msg,
                          const upb_MiniTable_Sub* subs,
                          const upb_MiniTable_Field* f) {
   const upb_Array* arr = *UPB_PTR_AT(msg, f->offset, upb_Array*);
-  bool packed = f->mode & kUpb_LabelFlags_IsPacked;
+  bool packed = f->mode & upb_LabelFlags_IsPacked;
   size_t pre_len = e->limit - e->ptr;
 
   if (arr == NULL || arr->len == 0) {
@@ -358,7 +355,7 @@ static void encode_array(upb_encstate* e, const upb_Message* msg,
       const void* const* start = _upb_array_constptr(arr);
       const void* const* ptr = start + arr->len;
       const upb_MiniTable* subm = subs[f->submsg_index].submsg;
-      if (--e->depth == 0) encode_err(e, kUpb_EncodeStatus_MaxDepthExceeded);
+      if (--e->depth == 0) encode_err(e);
       do {
         size_t size;
         ptr--;
@@ -373,7 +370,7 @@ static void encode_array(upb_encstate* e, const upb_Message* msg,
       const void* const* start = _upb_array_constptr(arr);
       const void* const* ptr = start + arr->len;
       const upb_MiniTable* subm = subs[f->submsg_index].submsg;
-      if (--e->depth == 0) encode_err(e, kUpb_EncodeStatus_MaxDepthExceeded);
+      if (--e->depth == 0) encode_err(e);
       do {
         size_t size;
         ptr--;
@@ -416,7 +413,7 @@ static void encode_map(upb_encstate* e, const upb_Message* msg,
 
   if (map == NULL) return;
 
-  if (e->options & kUpb_EncodeOption_Deterministic) {
+  if (e->options & kUpb_Encode_Deterministic) {
     _upb_sortedmap sorted;
     _upb_mapsorter_pushmap(&e->sorter, layout->fields[0].descriptortype, map,
                            &sorted);
@@ -445,29 +442,23 @@ static bool encode_shouldencode(upb_encstate* e, const upb_Message* msg,
   if (f->presence == 0) {
     /* Proto3 presence or map/array. */
     const void* mem = UPB_PTR_AT(msg, f->offset, void);
-    switch (f->mode >> kUpb_FieldRep_Shift) {
-      case kUpb_FieldRep_1Byte: {
+    switch (f->mode >> upb_FieldRep_Shift) {
+      case upb_FieldRep_1Byte: {
         char ch;
         memcpy(&ch, mem, 1);
         return ch != 0;
       }
-#if UINTPTR_MAX == 0xffffffff
-      case kUpb_FieldRep_Pointer:
-#endif
-      case kUpb_FieldRep_4Byte: {
+      case upb_FieldRep_4Byte: {
         uint32_t u32;
         memcpy(&u32, mem, 4);
         return u32 != 0;
       }
-#if UINTPTR_MAX != 0xffffffff
-      case kUpb_FieldRep_Pointer:
-#endif
-      case kUpb_FieldRep_8Byte: {
+      case upb_FieldRep_8Byte: {
         uint64_t u64;
         memcpy(&u64, mem, 8);
         return u64 != 0;
       }
-      case kUpb_FieldRep_StringView: {
+      case upb_FieldRep_StringView: {
         const upb_StringView* str = (const upb_StringView*)mem;
         return str->size != 0;
       }
@@ -523,16 +514,16 @@ static void encode_message(upb_encstate* e, const upb_Message* msg,
                            const upb_MiniTable* m, size_t* size) {
   size_t pre_len = e->limit - e->ptr;
 
-  if ((e->options & kUpb_EncodeOption_CheckRequired) && m->required_count) {
+  if ((e->options & kUpb_Encode_CheckRequired) && m->required_count) {
     uint64_t msg_head;
     memcpy(&msg_head, msg, 8);
     msg_head = _upb_BigEndian_Swap64(msg_head);
     if (upb_MiniTable_requiredmask(m) & ~msg_head) {
-      encode_err(e, kUpb_EncodeStatus_MissingRequired);
+      encode_err(e);
     }
   }
 
-  if ((e->options & kUpb_EncodeOption_SkipUnknown) == 0) {
+  if ((e->options & kUpb_Encode_SkipUnknown) == 0) {
     size_t unknown_size;
     const char* unknown = upb_Message_GetUnknown(msg, &unknown_size);
 
@@ -541,7 +532,7 @@ static void encode_message(upb_encstate* e, const upb_Message* msg,
     }
   }
 
-  if (m->ext != kUpb_ExtMode_NonExtendable) {
+  if (m->ext != upb_ExtMode_NonExtendable) {
     /* Encode all extensions together. Unlike C++, we do not attempt to keep
      * these in field number order relative to normal fields or even to each
      * other. */
@@ -550,7 +541,7 @@ static void encode_message(upb_encstate* e, const upb_Message* msg,
     if (ext_count) {
       const upb_Message_Extension* end = ext + ext_count;
       for (; ext != end; ext++) {
-        if (UPB_UNLIKELY(m->ext == kUpb_ExtMode_IsMessageSet)) {
+        if (UPB_UNLIKELY(m->ext == upb_ExtMode_IsMessageSet)) {
           encode_msgset_item(e, ext);
         } else {
           encode_field(e, &ext->data, &ext->ext->sub, &ext->ext->field);
@@ -573,9 +564,8 @@ static void encode_message(upb_encstate* e, const upb_Message* msg,
   *size = (e->limit - e->ptr) - pre_len;
 }
 
-upb_EncodeStatus upb_Encode(const void* msg, const upb_MiniTable* l,
-                            int options, upb_Arena* arena, char** buf,
-                            size_t* size) {
+char* upb_Encode(const void* msg, const upb_MiniTable* l, int options,
+                 upb_Arena* arena, size_t* size) {
   upb_encstate e;
   unsigned depth = (unsigned)options >> 16;
 
@@ -586,28 +576,23 @@ upb_EncodeStatus upb_Encode(const void* msg, const upb_MiniTable* l,
   e.depth = depth ? depth : 64;
   e.options = options;
   _upb_mapsorter_init(&e.sorter);
+  char* ret = NULL;
 
-  upb_EncodeStatus status = UPB_SETJMP(e.err);
-
-  // Unfortunately we must continue to perform hackery here because there are
-  // code paths which blindly copy the returned pointer without bothering to
-  // check for errors until much later (b/235839510). So we still set *buf to
-  // NULL on error and we still set it to non-NULL on a successful empty result.
-  if (status == kUpb_EncodeStatus_Ok) {
+  if (UPB_SETJMP(e.err)) {
+    *size = 0;
+    ret = NULL;
+  } else {
     encode_message(&e, msg, l, size);
     *size = e.limit - e.ptr;
     if (*size == 0) {
       static char ch;
-      *buf = &ch;
+      ret = &ch;
     } else {
       UPB_ASSERT(e.ptr);
-      *buf = e.ptr;
+      ret = e.ptr;
     }
-  } else {
-    *buf = NULL;
-    *size = 0;
   }
 
   _upb_mapsorter_destroy(&e.sorter);
-  return status;
+  return ret;
 }

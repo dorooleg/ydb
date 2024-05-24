@@ -27,7 +27,7 @@ namespace NKikimr::NBsController {
 
                     TString s;
                     const bool success = group->GroupMetrics->SerializeToString(&s);
-                    Y_DEBUG_ABORT_UNLESS(success);
+                    Y_VERIFY_DEBUG(success);
                     db.Table<Schema::Group>().Key(group->ID).Update<Schema::Group::Metrics>(s);
                 }
             }
@@ -59,11 +59,6 @@ namespace NKikimr::NBsController {
     };
 
     void TBlobStorageController::Handle(TEvBlobStorage::TEvControllerGroupMetricsExchange::TPtr& ev) {
-        if (auto& record = ev->Get()->Record; record.HasWhiteboardUpdate()) {
-            auto ev = std::make_unique<NNodeWhiteboard::TEvWhiteboard::TEvBSGroupStateUpdate>();
-            ev->Record.Swap(record.MutableWhiteboardUpdate());
-            Send(NNodeWhiteboard::MakeNodeWhiteboardServiceId(SelfId().NodeId()), ev.release());
-        }
         Execute(new TTxGroupMetricsExchange(this, ev));
     }
 

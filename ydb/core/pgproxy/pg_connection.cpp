@@ -1,10 +1,10 @@
 #include "pg_connection.h"
+#include "pg_proxy_config.h"
 #include "pg_proxy_types.h"
 #include "pg_proxy_events.h"
 #include "pg_stream.h"
 #include "pg_log_impl.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/core/raw_socket/sock_config.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NPG {
 
@@ -13,12 +13,10 @@ using namespace NActors;
 class TPGConnection : public TActorBootstrapped<TPGConnection>, public TNetworkConfig {
 public:
     using TBase = TActorBootstrapped<TPGConnection>;
-    const TActorId ListenerActorId;
     TIntrusivePtr<TSocketDescriptor> Socket;
     TSocketAddressType Address;
     THPTimer InactivityTimer;
     static constexpr TDuration InactivityTimeout = TDuration::Minutes(10);
-    static constexpr uint32_t BACKEND_DATA_MASK = 0x55aa55aa;
     TEvPollerReady* InactivityEvent = nullptr;
     bool IsAuthRequired = true;
     bool IsSslSupported = true;
@@ -27,14 +25,13 @@ public:
     bool PasswordWasSupplied = false;
     TPollerToken::TPtr PollerToken;
     TSocketBuffer BufferInput;
-    std::size_t MAX_BUFFER_SIZE = 2 * 1024 * 1024;
     std::unordered_map<TString, TString> ServerParams = {
         {"client_encoding", "UTF8"},
         {"server_encoding", "UTF8"},
         {"DateStyle", "ISO"},
         {"IntervalStyle", "postgres"},
         {"integer_datetimes", "on"},
-        {"server_version", "14.5 (ydb stable-23-4)"},
+        {"server_version", "14.5 (ydb stable-23-3)"},
     };
     TSocketBuffer BufferOutput;
     TActorId DatabaseProxy;
@@ -45,9 +42,8 @@ public:
     char TransactionStatus = 'I'; // could be 'I' (idle), 'T' (transaction), 'E' (failed transaction)
     std::deque<TAutoPtr<IEventHandle>> PostponedEvents;
 
-    TPGConnection(const TActorId& listenerActorId, TIntrusivePtr<TSocketDescriptor> socket, TNetworkConfig::TSocketAddressType address, const TActorId& databaseProxy)
-        : ListenerActorId(listenerActorId)
-        , Socket(std::move(socket))
+    TPGConnection(TIntrusivePtr<TSocketDescriptor> socket, TNetworkConfig::TSocketAddressType address, const TActorId& databaseProxy)
+        : Socket(std::move(socket))
         , Address(address)
         , DatabaseProxy(databaseProxy)
     {
@@ -65,10 +61,9 @@ public:
     void PassAway() override {
         //ctx.Send(Endpoint->Owner, new TEvHttpProxy::TEvHttpConnectionClosed(ctx.SelfID, std::move(RecycledRequests)));
         if (ConnectionEstablished) {
-            Send(DatabaseProxy, new TEvPGEvents::TEvConnectionClosed(), 0, IncomingSequenceNumber);
+            Send(DatabaseProxy, new TEvPGEvents::TEvConnectionClosed());
             ConnectionEstablished = false;
         }
-        Send(ListenerActorId, new TEvents::TEvUnsubscribe());
         Shutdown();
         TBase::PassAway();
     }
@@ -154,7 +149,6 @@ protected:
         };
         static const std::unordered_map<char, TStringBuf> outgoingMessageName = {
             GetMessageCode<TPGAuth>(),
-            GetMessageCode<TPGBackendKeyData>(),
             GetMessageCode<TPGErrorResponse>(),
             GetMessageCode<TPGDataRow>(),
             GetMessageCode<TPGParameterStatus>(),
@@ -211,8 +205,6 @@ protected:
             switch (message.Message) {
                 case TPGParameterStatus::CODE:
                     return ((const TPGParameterStatus&)message).Dump();
-                case TPGBackendKeyData::CODE:
-                    return ((const TPGBackendKeyData&)message).Dump();
                 case TPGReadyForQuery::CODE:
                     return ((const TPGReadyForQuery&)message).Dump();
                 case TPGCommandComplete::CODE:
@@ -323,9 +315,13 @@ protected:
         FlushAndPoll();
     }
 
-    bool IsValidBackendData(const TPGInitial::TPGBackendData& backendData) {
-        Y_UNUSED(backendData);
-        return true;
+    void FinishHandshake() {
+        for (const auto& [name, value] : ServerParams) {
+            SendParameterStatus(name, value);
+        }
+        SendReadyForQuery();
+        ConnectionEstablished = true;
+        Send(DatabaseProxy, new TEvPGEvents::TEvConnectionOpened(std::move(InitialMessage), Address));
     }
 
     void HandleMessage(const TPGInitial* message) {
@@ -354,10 +350,6 @@ protected:
         }
         if (protocol == 0x2e16d204) { // 80877102 cancellation message
             BLOG_D("cancellation message");
-            TPGInitial::TPGBackendData backendData = message->GetBackendData();
-            if (IsValidBackendData(backendData)) {
-                Send(DatabaseProxy, new TEvPGEvents::TEvCancelRequest(backendData.Pid ^ BACKEND_DATA_MASK, backendData.Key ^ BACKEND_DATA_MASK));
-            }
             CloseConnection = true;
             return;
         }
@@ -371,7 +363,7 @@ protected:
             Send(DatabaseProxy, new TEvPGEvents::TEvAuth(InitialMessage, Address), 0, IncomingSequenceNumber++);
         } else {
             SendAuthOk();
-            BecomeConnected();
+            FinishHandshake();
         }
     }
 
@@ -383,7 +375,7 @@ protected:
 
     void HandleMessage(const TPGQuery* message) {
         SyncSequenceNumber = IncomingSequenceNumber;
-        Send(DatabaseProxy, new TEvPGEvents::TEvQuery(MakePGMessageCopy(message), TransactionStatus), 0, IncomingSequenceNumber++);
+        Send(DatabaseProxy, new TEvPGEvents::TEvQuery(MakePGMessageCopy(message)), 0, IncomingSequenceNumber++);
     }
 
     void HandleMessage(const TPGParse* message) {
@@ -407,7 +399,7 @@ protected:
     }
 
     void HandleMessage(const TPGExecute* message) {
-        Send(DatabaseProxy, new TEvPGEvents::TEvExecute(MakePGMessageCopy(message), TransactionStatus), 0, IncomingSequenceNumber++);
+        Send(DatabaseProxy, new TEvPGEvents::TEvExecute(MakePGMessageCopy(message)), 0, IncomingSequenceNumber++);
     }
 
     void HandleMessage(const TPGClose* message) {
@@ -421,71 +413,12 @@ protected:
     void HandleMessage(const TPGFlush*) {
     }
 
-    static void FillDataRow(TPGStreamOutput<TPGDataRow>& dataOut, const TEvPGEvents::TDataRow& dataIn) {
-        dataOut << uint16_t(dataIn.size()); // number of fields
-        for (const auto& item : dataIn) {
-            if (item.Value) {
-                const auto& value(item.Value.value());
-                if (std::holds_alternative<TString>(value)) {
-                    const auto& valueText(std::get<TString>(value));
-                    dataOut << uint32_t(valueText.size()) << valueText;
-                } else {
-                    const auto& valueBinary(std::get<std::vector<uint8_t>>(value));
-                    dataOut << uint32_t(valueBinary.size()) << valueBinary;
-                }
-            } else {
-                dataOut << uint32_t(-1);
-            }
-        }
-    }
-
-    static void FillDataRowDescription(TPGStreamOutput<TPGRowDescription>& dataOut, const std::vector<TEvPGEvents::TRowDescriptionField>& dataIn) {
-        dataOut << uint16_t(dataIn.size()); // number of fields
-        for (const auto& field : dataIn) {
-            dataOut
-                << TStringBuf(field.Name) << '\0'
-                << uint32_t(field.TableId)
-                << uint16_t(field.ColumnId)
-                << uint32_t(field.DataType)
-                << uint16_t(field.DataTypeSize)
-                << uint32_t(field.DataTypeModifier)
-                << uint16_t(field.Format)
-                ;
-        }
-    }
-
-    template<typename TPGResponse>
-    static void FillKeyValueResponse(TPGStreamOutput<TPGResponse>& dataOut, const std::vector<std::pair<char, TString>>& dataIn) {
-        for (const auto& field : dataIn) {
-            dataOut << field.first << field.second << '\0';
-        }
-        dataOut << '\0';
-    }
-
-    void SendNoticeResponse(const std::vector<std::pair<char, TString>>& noticeFields) {
-        TPGStreamOutput<TPGNoticeResponse> noticeResponse;
-        FillKeyValueResponse(noticeResponse, noticeFields);
-        SendStream(noticeResponse);
-    }
-
-    void SendErrorResponse(const std::vector<std::pair<char, TString>>& errorFields) {
-        TPGStreamOutput<TPGErrorResponse> errorResponse;
-        FillKeyValueResponse(errorResponse, errorFields);
-        SendStream(errorResponse);
-    }
-
     bool FlushAndPoll() {
         if (FlushOutput()) {
             RequestPoller();
             return true;
         }
         return false;
-    }
-
-    void BecomeConnected() {
-        SyncSequenceNumber = IncomingSequenceNumber;
-        Send(DatabaseProxy, new TEvPGEvents::TEvConnectionOpened(InitialMessage, Address), 0, IncomingSequenceNumber++);
-        ConnectionEstablished = true;
     }
 
     struct TEventsComparator {
@@ -526,51 +459,11 @@ protected:
                 }
             } else {
                 SendAuthOk();
-                BecomeConnected();
+                FinishHandshake();
             }
             ++OutgoingSequenceNumber;
             ReplayPostponedEvents();
             FlushAndPoll();
-        } else {
-            PostponeEvent(ev);
-        }
-    }
-
-    void HandleConnected(TEvPGEvents::TEvFinishHandshake::TPtr& ev) {
-        if (IsEventExpected(ev)) {
-            if (ev->Get()->ErrorFields.empty()) {
-                const auto& clientParams(InitialMessage->GetClientParams());
-                auto itOptions = clientParams.find("options");
-                if (itOptions != clientParams.end()) {
-                    TStringBuf options(itOptions->second);
-                    TStringBuf token;
-                    while (options.NextTok(' ', token) && token == "-c") {
-                        TStringBuf option;
-                        if (options.NextTok(' ', option)) {
-                            TStringBuf name;
-                            TStringBuf value;
-                            if (option.NextTok('=', name)) {
-                                value = option;
-                                ServerParams[TString(name)] = TString(value);
-                            }
-                        }
-                    }
-                }
-
-                TPGStreamOutput<TPGBackendKeyData> backendKeyData;
-                backendKeyData << (ev->Get()->BackendData.Pid ^ BACKEND_DATA_MASK) << (ev->Get()->BackendData.Key ^ BACKEND_DATA_MASK);
-                SendStream(backendKeyData);
-
-                for (const auto& [name, value] : ServerParams) {
-                    SendParameterStatus(name, value);
-                }
-                BecomeReadyForQuery();
-            } else {
-                SendErrorResponse(ev->Get()->ErrorFields);
-                BLOG_ERROR("unable to create connection");
-                CloseConnection = true;
-                FlushAndPoll();
-            }
         } else {
             PostponeEvent(ev);
         }
@@ -587,18 +480,29 @@ protected:
                 } else {
                     if (!ev->Get()->DataFields.empty()) { // rowDescription
                         TPGStreamOutput<TPGRowDescription> rowDescription;
-                        FillDataRowDescription(rowDescription, ev->Get()->DataFields);
+                        rowDescription << uint16_t(ev->Get()->DataFields.size()); // number of fields
+                        for (const auto& field : ev->Get()->DataFields) {
+                            rowDescription
+                                << TStringBuf(field.Name) << '\0'
+                                << uint32_t(field.TableId)
+                                << uint16_t(field.ColumnId)
+                                << uint32_t(field.DataType)
+                                << uint16_t(field.DataTypeSize)
+                                << uint32_t(0xffffffff) // type modifier
+                                << uint16_t(0)          // format text
+                                ;
+                        }
                         SendStream(rowDescription);
                     }
-                    if (!ev->Get()->DataRows.empty()) { // dataFields
+                    { // dataFields
                         for (const auto& row : ev->Get()->DataRows) {
                             TPGStreamOutput<TPGDataRow> dataRow;
-                            FillDataRow(dataRow, row);
+                            dataRow << uint16_t(row.size()); // number of fields
+                            for (const auto& item : row) {
+                                dataRow << uint32_t(item.size()) << item;
+                            }
                             SendStream(dataRow);
                         }
-                    }
-                    if (!ev->Get()->NoticeFields.empty()) { // notices
-                        SendNoticeResponse(ev->Get()->NoticeFields);
                     }
                     if (ev->Get()->CommandCompleted) {
                         // commandComplete
@@ -609,14 +513,15 @@ protected:
                     }
                 }
             } else {
-                SendErrorResponse(ev->Get()->ErrorFields);
-                if (ev->Get()->DropConnection) {
-                    CloseConnection = true;
-                    FlushAndPoll();
-                    return;
+                // error response
+                TPGStreamOutput<TPGErrorResponse> errorResponse;
+                for (const auto& field : ev->Get()->ErrorFields) {
+                    errorResponse << field.first << field.second << '\0';
                 }
+                errorResponse << '\0';
+                SendStream(errorResponse);
             }
-            if (ev->Get()->ReadyForQuery) {
+            if (ev->Get()->CommandCompleted) {
                 BecomeReadyForQuery();
             }
         } else {
@@ -626,31 +531,32 @@ protected:
 
     void HandleConnected(TEvPGEvents::TEvDescribeResponse::TPtr& ev) {
         if (IsEventExpected(ev)) {
-            if (ev->Get()->ErrorFields.empty()) {
-                if (ev->Get()->ParameterTypes.size() > 0) {
-                    // parameterDescription (statement only)
-                    TPGStreamOutput<TPGParameterDescription> parameterDescription;
-                    parameterDescription << uint16_t(ev->Get()->ParameterTypes.size()); // number of fields
-                    for (auto type : ev->Get()->ParameterTypes) {
-                        parameterDescription << type;
-                    }
-                    SendStream(parameterDescription);
+            { // parameterDescription
+                TPGStreamOutput<TPGParameterDescription> parameterDescription;
+                parameterDescription << uint16_t(ev->Get()->ParameterTypes.size()); // number of fields
+                for (auto type : ev->Get()->ParameterTypes) {
+                    parameterDescription << type;
                 }
-                if (ev->Get()->DataFields.size() > 0) {
-                    // rowDescription
-                    TPGStreamOutput<TPGRowDescription> rowDescription;
-                    FillDataRowDescription(rowDescription, ev->Get()->DataFields);
-                    SendStream(rowDescription);
-                } else {
-                    SendMessage(TPGNoData());
+                SendStream(parameterDescription);
+            }
+            if (ev->Get()->DataFields.size() > 0) {
+                // rowDescription
+                TPGStreamOutput<TPGRowDescription> rowDescription;
+                rowDescription << uint16_t(ev->Get()->DataFields.size()); // number of fields
+                for (const auto& field : ev->Get()->DataFields) {
+                    rowDescription
+                        << TStringBuf(field.Name) << '\0'
+                        << uint32_t(field.TableId)
+                        << uint16_t(field.ColumnId)
+                        << uint32_t(field.DataType)
+                        << uint16_t(field.DataTypeSize)
+                        << uint32_t(0xffffffff) // type modifier
+                        << uint16_t(0)          // format text
+                        ;
                 }
+                SendStream(rowDescription);
             } else {
-                SendErrorResponse(ev->Get()->ErrorFields);
-                if (ev->Get()->DropConnection) {
-                    CloseConnection = true;
-                    FlushAndPoll();
-                    return;
-                }
+                SendMessage(TPGNoData());
             }
             ++OutgoingSequenceNumber;
             BecomeReadyForQuery();
@@ -661,43 +567,38 @@ protected:
 
     void HandleConnected(TEvPGEvents::TEvExecuteResponse::TPtr& ev) {
         if (IsEventExpected(ev)) {
-            if (ev->Get()->TransactionStatus) {
-                TransactionStatus = ev->Get()->TransactionStatus;
-            }
             if (ev->Get()->ErrorFields.empty()) {
                 if (ev->Get()->EmptyQuery) {
                     SendMessage(TPGEmptyQueryResponse());
                 } else {
-                    if (!ev->Get()->DataRows.empty()) { // dataFields
+                    TString tag = ev->Get()->Tag ? ev->Get()->Tag : "OK";
+                    { // dataFields
                         for (const auto& row : ev->Get()->DataRows) {
                             TPGStreamOutput<TPGDataRow> dataRow;
-                            FillDataRow(dataRow, row);
+                            dataRow << uint16_t(row.size()); // number of fields
+                            for (const auto& item : row) {
+                                dataRow << uint32_t(item.size()) << item;
+                            }
                             SendStream(dataRow);
                         }
                     }
-                    if (!ev->Get()->NoticeFields.empty()) { // notices
-                        SendNoticeResponse(ev->Get()->NoticeFields);
-                    }
-                    if (ev->Get()->CommandCompleted) {
-                        // commandComplete
-                        TString tag = ev->Get()->Tag ? ev->Get()->Tag : "OK";
+                    { // commandComplete
                         TPGStreamOutput<TPGCommandComplete> commandComplete;
                         commandComplete << tag << '\0';
                         SendStream(commandComplete);
                     }
                 }
             } else {
-                SendErrorResponse(ev->Get()->ErrorFields);
-                if (ev->Get()->DropConnection) {
-                    CloseConnection = true;
-                    FlushOutput();
-                    return;
+                // error response
+                TPGStreamOutput<TPGErrorResponse> errorResponse;
+                for (const auto& field : ev->Get()->ErrorFields) {
+                    errorResponse << field.first << field.second << '\0';
                 }
+                errorResponse << '\0';
+                SendStream(errorResponse);
             }
-            if (ev->Get()->ReadyForQuery) {
-                ++OutgoingSequenceNumber;
-                BecomeReadyForQuery();
-            }
+            ++OutgoingSequenceNumber;
+            BecomeReadyForQuery();
         } else {
             PostponeEvent(ev);
         }
@@ -705,17 +606,8 @@ protected:
 
     void HandleConnected(TEvPGEvents::TEvParseResponse::TPtr& ev) {
         if (IsEventExpected(ev)) {
-            if (ev->Get()->ErrorFields.empty()) {
-                TPGStreamOutput<TPGParseComplete> parseComplete;
-                SendStream(parseComplete);
-            } else {
-                SendErrorResponse(ev->Get()->ErrorFields);
-                if (ev->Get()->DropConnection) {
-                    CloseConnection = true;
-                    FlushOutput();
-                    return;
-                }
-            }
+            TPGStreamOutput<TPGParseComplete> parseComplete;
+            SendStream(parseComplete);
             ++OutgoingSequenceNumber;
             BecomeReadyForQuery();
         } else {
@@ -725,12 +617,8 @@ protected:
 
     void HandleConnected(TEvPGEvents::TEvBindResponse::TPtr& ev) {
         if (IsEventExpected(ev)) {
-            if (ev->Get()->ErrorFields.empty()) {
-                TPGStreamOutput<TPGBindComplete> bindComplete;
-                SendStream(bindComplete);
-            } else {
-                SendErrorResponse(ev->Get()->ErrorFields);
-            }
+            TPGStreamOutput<TPGBindComplete> bindComplete;
+            SendStream(bindComplete);
             ++OutgoingSequenceNumber;
             BecomeReadyForQuery();
         } else {
@@ -760,7 +648,7 @@ protected:
     }
 
     const TPGMessage* GetInputMessage() const {
-        Y_DEBUG_ABORT_UNLESS(HasInputMessage());
+        Y_VERIFY_DEBUG(HasInputMessage());
         return reinterpret_cast<const TPGMessage*>(BufferInput.data());
     }
 
@@ -776,15 +664,6 @@ protected:
         if (event->Get()->Read) {
             for (;;) {
                 ssize_t need = BufferInput.Avail();
-                if (need == 0) {
-                    size_t capacity = BufferInput.Capacity() * 2;
-                    if (capacity > MAX_BUFFER_SIZE) {
-                        BLOG_ERROR("connection closed - not enough buffer size (" << capacity << " > " << MAX_BUFFER_SIZE << ")");
-                        return PassAway();
-                    }
-                    BufferInput.Reserve(capacity);
-                    need = BufferInput.Avail();
-                }
                 ssize_t res = SocketReceive(BufferInput.Pos(), need);
                 if (res > 0) {
                     InactivityTimer.Reset();
@@ -840,19 +719,19 @@ protected:
                     break;
                 } else if (-res == EINTR) {
                     continue;
-                } else if (res == 0) {
+                } else if (!res) {
                     // connection closed
-                    BLOG_ERROR("connection was gracefully closed iSQ: " << IncomingSequenceNumber << " oSQ: " << OutgoingSequenceNumber << " sSQ: " << SyncSequenceNumber);
+                    BLOG_D("connection closed iSQ: " << IncomingSequenceNumber << " oSQ: " << OutgoingSequenceNumber << " sSQ: " << SyncSequenceNumber);
                     return PassAway();
                 } else {
-                    BLOG_ERROR("connection closed - error in recv: " << strerror(-res));
+                    BLOG_D("connection closed - error in recv: " << strerror(-res));
                     return PassAway();
                 }
             }
             if (event->Get() == InactivityEvent) {
                 const TDuration passed = TDuration::Seconds(std::abs(InactivityTimer.Passed()));
                 if (passed >= InactivityTimeout) {
-                    BLOG_ERROR("connection closed by inactivity timeout");
+                    BLOG_D("connection closed by inactivity timeout");
                     return PassAway(); // timeout
                 } else {
                     Schedule(InactivityTimeout - passed, InactivityEvent = new TEvPollerReady(nullptr, false, false));
@@ -896,11 +775,19 @@ protected:
     }
 
     bool UpgradeToSecure() {
-        int res = Socket->TryUpgradeToSecure();
-        if (res < 0) {
-            BLOG_ERROR("connection closed - error in UpgradeToSecure: " << strerror(-res));
-            PassAway();
-            return false;
+        for (;;) {
+            int res = Socket->UpgradeToSecure();
+            if (res >= 0) {
+                break;
+            } else if (-res == EINTR) {
+                continue;
+            } else if (-res == EAGAIN || -res == EWOULDBLOCK) {
+                break;
+            } else {
+                BLOG_ERROR("connection closed - error in UpgradeToSecure: " << strerror(-res));
+                PassAway();
+                return false;
+            }
         }
         return true;
     }
@@ -917,7 +804,6 @@ protected:
             hFunc(TEvPollerReady, HandleConnected);
             hFunc(TEvPollerRegisterResult, HandleConnected);
             hFunc(TEvPGEvents::TEvAuthResponse, HandleConnected);
-            hFunc(TEvPGEvents::TEvFinishHandshake, HandleConnected);
             hFunc(TEvPGEvents::TEvQueryResponse, HandleConnected);
             hFunc(TEvPGEvents::TEvParseResponse, HandleConnected);
             hFunc(TEvPGEvents::TEvBindResponse, HandleConnected);
@@ -928,8 +814,8 @@ protected:
     }
 };
 
-NActors::IActor* CreatePGConnection(const TActorId& listenerActorId, TIntrusivePtr<TSocketDescriptor> socket, TNetworkConfig::TSocketAddressType address, const TActorId& databaseProxy) {
-    return new TPGConnection(listenerActorId, std::move(socket), std::move(address), databaseProxy);
+NActors::IActor* CreatePGConnection(TIntrusivePtr<TSocketDescriptor> socket, TNetworkConfig::TSocketAddressType address, const TActorId& databaseProxy) {
+    return new TPGConnection(std::move(socket), std::move(address), databaseProxy);
 }
 
 }

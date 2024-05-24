@@ -94,7 +94,6 @@ namespace NKikimr::NTestShard {
         }
 
         void OnLoadComplete() {
-            SignalTabletActive(SelfId());
             StartActivities();
         }
 

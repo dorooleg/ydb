@@ -8,10 +8,8 @@ namespace NHive {
 
 struct TBootQueue {
     struct TBootQueueRecord {
-        TTabletId TabletId;
+        TFullTabletId TabletId;
         double Priority;
-        TFollowerId FollowerId;
-        TNodeId SuggestedNodeId;
 
         static double GetBootPriority(const TTabletInfo& tablet) {
             double priority = 0;
@@ -27,9 +25,6 @@ struct TBootQueue {
             case TTabletTypes::BlobDepot:
                 priority = 2;
                 break;
-            case TTabletTypes::ColumnShard:
-                priority = 0;
-                break;
             default:
                 if (tablet.IsLeader()) {
                     priority = 1;
@@ -37,9 +32,6 @@ struct TBootQueue {
                 break;
             }
             priority += tablet.Weight;
-            if (tablet.RestartsOften()) {
-               priority -= 5;
-            }
             return priority;
         }
 
@@ -47,10 +39,12 @@ struct TBootQueue {
             return Priority < o.Priority;
         }
 
-        TBootQueueRecord(const TTabletInfo& tablet, TNodeId suggestedNodeId = 0);
+        TBootQueueRecord(const TTabletInfo& tablet)
+            : TabletId(tablet.GetFullTabletId())
+            , Priority(GetBootPriority(tablet))
+        {
+        }
     };
-
-    static_assert(sizeof(TBootQueueRecord) <= 24);
 
     std::priority_queue<TBootQueueRecord, std::vector<TBootQueueRecord>> BootQueue;
     std::deque<TBootQueueRecord> WaitQueue; // tablets from BootQueue waiting for new nodes
@@ -59,11 +53,6 @@ struct TBootQueue {
     TBootQueueRecord PopFromBootQueue();
     void AddToWaitQueue(TBootQueueRecord record);
     void MoveFromWaitQueueToBootQueue();
-
-    template<typename... Args>
-    void EmplaceToBootQueue(Args&&... args) {
-        BootQueue.emplace(args...);
-    }
 };
 
 }

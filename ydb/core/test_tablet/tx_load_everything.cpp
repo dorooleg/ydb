@@ -20,7 +20,7 @@ namespace NKikimr::NTestShard {
                     const TString settings = table.GetValue<T::Settings>();
                     Self->Settings.emplace();
                     const bool success = Self->Settings->ParseFromString(settings);
-                    Y_ABORT_UNLESS(success);
+                    Y_VERIFY(success);
                 }
             }
             return true;

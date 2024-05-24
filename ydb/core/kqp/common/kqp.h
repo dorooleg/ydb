@@ -21,7 +21,7 @@
 #include <ydb/library/yql/public/issue/yql_issue.h>
 #include <ydb/public/api/protos/ydb_status_codes.pb.h>
 #include <ydb/public/api/protos/ydb_value.pb.h>
-#include <ydb/public/api/protos/ydb_query.pb.h>
+#include <ydb/public/api/protos/draft/ydb_query.pb.h>
 
 #include <google/protobuf/util/message_differencer.h>
 
@@ -35,8 +35,8 @@ namespace NKikimr::NKqp {
 
 void ConvertKqpQueryResultToDbResult(const NKikimrMiniKQL::TResult& from, Ydb::ResultSet* to);
 
-TString ScriptExecutionRunnerActorIdString(const NActors::TActorId& actorId);
-bool ScriptExecutionRunnerActorIdFromString(const TString& executionId, TActorId& actorId);
+TString ActorIdToScriptExecutionId(const NActors::TActorId& actorId);
+bool ScriptExecutionIdToActorId(const TString& executionId, TActorId& actorId);
 
 template<typename TFrom, typename TTo>
 inline void ConvertKqpQueryResultsToDbResult(const TFrom& from, TTo* to) {
@@ -80,8 +80,6 @@ public:
     /// Accepts query text
     virtual void Collect(const TString& queryData) = 0;
 
-    virtual bool IsNull() { return false; } 
-
     virtual ~IQueryReplayBackend() {};
 
     //// Updates configuration onn running backend, if applicable.
@@ -95,10 +93,6 @@ public:
     }
 
     virtual void UpdateConfig(const NKikimrConfig::TTableServiceConfig&) {
-    }
-
-    bool IsNull() {
-        return true;
     }
 
     ~TNullQueryReplayBackend() {

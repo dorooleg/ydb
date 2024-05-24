@@ -6,8 +6,6 @@
 
 #include <util/generic/ptr.h>
 #include <util/system/hp_timer.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
-#include <ydb/library/wilson_ids/wilson.h>
 
 namespace NKikimr {
 namespace NTabletFlatExecutor {
@@ -21,6 +19,7 @@ namespace NTabletFlatExecutor {
             : UniqID(uniqId)
             , Self(self)
         {
+
         }
 
         void Describe(IOutputStream &out) const noexcept
@@ -30,33 +29,10 @@ namespace NTabletFlatExecutor {
             out << "}";
         }
 
-        void Complete(const TActorContext& ctx, bool isRW) noexcept;
-
-        void Terminate(ETerminationReason reason, const TActorContext& ctx) noexcept;
-
-        void StartEnqueuedSpan() noexcept {
-            WaitingSpan = NWilson::TSpan(TWilsonTablet::TabletDetailed, Self->TxSpan.GetTraceId(), "Tablet.Transaction.Enqueued");
-        }
-
-        void FinishEnqueuedSpan() noexcept {
-            WaitingSpan.EndOk();
-        }
-
-        void CreatePendingSpan() noexcept {
-            WaitingSpan = NWilson::TSpan(TWilsonTablet::TabletDetailed, Self->TxSpan.GetTraceId(), "Tablet.Transaction.Pending");
-        }
-
-        void FinishPendingSpan() noexcept {
-            WaitingSpan.EndOk();
-        }
-
-        NWilson::TTraceId GetTxTraceId() const noexcept {
-            return Self->TxSpan.GetTraceId();
-        }
+        void Complete(const TActorContext& ctx) noexcept;
 
         const ui64 UniqID = Max<ui64>();
         const TAutoPtr<ITransaction> Self;
-        NWilson::TSpan WaitingSpan;
         ui64 Retries = 0;
         TPinned Pinned;
 

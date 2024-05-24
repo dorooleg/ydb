@@ -1,8 +1,8 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/services/services.pb.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/protos/node_whiteboard.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
@@ -106,7 +106,7 @@ public:
 
             TActorId txproxy = MakeTxProxyID();
             TBase::Send(txproxy, request.Release());
-            UnsafeBecome(&TThis::StateRequestedDescribe, TDuration::MilliSeconds(TBase::RequestSettings.Timeout), new TEvents::TEvWakeup());
+            Become(&TThis::StateRequestedDescribe, TDuration::MilliSeconds(TBase::RequestSettings.Timeout), new TEvents::TEvWakeup());
         } else {
             TBase::Bootstrap();
             if (!TBase::RequestSettings.FilterFields.empty()) {
@@ -154,11 +154,14 @@ public:
                         Tablets[pathDescription.GetDomainDescription().GetProcessingParams().GetSchemeShard()] = NKikimrTabletBase::TTabletTypes::SchemeShard;
                     } else {
                         TIntrusivePtr<TDomainsInfo> domains = AppData()->DomainsInfo;
-                        auto *domain = domains->GetDomain();
+                        TIntrusivePtr<TDomainsInfo::TDomain> domain = domains->Domains.begin()->second;
                         Tablets[domain->SchemeRoot] = NKikimrTabletBase::TTabletTypes::SchemeShard;
-                        Tablets[MakeBSControllerID()] = NKikimrTabletBase::TTabletTypes::BSController;
-                        Tablets[MakeConsoleID()] = NKikimrTabletBase::TTabletTypes::Console;
-                        Tablets[MakeNodeBrokerID()] = NKikimrTabletBase::TTabletTypes::NodeBroker;
+
+                        ui32 hiveDomain = domains->GetHiveDomainUid(domain->DefaultHiveUid);
+                        ui64 defaultStateStorageGroup = domains->GetDefaultStateStorageGroup(hiveDomain);
+                        Tablets[MakeBSControllerID(defaultStateStorageGroup)] = NKikimrTabletBase::TTabletTypes::BSController;
+                        Tablets[MakeConsoleID(defaultStateStorageGroup)] = NKikimrTabletBase::TTabletTypes::Console;
+                        Tablets[MakeNodeBrokerID(defaultStateStorageGroup)] = NKikimrTabletBase::TTabletTypes::NodeBroker;
                     }
                     if (pathDescription.GetDomainDescription().GetProcessingParams().HasHive()) {
                         Tablets[pathDescription.GetDomainDescription().GetProcessingParams().GetHive()] = NKikimrTabletBase::TTabletTypes::Hive;

@@ -14,27 +14,17 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RETRY_SERVICE_CONFIG_H
-#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RETRY_SERVICE_CONFIG_H
+#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RETRY_SERVICE_CONFIG_H
+#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RETRY_SERVICE_CONFIG_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stddef.h>
-#include <stdint.h>
-
 #include <memory>
 
-#include "y_absl/strings/string_view.h"
-#include "y_absl/types/optional.h"
-
-#include "src/core/lib/channel/channel_args.h"
+#include "src/core/ext/filters/client_channel/retry_throttle.h"
 #include "src/core/lib/channel/status_util.h"
 #include "src/core/lib/config/core_configuration.h"
 #include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/gprpp/validation_errors.h"
-#include "src/core/lib/json/json.h"
-#include "src/core/lib/json/json_args.h"
-#include "src/core/lib/json/json_object_loader.h"
 #include "src/core/lib/service_config/service_config_parser.h"
 
 namespace grpc_core {
@@ -42,20 +32,31 @@ namespace internal {
 
 class RetryGlobalConfig : public ServiceConfigParser::ParsedConfig {
  public:
-  uintptr_t max_milli_tokens() const { return max_milli_tokens_; }
-  uintptr_t milli_token_ratio() const { return milli_token_ratio_; }
+  RetryGlobalConfig(intptr_t max_milli_tokens, intptr_t milli_token_ratio)
+      : max_milli_tokens_(max_milli_tokens),
+        milli_token_ratio_(milli_token_ratio) {}
 
-  static const JsonLoaderInterface* JsonLoader(const JsonArgs&);
-  void JsonPostLoad(const Json& json, const JsonArgs& args,
-                    ValidationErrors* errors);
+  intptr_t max_milli_tokens() const { return max_milli_tokens_; }
+  intptr_t milli_token_ratio() const { return milli_token_ratio_; }
 
  private:
-  uintptr_t max_milli_tokens_ = 0;
-  uintptr_t milli_token_ratio_ = 0;
+  intptr_t max_milli_tokens_ = 0;
+  intptr_t milli_token_ratio_ = 0;
 };
 
 class RetryMethodConfig : public ServiceConfigParser::ParsedConfig {
  public:
+  RetryMethodConfig(int max_attempts, Duration initial_backoff,
+                    Duration max_backoff, float backoff_multiplier,
+                    StatusCodeSet retryable_status_codes,
+                    y_absl::optional<Duration> per_attempt_recv_timeout)
+      : max_attempts_(max_attempts),
+        initial_backoff_(initial_backoff),
+        max_backoff_(max_backoff),
+        backoff_multiplier_(backoff_multiplier),
+        retryable_status_codes_(retryable_status_codes),
+        per_attempt_recv_timeout_(per_attempt_recv_timeout) {}
+
   int max_attempts() const { return max_attempts_; }
   Duration initial_backoff() const { return initial_backoff_; }
   Duration max_backoff() const { return max_backoff_; }
@@ -66,10 +67,6 @@ class RetryMethodConfig : public ServiceConfigParser::ParsedConfig {
   y_absl::optional<Duration> per_attempt_recv_timeout() const {
     return per_attempt_recv_timeout_;
   }
-
-  static const JsonLoaderInterface* JsonLoader(const JsonArgs&);
-  void JsonPostLoad(const Json& json, const JsonArgs& args,
-                    ValidationErrors* errors);
 
  private:
   int max_attempts_ = 0;
@@ -85,12 +82,12 @@ class RetryServiceConfigParser : public ServiceConfigParser::Parser {
   y_absl::string_view name() const override { return parser_name(); }
 
   std::unique_ptr<ServiceConfigParser::ParsedConfig> ParseGlobalParams(
-      const ChannelArgs& /*args*/, const Json& json,
-      ValidationErrors* errors) override;
+      const grpc_channel_args* /*args*/, const Json& json,
+      grpc_error_handle* error) override;
 
   std::unique_ptr<ServiceConfigParser::ParsedConfig> ParsePerMethodParams(
-      const ChannelArgs& args, const Json& json,
-      ValidationErrors* errors) override;
+      const grpc_channel_args* args, const Json& json,
+      grpc_error_handle* error) override;
 
   static size_t ParserIndex();
   static void Register(CoreConfiguration::Builder* builder);
@@ -102,4 +99,4 @@ class RetryServiceConfigParser : public ServiceConfigParser::Parser {
 }  // namespace internal
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RETRY_SERVICE_CONFIG_H
+#endif  // GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RETRY_SERVICE_CONFIG_H

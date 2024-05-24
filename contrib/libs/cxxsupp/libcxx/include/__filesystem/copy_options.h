@@ -21,7 +21,9 @@
 
 _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
 
-enum class copy_options : unsigned short {
+_LIBCPP_AVAILABILITY_FILESYSTEM_PUSH
+
+enum class _LIBCPP_ENUM_VIS copy_options : unsigned short {
   none = 0,
   skip_existing = 1,
   overwrite_existing = 2,
@@ -36,42 +38,44 @@ enum class copy_options : unsigned short {
 };
 
 _LIBCPP_INLINE_VISIBILITY
-inline constexpr copy_options operator&(copy_options __lhs, copy_options __rhs) {
-  return static_cast<copy_options>(static_cast<unsigned short>(__lhs) &
-                                   static_cast<unsigned short>(__rhs));
+inline constexpr copy_options operator&(copy_options _LHS, copy_options _RHS) {
+  return static_cast<copy_options>(static_cast<unsigned short>(_LHS) &
+                                   static_cast<unsigned short>(_RHS));
 }
 
 _LIBCPP_INLINE_VISIBILITY
-inline constexpr copy_options operator|(copy_options __lhs, copy_options __rhs) {
-  return static_cast<copy_options>(static_cast<unsigned short>(__lhs) |
-                                   static_cast<unsigned short>(__rhs));
+inline constexpr copy_options operator|(copy_options _LHS, copy_options _RHS) {
+  return static_cast<copy_options>(static_cast<unsigned short>(_LHS) |
+                                   static_cast<unsigned short>(_RHS));
 }
 
 _LIBCPP_INLINE_VISIBILITY
-inline constexpr copy_options operator^(copy_options __lhs, copy_options __rhs) {
-  return static_cast<copy_options>(static_cast<unsigned short>(__lhs) ^
-                                   static_cast<unsigned short>(__rhs));
+inline constexpr copy_options operator^(copy_options _LHS, copy_options _RHS) {
+  return static_cast<copy_options>(static_cast<unsigned short>(_LHS) ^
+                                   static_cast<unsigned short>(_RHS));
 }
 
 _LIBCPP_INLINE_VISIBILITY
-inline constexpr copy_options operator~(copy_options __lhs) {
-  return static_cast<copy_options>(~static_cast<unsigned short>(__lhs));
+inline constexpr copy_options operator~(copy_options _LHS) {
+  return static_cast<copy_options>(~static_cast<unsigned short>(_LHS));
 }
 
 _LIBCPP_INLINE_VISIBILITY
-inline copy_options& operator&=(copy_options& __lhs, copy_options __rhs) {
-  return __lhs = __lhs & __rhs;
+inline copy_options& operator&=(copy_options& _LHS, copy_options _RHS) {
+  return _LHS = _LHS & _RHS;
 }
 
 _LIBCPP_INLINE_VISIBILITY
-inline copy_options& operator|=(copy_options& __lhs, copy_options __rhs) {
-  return __lhs = __lhs | __rhs;
+inline copy_options& operator|=(copy_options& _LHS, copy_options _RHS) {
+  return _LHS = _LHS | _RHS;
 }
 
 _LIBCPP_INLINE_VISIBILITY
-inline copy_options& operator^=(copy_options& __lhs, copy_options __rhs) {
-  return __lhs = __lhs ^ __rhs;
+inline copy_options& operator^=(copy_options& _LHS, copy_options _RHS) {
+  return _LHS = _LHS ^ _RHS;
 }
+
+_LIBCPP_AVAILABILITY_FILESYSTEM_POP
 
 _LIBCPP_END_NAMESPACE_FILESYSTEM
 

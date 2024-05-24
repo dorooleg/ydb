@@ -80,7 +80,7 @@ namespace NKikimr {
                     Sds.Proto.MutableEntries(index)->MergeFrom(msg->VDiskEntry);
                     break;
                 }
-                default: Y_ABORT("Unexpected case");
+                default: Y_FAIL("Unexpected case");
             }
         }
 
@@ -110,7 +110,6 @@ namespace NKikimr {
         using TNotifyVec = TVector<TNotify>;
 
         TIntrusivePtr<TSyncerContext> SyncerCtx;
-        bool EnableSelfCommit;
         const TDuration AdvanceEntryPointTimeout;
         TProtoState State;
         // If InFly is not empty, we have a write to log in flight;
@@ -127,13 +126,7 @@ namespace NKikimr {
         friend class TActorBootstrapped<TSyncerCommitter>;
 
         void Bootstrap(const TActorContext &ctx) {
-            if (EnableSelfCommit) {
-                ScheduleWakeup(ctx);
-            } else {
-                LOG_WARN(ctx, NKikimrServices::BS_SYNCER,
-                    VDISKP(SyncerCtx->VCtx->VDiskLogPrefix,
-                        "SelfCommit in TSyncerCommitter is disabled"));
-            }
+            ScheduleWakeup(ctx);
             TThis::Become(&TThis::StateFunc);
         }
 
@@ -169,7 +162,7 @@ namespace NKikimr {
 
         void Handle(NPDisk::TEvLogResult::TPtr &ev, const TActorContext &ctx) {
             CHECK_PDISK_RESPONSE(SyncerCtx->VCtx, ev, ctx);
-            Y_DEBUG_ABORT_UNLESS(!InFly.empty());
+            Y_VERIFY_DEBUG(!InFly.empty());
 
             // reply committed on all writes completed
             for (const auto &x: InFly){
@@ -178,7 +171,7 @@ namespace NKikimr {
             InFly.clear();
 
             // advance current entry point lsn
-            Y_DEBUG_ABORT_UNLESS(ev->Get()->Results.size() == 1);
+            Y_VERIFY_DEBUG(ev->Get()->Results.size() == 1);
             CurEntryPointLsn = ev->Get()->Results[0].Lsn;
             LastCommitTime = TAppData::TimeProvider->Now();
 
@@ -190,7 +183,7 @@ namespace NKikimr {
                 // we have some pending messages
                 InFly.swap(Delayed);
                 GenerateCommit(ctx);
-                Y_DEBUG_ABORT_UNLESS(Delayed.empty());
+                Y_VERIFY_DEBUG(Delayed.empty());
             }
         }
 
@@ -221,7 +214,7 @@ namespace NKikimr {
                 SelfCommit(ctx);
             }
 
-            if (EnableSelfCommit && !SelfCommitInProgress) {
+            if (!SelfCommitInProgress) {
                 // we don't want more than one wakeup scheduled
                 ScheduleWakeup(ctx);
             }
@@ -230,7 +223,7 @@ namespace NKikimr {
         void Handle(TEvSyncerCommitDone::TPtr &ev, const TActorContext &ctx) {
             Y_UNUSED(ev);
             SelfCommitInProgress = false;
-            if (EnableSelfCommit && !WakeupScheduled)
+            if (!WakeupScheduled)
                 ScheduleWakeup(ctx);
         }
 
@@ -259,7 +252,6 @@ namespace NKikimr {
                          TSyncerDataSerializer &&sds)
             : TActorBootstrapped<TSyncerCommitter>()
             , SyncerCtx(sc)
-            , EnableSelfCommit(!SyncerCtx->Config->BaseInfo.ReadOnly)
             , AdvanceEntryPointTimeout(SyncerCtx->Config->AdvanceEntryPointTimeout)
             , State(SyncerCtx->VCtx->Top, std::move(sds))
         {}

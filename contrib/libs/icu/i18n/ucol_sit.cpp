@@ -20,7 +20,6 @@
 #include "unicode/utf16.h"
 #include "utracimp.h"
 #include "ucol_imp.h"
-#include "ulocimp.h"
 #include "cmemory.h"
 #include "cstring.h"
 #include "uresimp.h"
@@ -87,6 +86,7 @@ static const char providerKeyword[]  = "@sp=";
 static const int32_t locElementCount = UCOL_SIT_LOCELEMENT_MAX+1;
 static const int32_t locElementCapacity = 32;
 static const int32_t loc3066Capacity = 256;
+static const int32_t internalBufferSize = 512;
 
 /* structure containing specification of a collator. Initialized
  * from a short string. Also used to construct a short string from a
@@ -99,7 +99,7 @@ struct CollatorSpec {
     CharString locale;
     UColAttributeValue options[UCOL_ATTRIBUTE_COUNT];
     uint32_t variableTopValue;
-    char16_t variableTopString[locElementCapacity];
+    UChar variableTopString[locElementCapacity];
     int32_t variableTopStringLen;
     UBool variableTopSet;
     CharString entries[UCOL_SIT_ITEMS_COUNT];
@@ -109,7 +109,7 @@ CollatorSpec::CollatorSpec() :
 locale(),
 variableTopValue(0),
 variableTopString(),
-variableTopSet(false)
+variableTopSet(FALSE)
  {
     // set collation options to default
     for(int32_t i = 0; i < UCOL_ATTRIBUTE_COUNT; i++) {
@@ -189,7 +189,7 @@ _processRFC3066Locale(CollatorSpec *spec, uint32_t, const char* string,
     char terminator = *string;
     string++;
     const char *end = uprv_strchr(string+1, terminator);
-    if(end == nullptr || end - string >= loc3066Capacity) {
+    if(end == NULL || end - string >= loc3066Capacity) {
         *status = U_BUFFER_OVERFLOW_ERROR;
         return string;
     } else {
@@ -217,10 +217,10 @@ _processCollatorOption(CollatorSpec *spec, uint32_t option, const char* string,
 U_CDECL_END
 
 
-static char16_t
+static UChar
 readHexCodeUnit(const char **string, UErrorCode *status)
 {
-    char16_t result = 0;
+    UChar result = 0;
     int32_t value = 0;
     char c;
     int32_t noDigits = 0;
@@ -238,7 +238,7 @@ readHexCodeUnit(const char **string, UErrorCode *status)
 #endif    
             return 0;
         }
-        result = (result << 4) | (char16_t)value;
+        result = (result << 4) | (UChar)value;
         noDigits++;
         (*string)++;
     }
@@ -270,7 +270,7 @@ _processVariableTop(CollatorSpec *spec, uint32_t value1, const char* string, UEr
         spec->variableTopValue = readHexCodeUnit(&string, status);
     }
     if(U_SUCCESS(*status)) {
-        spec->variableTopSet = true;
+        spec->variableTopSet = TRUE;
     }
     return string;
 }
@@ -372,7 +372,10 @@ int32_t ucol_sit_dumpSpecs(CollatorSpec *s, char *destination, int32_t capacity,
                     }
                     len += s->entries[i].length();
                 } else {
-                    len += s->entries[i].extract(destination + len, capacity - len, *status);
+                    len += s->entries[i].length();
+                    if(len < capacity) {
+                        uprv_strncat(destination,s->entries[i].data(), s->entries[i].length());
+                    }
                 }
             }
         }
@@ -450,29 +453,38 @@ ucol_prepareShortStringOpen( const char *definition,
     ucol_sit_readSpecs(&s, definition, parseError, status);
     ucol_sit_calculateWholeLocale(&s, *status);
 
-    CharString buffer = ulocimp_canonicalize(s.locale.data(), *status);
+    char buffer[internalBufferSize];
+    uprv_memset(buffer, 0, internalBufferSize);
+    uloc_canonicalize(s.locale.data(), buffer, internalBufferSize, status);
 
-    UResourceBundle *b = ures_open(U_ICUDATA_COLL, buffer.data(), status);
+    UResourceBundle *b = ures_open(U_ICUDATA_COLL, buffer, status);
     /* we try to find stuff from keyword */
-    UResourceBundle *collations = ures_getByKey(b, "collations", nullptr, status);
-    UResourceBundle *collElem = nullptr;
+    UResourceBundle *collations = ures_getByKey(b, "collations", NULL, status);
+    UResourceBundle *collElem = NULL;
+    char keyBuffer[256];
     // if there is a keyword, we pick it up and try to get elements
-    CharString keyBuffer = ulocimp_getKeywordValue(buffer.data(), "collation", *status);
-    if(keyBuffer.isEmpty()) {
+    int32_t keyLen = uloc_getKeywordValue(buffer, "collation", keyBuffer, sizeof(keyBuffer), status);
+    // Treat too long a value as no keyword.
+    if(keyLen >= (int32_t)sizeof(keyBuffer)) {
+      keyLen = 0;
+      *status = U_ZERO_ERROR;
+    }
+    if(keyLen == 0) {
       // no keyword
       // we try to find the default setting, which will give us the keyword value
-      UResourceBundle *defaultColl = ures_getByKeyWithFallback(collations, "default", nullptr, status);
+      UResourceBundle *defaultColl = ures_getByKeyWithFallback(collations, "default", NULL, status);
       if(U_SUCCESS(*status)) {
         int32_t defaultKeyLen = 0;
-        const char16_t *defaultKey = ures_getString(defaultColl, &defaultKeyLen, status);
-        keyBuffer.appendInvariantChars(defaultKey, defaultKeyLen, *status);
+        const UChar *defaultKey = ures_getString(defaultColl, &defaultKeyLen, status);
+        u_UCharsToChars(defaultKey, keyBuffer, defaultKeyLen);
+        keyBuffer[defaultKeyLen] = 0;
       } else {
         *status = U_INTERNAL_PROGRAM_ERROR;
         return;
       }
       ures_close(defaultColl);
     }
-    collElem = ures_getByKeyWithFallback(collations, keyBuffer.data(), collElem, status);
+    collElem = ures_getByKeyWithFallback(collations, keyBuffer, collElem, status);
     ures_close(collElem);
     ures_close(collations);
     ures_close(b);
@@ -488,7 +500,7 @@ ucol_openFromShortString( const char *definition,
     UTRACE_ENTRY_OC(UTRACE_UCOL_OPEN_FROM_SHORT_STRING);
     UTRACE_DATA1(UTRACE_INFO, "short string = \"%s\"", definition);
 
-    if (U_FAILURE(*status)) return nullptr;
+    if(U_FAILURE(*status)) return 0;
 
     UParseError internalParseError;
 
@@ -511,12 +523,14 @@ ucol_openFromShortString( const char *definition,
     string = ucol_sit_readSpecs(&s, definition, parseError, status);
     ucol_sit_calculateWholeLocale(&s, *status);
 
+    char buffer[internalBufferSize];
+    uprv_memset(buffer, 0, internalBufferSize);
 #ifdef UCOL_TRACE_SIT
     fprintf(stderr, "DEF %s, DATA %s, ERR %s\n", definition, s.locale.data(), u_errorName(*status));
 #endif
-    CharString buffer = ulocimp_canonicalize(s.locale.data(), *status);
+    uloc_canonicalize(s.locale.data(), buffer, internalBufferSize, status);
 
-    UCollator *result = ucol_open(buffer.data(), status);
+    UCollator *result = ucol_open(buffer, status);
     int32_t i = 0;
 
     for(i = 0; i < UCOL_ATTRIBUTE_COUNT; i++) {
@@ -528,7 +542,7 @@ ucol_openFromShortString( const char *definition,
             if(U_FAILURE(*status)) {
                 parseError->offset = (int32_t)(string - definition);
                 ucol_close(result);
-                return nullptr;
+                return NULL;
             }
 
         }
@@ -544,7 +558,7 @@ ucol_openFromShortString( const char *definition,
 
     if(U_FAILURE(*status)) { // here it can only be a bogus value
         ucol_close(result);
-        result = nullptr;
+        result = NULL;
     }
 
     UTRACE_EXIT_PTR_STATUS(result, *status);
@@ -560,7 +574,7 @@ ucol_getShortDefinitionString(const UCollator *coll,
                               UErrorCode *status)
 {
     if(U_FAILURE(*status)) return 0;
-    if(coll == nullptr) {
+    if(coll == NULL) {
         *status = U_ILLEGAL_ARGUMENT_ERROR;
         return 0;
     }
@@ -607,7 +621,7 @@ ucol_getContractions( const UCollator *coll,
                   USet *contractions,
                   UErrorCode *status)
 {
-  ucol_getContractionsAndExpansions(coll, contractions, nullptr, false, status);
+  ucol_getContractionsAndExpansions(coll, contractions, NULL, FALSE, status);
   return uset_getItemCount(contractions);
 }
 
@@ -631,12 +645,12 @@ ucol_getContractionsAndExpansions( const UCollator *coll,
     if(U_FAILURE(*status)) {
         return;
     }
-    if(coll == nullptr) {
+    if(coll == NULL) {
         *status = U_ILLEGAL_ARGUMENT_ERROR;
         return;
     }
     const icu::RuleBasedCollator *rbc = icu::RuleBasedCollator::rbcFromUCollator(coll);
-    if(rbc == nullptr) {
+    if(rbc == NULL) {
         *status = U_UNSUPPORTED_ERROR;
         return;
     }

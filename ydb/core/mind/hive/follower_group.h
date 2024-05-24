@@ -2,7 +2,6 @@
 
 #include "hive.h"
 #include <ydb/core/protos/hive.pb.h>
-#include <ydb/core/protos/follower_group.pb.h>
 #include <ydb/core/base/location.h>
 
 namespace NKikimr {
@@ -13,15 +12,13 @@ struct TFollowerGroup {
     bool AllowLeaderPromotion = false;
     bool AllowClientRead = false;
     bool RequireAllDataCenters = true;
-    TNodeFilter NodeFilter;
+    TVector<TNodeId> AllowedNodes;
+    TVector<TDataCenterId> AllowedDataCenters;
     bool LocalNodeOnly = true; // run follower on the same node as leader
     bool RequireDifferentNodes = false; // do not run followers on same nodes as another followers of the same leader
     bool FollowerCountPerDataCenter = false; // PER_AZ KIKIMR-10443
 
-    explicit TFollowerGroup(const THive& hive) 
-        : NodeFilter(hive)
-    {}
-
+    TFollowerGroup() = default;
     TFollowerGroup(const TFollowerGroup&) = delete;
     TFollowerGroup(TFollowerGroup&&) = delete;
     TFollowerGroup& operator =(const TFollowerGroup&) = delete;
@@ -38,14 +35,14 @@ struct TFollowerGroup {
         RequireAllDataCenters = followerGroup.GetRequireAllDataCenters();
         {
             const auto& allowedNodes(followerGroup.GetAllowedNodeIDs());
-            std::copy(allowedNodes.begin(), allowedNodes.end(), std::back_inserter(NodeFilter.AllowedNodes));
+            std::copy(allowedNodes.begin(), allowedNodes.end(), std::back_inserter(AllowedNodes));
         }
         {
             if (const auto& x = followerGroup.GetAllowedDataCenters(); !x.empty()) {
-                NodeFilter.AllowedDataCenters.insert(NodeFilter.AllowedDataCenters.end(), x.begin(), x.end());
+                AllowedDataCenters.insert(AllowedDataCenters.end(), x.begin(), x.end());
             } else {
                 for (const auto& dataCenterId : followerGroup.GetAllowedDataCenterNumIDs()) {
-                    NodeFilter.AllowedDataCenters.push_back(DataCenterToString(dataCenterId));
+                    AllowedDataCenters.push_back(DataCenterToString(dataCenterId));
                 }
             }
         }

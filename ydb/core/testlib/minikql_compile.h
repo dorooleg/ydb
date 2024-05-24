@@ -41,10 +41,10 @@ public:
 
                 for (auto& column : table.ColumnNames) {
                     auto columnInfo = data->Columns.FindPtr(column);
-                    Y_ABORT_UNLESS(column);
+                    Y_VERIFY(column);
 
                     auto insertResult = result.Columns.insert(std::make_pair(column, *columnInfo));
-                    Y_ABORT_UNLESS(insertResult.second);
+                    Y_VERIFY(insertResult.second);
                 }
             }
 
@@ -82,7 +82,7 @@ inline TExprContainer::TPtr ParseText(const TString& programText) {
     UNIT_ASSERT(astRes.IsOk());
 
     TExprContainer::TPtr expr(new TExprContainer());
-    bool isOk = CompileExpr(*astRes.Root, expr->Root, expr->Context, nullptr, nullptr);
+    bool isOk = CompileExpr(*astRes.Root, expr->Root, expr->Context, nullptr);
     expr->Context.IssueManager.GetIssues().PrintTo(Cerr);
     UNIT_ASSERT(isOk);
     return expr;

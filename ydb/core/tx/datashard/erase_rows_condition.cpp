@@ -2,8 +2,7 @@
 
 #include <ydb/library/dynumber/dynumber.h>
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/core/protos/flat_scheme_op.pb.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/datetime/base.h>
 #include <util/string/cast.h>
@@ -83,7 +82,7 @@ class TExpirationCondition: public IEraseRowsCondition {
                 return false;
             }
         default:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         }
     }
 
@@ -92,13 +91,13 @@ class TExpirationCondition: public IEraseRowsCondition {
         // 'value since epoch' mode
         case NScheme::NTypeIds::DyNumber:
             if (const auto& wallClockDyNumber = GetWallClockDyNumber()) {
-                Y_ABORT_UNLESS(NDyNumber::IsValidDyNumber(value));
+                Y_VERIFY(NDyNumber::IsValidDyNumber(value));
                 return value <= *wallClockDyNumber;
             } else {
                 return false;
             }
         default:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         }
     }
 
@@ -127,18 +126,18 @@ public:
 
     void Prepare(TIntrusiveConstPtr<NTable::TRowScheme> scheme, TMaybe<NTable::TPos> remapPos) override {
         const auto* columnInfo = scheme->ColInfo(ColumnId);
-        Y_ABORT_UNLESS(columnInfo);
+        Y_VERIFY(columnInfo);
 
         Pos = remapPos.GetOrElse(columnInfo->Pos);
-        Y_ABORT_UNLESS(Pos < scheme->Tags().size());
+        Y_VERIFY(Pos < scheme->Tags().size());
 
         Type = columnInfo->TypeInfo.GetTypeId();
-        Y_ABORT_UNLESS(Type != NScheme::NTypeIds::Pg, "pg types are not supported");
+        Y_VERIFY(Type != NScheme::NTypeIds::Pg, "pg types are not supported");
     }
 
     bool Check(const NTable::TRowState& row) const override {
-        Y_ABORT_UNLESS(Pos != Max<NTable::TPos>());
-        Y_ABORT_UNLESS(Pos < row.Size());
+        Y_VERIFY(Pos != Max<NTable::TPos>());
+        Y_VERIFY(Pos < row.Size());
 
         const auto& cell = row.Get(Pos);
         if (cell.IsNull()) {

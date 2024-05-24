@@ -6,37 +6,6 @@
 namespace NKikimr {
 namespace NSchemeShard {
 
-inline bool CheckStorageQuotasKinds(const Ydb::Cms::DatabaseQuotas& quotas,
-                                    const TVector<TStoragePool>& pools,
-                                    const TString& path,
-                                    TString& error
-) {
-    TVector<TString> quotedKinds;
-    for (const auto& storageQuota : quotas.storage_quotas()) {
-        quotedKinds.emplace_back(storageQuota.unit_kind());
-    }
-    Sort(quotedKinds);
-    const auto uniqueEnd = Unique(quotedKinds.begin(), quotedKinds.end());
-    if (uniqueEnd != quotedKinds.end()) {
-        error = TStringBuilder()
-            << "Malformed subdomain request: storage quotas' unit kinds must be unique, but "
-            << *uniqueEnd << " appears twice in the storage quotas definition of the " << path << " subdomain.";
-        return false;
-    }
-
-    for (const auto& quotedKind : quotedKinds) {
-        if (!AnyOf(pools, [&quotedKind](const TStoragePool& pool) {
-            return pool.GetKind() == quotedKind;
-        })) {
-            error = TStringBuilder()
-                << "Malformed subdomain request: cannot set a " << quotedKind << " storage quota, "
-                << "because no storage pool in the subdomain " << path << " has the specified kind.";
-            return false;
-        }
-    }
-    return true;
-}
-
 namespace NSubDomainState {
 
 class TConfigureParts: public TSubOperationState {
@@ -64,8 +33,8 @@ public:
                        << " at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSubDomain
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSubDomain
             || txState->TxType == TTxState::TxAlterSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomainCreateHive
@@ -79,7 +48,7 @@ public:
         auto status = record.GetStatus();
 
         auto shardIdx = context.SS->MustGetShardIdx(tabletId);
-        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
+        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
 
         if (status != NKikimrScheme::EStatus::StatusSuccess && status != NKikimrScheme::EStatus::StatusAlreadyExists) {
             LOG_CRIT_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -122,8 +91,8 @@ public:
                     << " at schemeshard:" << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSubDomain
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSubDomain
             || txState->TxType == TTxState::TxAlterSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomainCreateHive
@@ -137,7 +106,7 @@ public:
         auto status = record.GetStatus();
 
         auto shardIdx = context.SS->MustGetShardIdx(tabletId);
-        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
+        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
 
         if (status == NKikimrTx::TEvSubDomainConfigurationAck::REJECT) {
             LOG_CRIT_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -179,8 +148,8 @@ public:
                        << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSubDomain
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSubDomain
             || txState->TxType == TTxState::TxAlterSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomainCreateHive
@@ -196,13 +165,13 @@ public:
         }
 
         auto pathId = txState->TargetPathId;
-        Y_ABORT_UNLESS(context.SS->PathsById.contains(pathId));
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
         TPath path = TPath::Init(pathId, context.SS);
 
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(pathId));
+        Y_VERIFY(context.SS->SubDomains.contains(pathId));
         auto subDomain = context.SS->SubDomains.at(pathId);
         auto alterData = subDomain->GetAlter();
-        Y_ABORT_UNLESS(alterData);
+        Y_VERIFY(alterData);
         alterData->Initialize(context.SS->ShardInfos);
         auto processing = alterData->GetProcessingParams();
         auto storagePools = alterData->GetStoragePools();
@@ -213,7 +182,7 @@ public:
                 continue;
             }
             TShardIdx idx = shard.Idx;
-            Y_ABORT_UNLESS(context.SS->ShardInfos.contains(idx));
+            Y_VERIFY(context.SS->ShardInfos.contains(idx));
             TTabletId tabletID = context.SS->ShardInfos[idx].TabletID;
             auto type = context.SS->ShardInfos[idx].TabletType;
 
@@ -249,16 +218,6 @@ public:
                 context.OnComplete.BindMsgToPipe(OperationId, tabletID, idx, event);
                 break;
             }
-            case ETabletType::StatisticsAggregator: {
-                LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                    "Send configure request to statistics aggregator: " << tabletID <<
-                    " opId: " << OperationId <<
-                    " schemeshard: " << ssId);
-                auto event = new NStat::TEvStatistics::TEvConfigureAggregator(path.PathString());
-                shard.Operation = TTxState::ConfigureParts;
-                context.OnComplete.BindMsgToPipe(OperationId, tabletID, idx, event);
-                break;
-            }
             case ETabletType::SchemeShard: {
                 auto event = new TEvSchemeShard::TEvInitTenantSchemeShard(ui64(ssId),
                                                                               pathId.LocalPathId, path.PathString(),
@@ -273,12 +232,6 @@ public:
                 if (alterData->GetDatabaseQuotas()) {
                     event->Record.MutableDatabaseQuotas()->CopyFrom(*alterData->GetDatabaseQuotas());
                 }
-                if (alterData->GetAuditSettings()) {
-                    event->Record.MutableAuditSettings()->CopyFrom(*alterData->GetAuditSettings());
-                }
-                if (alterData->GetServerlessComputeResourcesMode()) {
-                    event->Record.SetServerlessComputeResourcesMode(*alterData->GetServerlessComputeResourcesMode());
-                }
                 LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                             "Send configure request to schemeshard: " << tabletID <<
                                 " opId: " << OperationId <<
@@ -286,26 +239,6 @@ public:
                                 " msg: " << event->Record.ShortDebugString());
 
                 shard.Operation = TTxState::ConfigureParts;
-                context.OnComplete.BindMsgToPipe(OperationId, tabletID, idx, event);
-                break;
-            }
-            case ETabletType::GraphShard: {
-                LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                    "Send configure request to graph shard: " << tabletID <<
-                    " opId: " << OperationId <<
-                    " schemeshard: " << ssId);
-                shard.Operation = TTxState::ConfigureParts;
-                auto event = new TEvSubDomain::TEvConfigure(processing);
-                context.OnComplete.BindMsgToPipe(OperationId, tabletID, idx, event);
-                break;
-            }
-            case ETabletType::BackupController: {
-                LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                    "Send configure request to backup controller tablet: " << tabletID <<
-                    " opId: " << OperationId <<
-                    " schemeshard: " << ssId);
-                shard.Operation = TTxState::ConfigureParts;
-                auto event = new TEvSubDomain::TEvConfigure(processing);
                 context.OnComplete.BindMsgToPipe(OperationId, tabletID, idx, event);
                 break;
             }
@@ -321,7 +254,7 @@ public:
 
 class TPropose: public TSubOperationState {
 private:
-    const TOperationId OperationId;
+    TOperationId OperationId;
 
     TString DebugHint() const override {
         return TStringBuilder()
@@ -353,7 +286,7 @@ public:
         if (!txState) {
             return false;
         }
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSubDomain
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSubDomain
             || txState->TxType == TTxState::TxAlterSubDomain
             || txState->TxType == TTxState::TxCreateExtSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomain
@@ -361,7 +294,7 @@ public:
         );
 
         TPathId pathId = txState->TargetPathId;
-        Y_ABORT_UNLESS(context.SS->PathsById.contains(pathId));
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
 
         NIceDb::TNiceDb db(context.GetDB());
@@ -371,10 +304,10 @@ public:
             context.SS->PersistCreateStep(db, pathId, step);
         }
 
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(pathId));
+        Y_VERIFY(context.SS->SubDomains.contains(pathId));
         auto subDomain = context.SS->SubDomains.at(pathId);
         auto alter = subDomain->GetAlter();
-        Y_ABORT_UNLESS(alter);
+        Y_VERIFY(alter);
         Y_VERIFY_S(subDomain->GetVersion() < alter->GetVersion(), "" << subDomain->GetVersion() << " and " << alter->GetVersion());
 
         subDomain->ActualizeAlterData(context.SS->ShardInfos, context.Ctx.Now(),
@@ -397,12 +330,8 @@ public:
         context.SS->ClearDescribePathCaches(path);
         context.OnComplete.PublishToSchemeBoard(OperationId, pathId);
 
-        if (txState->NeedSyncHive) {
-            context.SS->ChangeTxState(db, OperationId, TTxState::SyncHive);
-        } else {
-            context.SS->ChangeTxState(db, OperationId, TTxState::Done);
-        }
-        
+        context.SS->ChangeTxState(db, OperationId, TTxState::Done);
+
         LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                      "NSubDomainState::TPropose HandleReply TEvOperationPlan"
                      << ", operationId " << OperationId
@@ -420,8 +349,8 @@ public:
                        << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSubDomain
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateSubDomain
             || txState->TxType == TTxState::TxAlterSubDomain
             || txState->TxType == TTxState::TxCreateExtSubDomain
             || txState->TxType == TTxState::TxAlterExtSubDomain

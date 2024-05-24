@@ -32,8 +32,4 @@ std::optional<NPersQueueCommon::ECodec> FromV1Codec(const NYdb::NPersQueue::ECod
     }
 }
 
-i32 FromTopicCodec(const NYdb::NTopic::ECodec codec) {
-    return (ui32)(codec) - 1;
-}
-
 } // NKikimr::NPQ

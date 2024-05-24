@@ -27,7 +27,7 @@ protected:
     inline ui64 GetRowsLimit() const { return RowsLimit; }
     inline ui64 GetBytesLimit() const { return BytesLimit; }
 
-    bool Collect(const NTable::IScan::TRow& row, IOutputStream& out);
+    void Collect(const NTable::IScan::TRow& row, IOutputStream& out);
     virtual TMaybe<TBuffer> Flush(bool prepare);
 
 private:
@@ -42,7 +42,6 @@ protected:
     ui64 BytesRead;
     TBuffer Buffer;
 
-    TString ErrorString;
 }; // TS3BufferRaw
 
 } // NDataShard

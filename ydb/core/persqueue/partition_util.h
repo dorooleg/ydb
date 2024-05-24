@@ -4,6 +4,8 @@
 
 namespace NKikimr::NPQ {
 
+static const ui64 SET_OFFSET_COOKIE = 1;
+
 class TKeyLevel {
 public:
     friend IOutputStream& operator <<(IOutputStream& out, const TKeyLevel& value);
@@ -38,7 +40,7 @@ public:
     }
 
     std::pair<TKey, ui32> Compact() {
-        Y_ABORT_UNLESS(!Keys_.empty());
+        Y_VERIFY(!Keys_.empty());
         TKey tmp(Keys_.front().first);
         tmp.SetCount(RecsCount_);
         tmp.SetInternalPartsCount(InternalPartsCount_);
@@ -48,7 +50,7 @@ public:
     }
 
     std::pair<TKey, ui32> PopFront() {
-        Y_ABORT_UNLESS(!Keys_.empty());
+        Y_VERIFY(!Keys_.empty());
         Sum_ -= Keys_.front().second;
         RecsCount_ -= Keys_.front().first.GetCount();
         InternalPartsCount_ -= Keys_.front().first.GetInternalPartsCount();
@@ -58,7 +60,7 @@ public:
     }
 
     std::pair<TKey, ui32> PopBack() {
-        Y_ABORT_UNLESS(!Keys_.empty());
+        Y_VERIFY(!Keys_.empty());
         Sum_ -= Keys_.back().second;
         RecsCount_ -= Keys_.back().first.GetCount();
         InternalPartsCount_ -= Keys_.back().first.GetInternalPartsCount();
@@ -72,12 +74,12 @@ public:
     }
 
     const TKey& GetKey(const ui32 pos) const {
-        Y_ABORT_UNLESS(pos < Keys_.size());
+        Y_VERIFY(pos < Keys_.size());
         return Keys_[pos].first;
     }
 
     const ui32& GetSize(const ui32 pos) const {
-        Y_ABORT_UNLESS(pos < Keys_.size());
+        Y_VERIFY(pos < Keys_.size());
         return Keys_[pos].second;
     }
 

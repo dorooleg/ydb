@@ -1,6 +1,5 @@
 #pragma once
 
-#include <ydb/library/yql/minikql/computation/mkql_vector_spiller_adapter.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 #include <ydb/library/yql/public/udf/udf_type_builder.h>
@@ -10,11 +9,11 @@ namespace NKikimr {
 namespace NMiniKQL {
 namespace GraceJoin {
         
-const ui64 BitsForNumberOfBuckets = 5; // 2^5 = 32
+const ui64 BitsForNumberOfBuckets = 8; // 2^8 = 256
 const ui64 BucketsMask = (0x00000001 << BitsForNumberOfBuckets)  - 1;
 const ui64 NumberOfBuckets = (0x00000001 << BitsForNumberOfBuckets);  // Number of hashed keys buckets to distribute incoming tables tuples
-const ui64 DefaultTuplesNum = 100; // Default initial number of tuples in one bucket to allocate memory
-const ui64 DefaultTupleBytes = 64; // Default size of all columns in table row for estimations
+const ui64 DefaultTuplesNum = 1000; // Default initial number of tuples in one bucket to allocate memory
+const ui64 DefaultTupleBytes = 512; // Default size of all columns in table row for estimations
 const ui64 HashSize = 1; // Using ui64 hash size
 
 /*
@@ -43,22 +42,16 @@ struct JoinTuplesIds {
     ui32 id2 = 0; // Identifier of second table tuple as index in bucket
 };
 
-// To store keys values when making join only for unique keys (any join attribute)
-struct KeysHashTable {
-    ui64 SlotSize = 0; // Slot size in hash table
-    ui64 NSlots = 0; // Total number of slots in table  
-    ui64 FillCount = 0; // Number of ui64 slots which are filled
-    std::vector<ui64, TMKQLAllocator<ui64>> Table;  // Table to store keys data in particular slots
-    std::vector<ui64, TMKQLAllocator<ui64>> SpillData; // Vector to store long data which cannot be fit in single hash table slot.
-};
 
 struct TTableBucket {
+    ui64 TuplesNum = 0;  // Total number of tuples in bucket
     std::vector<ui64, TMKQLAllocator<ui64>> KeyIntVals;  // Vector to store table key values
     std::vector<ui64, TMKQLAllocator<ui64>> DataIntVals; // Vector to store data values in bucket
     std::vector<char, TMKQLAllocator<char>> StringsValues; // Vector to store data strings values
     std::vector<ui32, TMKQLAllocator<ui32>> StringsOffsets; // Vector to store strings values sizes (offsets in StringsValues are calculated) for particular tuple.
     std::vector<char, TMKQLAllocator<char>> InterfaceValues; // Vector to store types to work through external-provided IHash, IEquate interfaces
-    std::vector<ui32, TMKQLAllocator<ui32>> InterfaceOffsets; // Vector to store sizes of columns to work through IHash, IEquate interfaces
+    std::vector<ui32, TMKQLAllocator<ui32>> InterfaceOffsets; // Vector to store sizes of columns to work through IHash, IEquate interfaces 
+ 
     std::vector<JoinTuplesIds, TMKQLAllocator<JoinTuplesIds>>  JoinIds;     // Results of join operations stored as index of tuples in buckets 
                                                                             // of two tables with the same number
 
@@ -66,15 +59,9 @@ struct TTableBucket {
 
     std::set<ui32> AllLeftMatchedIds;  // All row ids of left join table which have matching rows in right table. To process streaming join mode.
     std::set<ui32> AllRightMatchedIds; // All row ids of right join table which matching rows in left table. To process streaming join mode. 
-    KeysHashTable AnyHashTable; // Hash table to process join only for unique keys (any join attribute)
 
  };
 
- struct TTableBucketStats {
-    ui64 TuplesNum = 0;             // Total number of tuples in bucket
-    ui64 StringValuesTotalSize = 0; // Total size of StringsValues. Used to correctly calculate StringsOffsets.
-    ui64 KeyIntValsTotalSize = 0;   // Total size of KeyIntVals. Used to correctly calculate StringsOffsets.
- };
 
 struct TupleData {
     ui64 * IntColumns = nullptr; // Array of packed int  data of the table. Caller should allocate array of NumberOfIntColumns size
@@ -113,18 +100,16 @@ class TTable {
     ui64 NumberOfDataColumns = 0; // Number of data columns in the Table
     ui64 NumberOfStringColumns = 0; // Total number of String Columns
     ui64 NumberOfIColumns = 0; // Total number of interface-based columns
-    ui64 NullsBitmapSize_ = 1; // Default size of ui64 values used for null columns bitmap.
+    ui64 NullsBitmapSize = 1; // Default size of ui64 values used for null columns bitmap.
                                 // Every bit set means null value. Order of columns is equal to order in AddTuple call.
-                                // First key int column is  bit 1 in bit mask, second - bit 2, etc.  Bit 0 is least significant in bitmask and tells if key columns contain nulls.
+                                // First key int column is  bit 0 in bit mask, second - bit 1, etc.  Bit 0 is least significant in bitmask.
     ui64 TotalStringsSize = 0; // Bytes in tuple header reserved to store total strings size key tuple columns
-    ui64 HeaderSize = HashSize + NullsBitmapSize_ + NumberOfKeyIntColumns + NumberOfKeyIColumns + TotalStringsSize; // Header of all tuples size
+    ui64 HeaderSize = HashSize + NullsBitmapSize + NumberOfKeyIntColumns + NumberOfKeyIColumns + TotalStringsSize; // Header of all tuples size
 
     ui64 BytesInKeyIntColumns = sizeof(ui64) * NumberOfKeyIntColumns;
     
     // Table data is partitioned in buckets based on key value
     std::vector<TTableBucket> TableBuckets;
-    // Statistics for buckets. Total number of tuples inside a single bucket and offsets.
-    std::vector<TTableBucketStats> TableBucketsStats;
 
     // Temporary vector for tuples manipulation;
     std::vector<ui64> TempTuple;
@@ -160,9 +145,6 @@ class TTable {
     // True if current iterator of tuple in joinedTable has corresponding joined tuple in second table. Id of joined tuple in second table returns in tupleId2.
     inline bool HasJoinedTupleId(TTable* joinedTable, ui32& tupleId2);
 
-    // Adds keys to KeysHashTable, return true if added, false if equal key already added
-    inline bool AddKeysToHashTable(KeysHashTable& t, ui64* keys);
-
     ui64 TotalPacked = 0; // Total number of packed tuples
     ui64 TotalUnpacked = 0; // Total number of unpacked tuples
 
@@ -171,12 +153,6 @@ class TTable {
 
     bool HasMoreLeftTuples_  = false; // True if join is not completed, rows from left table are coming
     bool HasMoreRightTuples_ = false; // True if join is not completed, rows from right table are coming
-
-    bool IsAny_ = false;  // True if key duplicates need to be removed from table (any join)
-
-    bool Table2Initialized_ = false;    // True when iterator counters for second table already initialized
-
-    ui64 TuplesFound_ = 0; // Total number of matching keys found during join
 
 public:
 
@@ -206,70 +182,8 @@ public:
     // Creates new table with key columns and data columns
     TTable(ui64 numberOfKeyIntColumns = 0, ui64 numberOfKeyStringColumns = 0,
             ui64 numberOfDataIntColumns = 0, ui64 numberOfDataStringColumns = 0,
-            ui64 numberOfKeyIColumns = 0, ui64 numberOfDataIColumns = 0, 
-            ui64 nullsBitmapSize = 1, TColTypeInterface * colInterfaces = nullptr, bool isAny = false);
-    
-    ~TTable();
+            ui64 numberOfKeyIColumns = 0, ui64 numberOfDataIColumns = 0, TColTypeInterface * colInterfaces = nullptr);
 
-};
-
-// Class that spills bucket data.
-// If, after saving, data has accumulated in the bucket again, you can spill it again.
-// After restoring the entire bucket, it will contain all the data saved over different iterations.
-class TTableBucketSpiller {
-public:
-    TTableBucketSpiller(ISpiller::TPtr spiller, size_t sizeLimit);
-
-    // Takes the bucket and immediately starts spilling. Spilling continues until an async operation occurs.
-    void SpillBucket(TTableBucket&& bucket);
-    // Starts bucket restoration after spilling. Restores and unites all the buckets from different iterations. Will pause in case of async operation.
-    void StartBucketRestoration();
-    // Extracts bucket restored from spilling. This bucket will contain all the data from different iterations of spilling.
-    TTableBucket&& ExtractBucket();
-
-    // Updates the states of spillers. This update should be called after async operation completion to resume spilling/resoration.
-    void Update();
-    // Flushes all the data from inner spillers. Should be called when no more data is expected for spilling.
-    void Finalize();
-    // Checks if spillers are waiting for any running async operation. No calls other than update are allowed when the method returns true.
-    bool HasRunningAsyncIoOperation() const;
-
-private:
-    void ProcessBucketSpilling();
-    template <class T>
-    void AppendVector(std::vector<T, TMKQLAllocator<T>>& first, std::vector<T, TMKQLAllocator<T>>&& second) const;
-    void ProcessBucketRestoration();
-
-private:
-    enum class EState {
-        Spilling,
-        Restoring,
-        InMemory
-    };
-
-    enum class ENextVectorToProcess {
-        KeyAndVals,
-        DataIntVals,
-        StringsValues,
-        StringsOffsets,
-        InterfaceValues,
-        InterfaceOffsets,
-
-        None
-    };
-
-    TVectorSpillerAdapter<ui64, TMKQLAllocator<ui64>> StateUi64Adapter;
-    TVectorSpillerAdapter<ui32, TMKQLAllocator<ui32>> StateUi32Adapter;
-    TVectorSpillerAdapter<char, TMKQLAllocator<char>> StateCharAdapter;
-
-    EState State = EState::InMemory;
-    ENextVectorToProcess NextVectorToProcess = ENextVectorToProcess::None;
-
-    ui64 SpilledBucketsCount = 0;
-
-    bool IsFinalizing = false;
-
-    TTableBucket CurrentBucket;
 };
 
 

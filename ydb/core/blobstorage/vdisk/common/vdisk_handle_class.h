@@ -18,8 +18,10 @@ namespace NKikimr {
         };
 
         EHandleType HandleType(const ui32 minREALHugeBlobSize, NKikimrBlobStorage::EPutHandleClass handleClass,
-                               ui32 originalBufSizeWithoutOverhead, bool addHeader);
+                               ui32 originalBufSizeWithoutOverhead);
 
+        bool IsHandleTypeLog(const ui32 minREALHugeBlobSize, NKikimrBlobStorage::EPutHandleClass handleClass,
+                             ui32 originalBufSizeWithoutOverhead);
     } // NPriPut
 
 } // NKikimr

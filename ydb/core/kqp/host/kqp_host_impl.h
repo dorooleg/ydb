@@ -12,19 +12,19 @@ Ydb::Table::QueryStatsCollection::Mode GetStatsMode(NYql::EKikimrStatsMode stats
 template<typename TResult, bool copyIssues = true>
 class TKqpAsyncResultBase : public NYql::IKikimrAsyncResult<TResult> {
 public:
-    using TAsyncTransformStatusCallback = std::function<NThreading::TFuture<void>(const NYql::IGraphTransformer::TStatus&)>;
+    using TTransformStatusCallback = std::function<void(const NYql::IGraphTransformer::TStatus&)>;
 
 public:
     TKqpAsyncResultBase(const NYql::TExprNode::TPtr& exprRoot, NYql::TExprContext& exprCtx,
-        NYql::IGraphTransformer& transformer, TAsyncTransformStatusCallback asyncTransformCallback)
+        NYql::IGraphTransformer& transformer, TTransformStatusCallback transformCallback = {})
         : ExprRoot(exprRoot)
         , ExprCtx(exprCtx)
         , Transformer(transformer)
-        , AsyncTransformCallback(asyncTransformCallback) {}
+        , TransformCallback(transformCallback) {}
 
     bool HasResult() const override {
         if (TransformFinished()) {
-            return AsyncTransformCallbackDone || !AsyncTransformCallback;
+            return TransformCallbackDone || !TransformCallback;
         }
 
         return false;
@@ -34,9 +34,7 @@ public:
         YQL_ENSURE(HasResult());
 
         if (Status.GetValue() == NYql::IGraphTransformer::TStatus::Error) {
-            TResult result = NYql::NCommon::ResultFromErrors<TResult>(ExprCtx.IssueManager.GetIssues());
-            FillResult(result);
-            return result;
+            return NYql::NCommon::ResultFromErrors<TResult>(ExprCtx.IssueManager.GetIssues());
         }
 
         YQL_ENSURE(Status.GetValue() == NYql::IGraphTransformer::TStatus::Ok);
@@ -55,8 +53,9 @@ public:
 
     NThreading::TFuture<bool> Continue() override {
         if (TransformFinished()) {
-            if (AsyncTransformCallback && !AsyncTransformCallbackDone) {
-                return DoAsyncTransformCallback();
+            if (TransformCallback && !TransformCallbackDone) {
+                TransformCallback(Status.GetValue());
+                TransformCallbackDone = true;
             }
 
             return NThreading::MakeFuture<bool>(true);
@@ -66,7 +65,7 @@ public:
 
         auto resultPromise = NThreading::NewPromise<bool>();
         auto statusPromise = Status;
-        bool hasCallback = !!AsyncTransformCallback;
+        bool hasCallback = !!TransformCallback;
 
         AsyncTransform(Transformer, ExprRoot, ExprCtx, Started,
             [resultPromise, statusPromise, hasCallback](const NYql::IGraphTransformer::TStatus& status) mutable {
@@ -79,25 +78,6 @@ public:
 
         Started = true;
         return resultPromise.GetFuture();
-    }
-
-    NThreading::TFuture<bool> DoAsyncTransformCallback() {
-        AsyncTransformCallbackDone = true;
-
-        auto statusValue = Status.GetValue();
-        Status = NThreading::NewPromise<NYql::IGraphTransformer::TStatus>();
-
-        return AsyncTransformCallback(statusValue).Apply(
-            [this, statusValue](const NThreading::TFuture<void>& f) mutable {
-                try {
-                    f.TryRethrow();
-                } catch (...) {
-                    statusValue = NYql::IGraphTransformer::TStatus::Error;
-                    ExprCtx.IssueManager.AddIssues(NYql::TIssues{ NYql::TIssue(CurrentExceptionMessage()) });
-                }
-                Status.SetValue(statusValue);
-                return true;
-            });
     }
 
 protected:
@@ -117,8 +97,8 @@ private:
     NYql::TExprContext& ExprCtx;
     NYql::IGraphTransformer& Transformer;
     bool Started = false;
-    TAsyncTransformStatusCallback AsyncTransformCallback;
-    bool AsyncTransformCallbackDone = false;
+    TTransformStatusCallback TransformCallback;
+    bool TransformCallbackDone = false;
     NThreading::TPromise<NYql::IGraphTransformer::TStatus> Status;
 };
 
@@ -263,21 +243,19 @@ public:
 };
 
 TIntrusivePtr<IKqpRunner> CreateKqpRunner(TIntrusivePtr<IKqpGateway> gateway, const TString& cluster,
-    const TIntrusivePtr<NYql::TTypeAnnotationContext>& typesCtx, const TIntrusivePtr<NYql::TKikimrSessionContext>& sessionCtx,
-    const TIntrusivePtr<TKqlTransformContext>& transformCtx, const NMiniKQL::IFunctionRegistry& funcRegistry);
+    TIntrusivePtr<NYql::TTypeAnnotationContext> typesCtx, TIntrusivePtr<NYql::TKikimrSessionContext> sessionCtx,
+    const NMiniKQL::IFunctionRegistry& funcRegistry,
+    TIntrusivePtr<ITimeProvider> timeProvider, TIntrusivePtr<IRandomProvider> randomProvider);
 
 TAutoPtr<NYql::IGraphTransformer> CreateKqpExplainPreparedTransformer(TIntrusivePtr<IKqpGateway> gateway,
     const TString& cluster, TIntrusivePtr<TKqlTransformContext> transformCtx, const NMiniKQL::IFunctionRegistry* funcRegistry,
-    NYql::TTypeAnnotationContext& typeCtx);
+    TIntrusivePtr<ITimeProvider> timeProvider, TIntrusivePtr<IRandomProvider> randomProvider);
 
 TAutoPtr<NYql::IGraphTransformer> CreateKqpTypeAnnotationTransformer(const TString& cluster,
     TIntrusivePtr<NYql::TKikimrTablesData> tablesData, NYql::TTypeAnnotationContext& typesCtx,
     NYql::TKikimrConfiguration::TPtr config);
 
 TAutoPtr<NYql::IGraphTransformer> CreateKqpCheckQueryTransformer();
-
-TIntrusivePtr<NYql::IKikimrGateway> CreateKqpGatewayProxy(const TIntrusivePtr<IKqpGateway>& gateway,
-    const TIntrusivePtr<NYql::TKikimrSessionContext>& sessionCtx, TActorSystem* actorSystem);
 
 } // namespace NKqp
 } // namespace NKikimr

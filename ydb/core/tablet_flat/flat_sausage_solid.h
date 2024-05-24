@@ -1,7 +1,7 @@
 #pragma once
 
 #include <ydb/core/base/logoblob.h>
-#include <ydb/library/actors/util/shared_data.h>
+#include <library/cpp/actors/util/shared_data.h>
 
 namespace NKikimr {
 namespace NPageCollection {
@@ -28,8 +28,8 @@ namespace NPageCollection {
             , Bytes(bytes)
             , Lead(lead)
         {
-            //Y_ABORT_UNLESS(Group != InvalidGroup, "Invalid TLargeGlobId storage group");
-            Y_ABORT_UNLESS(Lead && Lead.BlobSize() && Lead.BlobSize() <= Bytes);
+            //Y_VERIFY(Group != InvalidGroup, "Invalid TLargeGlobId storage group");
+            Y_VERIFY(Lead && Lead.BlobSize() && Lead.BlobSize() <= Bytes);
         }
 
         void Describe(IOutputStream &out) const noexcept
@@ -239,9 +239,9 @@ namespace NPageCollection {
                 if (Blobs[idx] != id) {
                     continue;
                 }
-                Y_ABORT_UNLESS(!Bodies[idx],
+                Y_VERIFY(!Bodies[idx],
                     "Apply blob %s multiple times", id.ToString().c_str());
-                Y_ABORT_UNLESS(id.BlobSize() == body.size(),
+                Y_VERIFY(id.BlobSize() == body.size(),
                     "Apply blob %s and body size mismatch", id.ToString().c_str());
                 // N.B. we store individual bodies to minimize upfront memory requirements
                 BytesLoaded += body.size();
@@ -249,7 +249,7 @@ namespace NPageCollection {
                 return ++BlobsLoaded == Blobs.size();
             }
 
-            Y_ABORT("Apply unknown blob %s", id.ToString().c_str());
+            Y_FAIL("Apply unknown blob %s", id.ToString().c_str());
         }
 
         explicit operator bool() const {
@@ -261,7 +261,7 @@ namespace NPageCollection {
         }
 
         TString ExtractString() {
-            Y_DEBUG_ABORT_UNLESS(BlobsLoaded == Bodies.size());
+            Y_VERIFY_DEBUG(BlobsLoaded == Bodies.size());
 
             TString data;
 
@@ -273,7 +273,7 @@ namespace NPageCollection {
                     data.append(body);
                 }
             }
-            Y_DEBUG_ABORT_UNLESS(data.size() == BytesLoaded);
+            Y_VERIFY_DEBUG(data.size() == BytesLoaded);
 
             TBodies().swap(Bodies);
 
@@ -281,7 +281,7 @@ namespace NPageCollection {
         }
 
         TSharedData ExtractSharedData() {
-            Y_DEBUG_ABORT_UNLESS(BlobsLoaded == Bodies.size());
+            Y_VERIFY_DEBUG(BlobsLoaded == Bodies.size());
 
             TSharedData data = TSharedData::Uninitialized(BytesLoaded);
 
@@ -290,7 +290,7 @@ namespace NPageCollection {
                 ::memcpy(ptr, body.data(), body.size());
                 ptr += body.size();
             }
-            Y_DEBUG_ABORT_UNLESS(ptr == data.mutable_end());
+            Y_VERIFY_DEBUG(ptr == data.mutable_end());
 
             TBodies().swap(Bodies);
 

@@ -41,8 +41,9 @@ Y_UNIT_TEST_SUITE(KqpStreamLookup) {
         bool readReceived = false;
         auto captureEvents = [&](TTestActorRuntimeBase &, TAutoPtr <IEventHandle> &ev) {
             if (ev->GetTypeRewrite() == TEvDataShard::TEvRead::EventType) {
-                Cerr << "Captured TEvDataShard::TEvRead from " << runtime->FindActorName(ev->Sender) << " to " << runtime->FindActorName(ev->GetRecipientRewrite()) << Endl;
-                if (runtime->FindActorName(ev->Sender) == "KQP_STREAM_LOOKUP_ACTOR") {
+                IActor* actor = runtime->FindActor(ev->Sender);
+                if (actor && actor->GetActivityType() == NKikimrServices::TActivity::KQP_STREAM_LOOKUP_ACTOR) {
+
                     if (!readReceived) {
                         auto senderSplit = runtime->AllocateEdgeActor();
                         ui64 txId = AsyncSplitTable(server, senderSplit, "/Root/TestTable", shards[0], 500);
@@ -69,9 +70,9 @@ Y_UNIT_TEST_SUITE(KqpStreamLookup) {
 
         auto reply = runtime->GrabEdgeEventRethrow<NKqp::TEvKqp::TEvQueryResponse>(sender);
         UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::SUCCESS);
-        auto resp = reply->Get()->Record.GetRef().GetResponse();
-        UNIT_ASSERT_VALUES_EQUAL(resp.YdbResultsSize(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(resp.GetYdbResults(0).rows_size(), 1000);
+        auto results = reply->Get()->Record.GetRef().GetResponse().GetResults();
+        UNIT_ASSERT_VALUES_EQUAL(results.size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(results[0].GetValue().GetStruct(0).ListSize(), 1000);
     }
 
     Y_UNIT_TEST(ReadTableWithIndexDuringSplit) {
@@ -91,6 +92,10 @@ Y_UNIT_TEST_SUITE(KqpStreamLookup) {
 
         CreateShardedTable(server, sender, "/Root", "TestTable",
             TShardedTableOptions()
+                .Columns({
+                    {"key", "Uint32", true, false},
+                    {"value", "Uint32", false, false},
+                })
                 .Indexes({
                     TShardedTableOptions::TIndex{
                         "by_value",
@@ -108,8 +113,9 @@ Y_UNIT_TEST_SUITE(KqpStreamLookup) {
         bool readReceived = false;
         auto captureEvents = [&](TTestActorRuntimeBase &, TAutoPtr <IEventHandle> &ev) {
             if (ev->GetTypeRewrite() == TEvDataShard::TEvRead::EventType) {
-                Cerr << "Captured TEvDataShard::TEvRead from " << runtime->FindActorName(ev->Sender) << " to " << runtime->FindActorName(ev->GetRecipientRewrite()) << Endl;
-                if (runtime->FindActorName(ev->Sender) == "KQP_STREAM_LOOKUP_ACTOR") {
+                IActor* actor = runtime->FindActor(ev->Sender);
+                if (actor && actor->GetActivityType() == NKikimrServices::TActivity::KQP_STREAM_LOOKUP_ACTOR) {
+
                     if (!readReceived) {
                         auto senderSplit = runtime->AllocateEdgeActor();
                         ui64 txId = AsyncSplitTable(server, senderSplit, "/Root/TestTable", shards[0], 500);
@@ -135,10 +141,11 @@ Y_UNIT_TEST_SUITE(KqpStreamLookup) {
 
         auto reply = runtime->GrabEdgeEventRethrow<NKqp::TEvKqp::TEvQueryResponse>(sender);
         UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::SUCCESS);
-        auto resp = reply->Get()->Record.GetRef().GetResponse();
-        UNIT_ASSERT_VALUES_EQUAL(resp.YdbResultsSize(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(resp.GetYdbResults(0).rows_size(), 1);
+        auto results = reply->Get()->Record.GetRef().GetResponse().GetResults();
+        UNIT_ASSERT_VALUES_EQUAL(results.size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(results[0].GetValue().GetStruct(0).ListSize(), 1);
     }
 
 } // Y_UNIT_TEST_SUITE(KqpStreamLookup)
 } // namespace NKikimr
+

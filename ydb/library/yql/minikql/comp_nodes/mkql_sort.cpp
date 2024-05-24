@@ -100,7 +100,7 @@ public:
 
     TGatherIterator(const TGatherIterator&) = default;
     TGatherIterator& operator=(const TGatherIterator&) = default;
-    TGatherIteratorRef operator*() const& {
+    TGatherIteratorRef operator*() {
         return TGatherIteratorRef(*First, *Second);
     }
 
@@ -142,45 +142,45 @@ public:
         return *this;
     }
 
-    ptrdiff_t operator - (TGatherIterator& rhs) const& {
+    ptrdiff_t operator - (TGatherIterator& rhs) {
         return First - rhs.First;
     }
 
-    TGatherIterator operator + (ptrdiff_t n) const& {
+    TGatherIterator operator + (ptrdiff_t n) {
         TGatherIterator tmp(*this);
         tmp.First += n;
         tmp.Second += n;
         return tmp;
     }
 
-    TGatherIterator operator - (ptrdiff_t n) const& {
+    TGatherIterator operator - (ptrdiff_t n) {
         TGatherIterator tmp(*this);
         tmp.First -= n;
         tmp.Second -= n;
         return tmp;
     }
 
-    bool operator==(const TGatherIterator& rhs) const& {
+    bool operator==(const TGatherIterator& rhs) {
         return First == rhs.First;
     }
 
-    bool operator!=(const TGatherIterator& rhs) const& {
+    bool operator!=(const TGatherIterator& rhs) {
         return First != rhs.First;
     }
 
-    bool operator<(TGatherIterator& rhs) const& {
+    bool operator<(TGatherIterator& rhs) {
         return First < rhs.First;
     }
 
-    bool operator<=(TGatherIterator& rhs) const& {
+    bool operator<=(TGatherIterator& rhs) {
         return First <= rhs.First;
     }
 
-    bool operator>(TGatherIterator& rhs) const& {
+    bool operator>(TGatherIterator& rhs) {
         return First > rhs.First;
     }
 
-    bool operator>=(TGatherIterator& rhs) const& {
+    bool operator>=(TGatherIterator& rhs) {
         return First >= rhs.First;
     }
 
@@ -199,8 +199,8 @@ struct TCompareDescr {
         const TVector<NUdf::ICompare::TPtr>& comparators)
         : KeySchemeTypes(std::move(keySchemeTypes))
         , KeyTypes(PrepareKeyTypesByScheme(KeySchemeTypes))
-        , Comparators(comparators)
         , Encoders(mutables)
+        , Comparators(comparators)
     {}
 
     static TKeyPayloadPairVector::value_type::first_type& Set(TKeyPayloadPairVector::value_type& item) { return item.first; }
@@ -220,6 +220,7 @@ struct TCompareDescr {
                     const auto& right = Get(y);
 
                     for (ui32 i = 0; i < KeyTypes.size(); ++i) {
+                        const auto& keyType = KeyTypes[i];
                         const auto& leftElem = left.GetElement(i);
                         const auto& rightElem = right.GetElement(i);
                         const bool asc = ascending.GetElement(i).Get<bool>();
@@ -346,7 +347,7 @@ public:
 
             auto size = list.GetListLength();
             if (!size) {
-                return ctx.HolderFactory.GetEmptyContainerLazy();
+                return ctx.HolderFactory.GetEmptyContainer();
             }
 
             if (Stealed) {
@@ -393,7 +394,7 @@ public:
             }
 
             if (items.empty()) {
-                return ctx.HolderFactory.GetEmptyContainerLazy();
+                return ctx.HolderFactory.GetEmptyContainer();
             }
 
             Description.Prepare(ctx, items);
@@ -449,7 +450,7 @@ public:
         return result;
     }
 
-    void PerformInplace(TComputationContext&, ui32 size, NUdf::TUnboxedValue* keys, NUdf::TUnboxedValue* items, const TComparator& comparator) const {
+    void PerformInplace(TComputationContext& ctx, ui32 size, NUdf::TUnboxedValue* keys, NUdf::TUnboxedValue* items, const TComparator& comparator) const {
         AlgorithmInplace(TGatherIterator(keys, items), TGatherIterator(keys, items) + size, comparator);
     }
 
@@ -478,7 +479,7 @@ public:
     NUdf::TUnboxedValuePod Perform(TComputationContext& ctx, TKeyPayloadPairVector& items, const TComparator& comparator) const {
         const auto n = std::min<ui64>(Nth->GetValue(ctx).Get<ui64>(), items.size());
         if (!n) {
-            return ctx.HolderFactory.GetEmptyContainerLazy();
+            return ctx.HolderFactory.GetEmptyContainer();
         }
 
         Algorithm(items.begin(), items.begin() + n, items.end(), comparator);
@@ -498,7 +499,7 @@ public:
         Y_UNUSED(keys);
         Y_UNUSED(items);
         Y_UNUSED(comparator);
-        Y_ABORT("Not supported");
+        Y_FAIL("Not supported");
     }
 
 private:
@@ -539,7 +540,7 @@ public:
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
         const auto count = Count->GetValue(ctx).Get<ui64>();
         if (!count) {
-            return ctx.HolderFactory.GetEmptyContainerLazy();
+            return ctx.HolderFactory.GetEmptyContainer();
         }
 
         auto list = List->GetValue(ctx);

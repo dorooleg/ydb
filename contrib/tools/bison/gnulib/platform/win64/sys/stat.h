@@ -32,7 +32,7 @@
 #if _MSC_VER >= 1900
 #include <../ucrt/sys/stat.h>
 #else
-#error #include <../include/sys/stat.h>
+#include <../include/sys/stat.h>
 #endif
 
 #else
@@ -51,7 +51,7 @@
 #if _MSC_VER >= 1900
 #include <../ucrt/sys/stat.h>
 #else
-#error #include <../include/sys/stat.h>
+#include <../include/sys/stat.h>
 #endif
 
 #ifndef _GL_M4_SYS_STAT_H

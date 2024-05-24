@@ -24,7 +24,7 @@ void TGetImpl::PrepareReply(NKikimrProto::EReplyStatus status, TString errorReas
     outGetResult->ErrorReason = errorReason;
 
     if (status != NKikimrProto::OK) {
-        Y_ABORT_UNLESS(status != NKikimrProto::NODATA);
+        Y_VERIFY(status != NKikimrProto::NODATA);
         for (ui32 i = 0, e = QuerySize; i != e; ++i) {
             const TEvBlobStorage::TEvGet::TQuery &query = Queries[i];
             TEvBlobStorage::TEvGetResult::TResponse &outResponse = outGetResult->Responses[i];
@@ -44,13 +44,11 @@ void TGetImpl::PrepareReply(NKikimrProto::EReplyStatus status, TString errorReas
             const TBlobState &blobState = Blackboard.GetState(query.Id);
             outResponse.Id = query.Id;
             outResponse.PartMap = blobState.PartMap;
+            outResponse.Keep = blobState.Keep;
+            outResponse.DoNotKeep = blobState.DoNotKeep;
             outResponse.LooksLikePhantom = PhantomCheck
                 ? std::make_optional(blobState.WholeSituation == TBlobState::ESituation::Absent)
                 : std::nullopt;
-
-            // fill in keep/doNotKeep flags
-            const auto it = BlobFlags.find(query.Id);
-            std::tie(outResponse.Keep, outResponse.DoNotKeep) = it != BlobFlags.end() ? it->second : std::make_tuple(false, false);
 
             if (blobState.WholeSituation == TBlobState::ESituation::Absent) {
                 bool okay = true;
@@ -135,16 +133,18 @@ void TGetImpl::PrepareReply(NKikimrProto::EReplyStatus status, TString errorReas
                 ui32 size = query.Size ? Min(query.Size, query.Id.BlobSize() - shift) : query.Id.BlobSize() - shift;
 
                 if (!PhantomCheck) {
-                    TRope data = blobState.Whole.Data.Read(shift, size);
-                    DecryptInplace(data, 0, shift, size, query.Id, *Info);
+                    TString data = TString::Uninitialized(size);
+                    char *dataBuffer = data.Detach();
+                    blobState.Whole.Data.Read(shift, dataBuffer, size);
+                    Decrypt(dataBuffer, dataBuffer, shift, size, query.Id, *Info);
                     outResponse.Buffer = std::move(data);
-                    Y_ABORT_UNLESS(outResponse.Buffer, "%s empty response buffer", RequestPrefix.data());
+                    Y_VERIFY(outResponse.Buffer, "%s empty response buffer", RequestPrefix.data());
                     ReplyBytes += outResponse.Buffer.size();
                 }
             } else if (blobState.WholeSituation == TBlobState::ESituation::Error) {
                 outResponse.Status = NKikimrProto::ERROR;
             } else {
-                Y_ABORT_UNLESS(false, "Id# %s BlobState# %s", query.Id.ToString().c_str(), blobState.ToString().data());
+                Y_VERIFY(false, "Id# %s BlobState# %s", query.Id.ToString().c_str(), blobState.ToString().data());
             }
         }
     }
@@ -206,12 +206,10 @@ TString TGetImpl::DumpFullState() const {
     str << Endl;
     str << " ReportDetailedPartMap# " << ReportDetailedPartMap;
     str << Endl;
-    if (ForceBlockTabletData) {
-        str << " ForceBlockTabletId# " << ForceBlockTabletData->Id;
-        str << Endl;
-        str << " ForceBlockTabletGeneration# " << ForceBlockTabletData->Generation;
-        str << Endl;
-    }
+    str << " ForceBlockTabletId# " << ForceBlockTabletData->Id;
+    str << Endl;
+    str << " ForceBlockTabletGeneration# " << ForceBlockTabletData->Generation;
+    str << Endl;
 
     str << " ReplyBytes# " << ReplyBytes;
     str << Endl;
@@ -225,6 +223,10 @@ TString TGetImpl::DumpFullState() const {
     str << " VPutRequests# " << VPutRequests;
     str << Endl;
     str << " VPutResponses# " << VPutResponses;
+    str << Endl;
+    str << " VMultiPutRequests# " << VMultiPutRequests;
+    str << Endl;
+    str << " VMultiPutResponses# " << VMultiPutResponses;
     str << Endl;
 
     str << " IsNoData# " << IsNoData;
@@ -247,7 +249,7 @@ TString TGetImpl::DumpFullState() const {
 }
 
 void TGetImpl::GenerateInitialRequests(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets) {
-    Y_ABORT_UNLESS(QuerySize != 0, "internal consistency error");
+    Y_VERIFY(QuerySize != 0, "internal consistency error");
 
     // TODO(cthulhu): query politics
     // TODO(cthulhu): adaptive request from nearest domain, and from different DC only when local DC failed
@@ -265,72 +267,131 @@ void TGetImpl::GenerateInitialRequests(TLogContext &logCtx, TDeque<std::unique_p
     TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
     TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> outVPuts;
     bool workDone = Step(logCtx, outVGets, outVPuts, getResult);
-    Y_ABORT_UNLESS(outVPuts.empty());
-    Y_ABORT_UNLESS(getResult.Get() == nullptr);
-    Y_ABORT_UNLESS(workDone);
+    Y_VERIFY(outVPuts.empty());
+    Y_VERIFY(getResult.Get() == nullptr);
+    Y_VERIFY(workDone);
 }
 
 void TGetImpl::PrepareRequests(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets) {
-    TStackVec<std::unique_ptr<TEvBlobStorage::TEvVGet>, TypicalDisksInGroup> gets(Info->GetTotalVDisksNum());
+    for (ui32 diskOrderNumber = 0; diskOrderNumber < Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber.size();
+            ++diskOrderNumber) {
+        TDiskRequests &requests = Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[diskOrderNumber];
+        ui32 endIdx = requests.GetsToSend.size();
+        ui32 beginIdx = requests.FirstUnsentRequestIdx;
 
-    for (auto& get : Blackboard.GroupDiskRequests.GetsPending) {
-        auto& vget = gets[get.OrderNumber];
-        if (!vget) {
-            const TVDiskID vdiskId = Info->GetVDiskId(get.OrderNumber);
-            vget = TEvBlobStorage::TEvVGet::CreateExtremeDataQuery(vdiskId, Deadline, Blackboard.GetHandleClass,
-                TEvBlobStorage::TEvVGet::EFlags::None, {}, {}, ForceBlockTabletData);
-        }
-        std::optional<ui64> cookie;
-        if (ReportDetailedPartMap) {
-            cookie = Blackboard.AddPartMap(get.Id, get.OrderNumber, RequestIndex);
-        }
-        vget->AddExtremeQuery(get.Id, get.Shift, get.Size, cookie ? &cookie.value() : nullptr);
-        vget->Record.SetSuppressBarrierCheck(IsInternal);
-        vget->Record.SetTabletId(TabletId);
-        vget->Record.SetAcquireBlockedGeneration(AcquireBlockedGeneration);
-        if (ReaderTabletData) {
-            auto msg = vget->Record.MutableReaderTabletData();
-            msg->SetId(ReaderTabletData->Id);
-            msg->SetGeneration(ReaderTabletData->Generation);
-        }
-    }
+        if (beginIdx < endIdx) {
+            TVDiskID vDiskId = Info->GetVDiskId(diskOrderNumber);
+            auto vGet = TEvBlobStorage::TEvVGet::CreateExtremeDataQuery(vDiskId, Deadline, Blackboard.GetHandleClass,
+                    TEvBlobStorage::TEvVGet::EFlags::None, TVGetCookie(beginIdx, endIdx), {}, ForceBlockTabletData);
+            for (ui32 idx = beginIdx; idx < endIdx; ++idx) {
+                TDiskGetRequest &get = requests.GetsToSend[idx];
+                ui64 cookie = idx;
+                vGet->AddExtremeQuery(get.Id, get.Shift, get.Size, &cookie);
+                if (ReportDetailedPartMap) {
+                    get.PartMapIndex = Blackboard.AddPartMap(get.Id, diskOrderNumber, RequestIndex);
+                }
+            }
+            vGet->Record.SetSuppressBarrierCheck(IsInternal);
+            vGet->Record.SetTabletId(TabletId);
+            vGet->Record.SetAcquireBlockedGeneration(AcquireBlockedGeneration);
 
-    for (auto& vget : gets) {
-        if (vget) {
-            R_LOG_DEBUG_SX(logCtx, "BPG14", "Send get to orderNumber# "
-                << Info->GetTopology().GetOrderNumber(VDiskIDFromVDiskID(vget->Record.GetVDiskID()))
-                << " vget# " << vget->ToString());
-            outVGets.push_back(std::move(vget));
+            if (ReaderTabletData) {
+                auto msg = vGet->Record.MutableReaderTabletData();
+                msg->SetId(ReaderTabletData->Id);
+                msg->SetGeneration(ReaderTabletData->Generation);
+            }
+
+            R_LOG_DEBUG_SX(logCtx, "BPG14", "Send get to orderNumber# " << diskOrderNumber
+                << " beginIdx# " << beginIdx
+                << " endIdx# " << endIdx
+                << " vGet# " << vGet->ToString());
+            outVGets.push_back(std::move(vGet));
             ++RequestIndex;
+            Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[diskOrderNumber].FirstUnsentRequestIdx = endIdx;
         }
     }
-
-    Blackboard.GroupDiskRequests.GetsPending.clear();
 }
 
-void TGetImpl::PrepareVPuts(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts) {
-    for (auto& put : Blackboard.GroupDiskRequests.PutsPending) {
-        const TVDiskID vdiskId = Info->GetVDiskId(put.OrderNumber);
-        Y_DEBUG_ABORT_UNLESS(Info->Type.GetErasure() != TBlobStorageGroupType::ErasureMirror3of4 ||
-            put.Id.PartId() != 3 || put.Buffer.IsEmpty());
-        auto vput = std::make_unique<TEvBlobStorage::TEvVPut>(put.Id, put.Buffer, vdiskId, true, nullptr, Deadline,
-            Blackboard.PutHandleClass);
-        R_LOG_DEBUG_SX(logCtx, "BPG15", "Send put to orderNumber# " << put.OrderNumber << " vput# " << vput->ToString());
-        outVPuts.push_back(std::move(vput));
-        ++VPutRequests;
+void TGetImpl::PrepareVPuts(TLogContext &logCtx,
+        TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts) {
+    for (ui32 diskOrderNumber = 0; diskOrderNumber < Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber.size();
+            ++diskOrderNumber) {
+        const TDiskRequests &requests = Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[diskOrderNumber];
+        ui32 endIdx = requests.PutsToSend.size();
+        ui32 beginIdx = requests.FirstUnsentPutIdx;
+
+        if (beginIdx < endIdx) {
+            TVDiskID vDiskId = Info->GetVDiskId(diskOrderNumber);
+            for (ui32 idx = beginIdx; idx < endIdx; ++idx) {
+                const TDiskPutRequest &put = requests.PutsToSend[idx];
+                ui64 cookie = TBlobCookie(diskOrderNumber, put.BlobIdx, put.Id.PartId(),
+                        VPutRequests);
+                auto vPut = std::make_unique<TEvBlobStorage::TEvVPut>(put.Id, put.Buffer, vDiskId, true, &cookie,
+                    Deadline, Blackboard.PutHandleClass);
+                R_LOG_DEBUG_SX(logCtx, "BPG15", "Send put to orderNumber# " << diskOrderNumber << " idx# " << idx
+                        << " vPut# " << vPut->ToString());
+                outVPuts.push_back(std::move(vPut));
+                ++VPutRequests;
+                ReceivedVPutResponses.push_back(false);
+            }
+            Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[diskOrderNumber].FirstUnsentPutIdx = endIdx;
+        }
     }
-    Blackboard.GroupDiskRequests.PutsPending.clear();
+}
+
+void TGetImpl::PrepareVPuts(TLogContext &logCtx,
+        TDeque<std::unique_ptr<TEvBlobStorage::TEvVMultiPut>> &outVMultiPuts) {
+    for (ui32 diskOrderNumber = 0; diskOrderNumber < Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber.size();
+            ++diskOrderNumber) {
+        const TDiskRequests &requests = Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[diskOrderNumber];
+        ui32 endIdx = requests.PutsToSend.size();
+        ui32 beginIdx = requests.FirstUnsentPutIdx;
+        if (beginIdx < endIdx) {
+            TVDiskID vDiskId = Info->GetVDiskId(diskOrderNumber);
+            // set cookie after adding items
+            auto vMultiPut = std::make_unique<TEvBlobStorage::TEvVMultiPut>(vDiskId, Deadline, Blackboard.PutHandleClass,
+                true, nullptr);
+            ui64 bytes = 0;
+            ui64 lastItemCount = 0;
+            for (ui32 idx = beginIdx; idx < endIdx; ++idx) {
+                const TDiskPutRequest &put = requests.PutsToSend[idx];
+                ui64 cookie = TBlobCookie(diskOrderNumber, put.BlobIdx, put.Id.PartId(), VMultiPutRequests);
+                ui64 itemSize = vMultiPut->Record.ItemsSize();
+                if (itemSize == MaxBatchedPutRequests || bytes + put.Buffer.size() > MaxBatchedPutSize) {
+                    vMultiPut->Record.SetCookie(TVMultiPutCookie(diskOrderNumber, lastItemCount, VMultiPutRequests));
+                    ++VMultiPutRequests;
+                    ReceivedVMultiPutResponses.push_back(false);
+                    R_LOG_DEBUG_SX(logCtx, "BPG16", "Send multiPut to orderNumber# " << diskOrderNumber << " count# "
+                            << vMultiPut->Record.ItemsSize() << " vMultiPut# " << vMultiPut->ToString());
+                    outVMultiPuts.push_back(std::move(vMultiPut));
+                    // set cookie after adding items
+                    vMultiPut = std::make_unique<TEvBlobStorage::TEvVMultiPut>(vDiskId, Deadline,
+                        Blackboard.PutHandleClass, true, nullptr);
+                    bytes = 0;
+                    lastItemCount = 0;
+                }
+                bytes += put.Buffer.size();
+                lastItemCount++;
+                vMultiPut->AddVPut(put.Id, TRcBuf(TRope(put.Buffer)), &cookie, put.ExtraBlockChecks, NWilson::TTraceId());
+            }
+            vMultiPut->Record.SetCookie(TVMultiPutCookie(diskOrderNumber, lastItemCount, VMultiPutRequests));
+            ++VMultiPutRequests;
+            ReceivedVMultiPutResponses.push_back(false);
+            R_LOG_DEBUG_SX(logCtx, "BPG17", "Send multiPut to orderNumber# " << diskOrderNumber << " count# "
+                    << vMultiPut->Record.ItemsSize() << " vMultiPut# " << vMultiPut->ToString());
+            outVMultiPuts.push_back(std::move(vMultiPut));
+            Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[diskOrderNumber].FirstUnsentPutIdx = endIdx;
+        }
+    }
 }
 
 EStrategyOutcome TGetImpl::RunBoldStrategy(TLogContext &logCtx) {
-    TStackVec<IStrategy*, 1> strategies;
-    TBoldStrategy s1(PhantomCheck);
-    strategies.push_back(&s1);
-    TRestoreStrategy s2;
-    if (MustRestoreFirst) {
-        strategies.push_back(&s2);
+    EStrategyOutcome outcome = Blackboard.RunStrategy(logCtx, TBoldStrategy(PhantomCheck));
+    if (outcome == EStrategyOutcome::DONE && MustRestoreFirst) {
+        Blackboard.ChangeAll();
+        outcome = Blackboard.RunStrategy(logCtx, TRestoreStrategy());
     }
-    return Blackboard.RunStrategies(logCtx, strategies);
+    return outcome;
 }
 
 EStrategyOutcome TGetImpl::RunMirror3dcStrategy(TLogContext &logCtx) {
@@ -340,14 +401,13 @@ EStrategyOutcome TGetImpl::RunMirror3dcStrategy(TLogContext &logCtx) {
 }
 
 EStrategyOutcome TGetImpl::RunMirror3of4Strategy(TLogContext &logCtx) {
-    TStackVec<IStrategy*, 1> strategies;
-    TMirror3of4GetStrategy s1;
-    strategies.push_back(&s1);
-    TPut3of4Strategy s2(TEvBlobStorage::TEvPut::TacticMaxThroughput);
-    if (MustRestoreFirst) {
-        strategies.push_back(&s2);
+    // run basic get strategy and, if blob restoration is required and we have successful get, restore the blob to full amount of parts
+    EStrategyOutcome outcome = Blackboard.RunStrategy(logCtx, TMirror3of4GetStrategy());
+    if (outcome == EStrategyOutcome::DONE && MustRestoreFirst) {
+        Blackboard.ChangeAll();
+        outcome = Blackboard.RunStrategy(logCtx, TPut3of4Strategy(TEvBlobStorage::TEvPut::TacticMaxThroughput));
     }
-    return Blackboard.RunStrategies(logCtx, strategies);
+    return outcome;
 }
 
 EStrategyOutcome TGetImpl::RunStrategies(TLogContext &logCtx) {
@@ -370,11 +430,22 @@ void TGetImpl::OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVPutResult &
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets, TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
         TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
     const NKikimrBlobStorage::TEvVPutResult &record = ev.Record;
-    Y_ABORT_UNLESS(record.HasVDiskID());
+    Y_VERIFY(record.HasVDiskID());
     TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
     TVDiskIdShort shortId(vdisk);
     ui32 orderNumber = Info->GetOrderNumber(shortId);
     const TLogoBlobID blob = LogoBlobIDFromLogoBlobID(record.GetBlobID());
+
+    Y_VERIFY(record.HasCookie());
+    TBlobCookie cookie(record.GetCookie());
+    Y_VERIFY(cookie.GetVDiskOrderNumber() == orderNumber);
+    Y_VERIFY(cookie.GetPartId() == blob.PartId());
+
+    ui64 requestIdx = cookie.GetRequestIdx();
+    Y_VERIFY_S(!ReceivedVPutResponses[requestIdx], "the response is received twice"
+            << " Event# " << ev.ToString()
+            << " State# " << DumpFullState());
+    ReceivedVPutResponses[requestIdx] = true;
 
     const NKikimrProto::EReplyStatus status = record.GetStatus();
     ++VPutResponses;
@@ -389,9 +460,55 @@ void TGetImpl::OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVPutResult &
             Blackboard.AddPutOkResponse(blob, orderNumber);
             break;
         default:
-        Y_ABORT("Unexpected status# %s", NKikimrProto::EReplyStatus_Name(status).data());
+        Y_FAIL("Unexpected status# %s", NKikimrProto::EReplyStatus_Name(status).data());
     }
     Step(logCtx, outVGets, outVPuts, outGetResult);
+}
+
+void TGetImpl::OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVMultiPutResult &ev,
+        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+        TDeque<std::unique_ptr<TEvBlobStorage::TEvVMultiPut>> &outVMultiPuts,
+        TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
+    const NKikimrBlobStorage::TEvVMultiPutResult &record = ev.Record;
+    Y_VERIFY(record.HasVDiskID());
+    TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
+    TVDiskIdShort shortId(vdisk);
+    ui32 orderNumber = Info->GetOrderNumber(shortId);
+
+    Y_VERIFY(record.HasCookie());
+    TVMultiPutCookie cookie(record.GetCookie());
+    Y_VERIFY(cookie.GetVDiskOrderNumber() == orderNumber);
+    Y_VERIFY(cookie.GetItemCount() == record.ItemsSize());
+
+    ui64 requestIdx = cookie.GetRequestIdx();
+    Y_VERIFY_S(!ReceivedVMultiPutResponses[requestIdx], "the response is received twice"
+            << " Event# " << ev.ToString()
+            << " State# " << DumpFullState());
+    ReceivedVMultiPutResponses[requestIdx] = true;
+
+    ++VMultiPutResponses;
+    for (auto &item : record.GetItems()) {
+        const NKikimrProto::EReplyStatus status = item.GetStatus();
+        const TLogoBlobID blob = LogoBlobIDFromLogoBlobID(item.GetBlobID());
+        Y_VERIFY(item.HasCookie());
+        TBlobCookie itemCookie(item.GetCookie());
+        Y_VERIFY(itemCookie.GetVDiskOrderNumber() == orderNumber);
+        Y_VERIFY(itemCookie.GetPartId() == blob.PartId());
+        switch (status) {
+            case NKikimrProto::ERROR:
+            case NKikimrProto::VDISK_ERROR_STATE:
+            case NKikimrProto::OUT_OF_SPACE:
+                Blackboard.AddErrorResponse(blob, orderNumber);
+                break;
+            case NKikimrProto::OK:
+            case NKikimrProto::ALREADY:
+                Blackboard.AddPutOkResponse(blob, orderNumber);
+                break;
+            default:
+            Y_FAIL("Unexpected status# %s", NKikimrProto::EReplyStatus_Name(status).data());
+        }
+    }
+    Step(logCtx, outVGets, outVMultiPuts, outGetResult);
 }
 
 }//NKikimr

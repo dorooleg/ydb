@@ -17,7 +17,7 @@ class IDataShardUserDb;
 
 class IBaseChangeCollectorSink {
 public:
-    using TDataChange = NKikimrChangeExchange::TDataChange;
+    using TDataChange = NKikimrChangeExchange::TChangeRecord::TDataChange;
 
     struct TVersionState {
         TRowVersion WriteVersion;
@@ -48,7 +48,7 @@ class TBaseChangeCollector
     : public IBaseChangeCollector
     , protected TChangeRecordBodySerializer
 {
-    using TDataChange = NKikimrChangeExchange::TDataChange;
+    using TDataChange = NKikimrChangeExchange::TChangeRecord::TDataChange;
 
 public:
     explicit TBaseChangeCollector(TDataShard* self, IDataShardUserDb& userDb, IBaseChangeCollectorSink& sink);

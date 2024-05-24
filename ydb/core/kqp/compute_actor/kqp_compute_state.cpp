@@ -4,7 +4,6 @@
 #include <ydb/core/kqp/runtime/kqp_compute.h>
 #include <ydb/core/kqp/runtime/kqp_read_table.h>
 #include <ydb/core/tx/datashard/range_ops.h>
-#include <ydb/library/actors/core/log.h>
 
 namespace NKikimr::NKqp::NComputeActor {
 
@@ -95,14 +94,7 @@ const TSmallVec<TSerializedTableRange> TShardState::GetScanRanges(TConstArrayRef
 
 TString TShardState::GetAddress() const {
     TStringBuilder sb;
-    sb << TabletId;
+    sb << TabletId << "::" << ScannerIdx;
     return sb;
 }
-
-TShardState::TShardState(const ui64 tabletId)
-    : TabletId(tabletId)
-{
-    AFL_ENSURE(TabletId);
-}
-
 }

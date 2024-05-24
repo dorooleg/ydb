@@ -1,9 +1,11 @@
 #pragma once
-#include <ydb/library/yql/minikql/mkql_alloc.h>
-#include <ydb/library/yql/minikql/computation/mkql_block_item.h>
-#include <ydb/library/yql/parser/pg_catalog/catalog.h>
 
 namespace NYql {
+
+// allow to construct TListEntry in the space for IBoxedValue
+static_assert(sizeof(NKikimr::NUdf::IBoxedValue) >= sizeof(NKikimr::NMiniKQL::TAllocState::TListEntry));
+
+constexpr size_t PallocHdrSize = sizeof(void*) + sizeof(NKikimr::NUdf::IBoxedValue);
 
 inline NKikimr::NUdf::TUnboxedValuePod ScalarDatumToPod(Datum datum) {
     return NKikimr::NUdf::TUnboxedValuePod((ui64)datum);
@@ -17,19 +19,27 @@ inline Datum ScalarDatumFromItem(const NKikimr::NUdf::TBlockItem& value) {
     return (Datum)value.As<ui64>();
 }
 
+class TBoxedValueWithFree : public NKikimr::NUdf::TBoxedValueBase {
+public:
+    void operator delete(void *mem) noexcept {
+        return NKikimr::NMiniKQL::MKQLFreeDeprecated(mem);
+    }
+};
+
 inline NKikimr::NUdf::TUnboxedValuePod PointerDatumToPod(Datum datum) {
-    auto header = ((NKikimr::NMiniKQL::TMkqlPAllocHeader*)datum) - 1;
+    auto original = (char*)datum - PallocHdrSize;
     // remove this block from list
-    header->U.Entry.Unlink();
-    NKikimr::NUdf::IBoxedValue* raw = &header->U.Boxed;
-    new(raw) NKikimr::NMiniKQL::TBoxedValueWithFree();
+    ((NKikimr::NMiniKQL::TAllocState::TListEntry*)original)->Unlink();
+
+    auto raw = (NKikimr::NUdf::IBoxedValue*)original;
+    new(raw) TBoxedValueWithFree();
     NKikimr::NUdf::IBoxedValuePtr ref(raw);
     return NKikimr::NUdf::TUnboxedValuePod(std::move(ref));
 }
 
 inline NKikimr::NUdf::TUnboxedValuePod OwnedPointerDatumToPod(Datum datum) {
-    auto header = ((NKikimr::NMiniKQL::TMkqlPAllocHeader*)datum) - 1;
-    NKikimr::NUdf::IBoxedValue* raw = &header->U.Boxed;
+    auto original = (char*)datum - PallocHdrSize;
+    auto raw = (NKikimr::NUdf::IBoxedValue*)original;
     NKikimr::NUdf::IBoxedValuePtr ref(raw);
     return NKikimr::NUdf::TUnboxedValuePod(std::move(ref));
 }
@@ -37,12 +47,11 @@ inline NKikimr::NUdf::TUnboxedValuePod OwnedPointerDatumToPod(Datum datum) {
 class TVPtrHolder {
 public:
     TVPtrHolder() {
-        new(Dummy) NKikimr::NMiniKQL::TBoxedValueWithFree();
+        new(Dummy) TBoxedValueWithFree();
     }
 
     static bool IsBoxedVPtr(Datum ptr) {
-        auto header = ((NKikimr::NMiniKQL::TMkqlPAllocHeader*)ptr) - 1;
-        return *(const uintptr_t*)&header->U.Boxed == *(const uintptr_t*)Instance.Dummy;
+        return *(const uintptr_t*)((char*)ptr - PallocHdrSize) == *(const uintptr_t*)Instance.Dummy;
     }
 
 private:
@@ -65,11 +74,11 @@ inline NKikimr::NUdf::TUnboxedValuePod AnyDatumToPod(Datum datum, bool passByVal
 }
 
 inline Datum PointerDatumFromPod(const NKikimr::NUdf::TUnboxedValuePod& value) {
-    return (Datum)(((const NKikimr::NMiniKQL::TMkqlPAllocHeader*)value.AsBoxed().Get()) + 1);
+    return (Datum)(((const char*)value.AsBoxed().Get()) + PallocHdrSize);
 }
 
 inline Datum PointerDatumFromItem(const NKikimr::NUdf::TBlockItem& value) {
-    return (Datum)(value.AsStringRef().Data() + sizeof(void*));
+    return (Datum)value.AsStringRef().Data();
 }
 
 inline ui32 GetFullVarSize(const text* s) {
@@ -96,57 +105,22 @@ inline void UpdateCleanVarSize(text* s, ui32 cleanSize) {
     SET_VARSIZE(s, cleanSize + VARHDRSZ);
 }
 
-inline char* MakeCStringNotFilled(size_t size) {
-    char* ret = (char*)palloc(size + 1);
-    ret[size] = '\0';
-    return ret;
-}
-
 inline char* MakeCString(TStringBuf s) {
-    char* ret = MakeCStringNotFilled(s.Size());
+    char* ret = (char*)palloc(s.Size() + 1);
     memcpy(ret, s.Data(), s.Size());
-    return ret;
-}
-
-inline char* MakeFixedStringNotFilled(size_t size) {
-    char* ret = (char*)palloc(size);
-    memset(ret, 0, size);
-    return ret;
-}
-
-inline char* MakeFixedString(TStringBuf s, size_t size) {
-    auto ret = MakeFixedStringNotFilled(size);
-    Y_ENSURE(s.Size() <= size);
-    memcpy(ret, s.Data(), s.Size());
-    return ret;
-}
-
-inline text* MakeVarNotFilled(size_t size) {
-    text* ret = (text*)palloc(size + VARHDRSZ);
-    UpdateCleanVarSize(ret, size);
+    ret[s.Size()] = '\0';
     return ret;
 }
 
 inline text* MakeVar(TStringBuf s) {
-    text* ret = MakeVarNotFilled(s.Size());
+    text* ret = (text*)palloc(s.Size() + VARHDRSZ);
+    UpdateCleanVarSize(ret, s.Size());
     memcpy(GetMutableVarData(ret), s.Data(), s.Size());
     return ret;
 }
 
 inline ui32 MakeTypeIOParam(const NPg::TTypeDesc& desc) {
     return desc.ElementTypeId ? desc.ElementTypeId : desc.TypeId;
-}
-
-void PrepareVariadicArraySlow(FunctionCallInfoBaseData& callInfo, const NPg::TProcDesc& desc);
-void FreeVariadicArray(FunctionCallInfoBaseData& callInfo, ui32 originalArgs);
-
-inline bool PrepareVariadicArray(FunctionCallInfoBaseData& callInfo, const NPg::TProcDesc& desc) {
-    if (!desc.VariadicArgType || desc.VariadicArgType == desc.VariadicType) {
-        return false;
-    }
-
-    PrepareVariadicArraySlow(callInfo, desc);
-    return true;
 }
 
 }

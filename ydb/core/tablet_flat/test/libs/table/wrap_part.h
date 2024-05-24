@@ -6,7 +6,7 @@
 #include <ydb/core/tablet_flat/test/libs/rows/rows.h>
 #include <ydb/core/tablet_flat/flat_table_part.h>
 #include <ydb/core/tablet_flat/flat_part_screen.h>
-#include <ydb/core/tablet_flat/flat_part_iter.h>
+#include <ydb/core/tablet_flat/flat_part_iter_multi.h>
 #include <ydb/core/tablet_flat/flat_stat_part.h>
 
 namespace NKikimr {
@@ -15,25 +15,14 @@ namespace NTest {
 
     template<EDirection Direction>
     struct TWrapPartImpl {
-        TWrapPartImpl(const TPartEggs &eggs, TRun& run, bool defaults = true)
+        TWrapPartImpl(const TPartEggs &eggs, TIntrusiveConstPtr<TSlices> slices = nullptr,
+                    bool defaults = true)
             : Eggs(eggs)
             , Scheme(eggs.Scheme)
             , Remap_(TRemap::Full(*Scheme))
             , Defaults(defaults)
             , State(Remap_.Size())
-            , Run_(*Scheme->Keys) // unused
-            , Run(run)
-        {
-        }
-        
-        TWrapPartImpl(const TPartEggs &eggs, TIntrusiveConstPtr<TSlices> slices = nullptr, bool defaults = true)
-            : Eggs(eggs)
-            , Scheme(eggs.Scheme)
-            , Remap_(TRemap::Full(*Scheme))
-            , Defaults(defaults)
-            , State(Remap_.Size())
-            , Run_(*Scheme->Keys)
-            , Run(Run_)
+            , Run(*Scheme->Keys)
         {
             if (slices || Eggs.Parts.size() == 1) {
                 /* Allowed to override part slice only for lone eggs */
@@ -50,20 +39,18 @@ namespace NTest {
         {
             for (const auto &slice : slices) {
                 auto got = Run.FindInsertHint(part.Get(), slice);
-                Y_ABORT_UNLESS(got.second, "Unexpected slices intersection");
+                Y_VERIFY(got.second, "Unexpected slices intersection");
                 Run.Insert(got.first, part, slice);
             }
         }
 
     public:
-        using TCells = TArrayRef<const TCell>;
-
         explicit operator bool() const noexcept
         {
             return Iter && Iter->IsValid() && Ready == EReady::Data;
         }
 
-        TRunIter* Get() const noexcept
+        TRunIt* Get() const noexcept
         {
             return Iter.Get();
         }
@@ -76,17 +63,13 @@ namespace NTest {
         void Make(IPages *env) noexcept
         {
             Ready = EReady::Gone;
-            Iter = MakeHolder<TRunIter>(Run, Remap_.Tags, Scheme->Keys, env);
+            Iter = MakeHolder<TRunIt>(Run, Remap_.Tags, Scheme->Keys, env);
         }
 
         EReady Seek(TRawVals key_, ESeek seek) noexcept
         {
             const TCelled key(key_, *Scheme->Keys, false);
-            return Seek(key, seek);
-        }
 
-        EReady Seek(const TCells key, ESeek seek) noexcept
-        {
             if constexpr (Direction == EDirection::Reverse) {
                 Ready = Iter->SeekReverse(key, seek);
             } else {
@@ -96,7 +79,7 @@ namespace NTest {
             if (Ready == EReady::Data)
                 Ready = RollUp();
 
-            Y_ABORT_UNLESS(Ready != EReady::Data || Iter->IsValid());
+            Y_VERIFY(Ready != EReady::Data || Iter->IsValid());
 
             return Ready;
         }
@@ -109,16 +92,25 @@ namespace NTest {
             if (Ready == EReady::Data)
                 Ready = RollUp();
 
-            Y_ABORT_UNLESS(Ready != EReady::Data || Iter->IsValid());
+            Y_VERIFY(Ready != EReady::Data || Iter->IsValid());
 
             return Ready;
         }
 
         TRowVersion GetRowVersion() const noexcept
         {
-            Y_ABORT_UNLESS(Ready == EReady::Data);
+            Y_VERIFY(Ready == EReady::Data);
 
             return Iter->GetRowVersion();
+        }
+
+        EReady DoIterNext() noexcept
+        {
+            if constexpr (Direction == EDirection::Reverse) {
+                return Iter->Prev();
+            } else {
+                return Iter->Next();
+            }
         }
 
         void StopAfter(TArrayRef<const TCell> key) {
@@ -132,14 +124,14 @@ namespace NTest {
             } else if (EReady::Data == (Ready = DoIterNext()))
                 Ready = RollUp();
 
-            Y_ABORT_UNLESS(Ready != EReady::Data || Iter->IsValid());
+            Y_VERIFY(Ready != EReady::Data || Iter->IsValid());
 
             return Ready;
         }
 
         const TRowState& Apply() noexcept
         {
-            Y_ABORT_UNLESS(Ready == EReady::Data, "Row state isn't ready");
+            Y_VERIFY(Ready == EReady::Data, "Row state isn't ready");
 
             return State;
         }
@@ -155,12 +147,8 @@ namespace NTest {
             TDbTupleRef key = Iter->GetKey();
 
             if (StopKey) {
-                auto cmp = CompareTypedCellVectors(key.Cells().data(), StopKey.data(), Scheme->Keys->Types.data(), Min(key.Cells().size(), StopKey.size()));
-                if (cmp == 0 && key.Cells().size() != StopKey.size()) {
-                    // smaller key is filled with +inf => always bigger
-                    cmp = key.Cells().size() < StopKey.size() ? +1 : -1;
-                }
-                if (Direction == EDirection::Forward && cmp > 0 || Direction == EDirection::Reverse && cmp < 0) {
+                auto cmp = CompareTypedCellVectors(key.Cells().data(), StopKey.data(), Scheme->Keys->Types.data(), StopKey.size());
+                if (cmp > 0) {
                    return EReady::Gone;
                 }
             }
@@ -179,29 +167,19 @@ namespace NTest {
         const bool Defaults = true;
 
     private:
-        EReady DoIterNext() noexcept
-        {
-            if constexpr (Direction == EDirection::Reverse) {
-                return Iter->Prev();
-            } else {
-                return Iter->Next();
-            }
-        }
-
         EReady Ready = EReady::Gone;
         bool NoBlobs = false;
         TRowState State;
-        TRun Run_;
-        TRun& Run;
-        THolder<TRunIter> Iter;
+        TRun Run;
+        THolder<TRunIt> Iter;
         TOwnedCellVec StopKey;
     };
 
     using TWrapPart = TWrapPartImpl<EDirection::Forward>;
     using TWrapReversePart = TWrapPartImpl<EDirection::Reverse>;
 
-    using TCheckIter = TChecker<TWrapPart, TPartEggs>;
-    using TCheckReverseIter = TChecker<TWrapReversePart, TPartEggs>;
+    using TCheckIt = TChecker<TWrapPart, TPartEggs>;
+    using TCheckReverseIt = TChecker<TWrapReversePart, TPartEggs>;
 }
 }
 }

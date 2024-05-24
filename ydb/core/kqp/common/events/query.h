@@ -1,54 +1,19 @@
 #pragma once
 #include <ydb/core/protos/kqp.pb.h>
 #include <ydb/core/kqp/common/simple/kqp_event_ids.h>
-#include <ydb/core/kqp/common/kqp_user_request_context.h>
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/grpc_services/cancelation/cancelation_event.h>
 #include <ydb/core/grpc_services/cancelation/cancelation.h>
 
-#include <ydb/public/api/protos/ydb_query.pb.h>
-#include <ydb/public/api/protos/ydb_table.pb.h>
+#include <ydb/public/api/protos/draft/ydb_query.pb.h>
 #include <ydb/library/aclib/aclib.h>
-#include <ydb/library/actors/core/event_pb.h>
-#include <ydb/library/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_pb.h>
+#include <library/cpp/actors/core/event_local.h>
 
 namespace NKikimr::NKqp::NPrivateEvents {
 
 struct TEvQueryRequestRemote: public TEventPB<TEvQueryRequestRemote, NKikimrKqp::TEvQueryRequest,
     TKqpEvents::EvQueryRequest> {
-};
-
-struct TQueryRequestSettings {
-    TQueryRequestSettings& SetKeepSession(bool flag) {
-        KeepSession = flag;
-        return *this;
-    }
-
-    TQueryRequestSettings& SetUseCancelAfter(bool flag) {
-        UseCancelAfter = flag;
-        return *this;
-    }
-
-    TQueryRequestSettings& SetSyntax(const ::Ydb::Query::Syntax& syntax) {
-        Syntax = syntax;
-        return *this;
-    }
-
-    TQueryRequestSettings& SetSupportStreamTrailingResult(bool flag) {
-        SupportsStreamTrailingResult = flag;
-        return *this;
-    }
-
-    TQueryRequestSettings& SetOutputChunkMaxSize(ui64 size) {
-        OutputChunkMaxSize = size;
-        return *this;
-    }
-
-    ui64 OutputChunkMaxSize = 0;
-    bool KeepSession = false;
-    bool UseCancelAfter = true;
-    ::Ydb::Query::Syntax Syntax = Ydb::Query::Syntax::SYNTAX_UNSPECIFIED;
-    bool SupportsStreamTrailingResult = false;
 };
 
 struct TEvQueryRequest: public NActors::TEventLocal<TEvQueryRequest, TKqpEvents::EvQueryRequest> {
@@ -66,7 +31,8 @@ public:
         const ::Ydb::Table::QueryStatsCollection::Mode collectStats,
         const ::Ydb::Table::QueryCachePolicy* queryCachePolicy,
         const ::Ydb::Operations::OperationParams* operationParams,
-        const TQueryRequestSettings& querySettings = TQueryRequestSettings());
+        bool keepSession = false,
+        bool useCancelAfter = true);
 
     TEvQueryRequest() = default;
 
@@ -88,7 +54,7 @@ public:
         return RequestCtx ? false : Record.HasYdbStatus();
     }
 
-    const ::NKikimrKqp::TTopicOperationsRequest& GetTopicOperations() const {
+    const ::NKikimrKqp::TTopicOperations& GetTopicOperations() const {
         return Record.GetRequest().GetTopicOperations();
     }
 
@@ -97,7 +63,7 @@ public:
     }
 
     bool GetKeepSession() const {
-        return RequestCtx ? QuerySettings.KeepSession : Record.GetRequest().GetKeepSession();
+        return RequestCtx ? KeepSession : Record.GetRequest().GetKeepSession();
     }
 
     TDuration GetCancelAfter() const {
@@ -132,10 +98,6 @@ public:
         return RequestCtx ? QueryType : Record.GetRequest().GetType();
     }
 
-    Ydb::Query::Syntax GetSyntax() const {
-        return RequestCtx ? QuerySettings.Syntax : Record.GetRequest().GetSyntax();
-    }
-
     bool HasPreparedQuery() const {
         return RequestCtx ? QueryId.size() > 0 : Record.GetRequest().HasPreparedQuery();
     }
@@ -146,6 +108,10 @@ public:
 
     const TString& GetQuery() const {
         return RequestCtx ? YqlText : Record.GetRequest().GetQuery();
+    }
+
+    const ::NKikimrMiniKQL::TParams& GetParameters() const {
+        return Record.GetRequest().GetParameters();
     }
 
     const ::Ydb::Table::TransactionControl& GetTxControl() const {
@@ -191,13 +157,6 @@ public:
         }
 
         return Record.GetTraceId();
-    }
-
-    NWilson::TTraceId GetWilsonTraceId() const {
-        if (RequestCtx) {
-            return RequestCtx->GetWilsonTraceId();
-        }
-        return {};
     }
 
     const TString& GetRequestType() const {
@@ -265,16 +224,13 @@ public:
             return ParametersSize;
         }
 
+        ParametersSize += Record.GetRequest().GetParameters().ByteSizeLong();
         for (const auto& [name, param] : GetYdbParameters()) {
             ParametersSize += name.size();
             ParametersSize += param.ByteSizeLong();
         }
 
         return ParametersSize;
-    }
-
-    bool GetCollectDiagnostics() const {
-        return Record.GetRequest().GetCollectDiagnostics();
     }
 
     ui32 CalculateSerializedSize() const override {
@@ -305,30 +261,6 @@ public:
         }
     }
 
-    void SetUserRequestContext(TIntrusivePtr<TUserRequestContext> userRequestContext) {
-        UserRequestContext = userRequestContext;
-    }
-
-    TIntrusivePtr<TUserRequestContext> GetUserRequestContext() const {
-        return UserRequestContext;
-    }
-
-    void SetProgressStatsPeriod(TDuration progressStatsPeriod) {
-        ProgressStatsPeriod = progressStatsPeriod;
-    }
-
-    bool GetSupportsStreamTrailingResult() const {
-        return QuerySettings.SupportsStreamTrailingResult;
-    }
-
-    ui64 GetOutputChunkMaxSize() const {
-        return RequestCtx ? QuerySettings.OutputChunkMaxSize : Record.GetRequest().GetOutputChunkMaxSize();
-    }
-
-    TDuration GetProgressStatsPeriod() const {
-        return ProgressStatsPeriod;
-    }
-
     mutable NKikimrKqp::TEvQueryRequest Record;
 
 private:
@@ -351,11 +283,9 @@ private:
     const ::Ydb::Table::QueryStatsCollection::Mode CollectStats = Ydb::Table::QueryStatsCollection::STATS_COLLECTION_NONE;
     const ::Ydb::Table::QueryCachePolicy* QueryCachePolicy = nullptr;
     const bool HasOperationParams = false;
-    const TQueryRequestSettings QuerySettings = TQueryRequestSettings();
+    bool KeepSession = false;
     TDuration OperationTimeout;
     TDuration CancelAfter;
-    TIntrusivePtr<TUserRequestContext> UserRequestContext;
-    TDuration ProgressStatsPeriod;
 };
 
 struct TEvDataQueryStreamPart: public TEventPB<TEvDataQueryStreamPart,

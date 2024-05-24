@@ -43,13 +43,17 @@ Macros:
 #  pragma GCC system_header
 #endif
 
-#ifdef _LIBCPP_COMPILER_GCC
-
+#ifndef __GNUC__
+#ifdef _LIBCPP_COMPILER_MSVC
+#include Y_MSVC_INCLUDE_NEXT(limits.h)
+#else
+#include_next <limits.h>
+#endif
+#else
 // GCC header limits.h recursively includes itself through another header called
 // syslimits.h for some reason. This setup breaks down if we directly
-// #include_next GCC's limits.h (reasons not entirely clear to me).
-// See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=107795 for more details.
-// Therefore, we manually re-create the necessary include sequence below:
+// #include_next GCC's limits.h (reasons not entirely clear to me). Therefore,
+// we manually re-create the necessary include sequence below:
 
 // Get the system limits.h defines (force recurse into the next level)
 #define _GCC_LIMITS_H_
@@ -59,13 +63,6 @@ Macros:
 // Get the ISO C defines
 #undef _GCC_LIMITS_H_
 #include_next <limits.h>
-
-#else
-
-#  if __has_include_next(<limits.h>)
-#    include_next <limits.h>
-#  endif
-
-#endif // _LIBCPP_COMPILER_GCC
+#endif // __GNUC__
 
 #endif // _LIBCPP_LIMITS_H

@@ -12,7 +12,7 @@ namespace NKikimr::NBlobDepot {
         if (auto *x = dynamic_cast<TBlobDepot*>(actor)) {
             x->Validate(overseer);
         } else {
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -20,17 +20,17 @@ namespace NKikimr::NBlobDepot {
         if (auto *x = dynamic_cast<TBlobDepot*>(actor)) {
             x->OnSuccessfulGetResult(id);
         } else {
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
     void TBlobDepot::Validate(NTesting::TGroupOverseer& overseer) const {
-        Y_ABORT_UNLESS(Config.HasVirtualGroupId());
+        Y_VERIFY(Config.HasVirtualGroupId());
         overseer.EnumerateBlobs(Config.GetVirtualGroupId(), [&](TLogoBlobID userId, NTesting::EBlobState userState) {
             switch (userState) {
                 case NTesting::EBlobState::NOT_WRITTEN:
                 case NTesting::EBlobState::CERTAINLY_COLLECTED_OR_NEVER_WRITTEN:
-                    Y_ABORT();
+                    Y_FAIL();
 
                 case NTesting::EBlobState::POSSIBLY_WRITTEN:
                     break;
@@ -39,7 +39,7 @@ namespace NKikimr::NBlobDepot {
                     Cerr << userId.ToString() << Endl;
                     const TData::TKey key(userId);
                     const TData::TValue *value = Data->FindKey(key);
-                    Y_ABORT_UNLESS(value); // key must exist
+                    Y_VERIFY(value); // key must exist
                     ui32 numDataBytes = 0;
                     EnumerateBlobsForValueChain(value->ValueChain, TabletID(), [&](TLogoBlobID id, ui32, ui32 size) {
                         const ui32 groupId = Info()->GroupFor(id.Channel(), id.Generation());
@@ -49,7 +49,7 @@ namespace NKikimr::NBlobDepot {
                             << " Id# " << id.ToString() << " State# " << (int)state);
                         numDataBytes += size;
                     });
-                    Y_ABORT_UNLESS(numDataBytes == userId.BlobSize());
+                    Y_VERIFY(numDataBytes == userId.BlobSize());
                     break;
                 }
 

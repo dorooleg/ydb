@@ -54,14 +54,13 @@ private:
 
             for (auto* structItem : structType->GetItems()) {
                 const auto itemName = structItem->GetName();
-                const TDataExprType* itemType = nullptr;
-
-                bool isOptional = false;
-                if (!IsDataOrOptionalOfData(structItem->GetItemType(), isOptional, itemType)) {
+                const auto* itemType = structItem->GetItemType();
+                if (itemType->GetKind() == ETypeAnnotationKind::Optional) {
+                    ctx.AddError(TIssue(ctx.GetPosition(write.Input().Pos()), TStringBuilder() << "Optional types are not supported in writing into Monitoring. FieldName: " << itemName));
                     return TStatus::Error;
                 }
 
-                const auto dataType = NUdf::GetDataTypeInfo(itemType->GetSlot());
+                const auto dataType = NUdf::GetDataTypeInfo(itemType->Cast<TDataExprType>()->GetSlot());
 
                 if (dataType.Features & NUdf::DateType || dataType.Features & NUdf::TzDateType) {
                     if (hasTimestampMember) {
@@ -69,15 +68,7 @@ private:
                         return TStatus::Error;
                     }
                     hasTimestampMember = true;
-                    continue;
-                }
-
-                if (isOptional) {
-                    ctx.AddError(TIssue(ctx.GetPosition(write.Input().Pos()), TStringBuilder() << "Optional types for labels and metric values are not supported in writing into Monitoring. FieldName: " << itemName));
-                    return TStatus::Error;
-                }
-                
-                if (dataType.Features & NUdf::StringType) {
+                } else if (dataType.Features & NUdf::StringType) {
                     labelMembers++;
                 } else if (dataType.Features & NUdf::NumericType) {
                     sensorMembers++;

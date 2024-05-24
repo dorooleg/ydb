@@ -4,34 +4,41 @@
 
 namespace NKikimr::NConveyor {
 
+NActors::IActor* CreateService(const TConfig& config, TIntrusivePtr<::NMonitoring::TDynamicCounters> conveyorSignals) {
+    return new TDistributor(config, "common", conveyorSignals);
+}
+
 TDistributor::TDistributor(const TConfig& config, const TString& conveyorName, TIntrusivePtr<::NMonitoring::TDynamicCounters> conveyorSignals)
     : Config(config)
     , ConveyorName(conveyorName)
-    , Counters(ConveyorName, conveyorSignals)
+    , WaitingQueueSize(conveyorSignals->GetCounter("WaitingQueueSize"))
+    , WaitingQueueSizeLimit(conveyorSignals->GetCounter("WaitingQueueSizeLimit"))
+    , WorkersCount(conveyorSignals->GetCounter("WorkersCount"))
+    , WorkersCountLimit(conveyorSignals->GetCounter("WorkersCountLimit"))
+    , IncomingRate(conveyorSignals->GetCounter("Incoming", true))
+    , SolutionsRate(conveyorSignals->GetCounter("Solved", true))
+    , OverlimitRate(conveyorSignals->GetCounter("Overlimit", true))
 {
 
 }
 
 void TDistributor::Bootstrap() {
-    const ui32 workersCount = Config.GetWorkersCountForConveyor(NKqp::TStagePredictor::GetUsableThreads());
-    AFL_NOTICE(NKikimrServices::TX_CONVEYOR)("action", "conveyor_registered")("actor_id", SelfId())("workers_count", workersCount)("config", Config.DebugString());
+    const ui32 workersCount = Config.GetWorkersCountDef(NKqp::TStagePredictor::GetUsableThreads());
+    ALS_NOTICE(NKikimrServices::TX_CONVEYOR) << "action=conveyor_registered;actor_id=" << SelfId() << ";workers_count=" << workersCount << ";limit=" << Config.GetQueueSizeLimit();
+    TServiceOperator::Register(Config);
     for (ui32 i = 0; i < workersCount; ++i) {
-        Workers.emplace_back(Register(new TWorker(ConveyorName)));
+        Workers.emplace_back(Register(new TWorker()));
     }
-    Counters.AvailableWorkersCount->Set(Workers.size());
-    Counters.WorkersCountLimit->Set(Workers.size());
-    Counters.WaitingQueueSizeLimit->Set(Config.GetQueueSizeLimit());
+    WorkersCountLimit->Set(Workers.size());
+    WaitingQueueSizeLimit->Set(Config.GetQueueSizeLimit());
     Become(&TDistributor::StateMain);
 }
 
 void TDistributor::HandleMain(TEvInternal::TEvTaskProcessedResult::TPtr& ev) {
-    Counters.SolutionsRate->Inc();
-    Counters.ExecuteHistogram->Collect((TMonotonic::Now() - ev->Get()->GetStartInstant()).MilliSeconds());
+    SolutionsRate->Inc();
     if (Waiting.size()) {
-        auto task = Waiting.pop();
-        Counters.WaitingHistogram->Collect((TMonotonic::Now() - task.GetCreateInstant()).MilliSeconds());
-        task.OnBeforeStart();
-        Send(ev->Sender, new TEvInternal::TEvNewTask(task));
+        Send(ev->Sender, new TEvInternal::TEvNewTask(Waiting.top()));
+        Waiting.pop();
     } else {
         Workers.emplace_back(ev->Sender);
     }
@@ -41,42 +48,28 @@ void TDistributor::HandleMain(TEvInternal::TEvTaskProcessedResult::TPtr& ev) {
     } else {
         Send(ev->Get()->GetOwnerId(), new TEvExecution::TEvTaskProcessedResult(ev->Get()->GetResult()));
     }
-    Counters.WaitingQueueSize->Set(Waiting.size());
-    Counters.AvailableWorkersCount->Set(Workers.size());
+    WaitingQueueSize->Set(Waiting.size());
+    WorkersCount->Set(Workers.size());
     ALS_DEBUG(NKikimrServices::TX_CONVEYOR) << "action=processed;owner=" << ev->Get()->GetOwnerId() << ";workers=" << Workers.size() << ";waiting=" << Waiting.size();
 }
 
 void TDistributor::HandleMain(TEvExecution::TEvNewTask::TPtr& ev) {
     ALS_DEBUG(NKikimrServices::TX_CONVEYOR) << "action=add_task;owner=" << ev->Sender << ";workers=" << Workers.size() << ";waiting=" << Waiting.size();
-    Counters.IncomingRate->Inc();
-
-    const TString taskClass = ev->Get()->GetTask()->GetTaskClassIdentifier();
-    auto itSignal = Signals.find(taskClass);
-    if (itSignal == Signals.end()) {
-        itSignal = Signals.emplace(taskClass, std::make_shared<TTaskSignals>("Conveyor/" + ConveyorName, taskClass)).first;
-    }
-
-    TWorkerTask wTask(ev->Get()->GetTask(), ev->Get()->GetTask()->GetOwnerId().value_or(ev->Sender), itSignal->second);
-
+    IncomingRate->Inc();
     if (Workers.size()) {
-        Counters.WaitingHistogram->Collect(0);
-
-        wTask.OnBeforeStart();
-        Send(Workers.back(), new TEvInternal::TEvNewTask(wTask));
+        Send(Workers.back(), new TEvInternal::TEvNewTask(TWorkerTask(ev->Get()->GetTask(), ev->Sender)));
         Workers.pop_back();
-        Counters.UseWorkerRate->Inc();
     } else if (Waiting.size() < Config.GetQueueSizeLimit()) {
-        Waiting.push(wTask);
-        Counters.WaitWorkerRate->Inc();
+        Waiting.emplace(ev->Get()->GetTask(), ev->Sender);
     } else {
         ALS_ERROR(NKikimrServices::TX_CONVEYOR) << "action=overlimit;sender=" << ev->Sender << ";workers=" << Workers.size() << ";waiting=" << Waiting.size();
-        Counters.OverlimitRate->Inc();
+        OverlimitRate->Inc();
         Send(ev->Sender, new TEvExecution::TEvTaskProcessedResult(
             TConclusionStatus::Fail("scan conveyor overloaded (" + ::ToString(Waiting.size()) + " >= " + ::ToString(Config.GetQueueSizeLimit()) + ")")
         ));
     }
-    Counters.WaitingQueueSize->Set(Waiting.size());
-    Counters.AvailableWorkersCount->Set(Workers.size());
+    WaitingQueueSize->Set(Waiting.size());
+    WorkersCount->Set(Workers.size());
 }
 
 }

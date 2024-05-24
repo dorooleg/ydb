@@ -33,7 +33,7 @@ namespace NBoot {
                         state.Pages.resize(size);
                         ui32 page = 0;
                         for (auto it = state.Blobs->Iterator(); it.IsValid(); it.Next()) {
-                            Y_DEBUG_ABORT_UNLESS(page < state.Pages.size(),
+                            Y_VERIFY_DEBUG(page < state.Pages.size(),
                                 "Unexpected memtable blobs instability during boot");
                             ui64 cookie = base | page++;
                             Pending += Spawn<TLoadBlobs>(TLargeGlobId(it->GId.Group, it->GId.Logo), cookie);
@@ -53,13 +53,13 @@ namespace NBoot {
             auto *load = step->ConsumeAs<TLoadBlobs>(Pending);
 
             size_t index = load->Cookie >> 32;
-            Y_ABORT_UNLESS(index < States.size());
+            Y_VERIFY(index < States.size());
             auto& state = States[index];
-            Y_ABORT_UNLESS(state.Pending > 0);
+            Y_VERIFY(state.Pending > 0);
 
             ui32 page = ui32(load->Cookie);
-            Y_ABORT_UNLESS(page < state.Pages.size());
-            Y_ABORT_UNLESS(!state.Pages[page].Data);
+            Y_VERIFY(page < state.Pages.size());
+            Y_VERIFY(!state.Pages[page].Data);
 
             state.Pages[page].PageId = page;
             state.Pages[page].Data = load->PlainData();

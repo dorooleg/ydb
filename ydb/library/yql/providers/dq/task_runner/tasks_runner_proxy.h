@@ -1,7 +1,6 @@
 #pragma once
 
 #include <ydb/library/yql/providers/dq/api/protos/task_command_executor.pb.h>
-#include <ydb/library/yql/dq/common/dq_serialized_batch.h>
 #include <ydb/library/yql/dq/runtime/dq_tasks_runner.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/mkql_node.h>
@@ -12,9 +11,17 @@ extern const TString WorkingDirectoryParamName;
 extern const TString WorkingDirectoryDontInitParamName; // COMPAT(aozeritsky)
 extern const TString UseMetaParamName; // COMPAT(aozeritsky)
 
-i64 SaveRopeToPipe(IOutputStream& output, const TRope& rope);
-void LoadRopeFromPipe(IInputStream& input, TRope& rope);
-NDq::TDqTaskRunnerMemoryLimits DefaultMemoryLimits();
+class IStringSource: public NDq::IDqAsyncInputBuffer {
+public:
+    virtual ~IStringSource() = default;
+    virtual void PushString(TVector<TString>&& batch, i64 space) = 0;
+};
+
+class IStringSink: public NDq::IDqAsyncOutputBuffer {
+public:
+    virtual ~IStringSink() = default;
+    virtual ui64 PopString(TVector<TString>& batch, ui64 bytes) = 0;
+};
 
 class IInputChannel : public TThrRefBase, private TNonCopyable {
 public:
@@ -22,7 +29,7 @@ public:
 
     virtual ~IInputChannel() = default;
 
-    virtual void Push(NDq::TDqSerializedBatch&& data) = 0;
+    virtual void Push(NDqProto::TData&& data) = 0;
 
     virtual i64 GetFreeSpace() = 0;
 
@@ -36,7 +43,7 @@ public:
     virtual ~IOutputChannel() = default;
 
     [[nodiscard]]
-    virtual NDqProto::TPopResponse Pop(NDq::TDqSerializedBatch& data) = 0;
+    virtual NDqProto::TPopResponse Pop(NDqProto::TData& data) = 0;
 
     virtual bool IsFinished() const = 0;
 };
@@ -49,16 +56,15 @@ public:
 
     virtual ui64 GetTaskId() const = 0;
 
-    virtual NYql::NDqProto::TPrepareResponse Prepare(const NDq::TDqTaskRunnerMemoryLimits& limits = DefaultMemoryLimits()) = 0;
+    virtual NYql::NDqProto::TPrepareResponse Prepare() = 0;
     virtual NYql::NDqProto::TRunResponse Run() = 0;
 
     virtual IInputChannel::TPtr GetInputChannel(ui64 channelId) = 0;
     virtual IOutputChannel::TPtr GetOutputChannel(ui64 channelId) = 0;
-    virtual NDq::IDqAsyncInputBuffer* GetSource(ui64 index) = 0;
+    virtual NDq::IDqAsyncInputBuffer::TPtr GetSource(ui64 index) = 0;
     virtual NDq::IDqAsyncOutputBuffer::TPtr GetSink(ui64 index) = 0;
 
     virtual const THashMap<TString,TString>& GetTaskParams() const = 0;
-    virtual const TVector<TString>& GetReadRanges() const = 0;
     virtual const THashMap<TString,TString>& GetSecureParams() const = 0;
     virtual const NKikimr::NMiniKQL::TTypeEnvironment& GetTypeEnv() const = 0;
     virtual const NKikimr::NMiniKQL::THolderFactory& GetHolderFactory() const = 0;
@@ -83,9 +89,12 @@ class IProxyFactory: public TThrRefBase, private TNonCopyable {
 public:
     using TPtr = TIntrusivePtr<IProxyFactory>;
 
-    virtual ITaskRunner::TPtr GetOld(NKikimr::NMiniKQL::TScopedAlloc& alloc, const NDq::TDqTaskSettings& task, const TString& traceId = "") = 0;
+    virtual ITaskRunner::TPtr GetOld(const NDq::TDqTaskSettings& task, const TString& traceId = "") = 0;
 
-    virtual TIntrusivePtr<NDq::IDqTaskRunner> Get(NKikimr::NMiniKQL::TScopedAlloc& alloc, const NDq::TDqTaskSettings& task, NDqProto::EDqStatsMode statsMode, const TString& traceId = "TODO") = 0;
+    virtual TIntrusivePtr<NDq::IDqTaskRunner> Get(const NDq::TDqTaskSettings& task, const TString& traceId = "TODO") = 0;
 };
+
+
+NDq::TDqTaskRunnerMemoryLimits DefaultMemoryLimits();
 
 } // namespace NYql::NTaskRunnerProxy

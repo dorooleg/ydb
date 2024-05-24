@@ -2,7 +2,6 @@
 #include "console_configs_provider.h"
 
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
-#include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
 
 namespace NKikimr::NConsole {
 
@@ -17,15 +16,18 @@ public:
     {
     }
 
-    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
+    bool Execute(TTransactionContext &txc, const TActorContext &) override
     {
         auto &req = Request->Get()->Record;
 
         NIceDb::TNiceDb db(txc.DB);
 
+        Y_UNUSED(Modify);
+        Y_UNUSED(Error);
+
         try {
-            Version = req.GetRequest().identity().version();
-            auto cluster = req.GetRequest().identity().cluster();
+            Version = req.GetRequest().version();
+            auto cluster = req.GetRequest().cluster();
 
             if (Version == 0) {
                 ythrow yexception() << "Invalid version";
@@ -39,24 +41,28 @@ public:
                 ythrow yexception() << "Version mismatch";
             }
         } catch (const yexception& ex) {
-            Error = true;
-
-            auto ev = MakeHolder<TEvConsole::TEvGenericError>();
-            ev->Record.SetYdbStatus(Ydb::StatusIds::BAD_REQUEST);
-            auto *issue = ev->Record.AddIssues();
+            Response = MakeHolder<TEvConsole::TEvDropConfigResponse>();
+            auto *op = Response->Record.MutableResponse()->mutable_operation();
+            op->set_status(Ydb::StatusIds::BAD_REQUEST);
+            op->set_ready(true);
+            auto *issue = op->add_issues();
             issue->set_severity(NYql::TSeverityIds::S_ERROR);
             issue->set_message(ex.what());
-            Response = MakeHolder<NActors::IEventHandle>(Request->Sender, ctx.SelfID, ev.Release());
+            Error = true;
             return true;
         }
 
         if (!Self->YamlDropped) {
             Modify = true;
 
-            db.Table<Schema::YamlConfig>().Key(Version).Delete();
+            db.Table<Schema::YamlConfig>().Key(Version)
+                .Update<Schema::YamlConfig::Dropped>(true);
         }
 
-        Response = MakeHolder<NActors::IEventHandle>(Request->Sender, ctx.SelfID, new TEvConsole::TEvDropConfigResponse());
+        Response = MakeHolder<TEvConsole::TEvDropConfigResponse>();
+        auto *op = Response->Record.MutableResponse()->mutable_operation();
+        op->set_status(Ydb::StatusIds::SUCCESS);
+        op->set_ready(true);
 
         return true;
     }
@@ -65,11 +71,9 @@ public:
     {
         LOG_DEBUG(ctx, NKikimrServices::CMS_CONFIGS, "TTxDropYamlConfig Complete");
 
-        ctx.Send(Response.Release());
+        ctx.Send(Request->Sender, Response.Release());
 
         if (!Error && Modify) {
-            Self->YamlVersion = 0;
-            Self->YamlConfig.clear();
             Self->YamlDropped = true;
 
             Self->VolatileYamlConfigs.clear();
@@ -83,7 +87,7 @@ public:
 
 private:
     TEvConsole::TEvDropConfigRequest::TPtr Request;
-    THolder<NActors::IEventHandle> Response;
+    THolder<TEvConsole::TEvDropConfigResponse> Response;
     bool Error = false;
     bool Modify = false;
     ui32 Version;

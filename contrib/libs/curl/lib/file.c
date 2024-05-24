@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -69,7 +69,7 @@
 #include "curl_memory.h"
 #include "memdebug.h"
 
-#if defined(_WIN32) || defined(MSDOS) || defined(__EMX__)
+#if defined(WIN32) || defined(MSDOS) || defined(__EMX__)
 #define DOS_FILESYSTEM 1
 #elif defined(__amigaos4__)
 #define AMIGA_FILESYSTEM 1
@@ -150,19 +150,9 @@ static CURLcode file_connect(struct Curl_easy *data, bool *done)
   char *actual_path;
 #endif
   size_t real_path_len;
-  CURLcode result;
 
-  if(file->path) {
-    /* already connected.
-     * the handler->connect_it() is normally only called once, but
-     * FILE does a special check on setting up the connection which
-     * calls this explicitly. */
-    *done = TRUE;
-    return CURLE_OK;
-  }
-
-  result = Curl_urldecode(data->state.up.path, 0, &real_path,
-                          &real_path_len, REJECT_ZERO);
+  CURLcode result = Curl_urldecode(data->state.up.path, 0, &real_path,
+                                   &real_path_len, REJECT_ZERO);
   if(result)
     return result;
 
@@ -236,11 +226,10 @@ static CURLcode file_connect(struct Curl_easy *data, bool *done)
   file->path = real_path;
   #endif
 #endif
-  Curl_safefree(file->freepath);
   file->freepath = real_path; /* free this when done */
 
   file->fd = fd;
-  if(!data->state.upload && (fd == -1)) {
+  if(!data->set.upload && (fd == -1)) {
     failf(data, "Couldn't open file %s", data->state.up.path);
     file_done(data, CURLE_FILE_COULDNT_READ_FILE, FALSE);
     return CURLE_FILE_COULDNT_READ_FILE;
@@ -340,7 +329,7 @@ static CURLcode file_upload(struct Curl_easy *data)
 
   while(!result) {
     size_t nread;
-    ssize_t nwrite;
+    size_t nwrite;
     size_t readcount;
     result = Curl_fillreadbuffer(data, data->set.buffer_size, &readcount);
     if(result)
@@ -351,7 +340,7 @@ static CURLcode file_upload(struct Curl_easy *data)
 
     nread = readcount;
 
-    /* skip bytes before resume point */
+    /*skip bytes before resume point*/
     if(data->state.resume_from) {
       if((curl_off_t)nread <= data->state.resume_from) {
         data->state.resume_from -= nread;
@@ -369,7 +358,7 @@ static CURLcode file_upload(struct Curl_easy *data)
 
     /* write the data to the target */
     nwrite = write(fd, buf2, nread);
-    if((size_t)nwrite != nread) {
+    if(nwrite != nread) {
       result = CURLE_SEND_ERROR;
       break;
     }
@@ -414,6 +403,7 @@ static CURLcode file_do(struct Curl_easy *data, bool *done)
   bool size_known;
   bool fstated = FALSE;
   char *buf = data->state.buffer;
+  curl_off_t bytecount = 0;
   int fd;
   struct FILEPROTO *file;
 
@@ -421,7 +411,7 @@ static CURLcode file_do(struct Curl_easy *data, bool *done)
 
   Curl_pgrsStartNow(data);
 
-  if(data->state.upload)
+  if(data->set.upload)
     return file_upload(data);
 
   file = data->req.p.file;
@@ -481,13 +471,13 @@ static CURLcode file_do(struct Curl_easy *data, bool *done)
               tm->tm_hour,
               tm->tm_min,
               tm->tm_sec,
-              data->req.no_body ? "": "\r\n");
+              data->set.opt_no_body ? "": "\r\n");
     result = Curl_client_write(data, CLIENTWRITE_HEADER, header, headerlen);
     if(result)
       return result;
     /* set the file size to make it available post transfer */
     Curl_pgrsSetDownloadSize(data, expected_size);
-    if(data->req.no_body)
+    if(data->set.opt_no_body)
       return result;
   }
 
@@ -562,12 +552,15 @@ static CURLcode file_do(struct Curl_easy *data, bool *done)
     if(nread <= 0 || (size_known && (expected_size == 0)))
       break;
 
+    bytecount += nread;
     if(size_known)
       expected_size -= nread;
 
     result = Curl_client_write(data, CLIENTWRITE_BODY, buf, nread);
     if(result)
       return result;
+
+    Curl_pgrsSetDownloadCounter(data, bytecount);
 
     if(Curl_pgrsUpdate(data))
       result = CURLE_ABORTED_BY_CALLBACK;

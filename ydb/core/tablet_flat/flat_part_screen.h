@@ -64,7 +64,7 @@ namespace NTable {
 
             void Pass(TRowId ref) noexcept
             {
-                Y_ABORT_UNLESS(Tail <= ref, "Got page ref from the past");
+                Y_VERIFY(Tail <= ref, "Got page ref from the past");
 
                 if (Open != Max<TRowId>() && Tail != ref) {
                     auto begin = std::exchange(Open, Max<TRowId>());
@@ -137,7 +137,7 @@ namespace NTable {
 
         size_t Lookup(TRowId rowId, int dir) const noexcept
         {
-            Y_ABORT_UNLESS(dir == +1, "Only forward direction supported");
+            Y_VERIFY(dir == +1, "Only forward direction supported");
 
             auto less = [](TRowId rowId, const THole &hole) {
                 return rowId < hole.End;
@@ -165,7 +165,7 @@ namespace NTable {
         {
             TRowId last = 0;
             for (const auto &hole : Holes) {
-                Y_ABORT_UNLESS(std::exchange(last, hole.End) <= hole.Begin,
+                Y_VERIFY(std::exchange(last, hole.End) <= hole.Begin,
                     "Screen not sorted or has intersections");
             }
         }
@@ -198,7 +198,7 @@ namespace NTable {
                 sub.back() = hole.Cut(sub.back());
 
                 if (!sub.front() || !sub.back()) {
-                    Y_ABORT("Produced trival edges on screen cutting");
+                    Y_FAIL("Produced trival edges on screen cutting");
                 }
 
                 return new TScreen(std::move(sub));
@@ -215,7 +215,7 @@ namespace NTable {
             } else if (two == nullptr || two->Size() == 0) {
                 return one;
             } else if (one->Bounds().Cut(two->Bounds())) {
-                Y_ABORT("Cannot join two intersecting screens");
+                Y_FAIL("Cannot join two intersecting screens");
             } else if (one->Bounds().End > two->Bounds().Begin) {
                 std::swap(one, two);
             }

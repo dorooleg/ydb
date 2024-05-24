@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -32,16 +32,14 @@
 #  include <sys/utime.h>
 #endif
 
-/* Returns 0 on success, non-zero on file problems */
-int getfiletime(const char *filename, struct GlobalConfig *global,
-                curl_off_t *stamp)
+curl_off_t getfiletime(const char *filename, struct GlobalConfig *global)
 {
-  int rc = 1;
+  curl_off_t result = -1;
 
 /* Windows stat() may attempt to adjust the unix GMT file time by a daylight
    saving time offset and since it's GMT that is bad behavior. When we have
    access to a 64-bit type we can bypass stat and get the times directly. */
-#if defined(_WIN32)
+#if defined(WIN32) && (SIZEOF_CURL_OFF_T >= 8)
   HANDLE hfile;
   TCHAR *tchar_filename = curlx_convert_UTF8_to_tchar((char *)filename);
 
@@ -54,40 +52,41 @@ int getfiletime(const char *filename, struct GlobalConfig *global,
     FILETIME ft;
     if(GetFileTime(hfile, NULL, NULL, &ft)) {
       curl_off_t converted = (curl_off_t)ft.dwLowDateTime
-        | ((curl_off_t)ft.dwHighDateTime) << 32;
+          | ((curl_off_t)ft.dwHighDateTime) << 32;
 
-      if(converted < CURL_OFF_T_C(116444736000000000))
-        warnf(global, "Failed to get filetime: underflow");
+      if(converted < CURL_OFF_T_C(116444736000000000)) {
+        warnf(global, "Failed to get filetime: underflow\n");
+      }
       else {
-        *stamp = (converted - CURL_OFF_T_C(116444736000000000)) / 10000000;
-        rc = 0;
+        result = (converted - CURL_OFF_T_C(116444736000000000)) / 10000000;
       }
     }
     else {
       warnf(global, "Failed to get filetime: "
-            "GetFileTime failed: GetLastError %u",
+            "GetFileTime failed: GetLastError %u\n",
             (unsigned int)GetLastError());
     }
     CloseHandle(hfile);
   }
   else if(GetLastError() != ERROR_FILE_NOT_FOUND) {
     warnf(global, "Failed to get filetime: "
-          "CreateFile failed: GetLastError %u",
+          "CreateFile failed: GetLastError %u\n",
           (unsigned int)GetLastError());
   }
 #else
   struct_stat statbuf;
   if(-1 != stat(filename, &statbuf)) {
-    *stamp = (curl_off_t)statbuf.st_mtime;
-    rc = 0;
+    result = (curl_off_t)statbuf.st_mtime;
   }
-  else
-    warnf(global, "Failed to get filetime: %s", strerror(errno));
+  else if(errno != ENOENT) {
+    warnf(global, "Failed to get filetime: %s\n", strerror(errno));
+  }
 #endif
-  return rc;
+  return result;
 }
 
-#if defined(HAVE_UTIME) || defined(HAVE_UTIMES) || defined(_WIN32)
+#if defined(HAVE_UTIME) || defined(HAVE_UTIMES) ||      \
+  (defined(WIN32) && (SIZEOF_CURL_OFF_T >= 8))
 void setfiletime(curl_off_t filetime, const char *filename,
                  struct GlobalConfig *global)
 {
@@ -95,7 +94,7 @@ void setfiletime(curl_off_t filetime, const char *filename,
 /* Windows utime() may attempt to adjust the unix GMT file time by a daylight
    saving time offset and since it's GMT that is bad behavior. When we have
    access to a 64-bit type we can bypass utime and set the times directly. */
-#if defined(_WIN32)
+#if defined(WIN32) && (SIZEOF_CURL_OFF_T >= 8)
     HANDLE hfile;
     TCHAR *tchar_filename = curlx_convert_UTF8_to_tchar((char *)filename);
 
@@ -103,7 +102,7 @@ void setfiletime(curl_off_t filetime, const char *filename,
        Windows FILETIME without overflow: 30827-12-31T23:59:59. */
     if(filetime > CURL_OFF_T_C(910670515199)) {
       warnf(global, "Failed to set filetime %" CURL_FORMAT_CURL_OFF_T
-            " on outfile: overflow", filetime);
+            " on outfile: overflow\n", filetime);
       curlx_unicodefree(tchar_filename);
       return;
     }
@@ -121,14 +120,14 @@ void setfiletime(curl_off_t filetime, const char *filename,
       ft.dwHighDateTime = (DWORD)(converted >> 32);
       if(!SetFileTime(hfile, NULL, &ft, &ft)) {
         warnf(global, "Failed to set filetime %" CURL_FORMAT_CURL_OFF_T
-              " on outfile: SetFileTime failed: GetLastError %u",
+              " on outfile: SetFileTime failed: GetLastError %u\n",
               filetime, (unsigned int)GetLastError());
       }
       CloseHandle(hfile);
     }
     else {
       warnf(global, "Failed to set filetime %" CURL_FORMAT_CURL_OFF_T
-            " on outfile: CreateFile failed: GetLastError %u",
+            " on outfile: CreateFile failed: GetLastError %u\n",
             filetime, (unsigned int)GetLastError());
     }
 
@@ -138,7 +137,7 @@ void setfiletime(curl_off_t filetime, const char *filename,
     times[0].tv_usec = times[1].tv_usec = 0;
     if(utimes(filename, times)) {
       warnf(global, "Failed to set filetime %" CURL_FORMAT_CURL_OFF_T
-            " on '%s': %s", filetime, filename, strerror(errno));
+            " on '%s': %s\n", filetime, filename, strerror(errno));
     }
 
 #elif defined(HAVE_UTIME)
@@ -147,10 +146,10 @@ void setfiletime(curl_off_t filetime, const char *filename,
     times.modtime = (time_t)filetime;
     if(utime(filename, &times)) {
       warnf(global, "Failed to set filetime %" CURL_FORMAT_CURL_OFF_T
-            " on '%s': %s", filetime, filename, strerror(errno));
+            " on '%s': %s\n", filetime, filename, strerror(errno));
     }
 #endif
   }
 }
-#endif /* defined(HAVE_UTIME) || defined(HAVE_UTIMES) ||        \
-          defined(_WIN32) */
+#endif /* defined(HAVE_UTIME) || defined(HAVE_UTIMES) || \
+          (defined(WIN32) && (SIZEOF_CURL_OFF_T >= 8)) */

@@ -1,5 +1,5 @@
 #include "mkql_contains.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
 namespace NKikimr {
@@ -23,7 +23,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto valueType = Type::getInt128Ty(context);
 
         const auto dict = GetNodeValue(Dict, ctx, block);

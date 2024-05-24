@@ -13,10 +13,8 @@ namespace NYdb {
             TTopicWorkloadStatsCollector(
                 size_t producerCount, size_t consumerCount,
                 bool quiet, bool printTimestamp,
-                ui32 windowDurationSec, ui32 totalDurationSec, ui32 warmupSec,
-                double Percentile,
-                std::shared_ptr<std::atomic_bool> errorFlag,
-                bool transferMode);
+                ui32 windowDurationSec, ui32 totalDurationSec,
+                std::shared_ptr<std::atomic_bool> errorFlag);
 
             void PrintWindowStatsLoop();
 
@@ -26,56 +24,33 @@ namespace NYdb {
             void AddWriterEvent(size_t writerIdx, const TTopicWorkloadStats::WriterEvent& event);
             void AddReaderEvent(size_t readerIdx, const TTopicWorkloadStats::ReaderEvent& event);
             void AddLagEvent(size_t readerIdx, const TTopicWorkloadStats::LagEvent& event);
-            void AddSelectEvent(size_t readerIdx, const TTopicWorkloadStats::SelectEvent& event);
-            void AddUpsertEvent(size_t readerIdx, const TTopicWorkloadStats::UpsertEvent& event);
-            void AddCommitTxEvent(size_t readerIdx, const TTopicWorkloadStats::CommitTxEvent& event);
 
             ui64 GetTotalReadMessages() const;
             ui64 GetTotalWriteMessages() const;
 
         private:
-            template<class T>
-            using TEventQueues = std::vector<THolder<TAutoLockFreeQueue<T>>>;
-
             void CollectThreadEvents();
-            template<class T>
-            void CollectThreadEvents(TEventQueues<T>& queues);
-
-            template<class T>
-            static void AddQueue(TEventQueues<T>& queues);
-
-            template<class T>
-            void AddEvent(size_t index, TEventQueues<T>& queues, const T& event);
 
             void PrintWindowStats(ui32 windowIt);
             void PrintStats(TMaybe<ui32> windowIt) const;
 
             size_t WriterCount;
             size_t ReaderCount;
-            bool TransferMode;
 
-            TEventQueues<TTopicWorkloadStats::WriterEvent> WriterEventQueues;
-            TEventQueues<TTopicWorkloadStats::ReaderEvent> ReaderEventQueues;
-            TEventQueues<TTopicWorkloadStats::LagEvent> LagEventQueues;
-            TEventQueues<TTopicWorkloadStats::SelectEvent> SelectEventQueues;
-            TEventQueues<TTopicWorkloadStats::UpsertEvent> UpsertEventQueues;
-            TEventQueues<TTopicWorkloadStats::CommitTxEvent> CommitTxEventQueues;
+            std::vector<THolder<TAutoLockFreeQueue<TTopicWorkloadStats::WriterEvent>>> WriterEventQueues;
+            std::vector<THolder<TAutoLockFreeQueue<TTopicWorkloadStats::ReaderEvent>>> ReaderEventQueues;
+            std::vector<THolder<TAutoLockFreeQueue<TTopicWorkloadStats::LagEvent>>> LagEventQueues;
 
             bool Quiet;
             bool PrintTimestamp;
 
-            double WindowSec;
-            double TotalSec;
-            double WarmupSec;
-
-            double Percentile;
+            double WindowDurationSec;
+            double TotalDurationSec;
 
             std::shared_ptr<std::atomic_bool> ErrorFlag;
 
             THolder<TTopicWorkloadStats> WindowStats;
             TTopicWorkloadStats TotalStats;
-
-            TInstant WarmupTime;
         };
     }
 }

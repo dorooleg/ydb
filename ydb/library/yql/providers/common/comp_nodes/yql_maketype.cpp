@@ -5,7 +5,6 @@
 #include <ydb/library/yql/ast/yql_expr.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_impl.h>
-#include <ydb/library/yql/parser/pg_catalog/catalog.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -102,12 +101,6 @@ namespace {
     struct TMakeTypeArgs<NYql::ETypeAnnotationKind::Callable> {
         static constexpr size_t MinValue = 2;
         static constexpr size_t MaxValue = 4;
-    };
-
-    template <>
-    struct TMakeTypeArgs<NYql::ETypeAnnotationKind::Pg> {
-        static constexpr size_t MinValue = 1;
-        static constexpr size_t MaxValue = 1;
     };
 }
 
@@ -310,18 +303,6 @@ public:
             break;
         }
 
-        case NYql::ETypeAnnotationKind::Pg: {
-            auto name = Args_[0]->GetValue(ctx);
-            auto nameStr = TString(name.AsStringRef());
-            if (!NYql::NPg::HasType(nameStr)) {
-                UdfTerminate((TStringBuilder() << Pos_ << ": Unknown Pg type: " << nameStr).data());
-            }
-
-            auto pgType = exprCtxPtr->template MakeType<NYql::TPgExprType>(NYql::NPg::LookupType(nameStr).TypeId);
-            retType = pgType;
-            break;
-        }
-
         default:
             MKQL_ENSURE(false, "Unsupported kind:" << Kind);
         }
@@ -401,9 +382,6 @@ template IComputationNode* WrapMakeType<NYql::ETypeAnnotationKind::EmptyDict>
     (TCallable& callable, const TComputationNodeFactoryContext& ctx, ui32 exprCtxMutableIndex);
 
 template IComputationNode* WrapMakeType<NYql::ETypeAnnotationKind::Callable>
-    (TCallable& callable, const TComputationNodeFactoryContext& ctx, ui32 exprCtxMutableIndex);
-
-template IComputationNode* WrapMakeType<NYql::ETypeAnnotationKind::Pg>
     (TCallable& callable, const TComputationNodeFactoryContext& ctx, ui32 exprCtxMutableIndex);
 
 }

@@ -33,7 +33,7 @@ public:
         // Parse protobuf options for enum values for app counters
         for (int i = 0; i < appDesc->value_count(); i++) {
             const NProtoBuf::EnumValueDescriptor* vdesc = appDesc->value(i);
-            Y_ABORT_UNLESS(vdesc->number() == vdesc->index(), "counter '%s' number (%d) != index (%d)",
+            Y_VERIFY(vdesc->number() == vdesc->index(), "counter '%s' number (%d) != index (%d)",
                    vdesc->full_name().c_str(), vdesc->number(), vdesc->index());
             if (!vdesc->options().HasExtension(CounterOpts)) {
                 NamesStrings.emplace_back(); // empty name
@@ -43,7 +43,7 @@ public:
             }
             const TCounterOptions& co = vdesc->options().GetExtension(CounterOpts);
             TString cntName = co.GetName();
-            Y_ABORT_UNLESS(!cntName.empty(), "counter '%s' number (%d) cannot have an empty counter name",
+            Y_VERIFY(!cntName.empty(), "counter '%s' number (%d) cannot have an empty counter name",
                     vdesc->full_name().c_str(), vdesc->number());
             TString nameString;
             if (IsHistogramAggregateSimpleName(cntName)) {
@@ -74,18 +74,18 @@ public:
 
     virtual const TVector<TTabletPercentileCounter::TRangeDef>& GetRanges(size_t idx) const
     {
-        Y_ABORT_UNLESS(idx < Size);
+        Y_VERIFY(idx < Size);
         if (!Ranges[idx].empty()) {
             return Ranges[idx];
         } else {
             if (!AppGlobalRanges.empty())
                 return AppGlobalRanges;
         }
-        Y_ABORT("Ranges for percentile counter '%s' are not defined", AppCountersDesc()->value(idx)->full_name().c_str());
+        Y_FAIL("Ranges for percentile counter '%s' are not defined", AppCountersDesc()->value(idx)->full_name().c_str());
     }
 
     virtual bool GetIntegral(size_t idx) const {
-        Y_ABORT_UNLESS(idx < Size);
+        Y_VERIFY(idx < Size);
         return Integral[idx];
     }
 
@@ -141,15 +141,15 @@ public:
         for (int j = 0; j < typesDesc->value_count(); j++) {
             const NProtoBuf::EnumValueDescriptor* tt = typesDesc->value(j);
             TTxType txType = tt->number();
-            Y_ABORT_UNLESS((int)txType == tt->index(), "tx type '%s' number (%d) != index (%d)",
+            Y_VERIFY((int)txType == tt->index(), "tx type '%s' number (%d) != index (%d)",
                    tt->full_name().c_str(), txType, tt->index());
-            Y_ABORT_UNLESS(tt->options().HasExtension(TxTypeOpts), "tx type '%s' number (%d) is missing TxTypeOpts",
+            Y_VERIFY(tt->options().HasExtension(TxTypeOpts), "tx type '%s' number (%d) is missing TxTypeOpts",
                     tt->full_name().c_str(), txType);
             const TTxTypeOptions& tto = tt->options().GetExtension(TxTypeOpts);
             TString txPrefix = tto.GetName() + "/";
             for (int i = 0; i < txDesc->value_count(); i++) {
                 const NProtoBuf::EnumValueDescriptor* v = txDesc->value(i);
-                Y_ABORT_UNLESS(v->number() == v->index(), "counter '%s' number (%d) != index (%d)",
+                Y_VERIFY(v->number() == v->index(), "counter '%s' number (%d) != index (%d)",
                        v->full_name().c_str(), v->number(), v->index());
                 if (!v->options().HasExtension(CounterOpts)) {
                     NamesStrings.emplace_back(); // empty name
@@ -158,7 +158,7 @@ public:
                     continue;
                 }
                 const TCounterOptions& co = v->options().GetExtension(CounterOpts);
-                Y_ABORT_UNLESS(!co.GetName().empty(), "counter '%s' number (%d) has an empty name",
+                Y_VERIFY(!co.GetName().empty(), "counter '%s' number (%d) has an empty name",
                         v->full_name().c_str(), v->number());
                 TVector<TTabletPercentileCounter::TRangeDef> ranges = TBase::ParseRanges(co);
                 NamesStrings.push_back(TBase::GetFilePrefix(typesDesc->file()) + txPrefix + co.GetName());
@@ -181,7 +181,7 @@ public:
 
     virtual const TVector<TTabletPercentileCounter::TRangeDef>& GetRanges(size_t idx) const
     {
-        Y_ABORT_UNLESS(idx < Size);
+        Y_VERIFY(idx < Size);
         if (!Ranges[idx].empty()) {
             return Ranges[idx];
         } else {
@@ -193,10 +193,10 @@ public:
             }
         }
         if (idx < TxOffset) {
-            Y_ABORT("Ranges for percentile counter '%s' are not defined", AppCountersDesc()->value(idx)->full_name().c_str());
+            Y_FAIL("Ranges for percentile counter '%s' are not defined", AppCountersDesc()->value(idx)->full_name().c_str());
         } else {
             size_t idx2 = (idx - TxOffset) % TxCountersSize;
-            Y_ABORT("Ranges for percentile counter '%s' are not defined", TxCountersDesc()->value(idx2)->full_name().c_str());
+            Y_FAIL("Ranges for percentile counter '%s' are not defined", TxCountersDesc()->value(idx2)->full_name().c_str());
         }
     }
 };
@@ -232,7 +232,7 @@ public:
 
     const TVector<TTabletPercentileCounter::TRangeDef>& GetRanges(size_t idx) const
     {
-        Y_ABORT_UNLESS(idx < Size);
+        Y_VERIFY(idx < Size);
         if (idx < Opts1.Size)
             return Opts1.GetRanges(idx);
         return Opts2.GetRanges(idx - Opts1.Size);
@@ -290,7 +290,7 @@ public:
         // Parse protobuf options for enum values for app counters
         for (ui32 i = 0; i < Size; ++i) {
             const NProtoBuf::EnumValueDescriptor* vdesc = labeledCounterDesc->value(i);
-            Y_ABORT_UNLESS(vdesc->number() == vdesc->index(), "counter '%s' number (%d) != index (%d)",
+            Y_VERIFY(vdesc->number() == vdesc->index(), "counter '%s' number (%d) != index (%d)",
                    vdesc->full_name().data(), vdesc->number(), vdesc->index());
             const TLabeledCounterOptions& co = vdesc->options().GetExtension(LabeledCounterOpts);
 
@@ -420,9 +420,9 @@ protected:
     size_t IndexOf(TTxType txType, ui32 txCounter) const {
         // Note that enum values are used only inside a process, not on disc/messages
         // so there are no backward compatibility issues
-        Y_ABORT_UNLESS(txCounter < TxCountersSize[counterType]);
+        Y_VERIFY(txCounter < TxCountersSize[counterType]);
         size_t ret = TxOffset[counterType] + txType * TxCountersSize[counterType] + txCounter;
-        Y_ABORT_UNLESS(ret < Size[counterType]);
+        Y_VERIFY(ret < Size[counterType]);
         return ret;
     }
 };
@@ -643,7 +643,7 @@ public:
         TVector<TString> groups;
         StringSplitter(group).Split('/').SkipEmpty().Collect(&groups);
 
-        Y_ABORT_UNLESS(SimpleOpts()->GetGroupNamesSize() == groups.size());
+        Y_VERIFY(SimpleOpts()->GetGroupNamesSize() == groups.size());
     }
 
     TProtobufTabletLabeledCounters(const TString& group, const ui64 id,
@@ -655,7 +655,7 @@ public:
         TVector<TString> groups;
         StringSplitter(group).Split('|').Collect(&groups);
 
-        Y_ABORT_UNLESS(SimpleOpts()->GetGroupNamesSize() == groups.size());
+        Y_VERIFY(SimpleOpts()->GetGroupNamesSize() == groups.size());
     }
 };
 

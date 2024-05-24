@@ -9,7 +9,7 @@
 #define LOG_D(stream) LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "[" << context.SS->TabletID() << "] " << stream)
 #define LOG_I(stream) LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "[" << context.SS->TabletID() << "] " << stream)
 #define LOG_N(stream) LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "[" << context.SS->TabletID() << "] " << stream)
-#define LOG_E(stream) LOG_ERROR_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "[" << context.SS->TabletID() << "] " << stream)
+
 
 namespace NKikimr::NSchemeShard {
 
@@ -36,17 +36,12 @@ struct TParamsDelta {
     uint8_t AddExternalSchemeShard = 0;
     uint8_t AddExternalHive = 0;
     uint8_t AddExternalSysViewProcessor = 0;
-    uint8_t AddExternalStatisticsAggregator = 0;
-    uint8_t AddGraphShard = 0;
-    uint8_t AddBackupController = 0;
     bool SharedTxSupportAdded = false;
     TVector<TStoragePool> StoragePoolsAdded;
-    bool ServerlessComputeResourcesModeChanged = false;
 };
 
 std::tuple<NKikimrScheme::EStatus, TString>
-VerifyParams(TParamsDelta* delta, const TPathId pathId, const TSubDomainInfo::TPtr& current,
-             const NKikimrSubDomains::TSubDomainSettings& input, const bool isServerlessExclusiveDynamicNodesEnabled) {
+VerifyParams(TParamsDelta* delta, const TSubDomainInfo::TPtr& current, const NKikimrSubDomains::TSubDomainSettings& input) {
     auto paramError = [](const TStringBuf& msg) {
         return std::make_tuple(NKikimrScheme::EStatus::StatusInvalidParameter,
             TStringBuilder() << "Invalid ExtSubDomain request: " << msg
@@ -60,7 +55,7 @@ VerifyParams(TParamsDelta* delta, const TPathId pathId, const TSubDomainInfo::TP
     //
     // Currently this operation support very few workable result states:
     // 1. extsubdomain with full SharedTxSupport (ExternalSchemeShard, Coordinators, Mediators + required params),
-    //   with or without ExternalHive, ExternalSysViewProcessor and ExternalStatisticsAggregator
+    //   with or without ExternalHive and ExternalSysViewProcessor
     //
 
     // First params check: single values
@@ -176,51 +171,6 @@ VerifyParams(TParamsDelta* delta, const TPathId pathId, const TSubDomainInfo::TP
         }
     }
 
-    // ExternalStatisticsAggregator checks
-    uint8_t addExternalStatisticsAggregator = 0;
-    if (input.HasExternalStatisticsAggregator()) {
-        const bool prev = bool(current->GetTenantStatisticsAggregatorID());
-        const bool next = input.GetExternalStatisticsAggregator();
-        const bool changed = (prev != next);
-
-        if (changed) {
-            if (next == false) {
-                return paramError("ExternalStatisticsAggregator could only be added, not removed");
-            }
-            addExternalStatisticsAggregator = 1;
-        }
-    }
-
-    // GraphShard checks
-    uint8_t addGraphShard = 0;
-    if (input.GetGraphShard()) {
-        const bool prev = bool(current->GetTenantGraphShardID());
-        const bool next = input.GetGraphShard();
-        const bool changed = (prev != next);
-
-        if (changed) {
-            if (next == false) {
-                return paramError("GraphShard could only be added, not removed");
-            }
-            addGraphShard = 1;
-        }
-    }
-
-    // BackupController checks
-    uint8_t addBackupController = 0;
-    if (input.GetExternalBackupController()) {
-        const bool prev = bool(current->GetTenantBackupControllerID());
-        const bool next = input.GetExternalBackupController();
-        const bool changed = (prev != next);
-
-        if (changed) {
-            if (next == false) {
-                return paramError("BackupController could only be added, not removed");
-            }
-            addBackupController = 1;
-        }
-    }
-
     // Second params check: combinations
 
     bool sharedTxSupportAdded = (coordinatorsAdded + mediatorsAdded) > 0;
@@ -274,46 +224,9 @@ VerifyParams(TParamsDelta* delta, const TPathId pathId, const TSubDomainInfo::TP
             }
         }
 
-        // storage pools quotas check
-        TString error;
-        if (const auto& effectivePools = requestedPools.empty()
-                ? actualPools
-                : requestedPools;
-            !CheckStorageQuotasKinds(input.GetDatabaseQuotas(), effectivePools, pathId.ToString(), error)
-        ) {
-            return paramError(error);
-        }
-
         std::set_difference(requestedPools.begin(), requestedPools.end(),
                             actualPools.begin(), actualPools.end(),
                             std::back_inserter(storagePoolsAdded));
-    }
-
-    // ServerlessComputeResourcesMode check
-    bool serverlessComputeResourcesModeChanged = false;
-    if (input.HasServerlessComputeResourcesMode()) {
-        if (!isServerlessExclusiveDynamicNodesEnabled) {
-            return std::make_tuple(NKikimrScheme::EStatus::StatusPreconditionFailed,
-                "Unsupported: feature flag EnableServerlessExclusiveDynamicNodes is off"
-            );
-        }
-
-        switch (input.GetServerlessComputeResourcesMode()) {
-            case EServerlessComputeResourcesMode::EServerlessComputeResourcesModeUnspecified:
-                return paramError("can not set ServerlessComputeResourcesMode to EServerlessComputeResourcesModeUnspecified");
-            case EServerlessComputeResourcesMode::EServerlessComputeResourcesModeExclusive:
-            case EServerlessComputeResourcesMode::EServerlessComputeResourcesModeShared:
-                break; // ok
-            default:
-                return paramError("unknown ServerlessComputeResourcesMode");
-        }
-
-        const bool isServerless = pathId != current->GetResourcesDomainId();
-        if (!isServerless) {
-            return paramError("ServerlessComputeResourcesMode can be changed only for serverless");
-        }
-
-        serverlessComputeResourcesModeChanged = current->GetServerlessComputeResourcesMode() != input.GetServerlessComputeResourcesMode();
     }
 
     delta->CoordinatorsAdded = coordinatorsAdded;
@@ -322,22 +235,16 @@ VerifyParams(TParamsDelta* delta, const TPathId pathId, const TSubDomainInfo::TP
     delta->AddExternalSchemeShard = addExternalSchemeShard;
     delta->AddExternalHive = addExternalHive;
     delta->AddExternalSysViewProcessor = addExternalSysViewProcessor;
-    delta->AddExternalStatisticsAggregator = addExternalStatisticsAggregator;
-    delta->AddGraphShard = addGraphShard;
-    delta->AddBackupController = addBackupController;
     delta->SharedTxSupportAdded = sharedTxSupportAdded;
     delta->StoragePoolsAdded = std::move(storagePoolsAdded);
-    delta->ServerlessComputeResourcesModeChanged = serverlessComputeResourcesModeChanged;
 
     return {NKikimrScheme::EStatus::StatusAccepted, {}};
 }
 
-void VerifyParams(TProposeResponse* result, TParamsDelta* delta, const TPathId pathId,
-                  const TSubDomainInfo::TPtr& current, const NKikimrSubDomains::TSubDomainSettings& input,
-                  const bool isServerlessExclusiveDynamicNodesEnabled) {
+void VerifyParams(TProposeResponse* result, TParamsDelta* delta, const TSubDomainInfo::TPtr& current, const NKikimrSubDomains::TSubDomainSettings& input) {
     // TProposeRespose should come in assuming positive outcome (status NKikimrScheme::StatusAccepted, no errors)
-    Y_ABORT_UNLESS(result->IsAccepted());
-    auto [status, reason] = VerifyParams(delta, pathId, current, input, isServerlessExclusiveDynamicNodesEnabled);
+    Y_VERIFY(result->IsAccepted());
+    auto [status, reason] = VerifyParams(delta, current, input);
     result->SetStatus(status, reason);
 }
 
@@ -383,7 +290,7 @@ private:
     TOperationId OperationId;
 
     TString DebugHint() const override {
-        return TStringBuilder() << "TCreateHive, operationId " << OperationId << ", ";
+        return TStringBuilder() << "TCreateHive, operationId# " << OperationId << ", ";
     }
 
 public:
@@ -415,10 +322,10 @@ public:
         LOG_I(DebugHint() << "ProgressState");
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterExtSubDomainCreateHive);
-        Y_ABORT_UNLESS(txState->Shards.size() == 1);
-        Y_ABORT_UNLESS(txState->Shards.back().TabletType == ETabletType::Hive,
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterExtSubDomainCreateHive);
+        Y_VERIFY(txState->Shards.size() == 1);
+        Y_VERIFY(txState->Shards.back().TabletType == ETabletType::Hive,
             "expected tablet type HIVE, actual type %s", ETabletType::TypeToStr(txState->Shards.back().TabletType)
         );
 
@@ -429,9 +336,9 @@ public:
 
         auto getSubdomainHiveTabletId = [](const TPathId& pathId, TShardIdx shardIdx, TOperationContext& context) {
             auto subdomain = context.SS->SubDomains.at(pathId);
-            Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
+            Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
             auto& shardInfo = context.SS->ShardInfos.at(shardIdx);
-            Y_ABORT_UNLESS(shardInfo.TabletType == ETabletType::Hive);
+            Y_VERIFY(shardInfo.TabletType == ETabletType::Hive);
             return shardInfo.TabletID;
         };
 
@@ -453,13 +360,13 @@ public:
         LOG_D(DebugHint() << "HandleReply TEvCreateTabletReply, msg: " << DebugReply(ev));
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterExtSubDomainCreateHive);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterExtSubDomainCreateHive);
 
         const auto& record = ev->Get()->Record;
         auto shardIdx = TShardIdx(record.GetOwner(), TLocalShardIdx(record.GetOwnerIdx()));
         auto createdTabletId = TTabletId(record.GetTabletID());  // global id from hive
-        Y_ABORT_UNLESS(createdTabletId != InvalidTabletId);
+        Y_VERIFY(createdTabletId != InvalidTabletId);
 
         NKikimrProto::EReplyStatus status = record.GetStatus();
         Y_VERIFY_S((
@@ -471,13 +378,13 @@ public:
         );
 
         auto rootHiveId = TTabletId(record.GetOrigin());
-        Y_ABORT_UNLESS(rootHiveId == context.SS->GetGlobalHive(context.Ctx));
+        Y_VERIFY(rootHiveId == context.SS->GetGlobalHive(context.Ctx));
 
         TShardInfo& shardInfo = context.SS->ShardInfos.at(shardIdx);
 
-        Y_ABORT_UNLESS(shardInfo.TabletType == ETabletType::Hive);
-        Y_ABORT_UNLESS(shardInfo.TabletID == InvalidTabletId || shardInfo.TabletID == createdTabletId);
-        Y_ABORT_UNLESS(shardInfo.CurrentTxId == OperationId.GetTxId());
+        Y_VERIFY(shardInfo.TabletType == ETabletType::Hive);
+        Y_VERIFY(shardInfo.TabletID == InvalidTabletId || shardInfo.TabletID == createdTabletId);
+        Y_VERIFY(shardInfo.CurrentTxId == OperationId.GetTxId());
 
         if (shardInfo.TabletID == InvalidTabletId) {
             context.SS->TabletCounters->Simple()[COUNTER_SUB_DOMAIN_HIVE_COUNT].Add(1);
@@ -499,7 +406,7 @@ public:
 
             subdomain->SetTenantHiveIDPrivate(createdTabletId);
 
-            Y_ABORT_UNLESS(subdomain->GetVersion() + 2 == subdomain->GetAlter()->GetVersion());
+            Y_VERIFY(subdomain->GetVersion() + 2 == subdomain->GetAlter()->GetVersion());
             subdomain->SetVersion(subdomain->GetVersion() + 1);
 
             context.SS->PersistSubDomainVersion(db, txState->TargetPathId, *subdomain);
@@ -531,10 +438,10 @@ public:
         LOG_D(DebugHint() << "HandleReply TEvCompletePublication" << ", msg: " << DebugReply(ev));
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterExtSubDomainCreateHive);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterExtSubDomainCreateHive);
 
-        Y_ABORT_UNLESS(txState->TargetPathId == ev->Get()->PathId);
+        Y_VERIFY(txState->TargetPathId == ev->Get()->PathId);
 
         NIceDb::TNiceDb db(context.GetDB());
 
@@ -549,7 +456,7 @@ public:
         LOG_I(DebugHint() << "HandleReply TEvPrivate:TEvCompleteBarrier, msg: " << ev->Get()->ToString());
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         NIceDb::TNiceDb db(context.GetDB());
 
@@ -576,7 +483,7 @@ public:
 
     bool ProgressState(TOperationContext& context) override {
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         LOG_I(DebugHint() << "ProgressState, operation type " << TTxState::TypeName(txState->TxType));
 
@@ -637,16 +544,16 @@ public:
         const auto& basenameId = path.Base()->PathId;
 
         // Get existing extsubdomain
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(basenameId));
+        Y_VERIFY(context.SS->SubDomains.contains(basenameId));
         auto subdomainInfo = context.SS->SubDomains.at(basenameId);
-        Y_ABORT_UNLESS(subdomainInfo);
+        Y_VERIFY(subdomainInfo);
 
         auto result = MakeHolder<TProposeResponse>(NKikimrScheme::StatusAccepted, ui64(OperationId.GetTxId()), ui64(schemeshardTabletId));
         result->SetPathId(basenameId.LocalPathId);
 
         // Check params and build change delta
         TParamsDelta delta;
-        VerifyParams(result.Get(), &delta, basenameId, subdomainInfo, inputSettings, context.SS->EnableServerlessExclusiveDynamicNodes);
+        VerifyParams(result.Get(), &delta, subdomainInfo, inputSettings);
         if (!result->IsAccepted()) {
             return result;
         }
@@ -654,12 +561,12 @@ public:
         // No need to check (shard) limits on path: hive goes above any limits
 
         // This suboperation can't be used as no-op, so check that hive creation is required
-        Y_ABORT_UNLESS(delta.AddExternalHive);
+        Y_VERIFY(delta.AddExternalHive);
 
         // Generate changes in: operation object, path, schemeshard in-memory object and local db
 
         // Create in-flight operation object
-        Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));
+        Y_VERIFY(!context.SS->FindTx(OperationId));
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxAlterExtSubDomainCreateHive, basenameId);
 
         // Create subdomain alter
@@ -682,7 +589,7 @@ public:
             }
 
             AddShardsTo(txState, OperationId.GetTxId(), basenameId, 1, TTabletTypes::Hive, channelsBinding, context.SS);
-            Y_ABORT_UNLESS(txState.Shards.size() == 1);
+            Y_VERIFY(txState.Shards.size() == 1);
         }
 
         // Register extsubdomain changes in shards, path, alter
@@ -736,7 +643,7 @@ public:
 
     bool ProgressState(TOperationContext& context) override {
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         LOG_I(DebugHint() << "ProgressState, operation type " << TTxState::TypeName(txState->TxType));
 
@@ -751,79 +658,12 @@ public:
         LOG_I(DebugHint() << "HandleReply TEvPrivate:TEvCompleteBarrier, msg: " << ev->Get()->ToString());
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         NIceDb::TNiceDb db(context.GetDB());
 
         context.SS->ChangeTxState(db, OperationId, TTxState::CreateParts);
 
-        return true;
-    }
-};
-
-class TSyncHive: public TSubOperationState {
-private:
-    const TOperationId OperationId;
-
-    TString DebugHint() const override {
-        return TStringBuilder() << "TSyncHive, operationId " << OperationId << ", ";
-    }
-
-public:
-    TSyncHive(TOperationId id)
-        : OperationId(id)
-    {
-        IgnoreMessages(DebugHint(), {
-            TEvPrivate::TEvOperationPlan::EventType
-        });
-    }
-
-    bool ProgressState(TOperationContext& context) override {
-        const TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-
-        LOG_I(DebugHint() << "ProgressState, NeedSyncHive: " << txState->NeedSyncHive);
-
-        if (txState->NeedSyncHive) {
-            const TPathId pathId = txState->TargetPathId;
-            Y_ABORT_UNLESS(context.SS->SubDomains.contains(pathId));
-            TSubDomainInfo::TConstPtr subDomain = context.SS->SubDomains.at(pathId);
-
-            const TTabletId hiveToSync = context.SS->ResolveHive(pathId, context.Ctx);
-
-            auto event = MakeHolder<TEvHive::TEvUpdateDomain>();
-            event->Record.SetTxId(ui64(OperationId.GetTxId()));
-            event->Record.MutableDomainKey()->SetSchemeShard(pathId.OwnerId);
-            event->Record.MutableDomainKey()->SetPathId(pathId.LocalPathId);
-            const auto& serverlessComputeResourcesMode = subDomain->GetServerlessComputeResourcesMode();
-            if (serverlessComputeResourcesMode.Defined()) {
-                event->Record.SetServerlessComputeResourcesMode(*serverlessComputeResourcesMode);
-            }
-
-            LOG_D(DebugHint() << "ProgressState"
-                << ", Syncing hive: " << hiveToSync
-                << ", msg: {" << event->Record.ShortDebugString() << "}");
-
-            context.OnComplete.BindMsgToPipe(OperationId, hiveToSync, pathId, event.Release());
-            return false;
-        } else {
-            NIceDb::TNiceDb db(context.GetDB());
-            context.SS->ChangeTxState(db, OperationId, TTxState::Done);
-            return true;
-        }
-    }
-
-    bool HandleReply(TEvHive::TEvUpdateDomainReply::TPtr& ev, TOperationContext& context) override {
-        const TTabletId hive = TTabletId(ev->Get()->Record.GetOrigin()); 
-
-        LOG_I(DebugHint() << "HandleReply TEvUpdateDomainReply"
-            << ", from hive: " << hive);
-
-        const TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        context.OnComplete.UnbindMsgFromPipe(OperationId, hive, txState->TargetPathId);
-        NIceDb::TNiceDb db(context.GetDB());
-        context.SS->ChangeTxState(db, OperationId, TTxState::Done);
         return true;
     }
 };
@@ -842,8 +682,6 @@ class TAlterExtSubDomain: public TSubOperation {
         case TTxState::ConfigureParts:
             return TTxState::Propose;
         case TTxState::Propose:
-            return TTxState::SyncHive;
-        case TTxState::SyncHive:
             return TTxState::Done;
         default:
             return TTxState::Invalid;
@@ -861,8 +699,6 @@ class TAlterExtSubDomain: public TSubOperation {
             return MakeHolder<NSubDomainState::TConfigureParts>(OperationId);
         case TTxState::Propose:
             return MakeHolder<NSubDomainState::TPropose>(OperationId);
-        case TTxState::SyncHive:
-            return MakeHolder<TSyncHive>(OperationId);
         case TTxState::Done:
             return MakeHolder<TDone>(OperationId);
         default:
@@ -889,28 +725,25 @@ public:
         const auto& basenameId = path.Base()->PathId;
 
         // Get existing extsubdomain
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(basenameId));
+        Y_VERIFY(context.SS->SubDomains.contains(basenameId));
         auto subdomainInfo = context.SS->SubDomains.at(basenameId);
-        Y_ABORT_UNLESS(subdomainInfo);
+        Y_VERIFY(subdomainInfo);
 
         auto result = MakeHolder<TProposeResponse>(NKikimrScheme::StatusAccepted, ui64(OperationId.GetTxId()), ui64(schemeshardTabletId));
         result->SetPathId(basenameId.LocalPathId);
 
         // Check params and build change delta
         TParamsDelta delta;
-        VerifyParams(result.Get(), &delta, basenameId, subdomainInfo, inputSettings, context.SS->EnableServerlessExclusiveDynamicNodes);
+        VerifyParams(result.Get(), &delta, subdomainInfo, inputSettings);
         if (!result->IsAccepted()) {
             return result;
         }
 
         // Count tablets to create
 
-        //NOTE: ExternalHive, ExternalSysViewProcessor and ExternalStatisticsAggregator are _not_ counted against limits
+        //NOTE: ExternalHive and ExternalSysViewProcessor are _not_ counted against limits
         ui64 tabletsToCreateUnderLimit = delta.AddExternalSchemeShard + delta.CoordinatorsAdded + delta.MediatorsAdded;
-        ui64 tabletsToCreateOverLimit = delta.AddExternalSysViewProcessor
-            + delta.AddExternalStatisticsAggregator
-            + delta.AddGraphShard
-            + delta.AddBackupController;
+        ui64 tabletsToCreateOverLimit = delta.AddExternalSysViewProcessor;
         ui64 tabletsToCreateTotal = tabletsToCreateUnderLimit + tabletsToCreateOverLimit;
 
         // Check path limits
@@ -930,7 +763,7 @@ public:
         // Generate changes in: operation object, path, schemeshard in-memory object and local db
 
         // Create in-flight operation object
-        Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));
+        Y_VERIFY(!context.SS->FindTx(OperationId));
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxAlterExtSubDomain, basenameId);
 
         // Create or derive alter.
@@ -946,10 +779,10 @@ public:
         };
         TSubDomainInfo::TPtr alter = [&delta, &subdomainInfo, &createAlterFrom, &context]() {
             if (delta.AddExternalHive && context.SS->EnableAlterDatabaseCreateHiveFirst) {
-                Y_ABORT_UNLESS(subdomainInfo->GetAlter());
+                Y_VERIFY(subdomainInfo->GetAlter());
                 return createAlterFrom(subdomainInfo->GetAlter());
             } else {
-                Y_ABORT_UNLESS(!subdomainInfo->GetAlter());
+                Y_VERIFY(!subdomainInfo->GetAlter());
                 return createAlterFrom(subdomainInfo);
             }
         }();
@@ -959,17 +792,6 @@ public:
         }
         if (inputSettings.HasDatabaseQuotas()) {
             alter->SetDatabaseQuotas(inputSettings.GetDatabaseQuotas());
-        }
-
-        if (const auto& auditSettings = subdomainInfo->GetAuditSettings()) {
-            alter->SetAuditSettings(*auditSettings);
-        }
-        if (inputSettings.HasAuditSettings()) {
-            alter->ApplyAuditSettings(inputSettings.GetAuditSettings());
-        }
-
-        if (inputSettings.HasServerlessComputeResourcesMode()) {
-            alter->SetServerlessComputeResourcesMode(inputSettings.GetServerlessComputeResourcesMode());
         }
 
         LOG_D("TAlterExtSubDomain Propose"
@@ -983,14 +805,7 @@ public:
         // Create shards for the requested tablets (except hive)
         {
             TChannelsBindings channelsBinding;
-            if (delta.SharedTxSupportAdded ||
-                delta.AddExternalSchemeShard ||
-                delta.AddExternalSysViewProcessor ||
-                delta.AddExternalHive ||
-                delta.AddExternalStatisticsAggregator ||
-                delta.AddGraphShard ||
-                delta.AddBackupController)
-            {
+            if (delta.SharedTxSupportAdded || delta.AddExternalSchemeShard || delta.AddExternalSysViewProcessor || delta.AddExternalHive) {
                 if (!context.SS->ResolveSubdomainsChannels(alter->GetStoragePools(), channelsBinding)) {
                     result->SetError(NKikimrScheme::StatusInvalidParameter, "failed to construct channels binding");
                     return result;
@@ -998,8 +813,8 @@ public:
             }
 
             // Declare shards.
-            // - hive always comes first (OwnerIdx 1)
-            // - schemeshard always comes second (OwnerIdx 2)
+            // - hive always come first (OwnerIdx 1)
+            // - schemeshard always come second (OwnerIdx 2)
             // - others follow
             //
             if (delta.AddExternalHive && !context.SS->EnableAlterDatabaseCreateHiveFirst) {
@@ -1016,16 +831,7 @@ public:
             if (delta.AddExternalSysViewProcessor) {
                 AddShardsTo(txState, OperationId.GetTxId(), basenameId, 1, TTabletTypes::SysViewProcessor, channelsBinding, context.SS);
             }
-            if (delta.AddExternalStatisticsAggregator) {
-                AddShardsTo(txState, OperationId.GetTxId(), basenameId, 1, TTabletTypes::StatisticsAggregator, channelsBinding, context.SS);
-            }
-            if (delta.AddGraphShard) {
-                AddShardsTo(txState, OperationId.GetTxId(), basenameId, 1, TTabletTypes::GraphShard, channelsBinding, context.SS);
-            }
-            if (delta.AddBackupController) {
-                AddShardsTo(txState, OperationId.GetTxId(), basenameId, 1, TTabletTypes::BackupController, channelsBinding, context.SS);
-            }
-            Y_ABORT_UNLESS(txState.Shards.size() == tabletsToCreateTotal);
+            Y_VERIFY(txState.Shards.size() == tabletsToCreateTotal);
         }
 
         // Register extsubdomain changes in shards, path, alter
@@ -1037,7 +843,6 @@ public:
         {
             // txState.State = TTxState::CreateParts;
             txState.State = TTxState::Waiting;
-            txState.NeedSyncHive = delta.ServerlessComputeResourcesModeChanged;
             context.DbChanges.PersistTxState(OperationId);
         }
 
@@ -1050,7 +855,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterExtSubDomain");
+        Y_FAIL("no AbortPropose for TAlterExtSubDomain");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -1070,7 +875,7 @@ ISubOperation::TPtr CreateAlterExtSubDomainCreateHive(TOperationId id, const TTx
 }
 
 ISubOperation::TPtr CreateAlterExtSubDomainCreateHive(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterExtSubDomainCreateHive>(id, state);
 }
 
@@ -1079,12 +884,12 @@ ISubOperation::TPtr CreateAlterExtSubDomain(TOperationId id, const TTxTransactio
 }
 
 ISubOperation::TPtr CreateAlterExtSubDomain(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterExtSubDomain>(id, state);
 }
 
 TVector<ISubOperation::TPtr> CreateCompatibleAlterExtSubDomain(TOperationId id, const TTxTransaction& tx, TOperationContext& context) {
-    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterExtSubDomain);
+    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterExtSubDomain);
 
     LOG_I("CreateCompatibleAlterExtSubDomain, opId " << id
         << ", feature flag EnableAlterDatabaseCreateHiveFirst " << context.SS->EnableAlterDatabaseCreateHiveFirst
@@ -1132,9 +937,9 @@ TVector<ISubOperation::TPtr> CreateCompatibleAlterExtSubDomain(TOperationId id, 
     //NOTE: (didn't TChecker::NotUnderOperation() checked that already?)
     const auto& basenameId = path.Base()->PathId;
 
-    Y_ABORT_UNLESS(context.SS->SubDomains.contains(basenameId));
+    Y_VERIFY(context.SS->SubDomains.contains(basenameId));
     auto subdomainInfo = context.SS->SubDomains.at(basenameId);
-    Y_ABORT_UNLESS(subdomainInfo);
+    Y_VERIFY(subdomainInfo);
 
     if (subdomainInfo->GetAlter()) {
         return errorResult(NKikimrScheme::StatusMultipleModifications, "extsubdomain is under another alter operation");
@@ -1151,7 +956,7 @@ TVector<ISubOperation::TPtr> CreateCompatibleAlterExtSubDomain(TOperationId id, 
     // Check params and build change delta
     TParamsDelta delta;
     {
-        auto [status, reason] = VerifyParams(&delta, basenameId, subdomainInfo, inputSettings, context.SS->EnableServerlessExclusiveDynamicNodes);
+        auto [status, reason] = VerifyParams(&delta, subdomainInfo, inputSettings);
         if (status != NKikimrScheme::EStatus::StatusAccepted) {
             return errorResult(status, reason);
         }

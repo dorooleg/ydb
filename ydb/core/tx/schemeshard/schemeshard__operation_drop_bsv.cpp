@@ -39,7 +39,7 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropBlockStoreVolume);
+        Y_VERIFY(txState->TxType == TTxState::TxDropBlockStoreVolume);
 
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
@@ -47,7 +47,7 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -97,8 +97,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropBlockStoreVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropBlockStoreVolume);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -138,7 +138,7 @@ public:
     THolder<TProposeResponse> Propose(const TString&, TOperationContext& context) override {
         const TTabletId ssId = context.SS->SelfTabletId();
 
-        const NKikimrSchemeOp::TDrop& drop = Transaction.GetDrop();
+        const auto& drop = Transaction.GetDrop();
 
         const TString& parentPathStr = Transaction.GetWorkingDir();
         const TString& name = drop.GetName();
@@ -176,31 +176,6 @@ public:
                     result->SetPathId(path.Base()->PathId.LocalPathId);
                 }
                 return result;
-            }
-        }
-
-        TBlockStoreVolumeInfo::TPtr volume = context.SS->BlockStoreVolumes.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(volume);
-
-        {
-            const NKikimrSchemeOp::TDropBlockStoreVolume& dropParams = Transaction.GetDropBlockStoreVolume();
-
-            ui64 proposedFillGeneration = dropParams.GetFillGeneration();
-            ui64 actualFillGeneration = volume->VolumeConfig.GetFillGeneration();
-            const bool isFillFinished = volume->VolumeConfig.GetIsFillFinished();
-
-            if (proposedFillGeneration > 0) {
-                if (isFillFinished) {
-                    result->SetError(NKikimrScheme::StatusSuccess,
-                                     TStringBuilder() << "Filling is finished, deletion is no-op");
-                    return result;
-                } else if (proposedFillGeneration < actualFillGeneration) {
-                    result->SetError(NKikimrScheme::StatusSuccess,
-                                     TStringBuilder() << "Proposed fill generation "
-                                        << "is less than fill generation of the volume: "
-                                        << proposedFillGeneration << " < " << actualFillGeneration);
-                    return result;
-                }
             }
         }
 
@@ -247,6 +222,9 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
+        TBlockStoreVolumeInfo::TPtr volume = context.SS->BlockStoreVolumes.at(path.Base()->PathId);
+        Y_VERIFY(volume);
+
         TVector<TShardIdx> shards;
         shards.push_back(volume->VolumeShardIdx);
 
@@ -287,7 +265,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropBlockStoreVolume");
+        Y_FAIL("no AbortPropose for TDropBlockStoreVolume");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -304,7 +282,7 @@ ISubOperation::TPtr CreateDropBSV(TOperationId id, const TTxTransaction& tx) {
 }
 
 ISubOperation::TPtr CreateDropBSV(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropBlockStoreVolume>(id, state);
 }
 

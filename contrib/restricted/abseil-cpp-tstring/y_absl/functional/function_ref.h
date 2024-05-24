@@ -66,11 +66,11 @@ class FunctionRef;
 
 // FunctionRef
 //
-// An `y_absl::FunctionRef` is a lightweight wrapper to any invocable object with
+// An `y_absl::FunctionRef` is a lightweight wrapper to any invokable object with
 // a compatible signature. Generally, an `y_absl::FunctionRef` should only be used
 // as an argument type and should be preferred as an argument over a const
 // reference to a `std::function`. `y_absl::FunctionRef` itself does not allocate,
-// although the wrapped invocable may.
+// although the wrapped invokable may.
 //
 // Example:
 //
@@ -98,7 +98,7 @@ class FunctionRef<R(Args...)> {
                               std::is_convertible<FR, R>::value>::type;
 
  public:
-  // Constructs a FunctionRef from any invocable type.
+  // Constructs a FunctionRef from any invokable type.
   template <typename F, typename = EnableIfCompatible<const F&>>
   // NOLINTNEXTLINE(runtime/explicit)
   FunctionRef(const F& f Y_ABSL_ATTRIBUTE_LIFETIME_BOUND)
@@ -135,14 +135,6 @@ class FunctionRef<R(Args...)> {
  private:
   y_absl::functional_internal::VoidPtr ptr_;
   y_absl::functional_internal::Invoker<R, Args...> invoker_;
-};
-
-// Allow const qualified function signatures. Since FunctionRef requires
-// constness anyway we can just make this a no-op.
-template <typename R, typename... Args>
-class FunctionRef<R(Args...) const> : public FunctionRef<R(Args...)> {
- public:
-  using FunctionRef<R(Args...)>::FunctionRef;
 };
 
 Y_ABSL_NAMESPACE_END

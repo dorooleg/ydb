@@ -2,10 +2,10 @@
 
 #include "iface.h"
 
-#include <grpcpp/support/byte_buffer.h>
-#include <grpcpp/support/slice.h>
+#include <grpc++/support/byte_buffer.h>
+#include <grpc++/support/slice.h>
 
-#include <ydb/library/grpc/server/grpc_request_base.h>
+#include <library/cpp/grpc/server/grpc_request_base.h>
 #include <library/cpp/string_utils/quote/quote.h>
 
 #include <ydb/public/api/protos/ydb_issue_message.pb.h>
@@ -20,17 +20,16 @@
 #include <ydb/library/yql/public/issue/yql_issue_manager.h>
 #include <ydb/library/aclib/aclib.h>
 
-#include <ydb/core/jaeger_tracing/request_discriminator.h>
 #include <ydb/core/grpc_services/counters/proxy_counters.h>
 #include <ydb/core/grpc_streaming/grpc_streaming.h>
 #include <ydb/core/tx/scheme_board/events.h>
 #include <ydb/core/base/events.h>
 
-#include <ydb/library/actors/wilson/wilson_span.h>
-
 #include <util/stream/str.h>
 
 namespace NKikimr {
+
+struct TAppConfig;
 
 namespace NSchemeCache {
     struct TSchemeCacheNavigate;
@@ -49,6 +48,7 @@ using TYdbIssueMessageType = Ydb::Issue::IssueMessage;
 
 std::pair<TString, TString> SplitPath(const TMaybe<TString>& database, const TString& path);
 std::pair<TString, TString> SplitPath(const TString& path);
+void RefreshToken(const TString& token, const TString& database, const TActorContext& ctx, TActorId id);
 
 struct TRpcServices {
     enum EServiceId {
@@ -98,14 +98,13 @@ struct TRpcServices {
         EvExplainDataQueryAst,
         EvReadColumns,
         EvBiStreamPing,
-        EvRefreshToken, // internal call, pair to EvStreamWriteRefreshToken
+        EvRefreshTokenRequest, // internal call
         EvGetShardLocations,
         EvExperimentalStreamQuery,
         EvStreamPQWrite,
         EvStreamPQMigrationRead,
         EvStreamTopicWrite,
         EvStreamTopicRead,
-        EvStreamTopicDirectRead,
         EvPQReadInfo,
         EvTopicCommitOffset,
         EvListOperations,
@@ -138,7 +137,6 @@ struct TRpcServices {
         EvAlterTopic,
         EvDescribeTopic,
         EvDescribeConsumer,
-        EvDescribePartition,
         EvGetDiskSpaceUsage,
         EvStopServingDatabase,
         EvCoordinationSession,
@@ -222,9 +220,7 @@ struct TRpcServices {
         EvDescribeYndxRateLimiterResource,
         EvAcquireYndxRateLimiterResource,
         EvGrpcRuntimeRequest,
-        EvNodeCheckRequest,
-        EvStreamWriteRefreshToken    // internal call, pair to EvRefreshToken
-        // !!! DO NOT ADD NEW REQUEST !!!
+        EvNodeCheckRequest // !!! DO NOT ADD NEW REQUEST !!!
     };
 
     struct TEvGrpcNextReply : public TEventLocal<TEvGrpcNextReply, TRpcServices::EvGrpcStreamIsReady> {
@@ -252,15 +248,7 @@ public:
     }
 };
 
-class IAuditCtx : public virtual IRequestCtxBaseMtSafe {
-public:
-    virtual void AddAuditLogPart(const TStringBuf& name, const TString& value) = 0;
-    virtual const TAuditLogParts& GetAuditLogParts() const = 0;
-};
-
-class IRequestCtxBase
-    : public virtual IAuditCtx
-{
+class IRequestCtxBase : public virtual IRequestCtxBaseMtSafe {
 public:
     virtual ~IRequestCtxBase() = default;
     // Returns true if client has the specified capability
@@ -269,19 +257,28 @@ public:
     virtual void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode status) = 0;
     // Reply using "transport error code"
     virtual void ReplyWithRpcStatus(grpc::StatusCode code, const TString& msg = "", const TString& details = "") = 0;
+    // Return address of the peer
+    virtual TString GetPeerName() const = 0;
+    // Return deadile of request execution, calculated from client timeout by grpc
+    virtual TInstant GetDeadline() const = 0;
+    // Meta value from request
+    virtual const TMaybe<TString> GetPeerMetaValues(const TString&) const = 0;
     // Auth property from connection
     virtual TVector<TStringBuf> FindClientCert() const = 0;
+    // Returns path and resource for rate limiter
+    virtual TMaybe<NRpcService::TRlPath> GetRlPath() const = 0;
     // Raise issue on the context
     virtual void RaiseIssue(const NYql::TIssue& issue) = 0;
     virtual void RaiseIssues(const NYql::TIssues& issues) = 0;
+    virtual const TString& GetRequestName() const = 0;
+    virtual void SetDiskQuotaExceeded(bool disk) = 0;
     virtual bool GetDiskQuotaExceeded() const = 0;
-
 };
 
 class TRespHookCtx : public TThrRefBase {
 public:
     using TPtr = TIntrusivePtr<TRespHookCtx>;
-    using TContextPtr = TIntrusivePtr<NYdbGrpc::IRequestContextBase>;
+    using TContextPtr = TIntrusivePtr<NGrpc::IRequestContextBase>;
     using TMessage = NProtoBuf::Message;
 
     TRespHookCtx(TContextPtr ctx, TMessage* data, const TString& requestName, ui64 ru, ui32 status)
@@ -305,7 +302,7 @@ public:
     }
 
 private:
-    TIntrusivePtr<NYdbGrpc::IRequestContextBase> Ctx_;
+    TIntrusivePtr<NGrpc::IRequestContextBase> Ctx_;
     TMessage* RespData_; //Allocated on arena owned by implementation of IRequestContextBase
     const TString RequestName_;
     const ui64 Ru_;
@@ -325,17 +322,12 @@ enum class TRateLimiterMode : ui8 {
 #define RLSWITCH(mode) \
     IsRlAllowed() ? mode : TRateLimiterMode::Off
 
-enum class TAuditMode : bool {
-    Off = false,
-    Auditable = true,
-};
-
 class ICheckerIface;
 
 // The way to pass some common data to request processing
 class IFacilityProvider {
 public:
-    virtual ui64 GetChannelBufferSize() const = 0;
+    virtual TIntrusiveConstPtr<TAppConfig> GetAppConfig() const = 0;
     // Registers new actor using method chosen by grpc proxy
     virtual TActorId RegisterActor(IActor* actor) const = 0;
 };
@@ -343,46 +335,21 @@ public:
 struct TRequestAuxSettings {
     TRateLimiterMode RlMode = TRateLimiterMode::Off;
     void (*CustomAttributeProcessor)(const TSchemeBoardEvents::TDescribeSchemeResult& schemeData, ICheckerIface*) = nullptr;
-    TAuditMode AuditMode = TAuditMode::Off;
-    NJaegerTracing::ERequestType RequestType = NJaegerTracing::ERequestType::UNSPECIFIED;
 };
 
-class TGRpcRequestProxySimple;
 // grpc_request_proxy part
 // The interface is used to perform authentication and check database access right
-class IRequestProxyCtx
-    : public virtual IAuditCtx
-{
-    friend class TGRpcRequestProxyImpl; 
-    template <typename TEvent>
-    friend class TGrpcRequestCheckActor;
-    friend class TGRpcRequestProxySimple;
-    friend class TGRpcRequestProxyHandleMethods;
-private:
-    virtual void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode status) = 0;
+class IRequestProxyCtx : public virtual IRequestCtxBase {
 public:
     virtual ~IRequestProxyCtx() = default;
 
     // auth
     virtual const TMaybe<TString> GetYdbToken() const  = 0;
-    virtual void UpdateAuthState(NYdbGrpc::TAuthState::EAuthState state) = 0;
+    virtual void UpdateAuthState(NGrpc::TAuthState::EAuthState state) = 0;
     virtual void SetInternalToken(const TIntrusiveConstPtr<NACLib::TUserToken>& token) = 0;
-    virtual const NYdbGrpc::TAuthState& GetAuthState() const = 0;
+    virtual const NGrpc::TAuthState& GetAuthState() const = 0;
     virtual void ReplyUnauthenticated(const TString& msg = "") = 0;
-    virtual void RaiseIssue(const NYql::TIssue& issue) = 0;
-    virtual void RaiseIssues(const NYql::TIssues& issues) = 0;
-
-    // tracing
-    virtual void StartTracing(NWilson::TSpan&& span) = 0;
-    virtual void FinishSpan() = 0;
-    // Returns pointer to a state that denotes whether this request ever been a subject
-    // to tracing decision. CAN be nullptr
-    virtual bool* IsTracingDecided() = 0;
-
-    // Used for per-type sampling
-    virtual NJaegerTracing::TRequestDiscriminator GetRequestDiscriminator() const {
-        return NJaegerTracing::TRequestDiscriminator::EMPTY;
-    };
+    virtual void ReplyUnavaliable() = 0;
 
     // validation
     virtual bool Validate(TString& error) = 0;
@@ -406,13 +373,6 @@ public:
 
     // Pass request for next processing
     virtual void Pass(const IFacilityProvider& facility) = 0;
-
-    // audit
-    virtual bool IsAuditable() const {
-        return false;
-    }
-    virtual void SetAuditLogHook(TAuditLogHook&& hook) = 0;
-    virtual void SetDiskQuotaExceeded(bool disk) = 0;
 };
 
 // Request context
@@ -422,23 +382,20 @@ class IRequestCtx
     , public virtual IRequestCtxBase
 {
     friend class TProtoResponseHelper;
+
 public:
-    using EStreamCtrl = NYdbGrpc::IRequestContextBase::EStreamCtrl;
     virtual google::protobuf::Message* GetRequestMut() = 0;
 
     virtual void SetRuHeader(ui64 ru) = 0;
     virtual void AddServerHint(const TString& hint) = 0;
     virtual void SetCostInfo(float consumed_units) = 0;
 
-    virtual void SetStreamingNotify(NYdbGrpc::IRequestContextBase::TOnNextReply&& cb) = 0;
-    virtual void FinishStream(ui32 status) = 0;
+    virtual void SetStreamingNotify(NGrpc::IRequestContextBase::TOnNextReply&& cb) = 0;
+    virtual void FinishStream() = 0;
 
-    virtual void SendSerializedResult(TString&& in, Ydb::StatusIds::StatusCode status, EStreamCtrl flag = EStreamCtrl::CONT) = 0;
+    virtual void SendSerializedResult(TString&& in, Ydb::StatusIds::StatusCode status) = 0;
 
     virtual void Reply(NProtoBuf::Message* resp, ui32 status = 0) = 0;
-
-protected:
-    virtual void FinishRequest() = 0;
 };
 
 class IRequestOpCtx : public IRequestCtx {
@@ -448,6 +405,9 @@ public:
         Ydb::StatusIds::StatusCode status) = 0;
     // Legacy, do not use for modern code
     virtual void SendResult(const google::protobuf::Message& result, Ydb::StatusIds::StatusCode status,
+        const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message) = 0;
+    // Legacy, do not use for modern code
+    virtual void SendResult(Ydb::StatusIds::StatusCode status,
         const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message) = 0;
 };
 
@@ -481,11 +441,9 @@ struct TCommonResponseFiller<TResp, false> : private TCommonResponseFillerImpl {
     }
 };
 
-template <ui32 TRpcId>
 class TRefreshTokenImpl
-    : public virtual IRequestProxyCtx
-    , public virtual IRequestCtxBase
-    , public TEventLocal<TRefreshTokenImpl<TRpcId>, TRpcId>
+    : public IRequestProxyCtx
+    , public TEventLocal<TRefreshTokenImpl, TRpcServices::EvRefreshTokenRequest>
 {
 public:
     TRefreshTokenImpl(const TString& token, const TString& database, TActorId from)
@@ -499,13 +457,7 @@ public:
         return Token_;
     }
 
-    void StartTracing(NWilson::TSpan&& /*span*/) override {}
-    void FinishSpan() override {}
-    bool* IsTracingDecided() override {
-        return nullptr;
-    }
-
-    void UpdateAuthState(NYdbGrpc::TAuthState::EAuthState state) override {
+    void UpdateAuthState(NGrpc::TAuthState::EAuthState state) override {
         State_.State = state;
     }
 
@@ -521,7 +473,7 @@ public:
         return Database_;
     }
 
-    const NYdbGrpc::TAuthState& GetAuthState() const override {
+    const NGrpc::TAuthState& GetAuthState() const override {
         return State_;
     }
 
@@ -553,11 +505,12 @@ public:
     }
 
     const TMaybe<TString> GetPeerMetaValues(const TString&) const override {
-        return {};
+        Y_FAIL("Unimplemented");
+        return TMaybe<TString>{};
     }
 
     TVector<TStringBuf> FindClientCert() const override {
-        Y_ABORT("Unimplemented");
+        Y_FAIL("Unimplemented");
         return {};
     }
 
@@ -569,24 +522,13 @@ public:
     }
 
     void ReplyWithRpcStatus(grpc::StatusCode, const TString&, const TString&) override {
-        Y_ABORT("Unimplemented");
+        Y_FAIL("Unimplemented");
     }
 
     void ReplyUnauthenticated(const TString&) override;
-    void ReplyUnavaliable();
-    void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode status) override {
-        switch (status) {
-            case Ydb::StatusIds::UNAVAILABLE:
-                return ReplyUnavaliable();
-            case Ydb::StatusIds::UNAUTHORIZED:
-                RaiseIssue(NYql::TIssue{"got UNAUTHORIZED ydb status"});
-                return ReplyUnauthenticated(TString());
-            default: {
-                auto ss = TStringBuilder() << "got unexpected: " << status << "ydb status";
-                RaiseIssue(NYql::TIssue{ss});
-                return ReplyUnavaliable();
-            }
-        }
+    void ReplyUnavaliable() override;
+    void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode) override {
+        Y_FAIL("Unimplemented");
     }
 
     void RaiseIssue(const NYql::TIssue& issue) override {
@@ -625,10 +567,6 @@ public:
         return {};
     }
 
-    NWilson::TTraceId GetWilsonTraceId() const override {
-        return {};
-    }
-
     TMaybe<TString> GetSdkBuildInfo() const {
         return {};
     }
@@ -652,27 +590,14 @@ public:
     }
 
     void Pass(const IFacilityProvider&) override {
-        Y_ABORT("unimplemented");
-    }
-
-    void SetAuditLogHook(TAuditLogHook&&) override {
-        Y_ABORT("unimplemented for TRefreshTokenImpl");
-    }
-
-    // IRequestCtxBase
-    //
-    void AddAuditLogPart(const TStringBuf&, const TString&) override {
-        Y_ABORT("unimplemented for TRefreshTokenImpl");
-    }
-    const TAuditLogParts& GetAuditLogParts() const override {
-        Y_ABORT("unimplemented for TRefreshTokenImpl");
+        Y_FAIL("unimplemented");
     }
 
 private:
     const TString Token_;
     const TString Database_;
     const TActorId From_;
-    NYdbGrpc::TAuthState State_;
+    NGrpc::TAuthState State_;
     TIntrusiveConstPtr<NACLib::TUserToken> InternalToken_;
     inline static const TString EmptySerializedTokenMessage_;
     NYql::TIssueManager IssueManager_;
@@ -717,13 +642,6 @@ class TGRpcRequestBiStreamWrapper
     : public IRequestProxyCtx
     , public TEventLocal<TGRpcRequestBiStreamWrapper<TRpcId, TReq, TResp, RlMode>, TRpcId>
 {
-private:
-    void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode status) override {
-        Ctx_->Attach(TActorId());
-        TResponse resp;
-        FillYdbStatus(resp, IssueManager_.GetIssues(), status);
-        Ctx_->WriteAndFinish(std::move(resp), grpc::Status::OK);
-    }
 public:
     using TRequest = TReq;
     using TResponse = TResp;
@@ -752,21 +670,43 @@ public:
         return ExtractYdbToken(Ctx_->GetPeerMetaValues(NYdb::YDB_AUTH_TICKET_HEADER));
     }
 
+    bool HasClientCapability(const TString& capability) const override {
+        return FindPtr(Ctx_->GetPeerMetaValues(NYdb::YDB_CLIENT_CAPABILITIES), capability);
+    }
+
     const TMaybe<TString> GetDatabaseName() const override {
         return ExtractDatabaseName(Ctx_->GetPeerMetaValues(NYdb::YDB_DATABASE_HEADER));
     }
 
-    void UpdateAuthState(NYdbGrpc::TAuthState::EAuthState state) override {
+    void UpdateAuthState(NGrpc::TAuthState::EAuthState state) override {
         auto& s = Ctx_->GetAuthState();
         s.State = state;
     }
 
-    const NYdbGrpc::TAuthState& GetAuthState() const override {
+    const NGrpc::TAuthState& GetAuthState() const override {
         return Ctx_->GetAuthState();
+    }
+
+    void ReplyWithRpcStatus(grpc::StatusCode, const TString&, const TString&) override {
+        Y_FAIL("Unimplemented");
     }
 
     void ReplyUnauthenticated(const TString& in) override {
         Ctx_->Finish(grpc::Status(grpc::StatusCode::UNAUTHENTICATED, MakeAuthError(in, IssueManager_)));
+    }
+
+    void ReplyUnavaliable() override {
+        Ctx_->Attach(TActorId());
+        TResponse resp;
+        FillYdbStatus(resp, IssueManager_.GetIssues(), Ydb::StatusIds::UNAVAILABLE);
+        Ctx_->WriteAndFinish(std::move(resp), grpc::Status::OK);
+    }
+
+    void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode status) override {
+        Ctx_->Attach(TActorId());
+        TResponse resp;
+        FillYdbStatus(resp, IssueManager_.GetIssues(), status);
+        Ctx_->WriteAndFinish(std::move(resp), grpc::Status::OK);
     }
 
     void RaiseIssue(const NYql::TIssue& issue) override {
@@ -833,10 +773,6 @@ public:
         return GetPeerMetaValues(NYdb::YDB_TRACE_ID_HEADER);
     }
 
-    NWilson::TTraceId GetWilsonTraceId() const override {
-        return Span_.GetTraceId();
-    }
-
     const TMaybe<TString> GetSdkBuildInfo() const {
         return GetPeerMetaValues(NYdb::YDB_SDK_BUILD_INFO_HEADER);
     }
@@ -850,52 +786,36 @@ public:
     }
 
     const TMaybe<TString> GetGrpcUserAgent() const {
-        return GetPeerMetaValues(NYdbGrpc::GRPC_USER_AGENT_HEADER);
+        return GetPeerMetaValues(NGrpc::GRPC_USER_AGENT_HEADER);
     }
 
     const TMaybe<TString> GetPeerMetaValues(const TString& key) const override {
         return ToMaybe(Ctx_->GetPeerMetaValues(key));
     }
 
+    TVector<TStringBuf> FindClientCert() const override {
+        Y_FAIL("Unimplemented");
+        return {};
+    }
+
     void SetDiskQuotaExceeded(bool) override {
     }
 
-    void RefreshToken(const TString& token, const TActorContext& ctx, TActorId id);
+    bool GetDiskQuotaExceeded() const override {
+        return false;
+    }
+
+    void RefreshToken(const TString& token, const TActorContext& ctx, TActorId id) {
+        NGRpcService::RefreshToken(token, GetDatabaseName().GetOrElse(""), ctx, id);
+    }
 
     void SetRespHook(TRespHook&&) override {
         /* cannot add hook to bidirect streaming */
-        Y_ABORT("Unimplemented");
+        Y_FAIL("Unimplemented");
     }
 
     void Pass(const IFacilityProvider&) override {
-        Y_ABORT("unimplemented");
-    }
-
-    void SetAuditLogHook(TAuditLogHook&&) override {
-        Y_ABORT("unimplemented for TGRpcRequestBiStreamWrapper");
-    }
-
-    // IRequestProxyCtx
-    //
-    void StartTracing(NWilson::TSpan&& span) override {
-        Span_ = std::move(span);
-    }
-
-    void FinishSpan() override {
-        Span_.End();
-    }
-
-    bool* IsTracingDecided() override {
-        return &IsTracingDecided_;
-    }
-
-    // IRequestCtxBase
-    //
-    void AddAuditLogPart(const TStringBuf&, const TString&) override {
-        Y_ABORT("unimplemented for TGRpcRequestBiStreamWrapper");
-    }
-    const TAuditLogParts& GetAuditLogParts() const override {
-        Y_ABORT("unimplemented for TGRpcRequestBiStreamWrapper");
+        Y_FAIL("unimplemented");
     }
 
 private:
@@ -906,23 +826,31 @@ private:
     TMaybe<NRpcService::TRlPath> RlPath_;
     bool RlAllowed_;
     IGRpcProxyCounters::TPtr Counters_;
-    NWilson::TSpan Span_;
-    bool IsTracingDecided_ = false;
 };
 
 template <typename TDerived>
 class TGrpcResponseSenderImpl : public IRequestOpCtx {
 public:
-    // IRequestOpCtx
-    //
     void SendOperation(const Ydb::Operations::Operation& operation) override {
         auto self = Derived();
-        if (operation.ready()) {
-            self->FinishRequest();
-        }
         auto resp = self->CreateResponseMessage();
         resp->mutable_operation()->CopyFrom(operation);
-        self->Reply(resp, operation.status());
+        self->Ctx_->Reply(resp, operation.status());
+    }
+
+    void SendResult(Ydb::StatusIds::StatusCode status,
+        const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message) override
+    {
+        auto self = Derived();
+        auto resp = self->CreateResponseMessage();
+        auto deferred = resp->mutable_operation();
+        deferred->set_ready(true);
+        deferred->set_status(status);
+        deferred->mutable_issues()->MergeFrom(message);
+        if (self->CostInfo) {
+            deferred->mutable_cost_info()->Swap(self->CostInfo);
+        }
+        self->Reply(resp, status);
     }
 
     void SendResult(const google::protobuf::Message& result,
@@ -930,7 +858,6 @@ public:
         const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message) override
     {
         auto self = Derived();
-        self->FinishRequest();
         auto resp = self->CreateResponseMessage();
         auto deferred = resp->mutable_operation();
         deferred->set_ready(true);
@@ -946,7 +873,6 @@ public:
 
     void SendResult(const google::protobuf::Message& result, Ydb::StatusIds::StatusCode status) override {
         auto self = Derived();
-        self->FinishRequest();
         auto resp = self->CreateResponseMessage();
         auto deferred = resp->mutable_operation();
         deferred->set_ready(true);
@@ -976,7 +902,7 @@ public:
     }
 
     const TMaybe<TString> GetGrpcUserAgent() const {
-        return GetPeerMetaValues(NYdbGrpc::GRPC_USER_AGENT_HEADER);
+        return GetPeerMetaValues(NGrpc::GRPC_USER_AGENT_HEADER);
     }
 };
 
@@ -991,7 +917,7 @@ public:
     }
 
     const TMaybe<TString> GetGrpcUserAgent() const {
-        return GetPeerMetaValues(NYdbGrpc::GRPC_USER_AGENT_HEADER);
+        return GetPeerMetaValues(NGrpc::GRPC_USER_AGENT_HEADER);
     }
 };
 
@@ -1011,9 +937,9 @@ public:
     using TRequest = TReq;
     using TResponse = TResp;
 
-    using TFinishWrapper = std::function<void(const NYdbGrpc::IRequestContextBase::TAsyncFinishResult&)>;
+    using TFinishWrapper = std::function<void(const NGrpc::IRequestContextBase::TAsyncFinishResult&)>;
 
-    TGRpcRequestWrapperImpl(NYdbGrpc::IRequestContextBase* ctx)
+    TGRpcRequestWrapperImpl(NGrpc::IRequestContextBase* ctx)
         : Ctx_(ctx)
     { }
 
@@ -1029,12 +955,12 @@ public:
         return ExtractDatabaseName(Ctx_->GetPeerMetaValues(NYdb::YDB_DATABASE_HEADER));
     }
 
-    void UpdateAuthState(NYdbGrpc::TAuthState::EAuthState state) override {
+    void UpdateAuthState(NGrpc::TAuthState::EAuthState state) override {
         auto& s = Ctx_->GetAuthState();
         s.State = state;
     }
 
-    const NYdbGrpc::TAuthState& GetAuthState() const override {
+    const NGrpc::TAuthState& GetAuthState() const override {
         return Ctx_->GetAuthState();
     }
 
@@ -1106,14 +1032,16 @@ public:
         Ctx_->UseDatabase(database);
     }
 
+    void ReplyUnavaliable() override {
+        TResponse* resp = CreateResponseMessage();
+        TCommonResponseFiller<TResp, TDerived::IsOp>::Fill(*resp, IssueManager.GetIssues(), CostInfo, Ydb::StatusIds::UNAVAILABLE);
+        Reply(resp, Ydb::StatusIds::UNAVAILABLE);
+    }
+
     void ReplyWithYdbStatus(Ydb::StatusIds::StatusCode status) override {
         TResponse* resp = CreateResponseMessage();
         TCommonResponseFiller<TResponse, TDerived::IsOp>::Fill(*resp, IssueManager.GetIssues(), CostInfo, status);
-        FinishRequest();
         Reply(resp, status);
-        if (Ctx_->IsStreamCall()) {
-            Ctx_->FinishStreamingOk();
-        }
     }
 
     TString GetPeerName() const override {
@@ -1127,14 +1055,14 @@ public:
     template <typename T>
     static const TRequest* GetProtoRequest(const T& req) {
         auto request = dynamic_cast<const TRequest*>(req->GetRequest());
-        Y_ABORT_UNLESS(request != nullptr, "Wrong using of TGRpcRequestWrapper");
+        Y_VERIFY(request != nullptr, "Wrong using of TGRpcRequestWrapper");
         return request;
     }
 
     template <typename T>
     static TRequest* GetProtoRequestMut(const T& req) {
         auto request = dynamic_cast<TRequest*>(req->GetRequestMut());
-        Y_ABORT_UNLESS(request != nullptr, "Wrong using of TGRpcRequestWrapper");
+        Y_VERIFY(request != nullptr, "Wrong using of TGRpcRequestWrapper");
         return request;
     }
 
@@ -1144,10 +1072,6 @@ public:
 
     TMaybe<TString> GetTraceId() const override {
         return GetPeerMetaValues(NYdb::YDB_TRACE_ID_HEADER);
-    }
-
-    NWilson::TTraceId GetWilsonTraceId() const override {
-        return Span_.GetTraceId();
     }
 
     const TMaybe<TString> GetSdkBuildInfo() const {
@@ -1162,7 +1086,7 @@ public:
         return GetPeerMetaValues(NYdb::YDB_REQUEST_TYPE_HEADER);
     }
 
-    void SendSerializedResult(TString&& in, Ydb::StatusIds::StatusCode status, IRequestCtx::EStreamCtrl flag = IRequestCtx::EStreamCtrl::CONT) override {
+    void SendSerializedResult(TString&& in, Ydb::StatusIds::StatusCode status) override {
         // res->data() pointer is used inside grpc code.
         // So this object should be destroyed during grpc_slice destroying routine
         auto res = new TString;
@@ -1177,7 +1101,7 @@ public:
                     (void*)(res->data()), res->size(), freeResult, res);
         grpc::Slice sl = grpc::Slice(slice, grpc::Slice::STEAL_REF);
         auto data = grpc::ByteBuffer(&sl, 1);
-        Ctx_->Reply(&data, status, flag);
+        Ctx_->Reply(&data, status);
     }
 
     void SetCostInfo(float consumed_units) override {
@@ -1202,7 +1126,7 @@ public:
         return google::protobuf::Arena::CreateMessage<TResult>(ctx->GetArena());
     }
 
-    void SetStreamingNotify(NYdbGrpc::IRequestContextBase::TOnNextReply&& cb) override {
+    void SetStreamingNotify(NGrpc::IRequestContextBase::TOnNextReply&& cb) override {
         Ctx_->SetNextReplyCallback(std::move(cb));
     }
 
@@ -1219,9 +1143,7 @@ public:
         return Ctx_->IsClientLost();
     }
 
-    void FinishStream(ui32 status) override {
-        // End Of Request for streaming requests
-        AuditLogRequestEnd(status);
+    void FinishStream() override {
         Ctx_->FinishStreamingOk();
     }
 
@@ -1254,38 +1176,7 @@ public:
     }
 
     void Pass(const IFacilityProvider&) override {
-        Y_ABORT("unimplemented");
-    }
-
-    void SetAuditLogHook(TAuditLogHook&& hook) override {
-        AuditLogHook = std::move(hook);
-    }
-
-    // IRequestCtx
-    //
-    void FinishRequest() override {
-        RequestFinished = true;
-    }
-
-    // IRequestCtxBase
-    //
-    void AddAuditLogPart(const TStringBuf& name, const TString& value) override {
-        AuditLogParts.emplace_back(name, value);
-    }
-    const TAuditLogParts& GetAuditLogParts() const override {
-        return AuditLogParts;
-    }
-
-    void StartTracing(NWilson::TSpan&& span) override {
-        Span_ = std::move(span);
-    }
-
-    void FinishSpan() override {
-        Span_.End();
-    }
-
-    bool* IsTracingDecided() override {
-        return &IsTracingDecided_;
+        Y_FAIL("unimplemented");
     }
 
     void ReplyGrpcError(grpc::StatusCode code, const TString& msg, const TString& details = "") {
@@ -1294,10 +1185,6 @@ public:
 
 private:
     void Reply(NProtoBuf::Message *resp, ui32 status) override {
-        // End Of Request for non streaming requests
-        if (RequestFinished) {
-            AuditLogRequestEnd(status);
-        }
         if (RespHook) {
             TRespHook hook = std::move(RespHook);
             return hook(MakeIntrusive<TRespHookCtx>(Ctx_, resp, GetRequestName(), Ru, status));
@@ -1305,32 +1192,21 @@ private:
         return Ctx_->Reply(resp, status);
     }
 
-    void AuditLogRequestEnd(ui32 status) {
-        if (AuditLogHook) {
-            AuditLogHook(status, GetAuditLogParts());
-            // Drop hook to avoid double logging in case when operation implemention
-            // invokes both FinishRequest() (indirectly) and FinishStream()
-            AuditLogHook = nullptr;
-        }
-    }
-
     TResponse* CreateResponseMessage() {
         return google::protobuf::Arena::CreateMessage<TResponse>(Ctx_->GetArena());
     }
 
     static TFinishWrapper GetStdFinishWrapper(std::function<void()>&& cb) {
-        return [cb = std::move(cb)](const NYdbGrpc::IRequestContextBase::TAsyncFinishResult& future) mutable {
+        return [cb = std::move(cb)](const NGrpc::IRequestContextBase::TAsyncFinishResult& future) mutable {
             Y_ASSERT(future.HasValue());
-            if (future.GetValue() == NYdbGrpc::IRequestContextBase::EFinishStatus::CANCEL) {
+            if (future.GetValue() == NGrpc::IRequestContextBase::EFinishStatus::CANCEL) {
                 cb();
             }
         };
     }
 
-protected:
-    NWilson::TSpan Span_;
 private:
-    TIntrusivePtr<NYdbGrpc::IRequestContextBase> Ctx_;
+    TIntrusivePtr<NGrpc::IRequestContextBase> Ctx_;
     TIntrusiveConstPtr<NACLib::TUserToken> InternalToken_;
     inline static const TString EmptySerializedTokenMessage_;
     NYql::TIssueManager IssueManager;
@@ -1341,11 +1217,6 @@ private:
     TMaybe<NRpcService::TRlPath> RlPath;
     IGRpcProxyCounters::TPtr Counters;
     std::function<TFinishWrapper(std::function<void()>&&)> FinishWrapper = &GetStdFinishWrapper;
-
-    TAuditLogParts AuditLogParts;
-    TAuditLogHook AuditLogHook;
-    bool RequestFinished = false;
-    bool IsTracingDecided_ = false;
 };
 
 template <ui32 TRpcId, typename TReq, typename TResp, bool IsOperation, typename TDerived>
@@ -1353,7 +1224,7 @@ class TGRpcRequestValidationWrapperImpl : public TGRpcRequestWrapperImpl<TRpcId,
 public:
     static IActor* CreateRpcActor(typename std::conditional<IsOperation, IRequestOpCtx, IRequestNoOpCtx>::type* msg);
 
-    TGRpcRequestValidationWrapperImpl(NYdbGrpc::IRequestContextBase* ctx)
+    TGRpcRequestValidationWrapperImpl(NGrpc::IRequestContextBase* ctx)
         : TGRpcRequestWrapperImpl<TRpcId, TReq, TResp, IsOperation, TDerived>(ctx)
     { }
 
@@ -1390,7 +1261,7 @@ class TGrpcRequestCall
     using TRequestIface = typename std::conditional<IsOperation, IRequestOpCtx, IRequestNoOpCtx>::type;
 
 public:
-    static IActor* CreateRpcActor(TRequestIface* msg);
+    static IActor* CreateRpcActor(typename std::conditional<IsOperation, IRequestOpCtx, IRequestNoOpCtx>::type* msg);
     static constexpr bool IsOp = IsOperation;
 
     using TBase = std::conditional_t<TProtoHasValidate<TReq>::Value,
@@ -1400,19 +1271,14 @@ public:
             TRpcServices::EvGrpcRuntimeRequest, TReq, TResp, IsOperation, TGrpcRequestCall<TReq, TResp, IsOperation>>>;
 
     template <typename TCallback>
-    TGrpcRequestCall(NYdbGrpc::IRequestContextBase* ctx, TCallback&& cb, TRequestAuxSettings auxSettings = {})
+    TGrpcRequestCall(NGrpc::IRequestContextBase* ctx, TCallback&& cb, TRequestAuxSettings auxSettings = {})
         : TBase(ctx)
         , PassMethod(std::forward<TCallback>(cb))
         , AuxSettings(std::move(auxSettings))
     { }
 
     void Pass(const IFacilityProvider& facility) override {
-        try {
-            PassMethod(std::move(std::unique_ptr<TRequestIface>(this)), facility);
-        } catch (const std::exception& ex) {
-            this->RaiseIssue(NYql::TIssue{TStringBuilder() << "unexpected exception: " << ex.what()});
-            this->ReplyWithYdbStatus(Ydb::StatusIds::INTERNAL_ERROR);
-        }
+        PassMethod(std::move(std::unique_ptr<TRequestIface>(this)), facility);
     }
 
     TRateLimiterMode GetRlMode() const override {
@@ -1428,19 +1294,6 @@ public:
             AuxSettings.CustomAttributeProcessor(schemeData, iface);
             return true;
         }
-    }
-
-    NJaegerTracing::TRequestDiscriminator GetRequestDiscriminator() const override {
-        return {
-            .RequestType = AuxSettings.RequestType,
-            .Database = TBase::GetDatabaseName(),
-        };
-    }
-
-    // IRequestCtxBaseMtSafe
-    //
-    bool IsAuditable() const override {
-        return (AuxSettings.AuditMode == TAuditMode::Auditable) && !this->IsInternalCall();
     }
 
 private:
@@ -1464,7 +1317,7 @@ public:
     static constexpr bool IsOp = IsOperation;
     static constexpr TRateLimiterMode RateLimitMode = RlMode;
 
-    TGRpcRequestWrapper(NYdbGrpc::IRequestContextBase* ctx)
+    TGRpcRequestWrapper(NGrpc::IRequestContextBase* ctx)
         : TGRpcRequestWrapperImpl<TRpcId, TReq, TResp, IsOperation,
             TGRpcRequestWrapper<TRpcId, TReq, TResp, IsOperation, RlMode>>(ctx)
     { }
@@ -1488,7 +1341,7 @@ public:
     static constexpr bool IsOp = IsOperation;
     static constexpr TRateLimiterMode RateLimitMode = RlMode;
 
-    TGRpcRequestWrapperNoAuth(NYdbGrpc::IRequestContextBase* ctx)
+    TGRpcRequestWrapperNoAuth(NGrpc::IRequestContextBase* ctx)
         : TGRpcRequestWrapperImpl<TRpcId, TReq, TResp, IsOperation,
             TGRpcRequestWrapperNoAuth<TRpcId, TReq, TResp, IsOperation, RlMode>>(ctx)
     { }
@@ -1501,8 +1354,8 @@ public:
         return false;
     }
 
-    const NYdbGrpc::TAuthState& GetAuthState() const override {
-        static NYdbGrpc::TAuthState noAuthState(false);
+    const NGrpc::TAuthState& GetAuthState() const override {
+        static NGrpc::TAuthState noAuthState(false);
         return noAuthState;
     }
 };
@@ -1517,7 +1370,7 @@ public:
     static constexpr bool IsOp = IsOperation;
     static constexpr TRateLimiterMode RateLimitMode = RlMode;
 
-    TGRpcRequestValidationWrapper(NYdbGrpc::IRequestContextBase* ctx, bool rlAllowed = true)
+    TGRpcRequestValidationWrapper(NGrpc::IRequestContextBase* ctx, bool rlAllowed = true)
         : TGRpcRequestWrapperImpl<TRpcId, TReq, TResp, IsOperation,
             TGRpcRequestValidationWrapper<TRpcId, TReq, TResp, IsOperation, RlMode>>(ctx)
         , RlAllowed(rlAllowed)

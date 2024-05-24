@@ -24,15 +24,6 @@ struct TFastVDiskSetup : public TDefaultVDiskSetup {
     }
 };
 
-struct TFastVDiskSetupMinHugeBlob : public TFastVDiskSetup {
-    TFastVDiskSetupMinHugeBlob(ui32 minHugeBlobInBytes) {
-        auto modifier = [=] (NKikimr::TVDiskConfig *cfg) {
-            cfg->MinHugeBlobInBytes = minHugeBlobInBytes;
-        };
-        AddConfigModifier(modifier);
-    }
-};
-
 struct TFastVDiskSetupSmallVDiskQueues : public TFastVDiskSetup {
     TFastVDiskSetupSmallVDiskQueues() {
         auto modifier = [] (NKikimr::TVDiskConfig *cfg) {
@@ -75,6 +66,7 @@ struct TFastVDiskSetupHndOff : public TFastVDiskSetup {
     TFastVDiskSetupHndOff() {
         auto modifier = [] (NKikimr::TVDiskConfig *cfg) {
             cfg->HullCompLevelRateThreshold = 0.01; // to compact very few chunks from level 0
+            cfg->RunHandoff = false; // do not run handoff
         };
         AddConfigModifier(modifier);
     }
@@ -90,7 +82,12 @@ struct TFastVDiskSetupCompacted : public TFastVDiskSetup {
 };
 
 struct TFastVDiskSetupCompactedHndOff : public TFastVDiskSetupCompacted {
-    TFastVDiskSetupCompactedHndOff() = default;
+    TFastVDiskSetupCompactedHndOff() {
+        auto modifier = [] (NKikimr::TVDiskConfig *cfg) {
+            cfg->RunHandoff = false; // do not run handoff
+        };
+        AddConfigModifier(modifier);
+    }
 };
 
 struct TFastCompactionGCNoSyncVDiskSetup : public TFastVDiskSetup {

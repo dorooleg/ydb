@@ -549,7 +549,7 @@ lzma_lz_encoder_init(lzma_next_coder *next, const lzma_allocator *allocator,
 			lzma_lz_options *lz_options))
 {
 #if defined(HAVE_SMALL) && !defined(HAVE_FUNC_ATTRIBUTE_CONSTRUCTOR)
-	// The CRC32 table must be initialized.
+	// We need that the CRC32 table has been initialized.
 	lzma_crc32_init();
 #endif
 
@@ -569,8 +569,6 @@ lzma_lz_encoder_init(lzma_next_coder *next, const lzma_allocator *allocator,
 		coder->lz.coder = NULL;
 		coder->lz.code = NULL;
 		coder->lz.end = NULL;
-		coder->lz.options_update = NULL;
-		coder->lz.set_out_limit = NULL;
 
 		// mf.size is initialized to silence Valgrind
 		// when used on optimized binaries (GCC may reorder

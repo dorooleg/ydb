@@ -107,13 +107,13 @@ Y_UNIT_TEST_SUITE(S3FileTreeBuilderTest) {
         b.Save(&range);
 
         TPathList paths;
-        ReadPathsList({}, MakeParams(range), {}, paths);
+        ui64 startPathIndex = 0;
+        ReadPathsList({}, MakeParams(range), paths, startPathIndex);
 
         UNIT_ASSERT_VALUES_EQUAL(paths.size(), 1);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Path, "name");
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Size, 0);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].IsDirectory, false);
-        UNIT_ASSERT_VALUES_EQUAL(paths[0].PathIndex, 0);
     }
 
     Y_UNIT_TEST(DeserializesManySlashes) {
@@ -124,13 +124,13 @@ Y_UNIT_TEST_SUITE(S3FileTreeBuilderTest) {
         b.Save(&range);
 
         TPathList paths;
-        ReadPathsList({}, MakeParams(range), {}, paths);
+        ui64 startPathIndex = 0;
+        ReadPathsList({}, MakeParams(range), paths, startPathIndex);
 
         UNIT_ASSERT_VALUES_EQUAL(paths.size(), 1);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Path, "a///b");
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Size, 42);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].IsDirectory, false);
-        UNIT_ASSERT_VALUES_EQUAL(paths[0].PathIndex, 0);
     }
 
     Y_UNIT_TEST(DeserializesTrailingSlash) {
@@ -142,18 +142,17 @@ Y_UNIT_TEST_SUITE(S3FileTreeBuilderTest) {
         b.Save(&range);
 
         TPathList paths;
-        ReadPathsList({}, MakeParams(range), {}, paths);
+        ui64 startPathIndex = 0;
+        ReadPathsList({}, MakeParams(range), paths, startPathIndex);
 
         UNIT_ASSERT_VALUES_EQUAL(paths.size(), 2);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Path, "root/name/");
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Size, 0);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].IsDirectory, true);
-        UNIT_ASSERT_VALUES_EQUAL(paths[0].PathIndex, 0);
 
         UNIT_ASSERT_VALUES_EQUAL(paths[1].Path, "root/name//");
         UNIT_ASSERT_VALUES_EQUAL(paths[1].Size, 3);
         UNIT_ASSERT_VALUES_EQUAL(paths[1].IsDirectory, true);
-        UNIT_ASSERT_VALUES_EQUAL(paths[1].PathIndex, 1);
     }
 
     Y_UNIT_TEST(DeserializesLeadingSlash) {
@@ -165,19 +164,18 @@ Y_UNIT_TEST_SUITE(S3FileTreeBuilderTest) {
         b.Save(&range);
 
         TPathList paths;
-        ReadPathsList({}, MakeParams(range), {}, paths);
+        ui64 startPathIndex = 0;
+        ReadPathsList({}, MakeParams(range), paths, startPathIndex);
 
         UNIT_ASSERT_VALUES_EQUAL(paths.size(), 2);
 
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Path, "/");
         UNIT_ASSERT_VALUES_EQUAL(paths[0].Size, 42);
         UNIT_ASSERT_VALUES_EQUAL(paths[0].IsDirectory, true);
-        UNIT_ASSERT_VALUES_EQUAL(paths[0].PathIndex, 0);
 
         UNIT_ASSERT_VALUES_EQUAL(paths[1].Path, "/root/name");
         UNIT_ASSERT_VALUES_EQUAL(paths[1].Size, 3);
         UNIT_ASSERT_VALUES_EQUAL(paths[1].IsDirectory, false);
-        UNIT_ASSERT_VALUES_EQUAL(paths[1].PathIndex, 1);
     }
 }
 

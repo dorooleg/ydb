@@ -18,15 +18,12 @@ void TTestInsertTaskActivity::DoFinished(const NBackgroundTasks::TTaskStateConta
 }
 
 void TTestInsertTaskActivity::DoExecute(NBackgroundTasks::ITaskExecutorController::TPtr controller, const NBackgroundTasks::TTaskStateContainer& currentState) {
-    ui32 c = 0;
-    {
-        TGuard<TMutex> g(Mutex);
-        c = currentState.HasObject() ?
-            currentState.GetAsSafe<TTestInsertTaskState>().GetCounter() :
-            0;
-        Cerr << "TASK EXECUTED: " << c << Endl;
-        CounterSumByActivityId[ActivityTaskId] += c;
-    }
+    TGuard<TMutex> g(Mutex);
+    const ui32 c = currentState.HasObject() ?
+        currentState.GetAsSafe<TTestInsertTaskState>().GetCounter() :
+        0;
+    Cerr << "TASK EXECUTED: " << c << Endl;
+    CounterSumByActivityId[ActivityTaskId] += c;
     controller->TaskInterrupted(std::make_shared<TTestInsertTaskState>(c + 1));
 }
 

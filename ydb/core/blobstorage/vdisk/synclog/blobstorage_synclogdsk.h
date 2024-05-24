@@ -134,7 +134,7 @@ namespace NKikimr {
 
             void GetOwnedChunks(TSet<TChunkIdx>& chunks) const {
                 const bool inserted = chunks.insert(ChunkIdx).second;
-                Y_ABORT_UNLESS(inserted);
+                Y_VERIFY(inserted);
             }
 
             static std::pair<TOneChunkPtr, const char *> Construct(const char *serialized);
@@ -253,7 +253,7 @@ namespace NKikimr {
                     }
                 } else {
                     // firstLsn >= lsn
-                    Y_DEBUG_ABORT_UNLESS(it->FirstLsn >= lsn);
+                    Y_VERIFY_DEBUG(it->FirstLsn >= lsn);
                     if (it->FirstLsn == lsn || it == begin) {
                         // it is good
                     } else {
@@ -261,16 +261,16 @@ namespace NKikimr {
                     }
                 }
                 It = it;
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
             }
 
             void Next() {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 ++It;
             }
 
             const TDiskIndexRecord *Get() const {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 return &*It;
             }
 
@@ -377,12 +377,12 @@ namespace NKikimr {
             }
 
             ui64 GetFirstLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return ManyIdxChunks.front()->GetFirstLsn();
             }
 
             ui64 GetLastLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return ManyIdxChunks.back()->GetLastLsn();
             }
 
@@ -435,7 +435,7 @@ namespace NKikimr {
                 ChunkIt = SnapPtr->ManyIdxChunks.begin();
                 if (ChunkIt != SnapPtr->ManyIdxChunks.end()) {
                     IdxBulkIt = (*ChunkIt)->GetIndexIterator();
-                    Y_DEBUG_ABORT_UNLESS(IdxBulkIt.Valid());
+                    Y_VERIFY_DEBUG(IdxBulkIt.Valid());
                 }
             }
 
@@ -463,7 +463,7 @@ namespace NKikimr {
                 } else {
                     // firstLsn >= lsn
                     ui64 firstLsn = (*it)->GetFirstLsn();
-                    Y_DEBUG_ABORT_UNLESS(firstLsn >= lsn);
+                    Y_VERIFY_DEBUG(firstLsn >= lsn);
                     if (firstLsn == lsn || it == begin) {
                         // it is good
                     } else {
@@ -479,25 +479,25 @@ namespace NKikimr {
                 ChunkIt = it;
                 IdxBulkIt = (*ChunkIt)->GetIndexIterator();
                 IdxBulkIt.Seek(lsn);
-                Y_DEBUG_ABORT_UNLESS(IdxBulkIt.Valid());
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(IdxBulkIt.Valid());
+                Y_VERIFY_DEBUG(Valid());
             }
 
             void Next() {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 IdxBulkIt.Next();
                 if (!IdxBulkIt.Valid()) {
                     ++ChunkIt;
                     if (ChunkIt != SnapPtr->ManyIdxChunks.end()) {
                         IdxBulkIt = (*ChunkIt)->GetIndexIterator();
                         IdxBulkIt.SeekToFirst();
-                        Y_DEBUG_ABORT_UNLESS(IdxBulkIt.Valid(), "ChunkIdx# %u", (*ChunkIt)->GetChunkIdx());
+                        Y_VERIFY_DEBUG(IdxBulkIt.Valid(), "ChunkIdx# %u", (*ChunkIt)->GetChunkIdx());
                     }
                 }
             }
 
             std::pair<ui32, const TDiskIndexRecord *> Get() const {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 return std::pair<ui32, const TDiskIndexRecord *>((*ChunkIt)->GetChunkIdx(), IdxBulkIt.Get());
             }
 
@@ -599,11 +599,11 @@ namespace NKikimr {
                 return ManyIdxChunks.empty();
             }
             ui64 PrivateGetFirstLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!PrivateEmpty());
+                Y_VERIFY_DEBUG(!PrivateEmpty());
                 return ManyIdxChunks.front()->GetFirstLsn();
             }
             ui64 PrivateGetLastLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!PrivateEmpty());
+                Y_VERIFY_DEBUG(!PrivateEmpty());
                 return ManyIdxChunks.back()->GetLastLsn();
             }
             void PrivateUpdateIndex(ui32 chunkIdx, const TVector<TSyncLogPageSnap> &pages);

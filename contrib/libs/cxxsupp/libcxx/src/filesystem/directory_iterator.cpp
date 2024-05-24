@@ -11,18 +11,8 @@
 #include <errno.h>
 #include <filesystem>
 #include <stack>
-#include <utility>
 
-#include "error.h"
-#include "file_descriptor.h"
-
-#if defined(_LIBCPP_WIN32API)
-# define WIN32_LEAN_AND_MEAN
-# define NOMINMAX
-# include <windows.h>
-#else
-# include <dirent.h>   // for DIR & friends
-#endif
+#include "filesystem_common.h"
 
 _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
 
@@ -35,8 +25,8 @@ public:
   __dir_stream& operator=(const __dir_stream&) = delete;
 
   __dir_stream(__dir_stream&& __ds) noexcept : __stream_(__ds.__stream_),
-                                               __root_(std::move(__ds.__root_)),
-                                               __entry_(std::move(__ds.__entry_)) {
+                                               __root_(move(__ds.__root_)),
+                                               __entry_(move(__ds.__entry_)) {
     __ds.__stream_ = INVALID_HANDLE_VALUE;
   }
 
@@ -114,8 +104,8 @@ public:
   __dir_stream& operator=(const __dir_stream&) = delete;
 
   __dir_stream(__dir_stream&& other) noexcept : __stream_(other.__stream_),
-                                                __root_(std::move(other.__root_)),
-                                                __entry_(std::move(other.__entry_)) {
+                                                __root_(move(other.__root_)),
+                                                __entry_(move(other.__entry_)) {
     other.__stream_ = nullptr;
   }
 
@@ -192,12 +182,12 @@ directory_iterator::directory_iterator(const path& p, error_code* ec,
 }
 
 directory_iterator& directory_iterator::__increment(error_code* ec) {
-  _LIBCPP_ASSERT_UNCATEGORIZED(__imp_, "Attempting to increment an invalid iterator");
+  _LIBCPP_ASSERT(__imp_, "Attempting to increment an invalid iterator");
   ErrorHandler<void> err("directory_iterator::operator++()", ec);
 
   error_code m_ec;
   if (!__imp_->advance(m_ec)) {
-    path root = std::move(__imp_->__root_);
+    path root = move(__imp_->__root_);
     __imp_.reset();
     if (m_ec)
       err.report(m_ec, "at root " PATH_CSTR_FMT, root.c_str());
@@ -206,7 +196,7 @@ directory_iterator& directory_iterator::__increment(error_code* ec) {
 }
 
 directory_entry const& directory_iterator::__dereference() const {
-  _LIBCPP_ASSERT_UNCATEGORIZED(__imp_, "Attempting to dereference an invalid iterator");
+  _LIBCPP_ASSERT(__imp_, "Attempting to dereference an invalid iterator");
   return __imp_->__entry_;
 }
 
@@ -231,11 +221,11 @@ recursive_directory_iterator::recursive_directory_iterator(
 
   __imp_ = make_shared<__shared_imp>();
   __imp_->__options_ = opt;
-  __imp_->__stack_.push(std::move(new_s));
+  __imp_->__stack_.push(move(new_s));
 }
 
 void recursive_directory_iterator::__pop(error_code* ec) {
-  _LIBCPP_ASSERT_UNCATEGORIZED(__imp_, "Popping the end iterator");
+  _LIBCPP_ASSERT(__imp_, "Popping the end iterator");
   if (ec)
     ec->clear();
   __imp_->__stack_.pop();
@@ -285,7 +275,7 @@ void recursive_directory_iterator::__advance(error_code* ec) {
   }
 
   if (m_ec) {
-    path root = std::move(stack.top().__root_);
+    path root = move(stack.top().__root_);
     __imp_.reset();
     err.report(m_ec, "at root " PATH_CSTR_FMT, root.c_str());
   } else {
@@ -319,7 +309,7 @@ bool recursive_directory_iterator::__try_recursion(error_code* ec) {
   if (!skip_rec) {
     __dir_stream new_it(curr_it.__entry_.path(), __imp_->__options_, m_ec);
     if (new_it.good()) {
-      __imp_->__stack_.push(std::move(new_it));
+      __imp_->__stack_.push(move(new_it));
       return true;
     }
   }
@@ -330,7 +320,7 @@ bool recursive_directory_iterator::__try_recursion(error_code* ec) {
       if (ec)
         ec->clear();
     } else {
-      path at_ent = std::move(curr_it.__entry_.__p_);
+      path at_ent = move(curr_it.__entry_.__p_);
       __imp_.reset();
       err.report(m_ec, "attempting recursion into " PATH_CSTR_FMT,
                  at_ent.c_str());

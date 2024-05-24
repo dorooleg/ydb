@@ -35,7 +35,7 @@
 #endif
 
 #ifdef HAVE_BEOS_THREADS
-#error #include <OS.h>
+#include <OS.h>
 #include <TLS.h>
 #endif
 

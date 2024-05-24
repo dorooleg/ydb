@@ -37,11 +37,11 @@ struct Schema : NIceDb::Schema {
         struct Owner : Column<2, NScheme::NTypeIds::Utf8> {};
         struct Order : Column<3, NScheme::NTypeIds::Uint64> {};
         struct Content : Column<4, NScheme::NTypeIds::Utf8> {};
-        struct Priority : Column<5, NScheme::NTypeIds::Int32> {};
 
         using TKey = TableKey<ID>;
-        using TColumns = TableColumns<ID, Owner, Order, Content, Priority>;
+        using TColumns = TableColumns<ID, Owner, Order, Content>;
     };
+
 
     struct WalleTask : Table<4> {
         struct TaskID : Column<1, NScheme::NTypeIds::Utf8> {};
@@ -130,18 +130,8 @@ struct Schema : NIceDb::Schema {
         using TColumns = TableColumns<NodeId, DiskId, Downtime>;
     };
 
-    struct MaintenanceTasks : Table<14> {
-        struct TaskID : Column<1, NScheme::NTypeIds::Utf8> {};
-        struct RequestID : Column<2, NScheme::NTypeIds::Utf8> {};
-        struct Owner : Column<3, NScheme::NTypeIds::Utf8> {};
-
-        using TKey = TableKey<TaskID>;
-        using TColumns = TableColumns<TaskID, RequestID, Owner>;
-    };
-
     using TTables = SchemaTables<Param, Permission, Request, WalleTask, Notification, NodeTenant,
-        HostMarkers, NodeMarkers, PDiskMarkers, VDiskMarkers, LogRecords, NodeDowntimes, PDiskDowntimes,
-        MaintenanceTasks>;
+        HostMarkers, NodeMarkers, PDiskMarkers, VDiskMarkers, LogRecords, NodeDowntimes, PDiskDowntimes>;
     using TSettings = SchemaSettings<ExecutorLogBatching<true>,
                                      ExecutorLogFlushPeriod<TDuration::MicroSeconds(512).GetValue()>>;
 };

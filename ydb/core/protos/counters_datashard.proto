@@ -24,9 +24,6 @@ enum ESimpleCounters {
     COUNTER_READ_ITERATORS_WAITING = 14                            [(CounterOpts) = {Name: "ReadIteratorsWaiting"}];
     COUNTER_READ_ITERATORS_COUNT = 15                              [(CounterOpts) = {Name: "ReadIteratorsCount"}];
     COUNTER_READ_ITERATORS_EXHAUSTED_COUNT = 16                    [(CounterOpts) = {Name: "ReadIteratorsExhaustedCount"}];
-    COUNTER_CHANGE_RECORDS_REQUESTED = 17                          [(CounterOpts) = {Name: "ChangeRecordsRequested"}];
-    COUNTER_CHANGE_DELIVERY_LAG = 18                               [(CounterOpts) = {Name: "ChangeDeliveryLag"}];
-    COUNTER_CHANGE_DATA_LAG = 19                                   [(CounterOpts) = {Name: "ChangeDataLag"}];
 }
 
 enum ECumulativeCounters {
@@ -126,22 +123,6 @@ enum ECumulativeCounters {
     COUNTER_READ_ITERATOR_ROWS_READ = 93                  [(CounterOpts) = {Name: "ReadIteratorRowsRead"}];
     COUNTER_READ_ITERATOR_BYTES_READ = 94                 [(CounterOpts) = {Name: "ReadIteratorBytesRead"}];
     COUNTER_READ_ITERATOR_CANCEL = 95                     [(CounterOpts) = {Name: "ReadIteratorCancel"}];
-    COUNTER_CHANGE_EXCHANGE_SUCCESSFUL_HANDSHAKES = 96    [(CounterOpts) = {Name: "ChangeExchangeSuccessfulHandshakes"}];
-    COUNTER_CHANGE_EXCHANGE_REJECTED_HANDSHAKES = 97      [(CounterOpts) = {Name: "ChangeExchangeRejectedHandshakes"}];
-    COUNTER_CHANGE_EXCHANGE_SUCCESSFUL_APPLY = 98         [(CounterOpts) = {Name: "ChangeExchangeSuccessfulApply"}];
-    COUNTER_CHANGE_EXCHANGE_REJECTED_APPLY = 99           [(CounterOpts) = {Name: "ChangeExchangeRejectedApply"}];
-    COUNTER_CHANGE_RECORDS_SENT = 100                     [(CounterOpts) = {Name: "ChangeRecordsSent"}];
-    COUNTER_CHANGE_RECORDS_FORGOTTEN = 101                [(CounterOpts) = {Name: "ChangeRecordsForgotten"}];
-    COUNTER_WRITE_REQUEST = 102                           [(CounterOpts) = {Name: "WriteRequests"}];
-    COUNTER_WRITE_IMMEDIATE = 103                         [(CounterOpts) = {Name: "WriteImmediate"}];
-    COUNTER_WRITE_COMPLETE = 104                          [(CounterOpts) = {Name: "WriteComplete"}];
-    COUNTER_WRITE_SUCCESS = 105                           [(CounterOpts) = {Name: "WriteSuccess"}];
-    COUNTER_WRITE_ERROR = 106                             [(CounterOpts) = {Name: "WriteError"}];   
-    COUNTER_WRITE_OVERLOADED = 107                        [(CounterOpts) = {Name: "WriteOverloaded"}];   
-    COUNTER_WRITE_OUT_OF_SPACE = 108                      [(CounterOpts) = {Name: "WriteOutOfSpace"}];
-    COUNTER_WRITE_CANCELLED = 109                         [(CounterOpts) = {Name: "WriteCancelled"}];
-    COUNTER_WRITE_ROWS = 110                              [(CounterOpts) = {Name: "WriteRows"}];
-    COUNTER_WRITE_BYTES = 111                             [(CounterOpts) = {Name: "WriteBytes"}];
 }
 
 enum EPercentileCounters {
@@ -391,14 +372,6 @@ enum EPercentileCounters {
         Ranges: { Value: 5        Name: "5"},
         Ranges: { Value: 10       Name: "10"},
     }];
-
-    COUNTER_WRITE_SUCCESS_COMPLETE_LATENCY = 20 [(CounterOpts) = {
-        Name: "WriteSuccessCompleteLatency"
-    }];
-
-    COUNTER_WRITE_EXEC_LATENCY = 21 [(CounterOpts) = {
-        Name: "WriteExecLatency"
-    }];    
 }
 
 enum ETxTypes {
@@ -480,9 +453,4 @@ enum ETxTypes {
     TXTYPE_CDC_STREAM_SCAN_RUN  = 75                      [(TxTypeOpts) = {Name: "TTxCdcStreamScanRun"}];
     TXTYPE_CDC_STREAM_SCAN_PROGRESS = 76                  [(TxTypeOpts) = {Name: "TTxCdcStreamScanProgress"}];
     TXTYPE_FIND_WRITE_CONFLICTS = 77                      [(TxTypeOpts) = {Name: "TTxFindWriteConflicts"}];
-    TXTYPE_UPDATE_FOLLOWER_READ_EDGE = 78                 [(TxTypeOpts) = {Name: "TxUpdateFollowerReadEdge"}];
-    TXTYPE_CDC_STREAM_EMIT_HEARTBEATS = 79                [(TxTypeOpts) = {Name: "TTxCdcStreamEmitHeartbeats"}];
-    TXTYPE_CLEANUP_VOLATILE = 80                          [(TxTypeOpts) = {Name: "TxCleanupVolatile"}];
-    TXTYPE_PLAN_PREDICTED_TXS = 81                        [(TxTypeOpts) = {Name: "TxPlanPredictedTxs"}];
-    TXTYPE_WRITE = 82                                     [(TxTypeOpts) = {Name: "TxWrite"}];
 }

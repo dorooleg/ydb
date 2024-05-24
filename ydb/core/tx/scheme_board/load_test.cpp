@@ -10,8 +10,8 @@
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/ptr.h>
 #include <util/generic/ylimits.h>
@@ -57,14 +57,14 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
             TDescription& dirDesc = dirDescTwoPart.Record;
 
             dirDesc.SetStatus(NKikimrScheme::StatusSuccess);
-            dirDesc.SetPathOwnerId(owner);
+            dirDesc.SetPathOwner(owner);
             dirDesc.SetPathId(nextPathId++);
             dirDesc.SetPath(dirPath);
 
             auto& dirSelf = *dirDesc.MutablePathDescription()->MutableSelf();
             dirSelf.SetName(dirName);
             dirSelf.SetPathId(dirDesc.GetPathId());
-            dirSelf.SetSchemeshardId(dirDesc.GetPathOwnerId());
+            dirSelf.SetSchemeshardId(dirDesc.GetPathOwner());
             dirSelf.SetPathType(NKikimrSchemeOp::EPathTypeDir);
             dirSelf.SetCreateFinished(true);
             dirSelf.SetCreateTxId(1);
@@ -84,7 +84,7 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
                 TDescription& objDesc = objDescTwoPart.Record;
 
                 objDesc.SetStatus(NKikimrScheme::StatusSuccess);
-                objDesc.SetPathOwnerId(owner);
+                objDesc.SetPathOwner(owner);
                 objDesc.SetPathId(nextPathId++);
                 objDesc.SetPath(objPath);
 
@@ -94,7 +94,7 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
                 dirChildren.Add()->CopyFrom(objSelf);
 
                 objSelf.SetPathId(objDesc.GetPathId());
-                objSelf.SetSchemeshardId(objDesc.GetPathOwnerId());
+                objSelf.SetSchemeshardId(objDesc.GetPathOwner());
                 objSelf.SetCreateFinished(true);
                 objSelf.SetCreateTxId(1);
                 objSelf.SetCreateStep(1);
@@ -126,11 +126,11 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
             return pathId;
         }
 
-        Y_ABORT("Unreachable");
+        Y_FAIL("Unreachable");
     }
 
     void Modify(TPathId pathId) {
-        Y_ABORT_UNLESS(Descriptions.contains(pathId));
+        Y_VERIFY(Descriptions.contains(pathId));
 
         TDescription& description = Descriptions.at(pathId).Record;
         auto& self = *description.MutablePathDescription()->MutableSelf();
@@ -144,10 +144,10 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
     }
 
     void Delete(TPathId pathId) {
-        Y_ABORT_UNLESS(Descriptions.contains(pathId));
+        Y_VERIFY(Descriptions.contains(pathId));
 
         TDescription& description = Descriptions.at(pathId).Record;
-        Y_ABORT_UNLESS(!IsDir(description));
+        Y_VERIFY(!IsDir(description));
 
         description.SetStatus(NKikimrScheme::StatusPathDoesNotExist);
 
@@ -183,25 +183,27 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
     }
 
     void Boot() {
-        const TActorId proxy = MakeStateStorageProxyID();
+        const TActorId proxy = MakeStateStorageProxyID(StateStorageGroupFromTabletID(Owner));
         Send(proxy, new TEvStateStorage::TEvListSchemeBoard(), IEventHandle::FlagTrackDelivery);
 
         Become(&TThis::StateBoot);
     }
 
     void Populate() {
+        const ui32 ssId = StateStorageGroupFromTabletID(Owner);
+
         Descriptions = GenerateDescriptions(Owner, Config, NextPathId);
         Populator = Register(CreateSchemeBoardPopulator(
-            Owner, Max<ui64>(), std::vector<std::pair<TPathId, TTwoPartDescription>>(Descriptions.begin(), Descriptions.end()), NextPathId
+            Owner, Max<ui64>(), ssId, Descriptions, NextPathId
         ));
 
         TPathId pathId(Owner, NextPathId - 1);
-        Y_ABORT_UNLESS(Descriptions.contains(pathId));
+        Y_VERIFY(Descriptions.contains(pathId));
         const TString& topPath = Descriptions.at(pathId).Record.GetPath();
 
         // subscriber will help us to know when sync is completed
         Subscriber = Register(CreateSchemeBoardSubscriber(
-            SelfId(), topPath,
+            SelfId(), topPath, ssId,
             ESchemeBoardSubscriberDeletionPolicy::Majority
         ));
 
@@ -228,13 +230,13 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
     void Handle(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev) {
         const auto* msg = ev->Get();
 
-        Y_ABORT_UNLESS(ev->Sender == Subscriber);
-        Y_ABORT_UNLESS(msg->PathId.LocalPathId == NextPathId - 1);
+        Y_VERIFY(ev->Sender == Subscriber);
+        Y_VERIFY(msg->PathId.LocalPathId == NextPathId - 1);
 
         Send(Subscriber, new TEvents::TEvPoisonPill());
         Subscriber = TActorId();
 
-        const TInstant ts = TInstant::FromValue(NSchemeBoard::GetPathVersion(msg->DescribeSchemeResult));
+        const TInstant ts = TInstant::FromValue(GetPathVersion(msg->DescribeSchemeResult));
         *SyncDuration = (TlsActivationContext->Now() - ts).MilliSeconds();
 
         Test();
@@ -251,7 +253,7 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
             break;
 
         default:
-            Y_DEBUG_ABORT("Unknown wakeup tag");
+            Y_VERIFY_DEBUG(false, "Unknown wakeup tag");
             break;
         }
     }
@@ -322,9 +324,10 @@ private:
 
 class TLoadConsumer: public TActorBootstrapped<TLoadConsumer> {
     void Subscribe(const TPathId& pathId) {
+        const ui32 ssId = StateStorageGroupFromTabletID(Owner);
         for (ui32 i = 0; i < Config.SubscriberMulti; ++i) {
             const TActorId subscriber = Register(CreateSchemeBoardSubscriber(
-                SelfId(), pathId,
+                SelfId(), pathId, ssId,
                 ESchemeBoardSubscriberDeletionPolicy::Majority
             ));
 
@@ -349,7 +352,7 @@ class TLoadConsumer: public TActorBootstrapped<TLoadConsumer> {
     void Handle(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev) {
         const auto* msg = ev->Get();
 
-        const TInstant ts = TInstant::FromValue(NSchemeBoard::GetPathVersion(msg->DescribeSchemeResult));
+        const TInstant ts = TInstant::FromValue(GetPathVersion(msg->DescribeSchemeResult));
         if (IsDir(msg->DescribeSchemeResult)) {
             LatencyDir->Collect((TlsActivationContext->Now() - ts).MilliSeconds());
         } else {

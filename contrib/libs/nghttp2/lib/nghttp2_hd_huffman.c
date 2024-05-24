@@ -107,9 +107,9 @@ void nghttp2_hd_huff_decode_context_init(nghttp2_hd_huff_decode_context *ctx) {
   ctx->fstate = NGHTTP2_HUFF_ACCEPTED;
 }
 
-nghttp2_ssize nghttp2_hd_huff_decode(nghttp2_hd_huff_decode_context *ctx,
-                                     nghttp2_buf *buf, const uint8_t *src,
-                                     size_t srclen, int final) {
+ssize_t nghttp2_hd_huff_decode(nghttp2_hd_huff_decode_context *ctx,
+                               nghttp2_buf *buf, const uint8_t *src,
+                               size_t srclen, int final) {
   const uint8_t *end = src + srclen;
   nghttp2_huff_decode node = {ctx->fstate, 0};
   const nghttp2_huff_decode *t = &node;
@@ -136,7 +136,7 @@ nghttp2_ssize nghttp2_hd_huff_decode(nghttp2_hd_huff_decode_context *ctx,
     return NGHTTP2_ERR_HEADER_COMP;
   }
 
-  return (nghttp2_ssize)srclen;
+  return (ssize_t)srclen;
 }
 
 int nghttp2_hd_huff_decode_failure_state(nghttp2_hd_huff_decode_context *ctx) {

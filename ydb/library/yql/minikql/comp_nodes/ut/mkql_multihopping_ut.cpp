@@ -1,5 +1,4 @@
-#include "../mkql_multihopping.h"
-#include "mkql_computation_node_ut.h"
+#include "mkql_multihopping.h"
 #include <ydb/library/yql/minikql/mkql_node.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
@@ -57,7 +56,13 @@ namespace {
         return output;
     }
 
+    TIntrusivePtr<IRandomProvider> CreateRandomProvider() {
+        return CreateDeterministicRandomProvider(1);
+    }
 
+    TIntrusivePtr<ITimeProvider> CreateTimeProvider() {
+        return CreateDeterministicTimeProvider(10000000);
+    }
 
     TComputationNodeFactory GetAuxCallableFactory(TWatermark& watermark) {
         return [&watermark](TCallable& callable, const TComputationNodeFactoryContext& ctx) -> IComputationNode* {
@@ -70,6 +75,47 @@ namespace {
             return GetBuiltinFactory()(callable, ctx);
         };
     }
+
+    struct TSetup {
+        TSetup(TScopedAlloc& alloc, TWatermark& watermark, bool watermarkMode = false)
+            : FunctionRegistry(CreateFunctionRegistry(CreateBuiltinRegistry()))
+            , RandomProvider(CreateRandomProvider())
+            , TimeProvider(CreateTimeProvider())
+            , StatsResgistry(CreateDefaultStatsRegistry())
+            , Alloc(alloc)
+            , Watermark(watermark)
+            , WatermarkMode(watermarkMode)
+        {
+            Env.Reset(new TTypeEnvironment(Alloc));
+            PgmBuilder.Reset(new TProgramBuilder(*Env, *FunctionRegistry));
+        }
+
+        THolder<IComputationGraph> BuildGraph(TRuntimeNode pgm, const std::vector<TNode*>& entryPoints = std::vector<TNode*>()) {
+            Explorer.Walk(pgm.GetNode(), *Env);
+            TComputationPatternOpts opts(Alloc.Ref(), *Env, GetAuxCallableFactory(Watermark),
+                FunctionRegistry.Get(),
+                NUdf::EValidateMode::None, NUdf::EValidatePolicy::Fail, "OFF", EGraphPerProcess::Multi,
+                StatsResgistry.Get());
+            Pattern = MakeComputationPattern(Explorer, pgm, entryPoints, opts);
+            TComputationOptsFull compOpts = opts.ToComputationOptions(*RandomProvider, *TimeProvider);
+            return Pattern->Clone(compOpts);
+        }
+
+        TIntrusivePtr<IFunctionRegistry> FunctionRegistry;
+        TIntrusivePtr<IRandomProvider> RandomProvider;
+        TIntrusivePtr<ITimeProvider> TimeProvider;
+        IStatsRegistryPtr StatsResgistry;
+
+        TScopedAlloc& Alloc;
+        THolder<TTypeEnvironment> Env;
+        THolder<TProgramBuilder> PgmBuilder;
+
+        TExploringNodeVisitor Explorer;
+        IComputationPattern::TPtr Pattern;
+
+        TWatermark& Watermark;
+        bool WatermarkMode;
+    };
 
     struct TStream : public NUdf::TBoxedValue {
         TStream(const TUnboxedValueVector& items, std::function<void()> fetchCallback, bool* yield)
@@ -97,8 +143,7 @@ namespace {
     };
 
     THolder<IComputationGraph> BuildGraph(
-        TSetup<false>& setup,
-        bool watermarkMode,
+        TSetup& setup,
         const std::vector<TInputItem> items,
         std::function<void()> fetchCallback,
         bool dataWatermarks,
@@ -173,7 +218,7 @@ namespace {
             pgmBuilder.NewDataLiteral<NUdf::EDataSlot::Interval>(NUdf::TStringRef((const char*)&interval, sizeof(interval))), // interval
             pgmBuilder.NewDataLiteral<NUdf::EDataSlot::Interval>(NUdf::TStringRef((const char*)&delay, sizeof(delay))),  // delay
             pgmBuilder.NewDataLiteral<bool>(dataWatermarks),
-            pgmBuilder.NewDataLiteral<bool>(watermarkMode)
+            pgmBuilder.NewDataLiteral<bool>(setup.WatermarkMode)
         );
 
         auto graph = setup.BuildGraph(pgmReturn, {streamNode});
@@ -202,7 +247,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLMultiHoppingTest) {
         ui64 hop = 10,
         ui64 interval = 30,
         ui64 delay = 20,
-        std::function<void(ui32, TSetup<false>&)> customCheck = [](ui32, TSetup<false>&){},
+        std::function<void(ui32, TSetup&)> customCheck = [](ui32, TSetup&){},
         TWatermark* watermark = nullptr,
         bool* yield = nullptr,
         std::function<void()> fetch_callback= [](){},
@@ -219,7 +264,8 @@ Y_UNIT_TEST_SUITE(TMiniKQLMultiHoppingTest) {
         if (watermark == nullptr) {
             watermark = &watermark_clone;
         }
-        TSetup<false> setup1(GetAuxCallableFactory(*watermark));
+        TScopedAlloc alloc(__LOCATION__);
+        TSetup setup1(alloc, *watermark, watermarkMode);
 
         ui32 curGroupId = 0;
         std::vector<TOutputItem> curResult;
@@ -234,7 +280,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLMultiHoppingTest) {
             curResult.clear();
         };
 
-        auto graph1 = BuildGraph(setup1, watermarkMode, input, check, dataWatermarks, yield, hop, interval, delay);
+        auto graph1 = BuildGraph(setup1, input, check, dataWatermarks, yield, hop, interval, delay);
 
         auto root1 = graph1->GetValue();
 
@@ -273,7 +319,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLMultiHoppingTest) {
                 ++inp_index;
             }
         };
-        TestImpl(input, expected, false, 10, 30, 20, [](ui32, TSetup<false>&){}, &watermark, &yield, avant_fetch, true);
+        TestImpl(input, expected, false, 10, 30, 20, [](ui32, TSetup&){}, &watermark, &yield, avant_fetch, true);
     }
 
     Y_UNIT_TEST(TestThrowWatermarkFromPast) {
@@ -446,12 +492,12 @@ Y_UNIT_TEST_SUITE(TMiniKQLMultiHoppingTest) {
             TOutputGroup({{2, 1, 160}, {2, 1, 170}, {2, 1, 180}}),
         };
         TestImpl(input, expected, true, 10, 30, 20,
-            [](ui32 curGroup, TSetup<false>& setup) {
+            [](ui32 curGroup, TSetup& setup) {
                 if (curGroup != 2) {
                     return;
                 }
 
-                setup.StatsRegistry->ForEachStat([](const TStatKey& key, i64 value) {
+                setup.StatsResgistry->ForEachStat([](const TStatKey& key, i64 value) {
                     if (key.GetName() == "MultiHop_KeysCount") {
                         UNIT_ASSERT_EQUAL_C(value, 1, "actual: " << value << " expected: " << 1);
                     }

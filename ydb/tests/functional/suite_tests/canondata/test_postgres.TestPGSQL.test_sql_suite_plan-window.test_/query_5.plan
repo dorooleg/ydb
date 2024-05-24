@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 8
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -32,21 +27,11 @@
                                         "Node Type": "TopSort-Sort",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
-                                                "TopSortBy": "argument._yql_RowNumber0"
+                                                "TopSortBy": "row.row_number"
                                             },
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 6
-                                                    }
-                                                ],
                                                 "Name": "Sort",
                                                 "SortBy": "row.depname"
                                             }
@@ -62,11 +47,6 @@
                                                         "Node Type": "Sort",
                                                         "Operators": [
                                                             {
-                                                                "Inputs": [
-                                                                    {
-                                                                        "ExternalPlanNodeId": 4
-                                                                    }
-                                                                ],
                                                                 "Name": "Sort",
                                                                 "SortBy": "row.depname"
                                                             }
@@ -79,7 +59,12 @@
                                                                 "PlanNodeType": "Connection",
                                                                 "Plans": [
                                                                     {
-                                                                        "Node Type": "Stage",
+                                                                        "Node Type": "Aggregate",
+                                                                        "Operators": [
+                                                                            {
+                                                                                "Name": "Aggregate"
+                                                                            }
+                                                                        ],
                                                                         "PlanNodeId": 3,
                                                                         "Plans": [
                                                                             {
@@ -94,17 +79,11 @@
                                                                                         "Node Type": "Aggregate-TableFullScan",
                                                                                         "Operators": [
                                                                                             {
-                                                                                                "Aggregation": "{_yql_agg_0: SUM(item.salary,state._yql_agg_0)}",
+                                                                                                "Aggregation": "{_yql_agg_0: SUM(item.salary)}",
                                                                                                 "GroupBy": "item.depname",
-                                                                                                "Inputs": [
-                                                                                                    {
-                                                                                                        "InternalOperatorId": 1
-                                                                                                    }
-                                                                                                ],
                                                                                                 "Name": "Aggregate"
                                                                                             },
                                                                                             {
-                                                                                                "Inputs": [],
                                                                                                 "Name": "TableFullScan",
                                                                                                 "ReadColumns": [
                                                                                                     "depname",
@@ -135,7 +114,7 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "_yql_RowNumber0 (Desc)"
+                                    "row_number (Desc)"
                                 ]
                             }
                         ]

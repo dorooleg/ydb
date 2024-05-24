@@ -35,8 +35,7 @@ lzma_version_string(void)
 // Memory allocation //
 ///////////////////////
 
-lzma_attr_alloc_size(1)
-extern void *
+extern void * lzma_attribute((__malloc__)) lzma_attr_alloc_size(1)
 lzma_alloc(size_t size, const lzma_allocator *allocator)
 {
 	// Some malloc() variants return NULL if called with size == 0.
@@ -54,8 +53,7 @@ lzma_alloc(size_t size, const lzma_allocator *allocator)
 }
 
 
-lzma_attr_alloc_size(1)
-extern void *
+extern void * lzma_attribute((__malloc__)) lzma_attr_alloc_size(1)
 lzma_alloc_zero(size_t size, const lzma_allocator *allocator)
 {
 	// Some calloc() variants return NULL if called with size == 0.
@@ -290,21 +288,13 @@ lzma_code(lzma_stream *strm, lzma_action action)
 			strm->next_in, &in_pos, strm->avail_in,
 			strm->next_out, &out_pos, strm->avail_out, action);
 
-	// Updating next_in and next_out has to be skipped when they are NULL
-	// to avoid null pointer + 0 (undefined behavior). Do this by checking
-	// in_pos > 0 and out_pos > 0 because this way NULL + non-zero (a bug)
-	// will get caught one way or other.
-	if (in_pos > 0) {
-		strm->next_in += in_pos;
-		strm->avail_in -= in_pos;
-		strm->total_in += in_pos;
-	}
+	strm->next_in += in_pos;
+	strm->avail_in -= in_pos;
+	strm->total_in += in_pos;
 
-	if (out_pos > 0) {
-		strm->next_out += out_pos;
-		strm->avail_out -= out_pos;
-		strm->total_out += out_pos;
-	}
+	strm->next_out += out_pos;
+	strm->avail_out -= out_pos;
+	strm->total_out += out_pos;
 
 	strm->internal->avail_in = strm->avail_in;
 

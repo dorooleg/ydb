@@ -5,7 +5,7 @@
 #undef INCLUDE_YDB_INTERNAL_H
 
 #include <ydb/public/api/grpc/draft/ydb_clickhouse_internal_v1.grpc.pb.h>
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 #include <ydb/public/sdk/cpp/client/ydb_common_client/impl/client.h>
 
 // TODO: Bad dependency???
@@ -103,13 +103,13 @@ public:
             };
 
         Connections_->RunDeferred<Ydb::ClickhouseInternal::V1::ClickhouseInternalService, Ydb::ClickhouseInternal::ScanRequest, Ydb::ClickhouseInternal::ScanResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::ClickhouseInternal::V1::ClickhouseInternalService::Stub::AsyncScan,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings, TEndpointKey(settings.Endpoint_, 0))
-            );
+                    std::move(request),
+                    extractor,
+                    &Ydb::ClickhouseInternal::V1::ClickhouseInternalService::Stub::AsyncScan,
+                    DbDriverState_,
+                    INITIAL_DEFERRED_CALL_DELAY,
+                    TRpcRequestSettings::Make(settings),
+                    TEndpointKey(settings.Endpoint_, 0));
 
         return promise.GetFuture();
     }
@@ -133,10 +133,10 @@ bool RangeFinished(const TString& lastReadKey, const TString& endKey, const TVec
         return false;
 
     NKikimr::TSerializedCellVec last(lastReadKey);
-    Y_ABORT_UNLESS(last.GetCells().size() <= keyColumnTypes.size());
+    Y_VERIFY(last.GetCells().size() <= keyColumnTypes.size());
 
     NKikimr::TSerializedCellVec end(endKey);
-    Y_ABORT_UNLESS(end.GetCells().size() <= keyColumnTypes.size());
+    Y_VERIFY(end.GetCells().size() <= keyColumnTypes.size());
 
     int cmp = NKikimr::CompareTypedCellVectors(
                 last.GetCells().data(), end.GetCells().data(),
@@ -844,7 +844,7 @@ TSnapshotHandle::~TSnapshotHandle() {
 }
 
 TString TSnapshotHandle::GetSnapshotId() const {
-    Y_ABORT_UNLESS(Impl_, "Empty handle");
+    Y_VERIFY(Impl_, "Empty handle");
     return Impl_->GetSnapshotId();
 }
 

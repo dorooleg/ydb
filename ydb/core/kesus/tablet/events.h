@@ -4,8 +4,6 @@
 
 #include <ydb/core/base/events.h>
 #include <ydb/core/protos/kesus.pb.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
-#include <ydb/public/api/protos/ydb_coordination.pb.h>
 
 namespace NKikimr {
 namespace NKesus {
@@ -91,10 +89,6 @@ struct TEvKesus {
         EvGetQuoterResourceCountersResult,
         EvAccountResources,
         EvAccountResourcesAck,
-        EvReportResources,
-        EvReportResourcesAck,
-        EvSyncResources,
-        EvSyncResourcesAck,
 
         EvEnd
     };
@@ -103,7 +97,7 @@ struct TEvKesus {
         "expected EvEnd <= EventSpaceEnd(TKikimrEvents::ES_KESUS)");
 
     inline static void FillError(NKikimrKesus::TKesusError* error, Ydb::StatusIds::StatusCode status, const TString& reason) {
-        Y_ABORT_UNLESS(status != Ydb::StatusIds::SUCCESS, "Attempting to set error to SUCCESS");
+        Y_VERIFY(status != Ydb::StatusIds::SUCCESS, "Attempting to set error to SUCCESS");
         error->SetStatus(status);
         error->AddIssues()->set_message(reason);
     }
@@ -544,26 +538,6 @@ struct TEvKesus {
 
     struct TEvAccountResourcesAck : public TEventPBWithArena<TEvAccountResourcesAck, NKikimrKesus::TEvAccountResourcesAck, EvAccountResourcesAck> {
         using TBaseEvent = TEventPBWithArena<TEvAccountResourcesAck, NKikimrKesus::TEvAccountResourcesAck, EvAccountResourcesAck>;
-        using TBaseEvent::TBaseEvent;
-    };
-
-    struct TEvReportResources : public TEventPBWithArena<TEvReportResources, NKikimrKesus::TEvReportResources, EvReportResources> {
-        using TBaseEvent = TEventPBWithArena<TEvReportResources, NKikimrKesus::TEvReportResources, EvReportResources>;
-        using TBaseEvent::TBaseEvent;
-    };
-
-    struct TEvReportResourcesAck : public TEventPBWithArena<TEvReportResourcesAck, NKikimrKesus::TEvReportResourcesAck, EvReportResourcesAck> {
-        using TBaseEvent = TEventPBWithArena<TEvReportResourcesAck, NKikimrKesus::TEvReportResourcesAck, EvReportResourcesAck>;
-        using TBaseEvent::TBaseEvent;
-    };
-
-    struct TEvSyncResources : public TEventPBWithArena<TEvSyncResources, NKikimrKesus::TEvSyncResources, EvSyncResources> {
-        using TBaseEvent = TEventPBWithArena<TEvSyncResources, NKikimrKesus::TEvSyncResources, EvSyncResources>;
-        using TBaseEvent::TBaseEvent;
-    };
-
-    struct TEvSyncResourcesAck : public TEventPBWithArena<TEvSyncResourcesAck, NKikimrKesus::TEvSyncResourcesAck, EvSyncResourcesAck> {
-        using TBaseEvent = TEventPBWithArena<TEvSyncResourcesAck, NKikimrKesus::TEvSyncResourcesAck, EvSyncResourcesAck>;
         using TBaseEvent::TBaseEvent;
     };
 };

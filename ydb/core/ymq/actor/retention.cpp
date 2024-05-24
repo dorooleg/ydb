@@ -7,9 +7,8 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/ymq/queues/common/key_hashes.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <util/random/random.h>
-#include <util/generic/guid.h>
 
 namespace NKikimr::NSQS {
 

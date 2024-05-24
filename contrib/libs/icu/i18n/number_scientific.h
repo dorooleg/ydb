@@ -9,8 +9,8 @@
 
 #include "number_types.h"
 
-U_NAMESPACE_BEGIN
-namespace number::impl {
+U_NAMESPACE_BEGIN namespace number {
+namespace impl {
 
 // Forward-declare
 class ScientificHandler;
@@ -22,19 +22,19 @@ class U_I18N_API ScientificModifier : public UMemory, public Modifier {
     void set(int32_t exponent, const ScientificHandler *handler);
 
     int32_t apply(FormattedStringBuilder &output, int32_t leftIndex, int32_t rightIndex,
-                  UErrorCode &status) const override;
+                  UErrorCode &status) const U_OVERRIDE;
 
-    int32_t getPrefixLength() const override;
+    int32_t getPrefixLength() const U_OVERRIDE;
 
-    int32_t getCodePointCount() const override;
+    int32_t getCodePointCount() const U_OVERRIDE;
 
-    bool isStrong() const override;
+    bool isStrong() const U_OVERRIDE;
 
-    bool containsField(Field field) const override;
+    bool containsField(Field field) const U_OVERRIDE;
 
-    void getParameters(Parameters& output) const override;
+    void getParameters(Parameters& output) const U_OVERRIDE;
 
-    bool strictEquals(const Modifier& other) const override;
+    bool semanticallyEquivalent(const Modifier& other) const U_OVERRIDE;
 
   private:
     int32_t fExponent;
@@ -47,19 +47,20 @@ class ScientificHandler : public UMemory, public MicroPropsGenerator, public Mul
                       const MicroPropsGenerator *parent);
 
     void
-    processQuantity(DecimalQuantity &quantity, MicroProps &micros, UErrorCode &status) const override;
+    processQuantity(DecimalQuantity &quantity, MicroProps &micros, UErrorCode &status) const U_OVERRIDE;
 
-    int32_t getMultiplier(int32_t magnitude) const override;
+    int32_t getMultiplier(int32_t magnitude) const U_OVERRIDE;
 
   private:
-    const Notation::ScientificSettings fSettings;
+    const Notation::ScientificSettings& fSettings;
     const DecimalFormatSymbols *fSymbols;
     const MicroPropsGenerator *fParent;
 
     friend class ScientificModifier;
 };
 
-} // namespace number::impl
+} // namespace impl
+} // namespace number
 U_NAMESPACE_END
 
 #endif //__NUMBER_SCIENTIFIC_H__

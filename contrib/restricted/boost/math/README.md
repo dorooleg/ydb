@@ -1,24 +1,11 @@
-Boost Math Library
-============================
+Boost Math Library 
+[![Build Status](https://drone.cpp.al/api/badges/boostorg/math/status.svg)](https://drone.cpp.al/boostorg/math)[![Build Status](https://github.com/boostorg/math/workflows/CI/badge.svg?branch=develop)](https://github.com/boostorg/math/actions)
+==================
 
->ANNOUNCEMENT: This library requires a compliant C++14 compiler.
+>ANNOUNCEMENT: Support for C++11 will be deprecated in this library starting in July 2023 (Boost 1.82).  
+>New features will require *at least* C++14, as will existing features starting with the deprecation release.
 
-|                  |  Master  |   Develop   |
-|------------------|----------|-------------|
-| Drone            | [![Build Status](https://drone.cpp.al/api/badges/boostorg/math/status.svg?ref=refs/heads/master)](https://drone.cpp.al/boostorg/math)   | [![Build Status](https://drone.cpp.al/api/badges/boostorg/math/status.svg)](https://drone.cpp.al/boostorg/math) |
-| Github Actions   | [![Build Status](https://github.com/boostorg/math/workflows/CI/badge.svg?branch=master)](https://github.com/boostorg/math/actions)      | [![Build Status](https://github.com/boostorg/math/workflows/CI/badge.svg?branch=develop)](https://github.com/boostorg/math/actions) |
-| Codecov          | [![codecov](https://codecov.io/gh/boostorg/math/branch/master/graph/badge.svg)](https://codecov.io/gh/boostorg/math/branch/master)      | [![codecov](https://codecov.io/gh/boostorg/math/branch/develop/graph/badge.svg)](https://codecov.io/gh/boostorg/math/branch/develop) |
-
-
-The Math library provides numerous advanced mathematical functions
-implemented in modern C++. The library strives to deliver the utmost
-in numerical and syntactical correctness while still
-maintaining high-performance.
-
-All code is header-only, facilitating easy client setup
-and use throughout the entire diverse collection of functions.
-
-The library is divided into several interconnected parts:
+This library is divided into several interconnected parts:
 
 ### Floating Point Utilities
 
@@ -44,33 +31,19 @@ A comprehensive tutorial is provided, along with a series of worked examples ill
 
 ### Special Functions
 
-Provides a wide range of high quality special functions; initially these were concentrated
-on functions used in statistical applications along with those in the Technical Report
-on C++ Library Extensions.
+Provides a small number of high quality special functions; initially these were concentrated on functions used in statistical applications along with those in the Technical Report on C++ Library Extensions.
 
-The function families currently implemented are the gamma, beta and error functions
-along with the incomplete gamma and beta functions (four variants of each)
-and all the possible inverses of these, plus the digamma, various factorial
-functions, Bessel functions, elliptic integrals, hypergeometrics, sinus cardinals
-(along with their hyperbolic variants), inverse hyperbolic functions,
-Legrendre/Laguerre/Hermite/Chebyshev polynomials
-and various special power and logarithmic functions.
+The function families currently implemented are the gamma, beta & error functions along with the incomplete gamma and beta functions (four variants of each) and all the possible inverses of these, plus the digamma, various factorial functions, Bessel functions, elliptic integrals, hypergeometrics, sinus cardinals (along with their hyperbolic variants), inverse hyperbolic functions, Legrendre/Laguerre/Hermite/Chebyshev polynomials and various special power and logarithmic functions.
 
-All the implementations are fully generic and support the use of arbitrary "real-number" types,
-including those in [Boost.Multiprecision](https://github.com/boostorg/multiprecision).
-Most functions are, however, optimized for use with types with known significand (or mantissa) sizes:
-typically built-in `float`, `double` or `long double`.
+All the implementations are fully generic and support the use of arbitrary "real-number" types, including Boost.Multiprecision, although they are optimised for use with types with known significand (or mantissa) sizes: typically float, double or long double.
 
-These functions also provide the basis of support for the TR1 special functions,
-many of which became standardized in [C++17](https://en.cppreference.com/w/cpp/numeric/special_functions).
+These functions also provide the basis of support for the TR1 special functions.
 
-### Root Finding
+### Root Finding and Function Minimisation
 
 A comprehensive set of root-finding algorithms over the real line, both with derivatives and derivative free.
 
-### Optimization
-
-Minimization of cost functions via Brent's method and differential evolution.
+Also function minimisation via Brent's Method.
 
 ### Polynomials and Rational Functions
 
@@ -78,17 +51,11 @@ Tools for manipulating polynomials and for efficient evaluation of rationals or 
 
 ### Interpolation
 
-Function interpolation via barycentric rational interpolation,
-compactly supported quadratic, cubic, and quintic B-splines,
-the Chebyshev transform, trigonometric polynomials, Makima,
-pchip, cubic Hermite splines, and bilinear interpolation.
+Function interpolation via barycentric rational interpolation, compactly supported quadratic, cubic, and quintic B-splines, the Chebyshev transform, trigonometric polynomials, Makima, pchip, cubic Hermite splines, and bilinear interpolation.
 
 ### Numerical Integration and Differentiation
 
-A reasonably comprehensive set of routines for integration
-(trapezoidal, Gauss-Legendre, Gauss-Kronrod, Gauss-Chebyshev, double-exponential, and Monte-Carlo)
-and differentiation (Chebyshev transform, finite difference, the complex step derivative,
-and forward-mode automatic differentiation).
+A reasonably comprehensive set of routines for integration (trapezoidal, Gauss-Legendre, Gauss-Kronrod, Gauss-Chebyshev, double-exponential, and Monte-Carlo) and differentiation (Chebyshev transform, finite difference, the complex step derivative, and forward-mode automatic differentiation).
 
 The integration routines are usable for functions returning complex results - and hence can be used for computation of  contour integrals.
 
@@ -100,19 +67,24 @@ The full documentation is available on [boost.org](http://www.boost.org/doc/libs
 
 ### Standalone Mode
 
-Defining BOOST_MATH_STANDALONE allows Boost.Math to be used without any Boost dependencies.
-Some functionality is reduced in this mode. A static_assert message will alert you
-if a particular feature has been disabled by standalone mode. Standalone mode is not designed to 
-be used with the rest of boost, and may result in compiler errors.
+Defining BOOST_MATH_STANDALONE allows Boost.Math to be used without any Boost dependencies. Some functionality is reduced in this mode. A static_assert message will alert you if a particular feature has been disabled by standalone mode.
 
 ## Supported Compilers ##
 
-The following compilers are tested with the CI system, and are known to work.
-Currently a compiler that is fully compliant with C++14 is required to use Boost.Math.
+The following compilers are tested with the CI system, and are known to work. Starting with Boost 1.76 (April 2021 Release) a compiler that is fully compliant with C++11 is required to use Boost.Math.
 
 * g++ 5 or later
 * clang++ 5 or later
 * Visual Studio 2015 (14.0) or later
+
+## Build Status ##
+
+|                  |  Master  |   Develop   |
+|------------------|----------|-------------|
+| Github Actions | [![Build Status](https://github.com/boostorg/math/workflows/CI/badge.svg?branch=master)](https://github.com/boostorg/math/actions) | [![Build Status](https://github.com/boostorg/math/workflows/CI/badge.svg?branch=develop)](https://github.com/boostorg/math/actions) |
+|Drone | [![Build Status](https://drone.cpp.al/api/badges/boostorg/math/status.svg?ref=refs/heads/master)](https://drone.cpp.al/boostorg/math) | [![Build Status](https://drone.cpp.al/api/badges/boostorg/math/status.svg)](https://drone.cpp.al/boostorg/math) |
+
+
 
 ## Support, bugs and feature requests ##
 

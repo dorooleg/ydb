@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "util/util.h"
 #include "util/logging.h"
 #include "re2/prefilter.h"
 #include "re2/prefilter_tree.h"
@@ -45,7 +46,7 @@ FilteredRE2& FilteredRE2::operator=(FilteredRE2&& other) {
   return *this;
 }
 
-RE2::ErrorCode FilteredRE2::Add(absl::string_view pattern,
+RE2::ErrorCode FilteredRE2::Add(const StringPiece& pattern,
                                 const RE2::Options& options, int* id) {
   RE2* re = new RE2(pattern, options);
   RE2::ErrorCode code = re->error_code();
@@ -70,9 +71,8 @@ void FilteredRE2::Compile(std::vector<std::string>* atoms) {
     return;
   }
 
-  // Similarly to PrefilterTree::Compile(), make compiling
-  // a no-op if it's attempted before adding any patterns.
   if (re2_vec_.empty()) {
+    LOG(ERROR) << "Compile called before Add.";
     return;
   }
 
@@ -85,14 +85,14 @@ void FilteredRE2::Compile(std::vector<std::string>* atoms) {
   compiled_ = true;
 }
 
-int FilteredRE2::SlowFirstMatch(absl::string_view text) const {
+int FilteredRE2::SlowFirstMatch(const StringPiece& text) const {
   for (size_t i = 0; i < re2_vec_.size(); i++)
     if (RE2::PartialMatch(text, *re2_vec_[i]))
       return static_cast<int>(i);
   return -1;
 }
 
-int FilteredRE2::FirstMatch(absl::string_view text,
+int FilteredRE2::FirstMatch(const StringPiece& text,
                             const std::vector<int>& atoms) const {
   if (!compiled_) {
     LOG(DFATAL) << "FirstMatch called before Compile.";
@@ -106,9 +106,10 @@ int FilteredRE2::FirstMatch(absl::string_view text,
   return -1;
 }
 
-bool FilteredRE2::AllMatches(absl::string_view text,
-                             const std::vector<int>& atoms,
-                             std::vector<int>* matching_regexps) const {
+bool FilteredRE2::AllMatches(
+    const StringPiece& text,
+    const std::vector<int>& atoms,
+    std::vector<int>* matching_regexps) const {
   matching_regexps->clear();
   std::vector<int> regexps;
   prefilter_tree_->RegexpsGivenStrings(atoms, &regexps);
@@ -118,8 +119,9 @@ bool FilteredRE2::AllMatches(absl::string_view text,
   return !matching_regexps->empty();
 }
 
-void FilteredRE2::AllPotentials(const std::vector<int>& atoms,
-                                std::vector<int>* potential_regexps) const {
+void FilteredRE2::AllPotentials(
+    const std::vector<int>& atoms,
+    std::vector<int>* potential_regexps) const {
   prefilter_tree_->RegexpsGivenStrings(atoms, potential_regexps);
 }
 

@@ -108,24 +108,24 @@ namespace NKikimr {
         {}
 
         TRootIteratorBase& operator ++() {
-            Y_ABORT_UNLESS(!AtEnd);
+            Y_VERIFY(!AtEnd);
             AtEnd = true;
             return *this;
         }
 
         TRootIteratorBase& operator --() {
-            Y_ABORT_UNLESS(AtEnd);
+            Y_VERIFY(AtEnd);
             AtEnd = false;
             return *this;
         }
 
         auto NestedBegin() const {
-            Y_ABORT_UNLESS(!AtEnd && Topology);
+            Y_VERIFY(!AtEnd && Topology);
             return Topology->FailRealms.begin();
         }
 
         auto NestedEnd() const {
-            Y_ABORT_UNLESS(!AtEnd && Topology);
+            Y_VERIFY(!AtEnd && Topology);
             return Topology->FailRealms.end();
         }
 
@@ -134,12 +134,12 @@ namespace NKikimr {
         }
 
         friend bool operator ==(const TRootIteratorBase& x, const TRootIteratorBase& y) {
-            Y_DEBUG_ABORT_UNLESS(x.Topology == y.Topology);
+            Y_VERIFY_DEBUG(x.Topology == y.Topology);
             return x.AtEnd == y.AtEnd;
         }
 
         friend bool operator !=(const TRootIteratorBase& x, const TRootIteratorBase& y) {
-            Y_DEBUG_ABORT_UNLESS(x.Topology == y.Topology);
+            Y_VERIFY_DEBUG(x.Topology == y.Topology);
             return x.AtEnd != y.AtEnd;
         }
     };
@@ -237,7 +237,7 @@ namespace NKikimr {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     inline TBlobStorageGroupInfo::TVDiskIterator TBlobStorageGroupInfo::FindVDisk(const TVDiskID& vdisk) const {
-        Y_ABORT_UNLESS(vdisk.GroupID == GroupID && vdisk.GroupGeneration == GroupGeneration);
+        Y_VERIFY(vdisk.GroupID == GroupID && vdisk.GroupGeneration == GroupGeneration);
         const auto realmIt = Topology->FailRealms.begin() + vdisk.FailRealm;
         const auto domainIt = realmIt->FailDomains.begin() + vdisk.FailDomain;
         const auto vdiskIt = domainIt->VDisks.begin() + vdisk.VDisk;

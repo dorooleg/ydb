@@ -1,6 +1,5 @@
 #include <ydb/core/protos/blobstorage.pb.h>
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/core/protos/blobstorage_config.pb.h>
 #include <ydb/library/yaml_config/yaml_config_parser.h>
 #include "cli.h"
 #include "cli_cmds.h"

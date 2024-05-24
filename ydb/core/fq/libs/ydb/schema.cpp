@@ -4,8 +4,8 @@
 #include <ydb/core/fq/libs/events/events.h>
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/string/builder.h>
 #include <util/system/defaults.h>
@@ -225,7 +225,7 @@ public:
 protected:
     void Init() override {
         FillRequestsPath(RequestsPath);
-        Y_ABORT_UNLESS(!RequestsPath.empty());
+        Y_VERIFY(!RequestsPath.empty());
         TriedPaths.resize(RequestsPath.size());
         CurrentRequest = RequestsPath.size() - 1;
         TBase::Init();
@@ -464,7 +464,7 @@ private:
     void FillRequestsPath(std::vector<TCreateRateLimiterResourceRequestDesc>& desc) override {
         std::vector<TString> components = NKikimr::SplitPath(ResourcePath);
         desc.resize(components.size());
-        Y_ABORT_UNLESS(components.size() == Limits.size(),
+        Y_VERIFY(components.size() == Limits.size(),
             "Components count and limits size don't match. Components: %lu. Limits: %lu. ResourcePath: \"%s\"",
             components.size(), Limits.size(), ResourcePath.c_str());
         for (size_t i = 0; i < components.size(); ++i) {

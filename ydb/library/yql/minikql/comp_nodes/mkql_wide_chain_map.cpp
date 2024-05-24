@@ -1,6 +1,6 @@
 #include "mkql_wide_chain_map.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/computation/mkql_custom_list.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/utils/cast.h>
@@ -26,12 +26,12 @@ public:
         , InitItems(std::move(initItems))
         , Outputs(std::move(outputs))
         , UpdateItems(std::move(updateItems))
-        , InputsOnInit(GetPasstroughtMapOneToOne(Inputs, InitItems))
-        , InputsOnUpdate(GetPasstroughtMapOneToOne(Inputs, UpdateItems))
-        , InitOnInputs(GetPasstroughtMapOneToOne(InitItems, Inputs))
-        , UpdateOnInputs(GetPasstroughtMapOneToOne(UpdateItems, Inputs))
-        , OutputsOnUpdate(GetPasstroughtMapOneToOne(Outputs, UpdateItems))
-        , UpdateOnOutputs(GetPasstroughtMapOneToOne(UpdateItems, Outputs))
+        , InputsOnInit(GetPasstroughtMap(Inputs, InitItems))
+        , InputsOnUpdate(GetPasstroughtMap(Inputs, UpdateItems))
+        , InitOnInputs(GetPasstroughtMap(InitItems, Inputs))
+        , UpdateOnInputs(GetPasstroughtMap(UpdateItems, Inputs))
+        , OutputsOnUpdate(GetPasstroughtMap(Outputs, UpdateItems))
+        , UpdateOnOutputs(GetPasstroughtMap(UpdateItems, Outputs))
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Inputs.size()))
         , TempStateIndex(std::exchange(mutables.CurValueIndex, mutables.CurValueIndex + Outputs.size()))
     {}
@@ -46,7 +46,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto flagType = Type::getInt1Ty(context);
         const auto flagPtr = new AllocaInst(flagType, 0U, "flag_ptr", &ctx.Func->getEntryBlock().back());
@@ -61,7 +61,7 @@ public:
 
         block = good;
         for (auto i = 0U; i < Inputs.size(); ++i)
-            if (Inputs[i]->GetDependencesCount() > 0U || !InputsOnInit[i] || !InputsOnUpdate[i])
+            if (Inputs[i]->GetDependencesCount() > 0U)
                 EnsureDynamicCast<ICodegeneratorExternalNode*>(Inputs[i])->CreateSetValue(ctx, block, getres.second[i](ctx, block));
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
@@ -110,7 +110,7 @@ public:
                 result.emplace_back([output = Outputs[i]] (const TCodegenContext& ctx, BasicBlock*& block) { return GetNodeValue(output, ctx, block); });
             else
                 result.emplace_back([this, i, source = getres.second, flagPtr, flagType] (const TCodegenContext& ctx, BasicBlock*& block) {
-                    auto& context = ctx.Codegen.GetContext();
+                    auto& context = ctx.Codegen->GetContext();
 
                     const auto init = BasicBlock::Create(context, "init", ctx.Func);
                     const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -147,7 +147,10 @@ private:
         auto** fields = ctx.WideFields.data() + WideFieldsIndex;
 
         for (auto i = 0U; i < Inputs.size(); ++i) {
-            if (const auto& map = InputsOnInit[i]; map && !Inputs[i]->GetDependencesCount()) {
+            if (Inputs[i]->GetDependencesCount() > 0U) {
+                fields[i] = &Inputs[i]->RefValue(ctx);
+                continue;
+            } else if (const auto& map = InputsOnInit[i]) {
                 if (const auto& to = UpdateOnOutputs[*map]) {
                     fields[i] = &Outputs[*to]->RefValue(ctx);
                     continue;
@@ -155,9 +158,6 @@ private:
                     fields[i] = out;
                     continue;
                 }
-            } else {
-                fields[i] = &Inputs[i]->RefValue(ctx);
-                continue;
             }
 
             fields[i] = nullptr;
@@ -199,14 +199,14 @@ private:
         auto** fields = ctx.WideFields.data() + WideFieldsIndex;
 
         for (auto i = 0U; i < Inputs.size(); ++i) {
-            if (const auto& map = InputsOnUpdate[i]; map && !Inputs[i]->GetDependencesCount()) {
+            if (Inputs[i]->GetDependencesCount() > 0U) {
+                fields[i] = &Inputs[i]->RefValue(ctx);
+                continue;
+            } else if (const auto& map = InputsOnUpdate[i]) {
                 if (const auto out = output[*map]) {
                     fields[i] = out;
                     continue;
                 }
-            } else {
-                fields[i] = &Inputs[i]->RefValue(ctx);
-                continue;
             }
 
             fields[i] = nullptr;

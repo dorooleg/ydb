@@ -14,7 +14,7 @@ struct TManyPutOneGet {
     const bool WithErrorResponse;
 
     TManyPutOneGet(bool waitForCompaction, ui32 msgNum, ui32 msgSize, NKikimrBlobStorage::EPutHandleClass cls,
-                   ui64 tabletId = DefaultTestTabletId, ui64 shift = 0, bool withErrorResponse = false)
+                   ui64 tabletId = 0, ui64 shift = 0, bool withErrorResponse = false)
         : WaitForCompaction(waitForCompaction)
         , MsgPacks(new TVector<TMsgPackInfo>{TMsgPackInfo(msgSize, msgNum)})
         , HandleClass(cls)
@@ -24,8 +24,8 @@ struct TManyPutOneGet {
     {}
 
     TManyPutOneGet(bool waitForCompaction, std::shared_ptr<TVector<TMsgPackInfo>> msgPacks,
-                   NKikimrBlobStorage::EPutHandleClass cls, ui64 tabletId = DefaultTestTabletId,
-                   ui64 shift = 0, bool withErrorResponse = false)
+                   NKikimrBlobStorage::EPutHandleClass cls, ui64 tabletId = 0, ui64 shift = 0,
+                   bool withErrorResponse = false)
         : WaitForCompaction(waitForCompaction)
         , MsgPacks(msgPacks)
         , HandleClass(cls)
@@ -45,8 +45,7 @@ struct TManyPutGet {
     const NKikimrBlobStorage::EPutHandleClass HandleClass;
     const ui64 TabletId;
 
-    TManyPutGet(bool waitForCompaction, ui32 msgNum, ui32 msgSize, NKikimrBlobStorage::EPutHandleClass cls,
-            ui64 tabletId = DefaultTestTabletId)
+    TManyPutGet(bool waitForCompaction, ui32 msgNum, ui32 msgSize, NKikimrBlobStorage::EPutHandleClass cls, ui64 tabletId = 0)
         : WaitForCompaction(waitForCompaction)
         , MsgNum(msgNum)
         , MsgSize(msgSize)
@@ -67,7 +66,7 @@ struct TManyMultiPutGet {
     const ui64 TabletId;
 
     TManyMultiPutGet(bool waitForCompaction, ui32 msgNum, ui32 msgSize, ui32 batchSize,
-            NKikimrBlobStorage::EPutHandleClass cls, ui64 tabletId = DefaultTestTabletId)
+            NKikimrBlobStorage::EPutHandleClass cls, ui64 tabletId = 0)
         : WaitForCompaction(waitForCompaction)
         , MsgNum(msgNum)
         , MsgSize(msgSize)
@@ -95,7 +94,7 @@ struct TManyPutRangeGet {
         , MsgSize(msgSize)
         , HandleClass(cls)
     {
-        Y_ABORT_UNLESS(indexOnly);
+        Y_VERIFY(indexOnly);
     }
 
     void operator ()(TConfiguration *conf);
@@ -117,7 +116,7 @@ struct TManyPutRangeGet2Channels {
         , MsgSize(msgSize)
         , HandleClass(cls)
     {
-        Y_ABORT_UNLESS(indexOnly);
+        Y_VERIFY(indexOnly);
     }
 
     void operator ()(TConfiguration *conf);

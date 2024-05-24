@@ -9,9 +9,9 @@
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/random/shuffle.h>
 
@@ -29,8 +29,6 @@ class TListEndpointsRPC : public TActorBootstrapped<TListEndpointsRPC> {
     THolder<TEvDiscovery::TEvDiscoveryData> LookupResponse;
     THolder<TEvInterconnect::TEvNodeInfo> NameserviceResponse;
 
-    NWilson::TSpan Span;
-
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::GRPC_REQ;
@@ -39,7 +37,6 @@ public:
     TListEndpointsRPC(TEvListEndpointsRequest::TPtr &msg, TActorId cacheId)
         : Request(msg->Release().Release())
         , CacheId(cacheId)
-        , Span(TWilsonGrpc::RequestActor, Request->GetWilsonTraceId(), "ListEndpointsRpc")
     {}
 
     void Bootstrap() {
@@ -57,7 +54,6 @@ public:
         if (Discoverer) {
             Send(Discoverer, new TEvents::TEvPoisonPill());
         }
-        Span.EndOk();
 
         TActorBootstrapped<TListEndpointsRPC>::PassAway();
     }
@@ -71,7 +67,7 @@ public:
     }
 
     void Handle(TEvDiscovery::TEvDiscoveryData::TPtr &ev) {
-        Y_ABORT_UNLESS(ev->Get()->CachedMessageData);
+        Y_VERIFY(ev->Get()->CachedMessageData);
         Discoverer = {};
 
         LookupResponse.Reset(ev->Release().Release());
@@ -87,8 +83,9 @@ public:
         Discoverer = {};
 
         auto issue = MakeIssue(ErrorToIssueCode(ev->Get()->Status), ev->Get()->Error);
-        Request->RaiseIssue(issue);
-        Reply(ErrorToStatusCode(ev->Get()->Status));
+        google::protobuf::RepeatedPtrField<TYdbIssueMessageType> issueMessages;
+        NYql::IssueToMessage(issue, issueMessages.Add());
+        Reply(ErrorToStatusCode(ev->Get()->Status), issueMessages);
     }
 
     static NKikimrIssues::TIssuesIds::EIssueCode ErrorToIssueCode(TEvDiscovery::TEvError::EStatus status) {
@@ -126,8 +123,8 @@ public:
         if (!NameserviceResponse || !LookupResponse)
             return;
 
-        Y_ABORT_UNLESS(LookupResponse->CachedMessageData && !LookupResponse->CachedMessageData->InfoEntries.empty() &&
-            LookupResponse->CachedMessageData->Status == TEvStateStorage::TEvBoardInfo::EStatus::Ok);
+        Y_VERIFY(LookupResponse->CachedMessageData->Info &&
+            LookupResponse->CachedMessageData->Info->Status == TEvStateStorage::TEvBoardInfo::EStatus::Ok);
 
         const TSet<TString> services(
             Request->GetProtoRequest()->Getservice().begin(), Request->GetProtoRequest()->Getservice().end());
@@ -139,11 +136,8 @@ public:
             cachedMessage = LookupResponse->CachedMessageData->CachedMessage;
             cachedMessageSsl = LookupResponse->CachedMessageData->CachedMessageSsl;
         } else {
-            auto cachedMessageData = NDiscovery::CreateCachedMessage(
-                {}, std::move(LookupResponse->CachedMessageData->InfoEntries),
-                std::move(services), NameserviceResponse);
-            cachedMessage = std::move(cachedMessageData.CachedMessage);
-            cachedMessageSsl = std::move(cachedMessageData.CachedMessageSsl);
+            std::tie(cachedMessage, cachedMessageSsl) = NDiscovery::CreateSerializedMessage(
+                LookupResponse->CachedMessageData->Info, std::move(services), NameserviceResponse);
         }
 
         if (Request->SslServer()) {
@@ -158,8 +152,9 @@ public:
         PassAway();
     }
 
-    void Reply(Ydb::StatusIds::StatusCode status) {
-        Request->ReplyWithYdbStatus(status);
+    template <typename... Args>
+    void Reply(Args&&... args) {
+        Request->SendResult(std::forward<Args>(args)...);
         PassAway();
     }
 };

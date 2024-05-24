@@ -24,182 +24,42 @@ TTypeEnvironment::TTypeEnvironment(TScopedAlloc& alloc)
     , EmptyStruct(nullptr)
     , EmptyTuple(nullptr)
 {
+    NamesPool.reserve(64);
+    TypeOfType = TTypeType::Create(*this);
+    TypeOfType->Type = TypeOfType;
+    TypeOfVoid = TVoidType::Create(TypeOfType, *this);
+    Void = TVoid::Create(*this);
+    TypeOfNull = TNullType::Create(TypeOfType, *this);
+    Null = TNull::Create(*this);
+    TypeOfEmptyList = TEmptyListType::Create(TypeOfType, *this);
+    EmptyList = TEmptyList::Create(*this);
+    TypeOfEmptyDict = TEmptyDictType::Create(TypeOfType, *this);
+    EmptyDict = TEmptyDict::Create(*this);
+    Ui32 = TDataType::Create(NUdf::TDataType<ui32>::Id, *this);
+    Ui64 = TDataType::Create(NUdf::TDataType<ui64>::Id, *this);
+    AnyType = TAnyType::Create(TypeOfType, *this);
+    EmptyStruct = TStructLiteral::Create(0, nullptr, TStructType::Create(0, nullptr, *this), *this);
+    EmptyTuple = TTupleLiteral::Create(0, nullptr, TTupleType::Create(0, nullptr, *this), *this);
+    ListOfVoid = TListLiteral::Create(nullptr, 0, TListType::Create(Void->GetGenericType(), *this), *this);
 }
 
 TTypeEnvironment::~TTypeEnvironment() {
 }
 
 void TTypeEnvironment::ClearCookies() const {
-    if (TypeOfType) {
-        TypeOfType->SetCookie(0);
-    }
-    if (TypeOfVoid) {
-        TypeOfVoid->SetCookie(0);
-    }
-    if (Void) {
-        Void->SetCookie(0);
-    }
-    if (TypeOfNull) {
-        TypeOfNull->SetCookie(0);
-    }
-    if (Null) {
-        Null->SetCookie(0);
-    }
-    if (TypeOfEmptyList) {
-        TypeOfEmptyList->SetCookie(0);
-    }
-    if (EmptyList) {
-        EmptyList->SetCookie(0);
-    }
-    if (TypeOfEmptyDict) {
-        TypeOfEmptyDict->SetCookie(0);
-    }
-    if (EmptyDict) {
-        EmptyDict->SetCookie(0);
-    }
-    if (EmptyStruct) {
-        EmptyStruct->SetCookie(0);
-    }
-    if (ListOfVoid) {
-        ListOfVoid->SetCookie(0);
-    }
-    if (AnyType) {
-        AnyType->SetCookie(0);
-    }
-    if (EmptyTuple) {
-        EmptyTuple->SetCookie(0);
-    }
-}
-
-TTypeType* TTypeEnvironment::GetTypeOfTypeLazy() const {
-    if (!TypeOfType) {
-        TypeOfType = TTypeType::Create(*this);
-        TypeOfType->Type = TypeOfType;
-    }
-    return TypeOfType;
-}
-
-TVoidType* TTypeEnvironment::GetTypeOfVoidLazy() const {
-    if (!TypeOfVoid) {
-        TypeOfVoid = TVoidType::Create(GetTypeOfTypeLazy(), *this);
-    }
-    return TypeOfVoid;
-}
-
-TVoid* TTypeEnvironment::GetVoidLazy() const {
-    if (!Void) {
-        Void = TVoid::Create(*this);
-    }
-    return Void;
-}
-
-TNullType* TTypeEnvironment::GetTypeOfNullLazy() const {
-    if (!TypeOfNull) {
-        TypeOfNull = TNullType::Create(GetTypeOfTypeLazy(), *this);
-    }
-    return TypeOfNull;
-}
-
-TNull* TTypeEnvironment::GetNullLazy() const {
-    if (!Null) {
-        Null = TNull::Create(*this);
-    }
-    return Null;
-}
-
-TEmptyListType* TTypeEnvironment::GetTypeOfEmptyListLazy() const {
-    if (!TypeOfEmptyList) {
-        TypeOfEmptyList = TEmptyListType::Create(GetTypeOfTypeLazy(), *this);
-    }
-    return TypeOfEmptyList;
-}
-
-TEmptyList* TTypeEnvironment::GetEmptyListLazy() const {
-    if (!EmptyList) {
-        EmptyList = TEmptyList::Create(*this);
-    }
-    return EmptyList;
-}
-
-TEmptyDictType* TTypeEnvironment::GetTypeOfEmptyDictLazy() const {
-    if (!TypeOfEmptyDict) {
-        TypeOfEmptyDict = TEmptyDictType::Create(GetTypeOfTypeLazy(), *this);
-    }
-    return TypeOfEmptyDict;
-}
-
-TEmptyDict* TTypeEnvironment::GetEmptyDictLazy() const {
-    if (!EmptyDict) {
-        EmptyDict = TEmptyDict::Create(*this);
-    }
-    return EmptyDict;
-}
-
-TStructLiteral* TTypeEnvironment::GetEmptyStructLazy() const {
-    if (!EmptyStruct) {
-        EmptyStruct = TStructLiteral::Create(
-            0,
-            nullptr,
-            TStructType::Create(0, nullptr, *this), *this, false);
-    }
-    return EmptyStruct;
-}
-
-TListLiteral* TTypeEnvironment::GetListOfVoidLazy() const {
-    if (!ListOfVoid) {
-        ListOfVoid = TListLiteral::Create(nullptr, 0, TListType::Create(GetVoidLazy()->GetGenericType(), *this), *this);
-    }
-    return ListOfVoid;
-}
-
-TAnyType* TTypeEnvironment::GetAnyTypeLazy() const {
-    if (!AnyType) {
-        AnyType = TAnyType::Create(GetTypeOfTypeLazy(), *this);
-    }
-    return AnyType;
-}
-
-TTupleLiteral* TTypeEnvironment::GetEmptyTupleLazy() const {
-    if (!EmptyTuple) {
-        EmptyTuple = TTupleLiteral::Create(0, nullptr, TTupleType::Create(0, nullptr, *this), *this, false);
-    }
-    return EmptyTuple;
-}
-
-TDataType* TTypeEnvironment::GetUi32Lazy() const {
-    if (!Ui32) {
-        Ui32 = TDataType::Create(NUdf::TDataType<ui32>::Id, *this);
-    }
-    return Ui32;
-}
-
-TDataType* TTypeEnvironment::GetUi64Lazy() const {
-    if (!Ui64) {
-        Ui64 = TDataType::Create(NUdf::TDataType<ui64>::Id, *this);
-    }
-    return Ui64;
-}
-
-std::vector<TNode*>& TTypeEnvironment::GetNodeStack() const {
-    return Stack;
-}
-
-TInternName TTypeEnvironment::InternName(const TStringBuf& name) const {
-    if (NamesPool.empty()) {
-        NamesPool.reserve(64);
-    }
-
-    auto it = NamesPool.find(name);
-    if (it != NamesPool.end()) {
-        return TInternName(*it);
-    }
-
-    // Copy to arena and null-terminate
-    char* data = (char*)AllocateBuffer(name.size()+1);
-    memcpy(data, name.data(), name.size());
-    data[name.size()] = 0;
-
-    return TInternName(*NamesPool.insert(TStringBuf(data, name.size())).first);
+    TypeOfType->SetCookie(0);
+    TypeOfVoid->SetCookie(0);
+    Void->SetCookie(0);
+    TypeOfNull->SetCookie(0);
+    Null->SetCookie(0);
+    TypeOfEmptyList->SetCookie(0);
+    EmptyList->SetCookie(0);
+    TypeOfEmptyDict->SetCookie(0);
+    EmptyDict->SetCookie(0);
+    EmptyStruct->SetCookie(0);
+    ListOfVoid->SetCookie(0);
+    AnyType->SetCookie(0);
+    EmptyTuple->SetCookie(0);
 }
 
 #define LITERALS_LIST(xx) \
@@ -231,7 +91,7 @@ void TNode::Accept(INodeVisitor& visitor) {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -255,7 +115,7 @@ bool TNode::Equals(const TNode& nodeToCompare) const {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -273,7 +133,7 @@ void TNode::UpdateLinks(const THashMap<TNode*, TNode*>& links) {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -291,7 +151,7 @@ TNode* TNode::CloneOnCallableWrite(const TTypeEnvironment& env) const {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -309,7 +169,7 @@ void TNode::Freeze(const TTypeEnvironment& env) {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -367,7 +227,7 @@ void TType::Accept(INodeVisitor& visitor) {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -382,7 +242,7 @@ void TType::UpdateLinks(const THashMap<TNode*, TNode*>& links) {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -397,7 +257,7 @@ TNode* TType::CloneOnCallableWrite(const TTypeEnvironment& env) const {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -412,11 +272,11 @@ void TType::Freeze(const TTypeEnvironment& env) {
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
-bool TTypeBase::IsSameType(const TTypeBase& typeToCompare) const {
+bool TType::IsSameType(const TType& typeToCompare) const {
     if (Kind != typeToCompare.Kind) {
         return false;
     }
@@ -430,22 +290,7 @@ bool TTypeBase::IsSameType(const TTypeBase& typeToCompare) const {
 
 #undef APPLY
     default:
-        Y_ABORT();
-    }
-}
-
-size_t TTypeBase::CalcHash() const {
-    switch (Kind) {
-#define APPLY(kind, type) \
-    case EKind::kind: \
-        /* combine hashes to aviod collision, for example, between Kind and SchemeType */ \
-        return CombineHashes(IntHash((size_t)Kind), static_cast<const type&>(*this).CalcHash());
-
-    TYPES_LIST(APPLY)
-
-#undef APPLY
-    default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -475,7 +320,7 @@ bool TType::IsConvertableTo(const TType& typeToCompare, bool ignoreTagged) const
 
 #undef APPLY
     default:
-        Y_ABORT();
+        Y_FAIL();
     }
 }
 
@@ -486,10 +331,6 @@ TTypeType* TTypeType::Create(const TTypeEnvironment& env) {
 bool TTypeType::IsSameType(const TTypeType& typeToCompare) const {
     Y_UNUSED(typeToCompare);
     return true;
-}
-
-size_t TTypeType::CalcHash() const {
-    return 0;
 }
 
 bool TTypeType::IsConvertableTo(const TTypeType& typeToCompare, bool ignoreTagged) const {
@@ -510,9 +351,12 @@ void TTypeType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TTypeType::CalculatePresortSupport() {
+    return false;
+}
 
 TDataType::TDataType(NUdf::TDataTypeId schemeType, const TTypeEnvironment& env)
-    : TType(EKind::Data, env.GetTypeOfTypeLazy(), true)
+    : TType(EKind::Data, env.GetTypeOfType())
     , SchemeType(schemeType)
     , DataSlot(NUdf::FindDataSlot(schemeType))
 {
@@ -534,14 +378,6 @@ bool TDataType::IsSameType(const TDataType& typeToCompare) const {
     return static_cast<const TDataDecimalType&>(*this).IsSameType(static_cast<const TDataDecimalType&>(typeToCompare));
 }
 
-size_t TDataType::CalcHash() const {
-    size_t hash = IntHash((size_t)GetSchemeType());
-    if (SchemeType == NUdf::TDataType<NUdf::TDecimal>::Id) {
-        hash = CombineHashes(hash, static_cast<const TDataDecimalType&>(*this).CalcHash());
-    }
-    return hash;
-}
-
 bool TDataType::IsConvertableTo(const TDataType& typeToCompare, bool ignoreTagged) const {
     Y_UNUSED(ignoreTagged);
     return IsSameType(typeToCompare);
@@ -560,6 +396,10 @@ void TDataType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TDataType::CalculatePresortSupport() {
+    return true;
+}
+
 TDataDecimalType::TDataDecimalType(ui8 precision, ui8 scale, const TTypeEnvironment& env)
     : TDataType(NUdf::TDataType<NUdf::TDecimal>::Id, env), Precision(precision), Scale(scale)
 {
@@ -573,10 +413,6 @@ TDataDecimalType* TDataDecimalType::Create(ui8 precision, ui8 scale, const TType
 
 bool TDataDecimalType::IsSameType(const TDataDecimalType& typeToCompare) const {
     return Precision == typeToCompare.Precision && Scale == typeToCompare.Scale;
-}
-
-size_t TDataDecimalType::CalcHash() const {
-    return CombineHashes(IntHash((size_t)Precision), IntHash((size_t)Scale));
 }
 
 bool TDataDecimalType::IsConvertableTo(const TDataDecimalType& typeToCompare, bool ignoreTagged) const {
@@ -600,7 +436,7 @@ void TDataLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 }
@@ -624,14 +460,10 @@ bool TDataLiteral::Equals(const TDataLiteral& nodeToCompare) const {
         case NUdf::TDataType<NUdf::TDate>::Id:
         case NUdf::TDataType<ui16>::Id:   return self.Get<ui16>() == that.Get<ui16>();
         case NUdf::TDataType<i16>::Id:    return self.Get<i16>() == that.Get<i16>();
-        case NUdf::TDataType<NUdf::TDate32>::Id:
         case NUdf::TDataType<i32>::Id:    return self.Get<i32>() == that.Get<i32>();
         case NUdf::TDataType<NUdf::TDatetime>::Id:
         case NUdf::TDataType<ui32>::Id:   return self.Get<ui32>() == that.Get<ui32>();
         case NUdf::TDataType<NUdf::TInterval>::Id:
-        case NUdf::TDataType<NUdf::TInterval64>::Id:
-        case NUdf::TDataType<NUdf::TDatetime64>::Id:
-        case NUdf::TDataType<NUdf::TTimestamp64>::Id:
         case NUdf::TDataType<i64>::Id:    return self.Get<i64>() == that.Get<i64>();
         case NUdf::TDataType<NUdf::TTimestamp>::Id:
         case NUdf::TDataType<ui64>::Id:   return self.Get<ui64>() == that.Get<ui64>();
@@ -644,21 +476,9 @@ bool TDataLiteral::Equals(const TDataLiteral& nodeToCompare) const {
         default: return self.AsStringRef() == that.AsStringRef();
     }
 }
-static const THashSet<TStringBuf> PG_SUPPORTED_PRESORT = {
-    "bool",
-    "int2",
-    "int4",
-    "int8",
-    "float4",
-    "float8",
-    "bytea",
-    "varchar",
-    "text",
-    "cstring"
-};
 
 TPgType::TPgType(ui32 typeId, const TTypeEnvironment& env)
-    : TType(EKind::Pg, env.GetTypeOfTypeLazy(), PG_SUPPORTED_PRESORT.contains(NYql::NPg::LookupType(typeId).Name))
+    : TType(EKind::Pg, env.GetTypeOfType())
     , TypeId(typeId)
 {
 }
@@ -670,10 +490,6 @@ TPgType* TPgType::Create(ui32 typeId, const TTypeEnvironment& env) {
 
 bool TPgType::IsSameType(const TPgType& typeToCompare) const {
     return TypeId == typeToCompare.TypeId;
-}
-
-size_t TPgType::CalcHash() const {
-    return IntHash((size_t)TypeId);
 }
 
 bool TPgType::IsConvertableTo(const TPgType& typeToCompare, bool ignoreTagged) const {
@@ -694,13 +510,30 @@ void TPgType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+static THashSet<TStringBuf> PG_SUPPORTED_PRESORT = {
+    "bool",
+    "int2",
+    "int4",
+    "int8",
+    "float4",
+    "float8",
+    "bytea",
+    "varchar",
+    "text",
+    "cstring"
+};
+
+bool TPgType::CalculatePresortSupport() {
+    return PG_SUPPORTED_PRESORT.contains(GetName());
+}
+
 const TString& TPgType::GetName() const {
     return NYql::NPg::LookupType(TypeId).Name;
 }
 
 TStructType::TStructType(ui32 membersCount, std::pair<TInternName, TType*>* members, const TTypeEnvironment& env,
     bool validate)
-    : TType(EKind::Struct, env.GetTypeOfTypeLazy(), CalculatePresortSupport(membersCount, members))
+    : TType(EKind::Struct, env.GetTypeOfType())
     , MembersCount(membersCount)
     , Members(members)
 {
@@ -760,15 +593,6 @@ bool TStructType::IsSameType(const TStructType& typeToCompare) const {
     return true;
 }
 
-size_t TStructType::CalcHash() const {
-    size_t hash = 0;
-    for (size_t i = 0; i < MembersCount; ++i) {
-        hash = CombineHashes(hash, Members[i].first.Hash());
-        hash = CombineHashes(hash, Members[i].second->CalcHash());
-    }
-    return hash;
-}
-
 bool TStructType::IsConvertableTo(const TStructType& typeToCompare, bool ignoreTagged) const {
     if (this == &typeToCompare)
         return true;
@@ -792,7 +616,7 @@ void TStructType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto memberIt = links.find(member.second);
         if (memberIt != links.end()) {
             TNode* newNode = memberIt->second;
-            Y_DEBUG_ABORT_UNLESS(member.second->Equals(*newNode));
+            Y_VERIFY_DEBUG(member.second->Equals(*newNode));
             member.second = static_cast<TType*>(newNode);
         }
     }
@@ -831,9 +655,9 @@ void TStructType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
-bool TStructType::CalculatePresortSupport(ui32 membersCount, std::pair<TInternName, TType*>* members) {
-    for (ui32 i = 0; i < membersCount; ++i) {
-        if (!members[i].second->IsPresortSupported()) {
+bool TStructType::CalculatePresortSupport() {
+    for (ui32 i = 0; i < MembersCount; ++i) {
+        if (!Members[i].second->IsPresortSupported()) {
             return false;
         }
     }
@@ -887,7 +711,7 @@ TStructLiteral::TStructLiteral(TRuntimeNode* values, TStructType* type, bool val
     }
 }
 
-TStructLiteral* TStructLiteral::Create(ui32 valuesCount, const TRuntimeNode* values, TStructType* type, const TTypeEnvironment& env, bool useCachedEmptyStruct) {
+TStructLiteral* TStructLiteral::Create(ui32 valuesCount, const TRuntimeNode* values, TStructType* type, const TTypeEnvironment& env) {
     MKQL_ENSURE(valuesCount == type->GetMembersCount(), "Wrong count of members");
     TRuntimeNode* allocatedValues = nullptr;
     if (valuesCount) {
@@ -895,8 +719,9 @@ TStructLiteral* TStructLiteral::Create(ui32 valuesCount, const TRuntimeNode* val
         for (ui32 i = 0; i < valuesCount; ++i) {
             allocatedValues[i] = values[i];
         }
-    } else if (useCachedEmptyStruct) {
-        return env.GetEmptyStructLazy();
+    } else if (env.GetEmptyStruct()) {
+        // if EmptyStruct has already been initialized
+        return env.GetEmptyStruct();
     }
 
     return ::new(env.Allocate<TStructLiteral>()) TStructLiteral(allocatedValues, type);
@@ -906,7 +731,7 @@ void TStructLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
@@ -915,7 +740,7 @@ void TStructLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto valueIt = links.find(value.GetNode());
         if (valueIt != links.end()) {
             TNode* newNode = valueIt->second;
-            Y_DEBUG_ABORT_UNLESS(value.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(value.GetNode()->Equals(*newNode));
             value = TRuntimeNode(newNode, value.IsImmediate());
         }
     }
@@ -974,9 +799,9 @@ bool TStructLiteral::Equals(const TStructLiteral& nodeToCompare) const {
 }
 
 TListType::TListType(TType* itemType, const TTypeEnvironment& env, bool validate)
-    : TType(EKind::List, env.GetTypeOfTypeLazy(), itemType->IsPresortSupported())
+    : TType(EKind::List, env.GetTypeOfType())
     , Data(itemType)
-    , IndexDictKey(env.GetUi64Lazy())
+    , IndexDictKey(env.GetUi64())
 {
     Y_UNUSED(validate);
 }
@@ -989,10 +814,6 @@ bool TListType::IsSameType(const TListType& typeToCompare) const {
     return GetItemType()->IsSameType(*typeToCompare.GetItemType());
 }
 
-size_t TListType::CalcHash() const {
-    return CombineHashes(IndexDictKey->CalcHash(), Data->CalcHash());
-}
-
 bool TListType::IsConvertableTo(const TListType& typeToCompare, bool ignoreTagged) const {
     return GetItemType()->IsConvertableTo(*typeToCompare.GetItemType(), ignoreTagged);
 }
@@ -1001,7 +822,7 @@ void TListType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto itemTypeIt = links.find(GetItemType());
     if (itemTypeIt != links.end()) {
         TNode* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(GetItemType()->Equals(*newNode));
+        Y_VERIFY_DEBUG(GetItemType()->Equals(*newNode));
         Data = static_cast<TType*>(newNode);
     }
 }
@@ -1018,13 +839,17 @@ void TListType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TListType::CalculatePresortSupport() {
+    return GetItemType()->IsPresortSupported();
+}
+
 TListLiteral::TListLiteral(TRuntimeNode* items, ui32 count, TListType* type, const TTypeEnvironment& env, bool validate)
     : TNode(type)
     , Items(items)
     , Count(count)
 {
     for (ui32 i = 0; i < count; ++i) {
-        Y_DEBUG_ABORT_UNLESS(items[i].GetNode());
+        Y_VERIFY_DEBUG(items[i].GetNode());
     }
 
     if (!validate) {
@@ -1056,7 +881,7 @@ void TListLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
@@ -1065,7 +890,7 @@ void TListLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto itemIt = links.find(item.GetNode());
         if (itemIt != links.end()) {
             TNode* newNode = itemIt->second;
-            Y_DEBUG_ABORT_UNLESS(item.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(item.GetNode()->Equals(*newNode));
             item = TRuntimeNode(newNode, item.IsImmediate());
         }
     }
@@ -1150,7 +975,7 @@ bool TListLiteral::Equals(const TListLiteral& nodeToCompare) const {
 }
 
 TStreamType::TStreamType(TType* itemType, const TTypeEnvironment& env, bool validate)
-    : TType(EKind::Stream, env.GetTypeOfTypeLazy(), false)
+    : TType(EKind::Stream, env.GetTypeOfType())
     , Data(itemType)
 {
     Y_UNUSED(validate);
@@ -1164,10 +989,6 @@ bool TStreamType::IsSameType(const TStreamType& typeToCompare) const {
     return GetItemType()->IsSameType(*typeToCompare.GetItemType());
 }
 
-size_t TStreamType::CalcHash() const {
-    return Data->CalcHash();
-}
-
 bool TStreamType::IsConvertableTo(const TStreamType& typeToCompare, bool ignoreTagged) const {
     return GetItemType()->IsConvertableTo(*typeToCompare.GetItemType(), ignoreTagged);
 }
@@ -1176,7 +997,7 @@ void TStreamType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto itemTypeIt = links.find(GetItemType());
     if (itemTypeIt != links.end()) {
         TNode* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(GetItemType()->Equals(*newNode));
+        Y_VERIFY_DEBUG(GetItemType()->Equals(*newNode));
         Data = static_cast<TType*>(newNode);
     }
 }
@@ -1193,8 +1014,12 @@ void TStreamType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TStreamType::CalculatePresortSupport() {
+    return false;
+}
+
 TFlowType::TFlowType(TType* itemType, const TTypeEnvironment& env, bool validate)
-    : TType(EKind::Flow, env.GetTypeOfTypeLazy(), false)
+    : TType(EKind::Flow, env.GetTypeOfType())
     , Data(itemType)
 {
     Y_UNUSED(validate);
@@ -1208,10 +1033,6 @@ bool TFlowType::IsSameType(const TFlowType& typeToCompare) const {
     return GetItemType()->IsSameType(*typeToCompare.GetItemType());
 }
 
-size_t TFlowType::CalcHash() const {
-    return Data->CalcHash();
-}
-
 bool TFlowType::IsConvertableTo(const TFlowType& typeToCompare, bool ignoreTagged) const {
     return GetItemType()->IsConvertableTo(*typeToCompare.GetItemType(), ignoreTagged);
 }
@@ -1220,7 +1041,7 @@ void TFlowType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto itemTypeIt = links.find(GetItemType());
     if (itemTypeIt != links.end()) {
         TNode* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(GetItemType()->Equals(*newNode));
+        Y_VERIFY_DEBUG(GetItemType()->Equals(*newNode));
         Data = static_cast<TType*>(newNode);
     }
 }
@@ -1237,8 +1058,12 @@ void TFlowType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TFlowType::CalculatePresortSupport() {
+    return false;
+}
+
 TOptionalType::TOptionalType(TType* itemType, const TTypeEnvironment& env, bool validate)
-    : TType(EKind::Optional, env.GetTypeOfTypeLazy(), itemType->IsPresortSupported())
+    : TType(EKind::Optional, env.GetTypeOfType())
     , Data(itemType)
 {
     Y_UNUSED(validate);
@@ -1252,10 +1077,6 @@ bool TOptionalType::IsSameType(const TOptionalType& typeToCompare) const {
     return GetItemType()->IsSameType(*typeToCompare.GetItemType());
 }
 
-size_t TOptionalType::CalcHash() const {
-    return Data->CalcHash();
-}
-
 bool TOptionalType::IsConvertableTo(const TOptionalType& typeToCompare, bool ignoreTagged) const {
     return GetItemType()->IsConvertableTo(*typeToCompare.GetItemType(), ignoreTagged);
 }
@@ -1264,7 +1085,7 @@ void TOptionalType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto itemTypeIt = links.find(GetItemType());
     if (itemTypeIt != links.end()) {
         TNode* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(GetItemType()->Equals(*newNode));
+        Y_VERIFY_DEBUG(GetItemType()->Equals(*newNode));
         Data = static_cast<TType*>(newNode);
     }
 }
@@ -1281,8 +1102,12 @@ void TOptionalType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TOptionalType::CalculatePresortSupport() {
+    return GetItemType()->IsPresortSupported();
+}
+
 TTaggedType::TTaggedType(TType* baseType, TInternName tag, const TTypeEnvironment& env)
-    : TType(EKind::Tagged, env.GetTypeOfTypeLazy(), baseType->IsPresortSupported())
+    : TType(EKind::Tagged, env.GetTypeOfType())
     , BaseType(baseType)
     , Tag(tag)
 {
@@ -1296,10 +1121,6 @@ bool TTaggedType::IsSameType(const TTaggedType& typeToCompare) const {
     return Tag == typeToCompare.Tag && GetBaseType()->IsSameType(*typeToCompare.GetBaseType());
 }
 
-size_t TTaggedType::CalcHash() const {
-    return CombineHashes(BaseType->CalcHash(), Tag.Hash());
-}
-
 bool TTaggedType::IsConvertableTo(const TTaggedType& typeToCompare, bool ignoreTagged) const {
     return Tag == typeToCompare.Tag && GetBaseType()->IsConvertableTo(*typeToCompare.GetBaseType(), ignoreTagged);
 }
@@ -1308,7 +1129,7 @@ void TTaggedType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto itemTypeIt = links.find(GetBaseType());
     if (itemTypeIt != links.end()) {
         TNode* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(GetBaseType()->Equals(*newNode));
+        Y_VERIFY_DEBUG(GetBaseType()->Equals(*newNode));
         BaseType = static_cast<TType*>(newNode);
     }
 }
@@ -1323,6 +1144,10 @@ TNode* TTaggedType::DoCloneOnCallableWrite(const TTypeEnvironment& env) const {
 
 void TTaggedType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
+}
+
+bool TTaggedType::CalculatePresortSupport() {
+    return GetBaseType()->IsPresortSupported();
 }
 
 TOptionalLiteral::TOptionalLiteral(TOptionalType* type, bool validate)
@@ -1340,7 +1165,7 @@ TOptionalLiteral::TOptionalLiteral(TRuntimeNode item, TOptionalType* type, bool 
         return;
     }
 
-    Y_DEBUG_ABORT_UNLESS(Item.GetNode());
+    Y_VERIFY_DEBUG(Item.GetNode());
 
     MKQL_ENSURE(Item.GetStaticType()->IsSameType(*type->GetItemType()), "Wrong type of item");
 
@@ -1359,7 +1184,7 @@ void TOptionalLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
@@ -1367,7 +1192,7 @@ void TOptionalLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto itemIt = links.find(Item.GetNode());
         if (itemIt != links.end()) {
             TNode* newNode = itemIt->second;
-            Y_DEBUG_ABORT_UNLESS(Item.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(Item.GetNode()->Equals(*newNode));
             Item = TRuntimeNode(newNode, Item.IsImmediate());
         }
     }
@@ -1413,10 +1238,6 @@ bool TDictType::IsSameType(const TDictType& typeToCompare) const {
         && PayloadType->IsSameType(*typeToCompare.PayloadType);
 }
 
-size_t TDictType::CalcHash() const {
-    return CombineHashes(KeyType->CalcHash(), PayloadType->CalcHash());
-}
-
 bool TDictType::IsConvertableTo(const TDictType& typeToCompare, bool ignoreTagged) const {
     return KeyType->IsConvertableTo(*typeToCompare.KeyType, ignoreTagged)
         && PayloadType->IsConvertableTo(*typeToCompare.PayloadType, ignoreTagged);
@@ -1426,14 +1247,14 @@ void TDictType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto keyTypeIt = links.find(KeyType);
     if (keyTypeIt != links.end()) {
         TNode* newNode = keyTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(KeyType->Equals(*newNode));
+        Y_VERIFY_DEBUG(KeyType->Equals(*newNode));
         KeyType = static_cast<TType*>(newNode);
     }
 
     auto payloadTypeIt = links.find(PayloadType);
     if (payloadTypeIt != links.end()) {
         TNode* newNode = payloadTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(PayloadType->Equals(*newNode));
+        Y_VERIFY_DEBUG(PayloadType->Equals(*newNode));
         PayloadType = static_cast<TType*>(newNode);
     }
 }
@@ -1454,9 +1275,12 @@ void TDictType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TDictType::CalculatePresortSupport() {
+    return KeyType->IsPresortSupported() && PayloadType->IsPresortSupported();
+}
 
 TDictType::TDictType(TType* keyType, TType* payloadType, const TTypeEnvironment& env, bool validate)
-    : TType(EKind::Dict, env.GetTypeOfTypeLazy(), keyType->IsPresortSupported() && payloadType->IsPresortSupported())
+    : TType(EKind::Dict, env.GetTypeOfType())
     , KeyType(keyType)
     , PayloadType(payloadType)
 {
@@ -1513,7 +1337,7 @@ void TDictLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
@@ -1522,14 +1346,14 @@ void TDictLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto itemKeyIt = links.find(item.first.GetNode());
         if (itemKeyIt != links.end()) {
             TNode* newNode = itemKeyIt->second;
-            Y_DEBUG_ABORT_UNLESS(item.first.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(item.first.GetNode()->Equals(*newNode));
             item.first = TRuntimeNode(newNode, item.first.IsImmediate());
         }
 
         auto itemPayloadIt = links.find(item.second.GetNode());
         if (itemPayloadIt != links.end()) {
             TNode* newNode = itemPayloadIt->second;
-            Y_DEBUG_ABORT_UNLESS(item.second.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(item.second.GetNode()->Equals(*newNode));
             item.second = TRuntimeNode(newNode, item.second.IsImmediate());
         }
     }
@@ -1600,7 +1424,7 @@ bool TDictLiteral::Equals(const TDictLiteral& nodeToCompare) const {
 
 TCallableType::TCallableType(const TInternName &name, TType* returnType, ui32 argumentsCount,
         TType **arguments, TNode* payload, const TTypeEnvironment& env)
-    : TType(EKind::Callable, env.GetTypeOfTypeLazy(), false)
+    : TType(EKind::Callable, env.GetTypeOfType())
     , IsMergeDisabled0(false)
     , ArgumentsCount(argumentsCount)
     , Name(name)
@@ -1670,18 +1494,6 @@ bool TCallableType::IsSameType(const TCallableType& typeToCompare) const {
     return !Payload || Payload->Equals(*typeToCompare.Payload);
 }
 
-size_t TCallableType::CalcHash() const {
-    size_t hash = 0;
-    hash = CombineHashes(hash, IntHash<size_t>(ArgumentsCount));
-    hash = CombineHashes(hash, Name.Hash());
-    hash = CombineHashes(hash, ReturnType->CalcHash());
-    for (size_t index = 0; index < ArgumentsCount; ++index) {
-        hash = CombineHashes(hash, Arguments[index]->CalcHash());
-    }
-    hash = CombineHashes(hash, IntHash<size_t>(OptionalArgs));
-    return hash;
-}
-
 bool TCallableType::IsConvertableTo(const TCallableType& typeToCompare, bool ignoreTagged) const {
     // do not check callable name here
 
@@ -1691,15 +1503,15 @@ bool TCallableType::IsConvertableTo(const TCallableType& typeToCompare, bool ign
     if (IsMergeDisabled0 != typeToCompare.IsMergeDisabled0)
         return false;
 
-    if (ArgumentsCount < typeToCompare.ArgumentsCount)
+    if (ArgumentsCount != typeToCompare.ArgumentsCount)
         return false;
 
     // function with fewer optional args can't be converted to function
     // with more optional args
-    if (ArgumentsCount - OptionalArgs > typeToCompare.ArgumentsCount - typeToCompare.OptionalArgs)
+    if (OptionalArgs < typeToCompare.OptionalArgs)
         return false;
 
-    for (size_t index = 0; index < typeToCompare.ArgumentsCount; ++index) {
+    for (size_t index = 0; index < ArgumentsCount; ++index) {
         const auto arg = Arguments[index];
         const auto otherArg = typeToCompare.Arguments[index];
         if (!arg->IsConvertableTo(*otherArg, ignoreTagged))
@@ -1709,25 +1521,7 @@ bool TCallableType::IsConvertableTo(const TCallableType& typeToCompare, bool ign
     if (!ReturnType->IsConvertableTo(*typeToCompare.ReturnType, ignoreTagged))
         return false;
 
-    if (!Payload) {
-        return true;
-    }
-
-    if (!typeToCompare.Payload) {
-        return false;
-    }
-
-    TCallablePayload parsedPayload(Payload), parsedPayloadToCompare(typeToCompare.Payload);
-    for (size_t index = 0; index < typeToCompare.ArgumentsCount; ++index) {
-        if (parsedPayload.GetArgumentName(index) != parsedPayloadToCompare.GetArgumentName(index)) {
-            return false;
-        }
-        if (parsedPayload.GetArgumentFlags(index) != parsedPayloadToCompare.GetArgumentFlags(index)) {
-            return false;
-        }
-    }
-
-    return true;
+    return !Payload || Payload->Equals(*typeToCompare.Payload);
 }
 
 void TCallableType::SetOptionalArgumentsCount(ui32 count) {
@@ -1743,7 +1537,7 @@ void TCallableType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto returnTypeIt = links.find(ReturnType);
     if (returnTypeIt != links.end()) {
         TNode* newNode = returnTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(ReturnType->Equals(*newNode));
+        Y_VERIFY_DEBUG(ReturnType->Equals(*newNode));
         ReturnType = static_cast<TType*>(newNode);
     }
 
@@ -1752,7 +1546,7 @@ void TCallableType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto argIt = links.find(arg);
         if (argIt != links.end()) {
             TNode* newNode = argIt->second;
-            Y_DEBUG_ABORT_UNLESS(arg->Equals(*newNode));
+            Y_VERIFY_DEBUG(arg->Equals(*newNode));
             arg = static_cast<TType*>(newNode);
         }
     }
@@ -1761,7 +1555,7 @@ void TCallableType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto payloadIt = links.find(Payload);
         if (payloadIt != links.end()) {
             TNode* newNode = payloadIt->second;
-            Y_DEBUG_ABORT_UNLESS(Payload->Equals(*newNode));
+            Y_VERIFY_DEBUG(Payload->Equals(*newNode));
             Payload = newNode;
         }
     }
@@ -1804,6 +1598,10 @@ TNode* TCallableType::DoCloneOnCallableWrite(const TTypeEnvironment& env) const 
 
 void TCallableType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
+}
+
+bool TCallableType::CalculatePresortSupport() {
+    return false;
 }
 
 TCallable::TCallable(ui32 inputsCount, TRuntimeNode* inputs, TCallableType* type, bool validate)
@@ -1869,7 +1667,7 @@ void TCallable::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
@@ -1878,7 +1676,7 @@ void TCallable::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto inputIt = links.find(input.GetNode());
         if (inputIt != links.end()) {
             TNode* newNode = inputIt->second;
-            Y_DEBUG_ABORT_UNLESS(input.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(input.GetNode()->Equals(*newNode));
             input = TRuntimeNode(newNode, input.IsImmediate());
         }
     }
@@ -1887,7 +1685,7 @@ void TCallable::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto resultIt = links.find(Result.GetNode());
         if (resultIt != links.end()) {
             TNode* newNode = resultIt->second;
-            Y_DEBUG_ABORT_UNLESS(Result.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(Result.GetNode()->Equals(*newNode));
             Result = TRuntimeNode(newNode, Result.IsImmediate());
         }
     }
@@ -1982,26 +1780,6 @@ void TCallable::SetResult(TRuntimeNode result, const TTypeEnvironment& env) {
     Result.Freeze();
 }
 
-TCallablePayload::TCallablePayload(NMiniKQL::TNode* node)
-{
-    auto structObj = AS_VALUE(NMiniKQL::TStructLiteral, NMiniKQL::TRuntimeNode(node, true));
-    auto argsIndex = structObj->GetType()->GetMemberIndex("Args");
-    auto payloadIndex = structObj->GetType()->GetMemberIndex("Payload");
-    Payload_ = AS_VALUE(NMiniKQL::TDataLiteral, structObj->GetValue(payloadIndex))->AsValue().AsStringRef();
-    auto args = structObj->GetValue(argsIndex);
-    auto argsList = AS_VALUE(NMiniKQL::TListLiteral, args);
-    auto itemType = AS_TYPE(NMiniKQL::TStructType, AS_TYPE(NMiniKQL::TListType, args)->GetItemType());
-    auto nameIndex = itemType->GetMemberIndex("Name");
-    auto flagsIndex = itemType->GetMemberIndex("Flags");
-    ArgsNames_.reserve(argsList->GetItemsCount());
-    ArgsFlags_.reserve(argsList->GetItemsCount());
-    for (ui32 i = 0; i < argsList->GetItemsCount(); ++i) {
-        auto arg = AS_VALUE(NMiniKQL::TStructLiteral, argsList->GetItems()[i]);
-        ArgsNames_.push_back(AS_VALUE(NMiniKQL::TDataLiteral, arg->GetValue(nameIndex))->AsValue().AsStringRef());
-        ArgsFlags_.push_back(AS_VALUE(NMiniKQL::TDataLiteral, arg->GetValue(flagsIndex))->AsValue().Get<ui64>());
-    }
-}
-
 bool TRuntimeNode::HasValue() const {
     TRuntimeNode current = *this;
     for (;;) {
@@ -2048,10 +1826,6 @@ bool TAnyType::IsSameType(const TAnyType& typeToCompare) const {
     return true;
 }
 
-size_t TAnyType::CalcHash() const {
-    return 0;
-}
-
 bool TAnyType::IsConvertableTo(const TAnyType& typeToCompare, bool ignoreTagged) const {
     Y_UNUSED(ignoreTagged);
     return IsSameType(typeToCompare);
@@ -2070,12 +1844,16 @@ void TAnyType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TAnyType::CalculatePresortSupport() {
+    return false;
+}
+
 TAnyType* TAnyType::Create(TTypeType* type, const TTypeEnvironment& env) {
     return ::new(env.Allocate<TAnyType>()) TAnyType(type);
 }
 
 TAny* TAny::Create(const TTypeEnvironment& env) {
-    return ::new(env.Allocate<TAny>()) TAny(env.GetAnyTypeLazy());
+    return ::new(env.Allocate<TAny>()) TAny(env.GetAnyType());
 }
 
 void TAny::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
@@ -2083,7 +1861,7 @@ void TAny::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto itemIt = links.find(Item.GetNode());
         if (itemIt != links.end()) {
             TNode* newNode = itemIt->second;
-            Y_DEBUG_ABORT_UNLESS(Item.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(Item.GetNode()->Equals(*newNode));
             Item = TRuntimeNode(newNode, Item.IsImmediate());
         }
     }
@@ -2148,7 +1926,7 @@ TTupleLiteral::TTupleLiteral(TRuntimeNode* values, TTupleType* type, bool valida
     }
 }
 
-TTupleLiteral* TTupleLiteral::Create(ui32 valuesCount, const TRuntimeNode* values, TTupleType* type, const TTypeEnvironment& env, bool useCachedEmptyTuple) {
+TTupleLiteral* TTupleLiteral::Create(ui32 valuesCount, const TRuntimeNode* values, TTupleType* type, const TTypeEnvironment& env) {
     MKQL_ENSURE(valuesCount == type->GetElementsCount(), "Wrong count of elements");
     TRuntimeNode* allocatedValues = nullptr;
     if (valuesCount) {
@@ -2156,8 +1934,9 @@ TTupleLiteral* TTupleLiteral::Create(ui32 valuesCount, const TRuntimeNode* value
         for (ui32 i = 0; i < valuesCount; ++i) {
             allocatedValues[i] = values[i];
         }
-    } else if (useCachedEmptyTuple) {
-        return env.GetEmptyTupleLazy();
+    } else if (env.GetEmptyTuple()) {
+        // if EmptyTuple has already been initialized
+        return env.GetEmptyTuple();
     }
 
     return ::new(env.Allocate<TTupleLiteral>()) TTupleLiteral(allocatedValues, type);
@@ -2167,7 +1946,7 @@ void TTupleLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
@@ -2176,7 +1955,7 @@ void TTupleLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
         auto valueIt = links.find(value.GetNode());
         if (valueIt != links.end()) {
             TNode* newNode = valueIt->second;
-            Y_DEBUG_ABORT_UNLESS(value.GetNode()->Equals(*newNode));
+            Y_VERIFY_DEBUG(value.GetNode()->Equals(*newNode));
             value = TRuntimeNode(newNode, value.IsImmediate());
         }
     }
@@ -2238,10 +2017,6 @@ bool TResourceType::IsSameType(const TResourceType& typeToCompare) const {
     return Tag == typeToCompare.Tag;
 }
 
-size_t TResourceType::CalcHash() const {
-    return Tag.Hash();
-}
-
 bool TResourceType::IsConvertableTo(const TResourceType& typeToCompare, bool ignoreTagged) const {
     Y_UNUSED(ignoreTagged);
     return IsSameType(typeToCompare);
@@ -2260,8 +2035,12 @@ void TResourceType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
 }
 
+bool TResourceType::CalculatePresortSupport() {
+    return false;
+}
+
 TResourceType* TResourceType::Create(const TStringBuf& tag, const TTypeEnvironment& env) {
-    return ::new(env.Allocate<TResourceType>()) TResourceType(env.GetTypeOfTypeLazy(), env.InternName(tag));
+    return ::new(env.Allocate<TResourceType>()) TResourceType(env.GetTypeOfType(), env.InternName(tag));
 }
 
 TVariantType* TVariantType::Create(TType* underlyingType, const TTypeEnvironment& env) {
@@ -2272,16 +2051,12 @@ bool TVariantType::IsSameType(const TVariantType& typeToCompare) const {
     return GetUnderlyingType()->IsSameType(*typeToCompare.GetUnderlyingType());
 }
 
-size_t TVariantType::CalcHash() const {
-    return Data->CalcHash();
-}
-
 bool TVariantType::IsConvertableTo(const TVariantType& typeToCompare, bool ignoreTagged) const {
     return GetUnderlyingType()->IsConvertableTo(*typeToCompare.GetUnderlyingType(), ignoreTagged);
 }
 
 TVariantType::TVariantType(TType* underlyingType, const TTypeEnvironment& env, bool validate)
-    : TType(EKind::Variant, env.GetTypeOfTypeLazy(), underlyingType->IsPresortSupported())
+    : TType(EKind::Variant, env.GetTypeOfType())
     , Data(underlyingType)
 {
     if (validate) {
@@ -2300,7 +2075,7 @@ void TVariantType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto itemTypeIt = links.find(GetUnderlyingType());
     if (itemTypeIt != links.end()) {
         TNode* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(GetUnderlyingType()->Equals(*newNode));
+        Y_VERIFY_DEBUG(GetUnderlyingType()->Equals(*newNode));
         Data = static_cast<TType*>(newNode);
     }
 }
@@ -2316,6 +2091,10 @@ TNode* TVariantType::DoCloneOnCallableWrite(const TTypeEnvironment& env) const {
 
 void TVariantType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
+}
+
+bool TVariantType::CalculatePresortSupport() {
+    return GetUnderlyingType()->IsPresortSupported();
 }
 
 TVariantLiteral* TVariantLiteral::Create(TRuntimeNode item, ui32 index, TVariantType* type, const TTypeEnvironment& env) {
@@ -2355,14 +2134,14 @@ void TVariantLiteral::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     auto typeIt = links.find(Type);
     if (typeIt != links.end()) {
         TNode* newNode = typeIt->second;
-        Y_DEBUG_ABORT_UNLESS(Type->Equals(*newNode));
+        Y_VERIFY_DEBUG(Type->Equals(*newNode));
         Type = static_cast<TType*>(newNode);
     }
 
     auto itemIt = links.find(Item.GetNode());
     if (itemIt != links.end()) {
         TNode* newNode = itemIt->second;
-        Y_DEBUG_ABORT_UNLESS(Item.GetNode()->Equals(*newNode));
+        Y_VERIFY_DEBUG(Item.GetNode()->Equals(*newNode));
         Item = TRuntimeNode(newNode, Item.IsImmediate());
     }
 }
@@ -2385,7 +2164,7 @@ void TVariantLiteral::DoFreeze(const TTypeEnvironment& env) {
 }
 
 TBlockType::TBlockType(TType* itemType, EShape shape, const TTypeEnvironment& env)
-    : TType(EKind::Block, env.GetTypeOfTypeLazy(), false)
+    : TType(EKind::Block, env.GetTypeOfType())
     , ItemType(itemType)
     , Shape(shape)
 {
@@ -2399,10 +2178,6 @@ bool TBlockType::IsSameType(const TBlockType& typeToCompare) const {
     return GetItemType()->IsSameType(*typeToCompare.GetItemType()) && Shape == typeToCompare.Shape;
 }
 
-size_t TBlockType::CalcHash() const {
-    return CombineHashes(ItemType->CalcHash(), IntHash((size_t)Shape));
-}
-
 bool TBlockType::IsConvertableTo(const TBlockType& typeToCompare, bool ignoreTagged) const {
     return Shape == typeToCompare.Shape &&
         GetItemType()->IsConvertableTo(*typeToCompare.GetItemType(), ignoreTagged);
@@ -2412,7 +2187,7 @@ void TBlockType::DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
     const auto itemTypeIt = links.find(ItemType);
     if (itemTypeIt != links.end()) {
         auto* newNode = itemTypeIt->second;
-        Y_DEBUG_ABORT_UNLESS(ItemType->Equals(*newNode));
+        Y_VERIFY_DEBUG(ItemType->Equals(*newNode));
         ItemType = static_cast<TType*>(newNode);
     }
 }
@@ -2428,6 +2203,10 @@ TNode* TBlockType::DoCloneOnCallableWrite(const TTypeEnvironment& env) const {
 
 void TBlockType::DoFreeze(const TTypeEnvironment& env) {
     Y_UNUSED(env);
+}
+
+bool TBlockType::CalculatePresortSupport() {
+    return false;
 }
 
 bool IsNumericType(NUdf::TDataTypeId typeId) {
@@ -2507,12 +2286,12 @@ EValueRepresentation GetValueRepresentation(const TType* type) {
             return GetValueRepresentation(static_cast<const TTaggedType*>(type)->GetBaseType());
 
         default:
-            Y_ABORT("Unsupported type.");
+            Y_FAIL("Unsupported type.");
     }
 }
 
 TArrayRef<TType* const> GetWideComponents(const TFlowType* type) {
-    if (type->GetItemType()->IsMulti()) {
+    if (RuntimeVersion > 35) {
         return AS_TYPE(TMultiType, type->GetItemType())->GetElements();
     }
     return AS_TYPE(TTupleType, type->GetItemType())->GetElements();

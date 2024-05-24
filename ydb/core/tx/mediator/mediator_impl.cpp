@@ -1,7 +1,6 @@
 #include "mediator_impl.h"
 
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
-#include <library/cpp/time_provider/time_provider.h>
 
 namespace NKikimr {
 namespace NTxMediator {
@@ -42,12 +41,12 @@ ui64 TTxMediator::SubjectiveTime() {
 }
 
 void TTxMediator::InitSelfState(const TActorContext &ctx) {
-    Y_ABORT_UNLESS(Config.Bukets);
+    Y_VERIFY(Config.Bukets);
     ExecQueue = ctx.ExecutorThread.RegisterActor(CreateTxMediatorExecQueue(ctx.SelfID, TabletID(), 1, Config.Bukets->Buckets()));
-    Y_ABORT_UNLESS(!!ExecQueue);
+    Y_VERIFY(!!ExecQueue);
 
-    Y_ABORT_UNLESS(Config.CoordinatorSeletor);
-    Y_ABORT_UNLESS(Config.CoordinatorSeletor->List().size());
+    Y_VERIFY(Config.CoordinatorSeletor);
+    Y_VERIFY(Config.CoordinatorSeletor->List().size());
 
     for (ui64 it: Config.CoordinatorSeletor->List()) {
         TCoordinatorInfo &x = VolatileState.Domain[it];
@@ -77,7 +76,7 @@ void TTxMediator::ReplyEnqueuedWatch(const TActorContext &ctx) {
 }
 
 void TTxMediator::ReplySync(const TActorId &sender, const NKikimrTx::TEvCoordinatorSync &record, const TActorContext &ctx) {
-    Y_ABORT_UNLESS(record.GetMediatorID() == TabletID());
+    Y_VERIFY(record.GetMediatorID() == TabletID());
 
     LOG_DEBUG_S(ctx, NKikimrServices::TX_MEDIATOR, "tablet# " << TabletID()
         << " SEND EvCoordinatorSyncResult to# " << sender.ToString() << " Cookie# " << record.GetCookie()
@@ -114,7 +113,7 @@ void TTxMediator::DoConfigure(const TEvSubDomain::TEvConfigure &ev, const TActor
                      , "tablet# " << TabletID() << " actor# " << SelfId()
                     << " Apply TEvMediatorConfiguration Version# " << record.GetVersion()
                     << " recive empty coordinators set");
-        Y_ABORT("empty coordinators set");
+        Y_FAIL("empty coordinators set");
         return;
     }
 
@@ -122,7 +121,7 @@ void TTxMediator::DoConfigure(const TEvSubDomain::TEvConfigure &ev, const TActor
     coordinators.reserve(record.CoordinatorsSize());
 
     for (auto id: record.GetCoordinators()) {
-        Y_ABORT_UNLESS(TabletID() != id, "found self id in coordinators list");
+        Y_VERIFY(TabletID() != id, "found self id in coordinators list");
         coordinators.push_back(id);
     }
 
@@ -186,7 +185,7 @@ void TTxMediator::Progress(ui64 to, const TActorContext &ctx) {
     ui64 txCount = 0;
     for (TMap<ui64, TCoordinatorInfo>::iterator it = VolatileState.Domain.begin(), end = VolatileState.Domain.end(); it != end; ++it) {
         TCoordinatorInfo &info = it->second;
-        Y_ABORT_UNLESS(!info.Queue.empty() && info.Queue.front()->Step >= to);
+        Y_VERIFY(!info.Queue.empty() && info.Queue.front()->Step >= to);
 
         if (info.Queue.front()->Step != to)
             continue;
@@ -267,13 +266,13 @@ void TTxMediator::ProcessForeignStep(const TActorId &sender, const NKikimrTx::TE
     Y_UNUSED(info);
     Y_UNUSED(ctx);
 
-    Y_ABORT("TODO");
+    Y_FAIL("TODO");
 }
 
 void TTxMediator::Handle(TEvTxCoordinator::TEvCoordinatorStep::TPtr &ev, const TActorContext &ctx) {
     const NKikimrTx::TEvCoordinatorStep &record = ev->Get()->Record;
 
-    Y_ABORT_UNLESS(record.GetMediatorID() == TabletID());
+    Y_VERIFY(record.GetMediatorID() == TabletID());
     const ui64 coordinator = record.GetCoordinatorID();
     const ui64 step = record.GetStep();
     const ui64 transactionsCount = record.TransactionsSize();
@@ -304,6 +303,13 @@ void TTxMediator::Handle(TEvMediatorTimecast::TEvWatch::TPtr &ev, const TActorCo
     LOG_DEBUG_S(ctx, NKikimrServices::TX_MEDIATOR, "tablet# " << TabletID() << " SEND EvWatch to# "
         << ExecQueue.ToString() << " ExecQueue");
     ctx.ExecutorThread.Send(ev->Forward(ExecQueue));
+}
+
+void TTxMediator::Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
+    Y_UNUSED(ev);
+    LOG_DEBUG_S(ctx, NKikimrServices::TX_MEDIATOR, "tablet# " << TabletID() << " HANDLE TEvPoisonPill");
+    Become(&TThis::StateBroken);
+    ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
 }
 
 TTxMediator::TTxMediator(TTabletStorageInfo *info, const TActorId &tablet)

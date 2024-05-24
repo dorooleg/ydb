@@ -277,9 +277,6 @@ void TCommandExportToS3::Config(TConfig& config) {
             << "    - zstd-N (N is compression level, e.g. zstd-3)" << Endl)
         .RequiredArgument("STRING").StoreResult(&Compression);
 
-    config.Opts->AddLongOption("use-virtual-addressing", "S3 bucket virtual addressing")
-        .RequiredArgument("BOOL").StoreResult<bool>(&UseVirtualAddressing).DefaultValue("true");
-
     AddDeprecatedJsonOption(config);
     AddFormats(config, { EOutputFormat::Pretty, EOutputFormat::ProtoJsonBase64 });
     config.Opts->MutuallyExclusive("json", "format");
@@ -315,7 +312,6 @@ int TCommandExportToS3::Run(TConfig& config) {
     settings.Bucket(AwsBucket);
     settings.AccessKey(AwsAccessKey);
     settings.SecretKey(AwsSecretKey);
-    settings.UseVirtualAddressing(UseVirtualAddressing);
 
     for (const auto& item : Items) {
         settings.AppendItem({item.Source, item.Destination});

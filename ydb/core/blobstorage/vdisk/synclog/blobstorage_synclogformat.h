@@ -124,7 +124,7 @@ namespace NKikimr {
                     case RecBlock:      payloadSize = sizeof(TBlockRec); break;
                     case RecBarrier:    payloadSize = sizeof(TBarrierRec); break;
                     case RecBlockV2:    payloadSize = sizeof(TBlockRecV2); break;
-                    default: Y_ABORT("Unsupported type: RecType=%" PRIu64 " Lsn=%" PRIu64, (ui64)RecType, Lsn);
+                    default: Y_FAIL("Unsupported type: RecType=%" PRIu64 " Lsn=%" PRIu64, (ui64)RecType, Lsn);
                 }
                 return sizeof(*this) + payloadSize;
             }
@@ -140,22 +140,22 @@ namespace NKikimr {
             }
 
             const TLogoBlobRec *GetLogoBlob() const {
-                Y_DEBUG_ABORT_UNLESS(RecType == RecLogoBlob);
+                Y_VERIFY_DEBUG(RecType == RecLogoBlob);
                 return (const TLogoBlobRec *)(this + 1);
             }
 
             const TBlockRec *GetBlock() const {
-                Y_DEBUG_ABORT_UNLESS(RecType == RecBlock);
+                Y_VERIFY_DEBUG(RecType == RecBlock);
                 return (const TBlockRec *)(this + 1);
             }
 
             const TBarrierRec *GetBarrier() const {
-                Y_DEBUG_ABORT_UNLESS(RecType == RecBarrier);
+                Y_VERIFY_DEBUG(RecType == RecBarrier);
                 return (const TBarrierRec *)(this + 1);
             }
 
             const TBlockRecV2 *GetBlockV2() const {
-                Y_DEBUG_ABORT_UNLESS(RecType == RecBlockV2);
+                Y_VERIFY_DEBUG(RecType == RecBlockV2);
                 return (const TBlockRecV2 *)(this + 1);
             }
 
@@ -169,7 +169,7 @@ namespace NKikimr {
                     case RecBlock:      return GetBlock()->ToString();
                     case RecBarrier:    return GetBarrier()->ToString();
                     case RecBlockV2:    return GetBlockV2()->ToString();
-                    default: Y_ABORT("Unsupported type: RecType=%" PRIu64 " Lsn=%" PRIu64, (ui64)RecType, Lsn);
+                    default: Y_FAIL("Unsupported type: RecType=%" PRIu64 " Lsn=%" PRIu64, (ui64)RecType, Lsn);
                 }
             }
         };
@@ -287,7 +287,7 @@ namespace NKikimr {
             }
 
             void Next() {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 It = It->Next();
             }
 

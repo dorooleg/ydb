@@ -36,9 +36,7 @@ TAllocState::TAllocState(const TSourceLocation& location, const NKikimr::TAligne
 void TAllocState::CleanupPAllocList(TListEntry* root) {
     for (auto curr = root->Right; curr != root; ) {
         auto next = curr->Right;
-        auto size = ((TMkqlPAllocHeader*)curr)->Size;
-	auto fullSize = size + sizeof(TMkqlPAllocHeader);
-        MKQLFreeWithSize(curr, fullSize, EMemorySubPool::Default); // may free items from OffloadedBlocksRoot
+        MKQLFreeDeprecated(curr); // may free items from OffloadedBlocksRoot
         curr = next;
     }
 
@@ -57,7 +55,7 @@ void TAllocState::KillAllBoxed() {
     }
 
     {
-        Y_ABORT_UNLESS(CurrentPAllocList == &GlobalPAllocList);
+        Y_VERIFY(CurrentPAllocList == &GlobalPAllocList);
         CleanupPAllocList(&GlobalPAllocList);
     }
 
@@ -134,7 +132,7 @@ void TAllocState::UnlockObject(::NKikimr::NUdf::TUnboxedValuePod value) {
     }
 
     auto it = LockedObjectsRefs.find(obj);
-    Y_ABORT_UNLESS(it != LockedObjectsRefs.end());
+    Y_VERIFY(it != LockedObjectsRefs.end());
     if (--it->second.Locks == 0) {
        value.UnlockRef(it->second.OriginalRefs);
        LockedObjectsRefs.erase(it);
@@ -143,27 +141,21 @@ void TAllocState::UnlockObject(::NKikimr::NUdf::TUnboxedValuePod value) {
 
 void TScopedAlloc::Acquire() {
     if (!AttachedCount_) {
-        if (PrevState_) {
-            PgReleaseThreadContext(PrevState_->MainContext);
-        }
         PrevState_ = TlsAllocState;
         TlsAllocState = &MyState_;
         PgAcquireThreadContext(MyState_.MainContext);
     } else {
-        Y_ABORT_UNLESS(TlsAllocState == &MyState_, "Mismatch allocator in thread");
-
+        Y_VERIFY(TlsAllocState == &MyState_, "Mismatch allocator in thread");
     }
+
     ++AttachedCount_;
 }
 
 void TScopedAlloc::Release() {
     if (AttachedCount_ && --AttachedCount_ == 0) {
-        Y_ABORT_UNLESS(TlsAllocState == &MyState_, "Mismatch allocator in thread");
+        Y_VERIFY(TlsAllocState == &MyState_, "Mismatch allocator in thread");
         PgReleaseThreadContext(MyState_.MainContext);
         TlsAllocState = PrevState_;
-        if (PrevState_) {
-            PgAcquireThreadContext(PrevState_->MainContext);
-        }
         PrevState_ = nullptr;
     }
 }
@@ -192,9 +184,9 @@ void* MKQLAllocSlow(size_t sz, TAllocState* state, const EMemorySubPool mPool) {
 }
 
 void MKQLFreeSlow(TAllocPageHeader* header, TAllocState *state, const EMemorySubPool mPool) noexcept {
-    Y_DEBUG_ABORT_UNLESS(state);
-    Y_DEBUG_ABORT_UNLESS(header->MyAlloc == state, "%s", (TStringBuilder() << "wrong allocator was used; "
-        "allocated with: " << header->MyAlloc->GetDebugInfo() << " freed with: " << TlsAllocState->GetDebugInfo()).data());
+    Y_VERIFY_DEBUG(state);
+    Y_VERIFY_DEBUG(header->MyAlloc == state, "%s", (TStringBuilder() << "wrong allocator was used; "
+        "allocated with: " << header->MyAlloc->GetInfo() << " freed with: " << TlsAllocState->GetInfo()).data());
     state->ReturnBlock(header, header->Capacity);
     if (header == state->CurrentPages[(TMemorySubPoolIdx)mPool]) {
         state->CurrentPages[(TMemorySubPoolIdx)mPool] = &TAllocState::EmptyPageHeader;

@@ -1,8 +1,8 @@
 #pragma once
 #include "defs.h"
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/event_pb.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_pb.h>
 #include <ydb/library/yql/dq/actors/dq_events_ids.h>
 
 #include <ydb/core/fq/libs/events/event_ids.h>
@@ -98,7 +98,7 @@ struct TKikimrEvents : TEvents {
         ES_IAM_SERVICE,
         ES_FOLDER_SERVICE,
         ES_GRPC_MON,
-        ES_QUOTA, // must be in sync with ydb/core/quoter/public/quoter.h
+        ES_QUOTA,
         ES_COORDINATED_QUOTA,
         ES_ACCESS_SERVICE,
         ES_USER_ACCOUNT_SERVICE,
@@ -135,7 +135,7 @@ struct TKikimrEvents : TEvents {
         ES_HEALTH_CHECK,
         ES_DQ = NYql::NDq::TDqEvents::ES_DQ_COMPUTE, // 4212
         ES_YQ, // 4213
-        ES_CHANGE_EXCHANGE_DATASHARD,
+        ES_CHANGE_EXCHANGE,
         ES_DATABASE_SERVICE, //4215
         ES_SEQUENCESHARD, // 4216
         ES_SEQUENCEPROXY, // 4217
@@ -161,24 +161,7 @@ struct TKikimrEvents : TEvents {
         ES_DISCOVERY,
         ES_EXT_INDEX,
         ES_CONVEYOR,
-        ES_KQP_SCAN_EXCHANGE,
-        ES_IC_NODE_CACHE,
-        ES_DATA_OPERATIONS,
-        ES_KAFKA,
-        ES_STATISTICS,
-        ES_LDAP_AUTH_PROVIDER,
-        ES_DB_METADATA_CACHE,
-        ES_TABLE_CREATOR,
-        ES_PQ_PARTITION_CHOOSER,
-        ES_GRAPH,
-        ES_REPLICATION_WORKER,
-        ES_CHANGE_EXCHANGE,
-        ES_S3_FILE_QUEUE,
-        ES_NEBIUS_ACCESS_SERVICE,
-        ES_REPLICATION_SERVICE,
-        ES_BACKUP_SERVICE,
-        ES_TX_BACKGROUND,
-        ES_SS_BG_TASKS
+        ES_KQP_SCAN_EXCHANGE
     };
 };
 

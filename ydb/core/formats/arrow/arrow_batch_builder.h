@@ -2,7 +2,6 @@
 #include "arrow_helpers.h"
 #include <ydb/core/formats/factory.h>
 #include <ydb/core/scheme/scheme_tablecell.h>
-#include <ydb/library/conclusion/status.h>
 
 namespace NKikimr::NArrow {
 
@@ -45,7 +44,7 @@ public:
                     return nullptr;
                 } else {
                     auto status = c->GetScalar(RecordIdx);
-                    Y_ABORT_UNLESS(status.ok());
+                    Y_VERIFY(status.ok());
                     return *status;
                 }
             }
@@ -110,13 +109,13 @@ public:
             : Owner(owner)
             , WithCast(withCast)
         {
-            Y_ABORT_UNLESS(!Owner.InConstruction);
+            Y_VERIFY(!Owner.InConstruction);
             CurrentBuilder = Owner.Builders.begin();
             Owner.InConstruction = true;
         }
         ~TRecordConstructor() {
             for (; CurrentBuilder != Owner.Builders.end(); ++CurrentBuilder) {
-                Y_ABORT_UNLESS((*CurrentBuilder)->AppendNull().ok());
+                Y_VERIFY((*CurrentBuilder)->AppendNull().ok());
             }
             Owner.InConstruction = false;
             ++Owner.RecordsCount;
@@ -127,7 +126,7 @@ public:
     TRecordBatchConstructor& InitColumns(const std::shared_ptr<arrow::Schema>& schema);
 
     TRecordConstructor StartRecord(const bool withCast = false) {
-        Y_ABORT_UNLESS(!InConstruction);
+        Y_VERIFY(!InConstruction);
         return TRecordConstructor(*this, withCast);
     }
 
@@ -135,7 +134,7 @@ public:
 
     void Reserve(const ui32 recordsCount) {
         for (auto&& i : Builders) {
-            Y_ABORT_UNLESS(i->Reserve(recordsCount).ok());
+            Y_VERIFY(i->Reserve(recordsCount).ok());
         }
     }
 
@@ -149,23 +148,19 @@ public:
 
     /// @note compression is disabled by default KIKIMR-11690
     // Allowed codecs: UNCOMPRESSED, LZ4_FRAME, ZSTD
-    TArrowBatchBuilder(arrow::Compression::type codec = arrow::Compression::UNCOMPRESSED, const std::set<std::string>& notNullColumns = {});
+    TArrowBatchBuilder(arrow::Compression::type codec = arrow::Compression::UNCOMPRESSED);
     ~TArrowBatchBuilder() = default;
 
     bool Start(const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns,
                ui64 maxRowsInBlock, ui64 maxBytesInBlock, TString& err) override {
         Y_UNUSED(maxRowsInBlock);
         Y_UNUSED(maxBytesInBlock);
-        const auto result = Start(columns);
-        if (!result.ok()) {
-            err = result.ToString();
-        }
-        return result.ok();
+        Y_UNUSED(err);
+        return Start(columns);
     }
 
     void AddRow(const NKikimr::TDbTupleRef& key, const NKikimr::TDbTupleRef& value) override;
     void AddRow(const TConstArrayRef<TCell>& key, const TConstArrayRef<TCell>& value);
-    void AddRow(const TConstArrayRef<TCell>& row);
 
     // You have to call it before Start()
     void Reserve(size_t numRows) {
@@ -179,7 +174,7 @@ public:
         return NumBytes;
     }
 
-    arrow::Status Start(const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns);
+    bool Start(const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns);
     std::shared_ptr<arrow::RecordBatch> FlushBatch(bool reinitialize);
     std::shared_ptr<arrow::RecordBatch> GetBatch() const { return Batch; }
 
@@ -196,7 +191,6 @@ private:
     std::unique_ptr<arrow::RecordBatchBuilder> BatchBuilder;
     std::shared_ptr<arrow::RecordBatch> Batch;
     size_t RowsToReserve{DEFAULT_ROWS_TO_RESERVE};
-    const std::set<std::string> NotNullColumns;
 
 protected:
     size_t NumRows{0};
@@ -204,7 +198,7 @@ protected:
 
 private:
     std::unique_ptr<IBlockBuilder> Clone() const override {
-        return std::make_unique<TArrowBatchBuilder>(WriteOptions.codec->compression_type(), NotNullColumns);
+        return std::make_unique<TArrowBatchBuilder>();
     }
 };
 

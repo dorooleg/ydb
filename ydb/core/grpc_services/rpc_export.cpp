@@ -8,7 +8,7 @@
 #include <ydb/core/tx/schemeshard/schemeshard_export.h>
 #include <ydb/core/ydb_convert/compression.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/ptr.h>
 #include <util/string/builder.h>
@@ -71,7 +71,7 @@ class TExportRPC: public TRpcOperationRequestActor<TDerived, TEvRequest, true>, 
     }
 
     void ResolvePaths(const TVector<TString>& paths) {
-        Y_ABORT_UNLESS(!paths.empty());
+        Y_VERIFY(!paths.empty());
 
         auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
         request->DatabaseName = this->DatabaseName;
@@ -109,10 +109,6 @@ class TExportRPC: public TRpcOperationRequestActor<TDerived, TEvRequest, true>, 
                 TIssuesIds::EIssueCode code;
 
                 switch (entry.Status) {
-                case NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied:
-                    status = StatusIds::UNAUTHORIZED;
-                    code = TIssuesIds::ACCESS_DENIED;
-                    break;
                 case NSchemeCache::TSchemeCacheNavigate::EStatus::RootUnknown:
                 case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown:
                     status = StatusIds::SCHEME_ERROR;
@@ -187,12 +183,8 @@ public:
     using TRpcOperationRequestActor<TDerived, TEvRequest, true>::TRpcOperationRequestActor;
 
     void Bootstrap(const TActorContext&) {
-        const auto& request = *(this->GetProtoRequest());
-        if (request.operation_params().has_forget_after() && request.operation_params().operation_mode() != Ydb::Operations::OperationParams::SYNC) {
-            return this->Reply(StatusIds::UNSUPPORTED, TIssuesIds::DEFAULT_ERROR, "forget_after is not supported for this type of operation");
-        }
+        const auto& settings = this->GetProtoRequest()->settings();
 
-        const auto& settings = request.settings();
         if (settings.items().empty()) {
             return this->Reply(StatusIds::BAD_REQUEST, TIssuesIds::DEFAULT_ERROR, "Items are not set");
         }

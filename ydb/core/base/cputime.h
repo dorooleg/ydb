@@ -1,10 +1,11 @@
 #pragma once
 #include "appdata.h"
-#include "feature_flags.h"
 
 #include <util/system/datetime.h>
+#include <library/cpp/actors/core/actor.h>
 
-namespace NKikimr::NCpuTime {
+namespace NKikimr {
+namespace NCpuTime {
 
 class TCpuTimer {
     ui64 GetCpuTime() const {
@@ -46,4 +47,5 @@ private:
     TDuration* Counter;
 };
 
-} // namespace NKikimr::NCpuTime
+} // namespace NCpuTime
+} // namespace NKikimr

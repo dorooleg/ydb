@@ -2,7 +2,6 @@
 
 #include <ydb/core/protos/base.pb.h>
 #include <ydb/core/protos/blobstorage.pb.h>
-#include <ydb/core/protos/blobstorage_disk.pb.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -95,7 +94,7 @@ namespace NKikimr {
         res.MutableBlobID(); // in only fixuint64
         res.SetShift(Max<ui64>());
         res.SetSize(Max<ui64>());
-        res.SetBufferData(data);
+        res.SetBuffer(data);
         res.SetCookie(Max<ui64>());
         res.SetFullDataSize(Max<ui64>());
         res.SetIngress(Max<ui64>());

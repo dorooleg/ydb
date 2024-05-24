@@ -8,39 +8,41 @@
 
 namespace NYdbWorkload {
 
-class TStockWorkloadParams final: public TWorkloadParams {
-public:
-    void ConfigureOpts(NLastGetopt::TOpts& opts, const ECommandType commandType, int workloadType) override;
-    THolder<IWorkloadQueryGenerator> CreateGenerator() const override;
-    TString GetWorkloadName() const override;
+struct TStockWorkloadParams : public TWorkloadParams {
     size_t ProductCount = 0;
     size_t Quantity = 0;
     size_t OrderCount = 0;
     unsigned int MinPartitions = 0;
     unsigned int Limit = 0;
     bool PartitionsByLoad = true;
-    bool EnableCdc = false;
 };
 
-class TStockWorkloadGenerator final: public TWorkloadQueryGeneratorBase<TStockWorkloadParams> {
+class TStockWorkloadGenerator : public IWorkloadQueryGenerator {
 public:
-    using TBase = TWorkloadQueryGeneratorBase<TStockWorkloadParams>;
-    TStockWorkloadGenerator(const TStockWorkloadParams* params);
+
+    static TStockWorkloadGenerator* New(const TStockWorkloadParams* params) {
+        return new TStockWorkloadGenerator(params);
+    }
+
+    virtual ~TStockWorkloadGenerator() {}
 
     std::string GetDDLQueries() const override;
 
     TQueryInfoList GetInitialData() override;
 
-    TVector<std::string> GetCleanPaths() const override;
+    std::string GetCleanDDLQueries() const override;
 
     TQueryInfoList GetWorkload(int type) override;
-    TVector<TWorkloadType> GetSupportedWorkloadTypes() const override;
+
+    TStockWorkloadParams* GetParams() override;
+
     enum class EType {
         InsertRandomOrder,
         SubmitRandomOrder,
         SubmitSameOrder,
         GetRandomCustomerHistory,
-        GetCustomerHistory
+        GetCustomerHistory,
+        MaxType
     };
 
 private:
@@ -61,9 +63,12 @@ private:
     unsigned int GetProductCountInOrder();
     TProductsQuantity GenerateOrder(unsigned int productCountInOrder, int quantity);
 
+    TStockWorkloadGenerator(const TStockWorkloadParams* params);
+
     TQueryInfo FillStockData() const;
 
     std::string DbPath;
+    TStockWorkloadParams Params;
 
     std::random_device Rd;
     std::mt19937_64 Gen;

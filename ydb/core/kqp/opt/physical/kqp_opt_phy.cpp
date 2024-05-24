@@ -12,8 +12,6 @@
 #include <ydb/library/yql/dq/opt/dq_opt_join.h>
 #include <ydb/library/yql/providers/common/transform/yql_optimize.h>
 #include <ydb/library/yql/providers/dq/expr_nodes/dqs_expr_nodes.h>
-#include <ydb/library/yql/providers/dq/common/yql_dq_settings.h>
-
 
 namespace NKikimr::NKqp::NOpt {
 
@@ -25,28 +23,23 @@ using TStatus = IGraphTransformer::TStatus;
 
 class TKqpPhysicalOptTransformer : public TOptimizeTransformerBase {
 public:
-    TKqpPhysicalOptTransformer(TTypeAnnotationContext& typesCtx, const TIntrusivePtr<TKqpOptimizeContext>& kqpCtx, const TKikimrConfiguration::TPtr& config)
+    TKqpPhysicalOptTransformer(TTypeAnnotationContext& typesCtx, const TIntrusivePtr<TKqpOptimizeContext>& kqpCtx)
         : TOptimizeTransformerBase(nullptr, NYql::NLog::EComponent::ProviderKqp, {})
         , TypesCtx(typesCtx)
         , KqpCtx(*kqpCtx)
-        , Config(config)
     {
 #define HNDL(name) "KqpPhysical-"#name, Hndl(&TKqpPhysicalOptTransformer::name)
         AddHandler(0, &TDqSourceWrap::Match, HNDL(BuildStageWithSourceWrap));
-        AddHandler(0, &TDqReadWrap::Match, HNDL(BuildStageWithReadWrap));
         AddHandler(0, &TKqlReadTable::Match, HNDL(BuildReadTableStage));
         AddHandler(0, &TKqlReadTableRanges::Match, HNDL(BuildReadTableRangesStage));
         AddHandler(0, &TKqlLookupTable::Match, HNDL(BuildLookupTableStage));
         AddHandler(0, &TKqlStreamLookupTable::Match, HNDL(BuildStreamLookupTableStages));
-        AddHandler(0, &TKqlIndexLookupJoin::Match, HNDL(BuildStreamIdxLookupJoinStages));
-        AddHandler(0, &TKqlSequencer::Match, HNDL(BuildSequencerStages));
         AddHandler(0, [](auto) { return true; }, HNDL(RemoveRedundantSortByPk));
         AddHandler(0, &TCoTake::Match, HNDL(ApplyLimitToReadTable));
         AddHandler(0, &TCoTopSort::Match, HNDL(ApplyLimitToOlapReadTable));
         AddHandler(0, &TCoFlatMap::Match, HNDL(PushOlapFilter));
         AddHandler(0, &TCoAggregateCombine::Match, HNDL(PushAggregateCombineToStage));
         AddHandler(0, &TCoAggregateCombine::Match, HNDL(PushOlapAggregate));
-        AddHandler(0, &TCoAggregateCombine::Match, HNDL(PushdownOlapGroupByKeys));
         AddHandler(0, &TDqPhyLength::Match, HNDL(PushOlapLength));
         AddHandler(0, &TCoSkipNullMembers::Match, HNDL(PushSkipNullMembersToStage<false>));
         AddHandler(0, &TCoExtractMembers::Match, HNDL(PushExtractMembersToStage<false>));
@@ -72,16 +65,14 @@ public:
         AddHandler(0, &TCoOrderedLMap::Match, HNDL(PushOrderedLMapToStage<false>));
         AddHandler(0, &TKqlInsertRows::Match, HNDL(BuildInsertStages));
         AddHandler(0, &TKqlUpdateRows::Match, HNDL(BuildUpdateStages));
-        AddHandler(0, &TKqlInsertOnConflictUpdateRows::Match, HNDL(RewriteGenerateIfInsert));
         AddHandler(0, &TKqlUpdateRowsIndex::Match, HNDL(BuildUpdateIndexStages));
         AddHandler(0, &TKqlUpsertRowsIndex::Match, HNDL(BuildUpsertIndexStages));
         AddHandler(0, &TKqlInsertRowsIndex::Match, HNDL(BuildInsertIndexStages));
         AddHandler(0, &TKqlDeleteRowsIndex::Match, HNDL(BuildDeleteIndexStages));
-        AddHandler(0, &TKqpWriteConstraint::Match, HNDL(BuildWriteConstraint<false>));
         AddHandler(0, &TCoUnorderedBase::Match, HNDL(DropUnordered));
         AddHandler(0, &TDqStage::Match, HNDL(PrecomputeToInput));
         AddHandler(0, &TDqStage::Match, HNDL(FloatUpStage));
-        AddHandler(0, &TCoHasItems::Match, HNDL(BuildHasItems<false>));
+        AddHandler(0, &TCoHasItems::Match, HNDL(BuildHasItems));
         AddHandler(0, &TCoSqlIn::Match, HNDL(BuildSqlIn<false>));
         AddHandler(0, &TCoHead::Match, HNDL(BuildScalarPrecompute<false>));
         AddHandler(0, &TCoToOptional::Match, HNDL(BuildScalarPrecompute<false>));
@@ -116,51 +107,20 @@ public:
         AddHandler(1, &TDqJoin::Match, HNDL(BuildJoin<true>));
         AddHandler(1, &TCoLMap::Match, HNDL(PushLMapToStage<true>));
         AddHandler(1, &TCoOrderedLMap::Match, HNDL(PushOrderedLMapToStage<true>));
-        AddHandler(1, &TCoHasItems::Match, HNDL(BuildHasItems<true>));
         AddHandler(1, &TCoSqlIn::Match, HNDL(BuildSqlIn<true>));
         AddHandler(1, &TCoHead::Match, HNDL(BuildScalarPrecompute<true>));
         AddHandler(1, &TCoToOptional::Match, HNDL(BuildScalarPrecompute<true>));
         AddHandler(1, &TCoAsList::Match, HNDL(PropagatePrecomuteScalarRowset<true>));
         AddHandler(1, &TCoTake::Match, HNDL(PropagatePrecomuteTake<true>));
         AddHandler(1, &TCoFlatMap::Match, HNDL(PropagatePrecomuteFlatmap<true>));
-        AddHandler(1, &TKqpWriteConstraint::Match, HNDL(BuildWriteConstraint<true>));
 
         AddHandler(2, &TDqStage::Match, HNDL(RewriteKqpReadTable));
-        AddHandler(2, &TDqStage::Match, HNDL(RewriteKqpLookupTable));
-        AddHandler(2, &TKqlUpsertRows::Match, HNDL(RewriteReturningUpsert));
-        AddHandler(2, &TKqlDeleteRows::Match, HNDL(RewriteReturningDelete));
-
-        AddHandler(3, &TKqlReturningList::Match, HNDL(BuildReturning));
 #undef HNDL
 
         SetGlobal(1u);
     }
 
 protected:
-    TMaybeNode<TExprBase> BuildReturning(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpBuildReturning(node, ctx, KqpCtx);
-        DumpAppliedRule("BuildReturning", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
-    TMaybeNode<TExprBase> RewriteReturningUpsert(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpRewriteReturningUpsert(node, ctx, KqpCtx);
-        DumpAppliedRule("RewriteReturningUpsert", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
-    TMaybeNode<TExprBase> RewriteReturningDelete(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpRewriteReturningDelete(node, ctx, KqpCtx);
-        DumpAppliedRule("RewriteReturningDelete", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
-    TMaybeNode<TExprBase> RewriteGenerateIfInsert(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpRewriteGenerateIfInsert(node, ctx, KqpCtx);
-        DumpAppliedRule("RewriteGenerateIfInsert", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
     TMaybeNode<TExprBase> BuildReadTableStage(TExprBase node, TExprContext& ctx) {
         TExprBase output = KqpBuildReadTableStage(node, ctx, KqpCtx);
         DumpAppliedRule("BuildReadTableStage", node.Ptr(), output.Ptr(), ctx);
@@ -186,18 +146,6 @@ protected:
         return output;
     }
 
-    TMaybeNode<TExprBase> BuildStreamIdxLookupJoinStages(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpBuildStreamIdxLookupJoinStages(node, ctx);
-        DumpAppliedRule("BuildStreamIdxLookupJoinStages", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
-    TMaybeNode<TExprBase> BuildSequencerStages(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpBuildSequencerStages(node, ctx);
-        DumpAppliedRule("BuildSequencerStages", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
     TMaybeNode<TExprBase> RemoveRedundantSortByPk(TExprBase node, TExprContext& ctx) {
         TExprBase output = KqpRemoveRedundantSortByPk(node, ctx, KqpCtx);
         DumpAppliedRule("RemoveRedundantSortByPk", node.Ptr(), output.Ptr(), ctx);
@@ -207,12 +155,6 @@ protected:
     TMaybeNode<TExprBase> RewriteKqpReadTable(TExprBase node, TExprContext& ctx) {
         TExprBase output = KqpRewriteReadTable(node, ctx, KqpCtx);
         DumpAppliedRule("RewriteKqpReadTable", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
-    TMaybeNode<TExprBase> RewriteKqpLookupTable(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpRewriteLookupTablePhy(node, ctx, KqpCtx);
-        DumpAppliedRule("RewriteKqpLookupTable", node.Ptr(), output.Ptr(), ctx);
         return output;
     }
 
@@ -239,12 +181,6 @@ protected:
     {
         TExprBase output = DqPushAggregateCombineToStage(node, ctx, optCtx, *getParents(), false);
         DumpAppliedRule("PushAggregateCombineToStage", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
-    TMaybeNode<TExprBase> PushdownOlapGroupByKeys(TExprBase node, TExprContext& ctx) {
-        TExprBase output = KqpPushDownOlapGroupByKeys(node, ctx, KqpCtx);
-        DumpAppliedRule("PushdownOlapGroupByKeys", node.Ptr(), output.Ptr(), ctx);
         return output;
     }
 
@@ -427,12 +363,8 @@ protected:
     TMaybeNode<TExprBase> BuildJoin(TExprBase node, TExprContext& ctx,
         IOptimizationContext& optCtx, const TGetParents& getParents)
     {
-        // TODO: Allow push to left stage for data queries.
-        // It is now possible as we don't use datashard transactions for reads in data queries.
-        bool pushLeftStage = !KqpCtx.IsDataQuery() && AllowFuseJoinInputs(node);
-        bool useCBO = Config->CostBasedOptimizationLevel.Get().GetOrElse(TDqSettings::TDefault::CostBasedOptimizationLevel) == 3;
         TExprBase output = DqBuildJoin(node, ctx, optCtx, *getParents(), IsGlobal,
-            pushLeftStage, KqpCtx.Config->GetHashJoinMode(), useCBO
+            /*pushLeftStage =*/ !KqpCtx.IsDataQuery() && AllowFuseJoinInputs(node), KqpCtx.Config->GetHashJoinMode()
         );
         DumpAppliedRule("BuildJoin", node.Ptr(), output.Ptr(), ctx);
         return output;
@@ -498,15 +430,6 @@ protected:
         return output;
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> BuildWriteConstraint(TExprBase node, TExprContext& ctx,
-        IOptimizationContext& optCtx, const TGetParents& getParents)
-    {
-        TExprBase output = KqpBuildWriteConstraint(node, ctx, optCtx, *getParents(), IsGlobal);
-        DumpAppliedRule("BuildWriteConstraint", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
     TMaybeNode<TExprBase> DropUnordered(TExprBase node, TExprContext& ctx) {
         TExprBase output = node;
         if (node.Maybe<TCoUnorderedBase>().Input().Maybe<TDqCnUnionAll>()) {
@@ -522,9 +445,8 @@ protected:
         return output;
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> BuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TGetParents& getParents) {
-        TExprBase output = DqBuildHasItems(node, ctx, optCtx, *getParents(), IsGlobal);
+    TMaybeNode<TExprBase> BuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx) {
+        TExprBase output = DqBuildHasItems(node, ctx, optCtx);
         DumpAppliedRule("DqBuildHasItems", node.Ptr(), output.Ptr(), ctx);
         return output;
     }
@@ -586,22 +508,15 @@ protected:
         return output;
     }
 
-    TMaybeNode<TExprBase> BuildStageWithReadWrap(TExprBase node, TExprContext& ctx) {
-        TExprBase output = DqBuildStageWithReadWrap(node, ctx);
-        DumpAppliedRule("BuildStageWithReadWrap", node.Ptr(), output.Ptr(), ctx);
-        return output;
-    }
-
 private:
     TTypeAnnotationContext& TypesCtx;
     const TKqpOptimizeContext& KqpCtx;
-    const TKikimrConfiguration::TPtr& Config;
 };
 
 TAutoPtr<IGraphTransformer> CreateKqpPhyOptTransformer(const TIntrusivePtr<TKqpOptimizeContext>& kqpCtx,
-    NYql::TTypeAnnotationContext& typesCtx, const TKikimrConfiguration::TPtr& config)
+    NYql::TTypeAnnotationContext& typesCtx)
 {
-    return THolder<IGraphTransformer>(new TKqpPhysicalOptTransformer(typesCtx, kqpCtx, config));
+    return THolder<IGraphTransformer>(new TKqpPhysicalOptTransformer(typesCtx, kqpCtx));
 }
 
 } // namespace NKikimr::NKqp::NOpt

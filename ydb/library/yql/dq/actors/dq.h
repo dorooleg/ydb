@@ -79,17 +79,4 @@ struct TEvDq {
 
 };
 
-struct TChannelDataOOB {
-    NDqProto::TChannelData Proto;
-    TRope Payload;
-
-    size_t PayloadSize() const {
-        return Proto.GetData().GetRaw().size() + Payload.size();
-    }
-
-    ui32 RowCount() const {
-        return Proto.GetData().GetRows();
-    }
-};
-
 } // namespace NYql::NDq

@@ -3,7 +3,7 @@
 #include "dq_channel_storage.h"
 
 #include <ydb/library/yql/dq/common/dq_common.h>
-#include <ydb/library/yql/dq/common/dq_serialized_batch.h>
+#include <ydb/library/yql/dq/proto/dq_transport.pb.h>
 #include <ydb/library/yql/dq/actors/protos/dq_events.pb.h>
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
@@ -14,15 +14,31 @@
 
 namespace NYql::NDq {
 
-struct TDqOutputChannelStats : public TDqOutputStats {
+struct TDqOutputChannelStats : TDqOutputStats {
     ui64 ChannelId = 0;
-    ui32 DstStageId = 0;
-    ui64 MaxMemoryUsage = 0;
-    ui64 MaxRowsInMemory = 0;
+
+    // profile stats
     TDuration SerializationTime;
+
     ui64 SpilledBytes = 0;
     ui64 SpilledRows = 0;
     ui64 SpilledBlobs = 0;
+
+    explicit TDqOutputChannelStats(ui64 channelId)
+        : ChannelId(channelId) {}
+
+    template<typename T>
+    void FromProto(const T& f)
+    {
+        this->ChannelId = f.GetChannelId();
+        this->Chunks = f.GetChunks();
+        this->Bytes = f.GetBytes();
+        this->RowsIn = f.GetRowsIn();
+        this->RowsOut = f.GetRowsOut();
+        this->MaxMemoryUsage = f.GetMaxMemoryUsage();
+        //s->StartTs = TInstant::MilliSeconds(f.GetStartTs());
+        //s->FinishTs = TInstant::MilliSeconds(f.GetFinishTs());
+    }
 };
 
 class IDqOutputChannel : public IDqOutput {
@@ -31,12 +47,11 @@ public:
 
     virtual ui64 GetChannelId() const = 0;
     virtual ui64 GetValuesCount() const = 0;
-    virtual const TDqOutputChannelStats& GetPopStats() const = 0;
 
     // <| consumer methods
     // can throw TDqChannelStorageException
     [[nodiscard]]
-    virtual bool Pop(TDqSerializedBatch& data) = 0;
+    virtual bool Pop(NDqProto::TData& data) = 0;
     // Pop watermark.
     [[nodiscard]]
     virtual bool Pop(NDqProto::TWatermark& watermark) = 0;
@@ -49,11 +64,12 @@ public:
     //       Data-query implementation should be one-shot for Pop (a-la PopAll) call and without ChannelStorage.
     // can throw TDqChannelStorageException
     [[nodiscard]]
-    virtual bool PopAll(TDqSerializedBatch& data) = 0;
+    virtual bool PopAll(NDqProto::TData& data) = 0;
     // |>
 
     virtual ui64 Drop() = 0;
 
+    virtual const TDqOutputChannelStats* GetStats() const = 0;
     virtual void Terminate() = 0;
 };
 
@@ -63,13 +79,10 @@ struct TDqOutputChannelSettings {
     ui64 ChunkSizeLimit = 48_MB;
     NDqProto::EDataTransportVersion TransportVersion = NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_PICKLE_1_0;
     IDqChannelStorage::TPtr ChannelStorage;
-    TCollectStatsLevel Level = TCollectStatsLevel::None;
+    bool CollectProfileStats = false;
 };
 
-struct TDqOutputChannelChunkSizeLimitExceeded : public yexception {
-};
-
-IDqOutputChannel::TPtr CreateDqOutputChannel(ui64 channelId, ui32 dstStageId, NKikimr::NMiniKQL::TType* outputType,
+IDqOutputChannel::TPtr CreateDqOutputChannel(ui64 channelId, NKikimr::NMiniKQL::TType* outputType,
     const NKikimr::NMiniKQL::THolderFactory& holderFactory,
     const TDqOutputChannelSettings& settings, const TLogFunc& logFunc = {});
 

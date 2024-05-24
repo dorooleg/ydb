@@ -5,10 +5,8 @@
 #include "blobstorage_groupinfo_partlayout.h"
 #include <ydb/core/base/services/blobstorage_service_id.h>
 #include <ydb/core/blobstorage/vdisk/ingress/blobstorage_ingress.h>
-#include <ydb/core/protos/blobstorage.pb.h>
-#include <ydb/core/protos/blobstorage_disk.pb.h>
 
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <library/cpp/pop_count/popcount.h>
 
@@ -101,7 +99,7 @@ public:
             TSubgroupPartLayout temp(parts);
             temp.AddItem(idxInSubgroup, part, type);
             const ui32 newEffectiveReplicas = temp.CountEffectiveReplicas(type);
-            Y_ABORT_UNLESS(newEffectiveReplicas == effectiveReplicas || newEffectiveReplicas == effectiveReplicas + 1);
+            Y_VERIFY(newEffectiveReplicas == effectiveReplicas || newEffectiveReplicas == effectiveReplicas + 1);
             return newEffectiveReplicas > effectiveReplicas;
         };
         if (idxInSubgroup < type.TotalPartCount()) {
@@ -420,10 +418,6 @@ ui32 TBlobStorageGroupInfo::TTopology::GetIdxInSubgroup(const TVDiskIdShort& vdi
     return BlobMapper->GetIdxInSubgroup(vdisk, hash);
 }
 
-bool TBlobStorageGroupInfo::TTopology::IsHandoff(const TVDiskIdShort& vdisk, ui32 hash) const {
-    return BlobMapper->GetIdxInSubgroup(vdisk, hash) >= GType.TotalPartCount();
-}
-
 TVDiskIdShort TBlobStorageGroupInfo::TTopology::GetVDiskInSubgroup(ui32 idxInSubgroup, ui32 hash) const {
     return BlobMapper->GetVDiskInSubgroup(idxInSubgroup, hash);
 }
@@ -480,10 +474,10 @@ IBlobToDiskMapper *TBlobStorageGroupInfo::TTopology::CreateMapper(TBlobStorageGr
             return IBlobToDiskMapper::CreateMirror3dcMapper(topology);
 
         default:
-            Y_ABORT("unexpected erasure type 0x%08" PRIx32, static_cast<ui32>(gtype.GetErasure()));
+            Y_FAIL("unexpected erasure type 0x%08" PRIx32, static_cast<ui32>(gtype.GetErasure()));
     }
 
-    Y_ABORT();
+    Y_FAIL();
 }
 
 TBlobStorageGroupInfo::IQuorumChecker *TBlobStorageGroupInfo::TTopology::CreateQuorumChecker(const TTopology *topology) {
@@ -514,11 +508,11 @@ TBlobStorageGroupInfo::IQuorumChecker *TBlobStorageGroupInfo::TTopology::CreateQ
             return new TQuorumCheckerMirror3of4(topology);
 
         default:
-            Y_ABORT("unexpected erasure type 0x%08" PRIx32,
+            Y_FAIL("unexpected erasure type 0x%08" PRIx32,
                    static_cast<ui32>(topology->GType.GetErasure()));
     }
 
-    Y_ABORT();
+    Y_FAIL();
 }
 
 TString TBlobStorageGroupInfo::TTopology::ToString() const {
@@ -563,8 +557,8 @@ TBlobStorageGroupInfo::TDynamicInfo::TDynamicInfo(ui32 groupId, ui32 groupGen)
 ////////////////////////////////////////////////////////////////////////////
 TBlobStorageGroupInfo::TBlobStorageGroupInfo(TBlobStorageGroupType gtype, ui32 numVDisksPerFailDomain,
         ui32 numFailDomains, ui32 numFailRealms, const TVector<TActorId> *vdiskIds, EEncryptionMode encryptionMode,
-        ELifeCyclePhase lifeCyclePhase, TCypherKey key, ui32 groupId)
-    : GroupID(groupId)
+        ELifeCyclePhase lifeCyclePhase, TCypherKey key)
+    : GroupID(0)
     , GroupGeneration(1)
     , Type(gtype)
     , Dynamic(GroupID, GroupGeneration)
@@ -739,11 +733,11 @@ bool TBlobStorageGroupInfo::DecryptGroupKey(TBlobStorageGroupInfo::EEncryptionMo
 
                 TStreamCypher cypher;
                 bool isKeySet = cypher.SetKey(tenantKey);
-                Y_ABORT_UNLESS(isKeySet);
+                Y_VERIFY(isKeySet);
                 cypher.StartMessage(groupKeyNonce, 0);
 
                 ui32 h = 0;
-                Y_ABORT_UNLESS(encryptedGroupKey.size() == keySize + sizeof(h),
+                Y_VERIFY(encryptedGroupKey.size() == keySize + sizeof(h),
                         "Unexpected encryptedGroupKeySize# %" PRIu32 " keySize# %" PRIu32 " sizeof(h)# %" PRIu32
                         " groupId# %" PRIu32 " encryptedGroupKey# \"%s\"",
                         (ui32)encryptedGroupKey.size(), (ui32)keySize, (ui32)sizeof(h), (ui32)groupId,
@@ -755,7 +749,7 @@ bool TBlobStorageGroupInfo::DecryptGroupKey(TBlobStorageGroupInfo::EEncryptionMo
                 return isHashGood;
             }
     }
-    Y_ABORT("Unexpected Encryption Mode# %" PRIu64, (ui64)encryptionMode);
+    Y_FAIL("Unexpected Encryption Mode# %" PRIu64, (ui64)encryptionMode);
 }
 
 const TBlobStorageGroupInfo::IQuorumChecker& TBlobStorageGroupInfo::GetQuorumChecker() const {
@@ -779,7 +773,7 @@ TString TBlobStorageGroupInfo::BlobStateToString(EBlobState state) {
         case EBS_FULL:
             return "EBS_FULL";
         default:
-            Y_ABORT_UNLESS(false, "Unexpected state# %" PRIu64, (ui64)state);
+            Y_VERIFY(false, "Unexpected state# %" PRIu64, (ui64)state);
     }
 }
 
@@ -937,15 +931,15 @@ TVDiskID VDiskIDFromString(TString str, bool* isGenerationSet) {
     TVector<TString> parts = SplitString(str, ":");
     if (parts.size() != 5) {
         return TVDiskID::InvalidId;
-    }
+    } 
 
     ui32 groupGeneration = 0;
 
-    if (!IsHexNumber(parts[0]) || !IsNumber(parts[2]) || !IsNumber(parts[3]) || !IsNumber(parts[4])
+    if (!IsHexNumber(parts[0]) || !IsNumber(parts[2]) || !IsNumber(parts[3]) || !IsNumber(parts[4]) 
         || !(IsNumber(parts[1]) || parts[1] == "_")) {
         return TVDiskID::InvalidId;
     }
-
+    
     if (parts[1] == "_") {
         if (isGenerationSet) {
             *isGenerationSet = false;
@@ -957,10 +951,10 @@ TVDiskID VDiskIDFromString(TString str, bool* isGenerationSet) {
         groupGeneration = IntFromString<ui32, 10>(parts[1]);
     }
 
-    return TVDiskID(IntFromString<ui32, 16>(parts[0]),
-        groupGeneration,
-        IntFromString<ui8, 10>(parts[2]),
-        IntFromString<ui8, 10>(parts[3]),
+    return TVDiskID(IntFromString<ui32, 16>(parts[0]), 
+        groupGeneration, 
+        IntFromString<ui8, 10>(parts[2]), 
+        IntFromString<ui8, 10>(parts[3]), 
         IntFromString<ui8, 10>(parts[4]));
 }
 
@@ -1116,7 +1110,7 @@ bool TFailDomain::IsDifferentAt(const TLevelIds &id, const TFailDomain &other) c
     while (key != id.Ids.end()) {
         while (true) {
             if (a == Levels.end()) {
-                Y_ABORT("Not enough a levels for FailDomain comparison");
+                Y_FAIL("Not enough a levels for FailDomain comparison");
             }
             if (a->first < *key) {
                 ++a;
@@ -1124,7 +1118,7 @@ bool TFailDomain::IsDifferentAt(const TLevelIds &id, const TFailDomain &other) c
 
                 while (true) {
                     if (b == other.Levels.end()) {
-                        Y_ABORT("Not enough b levels for FailDomain comparison");
+                        Y_FAIL("Not enough b levels for FailDomain comparison");
                     }
                     if (b->first < *key) {
                         ++b;
@@ -1137,12 +1131,12 @@ bool TFailDomain::IsDifferentAt(const TLevelIds &id, const TFailDomain &other) c
                         ++b;
                         break;
                     } else {
-                        Y_ABORT("Missing b level for FailDomain comparison");
+                        Y_FAIL("Missing b level for FailDomain comparison");
                     }
                 }
                 break;
             } else {
-                Y_ABORT("Missing a level for FailDomain comparison");
+                Y_FAIL("Missing a level for FailDomain comparison");
             }
         }
     }

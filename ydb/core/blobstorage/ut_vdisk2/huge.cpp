@@ -13,9 +13,7 @@ Y_UNIT_TEST_SUITE(VDiskTest) {
 
         char value = 1;
         std::vector<TString> blobValues;
-        std::vector<ui32> minHugeBlobValues = {8 * 1024, 12 * 1024, 60 * 1024, 64 * 1024, 512 * 1024};
-
-        for (const ui32 size : {10, 1024, 40 * 1024, 576 * 1024, 1024 * 1024, 1536 * 1024}) {
+        for (const ui32 size : {10, 1024, 576 * 1024, 1024 * 1024, 1536 * 1024}) {
             for (ui32 i = 0; i < 10; ++i) {
                 TString data = TString::Uninitialized(size);
                 memset(data.Detach(), value++, data.size());
@@ -32,7 +30,7 @@ Y_UNIT_TEST_SUITE(VDiskTest) {
                 UNIT_ASSERT_VALUES_EQUAL(res.ResultSize(), 1);
                 const auto& value = res.GetResult(0);
                 UNIT_ASSERT_VALUES_EQUAL(value.GetStatus(), NKikimrProto::OK);
-                UNIT_ASSERT_VALUES_EQUAL(value.GetBufferData(), *datap);
+                UNIT_ASSERT_VALUES_EQUAL(value.GetBuffer(), *datap);
             }
         };
 
@@ -55,7 +53,6 @@ Y_UNIT_TEST_SUITE(VDiskTest) {
         ui64 minTotalSize = (ui64)4 << 30;
         ui64 totalSize = 0;
         ui8 channel = 0;
-        ui32 lastMinHugeBlobValue = 0;
 
         while (TInstant::Now() < end) {
             const ui64 tabletId = tabletIds[RandomNumber(tabletIds.size())];
@@ -70,16 +67,6 @@ Y_UNIT_TEST_SUITE(VDiskTest) {
 
             content.emplace(id, &data);
             totalSize += data.size();
-
-            if (RandomNumber(1000u) < 3) {
-                ui32 minHugeBlobValue;
-                do {
-                    minHugeBlobValue = minHugeBlobValues[RandomNumber(minHugeBlobValues.size())];
-                } while (minHugeBlobValue == lastMinHugeBlobValue);
-                lastMinHugeBlobValue = minHugeBlobValue;
-                env->ChangeMinHugeBlobSize(minHugeBlobValue);
-                Cerr << "Change MinHugeBlobSize# " << minHugeBlobValue << Endl; 
-            }
 
             if (totalSize > maxTotalSize || (totalSize >= minTotalSize && RandomNumber(1000u) < 3)) {
                 std::vector<TLogoBlobID> options;

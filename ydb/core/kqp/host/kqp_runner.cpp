@@ -4,11 +4,6 @@
 #include <ydb/core/kqp/query_compiler/kqp_query_compiler.h>
 #include <ydb/core/kqp/opt/kqp_opt.h>
 #include <ydb/core/kqp/opt/logical/kqp_opt_log.h>
-#include <ydb/core/kqp/opt/kqp_statistics_transformer.h>
-#include <ydb/core/kqp/opt/kqp_constant_folding_transformer.h>
-#include <ydb/core/kqp/opt/logical/kqp_opt_cbo.h>
-
-
 #include <ydb/core/kqp/opt/physical/kqp_opt_phy.h>
 #include <ydb/core/kqp/opt/peephole/kqp_opt_peephole.h>
 #include <ydb/core/kqp/opt/kqp_query_plan.h>
@@ -19,9 +14,6 @@
 #include <ydb/library/yql/core/type_ann/type_ann_expr.h>
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/core/services/yql_transform_pipeline.h>
-#include <ydb/library/yql/core/yql_opt_proposed_by_data.h>
-
-#include <ydb/library/yql/providers/dq/common/yql_dq_settings.h>
 
 #include <util/generic/is_in.h>
 
@@ -36,84 +28,14 @@ using namespace NThreading;
 
 namespace {
 
-TAutoPtr<IGraphTransformer> Log(const TStringBuf& transformerName, NYql::NLog::ELevel level = NYql::NLog::ELevel::TRACE) {
-    return TLogExprTransformer::Sync(TStringBuilder() << transformerName << "Transformer",
-        NYql::NLog::EComponent::ProviderKqp,
-        level);
-}
-
-TTransformStage LogStage(const TStringBuf& transformerName, NYql::NLog::ELevel level = NYql::NLog::ELevel::TRACE) {
-    return TTransformStage{ Log(transformerName, level), TStringBuilder() << "Log" << transformerName, TIssuesIds::DEFAULT_ERROR };
-}
-
-class TCompilePhysicalQueryTransformer : public TSyncTransformerBase {
-public:
-    TCompilePhysicalQueryTransformer(
-        const TString& cluster,
-        TKqlTransformContext& transformCtx,
-        TKqpOptimizeContext& optimizeCtx,
-        TTypeAnnotationContext& typesCtx,
-        const NMiniKQL::IFunctionRegistry& funcRegistry,
-        const TKikimrConfiguration::TPtr& config
-    )
-        : Cluster(cluster)
-        , TransformCtx(transformCtx)
-        , OptimizeCtx(optimizeCtx)
-        , TypesCtx(typesCtx)
-        , FuncRegistry(funcRegistry)
-        , Config(config)
-    {
-    }
-
-    TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) override {
-        output = input;
-
-        if (!TransformerFinished) {
-            TransformerFinished = true;
-            auto& preparedQuery = *TransformCtx.QueryCtx->PreparingQuery;
-            TKqpPhysicalQuery physicalQuery(input);
-
-            YQL_ENSURE(TransformCtx.DataQueryBlocks);
-            auto compiler = CreateKqpQueryCompiler(Cluster, OptimizeCtx.Tables, FuncRegistry, TypesCtx, Config);
-            auto ret = compiler->CompilePhysicalQuery(physicalQuery, *TransformCtx.DataQueryBlocks, *preparedQuery.MutablePhysicalQuery(), ctx);
-            if (!ret) {
-                ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), "Failed to compile physical query."));
-                return TStatus::Error;
-            }
-
-            preparedQuery.SetVersion(NKikimrKqp::TPreparedQuery::VERSION_PHYSICAL_V1);
-        }
-
-        return TStatus::Ok;
-    }
-
-    void Rewind() override {
-        TransformerFinished = false;
-    }
-
-private:
-    const TString Cluster;
-    TKqlTransformContext& TransformCtx;
-    TKqpOptimizeContext& OptimizeCtx;
-    TTypeAnnotationContext& TypesCtx;
-    const NMiniKQL::IFunctionRegistry& FuncRegistry;
-    TKikimrConfiguration::TPtr Config;
-    bool TransformerFinished = false;
-};
-
-class TPrepareQueryAsyncResult : public TKqpAsyncResultBase<IKikimrQueryExecutor::TQueryResult, false> {
+class TPhysicalAsyncRunResult : public TKqpAsyncResultBase<IKikimrQueryExecutor::TQueryResult, false> {
 public:
     using TResult = IKikimrQueryExecutor::TQueryResult;
 
-    TPrepareQueryAsyncResult(
-        const TExprNode::TPtr& queryRoot,
-        IGraphTransformer& transformer,
-        TExprContext& ctx,
-        TKqlTransformContext& transformCtx)
-        : TKqpAsyncResultBase(queryRoot, ctx, transformer, nullptr)
-        , TransformCtx(transformCtx)
-    {
-    }
+    TPhysicalAsyncRunResult(const TExprNode::TPtr& queryRoot, TExprContext& exprCtx, IGraphTransformer& transformer,
+        const TKqlTransformContext& transformCtx)
+        : TKqpAsyncResultBase(queryRoot, exprCtx, transformer)
+        , TransformCtx(transformCtx) {}
 
     void FillResult(TResult& queryResult) const override {
         TVector<NKikimrMiniKQL::TResult*> results;
@@ -130,33 +52,93 @@ public:
     }
 
 private:
-    TKqlTransformContext& TransformCtx;
+    const TKqlTransformContext& TransformCtx;
 };
 
 class TKqpRunner : public IKqpRunner {
 public:
     TKqpRunner(TIntrusivePtr<IKqpGateway> gateway, const TString& cluster,
-        const TIntrusivePtr<TTypeAnnotationContext>& typesCtx, const TIntrusivePtr<TKikimrSessionContext>& sessionCtx,
-        const TIntrusivePtr<TKqlTransformContext>& transformCtx, const NMiniKQL::IFunctionRegistry& funcRegistry)
+        TIntrusivePtr<TTypeAnnotationContext> typesCtx, TIntrusivePtr<TKikimrSessionContext> sessionCtx,
+        const NMiniKQL::IFunctionRegistry& funcRegistry,
+        TIntrusivePtr<ITimeProvider> timeProvider, TIntrusivePtr<IRandomProvider> randomProvider)
         : Gateway(gateway)
         , Cluster(cluster)
         , TypesCtx(*typesCtx)
-        , SessionCtx(sessionCtx)
-        , FunctionRegistry(funcRegistry)
+        , FuncRegistry(funcRegistry)
         , Config(sessionCtx->ConfigPtr())
-        , TransformCtx(transformCtx)
+        , TransformCtx(MakeIntrusive<TKqlTransformContext>(Config, sessionCtx->QueryPtr(), sessionCtx->TablesPtr()))
         , OptimizeCtx(MakeIntrusive<TKqpOptimizeContext>(cluster, Config, sessionCtx->QueryPtr(),
             sessionCtx->TablesPtr()))
         , BuildQueryCtx(MakeIntrusive<TKqpBuildQueryContext>())
-        , Pctx(TKqpProviderContext(*OptimizeCtx, Config->CostBasedOptimizationLevel.Get().GetOrElse(TDqSettings::TDefault::CostBasedOptimizationLevel)))
     {
-        CreateGraphTransformer(typesCtx, sessionCtx, funcRegistry);
+        auto logLevel = NYql::NLog::ELevel::TRACE;
+        auto logComp = NYql::NLog::EComponent::ProviderKqp;
+
+        PreparedExplainTransformer = TTransformationPipeline(typesCtx)
+            .Add(CreateKqpExplainPreparedTransformer(
+                Gateway, Cluster, TransformCtx, &funcRegistry, timeProvider, randomProvider), "ExplainQuery")
+            .Build(false);
+
+        PhysicalOptimizeTransformer = CreateKqpQueryBlocksTransformer(TTransformationPipeline(typesCtx)
+            .AddServiceTransformers()
+            .Add(TLogExprTransformer::Sync("PhysicalOptimizeTransformer", logComp, logLevel), "LogPhysicalOptimize")
+            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(),
+                *typesCtx, Config))
+            .Add(CreateKqpCheckQueryTransformer(), "CheckKqlQuery")
+            .AddPostTypeAnnotation(/* forSubgraph */ true)
+            .AddCommonOptimization()
+            .Add(CreateKqpLogOptTransformer(OptimizeCtx, *typesCtx, Config), "LogicalOptimize")
+            .Add(CreateKqpPhyOptTransformer(OptimizeCtx, *typesCtx), "PhysicalOptimize")
+            .Add(CreateKqpFinalizingOptTransformer(OptimizeCtx), "FinalizingOptimize")
+            .Add(CreateKqpQueryPhasesTransformer(), "QueryPhases")
+            .Add(CreateKqpQueryEffectsTransformer(OptimizeCtx), "QueryEffects")
+            .Add(CreateKqpCheckPhysicalQueryTransformer(), "CheckKqlPhysicalQuery")
+            .Build(false));
+
+        PhysicalBuildTxsTransformer = CreateKqpQueryBlocksTransformer(TTransformationPipeline(typesCtx)
+            .AddServiceTransformers()
+            .Add(TLogExprTransformer::Sync("PhysicalBuildTxsTransformer", logComp, logLevel), "LogPhysicalBuildTxs")
+            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config))
+            .AddPostTypeAnnotation(/* forSubgraph */ true)
+            .Add(
+                CreateKqpBuildTxsTransformer(
+                    OptimizeCtx,
+                    BuildQueryCtx,
+                    CreateTypeAnnotationTransformer(
+                        CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config),
+                        *typesCtx),
+                    *typesCtx,
+                    Config),
+                "BuildPhysicalTxs")
+            .Build(false));
+
+        PhysicalBuildQueryTransformer = TTransformationPipeline(typesCtx)
+            .AddServiceTransformers()
+            .Add(TLogExprTransformer::Sync("PhysicalBuildQueryTransformer", logComp, logLevel), "LogPhysicalBuildQuery")
+            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config))
+            .AddPostTypeAnnotation()
+            .Add(CreateKqpBuildPhysicalQueryTransformer(OptimizeCtx, BuildQueryCtx), "BuildPhysicalQuery")
+            .Build(false);
+
+        PhysicalPeepholeTransformer = TTransformationPipeline(typesCtx)
+            .AddServiceTransformers()
+            .Add(TLogExprTransformer::Sync("PhysicalPeepholeTransformer", logComp, logLevel), "LogPhysicalPeephole")
+            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config))
+            .AddPostTypeAnnotation()
+            .Add(
+                CreateKqpTxsPeepholeTransformer(
+                    CreateTypeAnnotationTransformer(
+                        CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config),
+                    *typesCtx), *typesCtx, Config), "Peephole")
+            .Build(false);
     }
 
     TIntrusivePtr<TAsyncQueryResult> PrepareDataQuery(const TString& cluster, const TExprNode::TPtr& query,
         TExprContext& ctx, const IKikimrQueryExecutor::TExecuteSettings& settings) override
     {
         YQL_ENSURE(TransformCtx->QueryCtx->Type == EKikimrQueryType::Dml);
+        YQL_ENSURE(TransformCtx->QueryCtx->PrepareOnly);
+        YQL_ENSURE(TransformCtx->QueryCtx->PreparingQuery);
         YQL_ENSURE(TMaybeNode<TKiDataQueryBlocks>(query));
 
         return PrepareQueryInternal(cluster, TKiDataQueryBlocks(query), ctx, settings);
@@ -166,6 +148,8 @@ public:
         TExprContext& ctx, const IKikimrQueryExecutor::TExecuteSettings& settings) override
     {
         YQL_ENSURE(TransformCtx->QueryCtx->Type == EKikimrQueryType::Scan);
+        YQL_ENSURE(TransformCtx->QueryCtx->PrepareOnly);
+        YQL_ENSURE(TransformCtx->QueryCtx->PreparingQuery);
         YQL_ENSURE(TMaybeNode<TKiDataQueryBlocks>(query));
 
         TKiDataQueryBlocks dataQueryBlocks(query);
@@ -196,36 +180,29 @@ public:
         TExprContext& ctx, const IKikimrQueryExecutor::TExecuteSettings& settings) override
     {
         YQL_ENSURE(IsIn({EKikimrQueryType::Query, EKikimrQueryType::Script}, TransformCtx->QueryCtx->Type));
+        YQL_ENSURE(TransformCtx->QueryCtx->PrepareOnly);
+        YQL_ENSURE(TransformCtx->QueryCtx->PreparingQuery);
         YQL_ENSURE(TMaybeNode<TKiDataQueryBlocks>(query));
 
-        switch (TransformCtx->Config->BlockChannelsMode) {
-            case NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_SCALAR:
-            case NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_AUTO:
-                TypesCtx.BlockEngineMode = NYql::EBlockEngineMode::Auto;
-                break;
-            case NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_FORCE:
-                TypesCtx.BlockEngineMode = NYql::EBlockEngineMode::Force;
-                break;
-            default:
-                YQL_ENSURE(false);
+        TKiDataQueryBlocks dataQueryBlocks(query);
+        YQL_ENSURE(dataQueryBlocks.ArgCount() == 1);
+
+        const auto& queryBlock = dataQueryBlocks.Arg(0);
+        if (queryBlock.Effects().ArgCount() > 0) {
+            ctx.AddError(YqlIssue(ctx.GetPosition(dataQueryBlocks.Pos()), TIssuesIds::KIKIMR_PRECONDITION_FAILED,
+                "Data modifications not yet supported."));
+            return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(ctx.IssueManager.GetIssues()));
         }
 
-        return PrepareQueryInternal(cluster, TKiDataQueryBlocks(query), ctx, settings);
+        return PrepareQueryInternal(cluster, dataQueryBlocks, ctx, settings);
     }
 
 private:
-
     TIntrusivePtr<TAsyncQueryResult> PrepareQueryInternal(const TString& cluster,
         const TKiDataQueryBlocks& dataQueryBlocks, TExprContext& ctx,
         const IKikimrQueryExecutor::TExecuteSettings& settings)
     {
-        CreateGraphTransformer(&TypesCtx, SessionCtx, FunctionRegistry);
-
         YQL_ENSURE(cluster == Cluster);
-        YQL_ENSURE(!settings.CommitTx);
-        YQL_ENSURE(!settings.RollbackTx);
-        YQL_ENSURE(TransformCtx->QueryCtx->PrepareOnly);
-        YQL_ENSURE(TransformCtx->QueryCtx->PreparingQuery);
 
         auto* queryCtx = TransformCtx->QueryCtx.Get();
 
@@ -242,117 +219,105 @@ private:
                     result.SetRowsLimit(FromString<ui64>(block.Results().Item(i).RowsLimit()));
                 }
             }
+        } else {
+            // scan query
         }
 
-        const bool sysColumnsEnabled = TransformCtx->Config->SystemColumnsEnabled();
+        bool sysColumnsEnabled = TransformCtx->Config->SystemColumnsEnabled();
+        return PrepareQueryNewEngine(cluster, dataQueryBlocks, ctx, settings, sysColumnsEnabled);
+    }
+
+    TIntrusivePtr<TAsyncQueryResult> PrepareQueryNewEngine(const TString& cluster,
+        const TKiDataQueryBlocks& dataQueryBlocks, TExprContext& ctx,
+        const IKikimrQueryExecutor::TExecuteSettings& settings, bool sysColumnsEnabled)
+    {
+        YQL_ENSURE(cluster == Cluster);
+        YQL_ENSURE(!settings.CommitTx);
+        YQL_ENSURE(!settings.RollbackTx);
+        YQL_ENSURE(TransformCtx->QueryCtx->PrepareOnly);
+
+        EKikimrQueryType queryType = TransformCtx->QueryCtx->Type;
+        switch (queryType) {
+            case EKikimrQueryType::Dml:
+            case EKikimrQueryType::Scan:
+            case EKikimrQueryType::Query:
+            case EKikimrQueryType::Script:
+                break;
+            default:
+                YQL_ENSURE(false, "PrepareQueryNewEngine, unexpected query type: " << queryType);
+        }
+
         auto kqlQueryBlocks = BuildKqlQuery(dataQueryBlocks, *TransformCtx->Tables, ctx, sysColumnsEnabled, OptimizeCtx, TypesCtx);
         if (!kqlQueryBlocks) {
             return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(ctx.IssueManager.GetIssues()));
         }
 
-        TExprNode::TPtr query = kqlQueryBlocks->Ptr();
+        auto query = kqlQueryBlocks->Ptr();
         YQL_CLOG(DEBUG, ProviderKqp) << "Initial KQL query: " << KqpExprToPrettyString(*query, ctx);
 
         TransformCtx->Reset();
+
+        PhysicalOptimizeTransformer->Rewind();
+        auto optimizedQuery = query;
+        auto status = InstantTransform(*PhysicalOptimizeTransformer, optimizedQuery, ctx);
+        if (status != IGraphTransformer::TStatus::Ok) {
+            ctx.AddError(TIssue(ctx.GetPosition(query->Pos()), "Failed to optimize query."));
+            return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(ctx.IssueManager.GetIssues()));
+        }
+
+        YQL_CLOG(TRACE, ProviderKqp) << "PhysicalOptimizeTransformer: "
+            << TransformerStatsToYson(PhysicalOptimizeTransformer->GetStatistics());
+        YQL_CLOG(DEBUG, ProviderKqp) << "Optimized KQL query: " << KqpExprToPrettyString(*optimizedQuery, ctx);
+
         BuildQueryCtx->Reset();
-        Transformer->Rewind();
+        PhysicalBuildTxsTransformer->Rewind();
+        auto builtTxsQuery = optimizedQuery;
+        status = InstantTransform(*PhysicalBuildTxsTransformer, builtTxsQuery, ctx);
+        if (status != IGraphTransformer::TStatus::Ok) {
+            ctx.AddError(TIssue(ctx.GetPosition(query->Pos()), "Failed to build physical txs."));
+            return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(ctx.IssueManager.GetIssues()));
+        }
 
-        TransformCtx->DataQueryBlocks = dataQueryBlocks;
+        YQL_CLOG(TRACE, ProviderKqp) << "PhysicalBuildTxsTransformer: "
+            << TransformerStatsToYson(PhysicalOptimizeTransformer->GetStatistics());
 
-        return MakeIntrusive<TPrepareQueryAsyncResult>(query, *Transformer, ctx, *TransformCtx);
-    }
+        PhysicalBuildQueryTransformer->Rewind();
+        auto builtQuery = builtTxsQuery;
+        status = InstantTransform(*PhysicalBuildQueryTransformer, builtQuery, ctx);
+        if (status != IGraphTransformer::TStatus::Ok) {
+            ctx.AddError(TIssue(ctx.GetPosition(query->Pos()), "Failed to build physical query."));
+            return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(ctx.IssueManager.GetIssues()));
+        }
 
-    void CreateGraphTransformer(const TIntrusivePtr<TTypeAnnotationContext>& typesCtx, const TIntrusivePtr<TKikimrSessionContext>& sessionCtx,
-        const NMiniKQL::IFunctionRegistry& funcRegistry)
-    {
-        auto preparedExplainTransformer = CreateKqpExplainPreparedTransformer(
-            Gateway, Cluster, TransformCtx, &funcRegistry, *typesCtx);
+        YQL_CLOG(TRACE, ProviderKqp) << "PhysicalBuildQueryTransformer: "
+            << TransformerStatsToYson(PhysicalBuildQueryTransformer->GetStatistics());
 
-        auto physicalOptimizeTransformer = CreateKqpQueryBlocksTransformer(TTransformationPipeline(typesCtx)
-            .AddServiceTransformers()
-            .Add(Log("PhysicalOptimize"), "LogPhysicalOptimize")
-            .AddPreTypeAnnotation()
-            .AddExpressionEvaluation(funcRegistry)
-            .AddIOAnnotation()
-            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(),
-                *typesCtx, Config))
-            .Add(CreateKqpCheckQueryTransformer(), "CheckKqlQuery")
-            .AddPostTypeAnnotation(/* forSubgraph */ true)
-            .AddCommonOptimization()
-            .Add(CreateKqpConstantFoldingTransformer(OptimizeCtx, *typesCtx, Config), "ConstantFolding")
-            .Add(CreateKqpStatisticsTransformer(OptimizeCtx, *typesCtx, Config, Pctx), "Statistics")
-            .Add(CreateKqpLogOptTransformer(OptimizeCtx, *typesCtx, Config), "LogicalOptimize")
-            .Add(CreateLogicalDataProposalsInspector(*typesCtx), "ProvidersLogicalOptimize")
-            .Add(CreateKqpPhyOptTransformer(OptimizeCtx, *typesCtx, Config), "KqpPhysicalOptimize")
-            .Add(CreatePhysicalDataProposalsInspector(*typesCtx), "ProvidersPhysicalOptimize")
-            .Add(CreateKqpFinalizingOptTransformer(OptimizeCtx), "FinalizingOptimize")
-            .Add(CreateKqpQueryPhasesTransformer(), "QueryPhases")
-            .Add(CreateKqpQueryEffectsTransformer(OptimizeCtx), "QueryEffects")
-            .Add(CreateKqpCheckPhysicalQueryTransformer(), "CheckKqlPhysicalQuery")
-            .Build(false));
+        PhysicalPeepholeTransformer->Rewind();
+        auto transformedQuery = builtQuery;
+        status = InstantTransform(*PhysicalPeepholeTransformer, transformedQuery, ctx);
+        if (status != IGraphTransformer::TStatus::Ok) {
+            ctx.AddError(TIssue(ctx.GetPosition(query->Pos()), "Failed peephole."));
+            return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(
+                ctx.IssueManager.GetIssues()));
+        }
 
-        auto physicalBuildTxsTransformer = CreateKqpQueryBlocksTransformer(TTransformationPipeline(typesCtx)
-            .AddServiceTransformers()
-            .Add(Log("PhysicalBuildTxs"), "LogPhysicalBuildTxs")
-            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config))
-            .AddPostTypeAnnotation(/* forSubgraph */ true)
-            .Add(
-                CreateKqpBuildTxsTransformer(
-                    OptimizeCtx,
-                    BuildQueryCtx,
-                    CreateTypeAnnotationTransformer(
-                        CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config),
-                        *typesCtx),
-                    *typesCtx,
-                    Config),
-                "BuildPhysicalTxs")
-            .Build(false));
+        YQL_CLOG(TRACE, ProviderKqp) << "PhysicalPeepholeTransformer: "
+            << TransformerStatsToYson(PhysicalPeepholeTransformer->GetStatistics());
+        YQL_CLOG(DEBUG, ProviderKqp) << "Physical KQL query: " << KqpExprToPrettyString(*builtQuery, ctx);
+        YQL_CLOG(DEBUG, ProviderKqp) << "Physical KQL query after peephole: " << KqpExprToPrettyString(*transformedQuery, ctx);
 
-        auto physicalBuildQueryTransformer = TTransformationPipeline(typesCtx)
-            .AddServiceTransformers()
-            .Add(Log("PhysicalBuildQuery"), "LogPhysicalBuildQuery")
-            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config))
-            .AddPostTypeAnnotation()
-            .Add(CreateKqpBuildPhysicalQueryTransformer(OptimizeCtx, BuildQueryCtx), "BuildPhysicalQuery")
-            .Add(CreateKqpStatisticsTransformer(OptimizeCtx, *typesCtx, Config, Pctx), "Statistics")
-            .Build(false);
-
-        auto physicalPeepholeTransformer = TTransformationPipeline(typesCtx)
-            .AddServiceTransformers()
-            .Add(Log("PhysicalPeephole"), "LogPhysicalPeephole")
-            .AddTypeAnnotationTransformer(CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config))
-            .AddPostTypeAnnotation()
-            .Add(GetDqIntegrationPeepholeTransformer(false, typesCtx), "DqIntegrationPeephole")
-            .Add(
-                CreateKqpTxsPeepholeTransformer(
-                    CreateTypeAnnotationTransformer(
-                        CreateKqpTypeAnnotationTransformer(Cluster, sessionCtx->TablesPtr(), *typesCtx, Config),
-                    *typesCtx), *typesCtx, Config), "Peephole")
-            .Build(false);
-
-        TAutoPtr<IGraphTransformer> compilePhysicalQuery(new TCompilePhysicalQueryTransformer(Cluster,
-            *TransformCtx,
-            *OptimizeCtx,
-            *typesCtx,
-            funcRegistry,
-            Config));
-
-        Transformer = CreateCompositeGraphTransformer(
-            {
-                TTransformStage{ physicalOptimizeTransformer, "PhysicalOptimize", TIssuesIds::DEFAULT_ERROR },
-                LogStage("PhysicalOptimize"),
-                TTransformStage{ physicalBuildTxsTransformer, "PhysicalBuildTxs", TIssuesIds::DEFAULT_ERROR },
-                LogStage("PhysicalBuildTxs"),
-                TTransformStage{ physicalBuildQueryTransformer, "PhysicalBuildQuery", TIssuesIds::DEFAULT_ERROR },
-                LogStage("PhysicalBuildQuery"),
-                TTransformStage{ CreateSaveExplainTransformerInput(*TransformCtx), "SaveExplainTransformerInput", TIssuesIds::DEFAULT_ERROR },
-                TTransformStage{ physicalPeepholeTransformer, "PhysicalPeephole", TIssuesIds::DEFAULT_ERROR },
-                LogStage("PhysicalPeephole"),
-                TTransformStage{ compilePhysicalQuery, "CompilePhysicalQuery", TIssuesIds::DEFAULT_ERROR },
-                TTransformStage{ preparedExplainTransformer, "ExplainQuery", TIssuesIds::DEFAULT_ERROR }, // TODO(sk): only on stats mode or if explain-only
-            },
-            false
-        );
+        auto& preparedQuery = *TransformCtx->QueryCtx->PreparingQuery;
+        TKqpPhysicalQuery physicalQuery(transformedQuery);
+        auto compiler = CreateKqpQueryCompiler(Cluster, OptimizeCtx->Tables, FuncRegistry, TypesCtx);
+        auto ret = compiler->CompilePhysicalQuery(physicalQuery, dataQueryBlocks, *preparedQuery.MutablePhysicalQuery(), ctx);
+        if (!ret) {
+            ctx.AddError(TIssue(ctx.GetPosition(query->Pos()), "Failed to compile physical query."));
+            return MakeKikimrResultHolder(ResultFromErrors<IKqpHost::TQueryResult>(ctx.IssueManager.GetIssues()));
+        }
+        preparedQuery.SetVersion(NKikimrKqp::TPreparedQuery::VERSION_PHYSICAL_V1);
+        // TODO(sk): only on stats mode or if explain-only
+        PreparedExplainTransformer->Rewind();
+        return MakeIntrusive<TPhysicalAsyncRunResult>(builtQuery, ctx, *PreparedExplainTransformer, *TransformCtx);
     }
 
     static bool MergeFlagValue(const TMaybe<bool>& configFlag, const TMaybe<bool>& flag) {
@@ -371,26 +336,29 @@ private:
     TIntrusivePtr<IKqpGateway> Gateway;
     TString Cluster;
     TTypeAnnotationContext& TypesCtx;
-    TIntrusivePtr<TKikimrSessionContext> SessionCtx;
-    const NMiniKQL::IFunctionRegistry& FunctionRegistry;
+    const NMiniKQL::IFunctionRegistry& FuncRegistry;
     TKikimrConfiguration::TPtr Config;
 
     TIntrusivePtr<TKqlTransformContext> TransformCtx;
     TIntrusivePtr<TKqpOptimizeContext> OptimizeCtx;
     TIntrusivePtr<TKqpBuildQueryContext> BuildQueryCtx;
 
-    TKqpProviderContext Pctx;
+    TAutoPtr<IGraphTransformer> PreparedExplainTransformer;
 
-    TAutoPtr<IGraphTransformer> Transformer;
+    TAutoPtr<IGraphTransformer> PhysicalOptimizeTransformer;
+    TAutoPtr<IGraphTransformer> PhysicalBuildTxsTransformer;
+    TAutoPtr<IGraphTransformer> PhysicalBuildQueryTransformer;
+    TAutoPtr<IGraphTransformer> PhysicalPeepholeTransformer;
 };
 
 } // namespace
 
 TIntrusivePtr<IKqpRunner> CreateKqpRunner(TIntrusivePtr<IKqpGateway> gateway, const TString& cluster,
-    const TIntrusivePtr<TTypeAnnotationContext>& typesCtx, const TIntrusivePtr<TKikimrSessionContext>& sessionCtx,
-    const TIntrusivePtr<TKqlTransformContext>& transformCtx, const NMiniKQL::IFunctionRegistry& funcRegistry)
+    TIntrusivePtr<TTypeAnnotationContext> typesCtx, TIntrusivePtr<TKikimrSessionContext> sessionCtx,
+    const NMiniKQL::IFunctionRegistry& funcRegistry,
+    TIntrusivePtr<ITimeProvider> timeProvider, TIntrusivePtr<IRandomProvider> randomProvider)
 {
-    return new TKqpRunner(gateway, cluster, typesCtx, sessionCtx, transformCtx, funcRegistry);
+    return new TKqpRunner(gateway, cluster, typesCtx, sessionCtx, funcRegistry, timeProvider, randomProvider);
 }
 
 } // namespace NKqp

@@ -14,7 +14,6 @@ namespace NTxProxy {
 enum class EUploadRowsMode {
     Normal,
     WriteToTableShadow,
-    UpsertIfExists,
 };
 
 using TUploadTypes = TVector<std::pair<TString, Ydb::Type>>;

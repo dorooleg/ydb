@@ -55,7 +55,7 @@ public:
         if (!stream->Read(&resp)) {
             auto status = stream->Finish();
             Cerr << (int)status.error_code() << " " << status.error_message() << "\n";
-            Y_ABORT("");
+            Y_FAIL("");
             UNIT_ASSERT(error);
         }
         Cerr << "=== Got response: " << resp.ShortDebugString() << Endl;

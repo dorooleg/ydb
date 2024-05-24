@@ -68,7 +68,7 @@ namespace NFake {
 
                 PassAway();
             } else {
-                 Y_ABORT("DS proxy model got an unexpected event");
+                 Y_FAIL("DS proxy model got an unexpected event");
             }
         }
 

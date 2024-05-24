@@ -140,14 +140,10 @@ Storage.prototype.appear = function() {
         } else if (!this.BlobDepotId) {
             erasureElem = $('<td>', {text: 'BlobDepot (error)'});
         } else {
-            label = 'BlobDepot';
-            if (this.BlobDepotOnlineTime === undefined || getTime() - this.BlobDepotOnlineTime >= 15000) {
-                label = 'BlobDepot (error)';
-            }
             erasureElem = $('<td>');
             var link = $('<a>', {
                 'href': '../../../tablets/app?TabletID=' + this.BlobDepotId,
-                'text': label,
+                'text': 'BlobDepot',
                 'title': this.BlobDepotId
             });
             erasureElem.html(link);
@@ -376,14 +372,6 @@ Storage.prototype.updateFromStorage = function(update) {
         //console.log(this);
         break;
     }
-
-    var blobDepotError = false;
-    if (this.BlobDepotId !== undefined && (!this.BlobDepotId || this.BlobDepotOnlineTime === undefined ||
-            getTime() - this.BlobDepotOnlineTime >= 15000)) {
-        this.color = red; // blob depot is ought to be working, but it does not
-        blobDepotError = true;
-    }
-
     var usage = 0;
     var missingDisks = 0;
     for (var numDisk in this.VDisks) {
@@ -424,9 +412,6 @@ Storage.prototype.updateFromStorage = function(update) {
         }
     }
     this.usage = usage;
-    if (blobDepotError) {
-        missingDisks = -1;
-    }
     this.missingDisks = missingDisks;
     if (this.visible) {
         this.update();

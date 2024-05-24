@@ -3,7 +3,7 @@
 namespace NKikimr::NBlobDepot {
 
     void TGivenIdRange::IssueNewRange(ui64 begin, ui64 end) {
-        Y_ABORT_UNLESS(begin < end);
+        Y_VERIFY(begin < end);
         NumAvailableItems += end - begin;
 
         // obtain insertion point
@@ -15,12 +15,12 @@ namespace NKikimr::NBlobDepot {
             const size_t count = Min(end - begin, BitsPerChunk - offset);
 
             if (it == Ranges.end() || it->first != key) {
-                Y_DEBUG_ABORT_UNLESS(it == Ranges.end() || key < it->first);
+                Y_VERIFY_DEBUG(it == Ranges.end() || key < it->first);
                 it = Ranges.emplace_hint(it, key, TChunk());
             }
 
             TChunk& chunk = it->second;
-            Y_DEBUG_ABORT_UNLESS((chunk >> offset).FirstNonZeroBit() >= count);
+            Y_VERIFY_DEBUG((chunk >> offset).FirstNonZeroBit() >= count);
             chunk.Set(offset, offset + count);
 
             ++it;
@@ -32,7 +32,7 @@ namespace NKikimr::NBlobDepot {
         const ui64 key = value / BitsPerChunk;
         TChunk& chunk = Ranges[key];
         const size_t offset = value % BitsPerChunk;
-        Y_DEBUG_ABORT_UNLESS(!chunk[offset]);
+        Y_VERIFY_DEBUG(!chunk[offset]);
         chunk.Set(offset);
         ++NumAvailableItems;
     }
@@ -40,10 +40,9 @@ namespace NKikimr::NBlobDepot {
     void TGivenIdRange::RemovePoint(ui64 value) {
         const ui64 key = value / BitsPerChunk;
         const auto it = Ranges.find(key);
-        Y_ABORT_UNLESS(it != Ranges.end());
+        Y_VERIFY(it != Ranges.end());
         TChunk& chunk = it->second;
         const size_t offset = value % BitsPerChunk;
-        Y_DEBUG_ABORT_UNLESS(chunk[offset]);
         chunk.Reset(offset);
         --NumAvailableItems;
         if (chunk.Empty()) {
@@ -67,14 +66,14 @@ namespace NKikimr::NBlobDepot {
 
     ui64 TGivenIdRange::GetMinimumValue() const {
         const auto it = Ranges.begin();
-        Y_ABORT_UNLESS(it != Ranges.end());
+        Y_VERIFY(it != Ranges.end());
         const TChunk& chunk = it->second;
         return chunk.FirstNonZeroBit() + it->first * BitsPerChunk;
     }
 
     ui64 TGivenIdRange::Allocate() {
         const auto it = Ranges.begin();
-        Y_ABORT_UNLESS(it != Ranges.end());
+        Y_VERIFY(it != Ranges.end());
         TChunk& chunk = it->second;
         const size_t offset = chunk.FirstNonZeroBit();
         const ui64 value = offset + it->first * BitsPerChunk;
@@ -97,7 +96,7 @@ namespace NKikimr::NBlobDepot {
                 break;
             } else if (validSince < (it->first + 1) * BitsPerChunk) {
                 const size_t numBits = validSince - it->first * BitsPerChunk;
-                Y_DEBUG_ABORT_UNLESS(0 < numBits && numBits < BitsPerChunk);
+                Y_VERIFY_DEBUG(0 < numBits && numBits < BitsPerChunk);
 
                 TChunk mask;
                 mask.Set(0, numBits);
@@ -135,11 +134,11 @@ namespace NKikimr::NBlobDepot {
             if (myIt->first < otherIt->first) {
                 ++myIt;
             } else if (otherIt->first < myIt->first) {
-                Y_ABORT();
+                Y_FAIL();
             } else {
                 TChunk& myChunk = myIt->second;
                 const TChunk& otherChunk = otherIt->second;
-                Y_DEBUG_ABORT_UNLESS((myChunk & otherChunk) == otherChunk);
+                Y_VERIFY_DEBUG((myChunk & otherChunk) == otherChunk);
                 myChunk -= otherChunk;
                 NumAvailableItems -= otherChunk.Count();
 
@@ -153,7 +152,7 @@ namespace NKikimr::NBlobDepot {
             }
         }
 
-        Y_ABORT_UNLESS(otherIt == other.Ranges.end());
+        Y_VERIFY(otherIt == other.Ranges.end());
     }
 
     void TGivenIdRange::Output(IOutputStream& s) const {
@@ -191,10 +190,10 @@ namespace NKikimr::NBlobDepot {
     void TGivenIdRange::CheckConsistency() const {
         ui32 count = 0;
         for (const auto& [key, chunk] : Ranges) {
-            Y_ABORT_UNLESS(!chunk.Empty());
+            Y_VERIFY(!chunk.Empty());
             count += chunk.Count();
         }
-        Y_ABORT_UNLESS(count == NumAvailableItems);
+        Y_VERIFY(count == NumAvailableItems);
     }
 
 } // NKikimr::NBlobDepot

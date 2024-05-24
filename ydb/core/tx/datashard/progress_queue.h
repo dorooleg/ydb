@@ -20,7 +20,7 @@ public:
 
     void Progress(T x, const TActorContext &ctx) {
         if (!HasInFly) {
-            Y_DEBUG_ABORT_UNLESS(!Queue.Head());
+            Y_VERIFY_DEBUG(!Queue.Head());
             ctx.Send(ctx.SelfID, new TEvent(x));
             HasInFly = true;
         } else {
@@ -29,7 +29,7 @@ public:
     }
 
     void Reset(const TActorContext &ctx) {
-        Y_DEBUG_ABORT_UNLESS(HasInFly);
+        Y_VERIFY_DEBUG(HasInFly);
         if (T x = Queue.Pop())
             ctx.Send(ctx.SelfID, new TEvent(x));
         else
@@ -52,7 +52,7 @@ public:
     }
 
     void Reset(const TActorContext &ctx) {
-        Y_DEBUG_ABORT_UNLESS(InFly);
+        Y_VERIFY_DEBUG(InFly);
         if (--InFly) {
             ctx.Send(ctx.SelfID, new TEvent());
         }
@@ -76,7 +76,7 @@ public:
 
     void Reset(const TActorContext &ctx) {
         Y_UNUSED(ctx);
-        Y_DEBUG_ABORT_UNLESS(HasInFly);
+        Y_VERIFY_DEBUG(HasInFly);
         HasInFly = false;
     }
 };
@@ -98,7 +98,7 @@ public:
 
     void Reset(const TActorContext &ctx) {
         Y_UNUSED(ctx);
-        Y_DEBUG_ABORT_UNLESS(HasSchedule);
+        Y_VERIFY_DEBUG(HasSchedule);
         HasSchedule = false;
     }
 };

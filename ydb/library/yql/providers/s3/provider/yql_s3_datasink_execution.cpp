@@ -95,10 +95,10 @@ private:
 
                         YQL_ENSURE(dqWriteStatus != TStatus::Async, "ApplyAsyncChanges should not return Async.");
 
-                        if (dqWriteStatus == TStatus::Repeat)
+                        if (TStatus::Repeat == dqWriteStatus)
                             output->SetState(TExprNode::EState::ExecutionRequired);
 
-                        if (dqWriteStatus != TStatus::Ok)
+                        if (TStatus::Ok != dqWriteStatus)
                             return dqWriteStatus;
 
                         output->SetState(TExprNode::EState::ExecutionComplete);

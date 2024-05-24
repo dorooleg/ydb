@@ -178,7 +178,7 @@ namespace NKikimr {
                     {}
 
                     std::pair<const typename TBaseMap::value_type*, TConstIterator> operator *() const {
-                        Y_DEBUG_ABORT_UNLESS(OverlayIt != Map.Overlay.end());
+                        Y_VERIFY_DEBUG(OverlayIt != Map.Overlay.end());
                         return std::make_pair(BaseIt != Map.Base.end() && BaseIt->first == OverlayIt->first ?
                             &*BaseIt : nullptr, OverlayIt);
                     }
@@ -301,10 +301,10 @@ namespace NKikimr {
             TValue *ConstructInplaceNewEntry(TKey key, TArgs&&... args) {
                 TIterator it = Overlay.lower_bound(key);
                 if (it != Overlay.end() && it->first == key) {
-                    Y_ABORT_UNLESS(!it->second);
+                    Y_VERIFY(!it->second);
                     it->second = MakeHolder<TValue>(std::forward<TArgs>(args)...);
                 } else {
-                    Y_ABORT_UNLESS(!Base.count(key));
+                    Y_VERIFY(!Base.count(key));
                     it = Overlay.emplace_hint(it, std::move(key), MakeHolder<TValue>(std::forward<TArgs>(args)...));
                 }
                 return it->second.Get();
@@ -313,11 +313,11 @@ namespace NKikimr {
             void DeleteExistingEntry(const TKey& key) {
                 TIterator it = Overlay.lower_bound(key);
                 if (it == Overlay.end() || it->first != key) {
-                    Y_ABORT_UNLESS(Base.count(key)); // ensure that this entry exists in the base map
+                    Y_VERIFY(Base.count(key)); // ensure that this entry exists in the base map
                     Overlay.emplace_hint(it, key, nullptr);
                 } else if (Base.count(key)) {
                     auto& value = it->second;
-                    Y_ABORT_UNLESS(value); // this entry must not be already deleted
+                    Y_VERIFY(value); // this entry must not be already deleted
                     value.Reset();
                 } else {
                     // just remove this entity from overlay as there is no corresponding entity in base map
@@ -375,7 +375,7 @@ namespace NKikimr {
                     const bool hasBase = baseIt != Base.end() && !(key < baseIt->first);
 
                     if (!overlay) {
-                        Y_DEBUG_ABORT_UNLESS(hasBase);
+                        Y_VERIFY_DEBUG(hasBase);
                         baseIt = Base.erase(baseIt);
                     } else if (hasBase) {
                         overlay->OnCommit();

@@ -14,7 +14,7 @@ void TDSAccessorSimple::OnConstructSnapshotError(const TString& errorMessage) {
 }
 
 void TDSAccessorSimple::OnBootstrap() {
-    UnsafeBecome(&TDSAccessorSimple::StateMain);
+    Become(&TDSAccessorSimple::StateMain);
     InputController = std::make_shared<TInputController>(SelfId());
     for (auto&& i : SnapshotConstructor->GetManagers()) {
         PathesInCheck.emplace(i->GetStorageTablePath());
@@ -33,7 +33,7 @@ void TDSAccessorSimple::Handle(TTableExistsActor::TEvController::TEvResult::TPtr
         PassAway();
         return;
     }
-    Y_ABORT_UNLESS(PathesInCheck.erase(ev->Get()->GetTablePath()) == 1);
+    Y_VERIFY(PathesInCheck.erase(ev->Get()->GetTablePath()) == 1);
     if (PathesInCheck.empty()) {
         TBase::StartSnapshotsFetching();
     }

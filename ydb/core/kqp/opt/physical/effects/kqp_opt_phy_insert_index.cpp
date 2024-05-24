@@ -85,12 +85,7 @@ TExprBase KqpBuildInsertIndexStages(TExprBase node, TExprContext& ctx, const TKq
     bool abortOnError = insert.OnConflict().Value() == "abort"sv;
     const auto& table = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, insert.Table().Path());
 
-    THashSet<TStringBuf> inputColumnsSet;
-    for (const auto& column : insert.Columns()) {
-        inputColumnsSet.emplace(column.Value());
-    }
-
-    auto insertRows = MakeConditionalInsertRows(insert.Input(), table, inputColumnsSet, abortOnError, insert.Pos(), ctx);
+    auto insertRows = MakeConditionalInsertRows(insert.Input(), table, abortOnError, insert.Pos(), ctx);
     if (!insertRows) {
         return node;
     }
@@ -99,6 +94,11 @@ TExprBase KqpBuildInsertIndexStages(TExprBase node, TExprContext& ctx, const TKq
         .Connection(insertRows.Cast())
         .Done();
 
+    THashSet<TStringBuf> inputColumnsSet;
+    for (const auto& column : insert.Columns()) {
+        inputColumnsSet.emplace(column.Value());
+    }
+
     auto indexes = BuildSecondaryIndexVector(table, insert.Pos(), ctx);
     YQL_ENSURE(indexes);
 
@@ -106,7 +106,6 @@ TExprBase KqpBuildInsertIndexStages(TExprBase node, TExprContext& ctx, const TKq
         .Table(insert.Table())
         .Input(insertRowsPrecompute)
         .Columns(insert.Columns())
-        .ReturningColumns(insert.ReturningColumns())
         .Done();
 
     TVector<TExprBase> effects;
@@ -136,7 +135,6 @@ TExprBase KqpBuildInsertIndexStages(TExprBase node, TExprContext& ctx, const TKq
             .Table(tableNode)
             .Input(upsertIndexRows)
             .Columns(BuildColumnsList(indexTableColumns, insert.Pos(), ctx))
-            .ReturningColumns<TCoAtomList>().Build()
             .Done();
 
         effects.emplace_back(upsertIndex);

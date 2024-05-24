@@ -4,7 +4,7 @@
         "PlanNodeType": "Query",
         "Plans": [
             {
-                "Node Type": "ResultSet",
+                "Node Type": "ResultSet_1",
                 "PlanNodeId": 4,
                 "PlanNodeType": "ResultSet",
                 "Plans": [
@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 2
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -29,41 +24,27 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "Node Type": "TopSort-Filter-TableRangeScan",
+                                        "Node Type": "TopSort-Filter-TableRangesScan",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
                                                 "TopSortBy": ""
                                             },
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 2
-                                                    }
-                                                ],
                                                 "Name": "Filter",
                                                 "Predicate": "item.d < 110 Or item.d > 150"
                                             },
                                             {
-                                                "Inputs": [],
-                                                "Name": "TableRangeScan",
+                                                "Name": "TableRangesScan",
                                                 "ReadColumns": [
                                                     "a",
                                                     "b",
                                                     "d"
                                                 ],
-                                                "ReadRange": [
-                                                    "a (null)",
-                                                    "b (-\u221e, +\u221e)",
-                                                    "c (-\u221e, +\u221e)",
-                                                    "d (-\u221e, +\u221e)",
-                                                    "e (-\u221e, +\u221e)"
+                                                "ReadRangesExpectedSize": "1",
+                                                "ReadRangesKeys": [
+                                                    "a"
                                                 ],
                                                 "Table": "sqllogictest_select2-4.test_plan/t1"
                                             }
@@ -98,15 +79,6 @@
                         "a",
                         "b",
                         "d"
-                    ],
-                    "lookup_by": [
-                        "a (null)"
-                    ],
-                    "scan_by": [
-                        "b (-\u221e, +\u221e)",
-                        "c (-\u221e, +\u221e)",
-                        "d (-\u221e, +\u221e)",
-                        "e (-\u221e, +\u221e)"
                     ],
                     "type": "Scan"
                 }

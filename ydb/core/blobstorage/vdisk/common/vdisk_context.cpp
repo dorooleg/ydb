@@ -3,7 +3,7 @@
 namespace NKikimr {
 
     static TLogger ActorSystemLogger(TActorSystem *as) {
-        Y_ABORT_UNLESS(as);
+        Y_VERIFY(as);
         auto logger = [as] (NLog::EPriority p, NLog::EComponent c, const TString &s) {
             LOG_LOG(*as, p, c, s);
         };
@@ -30,9 +30,7 @@ namespace NKikimr {
                 TReplQuoter::TPtr replPDiskReadQuoter,
                 TReplQuoter::TPtr replPDiskWriteQuoter,
                 TReplQuoter::TPtr replNodeRequestQuoter,
-                TReplQuoter::TPtr replNodeResponseQuoter,
-                ui64 burstThresholdNs,
-                float diskTimeAvailableScale)
+                TReplQuoter::TPtr replNodeResponseQuoter)
         : TBSProxyContext(vdiskCounters->GetSubgroup("subsystem", "memhull"))
         , VDiskActorId(vdiskActorId)
         , Top(std::move(top))
@@ -59,14 +57,10 @@ namespace NKikimr {
         , ReplPDiskWriteQuoter(std::move(replPDiskWriteQuoter))
         , ReplNodeRequestQuoter(std::move(replNodeRequestQuoter))
         , ReplNodeResponseQuoter(std::move(replNodeResponseQuoter))
-        , CostTracker(std::make_shared<TBsCostTracker>(Top->GType, type, vdiskCounters, burstThresholdNs,
-                diskTimeAvailableScale))
-        , OOSMonGroup(std::make_shared<NMonGroup::TOutOfSpaceGroup>(VDiskCounters, "subsystem", "oos"))
         , OutOfSpaceState(Top->GetTotalVDisksNum(), Top->GetOrderNumber(ShortSelfVDisk))
-        , CostMonGroup(vdiskCounters, "subsystem", "cost")
         , Logger(as ? ActorSystemLogger(as) : DevNullLogger())
     {
-        Y_ABORT_UNLESS(!VDiskLogPrefix.empty());
+        Y_VERIFY(!VDiskLogPrefix.empty());
     }
 
     TString TVDiskContext::FormatMessage(

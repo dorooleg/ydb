@@ -5,19 +5,19 @@
 #include "events.h"
 #include "tablet_types.h"
 #include "logoblob.h"
+#include "pathid.h"
 
-#include <ydb/core/scheme/scheme_pathid.h>
 #include <ydb/core/base/services/blobstorage_service_id.h>
 #include <ydb/core/base/blobstorage_grouptype.h>
 #include <ydb/core/protos/base.pb.h>
-#include <ydb/core/protos/blobstorage_base.pb.h>
-#include <ydb/core/protos/blobstorage_base3.pb.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/protos/blobstorage.pb.h>
+#include <ydb/core/protos/blobstorage_config.pb.h>
+#include <ydb/core/util/yverify_stream.h>
 
-#include <ydb/library/actors/wilson/wilson_trace.h>
+#include <library/cpp/actors/wilson/wilson_trace.h>
 #include <library/cpp/lwtrace/shuttle.h>
-#include <ydb/library/actors/util/rope.h>
-#include <ydb/library/actors/util/shared_data_rope_backend.h>
+#include <library/cpp/actors/util/rope.h>
+#include <library/cpp/actors/util/shared_data_rope_backend.h>
 
 #include <util/stream/str.h>
 #include <util/generic/xrange.h>
@@ -174,17 +174,17 @@ private:
     ui32 Raw = Max<ui32>();
 
     void Set(EGroupConfigurationType configurationType, ui32 availabilityDomainID, ui32 groupLocalId) {
-        Y_ABORT_UNLESS(groupLocalId <= MaxValidGroup);
+        Y_VERIFY(groupLocalId <= MaxValidGroup);
 
         switch (configurationType) {
             case EGroupConfigurationType::Static:
             case EGroupConfigurationType::Dynamic:
-                Y_ABORT_UNLESS(availabilityDomainID <= MaxValidDomain);
+                Y_VERIFY(availabilityDomainID <= MaxValidDomain);
                 Raw = static_cast<ui32>(configurationType) << TypeShift | availabilityDomainID << DomainShift | groupLocalId;
                 break;
 
             case EGroupConfigurationType::Virtual:
-                Y_ABORT_UNLESS(availabilityDomainID == 1);
+                Y_VERIFY(availabilityDomainID == 1);
                 Raw = static_cast<ui32>(EGroupConfigurationType::Dynamic) << TypeShift | VirtualGroupDomain << DomainShift | groupLocalId;
                 break;
         }
@@ -265,7 +265,7 @@ struct TTabletChannelInfo {
 
     ui32 GroupForGeneration(ui32 gen) const {
         const size_t historySize = History.size();
-        Y_ABORT_UNLESS(historySize > 0, "empty channel history");
+        Y_VERIFY(historySize > 0, "empty channel history");
 
         const THistoryEntry * const first = &*History.begin();
         if (historySize == 1) {
@@ -353,10 +353,6 @@ public:
             return Max<ui32>();
     }
 
-    ui32 GroupFor(const TLogoBlobID& id) const {
-        return GroupFor(id.Channel(), id.Generation());
-    }
-
     TString ToString() const {
         TStringStream str;
         str << "{Version# " << Version;
@@ -408,7 +404,7 @@ public:
 
 inline TActorId TTabletStorageInfo::BSProxyIDForChannel(ui32 channel, ui32 generation) const {
     const ui32 group = GroupFor(channel, generation);
-    Y_ABORT_UNLESS(group != Max<ui32>());
+    Y_VERIFY(group != Max<ui32>());
     const TActorId proxy = MakeBlobStorageProxyID(group);
     return proxy;
 }
@@ -419,7 +415,7 @@ inline ui32 GroupIDFromBlobStorageProxyID(TActorId actorId) {
         (((actorId.RawX2() >> (0 * 8)) & 0xff) << 8) |
         (((actorId.RawX2() >> (1 * 8)) & 0xff) << 16) |
         (((actorId.RawX2() >> (2 * 8)) & 0xff) << 24));
-    Y_ABORT_UNLESS(MakeBlobStorageProxyID(blobStorageGroup) == actorId);
+    Y_VERIFY(MakeBlobStorageProxyID(blobStorageGroup) == actorId);
     return blobStorageGroup;
 }
 
@@ -547,7 +543,6 @@ struct TEvBlobStorage {
         EvRegisterPDiskLoadActor,
         EvStatusUpdate,
         EvDropDonor,
-        EvPutVDiskToReadOnly,
 
         EvCntReply = EvPut + 7 * 512,                           /// 268 635 648
         EvVGenerationChangeResult,
@@ -702,15 +697,6 @@ struct TEvBlobStorage {
         EvFormatReencryptionFinish,
         EvDetectedPhantomBlobCommitted,
         EvGetLogoBlobIndexStatRequest,
-        EvReadMetadata,
-        EvWriteMetadata,
-        EvPermitGarbageCollection,
-        EvReplInvoke,
-        EvStartBalancing,
-        EvReplCheckProgress,
-        EvMinHugeBlobSizeUpdate,
-        EvHugePreCompact,
-        EvHugePreCompactResult,
 
         EvYardInitResult = EvPut + 9 * 512,                     /// 268 636 672
         EvLogResult,
@@ -759,8 +745,6 @@ struct TEvBlobStorage {
         EvGetLogoBlobResponse,
         EvChunkForgetResult,
         EvGetLogoBlobIndexStatResponse,
-        EvReadMetadataResult,
-        EvWriteMetadataResult,
 
         // internal proxy interface
         EvUnusedLocal1 = EvPut + 10 * 512, // Not used.    /// 268 637 184
@@ -790,33 +774,64 @@ struct TEvBlobStorage {
         EvBunchOfEvents,
 
         // blobstorage controller interface
-        EvControllerRegisterNode                    = 0x10031602,
-        EvControllerSelectGroups                    = 0x10031606,
-        EvControllerGetGroup                        = 0x10031607,
-        EvControllerUpdateDiskStatus                = 0x10031608,
-        EvControllerConfigRequest                   = 0x1003160a,
-        EvControllerConfigResponse                  = 0x1003160b,
-        EvControllerProposeGroupKey                 = 0x10031614,
-        EvControllerUpdateGroupStat                 = 0x10031616,
-        EvControllerNotifyGroupChange               = 0x10031617,
-        EvControllerCommitGroupLatencies            = 0x10031618,
-        EvControllerUpdateSelfHealInfo              = 0x10031619,
-        EvControllerScrubQueryStartQuantum          = 0x1003161a,
-        EvControllerScrubQuantumFinished            = 0x1003161b,
-        EvControllerScrubReportQuantumInProgress    = 0x1003161c,
-        EvControllerUpdateNodeDrives                = 0x1003161d,
-        EvControllerGroupDecommittedNotify          = 0x1003161e,
-        EvControllerGroupDecommittedResponse        = 0x1003161f,
-        EvControllerGroupMetricsExchange            = 0x10031620,
+        // EvControllerReadSchemeString = EvPut + 11 * 512,
+        // EvControllerReadDataString,
+        EvControllerRegisterNode = EvPut + 11 * 512 + 2,
+        EvControllerCreatePDisk,
+        EvControllerCreateVDiskSlots,
+        EvControllerCreateGroup,
+        EvControllerSelectGroups,
+        EvControllerGetGroup,
+        EvControllerUpdateDiskStatus,
+        EvControllerUpdateGroupsUsage, // Not used.
+        EvControllerConfigRequest,
+        EvControllerConfigResponse,
+        EvControllerProposeRequest,
+        EvControllerProposeResponse,
+        EvControllerVDiskStatusSubscribeRequest,
+        EvControllerVDiskStatusReport,
+        EvControllerGroupStatusRequest,
+        EvControllerGroupStatusResponse,
+        EvControllerUpdateGroup,
+        EvControllerUpdateFaultyDisks,
+        EvControllerProposeGroupKey,
+        EvControllerUpdateGroupLatencies, // Not used.
+        EvControllerUpdateGroupStat,
+        EvControllerNotifyGroupChange,
+        EvControllerCommitGroupLatencies,
+        EvControllerUpdateSelfHealInfo,
+        EvControllerScrubQueryStartQuantum,
+        EvControllerScrubQuantumFinished,
+        EvControllerScrubReportQuantumInProgress,
+        EvControllerUpdateNodeDrives,
+        EvControllerGroupDecommittedNotify,
+        EvControllerGroupDecommittedResponse,
+        EvControllerGroupMetricsExchange,
 
-        // BSC interface result section
-        EvControllerNodeServiceSetUpdate            = 0x10031802,
-        EvControllerSelectGroupsResult              = 0x10031806,
-        EvRequestControllerInfo                     = 0x10031807,
-        EvResponseControllerInfo                    = 0x10031808,
-        EvControllerNodeReport                      = 0x1003180d,
-        EvControllerScrubStartQuantum               = 0x1003180e,
-        EvControllerUpdateSystemViews               = 0x10031815,
+        // EvControllerReadSchemeStringResult = EvPut + 12 * 512,
+        // EvControllerReadDataStringResult,
+        EvControllerNodeServiceSetUpdate = EvPut + 12 * 512 + 2,
+        EvControllerCreatePDiskResult,
+        EvControllerCreateVDiskSlotsResult,
+        EvControllerCreateGroupResult,
+        EvControllerSelectGroupsResult,
+        EvRequestControllerInfo,
+        EvResponseControllerInfo,
+        EvControllerGroupReconfigureReplace, // Not used.
+        EvControllerGroupReconfigureReplaceResult, // Not used.
+        EvControllerGroupReconfigureWipe,
+        EvControllerGroupReconfigureWipeResult,
+        EvControllerNodeReport,
+        EvControllerScrubStartQuantum,
+
+        EvControllerMigrationPause,
+        EvControllerMigrationContinue,
+        EvControllerMigrationFinished,
+        EvControllerMigrationBatch,
+        EvControllerMigrationBatchRequest,
+        EvControllerMigrationDone,
+
+        EvControllerUpdateSystemViews,
 
         // proxy - node controller interface
         EvConfigureProxy = EvPut + 13 * 512,
@@ -826,24 +841,11 @@ struct TEvBlobStorage {
 
         // node controller internal messages
         EvRegisterNodeRetry = EvPut + 14 * 512,
-        EvAskWardenRestartPDisk,
-        EvAskWardenRestartPDiskResult,
-        EvNotifyWardenPDiskRestarted,
+        EvAskRestartPDisk,
+        EvRestartPDisk,
+        EvRestartPDiskResult,
         EvNodeWardenQueryGroupInfo,
         EvNodeWardenGroupInfo,
-        EvNodeConfigPush,
-        EvNodeConfigReversePush,
-        EvNodeConfigUnbind,
-        EvNodeConfigScatter,
-        EvNodeConfigGather,
-        EvNodeWardenQueryStorageConfig,
-        EvNodeWardenStorageConfig,
-        EvAskRestartVDisk,
-        EvNodeConfigInvokeOnRoot,
-        EvNodeConfigInvokeOnRootResult,
-        EvNodeWardenStorageConfigConfirm,
-        EvNodeWardenQueryBaseConfig,
-        EvNodeWardenBaseConfig,
 
         // Other
         EvRunActor = EvPut + 15 * 512,
@@ -925,11 +927,11 @@ struct TEvBlobStorage {
             , HandleClass(handleClass)
             , Tactic(tactic)
         {
-            Y_ABORT_UNLESS(Id, "EvPut invalid: LogoBlobId must have non-zero tablet field, id# %s", Id.ToString().c_str());
-            Y_ABORT_UNLESS(Buffer.size() < (40 * 1024 * 1024),
+            Y_VERIFY(Id, "EvPut invalid: LogoBlobId must have non-zero tablet field, id# %s", Id.ToString().c_str());
+            Y_VERIFY(Buffer.size() < (40 * 1024 * 1024),
                    "EvPut invalid: LogoBlobId# %s buffer.Size# %zu",
                    id.ToString().data(), Buffer.size());
-            Y_ABORT_UNLESS(Buffer.size() == id.BlobSize(),
+            Y_VERIFY(Buffer.size() == id.BlobSize(),
                    "EvPut invalid: LogoBlobId# %s buffer.Size# %zu",
                    id.ToString().data(), Buffer.size());
             REQUEST_VALGRIND_CHECK_MEM_IS_DEFINED(&id, sizeof(id));
@@ -988,16 +990,14 @@ struct TEvBlobStorage {
         bool WrittenBeyondBarrier = false; // was this blob written beyond the barrier?
         mutable NLWTrace::TOrbit Orbit;
         std::shared_ptr<TExecutionRelay> ExecutionRelay;
-        const TString StorageId;
 
         TEvPutResult(NKikimrProto::EReplyStatus status, const TLogoBlobID &id, const TStorageStatusFlags statusFlags,
-                ui32 groupId, float approximateFreeSpaceShare, const TString& storageId = Default<TString>())
+                ui32 groupId, float approximateFreeSpaceShare)
             : Status(status)
             , Id(id)
             , StatusFlags(statusFlags)
             , GroupId(groupId)
             , ApproximateFreeSpaceShare(approximateFreeSpaceShare)
-            , StorageId(storageId)
         {}
 
         TString Print(bool isFull) const {
@@ -1035,8 +1035,8 @@ struct TEvBlobStorage {
                 Shift = sh;
                 Size = sz;
 
-                Y_ABORT_UNLESS(id.BlobSize() > 0, "Please, don't read/write 0-byte blobs!");
-                Y_ABORT_UNLESS(sh < id.BlobSize(),
+                Y_VERIFY(id.BlobSize() > 0, "Please, don't read/write 0-byte blobs!");
+                Y_VERIFY(sh < id.BlobSize(),
                     "Please, don't read behind the end of the blob! BlobSize# %" PRIu32 " sh# %" PRIu32,
                     (ui32)id.BlobSize(), (ui32)sh);
             }
@@ -1102,7 +1102,7 @@ struct TEvBlobStorage {
             , ReportDetailedPartMap(reportDetailedPartMap)
             , ForceBlockTabletData(forceBlockTabletData)
         {
-            Y_ABORT_UNLESS(QuerySize > 0, "can't execute empty get queries");
+            Y_VERIFY(QuerySize > 0, "can't execute empty get queries");
             VerifySameTabletId();
         }
 
@@ -1122,8 +1122,8 @@ struct TEvBlobStorage {
             Queries[0].Id = id;
             Queries[0].Shift = shift;
             Queries[0].Size = size;
-            Y_ABORT_UNLESS(id.BlobSize() > 0, "Please, don't read/write 0-byte blobs!");
-            Y_ABORT_UNLESS(shift < id.BlobSize(),
+            Y_VERIFY(id.BlobSize() > 0, "Please, don't read/write 0-byte blobs!");
+            Y_VERIFY(shift < id.BlobSize(),
                     "Please, don't read behind the end of the blob! Id# %s BlobSize# %" PRIu32 " shift# %" PRIu32,
                     id.ToString().c_str(), (ui32)id.BlobSize(), (ui32)shift);
         }
@@ -1173,7 +1173,7 @@ struct TEvBlobStorage {
     private:
         void VerifySameTabletId() const {
             for (ui32 i = 1; i < QuerySize; ++i) {
-                Y_ABORT_UNLESS(Queries[i].Id.TabletID() == Queries[0].Id.TabletID(),
+                Y_VERIFY(Queries[i].Id.TabletID() == Queries[0].Id.TabletID(),
                         "Trying to request blobs for different tablets in one request: %" PRIu64 ", %" PRIu64,
                         Queries[0].Id.TabletID(), Queries[i].Id.TabletID());
             }
@@ -1194,7 +1194,7 @@ struct TEvBlobStorage {
             TLogoBlobID Id;
             ui32 Shift;
             ui32 RequestedSize;
-            TRope Buffer;
+            TString Buffer;
             TVector<TPartMapItem> PartMap;
             bool Keep = false;
             bool DoNotKeep = false;
@@ -1245,7 +1245,7 @@ struct TEvBlobStorage {
                     str << " RequestedSize# " << response.RequestedSize;
                 }
                 if (isFull) {
-                    str << " Buffer# " << response.Buffer.ConvertToString().Quote();
+                    str << " Buffer# " << response.Buffer.Quote();
                 }
                 str << "}";
                 if (ErrorReason.size()) {
@@ -1429,8 +1429,8 @@ struct TEvBlobStorage {
                 REQUEST_VALGRIND_CHECK_MEM_IS_DEFINED(diffs[idx].Buffer.Data(), diffs[idx].Buffer.size());
 
                 if (idx) {
-                    Y_VERIFY_S(diffs[idx - 1].Offset + diffs[idx - 1].Buffer.Size() <= diffs[idx].Offset,
-                            "EvPatch invalid: Diffs must not overlap,"
+                    Y_VERIFY_S(diffs[idx - 1].Offset + diffs[idx].Buffer.Size() <= diffs[idx].Offset,
+                            "EvPatch invalid: Diffs mustn't be re-covered,"
                             << " [" << idx - 1 << "].Offset# " << diffs[idx - 1].Offset
                             << " [" << idx - 1 << "].Size# " << diffs[idx - 1].Buffer.Size()
                             << " [" << idx << "].Offset# " << diffs[idx].Offset
@@ -1448,10 +1448,6 @@ struct TEvBlobStorage {
             }
         }
 
-        static ui8 BlobPlacementKind(const TLogoBlobID &blob) {
-            return blob.Hash() % BaseDomainsCount;
-        }
-
         static bool GetBlobIdWithSamePlacement(const TLogoBlobID &originalId, TLogoBlobID *patchedId,
                 ui32 bitsForBruteForce, ui32 originalGroupId, ui32 currentGroupId)
         {
@@ -1460,12 +1456,12 @@ struct TEvBlobStorage {
             }
 
             ui32 expectedValue = originalId.Hash() % BaseDomainsCount;
-            Y_ABORT_UNLESS(patchedId);
+            Y_VERIFY(patchedId);
             if (patchedId->Hash() % BaseDomainsCount == expectedValue) {
                 return true;
             }
 
-            Y_ABORT_UNLESS(bitsForBruteForce <= TLogoBlobID::MaxCookie);
+            Y_VERIFY(bitsForBruteForce <= TLogoBlobID::MaxCookie);
             ui32 baseCookie = ~bitsForBruteForce & patchedId->Cookie();
             ui32 extraCookie = TLogoBlobID::MaxCookie + 1;
             ui32 steps = 0;
@@ -1706,7 +1702,7 @@ struct TEvBlobStorage {
             , MinGeneration(minGeneration)
             , BlockedGeneration(blockedGeneration)
         {
-            Y_DEBUG_ABORT_UNLESS(status != NKikimrProto::OK);
+            Y_VERIFY_DEBUG(status != NKikimrProto::OK);
         }
 
         TEvDiscoverResult(const TLogoBlobID &id, ui32 minGeneration, const TString &buffer)
@@ -2319,6 +2315,8 @@ struct TEvBlobStorage {
     struct TEvControllerNodeServiceSetUpdate;
     struct TEvControllerProposeGroupKey;
     struct TEvControllerSelectGroupsResult;
+    struct TEvControllerGroupReconfigureWipe;
+    struct TEvControllerGroupReconfigureWipeResult;
     struct TEvControllerNodeReport;
     struct TEvControllerConfigRequest;
     struct TEvControllerConfigResponse;
@@ -2331,7 +2329,6 @@ struct TEvBlobStorage {
     struct TEvControllerGroupDecommittedNotify;
     struct TEvControllerGroupDecommittedResponse;
     struct TEvControllerGroupMetricsExchange;
-    struct TEvPutVDiskToReadOnly;
 
     struct TEvMonStreamQuery;
     struct TEvMonStreamActorDeathNote;
@@ -2339,10 +2336,9 @@ struct TEvBlobStorage {
     struct TEvDropDonor;
     struct TEvBunchOfEvents;
 
-    struct TEvAskRestartVDisk;
-    struct TEvAskWardenRestartPDisk;
-    struct TEvAskWardenRestartPDiskResult;
-    struct TEvNotifyWardenPDiskRestarted;
+    struct TEvAskRestartPDisk;
+    struct TEvRestartPDisk;
+    struct TEvRestartPDiskResult;
 };
 
 // EPutHandleClass defines BlobStorage queue to a request to
@@ -2355,7 +2351,7 @@ static inline NKikimrBlobStorage::EVDiskQueueId HandleClassToQueueId(NKikimrBlob
         case NKikimrBlobStorage::EPutHandleClass::UserData:
             return NKikimrBlobStorage::EVDiskQueueId::PutUserData;
         default:
-            Y_ABORT("Unexpected case");
+            Y_FAIL("Unexpected case");
     }
 }
 
@@ -2371,7 +2367,7 @@ static inline NKikimrBlobStorage::EVDiskQueueId HandleClassToQueueId(NKikimrBlob
             case NKikimrBlobStorage::EGetHandleClass::LowRead:
                 return NKikimrBlobStorage::EVDiskQueueId::GetLowRead;
             default:
-                Y_ABORT("Unexpected case");
+                Y_FAIL("Unexpected case");
         }
     }
 
@@ -2383,23 +2379,8 @@ inline bool SendPutToGroup(const TActorContext &ctx, ui32 groupId, TTabletStorag
         const ui32 expectedGroupId = storage->GroupFor(id.Channel(), id.Generation());
         return id.TabletID() == storage->TabletID && expectedGroupId != Max<ui32>() && groupId == expectedGroupId;
     };
-    Y_ABORT_UNLESS(checkGroupId(), "groupId# %" PRIu32 " does not match actual one LogoBlobId# %s", groupId,
+    Y_VERIFY(checkGroupId(), "groupId# %" PRIu32 " does not match actual one LogoBlobId# %s", groupId,
         event->Id.ToString().data());
-    return SendToBSProxy(ctx, groupId, event.Release(), cookie, std::move(traceId));
-    // TODO(alexvru): check if return status is actually needed?
-}
-
-inline bool SendPatchToGroup(const TActorContext &ctx, ui32 groupId, TTabletStorageInfo *storage,
-        THolder<TEvBlobStorage::TEvPatch> event, ui64 cookie = 0, NWilson::TTraceId traceId = {}) {
-    auto checkGroupId = [&] {
-        const TLogoBlobID &id = event->PatchedId;
-        const ui32 expectedGroupId = storage->GroupFor(id.Channel(), id.Generation());
-        const TLogoBlobID &originalId = event->OriginalId;
-        const ui32 expectedOriginalGroupId = storage->GroupFor(originalId.Channel(), originalId.Generation());
-        return id.TabletID() == storage->TabletID && expectedGroupId != Max<ui32>() && groupId == expectedGroupId && event->OriginalGroupId == expectedOriginalGroupId;
-    };
-    Y_VERIFY_S(checkGroupId(), "groupIds# (" << event->OriginalGroupId << ',' << groupId << ") does not match actual ones LogoBlobIds# (" <<
-        event->OriginalId.ToString() << ',' << event->PatchedId.ToString() << ')');
     return SendToBSProxy(ctx, groupId, event.Release(), cookie, std::move(traceId));
     // TODO(alexvru): check if return status is actually needed?
 }

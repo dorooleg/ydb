@@ -3,7 +3,6 @@
 
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -17,7 +16,7 @@ namespace {
 
 class TReadIteratorScan : public TActorBootstrapped<TReadIteratorScan> {
     std::unique_ptr<TEvDataShard::TEvRead> Request;
-    const NKikimrDataEvents::EDataFormat Format;
+    const NKikimrTxDataShard::EScanDataFormat Format;
     const ui64 TabletId;
     const TActorId Parent;
     const TSubLoadId Id;
@@ -115,7 +114,7 @@ private:
             return StopWithError(ctx, ss.Str());
         }
 
-        if (Format != NKikimrDataEvents::FORMAT_CELLVEC) {
+        if (Format != NKikimrTxDataShard::CELLVEC) {
             return StopWithError(ctx, "Unsupported format");
         }
 
@@ -212,14 +211,15 @@ void AddRangeQuery(
     auto fromBuf = TSerializedCellVec::Serialize(fromCells);
     auto toBuf = TSerializedCellVec::Serialize(toCells);
 
-    request.Ranges.emplace_back(std::move(fromBuf), std::move(toBuf), fromInclusive, toInclusive);
+    request.Ranges.emplace_back(fromBuf, toBuf, fromInclusive, toInclusive);
 }
 
 void AddKeyQuery(
     TEvDataShard::TEvRead &request,
     const TOwnedCellVec &key)
 {
-    request.Keys.emplace_back(key);
+    auto buf = TSerializedCellVec::Serialize(key);
+    request.Keys.emplace_back(buf);
 }
 
 IActor *CreateReadIteratorScan(

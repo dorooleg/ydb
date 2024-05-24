@@ -23,7 +23,7 @@ public:
     }
 
     void Push(T *value) {
-        Y_ABORT_UNLESS(value->*N == nullptr);
+        Y_VERIFY(value->*N == nullptr);
         ui64 hash = H(*value);
         T*& entry = Table[hash % Table.size()];
         value->*N = entry;

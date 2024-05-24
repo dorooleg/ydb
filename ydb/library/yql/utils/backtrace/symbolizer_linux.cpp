@@ -1,150 +1,83 @@
 #include "symbolizer.h"
+#include "fake_llvm_symbolizer/fake_llvm_symbolizer.h"
 
-#include <contrib/libs/backtrace/backtrace.h>
+#include <library/cpp/deprecated/atomic/atomic.h>
+#include <library/cpp/malloc/api/malloc.h>
 
-#include <util/generic/string.h>
-#include <util/generic/vector.h>
-#include <util/system/type_name.h>
+#include <util/generic/hash.h>
 #include <util/system/execpath.h>
-#include <util/string/builder.h>
 
-#include <mutex>
-#include <numeric>
-#include <algorithm>
+#include <dlfcn.h>
+#include <link.h>
+#include <signal.h>
 
-#include <util/stream/mem.h>
-
-#ifdef __GNUC__
-    #include <cxxabi.h>
-#endif
-
-namespace {
-const size_t MaxStrLen = 512;
-const size_t MaxDemangleLen = 1024 * 1024;
-char Buff[MaxDemangleLen];
-
-class TNoThrowingMemoryOutput : public TMemoryOutput {
-public:
-    TNoThrowingMemoryOutput(void* c, size_t l) : TMemoryOutput(c, l) {}
-    void Truncate() {
-        *(Buf_ - 1) = '.';
-        *(Buf_ - 2) = '.';
-        *(Buf_ - 3) = '.';
-    }
-
-    void DoWrite(const void* buf, size_t len) override {
-        bool truncated = Buf_ + len > End_;
-        if (truncated) {
-            len = std::min(len, (size_t)(End_ - Buf_));
-        }
-        memcpy(Buf_, buf, len);
-        Buf_ += len;
-        if (truncated) {
-            Truncate();
-        }
-    }
-
-    void DoWriteC(char c) override {
-        if (Buf_ == End_) {
-            Truncate();
-        } else {
-            *Buf_++ = c;
-        }
-    }
-};
-
-void HandleLibBacktraceError(void* data, const char* msg, int) {
-    if (!data) {
-        Cerr << msg;
-        return;
-    }
-    TNoThrowingMemoryOutput out(data, MaxStrLen - 1);
-    out << msg;
-}
-
-const char* Demangle(const char* name) {
-#ifndef __GNUC__
-    return name;
-#else
-    int status;
-    size_t len = MaxDemangleLen - 1;
-    const char* res = __cxxabiv1::__cxa_demangle(name, Buff, &len, &status);
-
-    if (!res) {
-        return name;
-    }
-    return res;
-#endif
-}
-
-int HandleLibBacktraceFrame(void* data, uintptr_t, const char* filename, int lineno, const char* function) {
-    TNoThrowingMemoryOutput out(data, MaxStrLen - 1);
-    const char* fileName = filename ? filename : "???";
-    const char* functionName = function ? Demangle(function) : "???";
-    out << functionName << " at " << fileName << ":" << lineno << ":0";
-    return 0;
-}
-}
+#include <iostream>
+#include <sstream>
 
 namespace NYql {
-    namespace NBacktrace {
-        namespace {
-            std::mutex Mutex;
-            char* Result[Limit];
-            size_t Order[Limit];
-            char TmpBuffer[MaxStrLen * Limit]{};
-            auto CreateState(const char* filename) {
-                return backtrace_create_state(
-                    filename,
-                    0,
-                    HandleLibBacktraceError,
-                    nullptr
-                );
-            }
-        }
 
-        void Symbolize(const TStackFrame* frames, size_t count, IOutputStream* out) {
-            if (!count) {
-                return;
-            }
-            memset(TmpBuffer, 0, sizeof(TmpBuffer));
-            Result[0] = TmpBuffer;
-            for (size_t i = 1; i < Limit; ++i) {
-                Result[i] = Result[i - 1] + MaxStrLen;
-            }
-            const std::lock_guard lock{Mutex};
+namespace NBacktrace {
+    
+extern THashMap<TString, TString> Mapping;
 
-            std::iota(Order, Order + count, 0u);
-            std::sort(Order, Order + count, [&frames](auto a, auto b) { return strcmp(frames[a].File, frames[b].File) < 0; });
+}
+}
 
-            struct backtrace_state* state = nullptr;
-            for (size_t i = 0; i < count; ++i) {
-                if (!i || frames[Order[i - 1]].File != frames[Order[i]].File) {
-                    state = CreateState(frames[Order[i]].File);
-                }
-
-                if (!state) {
-                    Result[Order[i]] = nullptr; // File not found
-                    continue;
-                }
-
-                int status = backtrace_pcinfo(
-                    state,
-                    reinterpret_cast<uintptr_t>(frames[Order[i]].Address) - 1, // last byte of the call instruction
-                    HandleLibBacktraceFrame,
-                    HandleLibBacktraceError,
-                    reinterpret_cast<void*>(Result[Order[i]]));
-                if (0 != status) {
-                    break;
-                }
-            }
-            for (size_t i = 0; i < count; ++i) {
-                if (Result[i]) {
-                    *out << Result[i] << "\n";
-                } else {
-                    *out << "File `" << frames[i].File << "` not found\n"; 
-                }
-            }
-        }
+int DlIterCallback(struct dl_phdr_info *info, size_t size, void *data)
+{
+    Y_UNUSED(size);
+    Y_UNUSED(data);
+    if (*info->dlpi_name) {
+        TDllInfo dllInfo{ info->dlpi_name, (ui64)info->dlpi_addr };
+        ((THashMap<TString, TDllInfo>*)data)->emplace(dllInfo.Path, dllInfo);
     }
+
+    return 0;
+}
+
+class TBacktraceSymbolizer : public IBacktraceSymbolizer {
+public:
+    TBacktraceSymbolizer(bool kikimrFormat) : IBacktraceSymbolizer(), KikimrFormat_(kikimrFormat) {
+        dl_iterate_phdr(DlIterCallback, &DLLs_);
+        
+    }
+
+    TString SymbolizeFrame(void* ptr) override {
+        ui64 address = (ui64)ptr - 1;
+        ui64 offset = 0;
+        TString modulePath = BinaryPath_;
+#ifdef _linux_
+        Dl_info dlInfo;
+        memset(&dlInfo, 0, sizeof(dlInfo));
+        auto ret = dladdr((void*)address, &dlInfo);
+        if (ret) {
+            auto path = dlInfo.dli_fname;
+            auto it = DLLs_.find(path);
+            if (it != DLLs_.end()) {
+                modulePath = path;
+                offset = it->second.BaseAddress;
+            }
+        }
+#endif
+        if (!KikimrFormat_) {
+            return "StackFrame: " + modulePath + " " + address + " " + offset + "\n";
+        }
+
+        llvm::object::SectionedAddress secAddr;
+        secAddr.Address = address - offset;
+        return NYql::NBacktrace::SymbolizeAndDumpToString(modulePath, secAddr, offset);
+    }
+
+    ~TBacktraceSymbolizer() override {
+
+    }
+    
+private:
+    THashMap<TString, TDllInfo> DLLs_;
+    TString BinaryPath_ = GetPersistentExecPath();
+    bool KikimrFormat_;
+};
+
+std::unique_ptr<IBacktraceSymbolizer> BuildSymbolizer(bool format) {
+    return std::unique_ptr<IBacktraceSymbolizer>(new TBacktraceSymbolizer(format));
 }

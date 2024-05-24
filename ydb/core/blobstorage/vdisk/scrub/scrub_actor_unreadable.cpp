@@ -4,11 +4,11 @@
 namespace NKikimr {
 
     void TScrubCoroImpl::DropGarbageBlob(const TLogoBlobID& fullId) {
-        Y_ABORT_UNLESS(!fullId.PartId());
+        Y_VERIFY(!fullId.PartId());
         if (const auto it = UnreadableBlobs.find(fullId); it != UnreadableBlobs.end()) {
             STLOGX(GetActorContext(), PRI_NOTICE, BS_VDISK_SCRUB, VDS39, VDISKP(LogPrefix,
                 "dropped garbage unreadable blob"), (BlobId, it->first), (UnreadableParts, it->second.UnreadableParts));
-            MonGroup.UnreadableBlobsFound() -= it->second.UnreadableParts.CountBits();
+            *UnreadableBlobsFound -= it->second.UnreadableParts.CountBits();
             UnreadableBlobs.erase(it);
         }
     }
@@ -21,7 +21,7 @@ namespace NKikimr {
     }
 
     void TScrubCoroImpl::UpdateUnreadableParts(const TLogoBlobID& fullId, NMatrix::TVectorType corrupted, TDiskPart corruptedPart) {
-        Y_ABORT_UNLESS(!fullId.PartId());
+        Y_VERIFY(!fullId.PartId());
         const auto it = UnreadableBlobs.find(fullId);
 
         const NMatrix::TVectorType prevCorrupted = it != UnreadableBlobs.end()
@@ -50,17 +50,17 @@ namespace NKikimr {
                 UnreadableBlobs.try_emplace(fullId, corrupted, corruptedPart);
             }
 
-            MonGroup.UnreadableBlobsFound() += corrupted.CountBits() - prevCorrupted.CountBits();
+            *UnreadableBlobsFound += corrupted.CountBits() - prevCorrupted.CountBits();
         }
     }
 
     void TScrubCoroImpl::UpdateReadableParts(const TLogoBlobID& fullId, NMatrix::TVectorType readable) {
-        Y_ABORT_UNLESS(!fullId.PartId());
+        Y_VERIFY(!fullId.PartId());
         if (const auto it = UnreadableBlobs.find(fullId); it != UnreadableBlobs.end()) {
             STLOGX(GetActorContext(), PRI_NOTICE, BS_VDISK_SCRUB, VDS42, VDISKP(LogPrefix,
                 "read parts of previously unreadable blob"), (BlobId, it->first),
                 (UnreadablePartsBefore, it->second.UnreadableParts), (ReadableParts, readable));
-            MonGroup.UnreadableBlobsFound() -= (it->second.UnreadableParts & readable).CountBits();
+            *UnreadableBlobsFound -= (it->second.UnreadableParts & readable).CountBits();
             if ((it->second.UnreadableParts &= ~readable).Empty()) {
                 UnreadableBlobs.erase(it);
             }
@@ -112,12 +112,12 @@ namespace NKikimr {
                         "recovered parts of previously unreadable blob"), (BlobId, it->first),
                         (UnreadablePartsBefore, data.UnreadableParts), (RecoveredParts, item.Needed));
 
-                    MonGroup.UnreadableBlobsFound() -= (data.UnreadableParts & item.Needed).CountBits();
+                    *UnreadableBlobsFound -= (data.UnreadableParts & item.Needed).CountBits();
                     if ((data.UnreadableParts &= ~item.Needed).Empty()) {
                         UnreadableBlobs.erase(it);
                     }
-                    ++MonGroup.BlobsFixed();
-                    
+
+                    ++*BlobsFixed;
                 } else {
                     STLOG(PRI_WARN, BS_VDISK_SCRUB, VDS07, VDISKP(LogPrefix, "failed to restore corrupted blob"),
                         (BlobId, item.BlobId), (Status, item.Status));
@@ -135,8 +135,8 @@ namespace NKikimr {
                 }
             }
             if (when != TInstant::Max()) {
-                GetActorSystem()->Schedule(when, new IEventHandle(ScrubCtx->SkeletonId, SelfActorId,
-                    new TEvTakeHullSnapshot(false)));
+                GetActorSystem()->Schedule(when, new IEventHandle(EvGenerateRestoreCorruptedBlobQuery, 0, SelfActorId,
+                    {}, nullptr, 0));
                 GenerateRestoreCorruptedBlobQueryScheduled = true;
             }
         }
@@ -151,38 +151,10 @@ namespace NKikimr {
         GenerateRestoreCorruptedBlobQuery();
     }
 
-    void TScrubCoroImpl::Handle(TEvTakeHullSnapshotResult::TPtr ev) {
-        Y_ABORT_UNLESS(GenerateRestoreCorruptedBlobQueryScheduled);
+    void TScrubCoroImpl::HandleGenerateRestoreCorruptedBlobQuery() {
+        Y_VERIFY(GenerateRestoreCorruptedBlobQueryScheduled);
         GenerateRestoreCorruptedBlobQueryScheduled = false;
-
-        auto& snap = ev->Get()->Snap;
-        auto barriers = snap.BarriersSnap.CreateEssence(snap.HullCtx);
-        FilterUnreadableBlobs(snap, *barriers);
-
         GenerateRestoreCorruptedBlobQuery();
-    }
-
-    void TScrubCoroImpl::FilterUnreadableBlobs(THullDsSnap& snap, TBarriersSnapshot::TBarriersEssence& barriers) {
-        TLevelIndexSnapshot::TForwardIterator iter(snap.HullCtx, &snap.LogoBlobsSnap);
-        TIndexRecordMerger merger(Info->Type);
-
-        for (auto it = UnreadableBlobs.begin(); it != UnreadableBlobs.end(); ) {
-            const TLogoBlobID id = it->first;
-            ++it;
-
-            bool keepData = false;
-            if (iter.Seek(id); iter.Valid() && iter.GetCurKey().LogoBlobID() == id) {
-                iter.PutToMerger(&merger);
-                merger.Finish();
-                keepData = barriers.Keep(id, merger.GetMemRec(), {}, snap.HullCtx->AllowKeepFlags,
-                    true /*allowGarbageCollection*/).KeepData;
-                merger.Clear();
-            }
-
-            if (!keepData) {
-                DropGarbageBlob(id);
-            }
-        }
     }
 
 } // NKikimr

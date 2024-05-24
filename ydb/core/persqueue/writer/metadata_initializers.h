@@ -3,6 +3,7 @@
 #include <ydb/services/metadata/service.h>
 #include <ydb/services/metadata/abstract/initialization.h>
 
+
 namespace NKikimr::NGRpcProxy::V1 {
 
 using TInitBehaviourPtr = std::shared_ptr<NMetadata::NInitializer::IInitializationBehaviour>;
@@ -27,27 +28,24 @@ protected:
     virtual TString GetInternalStorageTablePath() const override {
         return "TopicPartitionsMapping";
     }
-
     TInitBehaviourPtr ConstructInitializer() const override {
         return TSrcIdMetaInitializer::GetInstant();
     }
-
 public:
     std::shared_ptr<NMetadata::NModifications::IOperationsManager> GetOperationsManager() const override {
         return nullptr;
     }
-
     static TClassBehaviourPtr GetInstant() {
         static TClassBehaviourPtr res{new TSrcIdMetaInitManager()};
         return res;
     }
-
     virtual TString GetTypeId() const override {
         return TypeName<TSrcIdMetaInitManager>();
     }
 
 private:
     TSrcIdMetaInitManager() = default;
+
 };
 
 } // namespace NKikimr::NGRpcProxy::V1

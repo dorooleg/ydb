@@ -5,10 +5,9 @@
 #include "cms_state.h"
 
 #include <ydb/core/protos/cms.pb.h>
-#include <ydb/core/protos/maintenance.pb.h>
 
-#include <ydb/library/actors/interconnect/events_local.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/interconnect/events_local.h>
+#include <library/cpp/actors/core/actor.h>
 
 /**
  * Here we declare interface for CMS (Cluster Management System) tablet whose intention
@@ -57,20 +56,6 @@ struct TEvCms {
         EvGetLogTailResponse,
         EvGetSentinelStateRequest,
         EvGetSentinelStateResponse,
-
-        EvListClusterNodesRequest,
-        EvListClusterNodesResponse,
-        EvCreateMaintenanceTaskRequest,
-        EvRefreshMaintenanceTaskRequest,
-        EvMaintenanceTaskResponse,
-        EvGetMaintenanceTaskRequest,
-        EvGetMaintenanceTaskResponse,
-        EvListMaintenanceTasksRequest,
-        EvListMaintenanceTasksResponse,
-        EvDropMaintenanceTaskRequest,
-        EvManageMaintenanceTaskResponse,
-        EvCompleteActionRequest,
-        EvManageActionResponse,
 
         EvWalleCreateTaskRequest = EvClusterStateRequest + 512,
         EvWalleCreateTaskResponse,
@@ -211,7 +196,7 @@ struct TEvCms {
     };
 
     struct TEvStoreWalleTask : public TEventLocal<TEvStoreWalleTask, EvStoreWalleTask> {
-        TTaskInfo Task;
+        TWalleTaskInfo Task;
 
         TString ToString() const override {
             return Sprintf("%s { Task: %s }", ToStringHeader().data(), Task.ToString().data());
@@ -266,7 +251,7 @@ struct TEvCms {
             return Sprintf("%s { TaskId: %s }", ToStringHeader().data(), TaskId.data());
         }
     };
-
+    
     struct TEvGetClusterInfoRequest : public TEventLocal<TEvGetClusterInfoRequest, EvGetClusterInfoRequest> {
         TString ToString() const override {
             return "Get Cluster Info Request";
@@ -274,7 +259,7 @@ struct TEvCms {
     };
 
     struct TEvGetClusterInfoResponse : public TEventLocal<TEvGetClusterInfoResponse, EvGetClusterInfoResponse> {
-        TClusterInfoPtr Info;
+        TClusterInfoPtr Info; 
 
         TString ToString() const override {
             return "Get Cluster Info Response";
@@ -339,71 +324,6 @@ struct TEvCms {
     struct TEvGetSentinelStateResponse : public TEventPB<TEvGetSentinelStateResponse,
                                                          NKikimrCms::TGetSentinelStateResponse,
                                                          EvGetSentinelStateResponse> {
-    };
-
-    struct TEvListClusterNodesRequest : public TEventPB<TEvListClusterNodesRequest,
-                                                        NKikimrMaintenance::TListClusterNodesRequest,
-                                                        EvListClusterNodesRequest> {
-    };
-
-    struct TEvListClusterNodesResponse : public TEventPB<TEvListClusterNodesResponse,
-                                                         NKikimrMaintenance::TListClusterNodesResponse,
-                                                         EvListClusterNodesResponse> {
-    };
-
-    struct TEvCreateMaintenanceTaskRequest : public TEventPB<TEvCreateMaintenanceTaskRequest,
-                                                             NKikimrMaintenance::TCreateMaintenanceTaskRequest,
-                                                             EvCreateMaintenanceTaskRequest> {
-    };
-
-    struct TEvRefreshMaintenanceTaskRequest : public TEventPB<TEvRefreshMaintenanceTaskRequest,
-                                                              NKikimrMaintenance::TRefreshMaintenanceTaskRequest,
-                                                              EvRefreshMaintenanceTaskRequest> {
-    };
-
-    struct TEvMaintenanceTaskResponse : public TEventPB<TEvMaintenanceTaskResponse,
-                                                        NKikimrMaintenance::TMaintenanceTaskResponse,
-                                                        EvMaintenanceTaskResponse> {
-    };
-
-    struct TEvGetMaintenanceTaskRequest : public TEventPB<TEvGetMaintenanceTaskRequest,
-                                                          NKikimrMaintenance::TGetMaintenanceTaskRequest,
-                                                          EvGetMaintenanceTaskRequest> {
-    };
-
-    struct TEvGetMaintenanceTaskResponse : public TEventPB<TEvGetMaintenanceTaskResponse,
-                                                           NKikimrMaintenance::TGetMaintenanceTaskResponse,
-                                                           EvGetMaintenanceTaskResponse> {
-    };
-
-    struct TEvListMaintenanceTasksRequest : public TEventPB<TEvListMaintenanceTasksRequest,
-                                                            NKikimrMaintenance::TListMaintenanceTasksRequest,
-                                                            EvListMaintenanceTasksRequest> {
-    };
-
-    struct TEvListMaintenanceTasksResponse : public TEventPB<TEvListMaintenanceTasksResponse,
-                                                             NKikimrMaintenance::TListMaintenanceTasksResponse,
-                                                             EvListMaintenanceTasksResponse> {
-    };
-
-    struct TEvDropMaintenanceTaskRequest : public TEventPB<TEvDropMaintenanceTaskRequest,
-                                                           NKikimrMaintenance::TDropMaintenanceTaskRequest,
-                                                           EvDropMaintenanceTaskRequest> {
-    };
-
-    struct TEvManageMaintenanceTaskResponse : public TEventPB<TEvManageMaintenanceTaskResponse,
-                                                              NKikimrMaintenance::TManageMaintenanceTaskResponse,
-                                                              EvManageMaintenanceTaskResponse> {
-    };
-
-    struct TEvCompleteActionRequest : public TEventPB<TEvCompleteActionRequest,
-                                                      NKikimrMaintenance::TCompleteActionRequest,
-                                                      EvCompleteActionRequest> {
-    };
-
-    struct TEvManageActionResponse : public TEventPB<TEvManageActionResponse,
-                                                     NKikimrMaintenance::TManageActionResponse,
-                                                     EvManageActionResponse> {
     };
 };
 

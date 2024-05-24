@@ -1,5 +1,5 @@
 #pragma once
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NActors {
 

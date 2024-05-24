@@ -13,8 +13,10 @@ public:
         : TypeId(typeId)
         , TypeDesc(typeDesc)
     {
-        if (TypeId != NTypeIds::Pg) {
-            Y_ABORT_UNLESS(!TypeDesc);
+        if (TypeId == NTypeIds::Pg) {
+            Y_VERIFY(TypeDesc);
+        } else {
+            Y_VERIFY(!TypeDesc);
         }
     }
 

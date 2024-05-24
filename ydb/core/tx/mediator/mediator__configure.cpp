@@ -22,7 +22,7 @@ struct TTxMediator::TTxConfigure : public TTransactionBase<TTxMediator> {
         , TimeCastBuketsPerMediator(timeCastBuckets)
         , ConfigurationApplied(false)
     {
-        Y_ABORT_UNLESS(TimeCastBuketsPerMediator);
+        Y_VERIFY(TimeCastBuketsPerMediator);
     }
 
     TTxType GetTxType() const override { return TXTYPE_INIT; }

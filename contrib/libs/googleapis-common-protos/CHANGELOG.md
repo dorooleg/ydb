@@ -1,50 +1,5 @@
 # Changelog
 
-## [1.63.0](https://github.com/googleapis/python-api-common-protos/compare/v1.62.0...v1.63.0) (2024-03-08)
-
-
-### Features
-
-* Add `api_version` field to `ServiceOptions` in `google/api/client.proto` ([6f9c4d2](https://github.com/googleapis/python-api-common-protos/commit/6f9c4d2b4b787d9ed2b447d7b99281aa3dcf97b5))
-* Add `LOCATION_POLICY_VIOLATED` enum to `ErrorReason` in `google/api/error_reason.proto` ([6f9c4d2](https://github.com/googleapis/python-api-common-protos/commit/6f9c4d2b4b787d9ed2b447d7b99281aa3dcf97b5))
-* Add `rest_reference_documentation_uri` field to `ServiceOptions` in `google/api/client.proto` ([6f9c4d2](https://github.com/googleapis/python-api-common-protos/commit/6f9c4d2b4b787d9ed2b447d7b99281aa3dcf97b5))
-
-## [1.62.0](https://github.com/googleapis/python-api-common-protos/compare/v1.61.0...v1.62.0) (2023-12-01)
-
-
-### Features
-
-* Add `auto_populated_fields` field of `MethodSettings` in `google/api/client_pb2` ([#194](https://github.com/googleapis/python-api-common-protos/issues/194)) ([4b0c73a](https://github.com/googleapis/python-api-common-protos/commit/4b0c73a40f9bf5337fe451c0210f73eadd196b99))
-* Add support for Python 3.12 ([#192](https://github.com/googleapis/python-api-common-protos/issues/192)) ([336cdf3](https://github.com/googleapis/python-api-common-protos/commit/336cdf351d4e87891d735837817d2cfc4e5a9fc7))
-
-
-### Bug Fixes
-
-* Migrate to native namespace packages ([#187](https://github.com/googleapis/python-api-common-protos/issues/187)) ([713e388](https://github.com/googleapis/python-api-common-protos/commit/713e3887a3293aea314060e84bdcf8a12eda3d6c))
-
-## [1.61.0](https://github.com/googleapis/python-api-common-protos/compare/v1.60.0...v1.61.0) (2023-10-09)
-
-
-### Features
-
-* Add `google/api/field_info.proto` ([2d39f37](https://github.com/googleapis/python-api-common-protos/commit/2d39f37212fe886b3029e1043ca28789e2d66876))
-* Add `IDENTIFIER` to `FieldBehavior` enum ([2d39f37](https://github.com/googleapis/python-api-common-protos/commit/2d39f37212fe886b3029e1043ca28789e2d66876))
-
-## [1.60.0](https://github.com/googleapis/python-api-common-protos/compare/v1.59.1...v1.60.0) (2023-07-27)
-
-
-### Features
-
-* Add `google/api/policy.proto` ([b2cb5c2](https://github.com/googleapis/python-api-common-protos/commit/b2cb5c257ae8d0869d33581b116995620ddae0b2))
-* Add `method_policies` to `Control` ([b2cb5c2](https://github.com/googleapis/python-api-common-protos/commit/b2cb5c257ae8d0869d33581b116995620ddae0b2))
-
-## [1.59.1](https://github.com/googleapis/python-api-common-protos/compare/v1.59.0...v1.59.1) (2023-06-06)
-
-
-### Bug Fixes
-
-* Invalid `dev` version identifiers in `setup.py` ([#166](https://github.com/googleapis/python-api-common-protos/issues/166)) ([c38e03a](https://github.com/googleapis/python-api-common-protos/commit/c38e03aa06eedf65373c283f16e7bbbd5622f37b)), closes [#165](https://github.com/googleapis/python-api-common-protos/issues/165)
-
 ## [1.59.0](https://github.com/googleapis/python-api-common-protos/compare/v1.58.0...v1.59.0) (2023-03-20)
 
 

@@ -17,6 +17,7 @@ class ICheckpointStorage : public virtual TThrRefBase {
 public:
     using TGetCheckpointsResult = std::pair<TCheckpoints, NYql::TIssues>;
     using TGetCoordinatorsResult = std::pair<TCoordinators, NYql::TIssues>;
+    using TAddToStateSizeResult = std::pair<ui64, NYql::TIssues>;
     using TGetTotalCheckpointsStateSizeResult = std::pair<ui64, NYql::TIssues>;
     using TCreateCheckpointResult = std::pair<TString, NYql::TIssues>; // graphDescId for subsequent usage.
 
@@ -43,8 +44,7 @@ public:
         const TCoordinatorId& coordinator,
         const TCheckpointId& checkpointId,
         ECheckpointStatus newStatus,
-        ECheckpointStatus prevStatus,
-        ui64 stateSizeBytes) = 0;
+        ECheckpointStatus prevStatus) = 0;
 
     virtual NThreading::TFuture<NYql::TIssues> AbortCheckpoint(
         const TCoordinatorId& coordinator,
@@ -70,6 +70,11 @@ public:
     virtual NThreading::TFuture<NYql::TIssues> DeleteMarkedCheckpoints(
         const TString& graphId,
         const TCheckpointId& checkpointUpperBound) = 0;
+
+    virtual NThreading::TFuture<ICheckpointStorage::TAddToStateSizeResult> AddToStateSize(
+        const TString& graphId,
+        const TCheckpointId& checkpoint,
+        ui64 size) = 0;
 
     virtual NThreading::TFuture<ICheckpointStorage::TGetTotalCheckpointsStateSizeResult> GetTotalCheckpointsStateSize(const TString& graphId) = 0;
 };

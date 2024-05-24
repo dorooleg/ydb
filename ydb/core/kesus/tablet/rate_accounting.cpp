@@ -6,9 +6,8 @@
 #include <ydb/core/util/token_bucket.h>
 #include <ydb/core/metering/time_grid.h>
 #include <ydb/core/metering/bill_record.h>
-#include <ydb/library/services/services.pb.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/string/builder.h>
 #include <util/generic/deque.h>
@@ -262,7 +261,7 @@ private:
 
     void Configure(const NKikimrKesus::TStreamingQuoterResource& props) {
         const auto& accCfg = props.GetAccountingConfig();
-        const auto& resCfg = props.GetHierarchicalDRRResourceConfig();
+        const auto& resCfg = props.GetHierarhicalDRRResourceConfig();
         ProvisionedBucket.SetRate(accCfg.GetProvisionedUnitsPerSecond());
         ProvisionedBucket.SetCapacity(accCfg.GetProvisionedUnitsPerSecond() * accCfg.GetProvisionedCoefficient());
         OnDemandBucket.SetRate(resCfg.GetMaxUnitsPerSecond());
@@ -415,7 +414,7 @@ TInstant TRateAccounting::Report(
         values += skip;
         size -= skip;
         start += interval * skip;
-        Y_ABORT_UNLESS(start >= reported, "rate accounting report deduplication error");
+        Y_VERIFY(start >= reported, "rate accounting report deduplication error");
     }
 
     // Accept values and add them into history
@@ -440,7 +439,7 @@ void TRateAccounting::RemoveOldClients() {
     while (!SortedClients.empty() && SortedClients.begin()->first <= Accounted) {
         ClientToReported.erase(SortedClients.begin()->second);
         SortedClients.erase(SortedClients.begin());
-        Y_DEBUG_ABORT_UNLESS(SortedClients.size() == ClientToReported.size());
+        Y_VERIFY_DEBUG(SortedClients.size() == ClientToReported.size());
     }
 }
 

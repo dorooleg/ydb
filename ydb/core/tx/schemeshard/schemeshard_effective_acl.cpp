@@ -6,7 +6,7 @@ namespace NSchemeShard {
 void TEffectiveACL::Init(const TString &effectiveACL)
 {
     NACLibProto::TSecurityObject object;
-    Y_ABORT_UNLESS(object.MutableACL()->ParseFromString(effectiveACL));
+    Y_VERIFY(object.MutableACL()->ParseFromString(effectiveACL));
 
     Inited = true;
     Split(object);
@@ -20,7 +20,7 @@ void TEffectiveACL::Init(const TString &effectiveACL)
 
 void TEffectiveACL::Update(const TEffectiveACL &parent, const TString &selfACL, bool isContainer)
 {
-    Y_DEBUG_ABORT_UNLESS(parent);
+    Y_VERIFY_DEBUG(parent);
 
     if (!selfACL) {
         InheritFrom(parent, isContainer);
@@ -30,10 +30,10 @@ void TEffectiveACL::Update(const TEffectiveACL &parent, const TString &selfACL, 
     const TString noMatterOwner;
 
     NACLib::TSecurityObject parentObj(noMatterOwner, true);
-    Y_ABORT_UNLESS(parentObj.MutableACL()->ParseFromString(parent.GetForChildren(isContainer)));
+    Y_VERIFY(parentObj.MutableACL()->ParseFromString(parent.GetForChildren(isContainer)));
 
     NACLib::TSecurityObject selfObj(noMatterOwner, isContainer);
-    Y_ABORT_UNLESS(selfObj.MutableACL()->ParseFromString(selfACL));
+    Y_VERIFY(selfObj.MutableACL()->ParseFromString(selfACL));
 
     NACLib::TSecurityObject effectiveObj = selfObj.MergeWithParent(parentObj); // merge is needed due to Deny records
 

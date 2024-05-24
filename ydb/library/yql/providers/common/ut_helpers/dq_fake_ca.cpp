@@ -109,7 +109,6 @@ TFakeCASetup::~TFakeCASetup() {
 void TFakeCASetup::AsyncOutputWrite(const TWriteValueProducer valueProducer, TMaybe<NDqProto::TCheckpoint> checkpoint, bool finish) {
     Execute([&valueProducer, checkpoint, finish](TFakeActor& actor) {
         auto batch = valueProducer(actor.GetHolderFactory());
-        
         Y_ASSERT(actor.DqAsyncOutput);
         actor.DqAsyncOutput->SendData(std::move(batch), 0, checkpoint, finish);
     });

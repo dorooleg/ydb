@@ -1,4 +1,4 @@
-#include "mkql_builtins_decimal.h" // Y_IGNORE
+#include "mkql_builtins_decimal.h"
 
 #include <cmath>
 
@@ -23,8 +23,6 @@ inline T Abs(T v) {
 
 template<typename TInput, typename TOutput>
 struct TAbs : public TSimpleArithmeticUnary<TInput, TOutput, TAbs<TInput, TOutput>> {
-    static constexpr auto NullMode = TKernel::ENullMode::Default;
-
     static TOutput Do(TInput val)
     {
         return Abs<TInput>(val);
@@ -37,7 +35,7 @@ struct TAbs : public TSimpleArithmeticUnary<TInput, TOutput, TAbs<TInput, TOutpu
             return arg;
 
         if (std::is_floating_point<TInput>()) {
-            auto& module = ctx.Codegen.GetModule();
+            auto& module = ctx.Codegen->GetModule();
             const auto fnType = FunctionType::get(arg->getType(), {arg->getType()}, false);
             const auto& name = GetFuncNameForType<TInput>("llvm.fabs");
             const auto func = module.getOrInsertFunction(name, fnType).getCallee();
@@ -78,12 +76,7 @@ struct TDecimalAbs {
 void RegisterAbs(IBuiltinFunctionRegistry& registry) {
     RegisterUnaryNumericFunctionOpt<TAbs, TUnaryArgsOpt>(registry, "Abs");
     RegisterFunctionUnOpt<NUdf::TDataType<NUdf::TInterval>, NUdf::TDataType<NUdf::TInterval>, TAbs, TUnaryArgsOpt>(registry, "Abs");
-    RegisterFunctionUnOpt<NUdf::TDataType<NUdf::TInterval64>, NUdf::TDataType<NUdf::TInterval64>, TAbs, TUnaryArgsOpt>(registry, "Abs");
     NDecimal::RegisterUnaryFunction<TDecimalAbs, TUnaryArgsOpt>(registry, "Abs");
-}
-
-void RegisterAbs(TKernelFamilyMap& kernelFamilyMap) {
-    kernelFamilyMap["Abs"] = std::make_unique<TUnaryNumericKernelFamily<TAbs>>();
 }
 
 } // namespace NMiniKQL

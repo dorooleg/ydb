@@ -6,11 +6,11 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_tools.h>
 #include <ydb/library/pdisk_io/aio.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 
 #include <library/cpp/lwtrace/all.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
@@ -196,7 +196,7 @@ struct TPDiskFailureInjectionTest {
         // initialize logger settings
         const TActorId loggerId(setup->NodeId, "logger");
 
-        TIntrusivePtr<NLog::TSettings> loggerSettings = new NLog::TSettings(loggerId, NActorsServices::LOGGER,
+        TIntrusivePtr<NLog::TSettings> loggerSettings = new NLog::TSettings(loggerId, NKikimrServices::LOGGER,
                 NActors::NLog::PRI_NOTICE, NActors::NLog::PRI_DEBUG, 0);
 
         loggerSettings->Append(
@@ -256,7 +256,7 @@ struct TPDiskFailureInjectionTest {
 
                 int fds[2];
                 if (pipe(fds) != 0) {
-                    Y_ABORT("pipe failed");
+                    Y_FAIL("pipe failed");
                 }
 
                 pid_t pid = fork();
@@ -319,7 +319,7 @@ struct TPDiskFailureInjectionTest {
                         ssize_t len = read(fds[0], buffer, sizeof(buffer));
                         if (len == -1) {
                             if (errno != EINTR) {
-                                Y_ABORT("unexpected error: %s", strerror(errno));
+                                Y_FAIL("unexpected error: %s", strerror(errno));
                             }
                             continue;
                         } else if (!len) {
@@ -335,13 +335,13 @@ struct TPDiskFailureInjectionTest {
                     // wait for child to terminate
                     int status = 0;
                     if (waitpid(pid, &status, 0) != pid) {
-                        Y_ABORT("waitpid failed with error: %s", strerror(errno));
+                        Y_FAIL("waitpid failed with error: %s", strerror(errno));
                     }
 
                     if (WIFSIGNALED(status)) {
                         int sig = WTERMSIG(status);
                         if (sig != SIGKILL) {
-                            Y_ABORT("unexpected termination signal: %d pid# %d", sig, (int)pid);
+                            Y_FAIL("unexpected termination signal: %d pid# %d", sig, (int)pid);
                         }
                     }
                 } else {

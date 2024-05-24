@@ -114,17 +114,6 @@ Y_UNIT_TEST_SUITE(EndpointElector) {
         UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey()).Endpoint, "");
     }
 
-    Y_UNIT_TEST(GetEndpoint) {
-        TEndpointElectorSafe elector;
-        elector.SetNewState(TVector<TEndpointRecord>{{"Two", 0, "", 2}, {"One", 0, "", 1}});
-        UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("One", 0), true).Endpoint, "One");
-        UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("Two", 0), true).Endpoint, "Two");
-        UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("", 1), true).NodeId, 1);
-        UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("", 2), true).NodeId, 2);
-        UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("Three", 0), true).Endpoint, "");
-        UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("", 3), true).NodeId, 0);
-    }
-
     Y_UNIT_TEST(DiffOnRemove) {
         TEndpointElectorSafe elector;
         auto removed = elector.SetNewState(TVector<TEndpointRecord>{{"Two", 2}, {"One", 1}});
@@ -159,7 +148,7 @@ Y_UNIT_TEST_SUITE(EndpointElector) {
         UNIT_ASSERT(endpoints.find("One_B") != endpoints.end());
 
         elector.SetNewState(TVector<TEndpointRecord>{{"One", 1}});
-        // no preferred endpoint, expect avaliable
+        // no prefered endpoint, expect avaliable
         UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey("Three", 0)).Endpoint, "One");
         UNIT_ASSERT_VALUES_EQUAL(elector.GetEndpoint(TEndpointKey()).Endpoint, "One");
     }

@@ -9,9 +9,6 @@ namespace NPDisk {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void TRequestBase::AbortDelete(TRequestBase* request, TActorSystem* actorSystem) {
-    while (auto span = request->SpanStack.Pop()) {
-        span.EndError("Abort");
-    }
     switch(request->GetType()) {
     case ERequestType::RequestChunkRead:
     {
@@ -48,7 +45,7 @@ void TChunkRead::Abort(TActorSystem* actorSystem) {
     if (FinalCompletion) {
         FinalCompletion->PartDeleted(actorSystem);
     } else {
-        Y_ABORT_UNLESS(!IsReplied);
+        Y_VERIFY(!IsReplied);
         TStringStream error;
         error << "ReqId# " << ReqId << " ChunkRead is deleted because of PDisk stoppage";
         THolder<NPDisk::TEvChunkReadResult> result = MakeHolder
@@ -67,14 +64,14 @@ void TChunkRead::Abort(TActorSystem* actorSystem) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 TChunkReadPiece::TChunkReadPiece(TIntrusivePtr<TChunkRead> &read, ui64 pieceCurrentSector, ui64 pieceSizeLimit,
-        bool isTheLastPiece, NWilson::TSpan span)
-        : TRequestBase(read->Sender, read->ReqId, read->Owner, read->OwnerRound, read->PriorityClass, std::move(span))
+        bool isTheLastPiece)
+        : TRequestBase(read->Sender, read->ReqId, read->Owner, read->OwnerRound, read->PriorityClass)
         , ChunkRead(read)
         , PieceCurrentSector(pieceCurrentSector)
         , PieceSizeLimit(pieceSizeLimit)
         , IsTheLastPiece(isTheLastPiece)
 {
-    Y_ABORT_UNLESS(ChunkRead->FinalCompletion);
+    Y_VERIFY(ChunkRead->FinalCompletion);
     if (!IsTheLastPiece) {
         ChunkRead->FinalCompletion->AddPart();
     }

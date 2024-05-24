@@ -1,49 +1,45 @@
-//
-//
-// Copyright 2018 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2018 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_HTTP_CLIENT_AUTHORITY_FILTER_H
-#define GRPC_SRC_CORE_EXT_FILTERS_HTTP_CLIENT_AUTHORITY_FILTER_H
+#ifndef GRPC_CORE_EXT_FILTERS_HTTP_CLIENT_AUTHORITY_FILTER_H
+#define GRPC_CORE_EXT_FILTERS_HTTP_CLIENT_AUTHORITY_FILTER_H
 
 #include <grpc/support/port_platform.h>
 
-#include <utility>
-
 #include "y_absl/status/statusor.h"
 
+#include <grpc/impl/codegen/compression_types.h>
+
 #include "src/core/lib/channel/channel_args.h"
-#include "src/core/lib/channel/channel_fwd.h"
 #include "src/core/lib/channel/promise_based_filter.h"
-#include "src/core/lib/promise/arena_promise.h"
 #include "src/core/lib/slice/slice.h"
-#include "src/core/lib/transport/transport.h"
 
 namespace grpc_core {
 
 class ClientAuthorityFilter final : public ChannelFilter {
  public:
-  static const grpc_channel_filter kFilter;
-
-  static y_absl::StatusOr<ClientAuthorityFilter> Create(const ChannelArgs& args,
-                                                      ChannelFilter::Args);
+  static y_absl::StatusOr<ClientAuthorityFilter> Create(
+      const grpc_channel_args* args, ChannelFilter::Args);
 
   // Construct a promise for one call.
-  ArenaPromise<ServerMetadataHandle> MakeCallPromise(
-      CallArgs call_args, NextPromiseFactory next_promise_factory) override;
+  ArenaPromise<TrailingMetadata> MakeCallPromise(
+      ClientInitialMetadata initial_metadata,
+      NextPromiseFactory next_promise_factory) override;
 
  private:
   explicit ClientAuthorityFilter(Slice default_authority)
@@ -53,4 +49,4 @@ class ClientAuthorityFilter final : public ChannelFilter {
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_HTTP_CLIENT_AUTHORITY_FILTER_H
+#endif /* GRPC_CORE_EXT_FILTERS_HTTP_CLIENT_AUTHORITY_FILTER_H */

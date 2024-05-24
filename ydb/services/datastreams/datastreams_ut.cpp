@@ -54,7 +54,7 @@ public:
 
 
         appConfig.MutablePQConfig()->MutableQuotingConfig()->SetEnableQuoting(true);
-        appConfig.MutablePQConfig()->MutableQuotingConfig()->SetQuotaWaitDurationMs(100);
+        appConfig.MutablePQConfig()->MutableQuotingConfig()->SetQuotaWaitDurationMs(300);
         appConfig.MutablePQConfig()->MutableQuotingConfig()->SetPartitionReadQuotaIsTwiceWriteQuota(true);
         appConfig.MutablePQConfig()->MutableBillingMeteringConfig()->SetEnabled(true);
         appConfig.MutablePQConfig()->MutableBillingMeteringConfig()->SetFlushIntervalSec(1);
@@ -133,6 +133,7 @@ ui32 CheckMeteringFile(TTempFileHandle* meteringFile, const TString& streamPath,
                        std::function<void(const NJson::TJsonValue::TMapType& map)> tags_check,
                        std::function<void(const NJson::TJsonValue::TMapType& map)> labels_check,
                        std::function<void(const NJson::TJsonValue::TMapType& map)> usage_check) {
+    Sleep(TDuration::Seconds(1));
     if (meteringFile->IsOpen()) {
         meteringFile->Flush();
         meteringFile->Close();
@@ -376,8 +377,6 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             }
         }
 
-        sleep(1);
-
         auto putUnitsSchemaFound =
             CheckMeteringFile(testServer.MeteringFile.Get(), "/Root/" + streamName, "yds.events.puts.v1",
                           [](const NJson::TJsonValue::TMapType& map) {
@@ -441,11 +440,8 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         const ui32 shardCount = 2;
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamName,
-                NYDS_V1::TCreateStreamSettings()
-                                .ShardCount(shardCount)
-                                .RetentionStorageMegabytes(storageMb)
-                                .StreamMode(NYdb::NDataStreams::V1::ESM_PROVISIONED)
-                        ).ExtractValueSync();
+                NYDS_V1::TCreateStreamSettings().ShardCount(shardCount)
+                                                .RetentionStorageMegabytes(storageMb)).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
@@ -465,8 +461,6 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             }
         }
 
-        sleep(1);
-
         auto storageSchemaFound =
             CheckMeteringFile(testServer.MeteringFile.Get(), "/Root/" + streamName, "yds.storage.reserved.v1",
                             [](const NJson::TJsonValue::TMapType& map) {
@@ -482,22 +476,17 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                                 UNIT_ASSERT_VALUES_EQUAL(
                                     labels.find("ydb_database")->second.GetString(), "root");
                             },
-                            [](const NJson::TJsonValue::TMapType& map) {
+                            [storageMb](const NJson::TJsonValue::TMapType& map) {
                                 UNIT_ASSERT(map.contains("usage"));
                                 auto& usage = map.find("usage")->second.GetMap();
-
-                                auto start = usage.find("start")->second.GetUInteger();
-                                auto finish = usage.find("finish")->second.GetUInteger();
-                                UNIT_ASSERT_LE(start, finish);
-
-                                auto now = TInstant::Now();
-                                UNIT_ASSERT_GT(start, now.Seconds() - 10);
-                                UNIT_ASSERT_GT(finish, now.Seconds() - 9);
+                                UNIT_ASSERT_GT(usage.find("start")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 10);
+                                UNIT_ASSERT_GT(usage.find("finish")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 9);
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "mbyte*second");
-
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetUInteger(),
-                                               storageMb * (finish - start));
+                                               storageMb);
 
                             });
         UNIT_ASSERT_VALUES_EQUAL(storageSchemaFound, 8);
@@ -527,16 +516,11 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                             [](const NJson::TJsonValue::TMapType& map) {
                                 UNIT_ASSERT(map.contains("usage"));
                                 auto& usage = map.find("usage")->second.GetMap();
-
-                                auto start = usage.find("start")->second.GetUInteger();
-                                auto finish = usage.find("finish")->second.GetUInteger();
-                                UNIT_ASSERT_LE(start, finish);
-
-                                UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetInteger(), finish - start);
-
-                                auto now = TInstant::Now();
-                                UNIT_ASSERT_GT(start, now.Seconds() - 10);
-                                UNIT_ASSERT_GT(finish, now.Seconds() - 9);
+                                UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetInteger(), 1);
+                                UNIT_ASSERT_GT(usage.find("start")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 10);
+                                UNIT_ASSERT_GT(usage.find("finish")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 9);
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "second");
                             });
@@ -586,9 +570,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamName,
                 NYDS_V1::TCreateStreamSettings().ShardCount(shardCount)
-                                                .RetentionStorageMegabytes(storageMb)
-                                                .StreamMode(NYdb::NDataStreams::V1::ESM_PROVISIONED)
-                    ).ExtractValueSync();
+                                                .RetentionStorageMegabytes(storageMb)).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
@@ -649,8 +631,6 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             UNIT_ASSERT(res.GetValue().IsSuccess());
         }
 
-        sleep(1);
-
         auto storageSchemaFound =
             CheckMeteringFile(testServer.MeteringFile.Get(), "/Root/" + streamName, "yds.storage.reserved.v1",
                             [](const NJson::TJsonValue::TMapType& map) {
@@ -709,16 +689,11 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                             [](const NJson::TJsonValue::TMapType& map) {
                                 UNIT_ASSERT(map.contains("usage"));
                                 auto& usage = map.find("usage")->second.GetMap();
-
-                                auto start = usage.find("start")->second.GetUInteger();
-                                auto finish = usage.find("finish")->second.GetUInteger();
-                                UNIT_ASSERT_LE(start, finish);
-
-                                UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetInteger(), finish - start);
-
-                                auto now = TInstant::Now();
-                                UNIT_ASSERT_GT(start, now.Seconds() - 10);
-                                UNIT_ASSERT_GT(finish, now.Seconds() - 9);
+                                UNIT_ASSERT(usage.find("quantity")->second.GetInteger() <= 1);
+                                UNIT_ASSERT_GT(usage.find("start")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 10);
+                                UNIT_ASSERT_GT(usage.find("finish")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 9);
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "second");
                             });
@@ -733,9 +708,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         const TString streamPath = "/Root/" + streamName;
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamPath,
-                NYDS_V1::TCreateStreamSettings().ShardCount(1)
-                        .StreamMode(NYdb::NDataStreams::V1::ESM_PROVISIONED)
-                ).ExtractValueSync();
+                NYDS_V1::TCreateStreamSettings().ShardCount(1)).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
@@ -777,8 +750,6 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
-
-        sleep(1);
 
         auto putUnitsSchemaFound =
             CheckMeteringFile(testServer.MeteringFile.Get(), streamPath, "yds.events.puts.v1",
@@ -905,7 +876,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                                      TDuration::Days(7).Hours());
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().stream_description().storage_limit_mb(), 50_GB / 1_MB);
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().stream_description().stream_mode_details().stream_mode(),
-                                     Ydb::DataStreams::V1::StreamMode::ON_DEMAND);
+                                     Ydb::DataStreams::V1::StreamMode::PROVISIONED);
 
 
         }
@@ -1242,8 +1213,6 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             }
         }
 
-        sleep(1);
-
         CheckMeteringFile(testServer.MeteringFile.Get(), "/Root/" + streamName,
                           "yds.throughput.reserved.v1",
                           [](const NJson::TJsonValue::TMapType& map) {
@@ -1404,7 +1373,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                     UNIT_ASSERT_VALUES_EQUAL(item.GetData(), item.GetPartitionKey());
                     auto hashKey = item.GetExplicitHash().empty() ? HexBytesToDecimal(MD5::Calc(item.GetPartitionKey())) : BytesToDecimal(item.GetExplicitHash());
                     UNIT_ASSERT_VALUES_EQUAL(NKikimr::NDataStreams::V1::ShardFromDecimal(hashKey, 5), item.GetPartitionStream()->GetPartitionId());
-                    UNIT_ASSERT(item.GetIp().empty());
+                    UNIT_ASSERT(!item.GetIp().empty());
                     if (item.GetData() == dataStr) {
                         UNIT_ASSERT_VALUES_EQUAL(item.GetExplicitHash(), dataStr);
                     }
@@ -1513,25 +1482,25 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             }
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().failed_record_count(), 0);
             Cerr << result.GetResult().DebugString() << Endl;
+            Cerr << "Second put records\n";
 
-            Cerr << "Second put records (async)\n";
-            auto secondWriteAsync = client.PutRecords(streamPath, records);
-
-            Cerr << Now().Seconds() << "Third put records\n";
             result = client.PutRecords(streamPath, records).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             if (result.GetStatus() != EStatus::SUCCESS) {
                 result.GetIssues().PrintTo(Cerr);
             }
+            Cerr << result.GetResult().DebugString() << Endl;
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().failed_record_count(), 4);
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().records(0).error_code(), "ProvisionedThroughputExceededException");
 
-            result = secondWriteAsync.ExtractValueSync();
+            Sleep(TDuration::Seconds(4));
+
+            Cerr << "Third put records\n";
+            result = client.PutRecords(streamPath, records).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             if (result.GetStatus() != EStatus::SUCCESS) {
                 result.GetIssues().PrintTo(Cerr);
             }
-            Cerr << result.GetResult().DebugString() << Endl;
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().failed_record_count(), 0);
             Cerr << result.GetResult().DebugString() << Endl;
 
@@ -1683,7 +1652,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                 UNIT_ASSERT(false);
                 break;
             } else {
-                Y_ABORT("not a data!");
+                Y_FAIL("not a data!");
             }
         }
     }

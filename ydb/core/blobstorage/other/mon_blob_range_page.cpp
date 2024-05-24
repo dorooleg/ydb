@@ -9,32 +9,64 @@ namespace NKikimr {
 
 namespace {
 
-    class TMonBlobRangeActor
-        : public TActor<TMonBlobRangeActor>
+    class TMonBlobRangePage
+        : public NMonitoring::IMonPage
     {
-        ui64 LastCookie = 0;
-        THashMap<ui64, std::tuple<TActorId, ui64, int, bool>> RequestsInFlight;
+        class TRequestActor
+            : public TActorBootstrapped<TRequestActor>
+        {
+            const ui32 GroupId;
+            std::unique_ptr<TEvBlobStorage::TEvRange> Query;
+            NThreading::TPromise<std::unique_ptr<TEvBlobStorage::TEvRangeResult>> Promise;
+
+        public:
+            static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+                return NKikimrServices::TActivity::BS_GET_ACTOR;
+            }
+
+            TRequestActor(ui32 groupId, ui64 tabletId, const TLogoBlobID& from, const TLogoBlobID& to,
+                    NThreading::TPromise<std::unique_ptr<TEvBlobStorage::TEvRangeResult>> promise)
+                : GroupId(groupId)
+                , Query(std::make_unique<TEvBlobStorage::TEvRange>(tabletId, from, to, false, TInstant::Max(), true))
+                , Promise(std::move(promise))
+            {}
+
+            void Bootstrap(const TActorContext& ctx) {
+                SendToBSProxy(ctx, GroupId, Query.release());
+                Become(&TThis::StateFunc);
+            }
+
+            void Handle(TEvBlobStorage::TEvRangeResult::TPtr& ev, const TActorContext& ctx) {
+                Promise.SetValue(std::unique_ptr<TEvBlobStorage::TEvRangeResult>(ev->Release().Release()));
+                Die(ctx);
+            }
+
+            STRICT_STFUNC(StateFunc,
+                HFunc(TEvBlobStorage::TEvRangeResult, Handle)
+            )
+        };
+
+    private:
+        TActorSystem *ActorSystem;
 
     public:
-        TMonBlobRangeActor()
-            : TActor(&TThis::StateFunc)
+        TMonBlobRangePage(const TString& path, TActorSystem *actorSystem)
+            : IMonPage(path)
+            , ActorSystem(actorSystem)
         {}
 
-        void Handle(NMon::TEvHttpInfo::TPtr ev) {
+        void Output(NMonitoring::IMonHttpRequest& request) override {
+            IOutputStream& out = request.Output();
+
             // parse HTTP request
-            const TCgiParameters& params = ev->Get()->Request.GetParams();
+            const TCgiParameters& params = request.GetParams();
 
             auto generateError = [&](const TString& msg) {
-                TStringStream out;
-
                 out << "HTTP/1.1 400 Bad Request\r\n"
                     << "Content-Type: text/plain\r\n"
                     << "Connection: close\r\n"
                     << "\r\n"
                     << msg << "\r\n";
-
-                Send(ev->Sender, new NMon::TEvHttpInfoRes(out.Str(), ev->Get()->SubRequestId, NMon::TEvHttpInfoRes::Custom),
-                    0, ev->Cookie);
             };
 
             ui32 groupId = 0;
@@ -52,7 +84,6 @@ namespace {
             }
 
             ui32 json = 0;
-            ui32 mustRestoreFirst = 0;
             TLogoBlobID from, to;
             TString errorExplanation;
             if (!params.Has("from")) {
@@ -74,23 +105,19 @@ namespace {
                     return generateError("Failed to parse json parameter -- must be an integer");
                 }
             }
-            if (params.Has("mustRestoreFirst") && !TryFromString(params.Get("mustRestoreFirst"), mustRestoreFirst)) {
-                return generateError("Failed to parse mustRestoreFirst parameter -- must be an integer");
-            }
 
-            const ui64 cookie = ++LastCookie;
-            auto query = std::make_unique<TEvBlobStorage::TEvRange>(tabletId, from, to, mustRestoreFirst, TInstant::Max(), true);
-            SendToBSProxy(SelfId(), groupId, query.release(), cookie);
-            RequestsInFlight[cookie] = {ev->Sender, ev->Cookie, ev->Get()->SubRequestId, json};
-        }
+            // create promise & future to obtain query result
+            auto promise = NThreading::NewPromise<std::unique_ptr<TEvBlobStorage::TEvRangeResult>>();
+            auto future = promise.GetFuture();
 
-        void Handle(TEvBlobStorage::TEvRangeResult::TPtr ev) {
-            const auto it = RequestsInFlight.find(ev->Cookie);
-            Y_ABORT_UNLESS(it != RequestsInFlight.end());
-            const auto& [sender, senderCookie, subRequestId, json] = it->second;
+            // register and start actor
+            ActorSystem->Register(new TRequestActor(groupId, tabletId, from, to, std::move(promise)));
 
-            auto *result = ev->Get();
-            TStringStream out;
+            // wait for query to complete
+            future.Wait();
+
+            // obtain result
+            const std::unique_ptr<TEvBlobStorage::TEvRangeResult>& result = future.GetValue();
 
             if (json) {
                 out << NMonitoring::HTTPOKJSON;
@@ -109,62 +136,64 @@ namespace {
                 NJsonWriter::TBuf buf;
                 buf.WriteJsonValue(&root);
                 out << buf.Str();
-            } else {
-                out << NMonitoring::HTTPOKHTML;
 
-                HTML(out) {
-                    out << "<!DOCTYPE html>\n";
-                    HTML_TAG() {
-                        HEAD() {
-                            out << "<title>Blob Range Index Query</title>\n";
-                            out << "<link rel='stylesheet' href='../static/css/bootstrap.min.css'>\n";
-                            out << "<script language='javascript' type='text/javascript' src='../static/js/jquery.min.js'></script>\n";
-                            out << "<script language='javascript' type='text/javascript' src='../static/js/bootstrap.min.js'></script>\n";
-                            out << "<style type=\"text/css\">\n";
-                            out << ".table-nonfluid { width: auto; }\n";
-                            out << ".narrow-line50 {line-height: 50%}\n";
-                            out << ".narrow-line60 {line-height: 60%}\n";
-                            out << ".narrow-line70 {line-height: 70%}\n";
-                            out << ".narrow-line80 {line-height: 80%}\n";
-                            out << ".narrow-line90 {line-height: 90%}\n";
-                            out << "</style>\n";
-                        }
-                        BODY() {
-                            DIV_CLASS("panel panel-info") {
-                                DIV_CLASS("panel-heading") {
-                                    out << "Blob Data";
+                return;
+            }
+
+            out << NMonitoring::HTTPOKHTML;
+
+            HTML(out) {
+                out << "<!DOCTYPE html>\n";
+                HTML_TAG() {
+                    HEAD() {
+                        out << "<title>Blob Range Index Query</title>\n";
+                        out << "<link rel='stylesheet' href='https://yastatic.net/bootstrap/3.3.1/css/bootstrap.min.css'>\n";
+                        out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/jquery/2.1.3/jquery.min.js'></script>\n";
+                        out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/bootstrap/3.3.1/js/bootstrap.min.js'></script>\n";
+                        out << "<style type=\"text/css\">\n";
+                        out << ".table-nonfluid { width: auto; }\n";
+                        out << ".narrow-line50 {line-height: 50%}\n";
+                        out << ".narrow-line60 {line-height: 60%}\n";
+                        out << ".narrow-line70 {line-height: 70%}\n";
+                        out << ".narrow-line80 {line-height: 80%}\n";
+                        out << ".narrow-line90 {line-height: 90%}\n";
+                        out << "</style>\n";
+                    }
+                    BODY() {
+                        DIV_CLASS("panel panel-info") {
+                            DIV_CLASS("panel-heading") {
+                                out << "Blob Data";
+                            }
+                            DIV_CLASS("panel-body") {
+                                DIV() {
+                                    out << "Status: ";
+                                    STRONG() {
+                                        out << NKikimrProto::EReplyStatus_Name(result->Status);
+                                    }
                                 }
-                                DIV_CLASS("panel-body") {
+
+                                if (result->ErrorReason) {
                                     DIV() {
-                                        out << "Status: ";
+                                        out << "ErrorReason: ";
                                         STRONG() {
-                                            out << NKikimrProto::EReplyStatus_Name(result->Status);
+                                            out << result->ErrorReason;
                                         }
                                     }
+                                }
 
-                                    if (result->ErrorReason) {
-                                        DIV() {
-                                            out << "ErrorReason: ";
-                                            STRONG() {
-                                                out << result->ErrorReason;
+                                TABLE() {
+                                    TABLEHEAD() {
+                                        TABLER() {
+                                            TABLEH() {
+                                                out << "LogoBlobId";
                                             }
                                         }
                                     }
-
-                                    TABLE() {
-                                        TABLEHEAD() {
+                                    TABLEBODY() {
+                                        for (const auto& blob : result->Responses) {
                                             TABLER() {
-                                                TABLEH() {
-                                                    out << "LogoBlobId";
-                                                }
-                                            }
-                                        }
-                                        TABLEBODY() {
-                                            for (const auto& blob : result->Responses) {
-                                                TABLER() {
-                                                    TABLED() {
-                                                        out << blob.Id.ToString();
-                                                    }
+                                                TABLED() {
+                                                    out << blob.Id.ToString();
                                                 }
                                             }
                                         }
@@ -175,21 +204,13 @@ namespace {
                     }
                 }
             }
-
-            Send(sender, new NMon::TEvHttpInfoRes(out.Str(), subRequestId, NMon::TEvHttpInfoRes::Custom), 0, senderCookie);
-            RequestsInFlight.erase(it);
         }
-
-        STRICT_STFUNC(StateFunc,
-            hFunc(NMon::TEvHttpInfo, Handle);
-            hFunc(TEvBlobStorage::TEvRangeResult, Handle);
-        )
     };
 
 } // anon
 
-IActor *CreateMonBlobRangeActor() {
-    return new TMonBlobRangeActor;
+NMonitoring::IMonPage *CreateMonBlobRangePage(const TString& path, TActorSystem *actorSystem) {
+    return new TMonBlobRangePage(path, actorSystem);
 }
 
 } // NKikimr

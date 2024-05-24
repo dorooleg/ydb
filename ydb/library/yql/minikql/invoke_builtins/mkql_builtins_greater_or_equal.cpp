@@ -1,6 +1,6 @@
 #include "mkql_builtins_compare.h"
 #include "mkql_builtins_datetime.h"
-#include "mkql_builtins_decimal.h" // Y_IGNORE
+#include "mkql_builtins_decimal.h"
 #include "mkql_builtins_string_kernels.h"
 
 #include <ydb/library/yql/minikql/mkql_type_ops.h>
@@ -145,7 +145,7 @@ struct TGreaterOrEqual : public TCompareArithmeticBinary<TLeft, TRight, TGreater
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenGreaterOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenGreaterOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -155,24 +155,24 @@ struct TGreaterOrEqualOp;
 
 template<typename TLeft, typename TRight>
 struct TGreaterOrEqualOp<TLeft, TRight, bool> : public TGreaterOrEqual<TLeft, TRight, false> {
-    static constexpr auto NullMode = TKernel::ENullMode::Default;
+    static constexpr bool DefaultNulls = true;
 };
 
 template<typename TLeft, typename TRight, bool Aggr>
-struct TDiffDateGreaterOrEqual : public TCompareArithmeticBinary<typename TLeft::TLayout, typename TRight::TLayout, TDiffDateGreaterOrEqual<TLeft, TRight, Aggr>>, public TAggrGreaterOrEqual {
-    static bool Do(typename TLeft::TLayout left, typename TRight::TLayout right)
+struct TDiffDateGreaterOrEqual : public TCompareArithmeticBinary<TLeft, TRight, TDiffDateGreaterOrEqual<TLeft, TRight, Aggr>>, public TAggrGreaterOrEqual {
+    static bool Do(TLeft left, TRight right)
     {
         return std::is_same<TLeft, TRight>::value ?
-            GreaterOrEqual<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right):
+            GreaterOrEqual<TLeft, TRight, Aggr>(left, right):
             GreaterOrEqual<TScaledDate, TScaledDate, Aggr>(ToScaledDate<TLeft>(left), ToScaledDate<TRight>(right));
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         return std::is_same<TLeft, TRight>::value ?
-            GenGreaterOrEqual<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right, context, block):
+            GenGreaterOrEqual<TLeft, TRight, Aggr>(left, right, context, block):
             GenGreaterOrEqual<TScaledDate, TScaledDate, Aggr>(GenToScaledDate<TLeft>(left, context, block), GenToScaledDate<TRight>(right, context, block), context, block);
     }
 #endif
@@ -182,8 +182,8 @@ template<typename TLeft, typename TRight, typename TOutput>
 struct TDiffDateGreaterOrEqualOp;
 
 template<typename TLeft, typename TRight>
-struct TDiffDateGreaterOrEqualOp<TLeft, TRight, NUdf::TDataType<bool>> : public TDiffDateGreaterOrEqual<TLeft, TRight, false> {
-    static constexpr auto NullMode = TKernel::ENullMode::Default;
+struct TDiffDateGreaterOrEqualOp<TLeft, TRight, bool> : public TDiffDateGreaterOrEqual<TLeft, TRight, false> {
+    static constexpr bool DefaultNulls = true;
 };
 
 template<typename TLeft, typename TRight, bool Aggr>
@@ -200,12 +200,12 @@ struct TAggrTzDateGreaterOrEqual : public TCompareArithmeticBinaryWithTimezone<T
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenGreaterOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenGreaterOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 
     static Value* GenTz(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenGreaterOrEqual<ui16, ui16, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenGreaterOrEqual<ui16, ui16, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -219,7 +219,7 @@ struct TCustomGreaterOrEqual : public TAggrGreaterOrEqual {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto res = CallBinaryUnboxedValueFunction(&CompareCustoms<Slot>, Type::getInt32Ty(context), left, right, ctx.Codegen, block);
         const auto comp = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_SGE, res, ConstantInt::get(res->getType(), 0), "greater_or_equal", block);
         ValueCleanup(EValueRepresentation::String, left, ctx, block);
@@ -239,7 +239,7 @@ struct TDecimalGreaterOrEqual {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto lok = NDecimal::GenIsComparable(l, context, block);
@@ -262,7 +262,7 @@ struct TDecimalAggrGreaterOrEqual : public TAggrGreaterOrEqual {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto ge = GenGreaterOrEqualSigned(l, r, block);
@@ -278,7 +278,6 @@ void RegisterGreaterOrEqual(IBuiltinFunctionRegistry& registry) {
 
     RegisterComparePrimitive<TGreaterOrEqual, TCompareArgsOpt>(registry, name);
     RegisterCompareDatetime<TDiffDateGreaterOrEqual, TCompareArgsOpt>(registry, name);
-    RegisterCompareBigDatetime<TDiffDateGreaterOrEqual, TCompareArgsOpt>(registry, name);
 
     RegisterCompareStrings<TCustomGreaterOrEqual, TCompareArgsOpt>(registry, name);
     RegisterCompareCustomOpt<NUdf::TDataType<NUdf::TDecimal>, NUdf::TDataType<NUdf::TDecimal>, TDecimalGreaterOrEqual, TCompareArgsOpt>(registry, name);

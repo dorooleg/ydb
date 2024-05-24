@@ -7,10 +7,7 @@
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
 #include <ydb/library/yql/utils/yql_panic.h>
-#include <ydb/public/sdk/cpp/client/ydb_params/params.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
-
-#include <ydb/public/sdk/cpp/client/ydb_result/result.h>
+#include <ydb/core/util/yverify_stream.h>
 
 namespace NKikimr::NKqp {
 
@@ -22,19 +19,13 @@ TTypedUnboxedValue TKqpExecuterTxResult::GetUV(
     const NKikimr::NMiniKQL::TTypeEnvironment& typeEnv,
     const NKikimr::NMiniKQL::THolderFactory& factory)
 {
-    YQL_ENSURE(!Rows.IsWide());
     if (IsStream) {
         auto* listOfItemType = NKikimr::NMiniKQL::TListType::Create(MkqlItemType, typeEnv);
-
-        NUdf::TUnboxedValue* itemsPtr = nullptr;
-        auto value = factory.CreateDirectArrayHolder(Rows.RowCount(), itemsPtr);
-        Rows.ForEachRow([&](NUdf::TUnboxedValue& value) {
-            *itemsPtr++ = std::move(value);
-        });
+        NUdf::TUnboxedValue value = factory.VectorAsArray(Rows);
         return {listOfItemType, value};
     } else {
-        YQL_ENSURE(Rows.RowCount() == 1, "Actual buffer size: " << Rows.RowCount());
-        return {MkqlItemType, *Rows.Head()};
+        YQL_ENSURE(Rows.size() == 1, "Actual buffer size: " << Rows.size());
+        return {MkqlItemType, Rows[0]};
     }
 }
 
@@ -51,7 +42,6 @@ NKikimrMiniKQL::TResult TKqpExecuterTxResult::GetMkql() {
 }
 
 void TKqpExecuterTxResult::FillMkql(NKikimrMiniKQL::TResult* mkqlResult) {
-    YQL_ENSURE(!Rows.IsWide());
     if (IsStream) {
         mkqlResult->MutableType()->SetKind(NKikimrMiniKQL::List);
         ExportTypeToProto(
@@ -59,61 +49,18 @@ void TKqpExecuterTxResult::FillMkql(NKikimrMiniKQL::TResult* mkqlResult) {
             *mkqlResult->MutableType()->MutableList()->MutableItem(),
             ColumnOrder);
 
-        Rows.ForEachRow([&](NUdf::TUnboxedValue& value) {
+        for(auto& row: Rows) {
             ExportValueToProto(
-                MkqlItemType, value, *mkqlResult->MutableValue()->AddList(),
+                MkqlItemType, row, *mkqlResult->MutableValue()->AddList(),
                 ColumnOrder);
-        });
-    } else {
-        YQL_ENSURE(Rows.RowCount() == 1, "Actual buffer size: " << Rows.RowCount());
-        ExportTypeToProto(MkqlItemType, *mkqlResult->MutableType());
-        ExportValueToProto(MkqlItemType, *Rows.Head(), *mkqlResult->MutableValue());
-    }
-}
-
-Ydb::ResultSet* TKqpExecuterTxResult::GetYdb(google::protobuf::Arena* arena, TMaybe<ui64> rowsLimitPerWrite) {
-    Ydb::ResultSet* ydbResult = google::protobuf::Arena::CreateMessage<Ydb::ResultSet>(arena);
-    FillYdb(ydbResult, rowsLimitPerWrite);
-    return ydbResult;
-}
-
-Ydb::ResultSet* TKqpExecuterTxResult::ExtractTrailingYdb(google::protobuf::Arena* arena) {
-    if (!HasTrailingResult)
-        return nullptr;
-
-    Ydb::ResultSet* ydbResult = google::protobuf::Arena::CreateMessage<Ydb::ResultSet>(arena);
-    ydbResult->Swap(&TrailingResult);
-
-    return ydbResult;
-}
-
-
-void TKqpExecuterTxResult::FillYdb(Ydb::ResultSet* ydbResult, TMaybe<ui64> rowsLimitPerWrite) {
-    YQL_ENSURE(ydbResult);
-    YQL_ENSURE(!Rows.IsWide());
-    YQL_ENSURE(MkqlItemType->GetKind() == NKikimr::NMiniKQL::TType::EKind::Struct);
-    const auto* mkqlSrcRowStructType = static_cast<const TStructType*>(MkqlItemType);
-
-    for (ui32 idx = 0; idx < mkqlSrcRowStructType->GetMembersCount(); ++idx) {
-        auto* column = ydbResult->add_columns();
-        ui32 memberIndex = (!ColumnOrder || ColumnOrder->empty()) ? idx : (*ColumnOrder)[idx];
-        column->set_name(TString(mkqlSrcRowStructType->GetMemberName(memberIndex)));
-        ExportTypeToProto(mkqlSrcRowStructType->GetMemberType(memberIndex), *column->mutable_type());
-    }
-
-    Rows.ForEachRow([&](const NUdf::TUnboxedValue& value) -> bool {
-        if (rowsLimitPerWrite) {
-            if (*rowsLimitPerWrite == 0) {
-                ydbResult->set_truncated(true);
-                return false;
-            }
-            --(*rowsLimitPerWrite);
         }
-        ExportValueToProto(MkqlItemType, value, *ydbResult->add_rows(), ColumnOrder);
-        return true;
-    });
-}
 
+    } else {
+        YQL_ENSURE(Rows.size() == 1, "Actual buffer size: " << Rows.size());
+        ExportTypeToProto(MkqlItemType, *mkqlResult->MutableType());
+        ExportValueToProto(MkqlItemType, Rows[0], *mkqlResult->MutableValue());
+    }
+}
 
 TTxAllocatorState::TTxAllocatorState(const IFunctionRegistry* functionRegistry,
     TIntrusivePtr<ITimeProvider> timeProvider, TIntrusivePtr<IRandomProvider> randomProvider)
@@ -138,21 +85,21 @@ std::pair<NKikimr::NMiniKQL::TType*, NUdf::TUnboxedValue> TTxAllocatorState::Get
     auto& internalBinding = paramBinding.GetInternalBinding();
     switch (internalBinding.GetType()) {
         case NKqpProto::TKqpPhyInternalBinding::PARAM_NOW:
-            return {TypeEnv.GetUi64Lazy(), TUnboxedValuePod(ui64(GetCachedNow()))};
+            return {TypeEnv.GetUi64(), TUnboxedValuePod(ui64(GetCachedNow()))};
         case NKqpProto::TKqpPhyInternalBinding::PARAM_CURRENT_DATE: {
             ui32 date = GetCachedDate();
             YQL_ENSURE(date <= Max<ui32>());
-            return {TypeEnv.GetUi32Lazy(), TUnboxedValuePod(ui32(date))};
+            return {TypeEnv.GetUi32(), TUnboxedValuePod(ui32(date))};
         }
         case NKqpProto::TKqpPhyInternalBinding::PARAM_CURRENT_DATETIME: {
             ui64 datetime = GetCachedDatetime();
             YQL_ENSURE(datetime <= Max<ui32>());
-            return {TypeEnv.GetUi32Lazy(), TUnboxedValuePod(ui32(datetime))};
+            return {TypeEnv.GetUi32(), TUnboxedValuePod(ui32(datetime))};
         }
         case NKqpProto::TKqpPhyInternalBinding::PARAM_CURRENT_TIMESTAMP:
-            return {TypeEnv.GetUi64Lazy(), TUnboxedValuePod(ui64(GetCachedTimestamp()))};
+            return {TypeEnv.GetUi64(), TUnboxedValuePod(ui64(GetCachedTimestamp()))};
         case NKqpProto::TKqpPhyInternalBinding::PARAM_RANDOM_NUMBER:
-            return {TypeEnv.GetUi64Lazy(), TUnboxedValuePod(ui64(GetCachedRandom<ui64>()))};
+            return {TypeEnv.GetUi64(), TUnboxedValuePod(ui64(GetCachedRandom<ui64>()))};
         case NKqpProto::TKqpPhyInternalBinding::PARAM_RANDOM:
             return {NKikimr::NMiniKQL::TDataType::Create(NUdf::TDataType<double>::Id, TypeEnv),
                 TUnboxedValuePod(double(GetCachedRandom<double>()))};
@@ -204,14 +151,6 @@ const TQueryData::TParamMap& TQueryData::GetParams() {
     return Params;
 }
 
-const TQueryData::TParamProtobufMap& TQueryData::GetParamsProtobuf() {
-    for(auto& [name, _] : UnboxedData) {
-        GetParameterTypedValue(name);
-    }
-
-    return ParamsProtobuf;
-}
-
 NKikimr::NMiniKQL::TType* TQueryData::GetParameterType(const TString& name) {
     auto it = UnboxedData.find(name);
     if (it == UnboxedData.end()) {
@@ -234,23 +173,6 @@ NKikimrMiniKQL::TResult* TQueryData::GetMkqlTxResult(const NKqpProto::TKqpPhyRes
     auto g = TypeEnv().BindAllocator();
     return TxResults[txIndex][resultIndex].GetMkql(arena);
 }
-
-Ydb::ResultSet* TQueryData::ExtractTrailingTxResult(const NKqpProto::TKqpPhyResultBinding& rb, google::protobuf::Arena* arena) {
-    auto txIndex = rb.GetTxResultBinding().GetTxIndex();
-    auto resultIndex = rb.GetTxResultBinding().GetResultIndex();
-    return TxResults[txIndex][resultIndex].ExtractTrailingYdb(arena);
-}
-
-
-Ydb::ResultSet* TQueryData::GetYdbTxResult(const NKqpProto::TKqpPhyResultBinding& rb, google::protobuf::Arena* arena, TMaybe<ui64> rowsLimitPerWrite) {
-    auto txIndex = rb.GetTxResultBinding().GetTxIndex();
-    auto resultIndex = rb.GetTxResultBinding().GetResultIndex();
-
-    YQL_ENSURE(HasResult(txIndex, resultIndex));
-    auto g = TypeEnv().BindAllocator();
-    return TxResults[txIndex][resultIndex].GetYdb(arena, rowsLimitPerWrite);
-}
-
 
 void TQueryData::AddTxResults(ui32 txIndex, TVector<TKqpExecuterTxResult>&& results) {
     auto g = TypeEnv().BindAllocator();
@@ -327,7 +249,6 @@ bool TQueryData::AddUVParam(const TString& name, NKikimr::NMiniKQL::TType* type,
 
 bool TQueryData::AddTypedValueParam(const TString& name, const Ydb::TypedValue& param) {
     auto guard = TypeEnv().BindAllocator();
-    const TBindTerminator bind(this);
     auto [typeFromProto, value] = ImportValueFromProto(
         param.type(), param.value(), TypeEnv(), AllocState->HolderFactory);
     return AddUVParam(name, typeFromProto, value);
@@ -376,27 +297,6 @@ const NKikimrMiniKQL::TParams* TQueryData::GetParameterMiniKqlValue(const TStrin
             YQL_ENSURE(success);
 
             return &(nit->second);
-        }
-    }
-
-    return &(it->second);
-}
-
-const Ydb::TypedValue* TQueryData::GetParameterTypedValue(const TString& name) {
-    if (UnboxedData.find(name) == UnboxedData.end())
-        return nullptr;
-
-    auto it = ParamsProtobuf.find(name);
-    if (it == ParamsProtobuf.end()) {
-        with_lock(AllocState->Alloc) {
-            const auto& [type, uv] = GetParameterUnboxedValue(name);
-
-            auto& tv = ParamsProtobuf[name];
-
-            ExportTypeToProto(type, *tv.mutable_type());
-            ExportValueToProto(type, uv, *tv.mutable_value());
-
-            return &tv;
         }
     }
 
@@ -479,9 +379,7 @@ NDqProto::TData TQueryData::GetShardParam(ui64 shardId, const TString& name) {
 
     auto guard = TypeEnv().BindAllocator();
     NDq::TDqDataSerializer dataSerializer{AllocState->TypeEnv, AllocState->HolderFactory, NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_PICKLE_1_0};
-    NDq::TDqSerializedBatch batch = dataSerializer.Serialize(it->second.Values.begin(), it->second.Values.end(), it->second.ItemType);
-    YQL_ENSURE(!batch.IsOOB());
-    return batch.Proto;
+    return dataSerializer.Serialize(it->second.Values.begin(), it->second.Values.end(), it->second.ItemType);
 }
 
 NDqProto::TData TQueryData::SerializeParamValue(const TString& name) {
@@ -494,6 +392,7 @@ void TQueryData::Clear() {
     {
         auto g = TypeEnv().BindAllocator();
         Params.clear();
+        
         TUnboxedParamsMap emptyMap;
         UnboxedData.swap(emptyMap);
 
@@ -509,18 +408,6 @@ void TQueryData::Clear() {
 
         AllocState->Reset();
     }
-}
-
-void TQueryData::Terminate(const char* message) const {
-    TStringBuf reason = (message ? TStringBuf(message) : TStringBuf("(unknown)"));
-    TString fullMessage = TStringBuilder() <<
-        "Terminate was called, reason(" << reason.size() << "): " << reason << Endl;
-    AllocState->HolderFactory.CleanupModulesOnTerminate();
-    if (std::current_exception()) {
-        throw;
-    }
-
-    ythrow yexception() << fullMessage;
 }
 
 } // namespace NKikimr::NKqp

@@ -2,8 +2,7 @@
 
 #include "defs.h"
 #include "flat_part_scheme.h"
-#include "flat_page_btree_index.h"
-#include "flat_page_flat_index.h"
+#include "flat_page_index.h"
 #include "flat_page_data.h"
 #include "flat_page_blobs.h"
 #include "flat_page_frames.h"
@@ -11,6 +10,7 @@
 #include "flat_page_gstat.h"
 #include "flat_page_txidstat.h"
 #include "flat_page_txstatus.h"
+#include "util_basics.h"
 
 namespace NKikimr {
 namespace NTable {
@@ -46,53 +46,16 @@ namespace NTable {
             Trace = 2, /* how many last data pages to keep while seq scans */
         };
 
-        struct TIndexPages {
-            using TPageId = NPage::TPageId;
-            using TGroupId = NPage::TGroupId;
-            using TBtreeIndexMeta = NPage::TBtreeIndexMeta;
-            const TVector<TPageId> FlatGroups;
-            const TVector<TPageId> FlatHistoric;
-            const TVector<TBtreeIndexMeta> BTreeGroups;
-            const TVector<TBtreeIndexMeta> BTreeHistoric;
-
-            bool HasBTree() const noexcept {
-                return !BTreeGroups.empty();
-            }
-
-            bool HasFlat() const noexcept {
-                return !FlatGroups.empty();
-            }
-
-            const TBtreeIndexMeta& GetBTree(TGroupId groupId) const noexcept {
-                if (groupId.IsHistoric()) {
-                    Y_ABORT_UNLESS(groupId.Index < BTreeHistoric.size());
-                    return BTreeHistoric[groupId.Index];
-                } else {
-                    Y_ABORT_UNLESS(groupId.Index < BTreeGroups.size());
-                    return BTreeGroups[groupId.Index];
-                }
-            }
-
-            TPageId GetFlat(TGroupId groupId) const noexcept {
-                if (groupId.IsHistoric()) {
-                    Y_ABORT_UNLESS(groupId.Index < FlatHistoric.size());
-                    return FlatHistoric[groupId.Index];
-                } else {
-                    Y_ABORT_UNLESS(groupId.Index < FlatGroups.size());
-                    return FlatGroups[groupId.Index];
-                }
-            }
-        };
-
         struct TParams {
             TEpoch Epoch;
             TIntrusiveConstPtr<TPartScheme> Scheme;
-            TIndexPages IndexPages;
+            TSharedData Index;
             TIntrusiveConstPtr<NPage::TExtBlobs> Blobs;
             TIntrusiveConstPtr<NPage::TBloom> ByKey;
             TIntrusiveConstPtr<NPage::TFrames> Large;
             TIntrusiveConstPtr<NPage::TFrames> Small;
-            size_t IndexesRawSize;
+            TVector<TSharedData> GroupIndexes;
+            TVector<TSharedData> HistoricIndexes;
             TRowVersion MinRowVersion;
             TRowVersion MaxRowVersion;
             TIntrusiveConstPtr<NPage::TGarbageStats> GarbageStats;
@@ -115,23 +78,28 @@ namespace NTable {
             , Blobs(std::move(params.Blobs))
             , Large(std::move(params.Large))
             , Small(std::move(params.Small))
-            , IndexPages(std::move(params.IndexPages))
+            , Index(std::move(params.Index))
+            , GroupIndexes(
+                std::make_move_iterator(params.GroupIndexes.begin()),
+                std::make_move_iterator(params.GroupIndexes.end()))
+            , HistoricIndexes(
+                std::make_move_iterator(params.HistoricIndexes.begin()),
+                std::make_move_iterator(params.HistoricIndexes.end()))
             , ByKey(std::move(params.ByKey))
             , GarbageStats(std::move(params.GarbageStats))
             , TxIdStats(std::move(params.TxIdStats))
             , Stat(stat)
-            , GroupsCount(Max(IndexPages.FlatGroups.size(), IndexPages.BTreeGroups.size()))
-            , HistoricGroupsCount(Max(IndexPages.FlatHistoric.size(), IndexPages.BTreeHistoric.size()))
-            , IndexesRawSize(params.IndexesRawSize)
+            , Groups(1 + GroupIndexes.size())
+            , IndexesRawSize(Index.RawSize() + SumRawSize(GroupIndexes))
             , MinRowVersion(params.MinRowVersion)
             , MaxRowVersion(params.MaxRowVersion)
         {
-            Y_ABORT_UNLESS(Scheme->Groups.size() == GroupsCount,
+            Y_VERIFY(Scheme->Groups.size() == Groups,
                 "Part has scheme with %" PRISZT " groups, but %" PRISZT " indexes",
-                Scheme->Groups.size(), GroupsCount);
-            Y_ABORT_UNLESS(!HistoricGroupsCount || HistoricGroupsCount == GroupsCount,
+                Scheme->Groups.size(), Groups);
+            Y_VERIFY(HistoricIndexes.empty() || HistoricIndexes.size() == Groups,
                 "Part has %" PRISZT " indexes, but %" PRISZT " historic indexes",
-                GroupsCount, HistoricGroupsCount);
+                Groups, HistoricIndexes.size());
         }
 
         virtual ~TPart() = default;
@@ -155,10 +123,25 @@ namespace NTable {
 
         virtual ui64 DataSize() const = 0;
         virtual ui64 BackingSize() const = 0;
-        virtual ui64 GetPageSize(NPage::TPageId pageId, NPage::TGroupId groupId) const = 0;
-        virtual NPage::EPage GetPageType(NPage::TPageId pageId, NPage::TGroupId groupId) const = 0;
-        virtual ui8 GetGroupChannel(NPage::TGroupId groupId) const = 0;
-        virtual ui8 GetPageChannel(ELargeObj lob, ui64 ref) const = 0;
+        virtual ui64 GetPageSize(NPage::TPageId id, NPage::TGroupId groupId = { }) const = 0;
+
+        const NPage::TIndex& GetGroupIndex(NPage::TGroupId groupId) const noexcept {
+            if (!groupId.Historic) {
+                if (groupId.Index == 0) {
+                    return Index;
+                } else {
+                    Y_VERIFY(groupId.Index <= GroupIndexes.size(),
+                        "Group index %" PRIu32 " is missing",
+                        groupId.Index);
+                    return GroupIndexes[groupId.Index - 1];
+                }
+            } else {
+                Y_VERIFY(groupId.Index < HistoricIndexes.size(),
+                    "Historic index %" PRIu32 " is missing",
+                    groupId.Index);
+                return HistoricIndexes[groupId.Index];
+            }
+        }
 
     protected:
         // Helper for CloneWithEpoch
@@ -169,16 +152,26 @@ namespace NTable {
             , Blobs(src.Blobs)
             , Large(src.Large)
             , Small(src.Small)
-            , IndexPages(src.IndexPages)
+            , Index(src.Index)
+            , GroupIndexes(src.GroupIndexes)
+            , HistoricIndexes(src.HistoricIndexes)
             , ByKey(src.ByKey)
             , GarbageStats(src.GarbageStats)
             , Stat(src.Stat)
-            , GroupsCount(src.GroupsCount)
-            , HistoricGroupsCount(src.HistoricGroupsCount)
+            , Groups(src.Groups)
             , IndexesRawSize(src.IndexesRawSize)
             , MinRowVersion(src.MinRowVersion)
             , MaxRowVersion(src.MaxRowVersion)
         { }
+
+    private:
+        static size_t SumRawSize(const TVector<NPage::TIndex>& indexes) {
+            size_t ret = 0;
+            for (auto& index : indexes) {
+                ret += index.RawSize();
+            }
+            return ret;
+        }
 
     public:
         const TLogoBlobID Label;
@@ -187,13 +180,14 @@ namespace NTable {
         const TIntrusiveConstPtr<NPage::TExtBlobs> Blobs;
         const TIntrusiveConstPtr<NPage::TFrames> Large;
         const TIntrusiveConstPtr<NPage::TFrames> Small;
-        const TIndexPages IndexPages;
+        const NPage::TIndex Index;
+        const TVector<NPage::TIndex> GroupIndexes;
+        const TVector<NPage::TIndex> HistoricIndexes;
         const TIntrusiveConstPtr<NPage::TBloom> ByKey;
         const TIntrusiveConstPtr<NPage::TGarbageStats> GarbageStats;
         const TIntrusiveConstPtr<NPage::TTxIdStatsPage> TxIdStats;
         const TStat Stat;
-        const size_t GroupsCount;
-        const size_t HistoricGroupsCount;
+        const size_t Groups;
         const size_t IndexesRawSize;
         const TRowVersion MinRowVersion;
         const TRowVersion MaxRowVersion;

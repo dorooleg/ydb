@@ -1,4 +1,4 @@
-#include "mkql_builtins_impl.h"  // Y_IGNORE  // Y_IGNORE
+#include "mkql_builtins_impl.h"
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 
 namespace NKikimr {
@@ -16,7 +16,7 @@ struct TConcat {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return CallBinaryUnboxedValueFunction(&ConcatStrings, Type::getInt128Ty(ctx.Codegen.GetContext()), left, right, ctx.Codegen, block);
+        return CallBinaryUnboxedValueFunction(&ConcatStrings, Type::getInt128Ty(ctx.Codegen->GetContext()), left, right, ctx.Codegen, block);
     }
 #endif
 };

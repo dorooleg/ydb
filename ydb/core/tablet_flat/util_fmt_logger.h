@@ -4,8 +4,8 @@
 
 #include <ydb/core/base/appdata.h>
 #include <library/cpp/time_provider/time_provider.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/log_iface.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/log_iface.h>
 
 namespace NKikimr {
 namespace NUtil {
@@ -59,7 +59,7 @@ namespace NUtil {
             auto *ev = new NLog::TEvLog(stamp, ui32(level), Comp, line);
 
             if (!Sys->Send(Path, ev))
-                Y_ABORT("Cannot send NLog::TEvLog to logger actor");
+                Y_FAIL("Cannot send NLog::TEvLog to logger actor");
         }
 
     private:

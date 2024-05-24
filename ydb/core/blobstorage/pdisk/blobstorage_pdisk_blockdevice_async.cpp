@@ -12,14 +12,14 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/blobstorage/lwtrace_probes/blobstorage_probes.h>
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/protos/services.pb.h>
+#include <ydb/core/util/yverify_stream.h>
 #include <ydb/library/pdisk_io/aio.h>
 #include <ydb/library/pdisk_io/spdk_state.h>
 #include <ydb/library/pdisk_io/wcache.h>
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/util/thread.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/util/thread.h>
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 
 #include <util/generic/deque.h>
@@ -83,15 +83,12 @@ class TRealBlockDevice : public IBlockDevice {
                             if (!stateError && action->CanHandleResult()) {
                                 action->Exec(Device.ActorSystem);
                             } else {
-                                TString errorReason = action->ErrorReason;
-
-                                action->Release(Device.ActorSystem);
-
                                 if (!stateError) {
                                     stateError = true;
                                     Device.BecomeErrorState(TStringBuilder()
-                                            << " CompletionAction error, operation info# " << errorReason);
+                                            << " CompletionAction error, operation info# " << action->ErrorReason);
                                 }
+                                action->Release(Device.ActorSystem);
                             }
                         }
                     }
@@ -230,11 +227,7 @@ class TRealBlockDevice : public IBlockDevice {
 
             Device.IncrementMonInFlight(op->GetType(), op->GetSize());
 
-            double blockedMs = 0;
-            action->OperationIdx = Device.FlightControl.Schedule(blockedMs);
-
-            *Device.Mon.DeviceWaitTimeMs += blockedMs;
-
+            action->OperationIdx = Device.FlightControl.Schedule();
             if (action->FlushAction) {
                 action->FlushAction->OperationIdx = action->OperationIdx;
             }
@@ -290,7 +283,7 @@ class TRealBlockDevice : public IBlockDevice {
                 }
                 prevCycleEnd = cycleEnd;
             }
-            Y_ABORT_UNLESS(OperationsToBeSubmit.GetWaitingSize() == 0);
+            Y_VERIFY(OperationsToBeSubmit.GetWaitingSize() == 0);
         }
     };
 
@@ -390,10 +383,10 @@ class TRealBlockDevice : public IBlockDevice {
             Device.DecrementMonInFlight(op->GetType(), opSize);
             if (opSize == 0) {
                 if (op->GetType() == IAsyncIoOperation::EType::PRead) {
-                    Y_ABORT_UNLESS(WaitingNoops[completionAction->OperationIdx % MaxWaitingNoops] == nullptr);
+                    Y_VERIFY(WaitingNoops[completionAction->OperationIdx % MaxWaitingNoops] == nullptr);
                     WaitingNoops[completionAction->OperationIdx % MaxWaitingNoops] = completionAction;
                 } else {
-                    Y_DEBUG_ABORT("Threre must not be writes of size 0 in TRealBlockDevice");
+                    Y_VERIFY_DEBUG(false, "Threre must not be writes of size 0 in TRealBlockDevice");
                 }
             } else {
                 if ((ui64)op->GetOffset() != EndOffset) {
@@ -414,7 +407,7 @@ class TRealBlockDevice : public IBlockDevice {
                 }
                 if (completionAction->FlushAction) {
                     ui64 idx = completionAction->FlushAction->OperationIdx;
-                    Y_ABORT_UNLESS(WaitingNoops[idx % MaxWaitingNoops] == nullptr);
+                    Y_VERIFY(WaitingNoops[idx % MaxWaitingNoops] == nullptr);
                     WaitingNoops[idx % MaxWaitingNoops] = completionAction->FlushAction;
                     completionAction->FlushAction = nullptr;
                 }
@@ -487,7 +480,7 @@ class TRealBlockDevice : public IBlockDevice {
     ////////////////////////////////////////////////////////
     // TSubmitGetThread
     ////////////////////////////////////////////////////////
-    class TSubmitGetThread : public TSubmitThreadBase {
+    class TSubmitGetThread : public TSubmitThreadBase{
     public:
         TSubmitGetThread(TRealBlockDevice &device)
             : TSubmitThreadBase(device, &ThreadProc, this)
@@ -516,18 +509,7 @@ class TRealBlockDevice : public IBlockDevice {
 
             action->OperationIdx = Device.FlightControl.TrySchedule();
             if (action->OperationIdx == 0) {
-                if (OpScheduleFailedTime == 0) {
-                    // If failed to schedule, remember the time to use it when scheduling succeeds.
-                    OpScheduleFailedTime = HPNow();
-                }
                 return false;
-            }
-
-            if (OpScheduleFailedTime != 0) {
-                // Scheduling failed previously, calculate how much time operation had to wait for scheduling.
-                *Device.Mon.DeviceWaitTimeMs += HPMilliSecondsFloat(OpScheduleFailedTime - HPNow());
-
-                OpScheduleFailedTime = 0;
             }
 
             if (!Device.QuitCounter.Increment()) {
@@ -628,10 +610,8 @@ class TRealBlockDevice : public IBlockDevice {
                 } while (inFlight == (i64)Device.DeviceInFlight || isExiting && inFlight > 0);
             }
 
-            Y_ABORT_UNLESS(OperationsToBeSubmit.GetWaitingSize() == 0);
+            Y_VERIFY(OperationsToBeSubmit.GetWaitingSize() == 0);
         }
-    private:
-        NHPTimer::STime OpScheduleFailedTime = 0;
     };
 
     ////////////////////////////////////////////////////////
@@ -660,7 +640,7 @@ class TRealBlockDevice : public IBlockDevice {
                             Device.CompletionThread->Schedule(nullptr);
                             return;
                         }
-                        Y_ABORT_UNLESS(op->GetType() == IAsyncIoOperation::EType::PTrim);
+                        Y_VERIFY(op->GetType() == IAsyncIoOperation::EType::PTrim);
                         auto *completion = static_cast<TCompletionAction*>(op->GetCookie());
                         if (Device.IsTrimEnabled) {
                             Device.IdleCounter.Increment();
@@ -787,15 +767,15 @@ protected:
     void Initialize(TActorSystem *actorSystem, const TActorId& pdiskActor) override {
         ActorSystem = actorSystem;
         PDiskActor = pdiskActor;
-        Y_ABORT_UNLESS(ActorSystem);
+        Y_VERIFY(ActorSystem);
 
         TString errStr = TDeviceMode::Validate(Flags);
         if (errStr) {
             Y_FAIL_S(IoContext->GetPDiskInfo() << " Error in device flags: " << errStr);
         }
 
-        Y_ABORT_UNLESS(ActorSystem->AppData<TAppData>());
-        Y_ABORT_UNLESS(ActorSystem->AppData<TAppData>()->IoContextFactory);
+        Y_VERIFY(ActorSystem->AppData<TAppData>());
+        Y_VERIFY(ActorSystem->AppData<TAppData>()->IoContextFactory);
         auto *factory = ActorSystem->AppData<TAppData>()->IoContextFactory;
         IoContext = factory->CreateAsyncIoContext(Path, PDiskId, Flags, SectorMap);
         if (Flags & TDeviceMode::UseSpdk) {
@@ -958,13 +938,13 @@ protected:
 
     void PreadAsync(void *data, ui32 size, ui64 offset, TCompletionAction *completionAction, TReqId reqId,
             NWilson::TTraceId *traceId) override {
-        Y_ABORT_UNLESS(completionAction);
+        Y_VERIFY(completionAction);
         if (!IsInitialized) {
             completionAction->Release(ActorSystem);
             return;
         }
         if (data && size) {
-            Y_ABORT_UNLESS(intptr_t(data) % 512 == 0);
+            Y_VERIFY(intptr_t(data) % 512 == 0);
             REQUEST_VALGRIND_CHECK_MEM_IS_ADDRESSABLE(data, size);
         }
 
@@ -975,13 +955,13 @@ protected:
 
     void PwriteAsync(const void *data, ui64 size, ui64 offset, TCompletionAction *completionAction, TReqId reqId,
             NWilson::TTraceId *traceId) override {
-        Y_ABORT_UNLESS(completionAction);
+        Y_VERIFY(completionAction);
         if (!IsInitialized) {
             completionAction->Release(ActorSystem);
             return;
         }
         if (data && size) {
-            Y_ABORT_UNLESS(intptr_t(data) % 512 == 0);
+            Y_VERIFY(intptr_t(data) % 512 == 0);
             REQUEST_VALGRIND_CHECK_MEM_IS_DEFINED(data, size);
         }
 
@@ -991,7 +971,7 @@ protected:
     }
 
     void FlushAsync(TCompletionAction *completionAction, TReqId reqId) override {
-        Y_ABORT_UNLESS(completionAction);
+        Y_VERIFY(completionAction);
         if (!IsInitialized) {
             completionAction->Release(ActorSystem);
             return;
@@ -1003,7 +983,7 @@ protected:
     }
 
     void NoopAsync(TCompletionAction *completionAction, TReqId /*reqId*/) override {
-        Y_ABORT_UNLESS(completionAction);
+        Y_VERIFY(completionAction);
         if (!IsInitialized) {
             completionAction->Release(ActorSystem);
             return;
@@ -1018,7 +998,7 @@ protected:
     }
 
     void NoopAsyncHackForLogReader(TCompletionAction *completionAction, TReqId /*reqId*/) override {
-        Y_ABORT_UNLESS(completionAction);
+        Y_VERIFY(completionAction);
         if (!IsInitialized) {
             completionAction->Release(ActorSystem);
             return;
@@ -1033,7 +1013,7 @@ protected:
     }
 
     void TrimAsync(ui32 size, ui64 offset, TCompletionAction *completionAction, TReqId reqId) override {
-        Y_ABORT_UNLESS(completionAction);
+        Y_VERIFY(completionAction);
         if (!IsInitialized || QuitCounter.IsBlocked()) {
             return;
         }
@@ -1091,7 +1071,7 @@ protected:
     }
 
     void BecomeErrorState(const TString& info) {
-        // Block only B flag so device will not be working but when Stop() will be called AFlag will be toggled
+        // Block only B flag so device will not working but when Stop() will be called AFlag will be toggled
         QuitCounter.BlockB();
         TString fullInfo = TStringBuilder() << IoContext->GetPDiskInfo() << info;
         if (ActorSystem) {
@@ -1106,20 +1086,20 @@ protected:
         QuitCounter.BlockA(res);
         if (res.PrevA ^ res.A) { // res.ToggledA()
             if (IsInitialized) {
-                Y_ABORT_UNLESS(TrimThread);
-                Y_ABORT_UNLESS(CompletionThread);
+                Y_VERIFY(TrimThread);
+                Y_VERIFY(CompletionThread);
                 TrimThread->Schedule(nullptr); // Stop the Trim thread
                 if (Flags & TDeviceMode::UseSpdk) {
-                    Y_ABORT_UNLESS(SpdkSubmitGetThread);
+                    Y_VERIFY(SpdkSubmitGetThread);
                     SpdkSubmitGetThread->Schedule(nullptr); // Stop the SpdkSubmitGetEvents thread
                     SpdkState->WaitAllThreads();
                 } else {
-                    Y_ABORT_UNLESS(SubmitThread);
+                    Y_VERIFY(SubmitThread);
                     SubmitThread->Schedule(nullptr); // Stop the SubminEvents thread
                     SubmitThread->Join();
 
                     if (!(Flags & TDeviceMode::UseSubmitGetThread)) {
-                        Y_ABORT_UNLESS(GetEventsThread);
+                        Y_VERIFY(GetEventsThread);
                         GetEventsThread->Join();
                     }
                 }
@@ -1128,10 +1108,10 @@ protected:
                 CompletionThread->Join();
                 IsInitialized = false;
             } else {
-                Y_ABORT_UNLESS(SubmitThread.Get() == nullptr);
-                Y_ABORT_UNLESS(GetEventsThread.Get() == nullptr);
-                Y_ABORT_UNLESS(TrimThread.Get() == nullptr);
-                Y_ABORT_UNLESS(CompletionThread.Get() == nullptr);
+                Y_VERIFY(SubmitThread.Get() == nullptr);
+                Y_VERIFY(GetEventsThread.Get() == nullptr);
+                Y_VERIFY(TrimThread.Get() == nullptr);
+                Y_VERIFY(CompletionThread.Get() == nullptr);
             }
             if (IsFileOpened) {
                 EIoResult ret = IoContext->Destroy();
@@ -1239,7 +1219,7 @@ class TCachedBlockDevice : public TRealBlockDevice {
                 if (read.Size <= cached->Data.Size()) {
                     memcpy(read.Data, cached->Data.GetData(), read.Size);
                     Mon.DeviceReadCacheHits->Inc();
-                    Y_ABORT_UNLESS(read.CompletionAction);
+                    Y_VERIFY(read.CompletionAction);
                     for (size_t i = 0; i < cached->BadOffsets.size(); ++i) {
                         read.CompletionAction->RegisterBadOffset(cached->BadOffsets[i]);
                     }
@@ -1285,11 +1265,11 @@ public:
             TGuard<TMutex> guard(CacheMutex);
             ui64 offset = completion->GetOffset();
             auto currentReadIt = CurrentReads.find(offset);
-            Y_ABORT_UNLESS(currentReadIt != CurrentReads.end());
+            Y_VERIFY(currentReadIt != CurrentReads.end());
             auto range = ReadsForOffset.equal_range(offset);
 
             ui64 chunkIdx = offset / PDisk->Format.ChunkSize;
-            Y_ABORT_UNLESS(chunkIdx < PDisk->ChunkState.size());
+            Y_VERIFY(chunkIdx < PDisk->ChunkState.size());
             if (TChunkState::DATA_COMMITTED == PDisk->ChunkState[chunkIdx].CommitState) {
                 if ((offset % PDisk->Format.ChunkSize) + completion->GetSize() > PDisk->Format.ChunkSize) {
                     // TODO: split buffer if crossing chunk boundary instead of completely discarding it
@@ -1320,7 +1300,7 @@ public:
                     } else {
                         Mon.DeviceReadCacheMisses->Inc();
                     }
-                    Y_ABORT_UNLESS(read.CompletionAction);
+                    Y_VERIFY(read.CompletionAction);
                     for (ui64 badOffset : completion->GetBadOffsets()) {
                         read.CompletionAction->RegisterBadOffset(badOffset);
                     }
@@ -1349,26 +1329,8 @@ public:
     void ReleaseRead(TCachedReadCompletion *completion, TActorSystem *actorSystem) {
         TGuard<TMutex> guard(CacheMutex);
         Y_UNUSED(actorSystem);
-
-        if (!completion->CanHandleResult()) {
-            // If error, notify all underlying reads of that error.
-            // Notice that reads' CompletionActions are not released here.
-            // This should happen on device stop.
-            ui64 offset = completion->GetOffset();
-            auto range = ReadsForOffset.equal_range(offset);
-
-            for (auto it = range.first; it != range.second; ++it) {
-                TRead &read = it->second;
-
-                Y_ABORT_UNLESS(read.CompletionAction);
-
-                read.CompletionAction->SetResult(completion->Result);
-                read.CompletionAction->SetErrorReason(completion->ErrorReason);
-            }
-        }
-
         auto it = CurrentReads.find(completion->GetOffset());
-        Y_ABORT_UNLESS(it != CurrentReads.end());
+        Y_VERIFY(it != CurrentReads.end());
         delete it->second;
         CurrentReads.erase(it);
         ReadsInFly--;

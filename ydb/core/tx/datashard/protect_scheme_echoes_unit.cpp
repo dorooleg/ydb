@@ -19,7 +19,7 @@ public:
                              TTransactionContext &txc,
                              const TActorContext &) override
     {
-        Y_ABORT_UNLESS(op->IsSchemeTx());
+        Y_VERIFY(op->IsSchemeTx());
 
         TActiveTransaction *activeTx = dynamic_cast<TActiveTransaction*>(op.Get());
         Y_VERIFY_S(activeTx, "cannot cast operation of kind " << op->GetKind());

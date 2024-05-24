@@ -27,8 +27,7 @@ namespace NTable {
 
             out
                 << "Spent{" << NFmt::TDelay(now - Fired)
-                << " wa " << NFmt::TDelay(Waits + (now - Since))
-                << " cnt " << Interrupts << "}";
+                << " wa " << NFmt::TDelay(Waits + (now - Since)) << "}";
         }
 
         void Alter(bool available) noexcept
@@ -37,7 +36,6 @@ namespace NTable {
                 /* State isn't changed since last Alter(...) */
             } else if (Since == TInstant::Max()) {
                 Since = Time->Now();
-                Interrupts++;
             } else {
                 Waits += Time->Now() - std::exchange(Since, TInstant::Max());
             }
@@ -49,7 +47,6 @@ namespace NTable {
         TInstant Fired = TInstant::Max();
         TInstant Since = TInstant::Max();
         TDuration Waits = TDuration::Zero();
-        ui64 Interrupts = 0;
     };
 
 }

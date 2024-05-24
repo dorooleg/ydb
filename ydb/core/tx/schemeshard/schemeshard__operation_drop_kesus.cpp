@@ -36,7 +36,7 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropKesus);
+        Y_VERIFY(txState->TxType == TTxState::TxDropKesus);
 
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
@@ -45,7 +45,7 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -89,8 +89,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropKesus);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropKesus);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -185,7 +185,7 @@ public:
         NIceDb::TNiceDb db(context.GetDB());
 
         TKesusInfo::TPtr kesus = context.SS->KesusInfos.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(kesus);
+        Y_VERIFY(kesus);
 
         {
             auto shardIdx = kesus->KesusShardIdx;
@@ -220,7 +220,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropKesus");
+        Y_FAIL("no AbortPropose for TDropKesus");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -237,7 +237,7 @@ ISubOperation::TPtr CreateDropKesus(TOperationId id, const TTxTransaction& tx) {
 }
 
 ISubOperation::TPtr CreateDropKesus(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropKesus>(id, state);
 }
 

@@ -8,9 +8,8 @@
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/cms/console/net_classifier_updater.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/core/protos/netclassifier.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #include <util/generic/hash.h>
 #include <util/stream/file.h>

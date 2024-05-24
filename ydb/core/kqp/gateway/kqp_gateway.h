@@ -1,23 +1,21 @@
 #pragma once
 
 #include <ydb/core/kqp/query_data/kqp_query_data.h>
+#include <ydb/core/protos/kqp_physical.pb.h>
 #include <ydb/core/protos/tx_proxy.pb.h>
 #include <ydb/core/protos/tx_datashard.pb.h>
-#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
-#include <ydb/core/protos/data_events.pb.h>
 
 #include <ydb/core/kqp/topics/kqp_topics.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
 #include <ydb/core/kqp/provider/yql_kikimr_gateway.h>
 #include <ydb/core/kqp/provider/yql_kikimr_settings.h>
-#include <ydb/core/control/immediate_control_board_impl.h>
 #include <ydb/core/tx/long_tx_service/public/lock_handle.h>
-#include <ydb/core/ydb_convert/table_profiles.h>
 #include <ydb/library/accessor/accessor.h>
 #include <ydb/library/yql/ast/yql_expr.h>
+#include <ydb/library/yql/dq/common/dq_value.h>
 
-#include <ydb/library/actors/wilson/wilson_trace.h>
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/wilson/wilson_trace.h>
+#include <library/cpp/actors/core/actorid.h>
 #include <library/cpp/lwtrace/shuttle.h>
 #include <library/cpp/protobuf/util/pb_io.h>
 
@@ -39,7 +37,7 @@ struct TKqpSettings {
     {
         auto defaultSettingsData = NResource::Find("kqp_default_settings.txt");
         TStringInput defaultSettingsStream(defaultSettingsData);
-        Y_ABORT_UNLESS(TryParseFromTextFormat(defaultSettingsStream, DefaultSettings));
+        Y_VERIFY(TryParseFromTextFormat(defaultSettingsStream, DefaultSettings));
     }
 
     TKqpSettings()
@@ -47,7 +45,7 @@ struct TKqpSettings {
     {
         auto defaultSettingsData = NResource::Find("kqp_default_settings.txt");
         TStringInput defaultSettingsStream(defaultSettingsData);
-        Y_ABORT_UNLESS(TryParseFromTextFormat(defaultSettingsStream, DefaultSettings));
+        Y_VERIFY(TryParseFromTextFormat(defaultSettingsStream, DefaultSettings));
     }
 
     NKikimrKqp::TKqpDefaultSettings DefaultSettings;
@@ -61,12 +59,6 @@ struct TModuleResolverState : public TThrRefBase {
 };
 
 void ApplyServiceConfig(NYql::TKikimrConfiguration& kqpConfig, const NKikimrConfig::TTableServiceConfig& serviceConfig);
-
-enum class ELocksOp {
-    Unspecified = 0,
-    Commit,
-    Rollback
-};
 
 class IKqpGateway : public NYql::IKikimrGateway {
 public:
@@ -115,10 +107,6 @@ public:
         NKikimrIssues::TStatusIds::EStatusCode Status =  NKikimrIssues::TStatusIds::UNKNOWN;
     };
 
-    struct TKqpTableProfilesResult : public IKqpGateway::TGenericResult {
-        TTableProfiles Profiles;
-    };
-
     struct TExecPhysicalRequest : private TMoveOnly {
     public:
 
@@ -126,14 +114,13 @@ public:
             : TxAlloc(txAlloc)
         {}
 
-        bool AllowTrailingResults = false;
-        NKikimrKqp::EQueryType QueryType = NKikimrKqp::EQueryType::QUERY_TYPE_UNDEFINED;
         NKikimr::TControlWrapper PerRequestDataSizeLimit;
         NKikimr::TControlWrapper MaxShardCount;
         TVector<TPhysicalTxData> Transactions;
-        TMap<ui64, TVector<NKikimrDataEvents::TLock>> DataShardLocks;
+        TMap<ui64, TVector<NKikimrTxDataShard::TLock>> DataShardLocks;
         NKikimr::NKqp::TTxAllocatorState::TPtr TxAlloc;
-        ELocksOp LocksOp = ELocksOp::Unspecified;
+        bool ValidateLocks = false;
+        bool EraseLocks = false;
         TMaybe<ui64> AcquireLocksTxId;
         TDuration Timeout;
         TMaybe<TDuration> CancelAfter;
@@ -143,7 +130,6 @@ public:
         ui64 MkqlMemoryLimit = 0; // old engine compatibility
         ui64 PerShardKeysSizeLimitBytes = 0;
         Ydb::Table::QueryStatsCollection::Mode StatsMode = Ydb::Table::QueryStatsCollection::STATS_COLLECTION_NONE;
-        TDuration ProgressStatsPeriod;
         TKqpSnapshot Snapshot = TKqpSnapshot();
         NKikimrKqp::EIsolationLevel IsolationLevel = NKikimrKqp::ISOLATION_LEVEL_UNDEFINED;
         TMaybe<NKikimrKqp::TRlPath> RlPath;
@@ -154,15 +140,6 @@ public:
         NWilson::TTraceId TraceId;
 
         NTopic::TTopicOperations TopicOperations;
-
-        ui64 OutputChunkMaxSize = 0;
-
-        bool IsTrailingResultsAllowed() const {
-            return AllowTrailingResults && (
-                QueryType == NKikimrKqp::EQueryType::QUERY_TYPE_SQL_GENERIC_QUERY ||
-                QueryType == NKikimrKqp::EQueryType::QUERY_TYPE_SQL_GENERIC_CONCURRENT_QUERY
-            );
-        }
     };
 
     struct TExecPhysicalResult : public TGenericResult {
@@ -176,16 +153,7 @@ public:
     };
 
 public:
-    virtual TString GetDatabase() = 0;
-    virtual bool GetDomainLoginOnly() = 0;
-    virtual TMaybe<TString> GetDomainName() = 0;
-
-    /* Scheme */
-    virtual NThreading::TFuture<TKqpTableProfilesResult> GetTableProfiles() = 0;
-    virtual NThreading::TFuture<TGenericResult> ModifyScheme(NKikimrSchemeOp::TModifyScheme&& modifyScheme) = 0;
-
     /* Compute */
-    using NYql::IKikimrGateway::ExecuteLiteral;
     virtual NThreading::TFuture<TExecPhysicalResult> ExecuteLiteral(TExecPhysicalRequest&& request,
         TQueryData::TPtr params, ui32 txIndex) = 0;
 
@@ -208,21 +176,11 @@ public:
     virtual NThreading::TFuture<TQueryResult> StreamExecScanQueryAst(const TString& cluster, const TString& query,
          TQueryData::TPtr, const TAstQuerySettings& settings, const NActors::TActorId& target,
          std::shared_ptr<NGRpcService::IRequestCtxMtSafe> rpcCtx) = 0;
-
-    virtual NThreading::TFuture<TQueryResult> ExecGenericQuery(const TString& cluster, const TString& query,
-        TQueryData::TPtr params, const TAstQuerySettings& settings,
-        const Ydb::Table::TransactionSettings& txSettings) = 0;
-
-    virtual NThreading::TFuture<TQueryResult> ExplainGenericQuery(const TString& cluster, const TString& query) = 0;
-
-    virtual NThreading::TFuture<TQueryResult> StreamExecGenericQuery(const TString& cluster, const TString& query,
-         TQueryData::TPtr params, const TAstQuerySettings& settings,
-        const Ydb::Table::TransactionSettings& txSettings, const NActors::TActorId& target) = 0;
 };
 
-TIntrusivePtr<IKqpGateway> CreateKikimrIcGateway(const TString& cluster, NKikimrKqp::EQueryType queryType, const TString& database,
+TIntrusivePtr<IKqpGateway> CreateKikimrIcGateway(const TString& cluster, const TString& database,
     std::shared_ptr<IKqpGateway::IKqpTableMetadataLoader>&& metadataLoader, NActors::TActorSystem* actorSystem,
-    ui32 nodeId, TKqpRequestCounters::TPtr counters, const NKikimrConfig::TQueryServiceConfig& queryServiceConfig = NKikimrConfig::TQueryServiceConfig());
+    ui32 nodeId, TKqpRequestCounters::TPtr counters);
 
 } // namespace NKikimr::NKqp
 

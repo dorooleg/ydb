@@ -12,8 +12,8 @@
 #include <ydb/core/protos/tenant_slot_broker.pb.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/map.h>
@@ -562,13 +562,13 @@ private:
 
         void AddAssignedSlot(TSlot::TPtr slot)
         {
-            Y_ABORT_UNLESS(!AssignedSlots.contains(slot));
+            Y_VERIFY(!AssignedSlots.contains(slot));
             AssignedSlots.insert(slot);
         }
 
         void RemoveAssignedSlot(TSlot::TPtr slot)
         {
-            Y_ABORT_UNLESS(AssignedSlots.contains(slot));
+            Y_VERIFY(AssignedSlots.contains(slot));
             AssignedSlots.erase(slot);
         }
 
@@ -592,7 +592,7 @@ private:
 
         void DecPending()
         {
-            Y_ABORT_UNLESS(PendingCount, "Dec zero pending for %s", Description.ToString().data());
+            Y_VERIFY(PendingCount, "Dec zero pending for %s", Description.ToString().data());
             SetPending(PendingCount - 1);
         }
 
@@ -621,7 +621,7 @@ private:
 
         void DecMissing()
         {
-            Y_ABORT_UNLESS(MissingCount, "Dec zero missing for %s", Description.ToString().data());
+            Y_VERIFY(MissingCount, "Dec zero missing for %s", Description.ToString().data());
             SetMissing(MissingCount - 1);
         }
 
@@ -645,7 +645,7 @@ private:
 
         void DecMisplaced()
         {
-            Y_ABORT_UNLESS(MisplacedCount, "Dec zero misplaced for %s", Description.ToString().data());
+            Y_VERIFY(MisplacedCount, "Dec zero misplaced for %s", Description.ToString().data());
             SetMisplaced(MisplacedCount - 1);
         }
 
@@ -669,7 +669,7 @@ private:
 
         void DecSplit()
         {
-            Y_ABORT_UNLESS(SplitCount, "Dec zero split for %s", Description.ToString().data());
+            Y_VERIFY(SplitCount, "Dec zero split for %s", Description.ToString().data());
             SetSplit(SplitCount - 1);
         }
 
@@ -687,7 +687,7 @@ private:
 
         void DecPinned()
         {
-            Y_ABORT_UNLESS(PinnedCount, "Dec zero pinned for %s", Description.ToString().data());
+            Y_VERIFY(PinnedCount, "Dec zero pinned for %s", Description.ToString().data());
             SetPinned(PinnedCount - 1);
         }
 
@@ -945,11 +945,11 @@ private:
 
 
     ui64 Generation() const;
-    void DefaultSignalTabletActive(const TActorContext &ctx) override;
     void OnActivateExecutor(const TActorContext &ctx) override;
     void OnDetach(const TActorContext &ctx) override;
     void OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev,
                       const TActorContext &ctx) override;
+    void Enqueue(TAutoPtr<IEventHandle> &ev) override;
     bool OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
                              const TActorContext &ctx) override;
 
@@ -957,7 +957,7 @@ private:
     void Die(const TActorContext &ctx) override;
 
     void LoadConfigFromProto(const NKikimrTenantSlotBroker::TConfig &config);
-    void SwitchToWork(const TActorContext &ctx);
+    void ProcessEnqueuedEvents(const TActorContext &ctx);
 
     void ClearState();
 
@@ -1061,6 +1061,8 @@ private:
                 const TActorContext &ctx);
     void Handle(TEvConsole::TEvReplaceConfigSubscriptionsResponse::TPtr &ev,
                 const TActorContext &ctx);
+    void Handle(TEvents::TEvPoisonPill::TPtr &ev,
+                const TActorContext &ctx);
     void Handle(TEvents::TEvUndelivered::TPtr &ev,
                 const TActorContext &ctx);
     void Handle(TEvInterconnect::TEvNodeInfo::TPtr &ev,
@@ -1103,6 +1105,7 @@ private:
         switch (ev->GetTypeRewrite()) {
             HFuncTraced(TEvConsole::TEvConfigNotificationRequest, Handle);
             HFuncTraced(TEvConsole::TEvReplaceConfigSubscriptionsResponse, Handle);
+            HFuncTraced(TEvents::TEvPoisonPill, Handle);
             HFuncTraced(TEvents::TEvUndelivered, Handle);
             HFuncTraced(TEvInterconnect::TEvNodeInfo, Handle);
             HFuncTraced(TEvPrivate::TEvCheckAllSlotsStatus, Handle);
@@ -1123,7 +1126,7 @@ private:
 
         default:
             if (!HandleDefaultEvents(ev, SelfId())) {
-                Y_ABORT("TTenantSlotBroker::StateWork unexpected event type: %" PRIx32 " event: %s",
+                Y_FAIL("TTenantSlotBroker::StateWork unexpected event type: %" PRIx32 " event: %s",
                        ev->GetTypeRewrite(), ev->ToString().data());
             }
         }
@@ -1149,9 +1152,11 @@ public:
     }
 
 private:
+    TDeque<TAutoPtr<IEventHandle>> InitQueue;
     NKikimrTenantSlotBroker::TConfig Config;
     TDuration PendingTimeout;
     ui64 RequestId;
+    ui32 DomainId;
     TString DomainName;
     // NodeId -> DataCenter
     THashMap<ui32, TString> NodeIdToDataCenter;

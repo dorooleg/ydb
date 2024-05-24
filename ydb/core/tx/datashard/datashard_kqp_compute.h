@@ -10,7 +10,6 @@ namespace NKikimr {
     namespace NDataShard {
         class TExecuteKqpScanTxUnit;
         class TDataShard;
-        class TDataShardUserDb;
     }
 }
 
@@ -23,7 +22,10 @@ using TKqpTableStats = TEngineHostCounters;
 
 class TKqpDatashardComputeContext : public TKqpComputeContextBase {
 public:
-    TKqpDatashardComputeContext(NDataShard::TDataShard* shard, NDataShard::TDataShardUserDb& userDb, bool disableByKeyFilter);
+    TKqpDatashardComputeContext(NDataShard::TDataShard* shard, TEngineHost& engineHost, TInstant now)
+        : Shard(shard)
+        , EngineHost(engineHost)
+        , Now(now) {}
 
     ui64 GetLocalTableId(const TTableId& tableId) const;
     TString GetTablePath(const TTableId& tableId) const;
@@ -49,7 +51,9 @@ public:
     TRowVersion GetReadVersion() const;
 
     TEngineHostCounters& GetTaskCounters(ui64 taskId) { return TaskCounters[taskId]; }
-    TEngineHostCounters& GetDatashardCounters();
+    TEngineHostCounters& GetDatashardCounters() { return EngineHost.GetCounters(); }
+
+    std::pair<IEngineFlat::EResult, TString> ValidateKeys(const IEngineFlat::TValidationInfo& validationInfo);
 
     bool IsTabletNotReady() const { return TabletNotReady; }
 
@@ -57,33 +61,35 @@ public:
         const TSmallVec<NTable::TTag>& systemColumnTags, const THolderFactory& holderFactory,
         NUdf::TUnboxedValue& result, TKqpTableStats& stats);
 
-    TAutoPtr<NTable::TTableIter> CreateIterator(const TTableId& tableId, const TTableRange& range,
+    TAutoPtr<NTable::TTableIt> CreateIterator(const TTableId& tableId, const TTableRange& range,
         const TSmallVec<NTable::TTag>& columnTags);
 
-    TAutoPtr<NTable::TTableReverseIter> CreateReverseIterator(const TTableId& tableId, const TTableRange& range,
+    TAutoPtr<NTable::TTableReverseIt> CreateReverseIterator(const TTableId& tableId, const TTableRange& range,
         const TSmallVec<NTable::TTag>& columnTags);
 
-    bool ReadRow(const TTableId& tableId, NTable::TTableIter& iterator,
+    bool ReadRow(const TTableId& tableId, NTable::TTableIt& iterator,
         const TSmallVec<NTable::TTag>& systemColumnTags, const TSmallVec<bool>& skipNullKeys,
         const THolderFactory& holderFactory, NUdf::TUnboxedValue& result, TKqpTableStats& stats);
 
-    bool ReadRow(const TTableId& tableId, NTable::TTableReverseIter& iterator,
+    bool ReadRow(const TTableId& tableId, NTable::TTableReverseIt& iterator,
         const TSmallVec<NTable::TTag>& systemColumnTags, const TSmallVec<bool>& skipNullKeys,
         const THolderFactory& holderFactory, NUdf::TUnboxedValue& result, TKqpTableStats& stats);
 
-    bool ReadRowWide(const TTableId& tableId, NTable::TTableIter& iterator,
+    bool ReadRowWide(const TTableId& tableId, NTable::TTableIt& iterator,
         const TSmallVec<NTable::TTag>& systemColumnTags, const TSmallVec<bool>& skipNullKeys,
         NUdf::TUnboxedValue* const* result, TKqpTableStats& stats);
 
-    bool ReadRowWide(const TTableId& tableId, NTable::TTableReverseIter& iterator,
+    bool ReadRowWide(const TTableId& tableId, NTable::TTableReverseIt& iterator,
         const TSmallVec<NTable::TTag>& systemColumnTags, const TSmallVec<bool>& skipNullKeys,
         NUdf::TUnboxedValue* const* result, TKqpTableStats& stats);
 
     bool HadInconsistentReads() const { return InconsistentReads; }
     void SetInconsistentReads() { InconsistentReads = true; }
 
-    bool HasVolatileReadDependencies() const;
-    const absl::flat_hash_set<ui64>& GetVolatileReadDependencies() const;
+    bool HasVolatileReadDependencies() const { return !VolatileReadDependencies.empty(); }
+    const absl::flat_hash_set<ui64>& GetVolatileReadDependencies() const { return VolatileReadDependencies; }
+    void AddVolatileReadDependency(ui64 txId) { VolatileReadDependencies.insert(txId); }
+
 private:
     void TouchTableRange(const TTableId& tableId, const TTableRange& range) const;
     void TouchTablePoint(const TTableId& tableId, const TArrayRef<const TCell>& key) const;
@@ -106,12 +112,16 @@ public:
 private:
     NDataShard::TDataShard* Shard;
     std::unordered_map<ui64, TEngineHostCounters> TaskCounters;
-    NDataShard::TDataShardUserDb& UserDb;
-    bool DisableByKeyFilter;
+    TEngineHost& EngineHost;
+    TInstant Now;
+    ui64 LockTxId = 0;
+    ui32 LockNodeId = 0;
     bool PersistentChannels = false;
     bool TabletNotReady = false;
     bool InconsistentReads = false;
+    TRowVersion ReadVersion = TRowVersion::Min();
     THashMap<std::pair<ui64, ui64>, TActorId> OutputChannels;
+    absl::flat_hash_set<ui64> VolatileReadDependencies;
 };
 
 class TKqpDatashardApplyContext : public NUdf::IApplyContext {

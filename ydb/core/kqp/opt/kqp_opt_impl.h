@@ -60,6 +60,4 @@ TVector<std::pair<NYql::TExprNode::TPtr, const NYql::TIndexDescription*>> BuildS
     const std::function<NYql::NNodes::TExprBase (const NYql::TKikimrTableMetadata&,
         NYql::TPositionHandle, NYql::TExprContext&)>& tableBuilder);
 
-bool IsBuiltEffect(const NYql::NNodes::TExprBase& effect);
-
 } // namespace NKikimr::NKqp::NOpt

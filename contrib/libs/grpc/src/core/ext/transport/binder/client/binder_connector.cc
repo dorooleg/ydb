@@ -84,7 +84,7 @@ class BinderConnector : public grpc_core::SubchannelConnector {
         std::move(endpoint_binder),
         grpc_binder::GetSecurityPolicySetting()->Get(conn_id_));
     GPR_ASSERT(transport != nullptr);
-    result_->channel_args = args_.channel_args;
+    result_->channel_args = grpc_channel_args_copy(args_.channel_args);
     result_->transport = transport;
 
     GPR_ASSERT(notify_ != nullptr);
@@ -92,14 +92,14 @@ class BinderConnector : public grpc_core::SubchannelConnector {
     // might be invoked from non-gRPC code
     if (grpc_core::ExecCtx::Get() == nullptr) {
       grpc_core::ExecCtx exec_ctx;
-      grpc_core::ExecCtx::Run(DEBUG_LOCATION, notify_, y_absl::OkStatus());
+      grpc_core::ExecCtx::Run(DEBUG_LOCATION, notify_, GRPC_ERROR_NONE);
     } else {
-      grpc_core::ExecCtx::Run(DEBUG_LOCATION, notify_, y_absl::OkStatus());
+      grpc_core::ExecCtx::Run(DEBUG_LOCATION, notify_, GRPC_ERROR_NONE);
     }
 
     Unref();  // Was referenced in BinderConnector::Connect
   }
-  void Shutdown(grpc_error_handle /*error*/) override {}
+  void Shutdown(grpc_error_handle error) override { (void)error; }
 
  private:
   Args args_;
@@ -114,11 +114,18 @@ class BinderConnector : public grpc_core::SubchannelConnector {
 namespace grpc_core {
 
 RefCountedPtr<Subchannel> BinderClientChannelFactory::CreateSubchannel(
-    const grpc_resolved_address& address, const ChannelArgs& args) {
+    const grpc_resolved_address& address, const grpc_channel_args* args) {
   gpr_log(GPR_INFO, "BinderClientChannelFactory creating subchannel %p", this);
-  return Subchannel::Create(
-      MakeOrphanable<BinderConnector>(), address,
-      args.Set(GRPC_ARG_DEFAULT_AUTHORITY, "binder.authority"));
+  grpc_arg default_authority_arg = grpc_channel_arg_string_create(
+      const_cast<char*>(GRPC_ARG_DEFAULT_AUTHORITY),
+      const_cast<char*>("binder.authority"));
+  grpc_channel_args* new_args =
+      grpc_channel_args_copy_and_add(args, &default_authority_arg, 1);
+
+  RefCountedPtr<Subchannel> s =
+      Subchannel::Create(MakeOrphanable<BinderConnector>(), address, new_args);
+
+  return s;
 }
 
 }  // namespace grpc_core

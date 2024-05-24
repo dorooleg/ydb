@@ -14,11 +14,12 @@ public:
         LOG_S_DEBUG("TTxNotifyTxCompletion.Execute at tablet " << Self->TabletID());
 
         const ui64 txId = Ev->Get()->Record.GetTxId();
-        auto txOperator = Self->ProgressTxController->GetTxOperator(txId);
-        if (txOperator) {
-            txOperator->RegisterSubscriber(Ev->Sender);
+
+        if (Self->AltersInFlight.contains(txId)) {
+            Self->AltersInFlight[txId].NotifySubscribers.insert(Ev->Sender);
             return true;
         }
+
         Result.reset(new TEvColumnShard::TEvNotifyTxCompletionResult(Self->TabletID(), txId));
         return true;
     }

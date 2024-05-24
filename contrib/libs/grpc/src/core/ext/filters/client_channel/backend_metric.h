@@ -14,34 +14,24 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_BACKEND_METRIC_H
-#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_BACKEND_METRIC_H
+#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_BACKEND_METRIC_H
+#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_BACKEND_METRIC_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stddef.h>
+#include <grpc/slice.h>
 
-#include "y_absl/strings/string_view.h"
-
-#include "src/core/ext/filters/client_channel/lb_policy/backend_metric_data.h"
+#include "src/core/ext/filters/client_channel/lb_policy.h"
+#include "src/core/lib/resource_quota/arena.h"
+#include "src/core/lib/slice/slice.h"
 
 namespace grpc_core {
 
-class BackendMetricAllocatorInterface {
- public:
-  virtual ~BackendMetricAllocatorInterface() = default;
-
-  virtual BackendMetricData* AllocateBackendMetricData() = 0;
-
-  virtual char* AllocateString(size_t size) = 0;
-};
-
-// Parses the serialized load report and populates out.
-// Returns false on error.
-const BackendMetricData* ParseBackendMetricData(
-    y_absl::string_view serialized_load_report,
-    BackendMetricAllocatorInterface* allocator);
+// Parses the serialized load report and allocates a BackendMetricData
+// object on the arena.
+const LoadBalancingPolicy::BackendMetricAccessor::BackendMetricData*
+ParseBackendMetricData(const Slice& serialized_load_report, Arena* arena);
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_BACKEND_METRIC_H
+#endif /* GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_BACKEND_METRIC_H */

@@ -28,6 +28,7 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <math.h>
 #include <stdlib.h>
+#include <ymath.h>
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)

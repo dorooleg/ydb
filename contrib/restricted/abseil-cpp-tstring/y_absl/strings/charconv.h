@@ -18,12 +18,11 @@
 #include <system_error>  // NOLINT(build/c++11)
 
 #include "y_absl/base/config.h"
-#include "y_absl/base/nullability.h"
 
 namespace y_absl {
 Y_ABSL_NAMESPACE_BEGIN
 
-// Workalike compatibility version of std::chars_format from C++17.
+// Workalike compatibilty version of std::chars_format from C++17.
 //
 // This is an bitfield enumerator which can be passed to y_absl::from_chars to
 // configure the string-to-float conversion.
@@ -45,11 +44,11 @@ enum class chars_format {
 // characters that were successfully parsed.  If none was found, `ptr` is set
 // to the `first` argument to from_chars.
 struct from_chars_result {
-  y_absl::Nonnull<const char*> ptr;
+  const char* ptr;
   std::errc ec;
 };
 
-// Workalike compatibility version of std::from_chars from C++17.  Currently
+// Workalike compatibilty version of std::from_chars from C++17.  Currently
 // this only supports the `double` and `float` types.
 //
 // This interface incorporates the proposed resolutions for library issues
@@ -77,13 +76,11 @@ struct from_chars_result {
 // format that strtod() accepts, except that a "0x" prefix is NOT matched.
 // (In particular, in `hex` mode, the input "0xff" results in the largest
 // matching pattern "0".)
-y_absl::from_chars_result from_chars(y_absl::Nonnull<const char*> first,
-                                   y_absl::Nonnull<const char*> last,
+y_absl::from_chars_result from_chars(const char* first, const char* last,
                                    double& value,  // NOLINT
                                    chars_format fmt = chars_format::general);
 
-y_absl::from_chars_result from_chars(y_absl::Nonnull<const char*> first,
-                                   y_absl::Nonnull<const char*> last,
+y_absl::from_chars_result from_chars(const char* first, const char* last,
                                    float& value,  // NOLINT
                                    chars_format fmt = chars_format::general);
 

@@ -173,10 +173,6 @@ public:
         }
     }
 
-    void Handle(TEvNodeWardenQueryStorageConfig::TPtr ev) {
-        Send(ev->Sender, new TEvNodeWardenStorageConfig(NKikimrBlobStorage::TStorageConfig(), nullptr));
-    }
-
     STRICT_STFUNC(StateFunc, {
         hFunc(TEvCheckState, Handle);
         hFunc(TEvTabletPipe::TEvClientConnected, Handle);
@@ -184,6 +180,5 @@ public:
         hFunc(TEvBlobStorage::TEvControllerNodeServiceSetUpdate, Handle);
         cFunc(EvUpdateDriveStatus, UpdateDriveStatus);
         cFunc(TEvents::TSystem::Wakeup, Connect);
-        hFunc(TEvNodeWardenQueryStorageConfig, Handle);
     })
 };

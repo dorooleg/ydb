@@ -58,22 +58,20 @@ namespace NKikimr {
             TDiskPartVec RemovedHugeBlobs;
             TVector<TChunkIdx> ChunksToForget;
             TLogSignature Signature;
-            ui64 WId;
 
             TReleaseQueueItem(ui64 recordLsn, TDiskPartVec&& removedHugeBlobs, TVector<TChunkIdx> chunksToForget,
-                    TLogSignature signature, ui64 wId)
+                    TLogSignature signature)
                 : RecordLsn(recordLsn)
                 , RemovedHugeBlobs(std::move(removedHugeBlobs))
                 , ChunksToForget(std::move(chunksToForget))
                 , Signature(signature)
-                , WId(wId)
             {}
         };
         TDeque<TReleaseQueueItem> ReleaseQueue;
 
     public:
         void SetActorId(const TActorId& actorId) {
-            Y_ABORT_UNLESS(!ActorId);
+            Y_VERIFY(!ActorId);
             ActorId = actorId;
         }
 
@@ -91,11 +89,11 @@ namespace NKikimr {
         // this function is called every time when compaction is about to commit new entrypoint containing at least
         // one removed huge blob; recordLsn is allocated LSN of this entrypoint
         void Update(ui64 recordLsn, TDiskPartVec&& removedHugeBlobs, TVector<TChunkIdx> chunksToForget, TLogSignature signature,
-                ui64 wId, const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId,
-                const TPDiskCtxPtr& pdiskCtx, const TVDiskContextPtr& vctx) {
-            Y_ABORT_UNLESS(recordLsn > LastDeletionLsn);
+                const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId, const TPDiskCtxPtr& pdiskCtx,
+                const TVDiskContextPtr& vctx) {
+            Y_VERIFY(recordLsn > LastDeletionLsn);
             LastDeletionLsn = recordLsn;
-            ReleaseQueue.emplace_back(recordLsn, std::move(removedHugeBlobs), std::move(chunksToForget), signature, wId);
+            ReleaseQueue.emplace_back(recordLsn, std::move(removedHugeBlobs), std::move(chunksToForget), signature);
             ProcessReleaseQueue(ctx, hugeKeeperId, skeletonId, pdiskCtx, vctx);
         }
 
@@ -149,7 +147,7 @@ namespace NKikimr {
                             }
                             for (const TChunkIdx chunkIdx : record.ChunksToForget) {
                                 ui32& value = slots[chunkIdx];
-                                Y_ABORT_UNLESS(!value);
+                                Y_VERIFY(!value);
                                 value = Max<ui32>();
                             }
 
@@ -202,7 +200,7 @@ namespace NKikimr {
         void ReleaseSnapshot(ui64 cookie, const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId,
                 const TPDiskCtxPtr& pdiskCtx, const TVDiskContextPtr& vctx) {
             auto it = CurrentSnapshots.find(cookie);
-            Y_ABORT_UNLESS(it != CurrentSnapshots.end() && it->second > 0);
+            Y_VERIFY(it != CurrentSnapshots.end() && it->second > 0);
             if (!--it->second) {
                 CurrentSnapshots.erase(it);
                 ProcessReleaseQueue(ctx, hugeKeeperId, skeletonId, pdiskCtx, vctx);
@@ -218,7 +216,7 @@ namespace NKikimr {
                 if (CurrentSnapshots.empty() || (item.RecordLsn <= CurrentSnapshots.begin()->first)) {
                     // matching record -- commit it to huge hull keeper and throw out of the queue
                     ctx.Send(hugeKeeperId, new TEvHullFreeHugeSlots(std::move(item.RemovedHugeBlobs),
-                        item.RecordLsn, item.Signature, item.WId));
+                        item.RecordLsn, item.Signature));
                     if (item.ChunksToForget) {
                         LOG_DEBUG(ctx, NKikimrServices::BS_VDISK_CHUNKS, VDISKP(vctx->VDiskLogPrefix,
                             "FORGET: PDiskId# %s ChunksToForget# %s", pdiskCtx->PDiskIdString.data(),

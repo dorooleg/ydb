@@ -1,9 +1,9 @@
 #pragma once
 
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/grpc/server/grpc_request_base.h>
-#include <ydb/library/grpc/server/grpc_server.h>
-#include <ydb/library/grpc/server/logger.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/grpc/server/grpc_request_base.h>
+#include <library/cpp/grpc/server/grpc_server.h>
+#include <library/cpp/grpc/server/logger.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -23,7 +23,7 @@ private:
 
 template <typename T>
 class TGrpcServiceBase
-    : public NYdbGrpc::TGrpcServiceBase<T>
+    : public NGrpc::TGrpcServiceBase<T>
     , public TGrpcServiceCfg
 {
 public:
@@ -49,12 +49,12 @@ public:
         , GRpcRequestProxyId_(proxies[0])
         , GRpcProxies_(proxies)
     {
-        Y_ABORT_UNLESS(proxies.size());
+        Y_VERIFY(proxies.size());
     }
 
     void InitService(
         const std::vector<std::unique_ptr<grpc::ServerCompletionQueue>>& cqs,
-        NYdbGrpc::TLoggerPtr logger,
+        NGrpc::TLoggerPtr logger,
         size_t index) override
     {
         CQS.reserve(cqs.size());
@@ -68,12 +68,12 @@ public:
         InitService(CQ_, logger);
     }
 
-    void InitService(grpc::ServerCompletionQueue* cq, NYdbGrpc::TLoggerPtr logger) override {
+    void InitService(grpc::ServerCompletionQueue* cq, NGrpc::TLoggerPtr logger) override {
         CQ_ = cq; // might be self assignment, but it's OK
         SetupIncomingRequests(std::move(logger));
     }
 
-    void SetGlobalLimiterHandle(NYdbGrpc::TGlobalLimiter* limiter) override {
+    void SetGlobalLimiterHandle(NGrpc::TGlobalLimiter* limiter) override {
         Limiter_ = limiter;
     }
 
@@ -87,7 +87,7 @@ public:
     }
 
 protected:
-    virtual void SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) = 0;
+    virtual void SetupIncomingRequests(NGrpc::TLoggerPtr logger) = 0;
 
     NActors::TActorSystem* ActorSystem_;
     grpc::ServerCompletionQueue* CQ_ = nullptr;
@@ -98,7 +98,7 @@ protected:
     const NActors::TActorId GRpcRequestProxyId_;
     const TVector<NActors::TActorId> GRpcProxies_;
 
-    NYdbGrpc::TGlobalLimiter* Limiter_ = nullptr;
+    NGrpc::TGlobalLimiter* Limiter_ = nullptr;
 };
 
 }

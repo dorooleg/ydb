@@ -1,10 +1,11 @@
 #pragma once
 #include "flat_iterator_ops.h"
 #include "flat_mem_iter.h"
-#include "flat_part_iter.h"
+#include "flat_part_iter_multi.h"
 #include "flat_row_remap.h"
 #include "flat_row_state.h"
 #include "flat_range_cache.h"
+#include "util_fmt_cell.h"
 
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 
@@ -21,8 +22,8 @@ enum class ENext {
     Uncommitted,
 };
 
-template<class TIterOps>
-class TTableIterBase : TNonCopyable {
+template<class TIteratorOps>
+class TTableItBase : TNonCopyable {
     enum class EType : ui8 {
         Mem = 0,
         Run = 1,
@@ -38,10 +39,10 @@ class TTableIterBase : TNonCopyable {
     };
 
     class TEraseCachingState {
-        using TOps = typename TIterOps::TEraseCacheOps;
+        using TOps = typename TIteratorOps::TEraseCacheOps;
 
     public:
-        TEraseCachingState(TTableIterBase* it)
+        TEraseCachingState(TTableItBase* it)
             : It(it)
             , Cache(it->ErasedKeysCache.Get())
         { }
@@ -71,8 +72,8 @@ class TTableIterBase : TNonCopyable {
                 FreeKey(&LastErased);
                 if (PrevEntryValid) {
                     // Merge the two adjacent entries that we have
-                    Y_DEBUG_ABORT_UNLESS(!FirstErased);
-                    Y_DEBUG_ABORT_UNLESS(MaxVersion >= PrevEntry->MaxVersion);
+                    Y_VERIFY_DEBUG(!FirstErased);
+                    Y_VERIFY_DEBUG(MaxVersion >= PrevEntry->MaxVersion);
                     NextEntry = Cache.MergeAdjacent(PrevEntry, NextEntry, ::Max(MaxVersion, version));
                 } else if (FirstErased) {
                     // Extend the next entry with an earlier key
@@ -86,8 +87,8 @@ class TTableIterBase : TNonCopyable {
                 ErasedCount = 0;
                 MaxVersion = TRowVersion::Min();
 
-                Y_DEBUG_ABORT_UNLESS(!FirstErased);
-                Y_DEBUG_ABORT_UNLESS(!LastErased);
+                Y_VERIFY_DEBUG(!FirstErased);
+                Y_VERIFY_DEBUG(!LastErased);
 
                 if (NextEntry->MaxVersion > It->SnapshotVersion) {
                     // The range is in future, the iterator cannot use it
@@ -98,12 +99,13 @@ class TTableIterBase : TNonCopyable {
 
                 if (!TOps::EndKey(NextEntry)) {
                     // We know that everything to +inf is erased
-                    It->Clear();
+                    It->Iterators.clear();
+                    It->Active = It->Iterators.end();
                     It->Ready = EReady::Gone;
                     return;
                 }
 
-                if (!It->SkipErase(TOps::EndKey(NextEntry), TOps::EndInclusive(NextEntry))) {
+                if (!It->SkipTo(TOps::EndKey(NextEntry), !TOps::EndInclusive(NextEntry))) {
                     // We've got some missing page, cannot iterate further
                     return;
                 }
@@ -125,7 +127,7 @@ class TTableIterBase : TNonCopyable {
                 return;
             }
 
-            Y_DEBUG_ABORT_UNLESS(ErasedCount == 0);
+            Y_VERIFY_DEBUG(ErasedCount == 0);
 
             if (NextEntryValid) {
                 // We already know the next erased key, but we don't know
@@ -133,8 +135,8 @@ class TTableIterBase : TNonCopyable {
                 return;
             }
 
-            Y_DEBUG_ABORT_UNLESS(!PrevEntryValid);
-            Y_DEBUG_ABORT_UNLESS(!NextEntryValid);
+            Y_VERIFY_DEBUG(!PrevEntryValid);
+            Y_VERIFY_DEBUG(!NextEntryValid);
 
             // Check if this key is an already known erase key
             auto res = Cache.FindKey(key);
@@ -147,7 +149,7 @@ class TTableIterBase : TNonCopyable {
                 }
 
                 Cache.Touch(res.first);
-                if (!It->SkipErase(TOps::EndKey(res.first), TOps::EndInclusive(res.first))) {
+                if (!It->SkipTo(TOps::EndKey(res.first), !TOps::EndInclusive(res.first))) {
                     // We've got some missing page, cannot iterate further
                     return;
                 }
@@ -178,12 +180,12 @@ class TTableIterBase : TNonCopyable {
 
             if (ErasedCount > 0 && LastErased) {
                 if (PrevEntryValid) {
-                    Y_DEBUG_ABORT_UNLESS(!FirstErased);
+                    Y_VERIFY_DEBUG(!FirstErased);
                     Cache.ExtendForward(PrevEntry, TakeKey(&LastErased), true, MaxVersion);
                     Cache.EvictOld();
                 } else if (ErasedCount >= Cache.MinRows()) {
                     // We have enough erased rows to make a new cache entry
-                    Y_DEBUG_ABORT_UNLESS(FirstErased);
+                    Y_VERIFY_DEBUG(FirstErased);
                     Cache.AddRange(TakeKey(&FirstErased), TakeKey(&LastErased), MaxVersion);
                     Cache.EvictOld();
                 }
@@ -213,7 +215,7 @@ class TTableIterBase : TNonCopyable {
         }
 
     private:
-        TTableIterBase* It;
+        TTableItBase* It;
         TOps Cache;
         TKeyRangeCache::const_iterator PrevEntry;
         TKeyRangeCache::const_iterator NextEntry;
@@ -227,32 +229,17 @@ class TTableIterBase : TNonCopyable {
         bool FutureEntryValid = false;
     };
 
-    bool SkipErase(TArrayRef<const TCell> endKey, bool inclusive = true) noexcept {
-        if (inclusive) {
-            // Pretend we saw endKey last, but the pointer correctness is very
-            // subtle. We only seek to the erased range end when we don't have
-            // a new cached range, so we would either reposition to a new key,
-            // or there would be a page fault after which this iterator is
-            // unusable, and Flush will not disturb erase cache records on the
-            // way out.
-            LastKey.assign(endKey.begin(), endKey.end());
-            LastKeyPage = {};
-            LastKeyState = ERowOp::Erase;
-        }
-        return SkipTo(endKey, !inclusive);
-    }
-
 public:
-    TTableIterBase(
+    TTableItBase(
         const TRowScheme* scheme, TTagsRef tags, ui64 lim = Max<ui64>(),
         TRowVersion snapshot = TRowVersion::Max(),
         NTable::ITransactionMapPtr committedTransactions = nullptr,
         NTable::ITransactionObserverPtr transactionObserver = nullptr);
 
-    ~TTableIterBase();
+    ~TTableItBase();
 
-    void Push(TAutoPtr<TMemIter>);
-    void Push(TAutoPtr<TRunIter>);
+    void Push(TAutoPtr<TMemIt>);
+    void Push(TAutoPtr<TRunIt>);
 
     void StopBefore(TArrayRef<const TCell> key);
     void StopAfter(TArrayRef<const TCell> key);
@@ -289,16 +276,14 @@ public:
                         eraseCache.Flush();
                     }
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(Active != Inactive);
+                    Y_VERIFY_DEBUG(Active != Inactive);
                     Stage = EStage::Fill;
                 }
             } else if ((Ready = Apply()) != EReady::Data) {
 
             } else if (mode != ENext::Data || State.GetRowState() != ERowOp::Erase) {
-                InitLastKey(State.GetRowState());
                 break;
             } else {
-                InitLastKey(ERowOp::Erase);
                 ++Stats.DeletedRowSkips; /* skip internal technical row states w/o data */
                 if (ErasedKeysCache && Stats.InvisibleRowSkips == SnapInvisibleRowSkips) {
                     // Try to cache erases that are at a head version
@@ -327,10 +312,6 @@ public:
         return State;
     }
 
-    ERowOp GetKeyState() const noexcept {
-        return LastKeyState;
-    }
-
     bool IsUncommitted() const noexcept;
     ui64 GetUncommittedTxId() const noexcept;
     EReady SkipUncommitted() noexcept;
@@ -347,9 +328,6 @@ private:
     ui64 Limit = 0;
 
     TRowState State;
-    TVector<TCell> LastKey;
-    TSharedData LastKeyPage;
-    ERowOp LastKeyState = ERowOp::Absent;
 
     // RowVersion of a persistent snapshot that we are reading
     // By default iterator is initialized with the HEAD snapshot
@@ -363,8 +341,8 @@ private:
 
     EStage Stage = EStage::Seek;
     EReady Ready = EReady::Gone;
-    THolderVector<TMemIter> MemIters;
-    THolderVector<TRunIter> RunIters;
+    THolderVector<TMemIt> MemIters;
+    THolderVector<TRunIt> RunIters;
     TOwnedCellVec StopKey;
     bool StopKeyInclusive = true;
 
@@ -388,7 +366,7 @@ private:
 
         int CompareKeys(TArrayRef<const TCell> a, TArrayRef<const TCell> b) const noexcept
         {
-            return TIterOps::CompareKeys(Types, a, b);
+            return TIteratorOps::CompareKeys(Types, a, b);
         }
 
         bool operator() (const TElement& a, const TElement& b) const noexcept
@@ -396,7 +374,7 @@ private:
             if (int cmp = CompareKeys(a.Key, b.Key))
                 return cmp > 0;
 
-            Y_DEBUG_ABORT_UNLESS(a.IteratorId.Epoch != b.IteratorId.Epoch,
+            Y_VERIFY_DEBUG(a.IteratorId.Epoch != b.IteratorId.Epoch,
                 "Found equal key iterators with the same epoch");
             return a.IteratorId.Epoch < b.IteratorId.Epoch;
         }
@@ -406,7 +384,7 @@ private:
 
     static TIteratorIndex IteratorIndexFromSize(size_t size) {
         TIteratorIndex index = size;
-        Y_ABORT_UNLESS(index == size, "Iterator index overflow");
+        Y_VERIFY(index == size, "Iterator index overflow");
         return index;
     }
 
@@ -414,13 +392,6 @@ private:
         Iterators.clear();
         Active = Iterators.end();
         Inactive = Active;
-        ClearKey();
-    }
-
-    void ClearKey() {
-        LastKey.clear();
-        LastKeyPage = {};
-        LastKeyState = ERowOp::Absent;
     }
 
     // ITERATORS STORAGE
@@ -447,36 +418,35 @@ private:
     EReady Snap(TRowVersion rowVersion) noexcept;
     EReady DoSkipUncommitted() noexcept;
     EReady Apply() noexcept;
-    void InitLastKey(ERowOp op) noexcept;
     void AddReadyIterator(TArrayRef<const TCell> key, TIteratorId itId);
     void AddNotReadyIterator(TIteratorId itId);
 
     bool SeekInternal(TArrayRef<const TCell> key, ESeek seek) noexcept;
 };
 
-class TTableIter;
-class TTableReverseIter;
+class TTableIt;
+class TTableReverseIt;
 
-class TTableIter : public TTableIterBase<TTableIterOps> {
+class TTableIt : public TTableItBase<TTableItOps> {
 public:
-    using TTableIterBase::TTableIterBase;
+    using TTableItBase::TTableItBase;
 
-    typedef TTableReverseIter TReverseType;
+    typedef TTableReverseIt TReverseType;
 
     static constexpr EDirection Direction = EDirection::Forward;
 };
 
-class TTableReverseIter : public TTableIterBase<TTableItReverseOps> {
+class TTableReverseIt : public TTableItBase<TTableItReverseOps> {
 public:
-    using TTableIterBase::TTableIterBase;
+    using TTableItBase::TTableItBase;
 
-    typedef TTableIter TReverseType;
+    typedef TTableIt TReverseType;
 
     static constexpr EDirection Direction = EDirection::Reverse;
 };
 
 template<class TIteratorOps>
-inline TTableIterBase<TIteratorOps>::TTableIterBase(
+inline TTableItBase<TIteratorOps>::TTableItBase(
         const TRowScheme* scheme, TTagsRef tags, ui64 limit,
         TRowVersion snapshot,
         NTable::ITransactionMapPtr committedTransactions,
@@ -494,12 +464,12 @@ inline TTableIterBase<TIteratorOps>::TTableIterBase(
 {}
 
 template<class TIteratorOps>
-inline TTableIterBase<TIteratorOps>::~TTableIterBase()
+inline TTableItBase<TIteratorOps>::~TTableItBase()
 {
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::AddReadyIterator(TArrayRef<const TCell> key, TIteratorId itId) {
+inline void TTableItBase<TIteratorOps>::AddReadyIterator(TArrayRef<const TCell> key, TIteratorId itId) {
     Active = Iterators.emplace(Active, TElement({key, itId}));
     ++Active;
     std::push_heap(Iterators.begin(), Active, Comparator);
@@ -507,7 +477,7 @@ inline void TTableIterBase<TIteratorOps>::AddReadyIterator(TArrayRef<const TCell
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::AddNotReadyIterator(TIteratorId itId) {
+inline void TTableItBase<TIteratorOps>::AddNotReadyIterator(TIteratorId itId) {
     size_t actPos = Active - Iterators.begin();
     Iterators.emplace_back(TElement({{ }, itId}));
     Active = Iterators.begin() + actPos;
@@ -515,7 +485,7 @@ inline void TTableIterBase<TIteratorOps>::AddNotReadyIterator(TIteratorId itId) 
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::Push(TAutoPtr<TMemIter> it)
+inline void TTableItBase<TIteratorOps>::Push(TAutoPtr<TMemIt> it)
 {
     if (it && it->IsValid()) {
         TIteratorId itId = { EType::Mem, IteratorIndexFromSize(MemIters.size()), it->MemTable->Epoch };
@@ -527,7 +497,7 @@ inline void TTableIterBase<TIteratorOps>::Push(TAutoPtr<TMemIter> it)
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::Push(TAutoPtr<TRunIter> it)
+inline void TTableItBase<TIteratorOps>::Push(TAutoPtr<TRunIt> it)
 {
     TIteratorId itId = { EType::Run, IteratorIndexFromSize(RunIters.size()), it->Epoch() };
 
@@ -543,9 +513,9 @@ inline void TTableIterBase<TIteratorOps>::Push(TAutoPtr<TRunIter> it)
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::StopBefore(TArrayRef<const TCell> key)
+inline void TTableItBase<TIteratorOps>::StopBefore(TArrayRef<const TCell> key)
 {
-    Y_ABORT_UNLESS(!StopKey, "Using multiple stop keys not allowed");
+    Y_VERIFY(!StopKey, "Using multiple stop keys not allowed");
 
     if (Y_UNLIKELY(!key)) {
         return;
@@ -560,9 +530,9 @@ inline void TTableIterBase<TIteratorOps>::StopBefore(TArrayRef<const TCell> key)
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::StopAfter(TArrayRef<const TCell> key)
+inline void TTableItBase<TIteratorOps>::StopAfter(TArrayRef<const TCell> key)
 {
-    Y_ABORT_UNLESS(!StopKey, "Using multiple stop keys not allowed");
+    Y_VERIFY(!StopKey, "Using multiple stop keys not allowed");
 
     if (Y_UNLIKELY(!key)) {
         return;
@@ -577,7 +547,7 @@ inline void TTableIterBase<TIteratorOps>::StopAfter(TArrayRef<const TCell> key)
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::Start() noexcept
+inline EReady TTableItBase<TIteratorOps>::Start() noexcept
 {
     if (Active != Iterators.end()) {
         return EReady::Page;
@@ -587,7 +557,6 @@ inline EReady TTableIterBase<TIteratorOps>::Start() noexcept
         Iterators.front().IteratorId.Type == EType::Stop ||
         Limit == 0)
     {
-        ClearKey();
         return EReady::Gone;
     }
 
@@ -615,11 +584,10 @@ inline EReady TTableIterBase<TIteratorOps>::Start() noexcept
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::Turn() noexcept
+inline EReady TTableItBase<TIteratorOps>::Turn() noexcept
 {
     if (!Limit) {
         // Optimization: avoid calling Next after returning the last row
-        ClearKey();
         return EReady::Gone;
     }
 
@@ -634,7 +602,7 @@ inline EReady TTableIterBase<TIteratorOps>::Turn() noexcept
                 TIteratorOps::MoveNext(mi);
                 if (mi.IsValid()) {
                     Active->Key = mi.GetKey().Cells();
-                    Y_DEBUG_ABORT_UNLESS(Active->Key.size() == Scheme->Keys->Types.size());
+                    Y_VERIFY_DEBUG(Active->Key.size() == Scheme->Keys->Types.size());
                     std::push_heap(Iterators.begin(), ++Active, Comparator);
                 } else {
                     Active = Iterators.erase(Active);
@@ -654,7 +622,7 @@ inline EReady TTableIterBase<TIteratorOps>::Turn() noexcept
 
                     case EReady::Data:
                         Active->Key = it.GetKey().Cells();
-                        Y_DEBUG_ABORT_UNLESS(Active->Key.size() == Scheme->Keys->Types.size());
+                        Y_VERIFY_DEBUG(Active->Key.size() == Scheme->Keys->Types.size());
                         Active->IteratorId.Epoch = it.Epoch();
                         std::push_heap(Iterators.begin(), ++Active, Comparator);
                         break;
@@ -665,12 +633,12 @@ inline EReady TTableIterBase<TIteratorOps>::Turn() noexcept
                         break;
 
                     default:
-                        Y_ABORT("Unexpected EReady value");
+                        Y_FAIL("Unexpected EReady value");
                 }
                 break;
             }
             default: {
-                Y_ABORT("Unexpected iterator type");
+                Y_FAIL("Unexpected iterator type");
             }
         }
     }
@@ -683,37 +651,37 @@ inline EReady TTableIterBase<TIteratorOps>::Turn() noexcept
 }
 
 template<class TIteratorOps>
-inline bool TTableIterBase<TIteratorOps>::IsUncommitted() const noexcept
+inline bool TTableItBase<TIteratorOps>::IsUncommitted() const noexcept
 {
     // Must only be called after a fully successful Apply()
-    Y_DEBUG_ABORT_UNLESS(Stage == EStage::Done && Ready == EReady::Data);
+    Y_VERIFY_DEBUG(Stage == EStage::Done && Ready == EReady::Data);
 
     // There must be at least one active iterator
-    Y_DEBUG_ABORT_UNLESS(Active != Inactive);
+    Y_VERIFY_DEBUG(Active != Inactive);
 
     return Delta && Uncommitted;
 }
 
 template<class TIteratorOps>
-inline ui64 TTableIterBase<TIteratorOps>::GetUncommittedTxId() const noexcept
+inline ui64 TTableItBase<TIteratorOps>::GetUncommittedTxId() const noexcept
 {
     // Must only be called after a fully successful Apply()
-    Y_DEBUG_ABORT_UNLESS(Stage == EStage::Done && Ready == EReady::Data);
+    Y_VERIFY_DEBUG(Stage == EStage::Done && Ready == EReady::Data);
 
     // There must be at least one active iterator
-    Y_DEBUG_ABORT_UNLESS(Active != Inactive);
+    Y_VERIFY_DEBUG(Active != Inactive);
 
     // Must only be called for uncommitted positions
-    Y_DEBUG_ABORT_UNLESS(Delta && Uncommitted);
+    Y_VERIFY_DEBUG(Delta && Uncommitted);
 
     return DeltaTxId;
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::SkipUncommitted() noexcept
+inline EReady TTableItBase<TIteratorOps>::SkipUncommitted() noexcept
 {
     // Must only be called after successful Apply() or page fault in SkipUncommitted()
-    Y_DEBUG_ABORT_UNLESS(Stage == EStage::Done && Ready != EReady::Gone);
+    Y_VERIFY_DEBUG(Stage == EStage::Done && Ready != EReady::Gone);
 
     if (Ready == EReady::Page) {
         // Previous SkipUncommitted() failed with a page fault, we must not skip again
@@ -735,16 +703,16 @@ inline EReady TTableIterBase<TIteratorOps>::SkipUncommitted() noexcept
 }
 
 template<class TIteratorOps>
-inline TRowVersion TTableIterBase<TIteratorOps>::GetRowVersion() const noexcept
+inline TRowVersion TTableItBase<TIteratorOps>::GetRowVersion() const noexcept
 {
     // Must only be called after a fully successful Apply()
-    Y_DEBUG_ABORT_UNLESS(Stage == EStage::Done && Ready == EReady::Data);
+    Y_VERIFY_DEBUG(Stage == EStage::Done && Ready == EReady::Data);
 
     // There must be at least one active iterator
-    Y_DEBUG_ABORT_UNLESS(Active != Inactive);
+    Y_VERIFY_DEBUG(Active != Inactive);
 
     if (Delta) {
-        Y_DEBUG_ABORT_UNLESS(!Uncommitted, "Cannot get version for uncommitted deltas");
+        Y_VERIFY_DEBUG(!Uncommitted, "Cannot get version for uncommitted deltas");
         return DeltaVersion;
     }
 
@@ -757,15 +725,15 @@ inline TRowVersion TTableIterBase<TIteratorOps>::GetRowVersion() const noexcept
             return RunIters[ai.Index]->GetRowVersion();
         }
         default:
-            Y_ABORT("Unexpected iterator type");
+            Y_FAIL("Unexpected iterator type");
     }
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::SkipToRowVersion(TRowVersion rowVersion) noexcept
+inline EReady TTableItBase<TIteratorOps>::SkipToRowVersion(TRowVersion rowVersion) noexcept
 {
     // Must only be called after successful Apply()
-    Y_DEBUG_ABORT_UNLESS(Stage == EStage::Done && Ready != EReady::Gone);
+    Y_VERIFY_DEBUG(Stage == EStage::Done && Ready != EReady::Gone);
 
     switch (Snap(rowVersion)) {
         case EReady::Data:
@@ -782,9 +750,9 @@ inline EReady TTableIterBase<TIteratorOps>::SkipToRowVersion(TRowVersion rowVers
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::Snap() noexcept
+inline EReady TTableItBase<TIteratorOps>::Snap() noexcept
 {
-    Y_DEBUG_ABORT_UNLESS(Active != Inactive);
+    Y_VERIFY_DEBUG(Active != Inactive);
 
     switch (Snap(SnapshotVersion)) {
         case EReady::Data:
@@ -792,8 +760,6 @@ inline EReady TTableIterBase<TIteratorOps>::Snap() noexcept
             return EReady::Data;
 
         case EReady::Gone:
-            InitLastKey(ERowOp::Absent);
-            ++Stats.DeletedRowSkips;
             Stage = EStage::Turn;
             return EReady::Data;
 
@@ -805,7 +771,7 @@ inline EReady TTableIterBase<TIteratorOps>::Snap() noexcept
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::Snap(TRowVersion rowVersion) noexcept
+inline EReady TTableItBase<TIteratorOps>::Snap(TRowVersion rowVersion) noexcept
 {
     for (auto i = TReverseIter(Inactive), e = TReverseIter(Active); i != e; ++i) {
         TIteratorId ai = i->IteratorId;
@@ -822,13 +788,13 @@ inline EReady TTableIterBase<TIteratorOps>::Snap(TRowVersion rowVersion) noexcep
                 if (ready == EReady::Data) {
                     return EReady::Data;
                 } else if (ready != EReady::Gone) {
-                    Y_DEBUG_ABORT_UNLESS(ready == EReady::Page);
+                    Y_VERIFY_DEBUG(ready == EReady::Page);
                     return ready;
                 }
                 break;
             }
             default:
-                Y_ABORT("Unexpected iterator type");
+                Y_FAIL("Unexpected iterator type");
         }
 
         // The last iterator becomes inactive
@@ -836,21 +802,21 @@ inline EReady TTableIterBase<TIteratorOps>::Snap(TRowVersion rowVersion) noexcep
     }
 
     // We ran out of versions, move to the next key
-    Y_DEBUG_ABORT_UNLESS(Active == Inactive);
+    Y_VERIFY_DEBUG(Active == Inactive);
     return EReady::Gone;
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::DoSkipUncommitted() noexcept
+inline EReady TTableItBase<TIteratorOps>::DoSkipUncommitted() noexcept
 {
-    Y_DEBUG_ABORT_UNLESS(Delta && Uncommitted);
+    Y_VERIFY_DEBUG(Delta && Uncommitted);
 
     for (auto i = TReverseIter(Inactive), e = TReverseIter(Active); i != e; ++i) {
         TIteratorId ai = i->IteratorId;
         switch (ai.Type) {
             case EType::Mem: {
                 auto& it = *MemIters[ai.Index];
-                Y_DEBUG_ABORT_UNLESS(it.IsDelta() && !CommittedTransactions.Find(it.GetDeltaTxId()));
+                Y_VERIFY_DEBUG(it.IsDelta() && !CommittedTransactions.Find(it.GetDeltaTxId()));
                 TransactionObserver.OnSkipUncommitted(it.GetDeltaTxId());
                 if (it.SkipDelta()) {
                     return EReady::Data;
@@ -859,7 +825,7 @@ inline EReady TTableIterBase<TIteratorOps>::DoSkipUncommitted() noexcept
             }
             case EType::Run: {
                 auto& it = *RunIters[ai.Index];
-                Y_DEBUG_ABORT_UNLESS(it.IsDelta() && !CommittedTransactions.Find(it.GetDeltaTxId()));
+                Y_VERIFY_DEBUG(it.IsDelta() && !CommittedTransactions.Find(it.GetDeltaTxId()));
                 TransactionObserver.OnSkipUncommitted(it.GetDeltaTxId());
                 auto ready = it.SkipDelta();
                 if (ready != EReady::Gone) {
@@ -868,7 +834,7 @@ inline EReady TTableIterBase<TIteratorOps>::DoSkipUncommitted() noexcept
                 break;
             }
             default:
-                Y_ABORT("Unexpected iterator type");
+                Y_FAIL("Unexpected iterator type");
         }
 
         // The last iterator becomes inactive
@@ -884,17 +850,17 @@ inline EReady TTableIterBase<TIteratorOps>::DoSkipUncommitted() noexcept
 }
 
 template<class TIteratorOps>
-inline EReady TTableIterBase<TIteratorOps>::Apply() noexcept
+inline EReady TTableItBase<TIteratorOps>::Apply() noexcept
 {
     State.Reset(Remap.CellDefaults());
 
-    TArrayRef<const TCell> key = Iterators.back().Key;
+    const TDbTupleRef key = GetKey();
 
     for (auto &pin: Remap.KeyPins())
-        State.Set(pin.Pos, { ECellOp::Set, ELargeObj::Inline }, key[pin.Key]);
+        State.Set(pin.Pos, { ECellOp::Set, ELargeObj::Inline }, key.Columns[pin.Key]);
 
     // We must have at least one active iterator
-    Y_DEBUG_ABORT_UNLESS(Active != Inactive);
+    Y_VERIFY_DEBUG(Active != Inactive);
 
     bool committed = false;
     for (auto i = TReverseIter(Inactive), e = TReverseIter(Active); i != e; ++i) {
@@ -941,7 +907,7 @@ inline EReady TTableIterBase<TIteratorOps>::Apply() noexcept
                 break;
             }
             default:
-                Y_ABORT("Unexpected iterator type");
+                Y_FAIL("Unexpected iterator type");
         }
 
         if (State.IsFinalized() || !committed)
@@ -957,43 +923,21 @@ inline EReady TTableIterBase<TIteratorOps>::Apply() noexcept
 }
 
 template<class TIteratorOps>
-inline void TTableIterBase<TIteratorOps>::InitLastKey(ERowOp op) noexcept
+inline TDbTupleRef TTableItBase<TIteratorOps>::GetKey() const noexcept
 {
-    TArrayRef<const TCell> key = Iterators.back().Key;
-
-    LastKey.assign(key.begin(), key.end());
-
     TIteratorId ai = Iterators.back().IteratorId;
     switch (ai.Type) {
-        case EType::Mem: {
-            // We keep mem table snapshot in memory, no page reference needed
-            LastKeyPage = {};
-            break;
-        }
-        case EType::Run: {
-            auto& it = *RunIters[ai.Index];
-            const TSharedData& page = it.GetKeyPage();
-            if (LastKeyPage.data() != page.data()) {
-                LastKeyPage = page;
-            }
-            break;
-        }
-        default: {
-            Y_ABORT("Unexpected iterator type");
-        }
+        case EType::Mem:
+            return MemIters[ai.Index]->GetKey();
+        case EType::Run:
+            return RunIters[ai.Index]->GetKey();
+        default:
+            Y_FAIL("Unexpected iterator type");
     }
-
-    LastKeyState = op;
 }
 
 template<class TIteratorOps>
-inline TDbTupleRef TTableIterBase<TIteratorOps>::GetKey() const noexcept
-{
-    return { Scheme->Keys->BasicTypes().data(), LastKey.data(), static_cast<ui32>(LastKey.size()) };
-}
-
-template<class TIteratorOps>
-inline TDbTupleRef TTableIterBase<TIteratorOps>::GetValues() const noexcept
+inline TDbTupleRef TTableItBase<TIteratorOps>::GetValues() const noexcept
 {
     if (State.GetRowState() == ERowOp::Erase)
         return TDbTupleRef();
@@ -1001,7 +945,7 @@ inline TDbTupleRef TTableIterBase<TIteratorOps>::GetValues() const noexcept
 }
 
 template<class TIteratorOps>
-inline bool TTableIterBase<TIteratorOps>::SeekInternal(TArrayRef<const TCell> key, ESeek seek) noexcept
+inline bool TTableItBase<TIteratorOps>::SeekInternal(TArrayRef<const TCell> key, ESeek seek) noexcept
 {
     Stage = EStage::Seek;
 
@@ -1043,7 +987,7 @@ inline bool TTableIterBase<TIteratorOps>::SeekInternal(TArrayRef<const TCell> ke
                 TIteratorOps::Seek(mi, key, seek);
                 if (mi.IsValid()) {
                     Active->Key = mi.GetKey().Cells();
-                    Y_DEBUG_ABORT_UNLESS(Active->Key.size() == Scheme->Keys->Types.size());
+                    Y_VERIFY_DEBUG(Active->Key.size() == Scheme->Keys->Types.size());
                     std::push_heap(Iterators.begin(), ++Active, Comparator);
                 } else {
                     Active = Iterators.erase(Active);
@@ -1062,7 +1006,7 @@ inline bool TTableIterBase<TIteratorOps>::SeekInternal(TArrayRef<const TCell> ke
 
                     case EReady::Data:
                         Active->Key = it.GetKey().Cells();
-                        Y_DEBUG_ABORT_UNLESS(Active->Key.size() == Scheme->Keys->Types.size());
+                        Y_VERIFY_DEBUG(Active->Key.size() == Scheme->Keys->Types.size());
                         Active->IteratorId.Epoch = it.Epoch();
                         std::push_heap(Iterators.begin(), ++Active, Comparator);
                         break;
@@ -1072,12 +1016,12 @@ inline bool TTableIterBase<TIteratorOps>::SeekInternal(TArrayRef<const TCell> ke
                         break;
 
                     default:
-                        Y_ABORT("Unexpected EReady value");
+                        Y_FAIL("Unexpected EReady value");
                 }
                 break;
             }
             default: {
-                Y_ABORT("Unexpected iterator type");
+                Y_FAIL("Unexpected iterator type");
             }
         }
     }

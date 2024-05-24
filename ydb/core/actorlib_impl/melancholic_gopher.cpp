@@ -1,9 +1,9 @@
 #include "mad_squirrel.h"
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 #include <util/system/hp_timer.h>
 #include <util/system/spinlock.h>
 
@@ -23,7 +23,7 @@ class TMelancholicGopher : public TActor<TMelancholicGopher> {
     }
 public:
     static constexpr EActivityType ActorActivityType() {
-        return EActivityType::ACTORLIB_COMMON;
+        return ACTORLIB_COMMON;
     }
 
     TMelancholicGopher(double surveyForSeconds, const TActorId &reportTo)
@@ -68,7 +68,7 @@ class TGopherMother : public TActorBootstrapped<TGopherMother> {
     }
 public:
     static constexpr EActivityType ActorActivityType() {
-        return EActivityType::ACTORLIB_COMMON;
+        return ACTORLIB_COMMON;
     }
 
     TGopherMother(const TVector<std::pair<ui32, double>> &lineProfile, ui32 lines, ui32 shotsInRound)
@@ -77,7 +77,7 @@ public:
         , ShotsInRound(shotsInRound)
         , WaitFor(0)
     {
-        Y_ABORT_UNLESS(!LineProfile.empty());
+        Y_VERIFY(!LineProfile.empty());
     }
 
     void Bootstrap(const TActorContext &ctx) {

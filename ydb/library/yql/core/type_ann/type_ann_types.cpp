@@ -2,7 +2,6 @@
 #include "type_ann_expr.h"
 #include "type_ann_impl.h"
 #include "type_ann_types.h"
-#include "ydb/library/yql/core/yql_opt_utils.h"
 
 namespace NYql {
 namespace NTypeAnnImpl {
@@ -937,14 +936,13 @@ namespace NTypeAnnImpl {
             TAstNode::NewList(inputPos, pool,
                 TAstNode::NewLiteralAtom(inputPos, TStringBuf("return"), pool), parsedType));
         TExprNode::TPtr exprRoot;
-        if (!CompileExpr(*astRoot, exprRoot, ctx.Expr, nullptr, nullptr)) {
+        if (!CompileExpr(*astRoot, exprRoot, ctx.Expr, nullptr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
         // TODO: Collect type annotation directly from AST.
-        NYql::TTypeAnnotationContext cleanTypes;
-        auto callableTransformer = CreateExtCallableTypeAnnotationTransformer(cleanTypes);
-        auto typeTransformer = CreateTypeAnnotationTransformer(callableTransformer, cleanTypes);
+        auto callableTransformer = CreateExtCallableTypeAnnotationTransformer(ctx.Types);
+        auto typeTransformer = CreateTypeAnnotationTransformer(callableTransformer, ctx.Types);
         if (InstantTransform(*typeTransformer, exprRoot, ctx.Expr) != IGraphTransformer::TStatus::Ok) {
             return IGraphTransformer::TStatus::Error;
         }
@@ -966,34 +964,6 @@ namespace NTypeAnnImpl {
             }
         }
 
-        input->SetTypeAnn(ctx.Expr.MakeType<TDataExprType>(EDataSlot::String));
-        return IGraphTransformer::TStatus::Ok;
-    }
-
-    IGraphTransformer::TStatus FormatTypeDiffWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        Y_UNUSED(output);
-        if (!EnsureArgsCount(*input, 3, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        auto resType = MakeTypeHandleResourceType(ctx.Expr);
-        if (input->Child(0)->GetTypeAnn() != resType) {
-            if (auto status = EnsureTypeRewrite(input->ChildRef(0), ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
-                return status;
-            }
-        }
-        if (input->Child(1)->GetTypeAnn() != resType) {
-            if (auto status = EnsureTypeRewrite(input->ChildRef(1), ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
-                return status;
-            }
-        }
-        if (!EnsureAtom(*input->Child(2), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-        if (!TryFromString<bool>(input->Child(2)->Content())) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->ChildPtr(2)->Pos()), TStringBuilder() << "Expected boolean value, but got: " << input->ChildPtr(2)->Content()));
-            return IGraphTransformer::TStatus::Error;
-        }
         input->SetTypeAnn(ctx.Expr.MakeType<TDataExprType>(EDataSlot::String));
         return IGraphTransformer::TStatus::Ok;
     }
@@ -1160,10 +1130,17 @@ namespace NTypeAnnImpl {
             }
 
             auto type = child->Child(1)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-            const TStructExprType* structType = nullptr;
-            bool optional = false;
-            if (!EnsureStructOrOptionalStructType(child->Child(1)->Pos(), *type, optional, structType, ctx.Expr)) {
+            if (!EnsureStructOrOptionalStructType(child->Child(1)->Pos(), *type, ctx.Expr)) {
                 return IGraphTransformer::TStatus::Error;
+            }
+
+            const TStructExprType* structType;
+            bool optional = false;
+            if (type->GetKind() == ETypeAnnotationKind::Optional) {
+                optional = true;
+                structType = type->Cast<TOptionalExprType>()->GetItemType()->Cast<TStructExprType>();
+            } else {
+                structType = type->Cast<TStructExprType>();
             }
 
             for (auto& field : structType->GetItems()) {
@@ -1557,36 +1534,6 @@ namespace NTypeAnnImpl {
         return IGraphTransformer::TStatus::Ok;
     }
 
-    template <>
-    IGraphTransformer::TStatus MakeTypeHandleWrapper<ETypeAnnotationKind::Pg>(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        Y_UNUSED(output);
-        if (!EnsureArgsCount(*input, 1, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (!EnsureSpecificDataType(*input->Child(0), EDataSlot::String, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        input->SetTypeAnn(MakeTypeHandleResourceType(ctx.Expr));
-        return IGraphTransformer::TStatus::Ok;
-    }
-
-    template <>
-    IGraphTransformer::TStatus SplitTypeHandleWrapper<ETypeAnnotationKind::Pg>(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        Y_UNUSED(output);
-        if (!EnsureArgsCount(*input, 1, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (!EnsureTypeHandleResourceType(*input->Child(0), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        input->SetTypeAnn(ctx.Expr.MakeType<TDataExprType>(EDataSlot::String));
-        return IGraphTransformer::TStatus::Ok;
-    }
-
     IGraphTransformer::TStatus CallableArgumentWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
         if (!EnsureMinArgsCount(*input, 1, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
@@ -1647,7 +1594,7 @@ namespace NTypeAnnImpl {
             .Seal()
             .Build();
 
-        return IGraphTransformer::TStatus::Repeat;
+return IGraphTransformer::TStatus::Repeat;
     }
 
     template <>

@@ -5,8 +5,6 @@
 #include <ydb/core/base/tablet_types.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tablet_flat/flat_cxx_database.h>
-#include <ydb/core/base/row_version.h>
-
 #include <util/generic/fwd.h>
 
 namespace NKikimr::NSchemeShard {
@@ -60,13 +58,13 @@ struct TSchemeLimits {
 
 using ETabletType = TTabletTypes;
 
-struct TVirtualTimestamp
-    : public TRowVersion
-{
-    using TRowVersion::TRowVersion;
+struct TVirtualTimestamp {
+    TStepId Step = InvalidStepId;
+    TTxId TxId = InvalidTxId;
 
     TVirtualTimestamp(TStepId step, TTxId txId)
-        : TRowVersion(step.GetValue(), txId.GetValue())
+        : Step(step)
+        , TxId(txId)
     {}
 
     bool Empty() const {
@@ -77,26 +75,14 @@ struct TVirtualTimestamp
         return !Empty();
     }
 
-    TStepId GetStep() const {
-        return TStepId(Step);
+    bool operator < (const TVirtualTimestamp& ts) const {
+        Y_VERIFY_DEBUG(Step, "Comparing with unset timestamp");
+        Y_VERIFY_DEBUG(ts.Step, "Comparing with unset timestamp");
+        return Step < ts.Step || Step == ts.Step && TxId < ts.TxId;
     }
 
-    void SetStep(TStepId step) {
-        Step = step.GetValue();
-    }
-
-    TTxId GetTxId() const {
-        return TTxId(TxId);
-    }
-
-    void SetTxId(TTxId txid) {
-        TxId = txid.GetValue();
-    }
-
-    bool operator<(const TVirtualTimestamp& ts) const {
-        Y_DEBUG_ABORT_UNLESS(Step, "Comparing with unset timestamp");
-        Y_DEBUG_ABORT_UNLESS(ts.Step, "Comparing with unset timestamp");
-        return static_cast<const TRowVersion&>(*this) < ts;
+    bool operator == (const TVirtualTimestamp& ts) const {
+        return Step == ts.Step && TxId == ts.TxId;
     }
 
     TString ToString() const {
@@ -112,7 +98,6 @@ struct TVirtualTimestamp
 enum class ETableColumnDefaultKind : ui32 {
     None = 0,
     FromSequence = 1,
-    FromLiteral = 2,
 };
 
 enum class EAttachChildResult : ui32 {
@@ -134,32 +119,6 @@ enum class EAttachChildResult : ui32 {
 
     AttachedAsOlderUnCreated,
     RejectAsNewerUnCreated
-};
-
-using EServerlessComputeResourcesMode = NKikimrSubDomains::EServerlessComputeResourcesMode;
-
-struct TTempTablesState {
-
-    struct TRetryState {
-        bool IsScheduled = false;
-        NMonotonic::TMonotonic LastRetryAt = TMonotonic::Zero();
-        TDuration CurrentDelay = TDuration::Zero();
-        ui32 RetryNumber = 0;
-    };
-
-    struct TNodeState {
-        THashSet<TActorId> Owners;
-        TRetryState RetryState;
-    };
-
-    THashMap<TActorId, THashSet<TPathId>> TempTablesByOwner; // OwnerActorId -> [ TPathId ]
-    THashMap<ui32, TNodeState> NodeStates; // NodeId -> TNodeState
-};
-
-struct TTempTableInfo {
-    TString WorkingDir;
-    TString Name;
-    TActorId OwnerActorId;
 };
 
 }

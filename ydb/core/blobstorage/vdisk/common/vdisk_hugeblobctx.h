@@ -49,7 +49,6 @@ namespace NKikimr {
 
         THugeSlotsMap(ui32 appendBlockSize, TAllSlotsInfo &&slotsInfo, TSearchTable &&searchTable);
         const TSlotInfo *GetSlotInfo(ui32 size) const;
-        ui32 AlignByBlockSize(ui32 size) const;
         void Output(IOutputStream &str) const;
         TString ToString() const;
 
@@ -65,17 +64,16 @@ namespace NKikimr {
     class THugeBlobCtx {
     public:
         // this value is multiply of AppendBlockSize and is calculated from Config->MinHugeBlobSize
+        const ui32 MinREALHugeBlobInBytes;
         const std::shared_ptr<const THugeSlotsMap> HugeSlotsMap;
-        const bool AddHeader;
 
-        // check whether this NEW blob is huge one; userPartSize doesn't include any metadata stored along with blob
-        bool IsHugeBlob(TBlobStorageGroupType gtype, const TLogoBlobID& fullId, ui32 minREALHugeBlobInBytes) const;
+        // check whether this blob is huge one; userPartSize doesn't include any metadata stored along with blob
+        bool IsHugeBlob(TBlobStorageGroupType gtype, const TLogoBlobID& fullId) const;
 
-        THugeBlobCtx(const std::shared_ptr<const THugeSlotsMap> &hugeSlotsMap, bool addHeader)
-            : HugeSlotsMap(hugeSlotsMap)
-            , AddHeader(addHeader)
-        {
-        }
+        THugeBlobCtx(ui32 minREALHugeBlobInBytes, const std::shared_ptr<const THugeSlotsMap> &hugeSlotsMap)
+            : MinREALHugeBlobInBytes(minREALHugeBlobInBytes)
+            , HugeSlotsMap(hugeSlotsMap)
+        {}
     };
 
     using THugeBlobCtxPtr = std::shared_ptr<THugeBlobCtx>;

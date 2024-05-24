@@ -3,9 +3,9 @@
 #include <ydb/core/protos/pqconfig.pb.h>
 #include <ydb/library/logger/actor.h>
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/persqueue.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 #include <library/cpp/logger/log.h>
 
 #include <util/datetime/base.h>
@@ -25,7 +25,7 @@ public:
         NActors::TActorSystem* actorSystem,
         const NKikimrPQ::TPQConfig::TPQLibSettings& settings
     ) const {
-        Y_ABORT_UNLESS(!ActorSystemPtr->load(std::memory_order_relaxed), "Double init");
+        Y_VERIFY(!ActorSystemPtr->load(std::memory_order_relaxed), "Double init");
         ActorSystemPtr->store(actorSystem, std::memory_order_relaxed);
 
         auto driverConfig = NYdb::TDriverConfig()
@@ -44,7 +44,7 @@ public:
         }
     }
 
-    virtual std::shared_ptr<NYdb::NTopic::IReadSession> GetReadSession(
+    virtual std::shared_ptr<NYdb::NPersQueue::IReadSession> GetReadSession(
         const NKikimrPQ::TMirrorPartitionConfig& config,
         ui32 partition,
         std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProviderFactory,
@@ -85,14 +85,14 @@ protected:
     }
 
 public:
-    std::shared_ptr<NYdb::NTopic::IReadSession> GetReadSession(
+    std::shared_ptr<NYdb::NPersQueue::IReadSession> GetReadSession(
         const NKikimrPQ::TMirrorPartitionConfig& config,
         ui32 partition,
         std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProviderFactory,
         ui64 maxMemoryUsageBytes,
         TMaybe<TLog> logger = Nothing()
     ) const override {
-        NYdb::NTopic::TTopicClientSettings clientSettings = NYdb::NTopic::TTopicClientSettings()
+        NYdb::NPersQueue::TPersQueueClientSettings clientSettings = NYdb::NPersQueue::TPersQueueClientSettings()
             .DiscoveryEndpoint(TStringBuilder() << config.GetEndpoint() << ":" << config.GetEndpointPort())
             .DiscoveryMode(NYdb::EDiscoveryMode::Async)
             .CredentialsProviderFactory(credentialsProviderFactory)
@@ -101,23 +101,25 @@ public:
             clientSettings.Database(config.GetDatabase());
         }
 
-        NYdb::NTopic::TReadSessionSettings settings = NYdb::NTopic::TReadSessionSettings()
+        NYdb::NPersQueue::TReadSessionSettings settings = NYdb::NPersQueue::TReadSessionSettings()
             .ConsumerName(config.GetConsumer())
             .MaxMemoryUsageBytes(maxMemoryUsageBytes)
             .Decompress(false)
-            .RetryPolicy(NYdb::NTopic::IRetryPolicy::GetNoRetryPolicy());
+            .DisableClusterDiscovery(true)
+            .ReadOnlyOriginal(true)
+            .RetryPolicy(NYdb::NPersQueue::IRetryPolicy::GetNoRetryPolicy());
         if (logger) {
             settings.Log(logger.GetRef());
         }
         if (config.HasReadFromTimestampsMs()) {
-            settings.ReadFromTimestamp(TInstant::MilliSeconds(config.GetReadFromTimestampsMs()));
+            settings.StartingMessageTimestamp(TInstant::MilliSeconds(config.GetReadFromTimestampsMs()));
         }
-        NYdb::NTopic::TTopicReadSettings topicSettings(config.GetTopic());
-        topicSettings.AppendPartitionIds({partition});
+        NYdb::NPersQueue::TTopicReadSettings topicSettings(config.GetTopic());
+        topicSettings.AppendPartitionGroupIds({partition + 1});
         settings.AppendTopics(topicSettings);
 
-        NYdb::NTopic::TTopicClient topicClient(*Driver, clientSettings);
-        return topicClient.CreateReadSession(settings);
+        NYdb::NPersQueue::TPersQueueClient persQueueClient(*Driver, clientSettings);
+        return persQueueClient.CreateReadSession(settings);
     }
 };
 

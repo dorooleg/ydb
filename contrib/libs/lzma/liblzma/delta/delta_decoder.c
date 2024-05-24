@@ -42,12 +42,7 @@ delta_decode(void *coder_ptr, const lzma_allocator *allocator,
 			in, in_pos, in_size, out, out_pos, out_size,
 			action);
 
-	// out might be NULL. In that case size == 0. Null pointer + 0 is
-	// undefined behavior so skip the call in that case as it would
-	// do nothing anyway.
-	const size_t size = *out_pos - out_start;
-	if (size > 0)
-		decode_buffer(coder, out + out_start, size);
+	decode_buffer(coder, out + out_start, *out_pos - out_start);
 
 	return ret;
 }

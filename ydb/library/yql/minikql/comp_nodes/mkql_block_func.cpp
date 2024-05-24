@@ -1,6 +1,5 @@
 #include "mkql_block_func.h"
-
-#include <ydb/library/yql/minikql/computation/mkql_block_impl.h>
+#include "mkql_block_impl.h"
 
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
@@ -66,7 +65,7 @@ IComputationNode* WrapBlockFunc(TCallable& callable, const TComputationNodeFacto
     MKQL_ENSURE(callable.GetInputsCount() >= 1, "Expected at least 1 arg");
     const auto funcNameData = AS_VALUE(TDataLiteral, callable.GetInput(0));
     const auto funcName = TString(funcNameData->AsValue().AsStringRef());
-    TComputationNodePtrVector argsNodes;
+    TVector<IComputationNode*> argsNodes;
     TVector<TType*> argsTypes;
     const auto callableType = callable.GetType();
     for (ui32 i = 1; i < callable.GetInputsCount(); ++i) {

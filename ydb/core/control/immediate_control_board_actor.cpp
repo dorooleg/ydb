@@ -3,7 +3,6 @@
 #include <ydb/core/mon/mon.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/library/services/services.pb.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -33,6 +32,7 @@ class TImmediateControlActor : public TActorBootstrapped<TImmediateControlActor>
         }
     };
 
+    TMutex Mtx;
     TIntrusivePtr<TControlBoard> Board;
     TVector<TLogRecord> HistoryLog;
 

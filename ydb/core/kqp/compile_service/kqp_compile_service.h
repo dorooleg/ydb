@@ -1,47 +1,23 @@
 #pragma once
 
 #include <ydb/core/kqp/common/kqp.h>
-#include <ydb/core/kqp/common/simple/temp_tables.h>
 #include <ydb/core/kqp/gateway/kqp_gateway.h>
-#include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
+#include <ydb/library/yql/providers/common/http_gateway/yql_http_gateway.h>
 
 namespace NKikimr {
 namespace NKqp {
 
-enum class ECompileActorAction {
-    COMPILE,
-    PARSE,
-    SPLIT,
-};
-
-IActor* CreateKqpCompileService(const NKikimrConfig::TTableServiceConfig& tableServiceConfig,
-    const NKikimrConfig::TQueryServiceConfig& queryServiceConfig,
-    const NKikimrConfig::TMetadataProviderConfig& metadataProviderConfig,
+IActor* CreateKqpCompileService(const NKikimrConfig::TTableServiceConfig& serviceConfig,
     const TKqpSettings::TConstPtr& kqpSettings, TIntrusivePtr<TModuleResolverState> moduleResolverState,
     TIntrusivePtr<TKqpCounters> counters, std::shared_ptr<IQueryReplayBackendFactory> queryReplayFactory,
-    std::optional<TKqpFederatedQuerySetup> federatedQuerySetup
-    );
-
-IActor* CreateKqpCompileComputationPatternService(const NKikimrConfig::TTableServiceConfig& serviceConfig,
-    TIntrusivePtr<TKqpCounters> counters);
+    NYql::IHTTPGateway::TPtr httpGateway);
 
 IActor* CreateKqpCompileActor(const TActorId& owner, const TKqpSettings::TConstPtr& kqpSettings,
-    const NKikimrConfig::TTableServiceConfig& tableServiceConfig,
-    const NKikimrConfig::TQueryServiceConfig& queryServiceConfig,
-    const NKikimrConfig::TMetadataProviderConfig& metadataProviderConfig,
+    const NKikimrConfig::TTableServiceConfig& serviceConfig, NYql::IHTTPGateway::TPtr httpGateway,
     TIntrusivePtr<TModuleResolverState> moduleResolverState, TIntrusivePtr<TKqpCounters> counters,
     const TString& uid, const TKqpQueryId& query,
     const TIntrusiveConstPtr<NACLib::TUserToken>& userToken,
-    std::optional<TKqpFederatedQuerySetup> federatedQuerySetup,
-    TKqpDbCountersPtr dbCounters, const TGUCSettings::TPtr& gUCSettings, const TMaybe<TString>& applicationName,
-    const TIntrusivePtr<TUserRequestContext>& userRequestContext, NWilson::TTraceId traceId = {},
-    TKqpTempTablesState::TConstPtr tempTablesState = nullptr,
-    ECompileActorAction compileAction = ECompileActorAction::COMPILE,
-    TMaybe<TQueryAst> queryAst = {},
-    bool collectFullDiagnostics = false,
-    bool PerStatementResult = false,
-    NYql::TExprContext* ctx = nullptr,
-    NYql::TExprNode::TPtr expr = nullptr);
+    TKqpDbCountersPtr dbCounters, NWilson::TTraceId traceId = {});
 
 IActor* CreateKqpCompileRequestActor(const TActorId& owner, const TIntrusiveConstPtr<NACLib::TUserToken>& userToken, const TMaybe<TString>& uid,
     TMaybe<TKqpQueryId>&& query, bool keepInCache, const TInstant& deadline, TKqpDbCountersPtr dbCounters,

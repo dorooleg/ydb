@@ -1,22 +1,22 @@
 #pragma once
 
 #include <ydb/core/testlib/test_client.h>
-#include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
+
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
-#include <ydb/library/yql/core/issue/yql_issue.h>
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
-#include <ydb/public/sdk/cpp/client/ydb_query/client.h>
+#include <ydb/public/sdk/cpp/client/draft/ydb_query/client.h>
 #include <ydb/public/sdk/cpp/client/draft/ydb_scripting.h>
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 
 #include <library/cpp/yson/node/node_io.h>
+
+#include <ydb/library/yql/core/issue/yql_issue.h>
+
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/yson/writer.h>
-#include <library/cpp/threading/future/async.h>
-
 
 #define Y_UNIT_TEST_TWIN(N, OPT)                                                                                   \
     template <bool OPT>                                                                                            \
@@ -68,8 +68,6 @@ namespace NKqp {
 class TKqpCounters;
 const TString KikimrDefaultUtDomainRoot = "Root";
 
-extern const TString EXPECTED_EIGHTSHARD_VALUE1;
-
 TVector<NKikimrKqp::TKqpSetting> SyntaxV1Settings();
 
 struct TKikimrSettings: public TTestFeatureFlagsHolder<TKikimrSettings> {
@@ -80,21 +78,11 @@ struct TKikimrSettings: public TTestFeatureFlagsHolder<TKikimrSettings> {
     TString DomainRoot = KikimrDefaultUtDomainRoot;
     ui32 NodeCount = 1;
     bool WithSampleTables = true;
-    bool UseRealThreads = true;
     TDuration KeepSnapshotTimeout = TDuration::Zero();
     IOutputStream* LogStream = nullptr;
-    TMaybe<NFake::TStorage> Storage = Nothing();
-    NKqp::IKqpFederatedQuerySetupFactory::TPtr FederatedQuerySetupFactory = std::make_shared<NKqp::TKqpFederatedQuerySetupFactoryNoop>();
-    NMonitoring::TDynamicCounterPtr CountersRoot = MakeIntrusive<NMonitoring::TDynamicCounters>();
 
     TKikimrSettings()
     {
-        auto* tableServiceConfig = AppConfig.MutableTableServiceConfig();
-        auto* infoExchangerRetrySettings = tableServiceConfig->MutableResourceManager()->MutableInfoExchangerSettings();
-        auto* exchangerSettings = infoExchangerRetrySettings->MutableExchangerSettings();
-        exchangerSettings->SetStartDelayMs(10);
-        exchangerSettings->SetMaxDelayMs(10);
-        AppConfig.MutableColumnShardConfig()->SetDisabledOnSchemeShard(false);
     }
 
     TKikimrSettings& SetAppConfig(const NKikimrConfig::TAppConfig& value) { AppConfig = value; return *this; }
@@ -107,9 +95,6 @@ struct TKikimrSettings: public TTestFeatureFlagsHolder<TKikimrSettings> {
     TKikimrSettings& SetWithSampleTables(bool value) { WithSampleTables = value; return *this; }
     TKikimrSettings& SetKeepSnapshotTimeout(TDuration value) { KeepSnapshotTimeout = value; return *this; }
     TKikimrSettings& SetLogStream(IOutputStream* follower) { LogStream = follower; return *this; };
-    TKikimrSettings& SetStorage(const NFake::TStorage& storage) { Storage = storage; return *this; };
-    TKikimrSettings& SetFederatedQuerySetupFactory(NKqp::IKqpFederatedQuerySetupFactory::TPtr value) { FederatedQuerySetupFactory = value; return *this; };
-    TKikimrSettings& SetUseRealThreads(bool value) { UseRealThreads = value; return *this; };
 };
 
 class TKikimrRunner {
@@ -131,16 +116,8 @@ public:
     TKikimrRunner(const TString& authToken = "", const TString& domainRoot = KikimrDefaultUtDomainRoot,
         ui32 nodeCount = 1);
 
-    TKikimrRunner(const NFake::TStorage& storage);
-
     ~TKikimrRunner() {
-        RunCall([&] { Driver->Stop(true); return false; });
-        if (ThreadPoolStarted_) {
-            ThreadPool.Stop();
-        }
-
-        UNIT_ASSERT_C(WaitHttpGatewayFinalization(CountersRoot), "Failed to finalize http gateway before destruction");
-
+        Driver->Stop(true);
         Server.Reset();
         Client.Reset();
     }
@@ -158,45 +135,27 @@ public:
             .UseQueryCache(false));
     }
 
-    NYdb::NQuery::TQueryClient GetQueryClient(
-        NYdb::NQuery::TClientSettings settings = NYdb::NQuery::TClientSettings()) const
-    {
-        return NYdb::NQuery::TQueryClient(*Driver, settings);
+    NYdb::NQuery::TQueryClient GetQueryClient() const {
+        return NYdb::NQuery::TQueryClient(*Driver);
     }
 
-    template <typename Func>
-    NThreading::TFuture<NThreading::TFutureType<TFunctionResult<Func>>> RunInThreadPool(Func&& func) {
-        if (!ThreadPoolStarted_) {
-            ThreadPool.Start();
-            ThreadPoolStarted_ = true;
-        }
-
-        return NThreading::Async(std::move(func), ThreadPool);
-    }
-
-    template <typename Func>
-    TFunctionResult<Func> RunCall(Func&& func) {
-        auto future = RunInThreadPool(std::move(func));
-        return GetTestServer().GetRuntime()->WaitFuture(future);
+    bool IsUsingSnapshotReads() const {
+        return Server->GetRuntime()->GetAppData().FeatureFlags.GetEnableMvccSnapshotReads();
     }
 
 private:
     void Initialize(const TKikimrSettings& settings);
     void WaitForKqpProxyInit();
     void CreateSampleTables();
-    void SetupLogLevelFromTestParam(NKikimrServices::EServiceKikimr service);
 
 private:
     THolder<Tests::TServerSettings> ServerSettings;
     THolder<Tests::TServer> Server;
     THolder<Tests::TClient> Client;
-    TAdaptiveThreadPool ThreadPool;
-    bool ThreadPoolStarted_ = false;
     TPortManager PortManager;
     TString Endpoint;
     NYdb::TDriverConfig DriverConfig;
     THolder<NYdb::TDriver> Driver;
-    NMonitoring::TDynamicCounterPtr CountersRoot;
 };
 
 inline TKikimrRunner DefaultKikimrRunner(TVector<NKikimrKqp::TKqpSetting> kqpSettings = {},
@@ -215,11 +174,9 @@ struct TCollectedStreamResult {
     TMaybe<TString> PlanJson;
     TMaybe<Ydb::TableStats::QueryStats> QueryStats;
     ui64 RowsCount = 0;
-    ui64 ConsumedRuFromHeader = 0;
 };
 
-template<typename TIterator>
-TCollectedStreamResult CollectStreamResult(TIterator& it);
+TCollectedStreamResult CollectStreamResult(NYdb::NTable::TScanQueryPartIterator& it);
 
 enum class EIndexTypeSql {
     Global,
@@ -252,11 +209,6 @@ TString ReformatYson(const TString& yson);
 void CompareYson(const TString& expected, const TString& actual);
 void CompareYson(const TString& expected, const NKikimrMiniKQL::TResult& actual);
 
-void CreateLargeTable(TKikimrRunner& kikimr, ui32 rowsPerShard, ui32 keyTextSize,
-    ui32 dataTextSize, ui32 batchSizeRows = 100, ui32 fillShardsCount = 8, ui32 largeTableKeysPerShard = 1000000);
-
-void CreateManyShardsTable(TKikimrRunner& kikimr, ui32 totalRows = 1000, ui32 shards = 100, ui32 batchSizeRows = 1000);
-
 bool HasIssue(const NYql::TIssues& issues, ui32 code,
     std::function<bool(const NYql::TIssue& issue)> predicate = {});
 
@@ -267,12 +219,6 @@ struct TExpectedTableStats {
     TMaybe<ui64> ExpectedUpdates;
     TMaybe<ui64> ExpectedDeletes;
 };
-
-void AssertTableStats(const Ydb::TableStats::QueryStats& stats, TStringBuf table,
-    const TExpectedTableStats& expectedStats);
-
-void AssertTableStats(const NYdb::NTable::TDataQueryResult& result, TStringBuf table,
-    const TExpectedTableStats& expectedStats);
 
 void AssertTableStats(const NYdb::NTable::TDataQueryResult& result, TStringBuf table,
     const TExpectedTableStats& expectedStats);
@@ -298,10 +244,9 @@ public:
     NYdb::EStatus Status;
 };
 
-TString StreamResultToYson(NYdb::NQuery::TExecuteQueryIterator& it, bool throwOnTImeout = false, const NYdb::EStatus& opStatus = NYdb::EStatus::SUCCESS, const TString& issueMessageSubString = "");
-TString StreamResultToYson(NYdb::NTable::TScanQueryPartIterator& it, bool throwOnTImeout = false, const NYdb::EStatus& opStatus = NYdb::EStatus::SUCCESS, const TString& issueMessageSubString = "");
-TString StreamResultToYson(NYdb::NScripting::TYqlResultPartIterator& it, bool throwOnTImeout = false, const NYdb::EStatus& opStatus = NYdb::EStatus::SUCCESS);
-TString StreamResultToYson(NYdb::NTable::TTablePartIterator& it, bool throwOnTImeout = false, const NYdb::EStatus& opStatus = NYdb::EStatus::SUCCESS);
+TString StreamResultToYson(NYdb::NTable::TScanQueryPartIterator& it, bool throwOnTImeout = false);
+TString StreamResultToYson(NYdb::NScripting::TYqlResultPartIterator& it, bool throwOnTImeout = false);
+TString StreamResultToYson(NYdb::NTable::TTablePartIterator& it, bool throwOnTImeout = false);
 
 bool ValidatePlanNodeIds(const NJson::TJsonValue& plan);
 ui32 CountPlanNodesByKv(const NJson::TJsonValue& plan, const TString& key, const TString& value);
@@ -316,7 +261,12 @@ inline void AssertSuccessResult(const NYdb::TStatus& result) {
     UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
 }
 
-void CreateSampleTablesWithIndex(NYdb::NTable::TSession& session, bool populateTables = true);
+void CreateSampleTablesWithIndex(NYdb::NTable::TSession& session);
+
+// KQP proxy needs to asynchronously receive tenants info before it is able to serve requests that have
+// database name specified. Before that it returns errors.
+// This method retries a simple query until it succeeds.
+void WaitForKqpProxyInit(const NYdb::TDriver& driver);
 
 void InitRoot(Tests::TServer::TPtr server, TActorId sender);
 
@@ -328,7 +278,6 @@ NKikimrScheme::TEvDescribeSchemeResult DescribeTable(Tests::TServer* server, TAc
 TVector<ui64> GetTableShards(Tests::TServer* server, TActorId sender, const TString &path);
 
 TVector<ui64> GetTableShards(Tests::TServer::TPtr server, TActorId sender, const TString &path);
-TVector<ui64> GetColumnTableShards(Tests::TServer* server, TActorId sender, const TString &path);
 
 void WaitForZeroSessions(const NKqp::TKqpCounters& counters);
 

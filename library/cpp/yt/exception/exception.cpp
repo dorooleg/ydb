@@ -1,97 +1,46 @@
 #include "exception.h"
 
-#include <library/cpp/yt/assert/assert.h>
-
 namespace NYT {
-
-////////////////////////////////////////////////////////////////////////////////
-
-namespace {
-
-template <class TRange>
-void AddAttributes(TSimpleException::TAttributes& attrs, TRange&& range)
-{
-    for (auto&& [key, value] : range) {
-        YT_VERIFY(attrs.emplace(std::move(key), std::move(value)).second);
-    }
-}
-
-} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 
 TSimpleException::TSimpleException(TString message)
     : Message_(std::move(message))
-    , What_(Message_)
 { }
 
-TSimpleException::TSimpleException(
-    const std::exception& exception,
-    TString message)
-    : InnerException_(std::current_exception())
-    , Message_(std::move(message))
-    , What_(Message_ + "\n" + exception.what())
-{ }
-
-const std::exception_ptr& TSimpleException::GetInnerException() const
-{
-    return InnerException_;
-}
-
-const char* TSimpleException::what() const noexcept
-{
-    return What_.c_str();
-}
-
-const TString& TSimpleException::GetMessage() const
+const TString& TSimpleException::GetMesage() const
 {
     return Message_;
 }
 
-const TSimpleException::TAttributes& TSimpleException::GetAttributes() const &
+const char* TSimpleException::what() const noexcept
 {
-    return Attributes_;
+    return Message_.c_str();
 }
 
-TSimpleException::TAttributes&& TSimpleException::GetAttributes() &&
+////////////////////////////////////////////////////////////////////////////////
+
+TCompositeException::TCompositeException(TString message)
+    : TSimpleException(std::move(message))
+    , What_(Message_)
+{ }
+
+TCompositeException::TCompositeException(
+    const std::exception& exception,
+    TString message)
+    : TSimpleException(message)
+    , InnerException_(std::current_exception())
+    , What_(message + "\n" + exception.what())
+{ }
+
+const std::exception_ptr& TCompositeException::GetInnerException() const
 {
-    return std::move(Attributes_);
+    return InnerException_;
 }
 
-TSimpleException& TSimpleException::operator<<= (TExceptionAttribute&& attribute) &
+const char* TCompositeException::what() const noexcept
 {
-    YT_VERIFY(Attributes_.emplace(std::move(attribute.Key), std::move(attribute.Value)).second);
-    return *this;
-}
-
-TSimpleException& TSimpleException::operator<<= (std::vector<TExceptionAttribute>&& attributes) &
-{
-    AddAttributes(Attributes_, std::move(attributes));
-    return *this;
-}
-
-TSimpleException& TSimpleException::operator<<= (TAttributes&& attributes) &
-{
-    AddAttributes(Attributes_, std::move(attributes));
-    return *this;
-}
-
-TSimpleException& TSimpleException::operator<<= (const TExceptionAttribute& attribute) &
-{
-    YT_VERIFY(Attributes_.emplace(attribute.Key, attribute.Value).second);
-    return *this;
-}
-
-TSimpleException& TSimpleException::operator<<= (const std::vector<TExceptionAttribute>& attributes) &
-{
-    AddAttributes(Attributes_, attributes);
-    return *this;
-}
-
-TSimpleException& TSimpleException::operator<<= (const TAttributes& attributes) &
-{
-    AddAttributes(Attributes_, attributes);
-    return *this;
+    return What_.c_str();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

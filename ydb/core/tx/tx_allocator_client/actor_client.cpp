@@ -2,10 +2,9 @@
 #include "client.h"
 
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/base/appdata.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/deque.h>
 
@@ -124,24 +123,6 @@ private:
 
 IActor* CreateTxAllocatorClient(TVector<ui64> txAllocators) {
     return new TTxAllocatorClientActor(std::move(txAllocators));
-}
-
-namespace {
-
-TVector<ui64> CollectTxAllocators(const TAppData* appData) {
-    TVector<ui64> allocators;
-    if (const auto& domain = appData->DomainsInfo->Domain) {
-        for (auto tabletId : domain->TxAllocators) {
-            allocators.push_back(tabletId);
-        }
-    }
-    return allocators;
-}
-
-}
-
-IActor* CreateTxAllocatorClient(const TAppData* appData) {
-    return CreateTxAllocatorClient(CollectTxAllocators(appData));
 }
 
 } // NKikimr

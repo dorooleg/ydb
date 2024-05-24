@@ -1,10 +1,9 @@
 #pragma once
 #include <ydb/core/tx/scheme_board/cache.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/external_sources/external_source_factory.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include "viewer.h"
@@ -173,8 +172,6 @@ public:
                 return NKikimrSchemeOp::EPathTypeBlockStoreVolume;
             case TNavigate::KindFileStore:
                 return NKikimrSchemeOp::EPathTypeFileStore;
-            case TNavigate::KindView:
-                return NKikimrSchemeOp::EPathTypeView;
             default:
                 return NKikimrSchemeOp::EPathTypeDir;
         }
@@ -188,6 +185,7 @@ public:
         result->SetReason(record.GetReason());
         result->SetPath(record.GetPath());
         result->MutablePathDescription()->CopyFrom(record.GetPathDescription());
+        result->SetPathOwner(record.GetPathOwner());
         result->SetPathId(record.GetPathId());
         result->SetLastExistedPrefixPath(record.GetLastExistedPrefixPath());
         result->SetLastExistedPrefixPathId(record.GetLastExistedPrefixPathId());
@@ -206,6 +204,7 @@ public:
 
         TAutoPtr<NKikimrViewer::TEvDescribeSchemeInfo> result(new NKikimrViewer::TEvDescribeSchemeInfo());
         result->SetPath(path);
+        result->SetPathOwner(schemeShardId);
         result->SetPathId(pathId.LocalPathId);
         result->SetPathOwnerId(pathId.OwnerId);
 
@@ -237,7 +236,7 @@ public:
             DescribeResult = GetSchemeShardDescribeSchemeInfo();
         } else if (CacheResult != nullptr) {
             NSchemeCache::TSchemeCacheNavigate *navigate = CacheResult->Request.Get();
-            Y_ABORT_UNLESS(navigate->ResultSet.size() == 1);
+            Y_VERIFY(navigate->ResultSet.size() == 1);
             if (navigate->ErrorCount == 0) {
                 DescribeResult = GetCacheDescribeSchemeInfo();
             }
@@ -264,52 +263,15 @@ public:
             const auto *descriptor = NKikimrScheme::EStatus_descriptor();
             auto accessDeniedStatus = descriptor->FindValueByNumber(NKikimrScheme::StatusAccessDenied)->name();
             if (DescribeResult->GetStatus() == accessDeniedStatus) {
-                headers = Viewer->GetHTTPFORBIDDEN(Event->Get());
+                headers = HTTPFORBIDDENJSON;
             }
             TProtoToJson::ProtoToJson(json, *DescribeResult, JsonSettings);
-            DecodeExternalTableContent(json);
         } else {
             json << "null";
         }
 
         Send(Event->Sender, new NMon::TEvHttpInfoRes(headers + json.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
-    }
-
-    void DecodeExternalTableContent(TStringStream& json) const {
-        if (!DescribeResult) {
-            return;
-        }
-
-        if (!DescribeResult->GetPathDescription().HasExternalTableDescription()) {
-            return;
-        }
-
-        const auto& content = DescribeResult->GetPathDescription().GetExternalTableDescription().GetContent();
-        if (!content) {
-            return;
-        }
-
-        NExternalSource::IExternalSourceFactory::TPtr externalSourceFactory{NExternalSource::CreateExternalSourceFactory({})};
-        NJson::TJsonValue root;
-        const auto& sourceType = DescribeResult->GetPathDescription().GetExternalTableDescription().GetSourceType();
-        try {
-            NJson::ReadJsonTree(json.Str(), &root);
-            root["PathDescription"]["ExternalTableDescription"].EraseValue("Content");
-            auto source = externalSourceFactory->GetOrCreate(sourceType);
-            auto parameters = source->GetParameters(content);
-            for (const auto& [key, items]: parameters) {
-                NJson::TJsonValue array{NJson::EJsonValueType::JSON_ARRAY};
-                for (const auto& item: items) {
-                    array.AppendValue(item);
-                }
-                root["PathDescription"]["ExternalTableDescription"]["Content"][key] = array;
-            }
-        } catch (...) {
-            BLOG_CRIT("Сan't unpack content for external table: " << sourceType << ", error: " << CurrentExceptionMessage());
-        }
-        json.Clear();
-        json << root;
     }
 
     void HandleTimeout() {

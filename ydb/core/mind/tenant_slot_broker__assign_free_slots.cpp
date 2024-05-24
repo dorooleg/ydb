@@ -34,7 +34,7 @@ public:
             if (!assigned) {
                 if (prev == Self->UnhappyTenants.end()) {
                     prev = Self->UnhappyTenants.begin();
-                    Y_ABORT_UNLESS(*prev == tenant);
+                    Y_VERIFY(*prev == tenant);
                 } else {
                     ++prev;
                 }
@@ -66,7 +66,7 @@ public:
                  ) {
                 auto allocation = *(it++);
 
-                Y_ABORT_UNLESS(allocation->Group);
+                Y_VERIFY(allocation->Group);
                 if (visitedGroups.contains(allocation->Group))
                     continue;
 
@@ -80,7 +80,7 @@ public:
             if (!assigned) {
                 if (prev == Self->SplitTenants.end()) {
                     prev = Self->SplitTenants.begin();
-                    Y_ABORT_UNLESS(*prev == tenant);
+                    Y_VERIFY(*prev == tenant);
                 } else {
                     ++prev;
                 }
@@ -128,7 +128,7 @@ public:
             if (!assigned) {
                 if (prev == Self->MisplacedTenants.end()) {
                     prev = Self->MisplacedTenants.begin();
-                    Y_ABORT_UNLESS(*prev == tenant);
+                    Y_VERIFY(*prev == tenant);
                 } else {
                     ++prev;
                 }
@@ -161,7 +161,7 @@ public:
         // Finally try to move some misplaced slots to better positions.
         AssignMisplacedSlots(visitedGroups, txc, ctx);
 
-        Y_ABORT_UNLESS(Self->PendingAssignFreeSlots);
+        Y_VERIFY(Self->PendingAssignFreeSlots);
         Self->PendingAssignFreeSlots = false;
 
         return true;

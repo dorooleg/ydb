@@ -1,8 +1,9 @@
 #pragma once
 #include "viewer.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
+#include <unordered_map>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/json/json_value.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/protobuf/json/proto2json.h>
@@ -11,164 +12,96 @@
 #include <ydb/core/kqp/common/kqp.h>
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
 #include <ydb/core/viewer/json/json.h>
+//#include <ydb/public/lib/deprecated/kicli/kicli.h>
 #include <ydb/public/lib/json_value/ydb_json_value.h>
 #include <ydb/public/sdk/cpp/client/ydb_result/result.h>
-#include "json_pipe_req.h"
-#include "viewer_request.h"
 
 namespace NKikimr {
 namespace NViewer {
 
 using namespace NActors;
-using namespace NMonitoring;
 using ::google::protobuf::FieldDescriptor;
 
-class TJsonQuery : public TViewerPipeClient<TJsonQuery> {
+class TJsonQuery : public TActorBootstrapped<TJsonQuery> {
     using TThis = TJsonQuery;
-    using TBase = TViewerPipeClient<TJsonQuery>;
+    using TBase = TActorBootstrapped<TJsonQuery>;
     IViewer* Viewer;
     TJsonSettings JsonSettings;
+    TActorId Initiator;
     NMon::TEvHttpInfo::TPtr Event;
-    TEvViewer::TEvViewerRequest::TPtr ViewerRequest;
     ui32 Timeout = 0;
     TVector<Ydb::ResultSet> ResultSets;
-    TString Query;
-    TString Database;
     TString Action;
     TString Stats;
-    TString Syntax;
-    TString UserToken;
-    bool IsBase64Encode;
-
-    enum ESchemaType {
-        Classic,
-        Modern,
-        Multi,
-        Ydb,
-    };
-    ESchemaType Schema = ESchemaType::Classic;
-
-    std::optional<TNodeId> SubscribedNodeId;
-    std::vector<TNodeId> TenantDynamicNodes;
-    bool Direct = false;
-    bool MadeKqpProxyRequest = false;
+    TString Schema = "classic";
 
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::VIEWER_HANDLER;
     }
 
-    ESchemaType StringToSchemaType(const TString& schemaStr) {
-        if (schemaStr == "classic") {
-            return ESchemaType::Classic;
-        } else if (schemaStr == "modern") {
-            return ESchemaType::Modern;
-        } else if (schemaStr == "multi") {
-            return ESchemaType::Multi;
-        } else if (schemaStr == "ydb") {
-            return ESchemaType::Ydb;
-        } else {
-            return ESchemaType::Classic;
-        }
-    }
-
-    void ParseCgiParameters(const TCgiParameters& params) {
-        JsonSettings.EnumAsNumbers = !FromStringWithDefault<bool>(params.Get("enums"), false);
-        JsonSettings.UI64AsString = !FromStringWithDefault<bool>(params.Get("ui64"), false);
-        Timeout = FromStringWithDefault<ui32>(params.Get("timeout"), 60000);
-        Query = params.Get("query");
-        Database = params.Get("database");
-        Stats = params.Get("stats");
-        Action = params.Get("action");
-        TString schemaStr = params.Get("schema");
-        Schema = StringToSchemaType(schemaStr);
-        Syntax = params.Get("syntax");
-        Direct = FromStringWithDefault<bool>(params.Get("direct"), Direct);
-        IsBase64Encode = FromStringWithDefault<bool>(params.Get("base64"), true);
-    }
-
-    void ParsePostContent(const TStringBuf& content) {
-        static NJson::TJsonReaderConfig JsonConfig;
-        NJson::TJsonValue requestData;
-        bool success = NJson::ReadJsonTree(content, &JsonConfig, &requestData);
-        if (success) {
-            Query = Query.empty() ? requestData["query"].GetStringSafe({}) : Query;
-            Database = Database.empty() ? requestData["database"].GetStringSafe({}) : Database;
-            Stats = Stats.empty() ? requestData["stats"].GetStringSafe({}) : Stats;
-            Action = Action.empty() ? requestData["action"].GetStringSafe({}) : Action;
-            Syntax = Syntax.empty() ? requestData["syntax"].GetStringSafe({}) : Syntax;
-        }
-    }
-
-    bool IsPostContent() const {
-        return NViewer::IsPostContent(Event);
-    }
-
     TJsonQuery(IViewer* viewer, NMon::TEvHttpInfo::TPtr& ev)
         : Viewer(viewer)
+        , Initiator(ev->Sender)
         , Event(ev)
-    {
-        const auto& params(Event->Get()->Request.GetParams());
-        InitConfig(params);
-        ParseCgiParameters(params);
-        if (IsPostContent()) {
-            TStringBuf content = Event->Get()->Request.GetPostContent();
-            ParsePostContent(content);
-        }
-        UserToken = Event->Get()->UserToken;
-    }
-
-    TJsonQuery(TEvViewer::TEvViewerRequest::TPtr& ev)
-        : ViewerRequest(ev)
-    {
-        auto& request = ViewerRequest->Get()->Record.GetQueryRequest();
-
-        TCgiParameters params(request.GetUri());
-        InitConfig(params);
-        ParseCgiParameters(params);
-
-        TStringBuf content = request.GetContent();
-        if (content) {
-            ParsePostContent(content);
-        }
-
-        Timeout = ViewerRequest->Get()->Record.GetTimeout();
-        UserToken = request.GetUserToken();
-        Direct = true;
-    }
-
-    void PassAway() override {
-        if (SubscribedNodeId.has_value()) {
-            Send(TActivationContext::InterconnectProxy(SubscribedNodeId.value()), new TEvents::TEvUnsubscribe());
-        }
-        TBase::PassAway();
-        BLOG_TRACE("PassAway()");
-    }
+    {}
 
     STATEFN(StateWork) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(TEvStateStorage::TEvBoardInfo, HandleReply);
-            hFunc(TEvents::TEvUndelivered, Undelivered);
-            hFunc(TEvInterconnect::TEvNodeConnected, Connected);
-            hFunc(TEvInterconnect::TEvNodeDisconnected, Disconnected);
-            hFunc(TEvViewer::TEvViewerResponse, HandleReply);
             hFunc(NKqp::TEvKqp::TEvQueryResponse, HandleReply);
+            hFunc(NKqp::TEvKqp::TEvProcessResponse, HandleReply);
             hFunc(NKqp::TEvKqp::TEvAbortExecution, HandleReply);
             hFunc(NKqp::TEvKqpExecuter::TEvStreamData, HandleReply);
             hFunc(NKqp::TEvKqpExecuter::TEvStreamProfile, HandleReply);
 
             cFunc(TEvents::TSystem::Wakeup, HandleTimeout);
+
+            default: {
+                Cerr << "Unexpected event received in TJsonQuery::StateWork: " << ev->GetTypeRewrite() << Endl;
+            }
         }
     }
 
-    void SendKpqProxyRequest() {
-        if (MadeKqpProxyRequest) {
+    void Bootstrap() {
+        const auto& params(Event->Get()->Request.GetParams());
+        auto event = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
+        JsonSettings.EnumAsNumbers = !FromStringWithDefault<bool>(params.Get("enums"), false);
+        JsonSettings.UI64AsString = !FromStringWithDefault<bool>(params.Get("ui64"), false);
+        Timeout = FromStringWithDefault<ui32>(params.Get("timeout"), 60000);
+        TString query = params.Get("query");
+        TString database = params.Get("database");
+        Stats = params.Get("stats");
+        Action = params.Get("action");
+        Schema = params.Get("schema");
+        if (Schema.empty()) {
+            Schema = "classic";
+        }
+        if (query.empty() && Event->Get()->Request.GetMethod() == HTTP_METHOD_POST) {
+            TStringBuf content = Event->Get()->Request.GetPostContent();
+            const THttpHeaders& headers = Event->Get()->Request.GetHeaders();
+            auto itContentType = FindIf(headers, [](const auto& header) { return header.Name() == "Content-Type"; });
+            if (itContentType != headers.end()) {
+                TStringBuf contentTypeHeader = itContentType->Value();
+                TStringBuf contentType = contentTypeHeader.NextTok(';');
+                if (contentType == "application/json") {
+                    static NJson::TJsonReaderConfig JsonConfig;
+                    NJson::TJsonValue requestData;
+                    bool success = NJson::ReadJsonTree(content, &JsonConfig, &requestData);
+                    if (success) {
+                        query = requestData["query"].GetStringSafe({});
+                        database = requestData["database"].GetStringSafe({});
+                        Stats = requestData["stats"].GetStringSafe({});
+                        Action = requestData["action"].GetStringSafe({});
+                    }
+                }
+            }
+        }
+        if (query.empty()) {
+            ReplyAndPassAway(Viewer->GetHTTPBADREQUEST(Event->Get(), {}, "Bad Request"));
             return;
         }
-        MadeKqpProxyRequest = true;
-        auto event = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
         NKikimrKqp::TQueryRequest& request = *event->Record.MutableRequest();
-        request.SetQuery(Query);
+        request.SetQuery(query);
         if (Action.empty() || Action == "execute-script" || Action == "execute") {
             request.SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
             request.SetType(NKikimrKqp::QUERY_TYPE_SQL_SCRIPT);
@@ -176,7 +109,6 @@ public:
         } else if (Action == "execute-query") {
             request.SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
             request.SetType(NKikimrKqp::QUERY_TYPE_SQL_GENERIC_QUERY);
-            request.mutable_txcontrol()->mutable_begin_tx()->mutable_serializable_read_write();
             request.SetKeepSession(false);
         } else if (Action == "explain-query") {
             request.SetAction(NKikimrKqp::QUERY_ACTION_EXPLAIN);
@@ -189,7 +121,6 @@ public:
         } else if (Action == "execute-data") {
             request.SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
             request.SetType(NKikimrKqp::QUERY_TYPE_SQL_DML);
-            request.mutable_txcontrol()->mutable_begin_tx()->mutable_serializable_read_write();
             request.SetKeepSession(false);
         } else if (Action == "explain" || Action == "explain-ast" || Action == "explain-data") {
             request.SetAction(NKikimrKqp::QUERY_ACTION_EXPLAIN);
@@ -204,50 +135,22 @@ public:
         if (Stats == "profile") {
             request.SetStatsMode(NYql::NDqProto::DQ_STATS_MODE_PROFILE);
             request.SetCollectStats(Ydb::Table::QueryStatsCollection::STATS_COLLECTION_PROFILE);
-        } else if (Stats == "full") {
-            request.SetStatsMode(NYql::NDqProto::DQ_STATS_MODE_FULL);
-            request.SetCollectStats(Ydb::Table::QueryStatsCollection::STATS_COLLECTION_FULL);
         }
-        if (Database) {
-            request.SetDatabase(Database);
+        if (database) {
+            request.SetDatabase(database);
         }
-        if (UserToken) {
-            event->Record.SetUserToken(UserToken);
-        }
-        if (Syntax == "yql_v1") {
-            request.SetSyntax(Ydb::Query::Syntax::SYNTAX_YQL_V1);
-        } else if (Syntax == "pg") {
-            request.SetSyntax(Ydb::Query::Syntax::SYNTAX_PG);
+        if (!Event->Get()->UserToken.empty()) {
+            event->Record.SetUserToken(Event->Get()->UserToken);
         }
         ActorIdToProto(SelfId(), event->Record.MutableRequestActorId());
         Send(NKqp::MakeKqpProxyID(SelfId().NodeId()), event.Release());
-    }
 
-    void Bootstrap() {
-        if (Query.empty()) {
-            if (Event) {
-                ReplyAndPassAway(Viewer->GetHTTPBADREQUEST(Event->Get(), {}, "Bad Request"));
-            } else {
-                auto* response = new TEvViewer::TEvViewerResponse();
-                response->Record.MutableQueryResponse()->SetYdbStatus(Ydb::StatusIds::BAD_REQUEST);
-                ReplyAndPassAway(response);
-            }
-            return;
-        }
-
-        if (Database && !Direct) {
-            RequestStateStorageEndpointsLookup(Database); // to find some dynamic node and redirect query there
-        }
-
-        if (Requests == 0) {
-            SendKpqProxyRequest();
-        }
         Become(&TThis::StateWork, TDuration::MilliSeconds(Timeout), new TEvents::TEvWakeup());
     }
 
 private:
-    NJson::TJsonValue ColumnPrimitiveValueToJsonValue(NYdb::TValueParser& valueParser) {
-        switch (const auto primitive = valueParser.GetPrimitiveType()) {
+    static NJson::TJsonValue ColumnPrimitiveValueToJsonValue(NYdb::TValueParser& valueParser) {
+        switch (valueParser.GetPrimitiveType()) {
             case NYdb::EPrimitiveType::Bool:
                 return valueParser.GetBool();
             case NYdb::EPrimitiveType::Int8:
@@ -287,7 +190,7 @@ private:
             case NYdb::EPrimitiveType::TzTimestamp:
                 return valueParser.GetTzTimestamp();
             case NYdb::EPrimitiveType::String:
-                return IsBase64Encode ? Base64Encode(valueParser.GetString()) : valueParser.GetString();
+                return Base64Encode(valueParser.GetString());
             case NYdb::EPrimitiveType::Yson:
                 return valueParser.GetYson();
             case NYdb::EPrimitiveType::Json:
@@ -298,11 +201,10 @@ private:
                 return valueParser.GetDyNumber();
             case NYdb::EPrimitiveType::Uuid:
                 return valueParser.GetUuid().ToString();
-            default:
-                Y_ENSURE(false, TStringBuilder() << "Unsupported type: " << primitive);        }
+        }
     }
 
-    NJson::TJsonValue ColumnValueToJsonValue(NYdb::TValueParser& valueParser) {
+    static NJson::TJsonValue ColumnValueToJsonValue(NYdb::TValueParser& valueParser) {
         switch (valueParser.GetKind()) {
             case NYdb::TTypeParser::ETypeKind::Primitive:
                 return ColumnPrimitiveValueToJsonValue(valueParser);
@@ -333,94 +235,27 @@ private:
         }
     }
 
-    void Connected(TEvInterconnect::TEvNodeConnected::TPtr &) {}
-
-    void Undelivered(TEvents::TEvUndelivered::TPtr &ev) {
-        if (ev->Get()->SourceType == NViewer::TEvViewer::EvViewerRequest) {
-            SendKpqProxyRequest();
-        }
-    }
-
-    void Disconnected(TEvInterconnect::TEvNodeDisconnected::TPtr &) {
-        SendKpqProxyRequest();
-    }
-
-    void SendDynamicNodeQueryRequest() {
-        ui64 hash = std::hash<TString>()(Event->Get()->Request.GetRemoteAddr());
-
-        auto itPos = std::next(TenantDynamicNodes.begin(), hash % TenantDynamicNodes.size());
-        std::nth_element(TenantDynamicNodes.begin(), itPos, TenantDynamicNodes.end());
-
-        TNodeId nodeId = *itPos;
-        SubscribedNodeId = nodeId;
-        TActorId viewerServiceId = MakeViewerID(nodeId);
-
-        THolder<TEvViewer::TEvViewerRequest> request = MakeHolder<TEvViewer::TEvViewerRequest>();
-        request->Record.SetTimeout(Timeout);
-        auto queryRequest = request->Record.MutableQueryRequest();
-        queryRequest->SetUri(TString(Event->Get()->Request.GetUri()));
-        if (IsPostContent()) {
-            TStringBuf content = Event->Get()->Request.GetPostContent();
-            queryRequest->SetContent(TString(content));
-        }
-        if (UserToken) {
-            queryRequest->SetUserToken(UserToken);
-        }
-
-        ViewerWhiteboardCookie cookie(NKikimrViewer::TEvViewerRequest::kQueryRequest, nodeId);
-        SendRequest(viewerServiceId, request.Release(), IEventHandle::FlagTrackDelivery | IEventHandle::FlagSubscribeOnSession, cookie.ToUi64());
-    }
-
-    void HandleReply(TEvStateStorage::TEvBoardInfo::TPtr& ev) {
-        BLOG_TRACE("Received TEvBoardInfo");
-        if (ev->Get()->Status == TEvStateStorage::TEvBoardInfo::EStatus::Ok) {
-            for (const auto& [actorId, infoEntry] : ev->Get()->InfoEntries) {
-                TenantDynamicNodes.emplace_back(actorId.NodeId());
-            }
-        }
-        if (TenantDynamicNodes.empty()) {
-            SendKpqProxyRequest();
-        } else {
-            SendDynamicNodeQueryRequest();
-        }
-    }
-
-    void Handle(NKikimrKqp::TEvQueryResponse& record) {
-        if (Event) {
-            TStringBuilder out;
-            NJson::TJsonValue jsonResponse;
-            if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
-                MakeOkReply(out, jsonResponse, record);
-            } else {
-                MakeErrorReply(out, jsonResponse, record);
-            }
-
-            if (Schema == ESchemaType::Classic && Stats.empty() && (Action.empty() || Action == "execute")) {
-                jsonResponse = std::move(jsonResponse["result"]);
-            }
-
-            TStringStream stream;
-            NJson::TJsonWriterConfig config;
-            config.ValidateUtf8 = false;
-            config.WriteNanAsString = true;
-            NJson::WriteJson(&stream, &jsonResponse, config);
-            out << stream.Str();
-
-            ReplyAndPassAway(out);
-        } else {
-            TEvViewer::TEvViewerResponse* response = new TEvViewer::TEvViewerResponse();
-            response->Record.MutableQueryResponse()->CopyFrom(record);
-            response->Record.MutableQueryResponse()->MutableResponse()->MutableYdbResults()->Add(ResultSets.begin(), ResultSets.end());
-            ReplyAndPassAway(response);
-        }
-    }
-
     void HandleReply(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev) {
-        Handle(ev->Get()->Record.GetRef());
+        TStringBuilder out;
+        NJson::TJsonValue jsonResponse;
+        NKikimrKqp::TEvQueryResponse& record = ev->Get()->Record.GetRef();
+        if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
+            MakeOkReply(out, jsonResponse, record);
+        } else {
+            MakeErrorReply(out, jsonResponse, record);
+        }
+
+        if (Schema == "classic" && Stats.empty() && (Action.empty() || Action == "execute")) {
+            jsonResponse = std::move(jsonResponse["result"]);
+        }
+
+        out << NJson::WriteJson(jsonResponse, false);
+
+        ReplyAndPassAway(out);
     }
 
-    void HandleReply(TEvViewer::TEvViewerResponse::TPtr& ev) {
-        Handle(*(ev.Get()->Get()->Record.MutableQueryResponse()));
+    void HandleReply(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev) {
+        Y_UNUSED(ev);
     }
 
     void HandleReply(NKqp::TEvKqp::TEvAbortExecution::TPtr& ev) {
@@ -443,22 +278,11 @@ private:
     }
 
     void HandleTimeout() {
-        if (Event) {
-            ReplyAndPassAway(Viewer->GetHTTPGATEWAYTIMEOUT(Event->Get()));
-        } else {
-            auto* response = new TEvViewer::TEvViewerResponse();
-            response->Record.MutableQueryResponse()->SetYdbStatus(Ydb::StatusIds::TIMEOUT);
-            ReplyAndPassAway(response);
-        }
-    }
-
-    void ReplyAndPassAway(TEvViewer::TEvViewerResponse* response) {
-        Send(ViewerRequest->Sender, response);
-        PassAway();
+        ReplyAndPassAway(Viewer->GetHTTPGATEWAYTIMEOUT(Event->Get()));
     }
 
     void ReplyAndPassAway(TString data) {
-        Send(Event->Sender, new NMon::TEvHttpInfoRes(std::move(data), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+        Send(Initiator, new NMon::TEvHttpInfoRes(std::move(data), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         PassAway();
     }
 
@@ -488,16 +312,12 @@ private:
     void MakeOkReply(TStringBuilder& out, NJson::TJsonValue& jsonResponse, NKikimrKqp::TEvQueryResponse& record) {
         const auto& response = record.GetResponse();
 
-        if (response.ResultsSize() > 0 || response.YdbResultsSize() > 0) {
+        if (response.ResultsSize() > 0) {
             try {
                 for (const auto& result : response.GetResults()) {
                     Ydb::ResultSet resultSet;
                     NKqp::ConvertKqpQueryResultToDbResult(result, &resultSet);
                     ResultSets.emplace_back(std::move(resultSet));
-                }
-
-                for (const auto& result : response.GetYdbResults()) {
-                    ResultSets.emplace_back(result);
                 }
             }
             catch (const std::exception& ex) {
@@ -511,7 +331,7 @@ private:
 
         out << Viewer->GetHTTPOKJSON(Event->Get());
         if (ResultSets.size() > 0) {
-            if (Schema == ESchemaType::Classic) {
+            if (Schema == "classic") {
                 NJson::TJsonValue& jsonResults = jsonResponse["result"];
                 jsonResults.SetType(NJson::JSON_ARRAY);
                 for (auto it = ResultSets.begin(); it != ResultSets.end(); ++it) {
@@ -528,7 +348,7 @@ private:
                 }
             }
 
-            if (Schema == ESchemaType::Modern) {
+            if (Schema == "modern") {
                 {
                     NJson::TJsonValue& jsonColumns = jsonResponse["columns"];
                     NYdb::TResultSet resultSet(ResultSets.front());
@@ -559,37 +379,7 @@ private:
                 }
             }
 
-            if (Schema == ESchemaType::Multi) {
-                NJson::TJsonValue& jsonResults = jsonResponse["result"];
-                jsonResults.SetType(NJson::JSON_ARRAY);
-                for (auto it = ResultSets.begin(); it != ResultSets.end(); ++it) {
-                    NYdb::TResultSet resultSet(*it);
-                    const auto& columnsMeta = resultSet.GetColumnsMeta();
-                    NJson::TJsonValue& jsonResult = jsonResults.AppendValue({});
-
-                    NJson::TJsonValue& jsonColumns = jsonResult["columns"];
-                    jsonColumns.SetType(NJson::JSON_ARRAY);
-                    for (size_t columnNum = 0; columnNum < columnsMeta.size(); ++columnNum) {
-                        NJson::TJsonValue& jsonColumn = jsonColumns.AppendValue({});
-                        const NYdb::TColumn& columnMeta = columnsMeta[columnNum];
-                        jsonColumn["name"] = columnMeta.Name;
-                        jsonColumn["type"] = columnMeta.Type.ToString();
-                    }
-
-                    NJson::TJsonValue& jsonRows = jsonResult["rows"];
-                    NYdb::TResultSetParser rsParser(resultSet);
-                    while (rsParser.TryNextRow()) {
-                        NJson::TJsonValue& jsonRow = jsonRows.AppendValue({});
-                        jsonRow.SetType(NJson::JSON_ARRAY);
-                        for (size_t columnNum = 0; columnNum < columnsMeta.size(); ++columnNum) {
-                            NJson::TJsonValue& jsonColumn = jsonRow.AppendValue({});
-                            jsonColumn = ColumnValueToJsonValue(rsParser.ColumnParser(columnNum));
-                        }
-                    }
-                }
-            }
-
-            if (Schema == ESchemaType::Ydb) {
+            if (Schema == "ydb") {
                 NJson::TJsonValue& jsonResults = jsonResponse["result"];
                 jsonResults.SetType(NJson::JSON_ARRAY);
                 for (auto it = ResultSets.begin(); it != ResultSets.end(); ++it) {
@@ -598,7 +388,7 @@ private:
                     NYdb::TResultSetParser rsParser(resultSet);
                     while (rsParser.TryNextRow()) {
                         NJson::TJsonValue& jsonRow = jsonResults.AppendValue({});
-                        TString row = NYdb::FormatResultRowJson(rsParser, columnsMeta, IsBase64Encode ? NYdb::EBinaryStringEncoding::Base64 : NYdb::EBinaryStringEncoding::Unicode);
+                        TString row = NYdb::FormatResultRowJson(rsParser, columnsMeta, NYdb::EBinaryStringEncoding::Base64);
                         NJson::ReadJsonTree(row, &jsonRow);
                     }
                 }
@@ -622,13 +412,10 @@ struct TJsonRequestParameters<TJsonQuery> {
     static TString GetParameters() {
         return R"___([{"name":"ui64","in":"query","description":"return ui64 as number","required":false,"type":"boolean"},
                       {"name":"query","in":"query","description":"query text","required":true,"type":"string"},
-                      {"name":"direct","in":"query","description":"force processing query on current node","required":false,"type":"boolean"},
-                      {"name":"syntax","in":"query","description":"query syntax (yql_v1, pg)","required":false,"type":"string"},
                       {"name":"database","in":"query","description":"database name","required":false,"type":"string"},
-                      {"name":"schema","in":"query","description":"result format schema (classic, modern, ydb, multi)","required":false,"type":"string"},
-                      {"name":"stats","in":"query","description":"return stats (profile, full)","required":false,"type":"string"},
-                      {"name":"action","in":"query","description":"execute method (execute-scan, execute-script, execute-query, execute-data,explain-ast, explain-scan, explain-script, explain-query, explain-data)","required":false,"type":"string"},
-                      {"name":"base64","in":"query","description":"return strings using base64 encoding","required":false,"type":"string"},
+                      {"name":"schema","in":"query","description":"result format schema (classic, modern, ydb)","required":false,"type":"string"},
+                      {"name":"stats","in":"query","description":"return stats (profile)","required":false,"type":"string"},
+                      {"name":"action","in":"query","description":"execute method (execute-scan, execute-script, explain, explain-ast, explain-scan, explain-script)","required":false,"type":"string"},
                       {"name":"timeout","in":"query","description":"timeout in ms","required":false,"type":"integer"}])___";
     }
 };

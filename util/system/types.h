@@ -64,7 +64,7 @@ typedef int64_t i64;
     #define PRITMT PRIi32
     #define SCNTMT SCNi32
 #elif defined(_64_)
-    #if defined(_darwin_) || defined(_emscripten_)
+    #if defined(_darwin_)
         #define PRISZT "lu"
         #undef PRIu64
         #define PRIu64 PRISZT

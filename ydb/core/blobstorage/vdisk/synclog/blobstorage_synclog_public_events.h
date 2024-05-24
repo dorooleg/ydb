@@ -152,8 +152,6 @@ namespace NKikimr {
             NMonGroup::TSyncLogIFaceGroup IFaceMonGroup;
             NMonGroup::TSyncLogCountersGroup CountersMonGroup;
 
-            const bool IsReadOnlyVDisk;
-
             TSyncLogCtx(TIntrusivePtr<TVDiskContext> vctx,
                     TIntrusivePtr<TLsnMngr> lsnMngr,
                     TPDiskCtxPtr pdiskCtx,
@@ -163,8 +161,7 @@ namespace NKikimr {
                     ui64 syncLogMaxEntryPointSize,
                     ui64 syncLogMaxMemAmount,
                     ui32 maxResponseSize,
-                    std::shared_ptr<TSyncLogFirstLsnToKeep> syncLogFirstLsnToKeep,
-                    bool isReadOnlyVDisk)
+                    std::shared_ptr<TSyncLogFirstLsnToKeep> syncLogFirstLsnToKeep)
                 : VCtx(std::move(vctx))
                 , LsnMngr(std::move(lsnMngr))
                 , PDiskCtx(std::move(pdiskCtx))
@@ -177,7 +174,6 @@ namespace NKikimr {
                 , SyncLogFirstLsnToKeep(std::move(syncLogFirstLsnToKeep))
                 , IFaceMonGroup(VCtx->VDiskCounters, "subsystem", "synclog")
                 , CountersMonGroup(VCtx->VDiskCounters, "subsystem", "synclogcounters")
-                , IsReadOnlyVDisk(isReadOnlyVDisk)
             {}
         };
 

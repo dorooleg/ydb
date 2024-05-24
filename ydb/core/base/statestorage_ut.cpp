@@ -8,6 +8,7 @@ namespace NKikimr {
 Y_UNIT_TEST_SUITE(TStateStorageConfig) {
 
     void FillStateStorageInfo(TStateStorageInfo *info, ui32 replicas, ui32 nToSelect, ui32 replicasInRing, bool useRingSpecificNodeSelection) {
+        info->StateStorageGroup = 1;
         info->NToSelect = nToSelect;
 
         info->Rings.resize(replicas);
@@ -28,7 +29,7 @@ Y_UNIT_TEST_SUITE(TStateStorageConfig) {
         TStateStorageInfo::TSelection selection;
         for (ui64 tabletId = 8000000; tabletId < 9000000; ++tabletId) {
             info.SelectReplicas(tabletId, &selection);
-            Y_ABORT_UNLESS(nToSelect == selection.Sz);
+            Y_VERIFY(nToSelect == selection.Sz);
             for (ui32 idx : xrange(nToSelect))
                 retHash = CombineHashes<ui64>(retHash, selection.SelectedReplicas[idx].Hash());
         }
@@ -47,7 +48,7 @@ Y_UNIT_TEST_SUITE(TStateStorageConfig) {
         for (ui64 tabletId = tabletStartId; tabletId < tabletStartId + tabletCount; ++tabletId) {
             ui64 selectionHash = 0;
             info.SelectReplicas(tabletId, &selection);
-            Y_ABORT_UNLESS(nToSelect == selection.Sz);
+            Y_VERIFY(nToSelect == selection.Sz);
             for (ui32 idx : xrange(nToSelect))
                 selectionHash = CombineHashes<ui64>(selectionHash, selection.SelectedReplicas[idx].Hash());
             hashes.insert(selectionHash);
@@ -97,7 +98,7 @@ Y_UNIT_TEST_SUITE(TStateStorageConfig) {
         TStateStorageInfo::TSelection selection;
         for (ui64 tabletId = 8000000; tabletId < 9000000; ++tabletId) {
             info.SelectReplicas(tabletId, &selection);
-            Y_ABORT_UNLESS(nToSelect == selection.Sz);
+            Y_VERIFY(nToSelect == selection.Sz);
             for (ui32 idx : xrange(nToSelect))
                 history[selection.SelectedReplicas[idx]] += 1;
         }

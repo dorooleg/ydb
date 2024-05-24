@@ -1,5 +1,5 @@
 #pragma once
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actorsystem.h>
 
 #include <util/generic/ptr.h>
 

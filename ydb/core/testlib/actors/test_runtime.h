@@ -2,12 +2,9 @@
 
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/core/base/memobserver.h>
-#include <ydb/core/protos/shared_cache.pb.h>
 
-#include <ydb/library/actors/testlib/test_runtime.h>
+#include <library/cpp/actors/testlib/test_runtime.h>
 #include <library/cpp/testing/unittest/tests_data.h>
-#include <library/cpp/threading/future/future.h>
 
 namespace NKikimr {
     struct TAppData;
@@ -33,7 +30,6 @@ namespace NActors {
             ~TNodeData();
             ui64 GetLoggerPoolId() const override;
             THolder<NActors::TMon> Mon;
-            TIntrusivePtr<NKikimr::TMemObserver> MemObserver = new NKikimr::TMemObserver;
         };
 
         struct TNodeFactory: public INodeFactory {
@@ -63,40 +59,14 @@ namespace NActors {
 
         void SimulateSleep(TDuration duration);
 
-        template<class TResult>
-        inline TResult WaitFuture(NThreading::TFuture<TResult> f) {
-            if (!f.HasValue() && !f.HasException()) {
-                TDispatchOptions options;
-                options.CustomFinalCondition = [&]() {
-                    return f.HasValue() || f.HasException();
-                };
-                options.FinalEvents.emplace_back([&](IEventHandle&) {
-                    return f.HasValue() || f.HasException();
-                });
-
-                this->DispatchEvents(options);
-
-                Y_ABORT_UNLESS(f.HasValue() || f.HasException());
-            }
-
-            return f.ExtractValue();
-        }
-
-        TIntrusivePtr<NKikimr::TMemObserver> GetMemObserver(ui32 nodeIndex = 0) {
-            TGuard<TMutex> guard(Mutex);
-            auto node = GetNodeById(GetNodeId(nodeIndex));
-            return node->MemObserver;
-        }
-
         void SendToPipe(ui64 tabletId, const TActorId& sender, IEventBase* payload, ui32 nodeIndex = 0,
-            const NKikimr::NTabletPipe::TClientConfig& pipeConfig = NKikimr::NTabletPipe::TClientConfig(), TActorId clientId = TActorId(), ui64 cookie = 0, NWilson::TTraceId traceId = {});
+            const NKikimr::NTabletPipe::TClientConfig& pipeConfig = NKikimr::NTabletPipe::TClientConfig(), TActorId clientId = TActorId(), ui64 cookie = 0);
         void SendToPipe(TActorId clientId, const TActorId& sender, IEventBase* payload,
-                                           ui32 nodeIndex = 0, ui64 cookie = 0, NWilson::TTraceId traceId = {});
+                                           ui32 nodeIndex = 0, ui64 cookie = 0);
         TActorId ConnectToPipe(ui64 tabletId, const TActorId& sender, ui32 nodeIndex, const NKikimr::NTabletPipe::TClientConfig& pipeConfig);
         void ClosePipe(TActorId clientId, const TActorId& sender, ui32 nodeIndex);
         void DisconnectNodes(ui32 fromNodeIndex, ui32 toNodeIndex, bool async = true);
         NKikimr::TAppData& GetAppData(ui32 nodeIndex = 0);
-        ui32 GetFirstNodeId();
 
         TPortManager& GetPortManager() {
             return *this;

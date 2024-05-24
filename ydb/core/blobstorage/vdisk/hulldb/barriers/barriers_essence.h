@@ -15,23 +15,6 @@ namespace NKikimr {
 
 namespace NGcOpt {
 
-    struct TKeepFlagStat {
-        bool Needed = false;
-
-        TKeepFlagStat() = default;
-
-        template<typename TKey, typename TMemRec>
-        TKeepFlagStat(const TRecordMergerBase<TKey, TMemRec>& subs, const TRecordMergerBase<TKey, TMemRec>& whole)
-            : Needed(subs.GetNumDoNotKeepFlags() == whole.GetNumDoNotKeepFlags() && // DoNotKeep flag only in this record
-                     subs.GetNumKeepFlags() < whole.GetNumKeepFlags()) // and Keep flag somewhere else
-        {
-            // Needed is set to true when we are going to compact this record, but this is the only metadata record that
-            // contains DoNotKeep flag for the blob; in this case we have to keep the record without any data to prevent
-            // DoNotKeep from vanishing; this flag is used only when the blob is deletable (i.e. has no flags at all, or
-            // has both Keep and DoNotKeep, and also it is beyond the soft barrier)
-        }
-    };
-
     //////////////////////////////////////////////////////////////////////////////////////////
     // TBarriersEssence
     //////////////////////////////////////////////////////////////////////////////////////////
@@ -51,28 +34,34 @@ namespace NGcOpt {
 
         NGc::TKeepStatus Keep(const TKeyLogoBlob &key,
                               const TMemRecLogoBlob &memRec,
-                              TKeepFlagStat keepFlagStat,
-                              bool allowKeepFlags,
-                              bool allowGarbageCollection) const {
-            return KeepLogoBlob(key.LogoBlobID(), memRec.GetIngress(), keepFlagStat, allowKeepFlags, allowGarbageCollection);
+                              ui32 recsMerged,
+                              bool allowKeepFlags) const {
+            const TIngress ingress = memRec.GetIngress();
+            Y_VERIFY_DEBUG(recsMerged >= 1);
+            return KeepLogoBlob(key.LogoBlobID(), ingress, recsMerged, allowKeepFlags);
         }
 
-        NGc::TKeepStatus Keep(const TKeyBlock& /*key*/,
-                              const TMemRecBlock& /*memRec*/,
-                              TKeepFlagStat /*keepFlagStat*/,
-                              bool /*allowKeepFlags*/,
-                              bool /*allowGarbageCollection*/) const {
+        NGc::TKeepStatus Keep(const TKeyBlock &key,
+                              const TMemRecBlock &memRec,
+                              ui32 recsMerged,
+                              bool allowKeepFlags) const {
+            Y_UNUSED(key);
+            Y_UNUSED(memRec);
+            Y_UNUSED(recsMerged);
+            Y_UNUSED(allowKeepFlags);
             // NOTE: We never delete block records, we only merge them. Merge rules are
             //       very simple, i.e. last block wins. As a result, after full merge
             //       blocks db size is equal to number of tablets on this vdisk.
             return NGc::TKeepStatus(true);
         }
 
-        NGc::TKeepStatus Keep(const TKeyBarrier& key,
-                              const TMemRecBarrier& /*memRec*/,
-                              TKeepFlagStat /*keepFlagStat*/,
-                              bool /*allowKeepFlags*/,
-                              bool /*allowGarbageCollection*/) const {
+        NGc::TKeepStatus Keep(const TKeyBarrier &key,
+                              const TMemRecBarrier &memRec,
+                              ui32 recsMerged,
+                              bool allowKeepFlags) const {
+            Y_UNUSED(memRec);
+            Y_UNUSED(recsMerged);
+            Y_UNUSED(allowKeepFlags);
             return KeepBarrier(key);
         }
 
@@ -92,9 +81,8 @@ namespace NGcOpt {
         NGc::TKeepStatus KeepBarrier(const TKeyBarrier &key) const;
         NGc::TKeepStatus KeepLogoBlob(const TLogoBlobID &id,
                                       const TIngress &ingress,
-                                      TKeepFlagStat keepFlagStat,
-                                      const bool allowKeepFlags,
-                                      bool allowGarbageCollection) const;
+                                      const ui32 recsMerged,
+                                      const bool allowKeepFlags) const;
     };
 
 } // NGcOpt

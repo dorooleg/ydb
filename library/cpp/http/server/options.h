@@ -8,8 +8,6 @@
 #include <util/generic/vector.h>
 #include <util/datetime/base.h>
 
-class IOutputStream;
-
 class THttpServerOptions {
 public:
     inline THttpServerOptions(ui16 port = 17000) noexcept
@@ -141,20 +139,6 @@ public:
         return *this;
     }
 
-    inline THttpServerOptions& SetOneShotPoll(bool v) {
-        OneShotPoll = v;
-
-        return *this;
-    }
-
-    inline THttpServerOptions& SetListenerThreads(ui32 val) {
-        nListenerThreads = val;
-
-        return *this;
-    }
-
-    void DebugPrint(IOutputStream& stream) const noexcept;
-
     struct TAddr {
         TString Addr;
         ui16 Port;
@@ -190,7 +174,4 @@ public:
     TString ListenThreadName = "HttpListen";
     TString RequestsThreadName = "HttpServer";
     TString FailRequestsThreadName = "HttpServer";
-
-    bool OneShotPoll = false;
-    ui32 nListenerThreads = 1;
 };

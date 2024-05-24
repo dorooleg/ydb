@@ -22,13 +22,11 @@ static inline char* AllocateFromPool(TMemoryPool& pool, size_t len) {
 class TSaveLoadTest: public TTestBase {
     UNIT_TEST_SUITE(TSaveLoadTest);
     UNIT_TEST(TestSaveLoad)
-    UNIT_TEST(TestSaveLoadEmptyStruct)
     UNIT_TEST(TestNewStyle)
     UNIT_TEST(TestNewNewStyle)
     UNIT_TEST(TestList)
     UNIT_TEST(TestTuple)
     UNIT_TEST(TestVariant)
-    UNIT_TEST(TestOptional)
     UNIT_TEST(TestInheritNonVirtualClass)
     UNIT_TEST(TestInheritVirtualClass)
     UNIT_TEST_SUITE_END();
@@ -59,11 +57,7 @@ class TSaveLoadTest: public TTestBase {
         TString Str;
         ui32 Int;
 
-        Y_SAVELOAD_DEFINE(Str, Int);
-    };
-
-    struct TNewNewStyleEmptyHelper {
-        Y_SAVELOAD_DEFINE();
+        Y_SAVELOAD_DEFINE(Str, Int)
     };
 
 private:
@@ -380,14 +374,6 @@ private:
         }
     }
 
-    inline void TestSaveLoadEmptyStruct() {
-        TBufferStream S_;
-        TNewNewStyleEmptyHelper h;
-
-        Save(&S_, h);
-        Load(&S_, h);
-    }
-
     void TestList() {
         TBufferStream s;
 
@@ -441,26 +427,6 @@ private:
 
         std::variant<char, bool> v2 = false;
         UNIT_ASSERT_EXCEPTION(::Load(&s, v2), TLoadEOF);
-    }
-
-    template <class T>
-    void TestOptionalImpl(const std::optional<T>& v) {
-        std::optional<T> loaded;
-        TBufferStream s;
-        ::Save(&s, v);
-        ::Load(&s, loaded);
-
-        UNIT_ASSERT_VALUES_EQUAL(v.has_value(), loaded.has_value());
-        if (v.has_value()) {
-            UNIT_ASSERT_VALUES_EQUAL(*v, *loaded);
-        }
-    }
-
-    void TestOptional() {
-        TestOptionalImpl(std::optional<ui64>(42ull));
-        TestOptionalImpl(std::optional<bool>(true));
-        TestOptionalImpl(std::optional<TString>("abacaba"));
-        TestOptionalImpl(std::optional<ui64>(std::nullopt));
     }
 
     //  tests serialization of class with three public string members

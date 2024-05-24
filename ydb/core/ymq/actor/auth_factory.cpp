@@ -1,7 +1,5 @@
 #include "auth_factory.h"
 
-#include <util/stream/file.h>
-
 namespace NKikimr::NSQS {
 
 void TAuthFactory::RegisterAuthActor(TActorSystem& system, TAuthActorData&& data)
@@ -22,11 +20,11 @@ TAuthFactory::CreateCredentialsProviderFactory(const NKikimrConfig::TSqsConfig& 
 
     const auto& authCfg = config.GetAuthConfig();
 
-    Y_ABORT_UNLESS(authCfg.LocalAuthConfig_case() == TSqsConfig::TYdbAuthConfig::kOauthToken);
+    Y_VERIFY(authCfg.LocalAuthConfig_case() == TSqsConfig::TYdbAuthConfig::kOauthToken);
 
     const TString token = TFileInput(authCfg.GetOauthToken().GetTokenFile()).ReadAll();
 
-    Y_ABORT_UNLESS(!token.empty());
+    Y_VERIFY(!token.empty());
 
     return NYdb::CreateOAuthCredentialsProviderFactory(token);
 }

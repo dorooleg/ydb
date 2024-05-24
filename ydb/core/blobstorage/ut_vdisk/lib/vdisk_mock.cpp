@@ -1,6 +1,6 @@
 #include "vdisk_mock.h"
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 #include <util/generic/hash_set.h>
 #include <util/system/guard.h>
 
@@ -59,7 +59,7 @@ public:
             rope.Begin().ExtractPlainDataAndAdvance(data->Detach(), data->size());
         }
 
-        Y_ABORT_UNLESS(data->size() == Shared->GroupInfo->Type.PartSize(id));
+        Y_VERIFY(data->size() == Shared->GroupInfo->Type.PartSize(id));
 
         // write record
         if (auto it = LogoBlobs.find(id); it != LogoBlobs.end()) {
@@ -75,7 +75,7 @@ public:
                 s << " data# " << data->size() << "b";
                 return s;
             };
-            Y_ABORT_UNLESS(!it->second || *it->second == *data, "%s", makeErrorString().data());
+            Y_VERIFY(!it->second || *it->second == *data, "%s", makeErrorString().data());
         }
         LogoBlobs[id] = std::move(data);
 
@@ -90,7 +90,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVPut::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId,
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId,
                 "record.VDiskId# %s VDiskId# %s",
                 VDiskIDFromVDiskID(record.GetVDiskID()).ToString().data(), VDiskId.ToString().data());
         TLogoBlobID id{LogoBlobIDFromLogoBlobID(record.GetBlobID())};
@@ -131,7 +131,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVMultiPut::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId,
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId,
                 "record.VDiskId# %s VDiskId# %s",
                 VDiskIDFromVDiskID(record.GetVDiskID()).ToString().data(), VDiskId.ToString().data());
 
@@ -170,7 +170,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVGet::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
 
         TMaybe<ui64> cookie;
         if (record.HasCookie()) {
@@ -210,7 +210,7 @@ public:
             TIngress ingr;
             with_lock (Shared->Mutex) {
                 auto iter = Shared->BlobToIngressMap.find(fullId);
-                Y_ABORT_UNLESS(iter != Shared->BlobToIngressMap.end(), "fullId# %s", fullId.ToString().data());
+                Y_VERIFY(iter != Shared->BlobToIngressMap.end(), "fullId# %s", fullId.ToString().data());
                 ingr = iter->second;
             }
 
@@ -226,20 +226,21 @@ public:
                 pingr = &ingress;
             }
 
-            if (buffer) {
-                offset = Min<size_t>(offset, buffer->size());
-                const ui32 maxSize = buffer->size() - offset;
-                size = size ? Min(size, maxSize) : maxSize;
-            }
-
             if (LostMode) {
                 // answer like in VDisk query code
                 if (record.GetIndexOnly()) {
                     response->AddResult(NKikimrProto::NOT_YET, fullId, cookie, pingr);
                 } else {
-                    response->AddResult(NKikimrProto::NOT_YET, id, offset, size, cookie, pingr);
+                    response->AddResult(NKikimrProto::NOT_YET, id, offset, nullptr, size, cookie, pingr);
                 }
             } else {
+                // adjust offset and size
+                if (buffer) {
+                    offset = Min<size_t>(offset, buffer->size());
+                    const ui32 maxSize = buffer->size() - offset;
+                    size = size ? Min(size, maxSize) : maxSize;
+                }
+
                 // check the status; we reply with OK on all index queries (we have found the blob); also we reply OK on
                 // data queries where we have the data
                 NKikimrProto::EReplyStatus status = record.GetIndexOnly() || buffer
@@ -250,8 +251,7 @@ public:
                     NMatrix::TVectorType local = ingr.LocalParts(Shared->GroupInfo->Type);
                     response->AddResult(status, record.GetIndexOnly() ? fullId : id, cookie, pingr, &local);
                 } else {
-                    auto data = TRcBuf::Copy(buffer->data() + offset, size);
-                    response->AddResult(status, id, offset, TRope(std::move(data)), cookie, pingr);
+                    response->AddResult(status, id, offset, buffer->data() + offset, size, cookie, pingr);
                 }
             }
         };
@@ -329,7 +329,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVBlock::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
 
         ui32& gen = Blocks[record.GetTabletId()];
         gen = Max(gen, record.GetGeneration());
@@ -342,7 +342,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVGetBlock::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
 
         std::unique_ptr<TEvBlobStorage::TEvVGetBlockResult> response;
         auto it = Blocks.find(record.GetTabletId());
@@ -361,7 +361,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVCollectGarbage::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
 
         if (IsBlocked(record.GetTabletId(), record.GetRecordGeneration())) {
             auto response = std::make_unique<TEvBlobStorage::TEvVCollectGarbageResult>(NKikimrProto::BLOCKED,
@@ -378,7 +378,7 @@ public:
 
         auto it = Barriers.find(key);
         if (it != Barriers.end()) {
-            Y_ABORT_UNLESS(it->second == value);
+            Y_VERIFY(it->second == value);
         } else {
             Barriers[key] = value;
         }
@@ -393,7 +393,7 @@ public:
 
     void Handle(TEvBlobStorage::TEvVGetBarrier::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
+        Y_VERIFY(VDiskIDFromVDiskID(record.GetVDiskID()) == VDiskId);
 
         const auto& from = record.GetFrom();
         auto first = std::make_tuple(from.GetTabletId(), from.GetChannel(), from.GetRecordGeneration(),

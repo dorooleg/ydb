@@ -2,7 +2,6 @@
 #include "kqp_node_state.h"
 
 #include <ydb/core/actorlib_impl/long_timer.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/protos/tx_datashard.pb.h>
@@ -12,15 +11,13 @@
 #include <ydb/core/kqp/compute_actor/kqp_compute_actor.h>
 #include <ydb/core/kqp/rm_service/kqp_resource_estimation.h>
 #include <ydb/core/kqp/rm_service/kqp_rm_service.h>
-#include <ydb/core/kqp/runtime/kqp_read_actor.h>
-#include <ydb/core/kqp/runtime/kqp_read_iterator_common.h>
 #include <ydb/core/kqp/common/kqp_resolve.h>
 
-#include <ydb/library/wilson_ids/wilson.h>
+#include <ydb/core/base/wilson.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
+#include <library/cpp/actors/wilson/wilson_span.h>
 
 #include <util/string/join.h>
 
@@ -62,7 +59,6 @@ NKqpNode::TState& GetStateBucketByTx(std::shared_ptr<TBucketArray> buckets, ui64
 void FinishKqpTask(ui64 txId, ui64 taskId, bool success, NKqpNode::TState& bucket, std::shared_ptr<NRm::IKqpResourceManager> ResourceManager) {
     auto ctx = bucket.RemoveTask(txId, taskId, success);
     if (ctx) {
-        ResourceManager->FreeExecutionUnits(1);
         if (ctx->ComputeActorsNumber == 0) {
             ResourceManager->FreeResources(txId);
         } else {
@@ -79,7 +75,7 @@ struct TMemoryQuotaManager : public NYql::NDq::TGuaranteeQuotaManager {
         , ui64 txId
         , ui64 taskId
         , ui64 limit
-        , bool instantAlloc)
+        , bool instantAlloc) 
     : NYql::NDq::TGuaranteeQuotaManager(limit, limit)
     , ResourceManager(std::move(resourceManager))
     , MemoryPool(memoryPool)
@@ -100,7 +96,7 @@ struct TMemoryQuotaManager : public NYql::NDq::TGuaranteeQuotaManager {
             return false;
         }
 
-        if (!ResourceManager->AllocateResources(TxId, TaskId,
+        if (!ResourceManager->AllocateResources(TxId, TaskId, 
                 NRm::TKqpResourcesRequest{.MemoryPool = MemoryPool, .Memory = extraSize})) {
             LOG_W("Can not allocate memory. TxId: " << TxId << ", taskId: " << TaskId << ", memory: +" << extraSize);
             return false;
@@ -110,7 +106,7 @@ struct TMemoryQuotaManager : public NYql::NDq::TGuaranteeQuotaManager {
     }
 
     void FreeExtraQuota(ui64 extraSize) override {
-        ResourceManager->FreeResources(TxId, TaskId,
+        ResourceManager->FreeResources(TxId, TaskId, 
             NRm::TKqpResourcesRequest{.MemoryPool = MemoryPool, .Memory = extraSize}
         );
     }
@@ -139,21 +135,13 @@ public:
     }
 
     TKqpNodeService(const NKikimrConfig::TTableServiceConfig& config, const TIntrusivePtr<TKqpCounters>& counters,
-        IKqpNodeComputeActorFactory* caFactory, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory,
-        const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup)
+        IKqpNodeComputeActorFactory* caFactory, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory)
         : Config(config.GetResourceManager())
         , Counters(counters)
         , CaFactory(caFactory)
         , AsyncIoFactory(std::move(asyncIoFactory))
-        , FederatedQuerySetup(federatedQuerySetup)
     {
         Buckets = std::make_shared<TBucketArray>();
-        if (config.HasIteratorReadsRetrySettings()) {
-            SetIteratorReadsRetrySettings(config.GetIteratorReadsRetrySettings());
-        }
-        if (config.HasIteratorReadQuotaSettings()) {
-            SetIteratorReadsQuotaSettings(config.GetIteratorReadQuotaSettings());
-        }
     }
 
     void Bootstrap() {
@@ -190,7 +178,7 @@ private:
             hFunc(TEvents::TEvPoison, HandleWork);
             hFunc(NMon::TEvHttpInfo, HandleWork);
             default: {
-                Y_ABORT("Unexpected event 0x%x for TKqpResourceManagerService", ev->GetTypeRewrite());
+                Y_FAIL("Unexpected event 0x%x for TKqpResourceManagerService", ev->GetTypeRewrite());
             }
         }
     }
@@ -273,23 +261,18 @@ private:
         }
     };
 
-    static constexpr double SecToUsec = 1e6;
-
     void HandleWork(TEvKqpNode::TEvStartKqpTasksRequest::TPtr& ev) {
         NWilson::TSpan sendTasksSpan(TWilsonKqp::KqpNodeSendTasks, NWilson::TTraceId(ev->TraceId), "KqpNode.SendTasks", NWilson::EFlags::AUTO_END);
 
-        NHPTimer::STime workHandlerStart = ev->SendTime;
         auto& msg = ev->Get()->Record;
-        Counters->NodeServiceStartEventDelivery->Collect(NHPTimer::GetTimePassed(&workHandlerStart) * SecToUsec);
-
         auto requester = ev->Sender;
 
         ui64 txId = msg.GetTxId();
-        const ui64 outputChunkMaxSize = msg.GetOutputChunkMaxSize();
+        bool isScan = msg.HasSnapshot();
 
         YQL_ENSURE(msg.GetStartAllOrFail()); // todo: support partial start
 
-        LOG_D("TxId: " << txId << ", new compute tasks request from " << requester
+        LOG_D("TxId: " << txId << ", new " << (isScan ? "scan " : "") << "compute tasks request from " << requester
             << " with " << msg.GetTasks().size() << " tasks: " << TasksIdsStr(msg.GetTasks()));
 
         NKqpNode::TTasksRequest request;
@@ -311,16 +294,6 @@ private:
             memoryPool = NRm::EKqpMemoryPool::Unspecified;
         }
 
-        size_t executionUnits = msg.GetTasks().size();
-        if (!ResourceManager()->AllocateExecutionUnits(executionUnits)) {
-            Counters->RmNotEnoughComputeActors->Inc();
-            TStringBuilder error;
-            error << "TxId: " << txId << ", NodeId: " << SelfId().NodeId() << ", not enough compute actors, requested " << msg.GetTasks().size();
-            LOG_N(error);
-            ReplyError(txId, request.Executer, msg, NKikimrKqp::TEvStartKqpTasksResponse::NOT_ENOUGH_EXECUTION_UNITS, error);
-            return;
-        }
-
         ui32 requestChannels = 0;
         for (auto& dqTask : *msg.MutableTasks()) {
             auto estimation = EstimateTaskResources(dqTask, Config, msg.GetTasks().size());
@@ -338,15 +311,28 @@ private:
             LOG_D("TxId: " << txId << ", task: " << taskCtx.TaskId << ", requested memory: " << taskCtx.Memory);
 
             requestChannels += estimation.ChannelBuffersCount;
+            request.TotalMemory += taskCtx.Memory;
         }
 
         LOG_D("TxId: " << txId << ", channels: " << requestChannels
-            << ", computeActors: " << msg.GetTasks().size() << ", memory: " << request.CalculateTotalMemory());
+            << ", computeActors: " << msg.GetTasks().size() << ", memory: " << request.TotalMemory);
+
+        auto txMemory = bucket.GetTxMemory(txId, memoryPool) + request.TotalMemory;
+        if (txMemory > Config.GetQueryMemoryLimit()) {
+            LOG_N("TxId: " << txId << ", requested too many memory: " << request.TotalMemory
+                << "(" << txMemory << " for this Tx), limit: " << Config.GetQueryMemoryLimit());
+
+            Counters->RmNotEnoughMemory->Inc();
+
+            return ReplyError(txId, request.Executer, msg, NKikimrKqp::TEvStartKqpTasksResponse::QUERY_MEMORY_LIMIT_EXCEEDED,
+                TStringBuilder() << "Required: " << txMemory << ", limit: " << Config.GetQueryMemoryLimit());
+        }
 
         TVector<ui64> allocatedTasks;
         allocatedTasks.reserve(msg.GetTasks().size());
         for (auto& task : request.InFlyTasks) {
             NRm::TKqpResourcesRequest resourcesRequest;
+            resourcesRequest.ExecutionUnits = 1;
             resourcesRequest.MemoryPool = memoryPool;
 
             // !!!!!!!!!!!!!!!!!!!!!
@@ -355,13 +341,35 @@ private:
 
             NRm::TKqpNotEnoughResources resourcesResponse;
             if (!ResourceManager()->AllocateResources(txId, task.first, resourcesRequest, &resourcesResponse)) {
+                NKikimrKqp::TEvStartKqpTasksResponse::ENotStartedTaskReason failReason = NKikimrKqp::TEvStartKqpTasksResponse::INTERNAL_ERROR;
+                TStringBuilder error;
+
+                if (resourcesResponse.ExecutionUnits()) {
+                    error << "TxId: " << txId << ", NodeId: " << SelfId().NodeId() << ", not enough compute actors, requested " << msg.GetTasks().size();
+                    LOG_N(error);
+
+                    failReason = NKikimrKqp::TEvStartKqpTasksResponse::NOT_ENOUGH_EXECUTION_UNITS;
+                }
+
+                if (resourcesResponse.ScanQueryMemory()) {
+                    error << "TxId: " << txId << ", NodeId: " << SelfId().NodeId() << ", not enough memory, requested " << task.second.Memory;
+                    LOG_N(error);
+
+                    failReason = NKikimrKqp::TEvStartKqpTasksResponse::NOT_ENOUGH_MEMORY;
+                }
+
+                if (resourcesResponse.QueryMemoryLimit()) {
+                    error << "TxId: " << txId << ", NodeId: " << SelfId().NodeId() << ", memory limit exceeded, requested " << task.second.Memory;
+                    LOG_N(error);
+
+                    failReason = NKikimrKqp::TEvStartKqpTasksResponse::QUERY_MEMORY_LIMIT_EXCEEDED;
+                }
+
                 for (ui64 taskId : allocatedTasks) {
                     ResourceManager()->FreeResources(txId, taskId);
                 }
 
-                ResourceManager()->FreeExecutionUnits(executionUnits);
-
-                ReplyError(txId, request.Executer, msg, resourcesResponse.GetStatus(), resourcesResponse.GetFailReason());
+                ReplyError(txId, request.Executer, msg, failReason, error);
                 return;
             }
 
@@ -407,20 +415,12 @@ private:
             auto& taskCtx = request.InFlyTasks[dqTask.GetId()];
             YQL_ENSURE(taskCtx.TaskId != 0);
 
-            {
-                ui32 inputChannelsCount = 0;
-                for (auto&& i : dqTask.GetInputs()) {
-                    inputChannelsCount += i.ChannelsSize();
-                }
-                memoryLimits.ChannelBufferSize = std::max<ui32>(taskCtx.ChannelSize / std::max<ui32>(1, inputChannelsCount), Config.GetMinChannelBufferSize());
-                memoryLimits.OutputChunkMaxSize = outputChunkMaxSize;
-                AFL_DEBUG(NKikimrServices::KQP_COMPUTE)("event", "channel_info")
-                    ("ch_size", taskCtx.ChannelSize)("ch_count", taskCtx.Channels)("ch_limit", memoryLimits.ChannelBufferSize)
-                    ("inputs", dqTask.InputsSize())("input_channels_count", inputChannelsCount);
-            }
+            memoryLimits.ChannelBufferSize = taskCtx.ChannelSize;
+            Y_VERIFY_DEBUG(memoryLimits.ChannelBufferSize >= Config.GetMinChannelBufferSize(),
+                "actual size: %ld, min: %ld", memoryLimits.ChannelBufferSize, Config.GetMinChannelBufferSize());
 
             auto& taskOpts = dqTask.GetProgram().GetSettings();
-            auto limit = taskOpts.GetHasMapJoin() || taskOpts.GetHasStateAggregation()
+            auto limit = taskOpts.GetHasMapJoin() /* || opts.GetHasSort()*/
                 ? memoryLimits.MkqlHeavyProgramMemoryLimit
                 : memoryLimits.MkqlLightProgramMemoryLimit;
 
@@ -463,23 +463,19 @@ private:
             IActor* computeActor;
             if (tableKind == ETableKind::Datashard || tableKind == ETableKind::Olap) {
                 auto& info = computesByStage.UpsertTaskWithScan(dqTask, meta, !AppData()->FeatureFlags.GetEnableSeparationComputeActorsFromRead());
-                computeActor = CreateKqpScanComputeActor(request.Executer, txId, &dqTask,
-                    AsyncIoFactory, runtimeSettings, memoryLimits,
-                    NWilson::TTraceId(ev->TraceId), ev->Get()->Arena);
+                computeActor = CreateKqpScanComputeActor(request.Executer, txId, std::move(dqTask),
+                    AsyncIoFactory, AppData()->FunctionRegistry, runtimeSettings, memoryLimits,
+                    NWilson::TTraceId(ev->TraceId));
                 taskCtx.ComputeActorId = Register(computeActor);
                 info.MutableActorIds().emplace_back(taskCtx.ComputeActorId);
             } else {
-                std::shared_ptr<TGUCSettings> GUCSettings;
-                if (ev->Get()->Record.HasSerializedGUCSettings()) {
-                    GUCSettings = std::make_shared<TGUCSettings>(ev->Get()->Record.GetSerializedGUCSettings());
-                }
                 if (Y_LIKELY(!CaFactory)) {
-                    computeActor = CreateKqpComputeActor(request.Executer, txId, &dqTask, AsyncIoFactory,
-                        runtimeSettings, memoryLimits, NWilson::TTraceId(ev->TraceId), ev->Get()->Arena, FederatedQuerySetup, GUCSettings);
+                    computeActor = CreateKqpComputeActor(request.Executer, txId, std::move(dqTask), AsyncIoFactory,
+                        AppData()->FunctionRegistry, runtimeSettings, memoryLimits, NWilson::TTraceId(ev->TraceId));
                     taskCtx.ComputeActorId = Register(computeActor);
                 } else {
-                    computeActor = CaFactory->CreateKqpComputeActor(request.Executer, txId, &dqTask,
-                        runtimeSettings, memoryLimits, NWilson::TTraceId(ev->TraceId), ev->Get()->Arena);
+                    computeActor = CaFactory->CreateKqpComputeActor(request.Executer, txId, std::move(dqTask),
+                                                                    runtimeSettings, memoryLimits);
                     taskCtx.ComputeActorId = computeActor->SelfId();
                 }
             }
@@ -500,8 +496,6 @@ private:
 
         Send(request.Executer, reply.Release(), IEventHandle::FlagTrackDelivery, txId);
 
-        Counters->NodeServiceProcessTime->Collect(NHPTimer::GetTimePassed(&workHandlerStart) * SecToUsec);
-
         bucket.NewRequest(txId, requester, std::move(request), memoryPool);
     }
 
@@ -512,25 +506,27 @@ private:
     }
 
     void HandleWork(TEvKqpNode::TEvCancelKqpTasksRequest::TPtr& ev) {
-        THPTimer timer;
         ui64 txId = ev->Get()->Record.GetTxId();
         auto& reason = ev->Get()->Record.GetReason();
 
         LOG_W("TxId: " << txId << ", terminate transaction, reason: " << reason);
         TerminateTx(txId, reason);
-
-        Counters->NodeServiceProcessCancelTime->Collect(timer.Passed() * SecToUsec);
     }
 
     void TerminateTx(ui64 txId, const TString& reason) {
         auto& bucket = GetStateBucketByTx(Buckets, txId);
-        auto tasksToAbort = bucket.GetTasksByTxId(txId);
+        auto tasksToAbort = bucket.RemoveTx(txId);
 
         if (!tasksToAbort.empty()) {
-            for (const auto& [taskId, computeActorId]: tasksToAbort) {
-                auto abortEv = MakeHolder<TEvKqp::TEvAbortExecution>(NYql::NDqProto::StatusIds::UNSPECIFIED,
-                    reason);
-                Send(computeActorId, abortEv.Release());
+            LOG_D("TxId: " << txId << ", cancel granted resources");
+            ResourceManager()->FreeResources(txId);
+
+            for (const auto& tasksRequest: tasksToAbort) {
+                for (const auto& [taskId, task] : tasksRequest.InFlyTasks) {
+                    auto abortEv = MakeHolder<TEvKqp::TEvAbortExecution>(NYql::NDqProto::StatusIds::UNSPECIFIED,
+                        reason);
+                    Send(task.ComputeActorId, abortEv.Release());
+                }
             }
         }
     }
@@ -582,37 +578,8 @@ private:
             LOG_I("Updated table service config: " << Config.DebugString());
         }
 
-        if (event.GetConfig().GetTableServiceConfig().HasIteratorReadsRetrySettings()) {
-            SetIteratorReadsRetrySettings(event.GetConfig().GetTableServiceConfig().GetIteratorReadsRetrySettings());
-        }
-
-        if (event.GetConfig().GetTableServiceConfig().HasIteratorReadQuotaSettings()) {
-            SetIteratorReadsQuotaSettings(event.GetConfig().GetTableServiceConfig().GetIteratorReadQuotaSettings());
-        }
-
         auto responseEv = MakeHolder<NConsole::TEvConsole::TEvConfigNotificationResponse>(event);
         Send(ev->Sender, responseEv.Release(), IEventHandle::FlagTrackDelivery, ev->Cookie);
-    }
-
-    void SetIteratorReadsQuotaSettings(const NKikimrConfig::TTableServiceConfig::TIteratorReadQuotaSettings& settings) {
-        SetDefaultIteratorQuotaSettings(settings.GetMaxRows(), settings.GetMaxBytes());
-    }
-
-    void SetIteratorReadsRetrySettings(const NKikimrConfig::TTableServiceConfig::TIteratorReadsRetrySettings& settings) {
-        auto ptr = MakeIntrusive<NKikimr::NKqp::TIteratorReadBackoffSettings>();
-        ptr->StartRetryDelay = TDuration::MilliSeconds(settings.GetStartDelayMs());
-        ptr->MaxShardAttempts = settings.GetMaxShardRetries();
-        ptr->MaxShardResolves = settings.GetMaxShardResolves();
-        ptr->UnsertaintyRatio = settings.GetUnsertaintyRatio();
-        ptr->Multiplier = settings.GetMultiplier();
-        if (settings.GetMaxTotalRetries()) {
-            ptr->MaxTotalRetries = settings.GetMaxTotalRetries();
-        }
-        if (settings.GetIteratorResponseTimeoutMs()) {
-            ptr->ReadResponseTimeout = TDuration::MilliSeconds(settings.GetIteratorResponseTimeoutMs());
-        }
-        ptr->MaxRetryDelay = TDuration::MilliSeconds(settings.GetMaxDelayMs());
-        SetReadIteratorBackoffSettings(ptr);
     }
 
     void HandleWork(TEvents::TEvUndelivered::TPtr& ev) {
@@ -690,7 +657,6 @@ private:
     IKqpNodeComputeActorFactory* CaFactory;
     std::shared_ptr<NRm::IKqpResourceManager> ResourceManager_;
     NYql::NDq::IDqAsyncIoFactory::TPtr AsyncIoFactory;
-    const std::optional<TKqpFederatedQuerySetup> FederatedQuerySetup;
 
     //state sharded by TxId
     std::shared_ptr<TBucketArray> Buckets;
@@ -700,10 +666,9 @@ private:
 } // anonymous namespace
 
 IActor* CreateKqpNodeService(const NKikimrConfig::TTableServiceConfig& tableServiceConfig,
-    TIntrusivePtr<TKqpCounters> counters, IKqpNodeComputeActorFactory* caFactory, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory,
-    const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup)
+    TIntrusivePtr<TKqpCounters> counters, IKqpNodeComputeActorFactory* caFactory, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory)
 {
-    return new TKqpNodeService(tableServiceConfig, counters, caFactory, std::move(asyncIoFactory), federatedQuerySetup);
+    return new TKqpNodeService(tableServiceConfig, counters, caFactory, std::move(asyncIoFactory));
 }
 
 } // namespace NKqp

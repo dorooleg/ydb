@@ -105,7 +105,7 @@ namespace NKikimr {
             friend class TActorBootstrapped<TSyncLogActor>;
 
             ui64 GetDbBirthLsn() {
-                Y_ABORT_UNLESS(DbBirthLsn.Defined());
+                Y_VERIFY(DbBirthLsn.Defined());
                 return *DbBirthLsn;
             }
 
@@ -115,7 +115,7 @@ namespace NKikimr {
                                                                 SlCtx->VCtx->VDiskLogPrefix,
                                                                 ctx.ExecutorThread.ActorSystem);
                 KeeperId = ctx.Register(CreateSyncLogKeeperActor(SlCtx, std::move(Repaired)));
-                ActiveActors.Insert(KeeperId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(KeeperId);
                 TThis::Become(&TThis::StateFunc);
             }
 
@@ -141,11 +141,11 @@ namespace NKikimr {
                     auto result = std::make_unique<TEvBlobStorage::TEvVSyncResult>(NKikimrProto::RACE, SelfVDiskId,
                         TSyncState(), true, SlCtx->VCtx->GetOutOfSpaceState().GetLocalStatusFlags(), now,
                         SlCtx->CountersMonGroup.VDiskCheckFailedPtr(), nullptr, ev->GetChannel());
-                    SendVDiskResponse(ctx, ev->Sender, result.release(), ev->Cookie, SlCtx->VCtx);
+                    SendVDiskResponse(ctx, ev->Sender, result.release(), ev->Cookie);
                     return;
                 }
 
-                Y_DEBUG_ABORT_UNLESS(sourceVDisk != SelfVDiskId);
+                Y_VERIFY_DEBUG(sourceVDisk != SelfVDiskId);
 
                 // handle locks
                 if (NeighborsPtr->IsLocked(sourceVDisk)) {
@@ -160,7 +160,7 @@ namespace NKikimr {
                     auto result = std::make_unique<TEvBlobStorage::TEvVSyncResult>(NKikimrProto::BLOCKED, SelfVDiskId,
                         TSyncState(), true, SlCtx->VCtx->GetOutOfSpaceState().GetLocalStatusFlags(), now,
                         SlCtx->CountersMonGroup.DiskLockedPtr(), nullptr, ev->GetChannel());
-                    SendVDiskResponse(ctx, ev->Sender, result.release(), ev->Cookie, SlCtx->VCtx);
+                    SendVDiskResponse(ctx, ev->Sender, result.release(), ev->Cookie);
                     return;
                 }
 
@@ -180,19 +180,17 @@ namespace NKikimr {
                     auto result = std::make_unique<TEvBlobStorage::TEvVSyncResult>(status, SelfVDiskId, syncState,
                         true, SlCtx->VCtx->GetOutOfSpaceState().GetLocalStatusFlags(), now,
                         SlCtx->CountersMonGroup.UnequalGuidPtr(), nullptr, ev->GetChannel());
-                    SendVDiskResponse(ctx, ev->Sender, result.release(), ev->Cookie, SlCtx->VCtx);
+                    SendVDiskResponse(ctx, ev->Sender, result.release(), ev->Cookie);
                     return;
                 }
 
-                if (!SlCtx->IsReadOnlyVDisk) {
-                    // cut the log (according to confirmed old synced state)
-                    CutLog(ctx, sourceVDisk, oldSyncState.SyncedLsn);
-                }
+                // cut the log (according to confirmed old synced state)
+                CutLog(ctx, sourceVDisk, oldSyncState.SyncedLsn);
                 // process the request further asyncronously
                 NeighborsPtr->Lock(sourceVDisk, oldSyncState.SyncedLsn);
                 auto aid = ctx.Register(CreateSyncLogReaderActor(SlCtx, VDiskIncarnationGuid, ev, ctx.SelfID, KeeperId,
                     SelfVDiskId, sourceVDisk, GetDbBirthLsn(), now));
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
             }
 
             void Handle(TEvSyncLogPut::TPtr &ev, const TActorContext &ctx) {
@@ -229,7 +227,7 @@ namespace NKikimr {
                     NeighborsPtr->UpdateSyncedLsn(vdisk, syncedLsn);
                     // get current min value
                     ui64 curMinLsn = NeighborsPtr->GlobalSyncedLsn();
-                    Y_ABORT_UNLESS(prevMinLsn <= curMinLsn,
+                    Y_VERIFY(prevMinLsn <= curMinLsn,
                              "TSyncLogActor::CutLog: currentSyncedLsn# %" PRIu64
                              " syncedLsn# %" PRIu64 " vdisk# %s prevMinLsn# %" PRIu64
                              " curMinLsn# %" PRIu64,
@@ -246,10 +244,10 @@ namespace NKikimr {
             }
 
             void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-                Y_DEBUG_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::SyncLogId);
+                Y_VERIFY_DEBUG(ev->Get()->SubRequestId == TDbMon::SyncLogId);
                 auto aid = ctx.RegisterWithSameMailbox(CreateGetHttpInfoActor(SlCtx->VCtx, GInfo, ev, SelfId(), KeeperId,
                     NeighborsPtr));
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
             }
 
             void Handle(TEvBlobStorage::TEvVBaldSyncLog::TPtr& ev, const TActorContext& ctx) {
@@ -260,7 +258,7 @@ namespace NKikimr {
                 auto selfId = ctx.SelfID;
                 auto actor = std::make_unique<TSyncLogGetLocalStatusActor>(SlCtx, ev, selfId, KeeperId);
                 auto aid = ctx.Register(actor.release());
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
             }
 
             // reconfigure BlobStorage Group
@@ -268,7 +266,7 @@ namespace NKikimr {
                 Y_UNUSED(ctx);
                 auto *msg = ev->Get();
                 GInfo = msg->NewInfo;
-                Y_ABORT_UNLESS(msg->NewVDiskId == msg->NewInfo->GetVDiskId(SlCtx->VCtx->ShortSelfVDisk));
+                Y_VERIFY(msg->NewVDiskId == msg->NewInfo->GetVDiskId(SlCtx->VCtx->ShortSelfVDisk));
                 SelfVDiskId = msg->NewVDiskId;
             }
 

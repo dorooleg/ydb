@@ -31,7 +31,7 @@ namespace NKikimr {
                 : Rec(rec)
                 , GType(gtype)
             {}
-
+                    
             void AddFromFresh(const TMemRecLogoBlob& memRec, const TRope*, const TKeyLogoBlob&, ui64) {
                 Process(memRec, nullptr);
             }
@@ -87,7 +87,6 @@ namespace NKikimr {
                     const TDiskPart& p = rec.OldDiskPart;
                     auto msg = std::make_unique<NPDisk::TEvChunkRead>(DCtx->PDiskCtx->Dsk->Owner,
                         DCtx->PDiskCtx->Dsk->OwnerRound, p.ChunkIdx, p.Offset, p.Size, NPriRead::HullComp, nullptr);
-                    DCtx->VCtx->CountDefragCost(*msg);
                     ctx.Send(DCtx->PDiskCtx->PDiskId, msg.release());
                     DCtx->DefragMonGroup.DefragBytesRewritten() += p.Size;
                     RewrittenBytes += p.Size;
@@ -128,28 +127,21 @@ namespace NKikimr {
 
             const auto &gtype = DCtx->VCtx->Top->GType;
             ui8 partId = rec.LogoBlobId.PartId();
-            Y_ABORT_UNLESS(partId);
+            Y_VERIFY(partId);
 
-            TRcBuf data = msg->Data.ToString();
-            Y_ABORT_UNLESS(data.size() == TDiskBlob::HeaderSize + gtype.PartSize(rec.LogoBlobId) ||
-                data.size() == gtype.PartSize(rec.LogoBlobId));
+            TString data = msg->Data.ToString();
+            Y_VERIFY(data.size() == TDiskBlob::HeaderSize + gtype.PartSize(rec.LogoBlobId));
+            const char *header = data.data();
 
-            ui32 trim = 0;
-            if (data.size() == TDiskBlob::HeaderSize + gtype.PartSize(rec.LogoBlobId)) {
-                const char *header = data.data();
-                ui32 fullDataSize;
-                memcpy(&fullDataSize, header, sizeof(fullDataSize));
-                header += sizeof(fullDataSize);
-                Y_ABORT_UNLESS(fullDataSize == rec.LogoBlobId.BlobSize());
-                Y_ABORT_UNLESS(NMatrix::TVectorType::MakeOneHot(partId - 1, gtype.TotalPartCount()).Raw() == static_cast<ui8>(*header));
-                trim += TDiskBlob::HeaderSize;
-            }
+            ui32 fullDataSize;
+            memcpy(&fullDataSize, header, sizeof(fullDataSize));
+            header += sizeof(fullDataSize);
+            Y_VERIFY(fullDataSize == rec.LogoBlobId.BlobSize());
 
-            TRope rope(std::move(data));
-            if (trim) {
-                rope.EraseFront(trim);
-            }
-            Y_ABORT_UNLESS(rope.size() == gtype.PartSize(rec.LogoBlobId));
+            Y_VERIFY(NMatrix::TVectorType::MakeOneHot(partId - 1, gtype.TotalPartCount()).Raw() == static_cast<ui8>(*header));
+
+            TRope rope(data);
+            rope.EraseFront(TDiskBlob::HeaderSize);
 
             auto writeEvent = std::make_unique<TEvBlobStorage::TEvVPut>(rec.LogoBlobId, std::move(rope),
                     SelfVDiskId, true, nullptr, TInstant::Max(), NKikimrBlobStorage::EPutHandleClass::AsyncBlob);

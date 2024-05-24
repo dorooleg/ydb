@@ -3,17 +3,13 @@
 #include <ydb/core/protos/kqp.pb.h>
 #include <ydb/core/protos/msgbus.pb.h>
 #include <ydb/core/protos/ydb_result_set_old.pb.h>
-#include <ydb/public/api/protos/ydb_table.pb.h>
-#include <ydb/core/protos/flat_scheme_op.pb.h>
-#include <ydb/core/protos/config.pb.h>
-#include <ydb/core/protos/tx_proxy.pb.h>
 #include <ydb/public/lib/deprecated/client/grpc_client.h>
 #include <ydb/public/lib/deprecated/client/msgbus_client_config.h>
 #include <ydb/public/lib/base/msgbus_status.h>
 #include <ydb/public/lib/scheme_types/scheme_type_id.h>
 #include <ydb/public/lib/value/value.h>
 
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 #include <library/cpp/messagebus/message_status.h>
 #include <library/cpp/messagebus/message.h>
 #include <library/cpp/threading/future/future.h>
@@ -336,7 +332,7 @@ public:
 
     template <typename T>
     const T& GetResponse() const { // msgbus event
-        Y_ABORT_UNLESS(HaveResponse<T>());
+        Y_VERIFY(HaveResponse<T>());
         return *static_cast<T*>(Reply.Get());
     }
 
@@ -585,8 +581,7 @@ public:
         Replication,
         BlobDepot,
         ExternalTable,
-        ExternalDataSource,
-        View
+        ExternalDataSource
     };
 
     TSchemaObject(TSchemaObject&&) = default;

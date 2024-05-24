@@ -24,7 +24,7 @@
 #include <openssl/crypto.h>
 
 #if defined(OPENSSL_FIPS) && OPENSSL_VERSION_NUMBER < 0x010001000L
-#error #include <openssl/fips.h>
+#include <openssl/fips.h>
 #endif
 
 

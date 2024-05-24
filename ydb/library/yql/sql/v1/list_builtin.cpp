@@ -5,7 +5,7 @@ using namespace NYql;
 namespace NSQLTranslationV1 {
 
 TAstNode* TListBuiltin::Translate(TContext& ctx) const {
-    Y_DEBUG_ABORT_UNLESS(Node);
+    Y_VERIFY_DEBUG(Node);
     return Node->Translate(ctx);
 }
 
@@ -44,7 +44,7 @@ bool TListExtractBuiltin::DoInit(TContext& ctx, ISource* src) {
         }
     }
 
-    Args[1] = MakeAtomFromExpression(Pos, ctx, Args[1]).Build();
+    Args[1] = MakeAtomFromExpression(ctx, Args[1]).Build();
     Node = Y(OpName, Args[0], Args[1]);
     return true;
 }
@@ -83,6 +83,18 @@ bool TListFilterBuiltin::DoInit(TContext& ctx, ISource* src) {
 
 TNodePtr TListFilterBuiltin::GetFilterLambda() {
     return BuildLambda(Pos, Y("item"), Y("Coalesce", Y("Apply", Args[1], "item"), Y("Bool", Q("false"))));
+}
+
+bool TListUniqBuiltin::DoInit(TContext& ctx, ISource* src) {
+    if (Args.size() != 1) {
+        ctx.Error(Pos) << OpName << " requires only one parameter";
+        return false;
+    }
+    if (!Args[0]->Init(ctx, src)) {
+        return false;
+    }
+    Node = Y("DictKeys", Y("ToDict", Args[0], GetIdentityLambda(), BuildLambda(Pos, Y("item"), Y("Void")), Q(Y(Q("Hashed"), Q("One")))));
+    return true;
 }
 
 bool TListCreateBuiltin::DoInit(TContext& ctx, ISource* src) {

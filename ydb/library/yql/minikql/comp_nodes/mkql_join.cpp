@@ -1,10 +1,9 @@
 #include "mkql_join.h"
+#include "mkql_llvm_base.h"
 
 #include <ydb/library/yql/minikql/computation/mkql_custom_list.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
-#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 
@@ -97,22 +96,22 @@ public:
     }
 
     void Live(IComputationNode* flow, NUdf::TUnboxedValue&& liveValue) {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
-        Y_DEBUG_ABORT_UNLESS(Count == 0);
+        Y_VERIFY_DEBUG(!IsLive());
+        Y_VERIFY_DEBUG(Count == 0);
         LiveFlow = flow;
         LiveValue = std::move(liveValue);
     }
 
     void Live(TLiveFetcher&& fetcher, NUdf::TUnboxedValue* liveValues) {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
-        Y_DEBUG_ABORT_UNLESS(Count == 0);
+        Y_VERIFY_DEBUG(!IsLive());
+        Y_VERIFY_DEBUG(Count == 0);
         Fetcher = std::move(fetcher);
         LiveValues = liveValues;
     }
 
     void Add(NUdf::TUnboxedValue&& value) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(!IsSealed);
+        Y_VERIFY_DEBUG(!IsSealed);
 #endif
         if (SingleShot && Count > 0) {
             MKQL_ENSURE(Count == 1, "Counter inconsistent");
@@ -127,7 +126,7 @@ public:
             }
             else {
                 if (Count == DEFAULT_STACK_ITEMS) {
-                    Y_DEBUG_ABORT_UNLESS(Heap.empty());
+                    Y_VERIFY_DEBUG(Heap.empty());
                     Heap.assign(Stack, Stack + DEFAULT_STACK_ITEMS);
                 }
 
@@ -159,7 +158,7 @@ public:
     }
 
     ui64 GetCount() const {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
         return Count;
     }
 
@@ -169,7 +168,7 @@ public:
 
     NUdf::TUnboxedValue Next(TComputationContext& ctx) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         if (IsLive()) {
             if ((Index + 1) == 0) {
@@ -249,9 +248,9 @@ public:
     }
 
     void Rewind() {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         Index = ui64(-1);
         if (FileState) {
@@ -276,7 +275,7 @@ private:
     }
 
     void Write(NUdf::TUnboxedValue&& value) {
-        Y_DEBUG_ABORT_UNLESS(FileState->Output);
+        Y_VERIFY_DEBUG(FileState->Output);
         TStringBuf serialized = ItemPacker.Pack(value);
         ui32 length = serialized.size();
         FileState->Output->Write(&length, sizeof(length));
@@ -293,10 +292,10 @@ private:
     NUdf::TUnboxedValue Read(TComputationContext& ctx) {
         ui32 length = 0;
         auto wasRead = FileState->Input->Load(&length, sizeof(length));
-        Y_ABORT_UNLESS(wasRead == sizeof(length));
+        Y_VERIFY(wasRead == sizeof(length));
         FileState->Buffer.Reserve(length);
         wasRead = FileState->Input->Load((void*)FileState->Buffer.Data(), length);
-        Y_ABORT_UNLESS(wasRead == length);
+        Y_VERIFY(wasRead == length);
         return ReadValue = ItemPacker.Unpack(TStringBuf(FileState->Buffer.Data(), length), ctx.HolderFactory);
     }
 
@@ -502,7 +501,7 @@ public:
                             break;
 
                         default:
-                            Y_ABORT("Unknown kind");
+                            Y_FAIL("Unknown kind");
                         }
 
                         if (OutputMode == EOutputMode::Unknown) {
@@ -556,7 +555,7 @@ public:
                 case EOutputMode::None:
                     return NUdf::TUnboxedValuePod::MakeFinish();
                 default:
-                    Y_ABORT("Unknown output mode");
+                    Y_FAIL("Unknown output mode");
                 }
             }
         }
@@ -946,7 +945,7 @@ public:
                             break;
 
                         default:
-                            Y_ABORT("Unknown kind");
+                            Y_FAIL("Unknown kind");
                         }
 
                         if (OutputMode == EOutputMode::Unknown) {
@@ -1004,13 +1003,13 @@ public:
                 case EOutputMode::None:
                     return EFetchResult::Finish;
                 default:
-                    Y_ABORT("Unknown output mode");
+                    Y_FAIL("Unknown output mode");
                 }
             }
         }
 
         template <bool IsLeftNull>
-        void PrepareNullItem(TComputationContext&, NUdf::TUnboxedValue*const* output) {
+        void PrepareNullItem(TComputationContext& ctx, NUdf::TUnboxedValue*const* output) {
             for (ui32 i = 0; i < Self->LeftInputColumns.size(); ++i) {
                 if (const auto out = output[Self->LeftOutputColumns[i]]) {
                     if constexpr (IsLeftNull) {
@@ -1158,10 +1157,11 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto indexType = Type::getInt32Ty(context);
+        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
         const auto size = LeftOutputColumns.size() + RightOutputColumns.size();
         const auto arrayType = ArrayType::get(valueType, size);
@@ -1184,7 +1184,6 @@ public:
             initF = InsertValueInst::Create(initF, pointers.back(), {i}, (TString("insert_") += ToString(i)).c_str(), atTop);
 
             getters[i] = [i, values, valueType, indexType, arrayType](const TCodegenContext& ctx, BasicBlock*& block) {
-                Y_UNUSED(ctx);
                 const auto pointer = GetElementPtrInst::CreateInBounds(arrayType, values, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, i)}, (TString("ptr_") += ToString(i)).c_str(), block);
                 return new LoadInst(valueType, pointer, (TString("load_") += ToString(i)).c_str(), block);
             };
@@ -1242,7 +1241,7 @@ private:
 #ifdef MKQL_DISABLE_CODEGEN
         state = ctx.HolderFactory.Create<TValue>(ctx, this, std::bind(&IComputationWideFlowNode::FetchValues, Flow, std::placeholders::_1, std::placeholders::_2));
 #else
-        state = ctx.ExecuteLLVM && Fetch ?
+        state = Fetch && ctx.ExecuteLLVM ?
             ctx.HolderFactory.Create<TValue>(ctx, this, Fetch):
             ctx.HolderFactory.Create<TValue>(ctx, this, std::bind(&IComputationWideFlowNode::FetchValues, Flow, std::placeholders::_1, std::placeholders::_2));
 #endif
@@ -1276,14 +1275,14 @@ private:
 
     Function* FetchFunc = nullptr;
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (FetchFunc) {
-            Fetch = reinterpret_cast<TFetchPtr>(codegen.GetPointerToFunction(FetchFunc));
+            Fetch = reinterpret_cast<TFetchPtr>(codegen->GetPointerToFunction(FetchFunc));
         }
     }
 
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
-        codegen.ExportSymbol(FetchFunc = GenerateFetchFunction(codegen));
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+        codegen->ExportSymbol(FetchFunc = GenerateFetchFunction(codegen));
     }
 
     TString MakeName() const {
@@ -1292,9 +1291,9 @@ private:
         return out.Str();
     }
 
-    Function* GenerateFetchFunction(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateFetchFunction(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto& name = MakeName();
         if (const auto f = module.getFunction(name.c_str()))
@@ -1306,6 +1305,7 @@ private:
         const auto contextType = GetCompContextType(context);
         const auto resultType = Type::getInt32Ty(context);
         const auto funcType = FunctionType::get(resultType, {PointerType::getUnqual(contextType), PointerType::getUnqual(arrayType)}, false);
+        const auto indexType = Type::getInt32Ty(context);
 
         TCodegenContext ctx(codegen);
         ctx.Func = cast<Function>(module.getOrInsertFunction(name.c_str(), funcType).getCallee());
@@ -1413,15 +1413,15 @@ public:
     }
 
     void Live(NUdf::TUnboxedValue& stream, NUdf::TUnboxedValue&& liveValue) {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
-        Y_DEBUG_ABORT_UNLESS(Count == 0);
+        Y_VERIFY_DEBUG(!IsLive());
+        Y_VERIFY_DEBUG(Count == 0);
         LiveStream = stream;
         LiveValue = std::move(liveValue);
     }
 
     void Add(NUdf::TUnboxedValue&& value) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(!IsSealed);
+        Y_VERIFY_DEBUG(!IsSealed);
 #endif
         if (SingleShot && Count > 0) {
             MKQL_ENSURE(Count == 1, "Counter inconsistent");
@@ -1436,7 +1436,7 @@ public:
             }
             else {
                 if (Count == DEFAULT_STACK_ITEMS) {
-                    Y_DEBUG_ABORT_UNLESS(Heap.empty());
+                    Y_VERIFY_DEBUG(Heap.empty());
                     Heap.assign(Stack, Stack + DEFAULT_STACK_ITEMS);
                 }
 
@@ -1468,7 +1468,7 @@ public:
     }
 
     ui64 GetCount() const {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
         return Count;
     }
 
@@ -1478,7 +1478,7 @@ public:
 
     NUdf::EFetchStatus Next(NUdf::TUnboxedValue& result) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         if (IsLive()) {
             auto status = NUdf::EFetchStatus::Ok;
@@ -1519,9 +1519,9 @@ public:
     }
 
     void Rewind() {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         Index = ui64(-1);
         if (FileState) {
@@ -1546,7 +1546,7 @@ private:
     }
 
     void Write(NUdf::TUnboxedValue&& value) {
-        Y_DEBUG_ABORT_UNLESS(FileState->Output);
+        Y_VERIFY_DEBUG(FileState->Output);
         TStringBuf serialized = ItemPacker.Pack(value);
         ui32 length = serialized.size();
         FileState->Output->Write(&length, sizeof(length));
@@ -1563,10 +1563,10 @@ private:
     NUdf::TUnboxedValue Read() {
         ui32 length = 0;
         auto wasRead = FileState->Input->Load(&length, sizeof(length));
-        Y_ABORT_UNLESS(wasRead == sizeof(length));
+        Y_VERIFY(wasRead == sizeof(length));
         FileState->Buffer.Reserve(length);
         wasRead = FileState->Input->Load((void*)FileState->Buffer.Data(), length);
-        Y_ABORT_UNLESS(wasRead == length);
+        Y_VERIFY(wasRead == length);
         return ItemPacker.Unpack(TStringBuf(FileState->Buffer.Data(), length), Ctx->HolderFactory);
     }
 
@@ -1774,7 +1774,7 @@ public:
                             break;
 
                         default:
-                            Y_ABORT("Unknown kind");
+                            Y_FAIL("Unknown kind");
                         }
 
                         if (OutputMode == EOutputMode::Unknown) {
@@ -1844,7 +1844,7 @@ public:
                 case EOutputMode::None:
                     return NUdf::EFetchStatus::Finish;
                 default:
-                    Y_ABORT("Unknown output mode");
+                    Y_FAIL("Unknown output mode");
                 }
             }
         }
@@ -2214,7 +2214,7 @@ IComputationNode* WrapCommonJoinCore(TCallable& callable, const TComputationNode
         MAKE_COMMON_JOIN_CORE_WRAPPER(RightSemi)
         MAKE_COMMON_JOIN_CORE_WRAPPER(Cross)
     default:
-        Y_ABORT("Unknown kind");
+        Y_FAIL("Unknown kind");
     }
 #undef MAKE_COMMON_JOIN_CORE_WRAPPER
 }

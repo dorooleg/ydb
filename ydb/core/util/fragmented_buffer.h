@@ -1,28 +1,29 @@
 #pragma once
 #include "defs.h"
 
-#include <ydb/library/actors/util/rope.h>
+#include <library/cpp/actors/util/rope.h>
 #include <util/generic/map.h>
 #include "interval_set.h"
 
 namespace NKikimr {
 
 class TFragmentedBuffer {
-    TMap<ui32, TRope> BufferForOffset;
+    TMap<i32, TRope> BufferForOffset;
+    void Insert(i32 begin, const char* source, i32 bytesToCopy);
 
 public:
+    TFragmentedBuffer();
+
     bool IsMonolith() const;
     TRope GetMonolith();
-    void SetMonolith(TRope&& data);
+    void SetMonolith(TRope &data);
 
-    void Write(ui32 begin, const char* buffer, ui32 size);
-    void Write(ui32 begin, TRope&& data);
-    void Read(ui32 begin, char* buffer, ui32 size) const;
-    TRope Read(ui32 begin, ui32 size) const;
+    void Write(i32 begin, const char* buffer, i32 size);
+    void Read(i32 begin, char* buffer, i32 size) const;
     TString Print() const;
 
-    void CopyFrom(const TFragmentedBuffer& from, const TIntervalSet<i32>& range, i32 offset = 0);
-    TIntervalSet<i32> GetIntervalSet() const;
+    std::pair<const char*, i32> Get(i32 begin) const;
+    void CopyFrom(const TFragmentedBuffer& from, const TIntervalSet<i32>& range);
 
     explicit operator bool() const {
         return !BufferForOffset.empty();

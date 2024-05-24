@@ -6,24 +6,17 @@
 #include "net_classifier_updater.h"
 
 #include <ydb/core/base/counters.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/cms/console/validators/registry.h>
-#include <ydb/core/protos/netclassifier.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
 namespace NKikimr::NConsole {
 
-void TConsole::DefaultSignalTabletActive(const TActorContext &)
-{
-    // must be empty
-}
-
 void TConsole::OnActivateExecutor(const TActorContext &ctx)
 {
     auto domains = AppData(ctx)->DomainsInfo;
+    auto domainId = domains->GetDomainUidByTabletId(TabletID());
+    Y_VERIFY(domainId != TDomainsInfo::BadDomainId);
 
     auto tabletsCounters = GetServiceCounters(AppData(ctx)->Counters, "tablets");
     tabletsCounters->RemoveSubgroup("type", "CONSOLE");
@@ -34,7 +27,7 @@ void TConsole::OnActivateExecutor(const TActorContext &ctx)
     ConfigsManager = new TConfigsManager(*this);
     ctx.RegisterWithSameMailbox(ConfigsManager);
 
-    TenantsManager = new TTenantsManager(*this, domains->Domain,
+    TenantsManager = new TTenantsManager(*this, domains->Domains.at(domainId),
                                          Counters,
                                          AppData()->FeatureFlags);
     ctx.RegisterWithSameMailbox(TenantsManager);
@@ -76,7 +69,7 @@ bool TConsole::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev, const TActo
         return true;
 
     auto domains = AppData(ctx)->DomainsInfo;
-    auto domain = domains->Domain;
+    auto domain = domains->Domains.at(domains->GetDomainUidByTabletId(TabletID()));
 
     TStringStream str;
     HTML(str) {
@@ -179,6 +172,13 @@ void TConsole::Handle(TEvConsole::TEvGetConfigRequest::TPtr &ev, const TActorCon
 void TConsole::Handle(TEvConsole::TEvSetConfigRequest::TPtr &ev, const TActorContext &ctx)
 {
     TxProcessor->ProcessTx(CreateTxSetConfig(ev), ctx);
+}
+
+void TConsole::Handle(TEvents::TEvPoisonPill::TPtr &ev,
+                      const TActorContext &ctx)
+{
+    Y_UNUSED(ev);
+    ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
 }
 
 IActor *CreateConsole(const TActorId &tablet, TTabletStorageInfo *info)

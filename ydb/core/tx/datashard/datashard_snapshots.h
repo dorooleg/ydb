@@ -109,8 +109,6 @@ public:
     void Reset();
 
     bool Reload(NIceDb::TNiceDb& db);
-    bool ReloadSys(NIceDb::TNiceDb& db);
-    bool ReloadSnapshots(NIceDb::TNiceDb& db);
 
     void InitExpireQueue(TInstant now);
 
@@ -145,9 +143,6 @@ public:
     bool GetPerformedUnprotectedReads() const;
     bool IsPerformedUnprotectedReadsCommitted() const;
     void SetPerformedUnprotectedReads(bool performedUnprotectedReads, TTransactionContext& txc);
-
-    std::pair<TRowVersion, bool> GetFollowerReadEdge() const;
-    bool PromoteFollowerReadEdge(const TRowVersion& version, bool repeatable, TTransactionContext& txc);
 
     EMvccState GetMvccState() const {
         return MvccState;
@@ -233,8 +228,6 @@ private:
     TRowVersion UnprotectedReadEdge = TRowVersion::Min();
 
     TRowVersion CommittedCompleteEdge = TRowVersion::Min();
-    TRowVersion FollowerReadEdge = TRowVersion::Min();
-    bool FollowerReadEdgeRepeatable = false;
 
     TSnapshotMap Snapshots;
 

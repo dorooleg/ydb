@@ -1,9 +1,7 @@
 #pragma once
 #include <util/system/types.h>
-#include <util/system/yassert.h>
 
 #include <cctype>
-#include <cstring>
 #include <utility>
 
 class IOutputStream;
@@ -11,11 +9,6 @@ class IOutputStream;
 namespace NKikimr {
 namespace NUuid {
 
-static constexpr ui32 UUID_LEN = 16;
-
-TString UuidBytesToString(const TString& in);
-void UuidBytesToString(const TString& in, IOutputStream& out);
-void UuidHalfsToString(ui64 low, ui64 hi, IOutputStream& out);
 void UuidToString(ui16 dw[8], IOutputStream& out);
 void UuidHalfsToByteString(ui64 low, ui64 hi, IOutputStream& out);
 
@@ -97,28 +90,6 @@ bool ParseUuidToArray(const T& buf, ui16* dw, bool shortForm) {
     }
 
     return true;
-}
-
-inline void UuidHalfsToBytes(char *dst, size_t dstSize, ui64 hi, ui64 low) {
-    union {
-        char bytes[UUID_LEN];
-        ui64 half[2];
-    } buf;
-    Y_ABORT_UNLESS(UUID_LEN == dstSize);
-    buf.half[0] = low;
-    buf.half[1] = hi;
-    memcpy(dst, buf.bytes, sizeof(buf));
-}
-
-inline void UuidBytesToHalfs(const char *str, size_t sz, ui64 &high, ui64 &low) {
-    union {
-        char bytes[UUID_LEN];
-        ui64 half[2];
-    } buf;
-    Y_ABORT_UNLESS(UUID_LEN == sz);
-    memcpy(buf.bytes, str, sizeof(buf));
-    low = buf.half[0];
-    high = buf.half[1];
 }
 
 }

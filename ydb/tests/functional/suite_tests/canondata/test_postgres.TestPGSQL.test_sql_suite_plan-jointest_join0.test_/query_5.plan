@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 16
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -32,33 +27,14 @@
                                         "Node Type": "TopSort-InnerJoin (MapJoin)-Filter",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
-                                                "TopSortBy": "argument.qr.qq"
+                                                "TopSortBy": "row.qq"
                                             },
                                             {
-                                                "Condition": "qq = unique2",
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 2
-                                                    },
-                                                    {
-                                                        "ExternalPlanNodeId": 4
-                                                    }
-                                                ],
                                                 "Name": "InnerJoin (MapJoin)"
                                             },
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 14
-                                                    }
-                                                ],
                                                 "Name": "Filter",
                                                 "Predicate": "Exist(item.qq)"
                                             }
@@ -83,7 +59,6 @@
                                                                         "Node Type": "TableFullScan",
                                                                         "Operators": [
                                                                             {
-                                                                                "Inputs": [],
                                                                                 "Name": "TableFullScan",
                                                                                 "ReadColumns": [
                                                                                     "unique1",
@@ -116,14 +91,6 @@
                                                         "Node Type": "FullJoin (JoinDict)",
                                                         "Operators": [
                                                             {
-                                                                "Inputs": [
-                                                                    {
-                                                                        "ExternalPlanNodeId": 12
-                                                                    },
-                                                                    {
-                                                                        "ExternalPlanNodeId": 8
-                                                                    }
-                                                                ],
                                                                 "Name": "FullJoin (JoinDict)"
                                                             }
                                                         ],
@@ -150,7 +117,6 @@
                                                                                         "Node Type": "TableFullScan",
                                                                                         "Operators": [
                                                                                             {
-                                                                                                "Inputs": [],
                                                                                                 "Name": "TableFullScan",
                                                                                                 "ReadColumns": [
                                                                                                     "q1",
@@ -195,7 +161,6 @@
                                                                                         "Node Type": "TableFullScan",
                                                                                         "Operators": [
                                                                                             {
-                                                                                                "Inputs": [],
                                                                                                 "Name": "TableFullScan",
                                                                                                 "ReadColumns": [
                                                                                                     "q1",
@@ -227,7 +192,7 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "qr.qq (Asc)"
+                                    "qq (Asc)"
                                 ]
                             }
                         ]

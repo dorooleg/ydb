@@ -44,6 +44,8 @@ EExecutionStatus TBuildDataTxOutRSUnit::Execute(TOperation::TPtr op,
                                                 TTransactionContext &txc,
                                                 const TActorContext &ctx)
 {
+    TDataShardLocksDb locksDb(DataShard, txc);
+    TSetupSysLocks guardLocks(op, DataShard, &locksDb);
     TActiveTransaction *tx = dynamic_cast<TActiveTransaction*>(op.Get());
     Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
 
@@ -56,19 +58,16 @@ EExecutionStatus TBuildDataTxOutRSUnit::Execute(TOperation::TPtr op,
             case ERestoreDataStatus::Restart:
                 return EExecutionStatus::Restart;
             case ERestoreDataStatus::Error:
-                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
-
-    TDataShardLocksDb locksDb(DataShard, txc);
-    TSetupSysLocks guardLocks(op, DataShard, &locksDb);
 
     tx->GetDataTx()->SetReadVersion(DataShard.GetReadWriteVersions(tx).ReadVersion);
     IEngineFlat *engine = tx->GetDataTx()->GetEngine();
     try {
         auto &outReadSets = op->OutReadSets();
 
-        if (tx->GetDataTx()->CheckCancelled(DataShard.TabletID()))
+        if (tx->GetDataTx()->CheckCancelled())
             engine->Cancel();
         else
             engine->SetMemoryLimit(txc.GetMemoryLimit() - tx->GetDataTx()->GetTxSize());

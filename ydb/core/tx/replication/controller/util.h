@@ -5,7 +5,7 @@
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/status/status.h>
 
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 
 #include <util/generic/algorithm.h>
 #include <util/generic/maybe.h>
@@ -29,9 +29,6 @@ inline TMaybe<TReplication::ETargetKind> TryTargetKindFromEntryType(NYdb::NSchem
     case NYdb::NScheme::ESchemeEntryType::ColumnTable:
     case NYdb::NScheme::ESchemeEntryType::ColumnStore:
     case NYdb::NScheme::ESchemeEntryType::Topic:
-    case NYdb::NScheme::ESchemeEntryType::ExternalTable:
-    case NYdb::NScheme::ESchemeEntryType::ExternalDataSource:
-    case NYdb::NScheme::ESchemeEntryType::View:
         return Nothing();
     }
 }

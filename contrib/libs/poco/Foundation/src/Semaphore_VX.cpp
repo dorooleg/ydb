@@ -13,7 +13,7 @@
 
 
 #include "Poco/Semaphore_VX.h"
-#error #include <sysLib.h>
+#include <sysLib.h>
 
 
 namespace Poco {

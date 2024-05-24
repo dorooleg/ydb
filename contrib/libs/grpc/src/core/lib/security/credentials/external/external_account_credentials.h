@@ -14,26 +14,15 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_EXTERNAL_EXTERNAL_ACCOUNT_CREDENTIALS_H
-#define GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_EXTERNAL_EXTERNAL_ACCOUNT_CREDENTIALS_H
+#ifndef GRPC_CORE_LIB_SECURITY_CREDENTIALS_EXTERNAL_EXTERNAL_ACCOUNT_CREDENTIALS_H
+#define GRPC_CORE_LIB_SECURITY_CREDENTIALS_EXTERNAL_EXTERNAL_ACCOUNT_CREDENTIALS_H
 
 #include <grpc/support/port_platform.h>
 
-#include <functional>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
 #include <vector>
 
-#include "y_absl/strings/string_view.h"
-
-#include "src/core/lib/gprpp/orphanable.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/http/httpcli.h"
-#include "src/core/lib/http/parser.h"
-#include "src/core/lib/iomgr/closure.h"
-#include "src/core/lib/iomgr/error.h"
-#include "src/core/lib/iomgr/polling_entity.h"
 #include "src/core/lib/json/json.h"
 #include "src/core/lib/security/credentials/oauth2/oauth2_credentials.h"
 
@@ -127,4 +116,4 @@ class ExternalAccountCredentials
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_EXTERNAL_EXTERNAL_ACCOUNT_CREDENTIALS_H
+#endif  // GRPC_CORE_LIB_SECURITY_CREDENTIALS_EXTERNAL_EXTERNAL_ACCOUNT_CREDENTIALS_H

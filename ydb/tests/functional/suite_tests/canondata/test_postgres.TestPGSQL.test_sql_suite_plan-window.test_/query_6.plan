@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 4
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -32,20 +27,10 @@
                                         "Node Type": "Limit-Sort",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "InternalOperatorId": 1
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "Limit"
                                             },
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 2
-                                                    }
-                                                ],
                                                 "Name": "Sort",
                                                 "SortBy": "row.salary"
                                             }
@@ -61,7 +46,6 @@
                                                         "Node Type": "TableFullScan",
                                                         "Operators": [
                                                             {
-                                                                "Inputs": [],
                                                                 "Name": "TableFullScan",
                                                                 "ReadColumns": [
                                                                     "salary"

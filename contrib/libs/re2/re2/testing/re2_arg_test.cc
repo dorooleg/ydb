@@ -10,8 +10,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "absl/base/macros.h"
-#include "gtest/gtest.h"
+#include "library/cpp/testing/gtest/gtest.h"
 #include "util/logging.h"
 #include "re2/re2.h"
 
@@ -88,7 +87,7 @@ const SuccessTable kSuccessTable[] = {
 { "18446744073709551616", 0,    { false, false, false, false, false, false }},
 };
 
-const int kNumStrings = ABSL_ARRAYSIZE(kSuccessTable);
+const int kNumStrings = arraysize(kSuccessTable);
 
 // It's ugly to use a macro, but we apparently can't use the EXPECT_EQ
 // macro outside of a TEST block and this seems to be the only way to
@@ -156,28 +155,6 @@ TEST(RE2ArgTest, ParseFromTest) {
   RE2::Arg arg2(&obj2);
   EXPECT_FALSE(arg2.Parse("two", 3));
 #endif
-}
-
-TEST(RE2ArgTest, OptionalDoubleTest) {
-  absl::optional<double> opt;
-  RE2::Arg arg(&opt);
-  EXPECT_TRUE(arg.Parse(NULL, 0));
-  EXPECT_FALSE(opt.has_value());
-  EXPECT_FALSE(arg.Parse("", 0));
-  EXPECT_TRUE(arg.Parse("28.30", 5));
-  EXPECT_TRUE(opt.has_value());
-  EXPECT_EQ(*opt, 28.30);
-}
-
-TEST(RE2ArgTest, OptionalIntWithCRadixTest) {
-  absl::optional<int> opt;
-  RE2::Arg arg = RE2::CRadix(&opt);
-  EXPECT_TRUE(arg.Parse(NULL, 0));
-  EXPECT_FALSE(opt.has_value());
-  EXPECT_FALSE(arg.Parse("", 0));
-  EXPECT_TRUE(arg.Parse("0xb0e", 5));
-  EXPECT_TRUE(opt.has_value());
-  EXPECT_EQ(*opt, 2830);
 }
 
 }  // namespace re2

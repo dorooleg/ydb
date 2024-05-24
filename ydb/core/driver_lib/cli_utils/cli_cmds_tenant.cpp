@@ -2,13 +2,12 @@
 #include "cli_cmds.h"
 
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 #include <ydb/public/sdk/cpp/client/resources/ydb_resources.h>
 
 #include <ydb/public/api/grpc/ydb_operation_v1.grpc.pb.h>
 #include <ydb/public/api/grpc/ydb_auth_v1.grpc.pb.h>
 #include <ydb/public/api/grpc/ydb_cms_v1.grpc.pb.h>
-#include <ydb/core/protos/console_base.pb.h>
 
 #include <util/string/split.h>
 #include <util/string/join.h>
@@ -123,7 +122,7 @@ template <typename TService, typename TRequest, typename TResponse,
 class TTenantClientGRpcCommand : public TTenantClientCommand {
 public:
     TRequest GRpcRequest;
-    NYdbGrpc::TGRpcClientConfig ClientConfig;
+    NGrpc::TGRpcClientConfig ClientConfig;
 
     TTenantClientGRpcCommand(const TString &name,
                              const std::initializer_list<TString> &aliases,
@@ -184,7 +183,7 @@ public:
             TTenantClientGRpcCommand::PrintResponse(response);
         } else {
             Ydb::Cms::ListDatabasesResult result;
-            Y_ABORT_UNLESS(response.result().UnpackTo(&result));
+            Y_VERIFY(response.result().UnpackTo(&result));
 
             Cout << "Databases:" << Endl;
             for (auto &path : result.paths())
@@ -212,7 +211,7 @@ public:
             TTenantClientGRpcCommand::PrintResponse(response);
         } else {
             Ydb::Cms::DescribeDatabaseOptionsResult result;
-            Y_ABORT_UNLESS(response.result().UnpackTo(&result));
+            Y_VERIFY(response.result().UnpackTo(&result));
 
             Cout << "Storage units" << Endl;
             for (auto &unit : result.storage_units()) {
@@ -268,7 +267,7 @@ public:
             TTenantClientGRpcCommand::PrintResponse(response);
         } else {
             Ydb::Cms::GetDatabaseStatusResult result;
-            Y_ABORT_UNLESS(response.result().UnpackTo(&result));
+            Y_VERIFY(response.result().UnpackTo(&result));
             // type -> <required, allocated>
             THashMap<TString, std::pair<ui64, ui64>> pools;
             // <type, dc> -> <required, allocated>
@@ -305,29 +304,7 @@ public:
             for (auto &unit : result.registered_resources()) {
                 Cout << "    " << unit.host() << ":" << unit.port() << " - " << unit.unit_kind() << Endl;
             }
-            Cout << "  Data size hard quota: " << result.database_quotas().data_size_hard_quota() << Endl;
-            Cout << "  Data size soft quota: " << result.database_quotas().data_size_soft_quota() << Endl;
         }
-    }
-};
-
-class TClientCommandTenantQuotasBase {
-    uint64_t DataSizeHardQuota;
-    uint64_t DataSizeSoftQuota;
-public:
-    void Config(auto& config) {
-        config.Opts->AddLongOption("data-size-hard-quota", "A maximum data size in bytes, new data will be rejected when exceeded")
-            .OptionalArgument("NUM").StoreResult(&DataSizeHardQuota);
-        config.Opts->AddLongOption("data-size-soft-quota", "Data size in bytes (lower than data_size_hard_quota), at this value new data ingestion is re-enabled again")
-            .OptionalArgument("NUM").StoreResult(&DataSizeSoftQuota);
-    }
-
-    void Parse(auto& config, auto& gRpcRequest)
-    {
-        if (config.ParseResult->Has("data-size-hard-quota"))
-            gRpcRequest.mutable_database_quotas()->set_data_size_hard_quota(DataSizeHardQuota);
-        if (config.ParseResult->Has("data-size-soft-quota"))
-            gRpcRequest.mutable_database_quotas()->set_data_size_soft_quota(DataSizeSoftQuota);
     }
 };
 
@@ -336,8 +313,7 @@ class TClientCommandTenantCreate
                                       Ydb::Cms::CreateDatabaseRequest,
                                       Ydb::Cms::CreateDatabaseResponse,
                                       decltype(&Ydb::Cms::V1::CmsService::Stub::AsyncCreateDatabase),
-                                      &Ydb::Cms::V1::CmsService::Stub::AsyncCreateDatabase>,
-                                      TClientCommandTenantQuotasBase {
+                                      &Ydb::Cms::V1::CmsService::Stub::AsyncCreateDatabase> {
     TVector<TString> Attributes;
     bool Shared = false;
     bool Serverless = false;
@@ -350,7 +326,6 @@ public:
     void Config(TConfig &config) override
     {
         TTenantClientGRpcCommand::Config(config);
-        TClientCommandTenantQuotasBase::Config(config);
 
         config.Opts->AddLongOption("no-tx", "Disable tenant services for database")
             .NoArgument();
@@ -367,7 +342,6 @@ public:
     void Parse(TConfig& config) override
     {
         TTenantClientGRpcCommand::Parse(config);
-        TClientCommandTenantQuotasBase::Parse(config, GRpcRequest);
 
         GRpcRequest.set_path(config.Tenant);
         if (config.ParseResult->Has("no-tx"))
@@ -632,32 +606,6 @@ public:
     }
 };
 
-class TClientCommandTenantChangeQuotas
-    : public TTenantClientGRpcCommand<Ydb::Cms::V1::CmsService,
-                                      Ydb::Cms::AlterDatabaseRequest,
-                                      Ydb::Cms::AlterDatabaseResponse,
-                                      decltype(&Ydb::Cms::V1::CmsService::Stub::AsyncAlterDatabase),
-                                      &Ydb::Cms::V1::CmsService::Stub::AsyncAlterDatabase>,
-                                      TClientCommandTenantQuotasBase {
-public:
-    TClientCommandTenantChangeQuotas()
-        : TTenantClientGRpcCommand("change", {}, "Change data size quotas for database")
-    {}
-
-    void Config(TConfig& config) override {
-        TTenantClientGRpcCommand::Config(config);
-        TClientCommandTenantQuotasBase::Config(config);
-        config.SetFreeArgsMin(0);
-    }
-
-    void Parse(TConfig& config) override
-    {
-        TTenantClientGRpcCommand::Parse(config);
-        TClientCommandTenantQuotasBase::Parse(config, GRpcRequest);
-        GRpcRequest.set_path(config.Tenant);
-    }
-};
-
 class TClientCommandTenantUnits : public TClientCommandTree {
 public:
     TClientCommandTenantUnits()
@@ -679,15 +627,6 @@ public:
     }
 };
 
-class TClientCommandTenantQuotas : public TClientCommandTree {
-public:
-    TClientCommandTenantQuotas()
-        : TClientCommandTree("quotas", {}, "Manage database size quotas")
-    {
-        AddCommand(std::make_unique<TClientCommandTenantChangeQuotas>());
-    }
-};
-
 class TClientCommandTenantName : public TClientCommandTree {
 public:
     TClientCommandTenantName()
@@ -698,7 +637,6 @@ public:
         AddCommand(std::make_unique<TClientCommandTenantRemove>());
         AddCommand(std::make_unique<TClientCommandTenantStatus>());
         AddCommand(std::make_unique<TClientCommandTenantUnits>());
-        AddCommand(std::make_unique<TClientCommandTenantQuotas>());
     }
 
     virtual void Parse(TConfig& config) override {

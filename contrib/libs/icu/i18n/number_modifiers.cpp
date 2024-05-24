@@ -22,30 +22,30 @@ const int32_t ARG_NUM_LIMIT = 0x100;
 // These are the default currency spacing UnicodeSets in CLDR.
 // Pre-compute them for performance.
 // The Java unit test testCurrencySpacingPatternStability() will start failing if these change in CLDR.
-icu::UInitOnce gDefaultCurrencySpacingInitOnce {};
+icu::UInitOnce gDefaultCurrencySpacingInitOnce = U_INITONCE_INITIALIZER;
 
 UnicodeSet *UNISET_DIGIT = nullptr;
-UnicodeSet *UNISET_NOTSZ = nullptr;
+UnicodeSet *UNISET_NOTS = nullptr;
 
 UBool U_CALLCONV cleanupDefaultCurrencySpacing() {
     delete UNISET_DIGIT;
     UNISET_DIGIT = nullptr;
-    delete UNISET_NOTSZ;
-    UNISET_NOTSZ = nullptr;
+    delete UNISET_NOTS;
+    UNISET_NOTS = nullptr;
     gDefaultCurrencySpacingInitOnce.reset();
-    return true;
+    return TRUE;
 }
 
 void U_CALLCONV initDefaultCurrencySpacing(UErrorCode &status) {
     ucln_i18n_registerCleanup(UCLN_I18N_CURRENCY_SPACING, cleanupDefaultCurrencySpacing);
     UNISET_DIGIT = new UnicodeSet(UnicodeString(u"[:digit:]"), status);
-    UNISET_NOTSZ = new UnicodeSet(UnicodeString(u"[[:^S:]&[:^Z:]]"), status);
-    if (UNISET_DIGIT == nullptr || UNISET_NOTSZ == nullptr) {
+    UNISET_NOTS = new UnicodeSet(UnicodeString(u"[:^S:]"), status);
+    if (UNISET_DIGIT == nullptr || UNISET_NOTS == nullptr) {
         status = U_MEMORY_ALLOCATION_ERROR;
         return;
     }
     UNISET_DIGIT->freeze();
-    UNISET_NOTSZ->freeze();
+    UNISET_NOTS->freeze();
 }
 
 }  // namespace
@@ -60,56 +60,12 @@ Modifier::Parameters::Parameters(
     const ModifierStore* _obj, Signum _signum, StandardPlural::Form _plural)
         : obj(_obj), signum(_signum), plural(_plural) {}
 
-bool Modifier::semanticallyEquivalent(const Modifier& other) const {
-    Parameters paramsThis;
-    Parameters paramsOther;
-    getParameters(paramsThis);
-    other.getParameters(paramsOther);
-    if (paramsThis.obj == nullptr && paramsOther.obj == nullptr) {
-        return strictEquals(other);
-    } else if (paramsThis.obj == nullptr || paramsOther.obj == nullptr) {
-        return false;
-    }
-    for (size_t i=0; i<SIGNUM_COUNT; i++) {
-        auto signum = static_cast<Signum>(i);
-        for (size_t j=0; j<StandardPlural::COUNT; j++) {
-            auto plural = static_cast<StandardPlural::Form>(j);
-            const auto* mod1 = paramsThis.obj->getModifier(signum, plural);
-            const auto* mod2 = paramsOther.obj->getModifier(signum, plural);
-            if (mod1 == mod2) {
-                // Equal pointers
-                continue;
-            } else if (mod1 == nullptr || mod2 == nullptr) {
-                // One pointer is null but not the other
-                return false;
-            } else if (!mod1->strictEquals(*mod2)) {
-                // The modifiers are NOT equivalent
-                return false;
-            } else {
-                // The modifiers are equivalent
-                continue;
-            }
-        }
-    }
-    return true;
-}
-
-
 ModifierStore::~ModifierStore() = default;
 
-AdoptingSignumModifierStore::~AdoptingSignumModifierStore()  {
+AdoptingModifierStore::~AdoptingModifierStore()  {
     for (const Modifier *mod : mods) {
         delete mod;
     }
-}
-
-AdoptingSignumModifierStore&
-AdoptingSignumModifierStore::operator=(AdoptingSignumModifierStore&& other) noexcept {
-    for (size_t i=0; i<SIGNUM_COUNT; i++) {
-        this->mods[i] = other.mods[i];
-        other.mods[i] = nullptr;
-    }
-    return *this;
 }
 
 
@@ -136,17 +92,17 @@ bool ConstantAffixModifier::isStrong() const {
 bool ConstantAffixModifier::containsField(Field field) const {
     (void)field;
     // This method is not currently used.
-    UPRV_UNREACHABLE_EXIT;
+    UPRV_UNREACHABLE;
 }
 
 void ConstantAffixModifier::getParameters(Parameters& output) const {
     (void)output;
     // This method is not currently used.
-    UPRV_UNREACHABLE_EXIT;
+    UPRV_UNREACHABLE;
 }
 
-bool ConstantAffixModifier::strictEquals(const Modifier& other) const {
-    const auto* _other = dynamic_cast<const ConstantAffixModifier*>(&other);
+bool ConstantAffixModifier::semanticallyEquivalent(const Modifier& other) const {
+    auto* _other = dynamic_cast<const ConstantAffixModifier*>(&other);
     if (_other == nullptr) {
         return false;
     }
@@ -225,17 +181,20 @@ bool SimpleModifier::isStrong() const {
 bool SimpleModifier::containsField(Field field) const {
     (void)field;
     // This method is not currently used.
-    UPRV_UNREACHABLE_EXIT;
+    UPRV_UNREACHABLE;
 }
 
 void SimpleModifier::getParameters(Parameters& output) const {
     output = fParameters;
 }
 
-bool SimpleModifier::strictEquals(const Modifier& other) const {
-    const auto* _other = dynamic_cast<const SimpleModifier*>(&other);
+bool SimpleModifier::semanticallyEquivalent(const Modifier& other) const {
+    auto* _other = dynamic_cast<const SimpleModifier*>(&other);
     if (_other == nullptr) {
         return false;
+    }
+    if (fParameters.obj != nullptr) {
+        return fParameters.obj == _other->fParameters.obj;
     }
     return fCompiledPattern == _other->fCompiledPattern
         && fField == _other->fField
@@ -359,10 +318,13 @@ void ConstantMultiFieldModifier::getParameters(Parameters& output) const {
     output = fParameters;
 }
 
-bool ConstantMultiFieldModifier::strictEquals(const Modifier& other) const {
-    const auto* _other = dynamic_cast<const ConstantMultiFieldModifier*>(&other);
+bool ConstantMultiFieldModifier::semanticallyEquivalent(const Modifier& other) const {
+    auto* _other = dynamic_cast<const ConstantMultiFieldModifier*>(&other);
     if (_other == nullptr) {
         return false;
+    }
+    if (fParameters.obj != nullptr) {
+        return fParameters.obj == _other->fParameters.obj;
     }
     return fPrefix.contentEquals(_other->fPrefix)
         && fSuffix.contentEquals(_other->fSuffix)
@@ -498,7 +460,7 @@ CurrencySpacingEnabledModifier::getUnicodeSet(const DecimalFormatSymbols &symbol
     // Ensure the static defaults are initialized:
     umtx_initOnce(gDefaultCurrencySpacingInitOnce, &initDefaultCurrencySpacing, status);
     if (U_FAILURE(status)) {
-        return {};
+        return UnicodeSet();
     }
 
     const UnicodeString& pattern = symbols.getPatternForCurrencySpacing(
@@ -507,8 +469,8 @@ CurrencySpacingEnabledModifier::getUnicodeSet(const DecimalFormatSymbols &symbol
             status);
     if (pattern.compare(u"[:digit:]", -1) == 0) {
         return *UNISET_DIGIT;
-    } else if (pattern.compare(u"[[:^S:]&[:^Z:]]", -1) == 0) {
-        return *UNISET_NOTSZ;
+    } else if (pattern.compare(u"[:^S:]", -1) == 0) {
+        return *UNISET_NOTS;
     } else {
         return UnicodeSet(pattern, status);
     }

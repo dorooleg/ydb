@@ -35,10 +35,10 @@ public:
     }
 
     TFsPath(const TFsPath& that);
-    TFsPath(TFsPath&& that);
+    TFsPath(TFsPath&& that) = default;
 
     TFsPath& operator=(const TFsPath& that);
-    TFsPath& operator=(TFsPath&& that);
+    TFsPath& operator=(TFsPath&& that) = default;
 
     ~TFsPath() = default;
 
@@ -62,6 +62,10 @@ public:
 
     inline bool operator==(const TFsPath& that) const {
         return Path_ == that.Path_;
+    }
+
+    inline bool operator!=(const TFsPath& that) const {
+        return Path_ != that.Path_;
     }
 
     TFsPath& operator/=(const TFsPath& that);
@@ -209,6 +213,7 @@ public:
 private:
     void InitSplit() const;
     TSplit& GetSplit() const;
+    void CopySplitFrom(const TFsPath& that) const;
 
 private:
     TString Path_;

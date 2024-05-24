@@ -80,7 +80,7 @@ namespace NKikimr {
                 }
 
                 void Finished() override {
-                    Y_ABORT_UNLESS(!Invoked);
+                    Y_VERIFY(!Invoked);
                     Invoked = true;
 
                     if (Status.ok()) {
@@ -152,8 +152,8 @@ namespace NKikimr {
                 void InvokeProcess() override {
                     auto guard = Guard(ReaderLock);
 
-                    Y_ABORT_UNLESS(!Finished);
-                    Y_DEBUG_ABORT_UNLESS(Reader);
+                    Y_VERIFY(!Finished);
+                    Y_VERIFY_DEBUG(Reader);
 
                     if (Initialized)
                         Process(Reply);
@@ -162,7 +162,7 @@ namespace NKikimr {
                 }
 
                 void InvokeFinish() override {
-                    Y_ABORT_UNLESS(!Finished);
+                    Y_VERIFY(!Finished);
                     Finished = true;
 
                     if (Status.ok()) {
@@ -188,7 +188,7 @@ namespace NKikimr {
 
         public:
             TImpl(const TGRpcClientConfig& config)
-                : Channel(NYdbGrpc::CreateChannelInterface(config))
+                : Channel(NGrpc::CreateChannelInterface(config))
                 , Stub(Channel)
                 , MaxInFlight(config.MaxInFlight)
             {
@@ -322,6 +322,7 @@ namespace NKikimr {
         IMPL_REQUEST(SchemeDescribe, TSchemeDescribe, TResponse)
         IMPL_REQUEST(PersQueueRequest, TPersQueueRequest, TResponse)
         IMPL_REQUEST(SchemeInitRoot, TSchemeInitRoot, TResponse)
+        IMPL_REQUEST(BSAdm, TBSAdm, TResponse)
         IMPL_REQUEST(BlobStorageConfig, TBlobStorageConfigRequest, TResponse)
         IMPL_REQUEST(ResolveNode, TResolveNodeRequest, TResponse)
         IMPL_REQUEST(HiveCreateTablet, THiveCreateTablet, TResponse)
@@ -335,6 +336,9 @@ namespace NKikimr {
         IMPL_REQUEST(TabletKillRequest, TTabletKillRequest, TResponse)
         IMPL_REQUEST(InterconnectDebug, TInterconnectDebug, TResponse)
         IMPL_REQUEST(TabletStateRequest, TTabletStateRequest, TResponse)
+        IMPL_REQUEST(DataShardLoadRequest, TDsTestLoadRequest, TResponse)
+        IMPL_REQUEST(BlobStorageLoadRequest, TBsTestLoadRequest, TResponse)
+        IMPL_REQUEST(BlobStorageGetRequest, TBsGetRequest, TResponse)
         IMPL_REQUEST(DbSchema, TJSON, TJSON)
         IMPL_REQUEST(DbOperation, TJSON, TJSON)
         IMPL_REQUEST(DbBatch, TJSON, TJSON)

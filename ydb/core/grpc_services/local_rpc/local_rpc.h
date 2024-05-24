@@ -68,11 +68,12 @@ public:
     }
 
     const TMaybe<TString> GetPeerMetaValues(const TString&) const override {
+        Y_FAIL("Unimplemented");
         return TMaybe<TString>{};
     }
 
     TVector<TStringBuf> FindClientCert() const override {
-        Y_ABORT("Unimplemented");
+        Y_FAIL("Unimplemented");
         return {};
     }
 
@@ -121,6 +122,20 @@ public:
         CbWrapper(resp);
     }
 
+    void SendResult(Ydb::StatusIds::StatusCode status,
+        const google::protobuf::RepeatedPtrField<NGRpcService::TYdbIssueMessageType>& message) override
+    {
+        TResp resp;
+        auto deferred = resp.mutable_operation();
+        deferred->set_ready(true);
+        deferred->set_status(status);
+        deferred->mutable_issues()->MergeFrom(message);
+        if (CostInfo) {
+            deferred->mutable_cost_info()->CopyFrom(*CostInfo);
+        }
+        CbWrapper(resp);
+    }
+
     void SendOperation(const Ydb::Operations::Operation& operation) override {
         TResp resp;
         resp.mutable_operation()->CopyFrom(operation);
@@ -160,24 +175,20 @@ public:
         ReplyWithYdbStatus(Ydb::StatusIds::GENERIC_ERROR);
     }
 
-    void SetStreamingNotify(NYdbGrpc::IRequestContextBase::TOnNextReply&&) override {
-        Y_ABORT("Unimplemented for local rpc");
+    void SetStreamingNotify(NGrpc::IRequestContextBase::TOnNextReply&&) override {
+        Y_FAIL("Unimplemented for local rpc");
     }
 
-    void FinishStream(ui32) override {
-        Y_ABORT("Unimplemented for local rpc");
+    void FinishStream() override {
+        Y_FAIL("Unimplemented for local rpc");
     }
 
-    virtual void SendSerializedResult(TString&&, Ydb::StatusIds::StatusCode, EStreamCtrl) override {
-        Y_ABORT("Unimplemented for local rpc");
+    virtual void SendSerializedResult(TString&&, Ydb::StatusIds::StatusCode) override {
+        Y_FAIL("Unimplemented for local rpc");
     }
 
     TMaybe<TString> GetTraceId() const override {
         return Nothing();
-    }
-
-    NWilson::TTraceId GetWilsonTraceId() const override {
-        return {};
     }
 
     TInstant GetDeadline() const override {
@@ -193,8 +204,15 @@ public:
         CostInfo->set_consumed_units(consumed_units);
     }
 
+    void SetDiskQuotaExceeded(bool disk) override {
+        if (!QuotaExceeded) {
+            QuotaExceeded = std::make_unique<Ydb::QuotaExceeded>();
+        }
+        QuotaExceeded->set_disk(disk);
+    }
+
     bool GetDiskQuotaExceeded() const override {
-        return false;
+        return QuotaExceeded ? QuotaExceeded->disk() : false;
     }
 
     TMaybe<NRpcService::TRlPath> GetRlPath() const override {
@@ -205,21 +223,10 @@ public:
         return InternalCall;
     }
 
-    // IRequestCtx
-    //
-    void FinishRequest() override {}
-
-    // IRequestCtxBase
-    //
-    void AddAuditLogPart(const TStringBuf&, const TString&) override {}
-    const NGRpcService::TAuditLogParts& GetAuditLogParts() const override {
-        Y_ABORT("unimplemented for local rpc");
-    }
-
 private:
     void Reply(NProtoBuf::Message *r, ui32) override {
         TResp* resp = dynamic_cast<TResp*>(r);
-        Y_ABORT_UNLESS(resp);
+        Y_VERIFY(resp);
         CbWrapper(*resp);
     }
 
@@ -235,22 +242,8 @@ private:
     NYql::TIssueManager IssueManager;
     google::protobuf::Arena Arena;
     std::unique_ptr<Ydb::CostInfo> CostInfo;
+    std::unique_ptr<Ydb::QuotaExceeded> QuotaExceeded;
 };
-
-template<class TRequest>
-concept TRequestWithOperationParams = requires(TRequest& request) {
-    { request.mutable_operation_params() } -> std::convertible_to<Ydb::Operations::OperationParams*>;
-};
-
-template<TRequestWithOperationParams TRequest>
-void SetRequestSyncOperationMode(TRequest& request) {
-    request.mutable_operation_params()->set_operation_mode(Ydb::Operations::OperationParams::SYNC);
-}
-
-template<class TRequest>
-void SetRequestSyncOperationMode(TRequest&) {
-    // nothing
-}
 
 template<typename TRpc>
 NThreading::TFuture<typename TRpc::TResponse> DoLocalRpc(typename TRpc::TRequest&& proto, const TString& database,
@@ -259,7 +252,7 @@ NThreading::TFuture<typename TRpc::TResponse> DoLocalRpc(typename TRpc::TRequest
 {
     auto promise = NThreading::NewPromise<typename TRpc::TResponse>();
 
-    SetRequestSyncOperationMode(proto);
+    proto.mutable_operation_params()->set_operation_mode(Ydb::Operations::OperationParams::SYNC);
 
     using TCbWrapper = TPromiseWrapper<typename TRpc::TResponse>;
     auto req = new TLocalRpcCtx<TRpc, TCbWrapper>(std::move(proto), TCbWrapper(promise), database, token, requestType, internalCall);
@@ -279,7 +272,7 @@ TActorId DoLocalRpcSameMailbox(typename TRpc::TRequest&& proto, std::function<vo
         const TString& database, const TMaybe<TString>& token, const TMaybe<TString>& requestType,
         const TActorContext& ctx, bool internalCall = false)
 {
-    SetRequestSyncOperationMode(proto);
+    proto.mutable_operation_params()->set_operation_mode(Ydb::Operations::OperationParams::SYNC);
 
     auto req = new TLocalRpcCtx<TRpc, std::function<void(typename TRpc::TResponse)>>(std::move(proto), std::move(cb), database, token, requestType, internalCall);
     auto actor = TRpc::CreateRpcActor(req);

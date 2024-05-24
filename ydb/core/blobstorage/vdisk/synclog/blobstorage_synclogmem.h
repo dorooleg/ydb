@@ -58,7 +58,7 @@ namespace NKikimr {
             }
 
             ui64 GetFirstLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return ((TRecordHdr *)Data())->Lsn;
             }
 
@@ -137,7 +137,7 @@ namespace NKikimr {
                 , Begin(nullptr)
                 , End(nullptr)
             {
-                Y_ABORT_UNLESS(pagePtr);
+                Y_VERIFY(pagePtr);
                 Begin = (const TRecordHdr *)(PagePtr->Data());
                 End = (const TRecordHdr *)(PagePtr->FreeSpace());
             }
@@ -147,7 +147,7 @@ namespace NKikimr {
             }
 
             void Next() {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 Pos = Pos->Next();
             }
 
@@ -156,7 +156,7 @@ namespace NKikimr {
             }
 
             const TRecordHdr *Get() const {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 return Pos;
             }
         private:
@@ -173,8 +173,8 @@ namespace NKikimr {
                     total++;
                     lastLsn = p->Lsn;
                 }
-                Y_ABORT_UNLESS(total > 0 && total == PagePtr->GetRecsNum());
-                Y_ABORT_UNLESS(lastLsn == PagePtr->GetLastLsn());
+                Y_VERIFY(total > 0 && total == PagePtr->GetRecsNum());
+                Y_VERIFY(lastLsn == PagePtr->GetLastLsn());
             }
         };
 
@@ -268,7 +268,7 @@ namespace NKikimr {
             {}
 
             TSyncLogPageSnap operator[] (size_type n) {
-                Y_DEBUG_ABORT_UNLESS(n < size());
+                Y_VERIFY_DEBUG(n < size());
                 if (n + 1 == size())
                     return TSyncLogPageSnap(LastPageHeader, TBase::operator[](n));
                 else
@@ -276,7 +276,7 @@ namespace NKikimr {
             }
 
             TSyncLogPageSnap operator[] (size_type n) const {
-                Y_DEBUG_ABORT_UNLESS(n < size());
+                Y_VERIFY_DEBUG(n < size());
                 if (n + 1 == size())
                     return TSyncLogPageSnap(LastPageHeader, TBase::operator[](n));
                 else
@@ -377,12 +377,12 @@ namespace NKikimr {
             }
 
             ui64 GetFirstLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return Pages[0].GetFirstLsn();
             }
 
             ui64 GetLastLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return Pages[Size() - 1].GetLastLsn();
             }
 
@@ -423,7 +423,7 @@ namespace NKikimr {
             {}
 
             void SeekToFirst() {
-                Y_DEBUG_ABORT_UNLESS(Snap);
+                Y_VERIFY_DEBUG(Snap);
                 It = Snap->Pages.begin();
             }
 
@@ -436,12 +436,12 @@ namespace NKikimr {
             }
 
             void Next() {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 ++It;
             }
 
             void Prev() {
-                Y_DEBUG_ABORT_UNLESS(Snap && It > Snap->Pages.begin() && It <= Snap->Pages.end());
+                Y_VERIFY_DEBUG(Snap && It > Snap->Pages.begin() && It <= Snap->Pages.end());
                 --It;
             }
 
@@ -491,7 +491,7 @@ namespace NKikimr {
             void Next();
 
             const TRecordHdr *Get() const {
-                Y_DEBUG_ABORT_UNLESS(Valid());
+                Y_VERIFY_DEBUG(Valid());
                 return Hdr;
             }
 
@@ -519,12 +519,12 @@ namespace NKikimr {
             typedef TSyncLogPages::iterator TPageIterator;
 
             ui64 GetFirstLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return Pages.front()->GetFirstLsn();
             }
 
             ui64 GetLastLsn() const {
-                Y_DEBUG_ABORT_UNLESS(!Empty());
+                Y_VERIFY_DEBUG(!Empty());
                 return Pages.back()->GetLastLsn();
             }
 

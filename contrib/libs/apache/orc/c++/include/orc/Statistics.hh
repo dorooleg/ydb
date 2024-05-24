@@ -19,11 +19,9 @@
 #ifndef ORC_STATISTICS_HH
 #define ORC_STATISTICS_HH
 
+#include "orc/orc-config.hh"
 #include "orc/Type.hh"
 #include "orc/Vector.hh"
-#include "orc/orc-config.hh"
-
-#include <sstream>
 
 namespace orc {
 
@@ -31,7 +29,7 @@ namespace orc {
    * Statistics that are available for all types of columns.
    */
   class ColumnStatistics {
-   public:
+  public:
     virtual ~ColumnStatistics();
 
     /**
@@ -56,9 +54,9 @@ namespace orc {
   /**
    * Statistics for binary columns.
    */
-  class BinaryColumnStatistics : public ColumnStatistics {
-   public:
-    ~BinaryColumnStatistics() override;
+  class BinaryColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~BinaryColumnStatistics();
 
     /**
      * Check whether column has total length.
@@ -72,9 +70,9 @@ namespace orc {
   /**
    * Statistics for boolean columns.
    */
-  class BooleanColumnStatistics : public ColumnStatistics {
-   public:
-    ~BooleanColumnStatistics() override;
+  class BooleanColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~BooleanColumnStatistics();
 
     /**
      * Check whether column has true/false count.
@@ -89,9 +87,9 @@ namespace orc {
   /**
    * Statistics for date columns.
    */
-  class DateColumnStatistics : public ColumnStatistics {
-   public:
-    ~DateColumnStatistics() override;
+  class DateColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~DateColumnStatistics();
 
     /**
      * Check whether column has minimum.
@@ -121,9 +119,9 @@ namespace orc {
   /**
    * Statistics for decimal columns.
    */
-  class DecimalColumnStatistics : public ColumnStatistics {
-   public:
-    ~DecimalColumnStatistics() override;
+  class DecimalColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~DecimalColumnStatistics();
 
     /**
      * Check whether column has minimum.
@@ -165,9 +163,9 @@ namespace orc {
   /**
    * Statistics for float and double columns.
    */
-  class DoubleColumnStatistics : public ColumnStatistics {
-   public:
-    ~DoubleColumnStatistics() override;
+  class DoubleColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~DoubleColumnStatistics();
 
     /**
      * Check whether column has minimum.
@@ -212,9 +210,9 @@ namespace orc {
    * Statistics for all of the integer columns, such as byte, short, int, and
    * long.
    */
-  class IntegerColumnStatistics : public ColumnStatistics {
-   public:
-    ~IntegerColumnStatistics() override;
+  class IntegerColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~IntegerColumnStatistics();
 
     /**
      * Check whether column has minimum.
@@ -258,9 +256,9 @@ namespace orc {
   /**
    * Statistics for string columns.
    */
-  class StringColumnStatistics : public ColumnStatistics {
-   public:
-    ~StringColumnStatistics() override;
+  class StringColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~StringColumnStatistics();
 
     /**
      * Check whether column has minimum.
@@ -284,13 +282,13 @@ namespace orc {
      * Get the minimum value for the column.
      * @return minimum value
      */
-    virtual const std::string& getMinimum() const = 0;
+    virtual const std::string & getMinimum() const = 0;
 
     /**
      * Get the maximum value for the column.
      * @return maximum value
      */
-    virtual const std::string& getMaximum() const = 0;
+    virtual const std::string & getMaximum() const = 0;
 
     /**
      * Get the total length of all values.
@@ -302,9 +300,9 @@ namespace orc {
   /**
    * Statistics for timestamp columns.
    */
-  class TimestampColumnStatistics : public ColumnStatistics {
-   public:
-    ~TimestampColumnStatistics() override;
+  class TimestampColumnStatistics: public ColumnStatistics {
+  public:
+    virtual ~TimestampColumnStatistics();
 
     /**
      * Check whether minimum timestamp exists.
@@ -368,7 +366,7 @@ namespace orc {
   };
 
   class Statistics {
-   public:
+  public:
     virtual ~Statistics();
 
     /**
@@ -376,7 +374,8 @@ namespace orc {
      * @param colId id of the column
      * @return one column's statistics
      */
-    virtual const ColumnStatistics* getColumnStatistics(uint32_t colId) const = 0;
+    virtual const ColumnStatistics* getColumnStatistics(uint32_t colId
+                                                        ) const = 0;
 
     /**
      * Get the number of columns.
@@ -389,8 +388,8 @@ namespace orc {
    * Statistics for all of collections such as Map and List.
    */
   class CollectionColumnStatistics : public ColumnStatistics {
-   public:
-    ~CollectionColumnStatistics() override;
+  public:
+    virtual ~CollectionColumnStatistics();
 
     /**
      * check whether column has minimum number of children
@@ -454,8 +453,8 @@ namespace orc {
   };
 
   class StripeStatistics : public Statistics {
-   public:
-    ~StripeStatistics() override;
+  public:
+    virtual ~StripeStatistics();
 
     /**
      * Get the statistics of a given RowIndex entry in a given column.
@@ -463,8 +462,9 @@ namespace orc {
      * @param rowIndexId RowIndex entry id
      * @return statistics of the given RowIndex entry
      */
-    virtual const ColumnStatistics* getRowIndexStatistics(uint32_t columnId,
-                                                          uint32_t rowIndexId) const = 0;
+    virtual const ColumnStatistics*
+                      getRowIndexStatistics(
+                          uint32_t columnId, uint32_t rowIndexId) const = 0;
 
     /**
      * Get the number of RowIndex statistics in a given column.
@@ -473,6 +473,6 @@ namespace orc {
      */
     virtual uint32_t getNumberOfRowIndexStats(uint32_t columnId) const = 0;
   };
-}  // namespace orc
+}
 
 #endif

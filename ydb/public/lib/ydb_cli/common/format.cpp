@@ -1,13 +1,10 @@
 #include "format.h"
+#include "pretty_table.h"
 
 #include <util/string/vector.h>
 #include <library/cpp/json/json_prettifier.h>
 
 #include <ydb/public/lib/json_value/ydb_json_value.h>
-#include <ydb/library/arrow_parquet/result_set_parquet_printer.h>
-
-#include <iomanip>
-#include <strstream>
 
 namespace NYdb {
 namespace NConsoleClient {
@@ -23,17 +20,14 @@ namespace {
     THashMap<EOutputFormat, TString> StdinFormatDescriptions = {
         { EOutputFormat::JsonUnicode, "Parameter names and values in json unicode format" },
         { EOutputFormat::JsonBase64, "Parameter names and values in json unicode format, binary string parameter values are base64-encoded" },
-        { EOutputFormat::Csv, "Parameter names and values in csv format" },
-        { EOutputFormat::Tsv, "Parameter names and values in tsv format" },
         { EOutputFormat::NewlineDelimited, "Newline character delimits parameter sets on stdin and triggers "
                                             "processing in accordance to \"batch\" option" },
         { EOutputFormat::Raw, "Binary value with no transformations or parsing, parameter name is set by an \"stdin-par\" option" },
-        { EOutputFormat::NoFraming, "Data from stdin is taken as a single set of parameters" },
+        { EOutputFormat::NoFraming, "Data from stdin is taken as a single set of parameters" }
     };
 
     THashMap<EOutputFormat, TString> FormatDescriptions = {
         { EOutputFormat::Pretty, "Human readable output" },
-        { EOutputFormat::PrettyTable, "Human readable table output" },
         { EOutputFormat::Json, "Output in json format" },
         { EOutputFormat::JsonUnicode, "Output in json format, binary strings are encoded with unicode characters. "
                                       "Every row is a separate json on a separate line." },
@@ -42,9 +36,6 @@ namespace {
                                            "Every row is a separate json on a separate line." },
         { EOutputFormat::JsonBase64, "Output in json format, binary strings are encoded with base64. "
                                      "Every row is a separate json on a separate line." },
-        { EOutputFormat::JsonBase64Simplify, "Output in json format, binary strings are encoded with base64. "
-                                     "Every row is a separate json on a separate line. " 
-                                     "Output only basic information about plan." },
         { EOutputFormat::JsonBase64Array, "Output in json format, binary strings are encoded with base64. "
                                            "Every resultset is a json array of rows. "
                                            "Every row is a separate json on a separate line." },
@@ -54,7 +45,6 @@ namespace {
         { EOutputFormat::ProtoJsonBase64, "Output result protobuf in json format, binary strings are encoded with base64" },
         { EOutputFormat::Csv, "Output in csv format" },
         { EOutputFormat::Tsv, "Output in tsv format" },
-        { EOutputFormat::Parquet, "Output in parquet format" },
     };
 
     THashMap<EMessagingFormat, TString> MessagingFormatDescriptions = {
@@ -102,11 +92,11 @@ void TCommandWithFormat::AddInputFormats(TClientCommand::TConfig& config,
     TStringStream description;
     description << "Input format. Available options: ";
     NColorizer::TColors colors = NColorizer::AutoColors(Cout);
-    Y_ABORT_UNLESS(std::find(allowedFormats.begin(), allowedFormats.end(), defaultFormat) != allowedFormats.end(), 
+    Y_VERIFY(std::find(allowedFormats.begin(), allowedFormats.end(), defaultFormat) != allowedFormats.end(), 
         "Couldn't find default format %s in allowed formats", (TStringBuilder() << defaultFormat).c_str());
     for (const auto& format : allowedFormats) {
         auto findResult = InputFormatDescriptions.find(format);
-        Y_ABORT_UNLESS(findResult != InputFormatDescriptions.end(),
+        Y_VERIFY(findResult != InputFormatDescriptions.end(),
             "Couldn't find description for %s input format", (TStringBuilder() << format).c_str());
         description << "\n  " << colors.BoldColor() << format << colors.OldColor()
             << "\n    " << findResult->second;
@@ -125,7 +115,7 @@ void TCommandWithFormat::AddStdinFormats(TClientCommand::TConfig &config, const 
     NColorizer::TColors colors = NColorizer::AutoColors(Cout);
     for (const auto& format : allowedStdinFormats) {
         auto findResult = StdinFormatDescriptions.find(format);
-        Y_ABORT_UNLESS(findResult != StdinFormatDescriptions.end(),
+        Y_VERIFY(findResult != StdinFormatDescriptions.end(),
                  "Couldn't find description for %s stdin format", (TStringBuilder() << format).c_str());
         description << "\n  " << colors.BoldColor() << format << colors.OldColor()
                     << "\n    " << findResult->second;
@@ -134,7 +124,7 @@ void TCommandWithFormat::AddStdinFormats(TClientCommand::TConfig &config, const 
     description << "\n2. Framing: defines how parameter sets are delimited on the stdin. Available options: ";
     for (const auto& format : allowedFramingFormats) {
         auto findResult = StdinFormatDescriptions.find(format);
-        Y_ABORT_UNLESS(findResult != StdinFormatDescriptions.end(),
+        Y_VERIFY(findResult != StdinFormatDescriptions.end(),
                  "Couldn't find description for %s framing format", (TStringBuilder() << format).c_str());
         description << "\n  " << colors.BoldColor() << format << colors.OldColor()
                     << "\n    " << findResult->second;
@@ -151,11 +141,11 @@ void TCommandWithFormat::AddFormats(TClientCommand::TConfig& config,
     TStringStream description;
     description << "Output format. Available options: ";
     NColorizer::TColors colors = NColorizer::AutoColors(Cout);
-    Y_ABORT_UNLESS(std::find(allowedFormats.begin(), allowedFormats.end(), defaultFormat) != allowedFormats.end(), 
+    Y_VERIFY(std::find(allowedFormats.begin(), allowedFormats.end(), defaultFormat) != allowedFormats.end(), 
         "Couldn't find default format %s in allowed formats", (TStringBuilder() << defaultFormat).c_str());
     for (const auto& format : allowedFormats) {
         auto findResult = FormatDescriptions.find(format);
-        Y_ABORT_UNLESS(findResult != FormatDescriptions.end(),
+        Y_VERIFY(findResult != FormatDescriptions.end(),
             "Couldn't find description for %s output format", (TStringBuilder() << format).c_str());
         description << "\n  " << colors.BoldColor() << format << colors.OldColor()
             << "\n    " << findResult->second;
@@ -172,7 +162,7 @@ void TCommandWithFormat::AddMessagingFormats(TClientCommand::TConfig& config, co
     NColorizer::TColors colors = NColorizer::AutoColors(Cout);
     for (const auto& format : allowedFormats) {
         auto findResult = MessagingFormatDescriptions.find(format);
-        Y_ABORT_UNLESS(findResult != MessagingFormatDescriptions.end(),
+        Y_VERIFY(findResult != MessagingFormatDescriptions.end(),
             "Couldn't find description for %s output format", (TStringBuilder() << format).c_str());
         description << "\n  " << colors.BoldColor() << format << colors.OldColor()
             << "\n    " << findResult->second;
@@ -191,7 +181,7 @@ void TCommandWithFormat::ParseFormats() {
 
     if (!StdinFormats.empty()) {
         for (const auto& format : AllowedInputFormats) {
-            Y_ABORT_UNLESS(std::find(AllowedStdinFormats.begin(), AllowedStdinFormats.end(), format) != AllowedStdinFormats.end(), 
+            Y_VERIFY(std::find(AllowedStdinFormats.begin(), AllowedStdinFormats.end(), format) != AllowedStdinFormats.end(), 
                      "Allowed stdin formats should contain all allowed input formats");
         }
         for (const auto& format : StdinFormats) {
@@ -207,7 +197,7 @@ void TCommandWithFormat::ParseFormats() {
                 IsStdinFormatSet = true;
             } else if (std::find(AllowedFramingFormats.begin(), AllowedFramingFormats.end(), format) != AllowedFramingFormats.end()) {
                 if (IsFramingFormatSet) {
-                    throw TMisuseException() << "Formats " << FramingFormat << " and " << format
+                    throw TMisuseException() << "Formats " << StdinFormat << " and " << format
                                              << " are mutually exclusive, choose only one of them.";
                 }
                 FramingFormat = format;
@@ -240,9 +230,7 @@ void TCommandWithFormat::ParseMessagingFormats() {
 void TQueryPlanPrinter::Print(const TString& plan) {
     switch (Format) {
         case EOutputFormat::Default:
-        case EOutputFormat::JsonBase64Simplify:
-        case EOutputFormat::Pretty:
-        case EOutputFormat::PrettyTable: {
+        case EOutputFormat::Pretty: {
             NJson::TJsonValue planJson;
             NJson::ReadJsonTree(plan, &planJson, true);
 
@@ -255,24 +243,11 @@ void TQueryPlanPrinter::Print(const TString& plan) {
                 const auto& queries = planJson.GetMapSafe().at("queries").GetArraySafe();
                 for (size_t queryId = 0; queryId < queries.size(); ++queryId) {
                     const auto& query = queries[queryId];
-                    Output << "Query " << queryId << ":" << Endl;
-
-                    if (Format == EOutputFormat::PrettyTable) {
-                        PrintPrettyTable(query);
-                    } else if (Format == EOutputFormat::JsonBase64Simplify) {
-                        PrintSimplifyJson(query);
-                    } else{
-                        PrintPretty(query);
-                    }
+                    Cout << "Query " << queryId << ":" << Endl;
+                    PrintPretty(query);
                 }
             } else {
-                if (Format == EOutputFormat::PrettyTable) {
-                    PrintPrettyTable(planJson);
-                } else if (Format == EOutputFormat::JsonBase64Simplify) {
-                    PrintSimplifyJson(planJson);
-                } else {
-                    PrintPretty(planJson);
-                }
+                PrintPretty(planJson);
             }
 
             break;
@@ -287,7 +262,7 @@ void TQueryPlanPrinter::Print(const TString& plan) {
 }
 
 void TQueryPlanPrinter::PrintJson(const TString& plan) {
-    Output << NJson::PrettifyJson(plan, false) << Endl;
+    Cout << NJson::PrettifyJson(plan, false) << Endl;
 }
 
 void TQueryPlanPrinter::PrintPretty(const NJson::TJsonValue& plan) {
@@ -336,29 +311,29 @@ void TQueryPlanPrinter::PrintPrettyImpl(const NJson::TJsonValue& plan, TVector<T
             }
 
             if (info.empty()) {
-                Output << prefix << op.GetMapSafe().at("Name").GetString() << Endl;
+                Cout << prefix << op.GetMapSafe().at("Name").GetString() << Endl;
             } else {
-                Output << prefix << op.GetMapSafe().at("Name").GetString()
+                Cout << prefix << op.GetMapSafe().at("Name").GetString()
                      << " (" << JoinStrings(info, ", ") << ")" << Endl;
             }
         }
     } else if (node.contains("PlanNodeType") && node.at("PlanNodeType").GetString() == "Connection") {
-        Output << prefix << "<" << node.at("Node Type").GetString() << ">" << Endl;
+        Cout << prefix << "<" << node.at("Node Type").GetString() << ">" << Endl;
     } else {
-        Output << prefix << node.at("Node Type").GetString() << Endl;
+        Cout << prefix << node.at("Node Type").GetString() << Endl;
     }
 
     static const THashSet<TString> requiredFields = {"CTE Name", "Tables"};
     for (const auto& [key, value] : node) {
         if (requiredFields.contains(key)) {
-            Output << headerPrefix << key << ": " << JsonToString(value) << Endl;
+            Cout << headerPrefix << key << ": " << JsonToString(value) << Endl;
         }
     }
 
     if (AnalyzeMode && node.contains("Stats")) {
-        NColorizer::TColors colors = NColorizer::AutoColors(Output);
+        NColorizer::TColors colors = NColorizer::AutoColors(Cout);
         for (const auto& [key, value] : node.at("Stats").GetMapSafe()) {
-            Output << headerPrefix << colors.Yellow() << key << ": " << colors.Cyan()
+            Cout << headerPrefix << colors.Yellow() << key << ": " << colors.Cyan()
                  << JsonToString(value) << colors.Default() << Endl;
         }
     }
@@ -373,175 +348,14 @@ void TQueryPlanPrinter::PrintPrettyImpl(const NJson::TJsonValue& plan, TVector<T
     }
 }
 
-void TQueryPlanPrinter::PrintSimplifyJson(const NJson::TJsonValue& plan) {
-    if (plan.GetMapSafe().contains("SimplifiedPlan")) {
-        auto queryPlan = plan.GetMapSafe().at("SimplifiedPlan");
-        Output << NJson::PrettifyJson(JsonToString(queryPlan), false) << Endl;
-    } else { /* old format plan */
-        PrintJson(plan.GetStringRobust());
-    }
-}
-
-void TQueryPlanPrinter::PrintPrettyTable(const NJson::TJsonValue& plan) {
-    static const TVector<TString> explainColumnNames = {"Operation", "E-Cost", "E-Rows", "E-Size"};
-    static const TVector<TString> explainAnalyzeColumnNames = {"Operation", "A-Cpu", "A-Rows", "E-Cost", "E-Rows", "E-Size"};
-
-    if (plan.GetMapSafe().contains("SimplifiedPlan")) {
-        auto queryPlan = plan.GetMapSafe().at("SimplifiedPlan");
-
-        TPrettyTable table(AnalyzeMode ? explainAnalyzeColumnNames : explainColumnNames,
-            TPrettyTableConfig().WithoutRowDelimiters());
-
-        Y_ENSURE(queryPlan.GetMapSafe().contains("Plans"));
-
-        TString offset;
-        for (auto subplan : queryPlan.GetMapSafe().at("Plans").GetArraySafe()) {
-            PrintPrettyTableImpl(subplan, offset, table);
-        }
-
-        Output << table;
-    } else { /* old format plan */
-        PrintJson(plan.GetStringRobust());
-    }
-}
-
-TString ReplaceAll(TString str, const TString& from, const TString& to) {
-    if (!from) {
-        return str;
-    }
-        
-    size_t startPos = 0;
-    while ((startPos = str.find(from, startPos)) != TString::npos) {
-        str.replace(startPos, from.length(), to);
-        startPos += to.length();
-    }
-
-    return str;
-}
-
-TString FormatPrettyTableDouble(TString stringValue) {
-    std::strstream stream;
-
-    double value = 0.0;
-
-    try {
-        value = std::stod(stringValue);
-    } catch (const std::invalid_argument& ia) {
-        return stringValue;
-    }
-
-    if (1e-3 < value && value < 1e8 || value == 0) {
-        stream << static_cast<int64_t>(std::round(value)) << '\0';
-        return ToString(stream.str());
-    }
-
-
-    stream << std::fixed << std::setprecision(3) << std::scientific << value << '\0';
-    return ToString(stream.str());   
-}
-
-void TQueryPlanPrinter::PrintPrettyTableImpl(const NJson::TJsonValue& plan, TString& offset, TPrettyTable& table) {
-    const auto& node = plan.GetMapSafe();
-
-    auto& newRow = table.AddRow();
-
-    NColorizer::TColors colors = NColorizer::AutoColors(Cout);
-    TStringBuf color;
-    switch(offset.size() % 3) {
-        case 0: 
-            color = colors.LightRed();
-            break;
-        case 1:
-            color = colors.LightGreen();
-            break;
-        case 2:
-            color = colors.LightBlue();
-            break;
-        default:
-            color = colors.Default();
-            break;
-    }
-
-    if (node.contains("Operators")) {
-        for (const auto& op : node.at("Operators").GetArraySafe()) {
-            TVector<TString> info;
-            TString aCpu;
-            TString aRows;
-            TString eCost;
-            TString eRows;
-            TString eSize;
-
-            for (const auto& [key, value] : op.GetMapSafe()) {
-                if (key == "A-Cpu") {
-                    aCpu = FormatPrettyTableDouble(std::to_string(value.GetDouble()));
-                } else if (key == "A-Rows") {
-                    aRows = FormatPrettyTableDouble(std::to_string(value.GetDouble()));
-                } else if (key == "E-Cost") {
-                    eCost = FormatPrettyTableDouble(value.GetString());
-                } else if (key == "E-Rows") {
-                    eRows = FormatPrettyTableDouble(value.GetString());
-                } else if (key == "E-Size") {
-                    eSize = FormatPrettyTableDouble(value.GetString());
-                } else if (key != "Name") {
-                    if (key == "SsaProgram") {
-                        // skip this attribute
-                    }
-                    else if (key == "Predicate" || key == "Condition" || key == "SortBy") {
-                        info.emplace_back(TStringBuilder() << ReplaceAll(ReplaceAll(JsonToString(value), "item.", ""), "state.", ""));
-                    } else if (key == "Table") {
-                        info.insert(info.begin(), TStringBuilder() << colors.LightYellow() << key << colors.Default() << ":" << colors.LightGreen() << " " << ReplaceAll(ReplaceAll(JsonToString(value), "item.", ""), "state.", "") << colors.Default());
-                    } else {
-                        info.emplace_back(TStringBuilder() << colors.LightYellow() << key << colors.Default() << ": " << ReplaceAll(ReplaceAll(JsonToString(value), "item.", ""), "state.", ""));
-                    }
-                }
-            }
-
-            TStringBuilder operation;
-            if (info.empty()) {
-                operation << offset << color << " -> " << colors.LightCyan() << op.GetMapSafe().at("Name").GetString() << colors.Default();
-            } else {
-                operation << offset << color << " -> " << colors.LightCyan() << op.GetMapSafe().at("Name").GetString() << colors.Default()
-                     << " (" << JoinStrings(info, ", ") << ")";
-            }
-
-            newRow.Column(0, std::move(operation));
-            if (AnalyzeMode) {
-                newRow.Column(1, std::move(aCpu));
-                newRow.Column(2, std::move(aRows));
-                newRow.Column(3, std::move(eCost));
-                newRow.Column(4, std::move(eRows));
-                newRow.Column(5, std::move(eSize));
-            }
-            else {
-                newRow.Column(1, std::move(eCost));
-                newRow.Column(2, std::move(eRows));
-                newRow.Column(3, std::move(eSize));
-            }
-        }
-    } else {
-        TStringBuilder operation;
-        operation << offset << color << " -> " << colors.LightCyan() << node.at("Node Type").GetString() << colors.Default();
-        newRow.Column(0, std::move(operation));
-    }
-
-    if (node.contains("Plans")) {
-        auto& plans = node.at("Plans").GetArraySafe();
-        for (auto subplan : plans) {
-            offset += "  ";
-            PrintPrettyTableImpl(subplan, offset, table);
-            offset.resize(offset.size() - 2);
-        }
-    }
-}
-
 TString TQueryPlanPrinter::JsonToString(const NJson::TJsonValue& jsonValue) {
     return jsonValue.GetStringRobust();
 }
 
+
 TResultSetPrinter::TResultSetPrinter(EOutputFormat format, std::function<bool()> isInterrupted)
     : Format(format)
     , IsInterrupted(isInterrupted)
-    , ParquetPrinter(std::make_unique<TResultSetParquetPrinter>(""))
 {}
 
 TResultSetPrinter::~TResultSetPrinter() {
@@ -579,9 +393,6 @@ void TResultSetPrinter::Print(const TResultSet& resultSet) {
     case EOutputFormat::Tsv:
         PrintCsv(resultSet, "\t");
         break;
-    case EOutputFormat::Parquet:
-        ParquetPrinter->Print(resultSet);
-        break;
     default:
         throw TMisuseException() << "This command doesn't support " << Format << " output format";
     }
@@ -614,9 +425,6 @@ void TResultSetPrinter::EndResultSet() {
     case EOutputFormat::JsonUnicodeArray:
     case EOutputFormat::JsonBase64Array:
         Cout << ']' << Endl;
-        break;
-    case EOutputFormat::Parquet:
-        ParquetPrinter->Reset();
         break;
     default:
         break;

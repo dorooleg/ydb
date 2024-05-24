@@ -3,7 +3,6 @@
 #include "defs.h"
 
 #include <ydb/core/protos/console_config.pb.h>
-#include <ydb/core/protos/config.pb.h>
 
 #include <util/generic/bitmap.h>
 #include <util/generic/hash.h>
@@ -498,7 +497,7 @@ private:
                     TIndexMap &map)
     {
         auto &set = map[key][item->Kind];
-        Y_ABORT_UNLESS(!forced || !set.contains(item));
+        Y_VERIFY(!forced || !set.contains(item));
         set.insert(item);
     }
 
@@ -509,17 +508,17 @@ private:
     {
         auto mapIt = map.find(key);
         if (mapIt == map.end()) {
-            Y_ABORT_UNLESS(!forced);
+            Y_VERIFY(!forced);
             return;
         }
         auto kindIt = mapIt->second.find(item->Kind);
         if (kindIt == mapIt->second.end()) {
-            Y_ABORT_UNLESS(!forced);
+            Y_VERIFY(!forced);
             return;
         }
         auto itemIt = kindIt->second.find(item);
         if (itemIt == kindIt->second.end()) {
-            Y_ABORT_UNLESS(!forced);
+            Y_VERIFY(!forced);
             return;
         }
         kindIt->second.erase(itemIt);
@@ -635,8 +634,8 @@ private:
                          THashMap<TKey, TSubscriptionSet> &index)
     {
         auto it = index.find(key);
-        Y_ABORT_UNLESS(it != index.end());
-        Y_ABORT_UNLESS(it->second.contains(subscription));
+        Y_VERIFY(it != index.end());
+        Y_VERIFY(it->second.contains(subscription));
         it->second.erase(subscription);
         if (it->second.empty())
             index.erase(it);
@@ -696,8 +695,8 @@ private:
                          THashMap<TKey, TInMemorySubscriptionSet> &index)
     {
         auto it = index.find(key);
-        Y_ABORT_UNLESS(it != index.end());
-        Y_ABORT_UNLESS(it->second.contains(subscription));
+        Y_VERIFY(it != index.end());
+        Y_VERIFY(it->second.contains(subscription));
         it->second.erase(subscription);
         if (it->second.empty())
             index.erase(it);

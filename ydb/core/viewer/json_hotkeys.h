@@ -1,8 +1,8 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/datashard/datashard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
@@ -80,32 +80,27 @@ public:
 
     void Handle(TEvSchemeShard::TEvDescribeSchemeResult::TPtr& ev) {
         DescribeResult = ev->Release();
-        const auto& pbRecord(DescribeResult->GetRecord());
-        if (pbRecord.HasPathDescription()) {
-            const auto& pathDescription = pbRecord.GetPathDescription();
-            const auto& partitions = pathDescription.GetTablePartitions();
-            const auto& metrics = pathDescription.GetTablePartitionMetrics();
-            TVector<std::pair<ui64, int>> tabletsOrder;
+        const auto& pathDescription = DescribeResult->GetRecord().GetPathDescription();
+        const auto& partitions = pathDescription.GetTablePartitions();
+        const auto& metrics = pathDescription.GetTablePartitionMetrics();
+        TVector<std::pair<ui64, int>> tabletsOrder;
 
-            for (int i = 0; i < metrics.size(); ++i) {
-                tabletsOrder.emplace_back(metrics.Get(i).GetCPU(), i);
-            }
-
-            Sort(tabletsOrder, std::greater<std::pair<ui64, int>>());
-            ui32 tablets = (ui32) std::max(1, (int) std::ceil(PollingFactor * tabletsOrder.size()));
-
-            for (ui32 i = 0; i < tablets; ++i) {
-                THolder<TEvDataShard::TEvGetDataHistogramRequest> request = MakeHolder<TEvDataShard::TEvGetDataHistogramRequest>();
-                if (EnableSampling) {
-                    request->Record.SetCollectKeySampleMs(30000); // 30 sec
-                }
-                request->Record.SetActualData(true);
-                ui64 datashardId = partitions.Get(tabletsOrder[i].second).GetDatashardId();
-                SendRequestToPipe(ConnectTabletPipe(datashardId), request.Release());
-            }
+        for (int i = 0; i < metrics.size(); ++i) {
+            tabletsOrder.emplace_back(metrics.Get(i).GetCPU(), i);
         }
 
-        RequestDone();
+        Sort(tabletsOrder, std::greater<std::pair<ui64, int>>());
+        ui32 tablets = (ui32) std::max(1, (int) std::ceil(PollingFactor * tabletsOrder.size()));
+
+        for (ui32 i = 0; i < tablets; ++i) {
+            THolder<TEvDataShard::TEvGetDataHistogramRequest> request = MakeHolder<TEvDataShard::TEvGetDataHistogramRequest>();
+            if (EnableSampling) {
+                request->Record.SetCollectKeySampleMs(30000); // 30 sec
+            }
+            request->Record.SetActualData(true);
+            ui64 datashardId = partitions.Get(tabletsOrder[i].second).GetDatashardId();
+            SendRequestToPipe(ConnectTabletPipe(datashardId), request.Release());
+        }
     }
 
     void Handle(TEvDataShard::TEvGetDataHistogramResponse::TPtr& ev) {
@@ -146,7 +141,7 @@ public:
         if (DescribeResult != nullptr) {
             switch (DescribeResult->GetRecord().GetStatus()) {
             case NKikimrScheme::StatusAccessDenied:
-                headers = Viewer->GetHTTPFORBIDDEN(Event->Get());
+                headers = HTTPFORBIDDENJSON;
                 break;
             default:
                 break;

@@ -76,15 +76,6 @@ TString GetResourceValuesText(const TResourceRawValues& values) {
     return str.Str();
 }
 
-NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values) {
-    NJson::TJsonValue json;
-    json["Counter"] = GetCounter(std::get<NMetrics::EResource::Counter>(values));
-    json["CPU"] = GetTimes(std::get<NMetrics::EResource::CPU>(values));
-    json["Memory"] = GetBytes(std::get<NMetrics::EResource::Memory>(values));
-    json["Network"] = GetBytesPerSecond(std::get<NMetrics::EResource::Network>(values));
-    return json;
-}
-
 TString GetResourceValuesText(const TResourceNormalizedValues& values) {
     TStringStream str;
     str << '(';
@@ -97,15 +88,6 @@ TString GetResourceValuesText(const TResourceNormalizedValues& values) {
     str << Sprintf("%.9f", std::get<NMetrics::EResource::Network>(values));
     str << ')';
     return str.Str();
-}
-
-NJson::TJsonValue GetResourceValuesJson(const TResourceNormalizedValues& values) {
-    NJson::TJsonValue json;
-    json["Counter"] = Sprintf("%.9f", std::get<NMetrics::EResource::Counter>(values));
-    json["CPU"] = Sprintf("%.9f", std::get<NMetrics::EResource::CPU>(values));
-    json["Memory"] = Sprintf("%.9f", std::get<NMetrics::EResource::Memory>(values));
-    json["Network"] = Sprintf("%.9f", std::get<NMetrics::EResource::Network>(values));
-    return json;
 }
 
 TString GetResourceValuesText(const TTabletInfo& tablet) {
@@ -159,14 +141,14 @@ TString GetResourceValuesHtml(const TResourceRawValues& values) {
     return str.Str();
 }
 
-// NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values) {
-//     NJson::TJsonValue value;
-//     value.AppendValue(GetCounter(std::get<NMetrics::EResource::Counter>(values)));
-//     value.AppendValue(GetTimes(std::get<NMetrics::EResource::CPU>(values)));
-//     value.AppendValue(GetBytes(std::get<NMetrics::EResource::Memory>(values)));
-//     value.AppendValue(GetBytesPerSecond(std::get<NMetrics::EResource::Network>(values)));
-//     return value;
-// }
+NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values) {
+    NJson::TJsonValue value;
+    value.AppendValue(GetCounter(std::get<NMetrics::EResource::Counter>(values)));
+    value.AppendValue(GetTimes(std::get<NMetrics::EResource::CPU>(values)));
+    value.AppendValue(GetBytes(std::get<NMetrics::EResource::Memory>(values)));
+    value.AppendValue(GetBytesPerSecond(std::get<NMetrics::EResource::Network>(values)));
+    return value;
+}
 
 NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values, const TResourceRawValues& maximum) {
     NMetrics::EResource resource = GetDominantResourceType(values, maximum);
@@ -214,25 +196,6 @@ TString GetConditionalRedString(const TString& str, bool condition) {
     }
 }
 
-TString GetValueWithColoredGlyph(double val, double maxVal) {
-    double ratio;
-    if (maxVal != 0) {
-        ratio = val / maxVal;
-    } else {
-        ratio = val ? 1.0 : 0.0;
-    }
-    TString glyph;
-    if (ratio < 0.9) {
-        glyph = "<span class='glyphicon glyphicon-ok-sign' style='color:green; margin-left:4px'></span>";
-    } else if (ratio < 1.0) {
-        glyph = "<span class='glyphicon glyphicon-exclamation-sign' style='color:#FFEA00; margin-left:4px'></span>";
-    } else {
-        glyph = "<span class='glyphicon glyphicon-exclamation-sign' style='color:red; margin-left:4px'></span>";
-    }
-
-    return Sprintf("<span>%.2f</span>", val) + glyph;
-}
-
 ui64 GetReadThroughput(const NKikimrTabletBase::TMetrics& values) {
     ui64 acc = 0;
     for (const auto& throughput : values.GetGroupReadThroughput()) {
@@ -249,14 +212,14 @@ ui64 GetWriteThroughput(const NKikimrTabletBase::TMetrics& values) {
     return acc;
 }
 
-TString GetCounter(i64 counter, const TString& zero) {
+TString GetCounter(ui64 counter, const TString& zero) {
     if (counter == 0) {
         return zero;
     }
-    return Sprintf("%ld", counter);
+    return Sprintf("%lu", counter);
 }
 
-TString GetBytes(i64 bytes, const TString& zero) {
+TString GetBytes(ui64 bytes, const TString& zero) {
     if (bytes == 0) {
         return zero;
     }
@@ -277,14 +240,14 @@ TString GetBytes(i64 bytes, const TString& zero) {
     return Sprintf(format, value);
 }
 
-TString GetBytesPerSecond(i64 bytes, const TString& zero) {
+TString GetBytesPerSecond(ui64 bytes, const TString& zero) {
     if (bytes == 0) {
         return zero;
     }
     return GetBytes(bytes) + "/s";
 }
 
-TString GetTimes(i64 times, const TString& zero) {
+TString GetTimes(ui64 times, const TString& zero) {
     if (times == 0) {
         return zero;
     }
@@ -357,6 +320,20 @@ TString GetDataCenterName(ui64 dataCenterId) {
     }
 }
 
+TString LongToShortTabletName(const TString& longTabletName) {
+    TString shortName;
+
+    for (char c : longTabletName) {
+        if (c >= 'A' && c <= 'Z') {
+            shortName += c;
+        }
+    }
+    if (shortName.empty()) {
+        shortName = longTabletName;
+    }
+    return shortName;
+}
+
 TString GetLocationString(const NActors::TNodeLocation& location) {
     NActorsInterconnect::TNodeLocation proto;
     location.Serialize(&proto, false);
@@ -370,100 +347,9 @@ void MakeTabletTypeSet(std::vector<TTabletTypes::EType>& list) {
 
 bool IsValidTabletType(TTabletTypes::EType type) {
     return (type > TTabletTypes::Unknown
-            && type < TTabletTypes::EType_MAX
+            && type < TTabletTypes::Reserved40
             );
 }
 
-bool IsValidObjectId(const TFullObjectId& objectId) {
-    return objectId.second != 0;
-}
-
-NJson::TJsonValue THive::GetBalancerProgressJson() {
-    NJson::TJsonValue result;
-    for (const auto& stats : BalancerStats) {
-        NJson::TJsonValue json;
-        json["TotalRuns"] = stats.TotalRuns;
-        json["TotalMovements"] = stats.TotalMovements;
-        json["IsRunningNow"] = stats.IsRunningNow;
-        json["CurrentMovements"] = stats.CurrentMovements;
-        json["CurrentMaxMovements"] = stats.CurrentMaxMovements;
-        json["LastRunTimestamp"] = stats.LastRunTimestamp.ToString();
-        json["LastRunMovements"] = stats.LastRunMovements;
-        result.AppendValue(std::move(json));
-    }
-    return result;
-}
-
-TString GetRunningTabletsText(ui64 runningTablets, ui64 totalTablets, bool warmUp) {
-    TStringBuilder str;
-    str << (totalTablets == 0 ? 0 : runningTablets * 100 / totalTablets) << "% "<< runningTablets << "/" << totalTablets;
-    if (warmUp) {
-        str << " (Warming up...)";
-    }
-    return str;
-}
-
-bool IsResourceDrainingState(TTabletInfo::EVolatileState state) {
-    switch (state) {
-    case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_STARTING:
-    case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING:
-    case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_UNKNOWN:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool IsAliveState(TTabletInfo::EVolatileState state) {
-    switch (state) {
-    case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_STARTING:
-    case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING:
-        return true;
-    default:
-        return false;
-    }
-}
-
-TString GetTabletTypeShortName(TTabletTypes::EType type) {
-    auto it = TABLET_TYPE_SHORT_NAMES.find(type);
-    if (it == TABLET_TYPE_SHORT_NAMES.end()) {
-        return TStringBuilder() << (ui32)type;
-    } else {
-        return it->second;
-    }
-}
-
-TTabletTypes::EType GetTabletTypeByShortName(const TString& name) {
-    auto it = TABLET_TYPE_BY_SHORT_NAME.find(name);
-    if (it == TABLET_TYPE_BY_SHORT_NAME.end()) {
-        return TTabletTypes::TypeInvalid;
-    } else {
-        return it->second;
-    }
-}
-
-TString GetTypesHtml(const std::set<TTabletTypes::EType>& typesToShow, const std::unordered_map<TTabletTypes::EType, NKikimrConfig::THiveTabletLimit>& tabletLimits) {
-    TStringBuilder str;
-    for (auto type : typesToShow) {
-        if (!str.empty()) {
-            str << " ";
-        }
-        auto it = tabletLimits.find(type);
-        auto shortTypeName = GetTabletTypeShortName(type);
-        auto longTypeName = TTabletTypes::TypeToStr(type);
-        if (it == tabletLimits.end() || it->second.GetMaxCount() > 0) {
-            str << "<span class='box' title='" << longTypeName
-                << "' onclick='applySetting(this,\"DefaultTabletLimit\",\"" << shortTypeName
-                << ":0\")'>";
-        } else {
-            str << "<span class='box box-disabled' title='" << longTypeName
-                << "' onclick='applySetting(this, \"DefaultTabletLimit\", \"" << shortTypeName
-                << ":" << TNodeInfo::MAX_TABLET_COUNT_DEFAULT_VALUE << "\")'>";
-        }
-        str << shortTypeName;
-        str << "</span>";
-    }
-    return str;
-}
 } // NHive
 } // NKikimr

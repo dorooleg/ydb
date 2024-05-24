@@ -1,18 +1,17 @@
 #include "proxy.h"
 
-#include <ydb/core/base/appdata.h>
-#include <ydb/core/base/path.h>
-#include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/base/tx_processing.h>
 #include <ydb/core/docapi/traits.h>
-#include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/library/aclib/aclib.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/protobuf_printer/security_printer.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
-#include <ydb/public/api/protos/ydb_issue_message.pb.h>
+#include <ydb/core/protos/flat_scheme_op.pb.h>
+#include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/base/appdata.h>
+#include <ydb/core/base/tx_processing.h>
+#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/core/base/path.h>
 
+#include <ydb/library/aclib/aclib.h>
+
+#include <library/cpp/actors/core/hfunc.h>
 #include <util/string/cast.h>
 
 namespace NKikimr {
@@ -73,7 +72,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
 
 
     void SendPropose(TAutoPtr<TEvSchemeShardPropose> req, ui64 shardToRequest, const TActorContext &ctx) {
-        Y_ABORT_UNLESS(!PipeClient);
+        Y_VERIFY(!PipeClient);
 
         if (UserToken) {
             req->Record.SetUserToken(UserToken->SerializeAsString());
@@ -148,11 +147,10 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         case NKikimrSchemeOp::ESchemeOpDropColumnTable:
         case NKikimrSchemeOp::ESchemeOpDropSequence:
         case NKikimrSchemeOp::ESchemeOpDropReplication:
-        case NKikimrSchemeOp::ESchemeOpDropReplicationCascade:
         case NKikimrSchemeOp::ESchemeOpDropBlobDepot:
         case NKikimrSchemeOp::ESchemeOpDropExternalTable:
+            return *modifyScheme.MutableDrop()->MutableName();
         case NKikimrSchemeOp::ESchemeOpDropExternalDataSource:
-        case NKikimrSchemeOp::ESchemeOpDropView:
             return *modifyScheme.MutableDrop()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpAlterTable:
@@ -165,7 +163,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableModifyACL()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpSplitMergeTablePartitions:
-            Y_ABORT("no implementation for ESchemeOpSplitMergeTablePartitions");
+            Y_FAIL("no implementation for ESchemeOpSplitMergeTablePartitions");
 
         case NKikimrSchemeOp::ESchemeOpBackup:
             return *modifyScheme.MutableBackup()->MutableTableName();
@@ -177,7 +175,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableSubDomain()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpAlterExtSubDomainCreateHive:
-            Y_ABORT("no implementation for ESchemeOpAlterExtSubDomainCreateHive");
+            Y_FAIL("no implementation for ESchemeOpAlterExtSubDomainCreateHive");
 
         case NKikimrSchemeOp::ESchemeOpCreateRtmrVolume:
             return *modifyScheme.MutableCreateRtmrVolume()->MutableName();
@@ -208,30 +206,29 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableCreateTableIndex()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpCreateConsistentCopyTables:
-            Y_ABORT("no implementation for ESchemeOpCreateConsistentCopyTables");
+            Y_FAIL("no implementation for ESchemeOpCreateConsistentCopyTables");
 
         case NKikimrSchemeOp::ESchemeOp_DEPRECATED_35:
-            Y_ABORT("no implementation for ESchemeOp_DEPRECATED_35");
+            Y_FAIL("no implementation for ESchemeOp_DEPRECATED_35");
 
         case NKikimrSchemeOp::ESchemeOpUpgradeSubDomain:
         case NKikimrSchemeOp::ESchemeOpUpgradeSubDomainDecision:
             return *modifyScheme.MutableUpgradeSubDomain()->MutableName();
 
-        case NKikimrSchemeOp::ESchemeOpCreateColumnBuild:
         case NKikimrSchemeOp::ESchemeOpCreateIndexBuild:
-            Y_ABORT("no implementation for ESchemeOpCreateIndexBuild/ESchemeOpCreateColumnBuild");
+            Y_FAIL("no implementation for ESchemeOpCreateIndexBuild");
 
         case NKikimrSchemeOp::ESchemeOpInitiateBuildIndexMainTable:
-            Y_ABORT("no implementation for ESchemeOpInitiateBuildIndexMainTable");
+            Y_FAIL("no implementation for ESchemeOpInitiateBuildIndexMainTable");
 
         case NKikimrSchemeOp::ESchemeOpCreateLock:
-            Y_ABORT("no implementation for ESchemeOpCreateLock");
+            Y_FAIL("no implementation for ESchemeOpCreateLock");
 
         case NKikimrSchemeOp::ESchemeOpApplyIndexBuild:
-            Y_ABORT("no implementation for ESchemeOpApplyIndexBuild");
+            Y_FAIL("no implementation for ESchemeOpApplyIndexBuild");
 
         case NKikimrSchemeOp::ESchemeOpFinalizeBuildIndexMainTable:
-            Y_ABORT("no implementation for ESchemeOpFinalizeBuildIndexMainTable");
+            Y_FAIL("no implementation for ESchemeOpFinalizeBuildIndexMainTable");
 
         case NKikimrSchemeOp::ESchemeOpAlterTableIndex:
             return *modifyScheme.MutableAlterTableIndex()->MutableName();
@@ -240,19 +237,19 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableAlterSolomonVolume()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpDropLock:
-            Y_ABORT("no implementation for ESchemeOpDropLock");
+            Y_FAIL("no implementation for ESchemeOpDropLock");
 
         case NKikimrSchemeOp::ESchemeOpFinalizeBuildIndexImplTable:
-            Y_ABORT("no implementation for ESchemeOpFinalizeBuildIndexImplTable");
+            Y_FAIL("no implementation for ESchemeOpFinalizeBuildIndexImplTable");
 
         case NKikimrSchemeOp::ESchemeOpInitiateBuildIndexImplTable:
-            Y_ABORT("no implementation for ESchemeOpInitiateBuildIndexImplTable");
+            Y_FAIL("no implementation for ESchemeOpInitiateBuildIndexImplTable");
 
         case NKikimrSchemeOp::ESchemeOpDropIndex:
             return *modifyScheme.MutableDropIndex()->MutableTableName();
 
         case NKikimrSchemeOp::ESchemeOpDropTableIndexAtMainTable:
-            Y_ABORT("no implementation for ESchemeOpDropTableIndexAtMainTable");
+            Y_FAIL("no implementation for ESchemeOpDropTableIndexAtMainTable");
 
         case NKikimrSchemeOp::ESchemeOpCancelIndexBuild:
             return *modifyScheme.MutableCancelIndexBuild()->MutableTablePath();
@@ -279,13 +276,13 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableAlterColumnTable()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpAlterLogin:
-            Y_ABORT("no implementation for ESchemeOpAlterLogin");
+            Y_FAIL("no implementation for ESchemeOpAlterLogin");
 
         case NKikimrSchemeOp::ESchemeOpCreateCdcStream:
             return *modifyScheme.MutableCreateCdcStream()->MutableTableName();
 
         case NKikimrSchemeOp::ESchemeOpCreateCdcStreamImpl:
-            Y_ABORT("no implementation for ESchemeOpCreateCdcStreamImpl");
+            Y_FAIL("no implementation for ESchemeOpCreateCdcStreamImpl");
 
         case NKikimrSchemeOp::ESchemeOpCreateCdcStreamAtTable:
             return *modifyScheme.MutableCreateCdcStream()->MutableTableName();
@@ -294,7 +291,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableAlterCdcStream()->MutableTableName();
 
         case NKikimrSchemeOp::ESchemeOpAlterCdcStreamImpl:
-            Y_ABORT("no implementation for ESchemeOpAlterCdcStreamImpl");
+            Y_FAIL("no implementation for ESchemeOpAlterCdcStreamImpl");
 
         case NKikimrSchemeOp::ESchemeOpAlterCdcStreamAtTable:
             return *modifyScheme.MutableAlterCdcStream()->MutableTableName();
@@ -303,19 +300,19 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableDropCdcStream()->MutableTableName();
 
         case NKikimrSchemeOp::ESchemeOpDropCdcStreamImpl:
-            Y_ABORT("no implementation for ESchemeOpDropCdcStreamImpl");
+            Y_FAIL("no implementation for ESchemeOpDropCdcStreamImpl");
 
         case NKikimrSchemeOp::ESchemeOpDropCdcStreamAtTable:
             return *modifyScheme.MutableDropCdcStream()->MutableTableName();
 
         case NKikimrSchemeOp::ESchemeOpMoveTable:
-            Y_ABORT("no implementation for ESchemeOpMoveTable");
+            Y_FAIL("no implementation for ESchemeOpMoveTable");
 
         case NKikimrSchemeOp::ESchemeOpMoveTableIndex:
-            Y_ABORT("no implementation for ESchemeOpMoveTableIndex");
+            Y_FAIL("no implementation for ESchemeOpMoveTableIndex");
 
         case NKikimrSchemeOp::ESchemeOpMoveIndex:
-            Y_ABORT("no implementation for ESchemeOpMoveIndex");
+            Y_FAIL("no implementation for ESchemeOpMoveIndex");
 
         case NKikimrSchemeOp::ESchemeOpCreateSequence:
         case NKikimrSchemeOp::ESchemeOpAlterSequence:
@@ -333,19 +330,13 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             return *modifyScheme.MutableCreateExternalTable()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpAlterExternalTable:
-            Y_ABORT("no implementation for ESchemeOpAlterExternalTable");
+            Y_FAIL("no implementation for ESchemeOpAlterExternalTable");
 
         case NKikimrSchemeOp::ESchemeOpCreateExternalDataSource:
             return *modifyScheme.MutableCreateExternalDataSource()->MutableName();
 
         case NKikimrSchemeOp::ESchemeOpAlterExternalDataSource:
-            Y_ABORT("no implementation for ESchemeOpAlterExternalDataSource");
-
-        case NKikimrSchemeOp::ESchemeOpCreateView:
-            return *modifyScheme.MutableCreateView()->MutableName();
-
-        case NKikimrSchemeOp::ESchemeOpAlterView:
-            Y_ABORT("no implementation for ESchemeOpAlterView");
+            Y_FAIL("no implementation for ESchemeOpAlterExternalDataSource");
         }
     }
 
@@ -367,7 +358,6 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         case NKikimrSchemeOp::ESchemeOpCreateColumnTable:
         case NKikimrSchemeOp::ESchemeOpCreateExternalTable:
         case NKikimrSchemeOp::ESchemeOpCreateExternalDataSource:
-        case NKikimrSchemeOp::ESchemeOpCreateView:
             return true;
         default:
             return false;
@@ -433,11 +423,6 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             if (shardResult->HasPathDropTxId()) {
                 result->Record.SetPathDropTxId(shardResult->GetPathDropTxId());
             }
-
-            for (const auto& issue : shardResult->GetIssues()) {
-                auto newIssue = result->Record.AddIssues();
-                newIssue->CopyFrom(issue);
-            }
         } else {
             switch (status) {
                 case TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ResolveError:
@@ -457,11 +442,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             << " SEND to# " << Source.ToString() << " Source " << result->ToString());
 
         if (result->Record.GetSchemeShardReason()) {
-            auto issueStatus = NKikimrIssues::TIssuesIds::DEFAULT_ERROR;
-            if (result->Record.GetSchemeShardStatus() == NKikimrScheme::EStatus::StatusPathDoesNotExist) {
-                issueStatus = NKikimrIssues::TIssuesIds::PATH_NOT_EXIST;
-            }
-            auto issue = MakeIssue(std::move(issueStatus), result->Record.GetSchemeShardReason());
+            auto issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, result->Record.GetSchemeShardReason());
             NYql::IssueToMessage(issue, result->Record.AddIssues());
         }
         ctx.Send(Source, result);
@@ -619,12 +600,9 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         case NKikimrSchemeOp::ESchemeOpDropColumnTable:
         case NKikimrSchemeOp::ESchemeOpDropSequence:
         case NKikimrSchemeOp::ESchemeOpDropReplication:
-        case NKikimrSchemeOp::ESchemeOpDropReplicationCascade:
         case NKikimrSchemeOp::ESchemeOpDropBlobDepot:
         case NKikimrSchemeOp::ESchemeOpDropExternalTable:
-        case NKikimrSchemeOp::ESchemeOpDropExternalDataSource:
-        case NKikimrSchemeOp::ESchemeOpDropView:
-        {
+        case NKikimrSchemeOp::ESchemeOpDropExternalDataSource: {
             auto toResolve = TPathToResolve(pbModifyScheme.GetOperationType());
             toResolve.Path = Merge(workingDir, SplitPath(GetPathNameForScheme(pbModifyScheme)));
             toResolve.RequiredAccess = NACLib::EAccessRights::RemoveSchema;
@@ -684,7 +662,6 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         case NKikimrSchemeOp::ESchemeOpCreateBlobDepot:
         case NKikimrSchemeOp::ESchemeOpCreateExternalTable:
         case NKikimrSchemeOp::ESchemeOpCreateExternalDataSource:
-        case NKikimrSchemeOp::ESchemeOpCreateView:
         {
             auto toResolve = TPathToResolve(pbModifyScheme.GetOperationType());
             toResolve.Path = workingDir;
@@ -765,7 +742,6 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         case NKikimrSchemeOp::ESchemeOpCreateTableIndex:
         case NKikimrSchemeOp::ESchemeOpDropTableIndex:
         case NKikimrSchemeOp::ESchemeOp_DEPRECATED_35:
-        case NKikimrSchemeOp::ESchemeOpCreateColumnBuild:
         case NKikimrSchemeOp::ESchemeOpCreateIndexBuild:
         case NKikimrSchemeOp::ESchemeOpInitiateBuildIndexMainTable:
         case NKikimrSchemeOp::ESchemeOpCreateLock:
@@ -786,7 +762,6 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         case NKikimrSchemeOp::ESchemeOpDropCdcStreamAtTable:
         case NKikimrSchemeOp::ESchemeOpMoveTableIndex:
         case NKikimrSchemeOp::ESchemeOpAlterExtSubDomainCreateHive:
-        case NKikimrSchemeOp::ESchemeOpAlterView:
             return false;
         }
         return true;
@@ -848,23 +823,28 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             case NSchemeCache::TSchemeCacheNavigate::EStatus::Ok:
                 continue;
 
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied: {
-                const ui32 access = NACLib::EAccessRights::DescribeSchema;
-                LOG_ERROR_S(ctx, NKikimrServices::TX_PROXY,
-                            "Access denied for " << (UserToken ? UserToken->GetUserSID() : "empty")
-                            << " with access " << NACLib::AccessRightsToString(access)
-                            << " to path " << JoinPath(entry.Path) << " because the base path");
-                const TString errString = TStringBuilder()
-                    << "Access denied for " << (UserToken ? UserToken->GetUserSID() : "empty")
-                    << " to path " << JoinPath(entry.Path);
-                auto issue = MakeIssue(NKikimrIssues::TIssuesIds::ACCESS_DENIED, errString);
-                ReportStatus(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::AccessDenied, nullptr, &issue, ctx);
-                break;
-            }
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown:
+            case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown: {
                 TxProxyMon->ResolveKeySetWrongRequest->Inc();
+
+                ui32 access = NACLib::EAccessRights::DescribeSchema;
+                if (UserToken && access != 0 && entry.SecurityObject != nullptr) {
+                    if (!entry.SecurityObject->CheckAccess(access, *UserToken)) {
+                        LOG_ERROR_S(ctx, NKikimrServices::TX_PROXY,
+                                    "Access denied for " << UserToken->GetUserSID()
+                                    << " with access " << NACLib::AccessRightsToString(access)
+                                    << " to path " << JoinPath(entry.Path) << " because the base path");
+                        const TString errString = TStringBuilder()
+                            << "Access denied for " << UserToken->GetUserSID()
+                            << " to path " << JoinPath(entry.Path);
+                        auto issue = MakeIssue(NKikimrIssues::TIssuesIds::ACCESS_DENIED, errString);
+                        ReportStatus(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::AccessDenied, nullptr, &issue, ctx);
+                        break;
+                    }
+                }
+
                 ReportStatus(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ResolveError, ctx);
                 break;
+            }
             case NSchemeCache::TSchemeCacheNavigate::EStatus::PathNotPath:
             case NSchemeCache::TSchemeCacheNavigate::EStatus::RootUnknown:
                 TxProxyMon->ResolveKeySetWrongRequest->Inc();
@@ -888,7 +868,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
 
         LOG_ERROR_S(ctx, NKikimrServices::TX_PROXY, "Unexpected response from scheme cache"
             << ": " << navigate->ToString(*AppData()->TypeRegistry));
-        Y_DEBUG_ABORT("Unreachable");
+        Y_VERIFY_DEBUG(false, "Unreachable");
 
         TxProxyMon->ResolveKeySetFail->Inc();
         ReportStatus(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ResolveError, ctx);
@@ -1017,7 +997,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         TEvTabletPipe::TEvClientConnected *msg = ev->Get();
         LOG_DEBUG_S(ctx, NKikimrServices::TX_PROXY, "Actor# " << ctx.SelfID.ToString() << " txid# " << TxId
             << " HANDLE EvClientConnected");
-        Y_ABORT_UNLESS(msg->ClientId == PipeClient);
+        Y_VERIFY(msg->ClientId == PipeClient);
 
         if (msg->Status != NKikimrProto::OK) {
             ReportStatus(TEvTxUserProxy::TResultStatus::ProxyShardNotAvailable, ctx);
@@ -1029,7 +1009,7 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
         LOG_DEBUG_S(ctx, NKikimrServices::TX_PROXY, "Actor# " << ctx.SelfID.ToString() << " txid# " << TxId
             << " HANDLE EvClientDestroyed");
         TEvTabletPipe::TEvClientDestroyed *msg = ev->Get();
-        Y_ABORT_UNLESS(msg->ClientId == PipeClient);
+        Y_VERIFY(msg->ClientId == PipeClient);
 
         ReportStatus(TEvTxUserProxy::TResultStatus::ProxyShardNotAvailable, ctx);
         return Die(ctx);
@@ -1069,15 +1049,15 @@ struct TBaseSchemeReq: public TActorBootstrapped<TDerived> {
             << " HANDLE EvNavigateKeySetResult TFlatSchemeReq marker# P5"
             << " ErrorCount# " << navigate->ErrorCount);
 
-        Y_ABORT_UNLESS(!navigate->ResultSet.empty());
+        Y_VERIFY(!navigate->ResultSet.empty());
 
         if (navigate->ErrorCount > 0) {
             InterpretResolveError(navigate, ctx);
             return Die(ctx);
         }
 
-        Y_ABORT_UNLESS(!navigate->ResultSet.empty());
-        Y_ABORT_UNLESS(navigate->ResultSet.size() == ResolveForACL.size());
+        Y_VERIFY(!navigate->ResultSet.empty());
+        Y_VERIFY(navigate->ResultSet.size() == ResolveForACL.size());
 
         ui64 shardToRequest = GetShardToRequest(*navigate->ResultSet.begin(), *ResolveForACL.begin());
 
@@ -1168,9 +1148,9 @@ void TFlatSchemeReq::Bootstrap(const TActorContext &ctx) {
                 "Actor# " << ctx.SelfID.ToString()
                           << " txid# " << TxId
                           << " Bootstrap EvSchemeRequest"
-                          << " record: " << SecureDebugString(GetRequestProto()));
-    Y_ABORT_UNLESS(GetRequestEv().HasModifyScheme());
-    Y_ABORT_UNLESS(!GetRequestEv().HasTransactionalModification());
+                          << " record: " << GetRequestProto().DebugString());
+    Y_VERIFY(GetRequestEv().HasModifyScheme());
+    Y_VERIFY(!GetRequestEv().HasTransactionalModification());
 
     WallClockStarted = ctx.Now();
 
@@ -1229,7 +1209,7 @@ void TFlatSchemeReq::HandleWorkingDir(TEvTxProxySchemeCache::TEvNavigateKeySetRe
                 "Actor# " << ctx.SelfID.ToString()
                           << " txid# " << TxId
                           << " HANDLE EvNavigateKeySetResult TFlatSchemeReq marker# P6");
-    Y_ABORT_UNLESS(NeedAdjustPathNames(GetModifyScheme()));
+    Y_VERIFY(NeedAdjustPathNames(GetModifyScheme()));
 
     const auto& resultSet = ev->Get()->Request->ResultSet;
 
@@ -1303,9 +1283,9 @@ void TSchemeTransactionalReq::Bootstrap(const TActorContext &ctx) {
                 "Actor# " << ctx.SelfID.ToString()
                           << " txid# " << TxId
                           << " Bootstrap EvSchemeRequest"
-                          << " record: " << SecureDebugString(GetRequestProto()));
-    Y_ABORT_UNLESS(!GetRequestEv().HasModifyScheme());
-    Y_ABORT_UNLESS(GetRequestEv().HasTransactionalModification());
+                          << " record: " << GetRequestProto().DebugString());
+    Y_VERIFY(!GetRequestEv().HasModifyScheme());
+    Y_VERIFY(GetRequestEv().HasTransactionalModification());
 
     WallClockStarted = ctx.Now();
 

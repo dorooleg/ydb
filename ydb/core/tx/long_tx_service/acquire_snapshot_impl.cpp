@@ -4,9 +4,7 @@
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-
-#include <util/random/random.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #define TXLOG_LOG(priority, stream) \
     LOG_LOG_S(*TlsActivationContext, priority, NKikimrServices::LONG_TX_SERVICE, LogPrefix << stream)
@@ -95,30 +93,19 @@ namespace NLongTxService {
                 case NSchemeCache::TSchemeCacheNavigate::EStatus::RedirectLookupError:
                 case NSchemeCache::TSchemeCacheNavigate::EStatus::LookupError:
                     return ReplyError(Ydb::StatusIds::UNAVAILABLE, "Schema service unavailable");
-                
-                case NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied:
-                    return ReplyError(Ydb::StatusIds::UNAUTHORIZED, "Access denied");
             }
 
             // FIXME: make sure we actually resolved a database, and not something else
             if (!entry.DomainInfo) {
                 return ReplyError(Ydb::StatusIds::INTERNAL_ERROR, "Missing domain info for a resolved database");
             }
-
-            const TVector<ui64>& coordinators = entry.DomainInfo->Coordinators.List();
-            if (coordinators.empty()) {
+            if (entry.DomainInfo->Coordinators.List().empty()) {
                 return ReplyError(Ydb::StatusIds::UNAVAILABLE, TStringBuilder()
                     << "The specified database '" << DatabaseName << "' has no coordinators");
             }
 
-            // Prefer a single random coordinator for each request
-            ui64 primary = coordinators[RandomNumber<ui64>(coordinators.size())];
-            for (ui64 coordinator : coordinators) {
-                if (coordinator == primary) {
-                    SendAcquireStep(coordinator);
-                } else {
-                    BackupCoordinators.insert(coordinator);
-                }
+            for (ui64 coordinator : entry.DomainInfo->Coordinators.List()) {
+                SendAcquireStep(coordinator);
             }
 
             Become(&TThis::StateWaitStep);
@@ -148,12 +135,6 @@ namespace NLongTxService {
                 << " NotDelivered# " << msg->NotDelivered);
 
             WaitingCoordinators.erase(tabletId);
-            if (WaitingCoordinators.empty() && !BackupCoordinators.empty()) {
-                for (ui64 coordinator : BackupCoordinators) {
-                    SendAcquireStep(coordinator);
-                }
-                BackupCoordinators.clear();
-            }
             if (WaitingCoordinators.empty()) {
                 return ReplyError(Ydb::StatusIds::UNAVAILABLE, "Database coordinators are unavailable");
             }
@@ -194,7 +175,6 @@ namespace NLongTxService {
         const TActorId LeaderPipeCache;
         TString LogPrefix;
         THashSet<ui64> WaitingCoordinators;
-        THashSet<ui64> BackupCoordinators;
     };
 
     void TLongTxServiceActor::StartAcquireSnapshotActor(const TString& databaseName, TDatabaseSnapshotState& state) {
@@ -205,11 +185,6 @@ namespace NLongTxService {
         req.BeginTxRequests.swap(state.PendingBeginTxRequests);
         Register(new TAcquireSnapshotActor(SelfId(), reqId, databaseName));
         state.ActiveRequests.insert(reqId);
-
-        if (Settings.Counters) {
-            Settings.Counters->AcquireReadSnapshotOutRequests->Inc();
-            Settings.Counters->AcquireReadSnapshotOutInFlight->Inc();
-        }
     }
 
 } // namespace NLongTxService

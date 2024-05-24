@@ -45,10 +45,10 @@ namespace NKikimr {
                     return SetPrivate(NoWrites);
                 case NKikimrProto::OUT_OF_SPACE:
                     // check flags additionally
-                    Y_ABORT_UNLESS(pdiskFlags & NKikimrBlobStorage::StatusNotEnoughDiskSpaceForOperation);
+                    Y_VERIFY(pdiskFlags & NKikimrBlobStorage::StatusNotEnoughDiskSpaceForOperation);
                     return SetPrivate(WriteOnlyLog);
                 default:
-                    Y_ABORT("Unexpected state# %s", NKikimrProto::EReplyStatus_Name(status).data());
+                    Y_FAIL("Unexpected state# %s", NKikimrProto::EReplyStatus_Name(status).data());
             }
         }
 

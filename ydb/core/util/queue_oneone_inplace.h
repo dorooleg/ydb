@@ -1,3 +1,3 @@
 #pragma once
-#include <ydb/library/actors/util/queue_oneone_inplace.h>
+#include <library/cpp/actors/util/queue_oneone_inplace.h>
 

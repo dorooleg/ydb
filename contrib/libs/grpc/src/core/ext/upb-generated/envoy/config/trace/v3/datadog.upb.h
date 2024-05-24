@@ -51,33 +51,17 @@ UPB_INLINE envoy_config_trace_v3_DatadogConfig* envoy_config_trace_v3_DatadogCon
   return ret;
 }
 UPB_INLINE char* envoy_config_trace_v3_DatadogConfig_serialize(const envoy_config_trace_v3_DatadogConfig* msg, upb_Arena* arena, size_t* len) {
-  char* ptr;
-  (void)upb_Encode(msg, &envoy_config_trace_v3_DatadogConfig_msginit, 0, arena, &ptr, len);
-  return ptr;
+  return upb_Encode(msg, &envoy_config_trace_v3_DatadogConfig_msginit, 0, arena, len);
 }
 UPB_INLINE char* envoy_config_trace_v3_DatadogConfig_serialize_ex(const envoy_config_trace_v3_DatadogConfig* msg, int options,
                                  upb_Arena* arena, size_t* len) {
-  char* ptr;
-  (void)upb_Encode(msg, &envoy_config_trace_v3_DatadogConfig_msginit, options, arena, &ptr, len);
-  return ptr;
-}
-UPB_INLINE void envoy_config_trace_v3_DatadogConfig_clear_collector_cluster(const envoy_config_trace_v3_DatadogConfig* msg) {
-  *UPB_PTR_AT(msg, UPB_SIZE(0, 0), upb_StringView) = upb_StringView_FromDataAndSize(NULL, 0);
+  return upb_Encode(msg, &envoy_config_trace_v3_DatadogConfig_msginit, options, arena, len);
 }
 UPB_INLINE upb_StringView envoy_config_trace_v3_DatadogConfig_collector_cluster(const envoy_config_trace_v3_DatadogConfig* msg) {
   return *UPB_PTR_AT(msg, UPB_SIZE(0, 0), upb_StringView);
 }
-UPB_INLINE void envoy_config_trace_v3_DatadogConfig_clear_service_name(const envoy_config_trace_v3_DatadogConfig* msg) {
-  *UPB_PTR_AT(msg, UPB_SIZE(8, 16), upb_StringView) = upb_StringView_FromDataAndSize(NULL, 0);
-}
 UPB_INLINE upb_StringView envoy_config_trace_v3_DatadogConfig_service_name(const envoy_config_trace_v3_DatadogConfig* msg) {
   return *UPB_PTR_AT(msg, UPB_SIZE(8, 16), upb_StringView);
-}
-UPB_INLINE void envoy_config_trace_v3_DatadogConfig_clear_collector_hostname(const envoy_config_trace_v3_DatadogConfig* msg) {
-  *UPB_PTR_AT(msg, UPB_SIZE(16, 32), upb_StringView) = upb_StringView_FromDataAndSize(NULL, 0);
-}
-UPB_INLINE upb_StringView envoy_config_trace_v3_DatadogConfig_collector_hostname(const envoy_config_trace_v3_DatadogConfig* msg) {
-  return *UPB_PTR_AT(msg, UPB_SIZE(16, 32), upb_StringView);
 }
 
 UPB_INLINE void envoy_config_trace_v3_DatadogConfig_set_collector_cluster(envoy_config_trace_v3_DatadogConfig *msg, upb_StringView value) {
@@ -85,9 +69,6 @@ UPB_INLINE void envoy_config_trace_v3_DatadogConfig_set_collector_cluster(envoy_
 }
 UPB_INLINE void envoy_config_trace_v3_DatadogConfig_set_service_name(envoy_config_trace_v3_DatadogConfig *msg, upb_StringView value) {
   *UPB_PTR_AT(msg, UPB_SIZE(8, 16), upb_StringView) = value;
-}
-UPB_INLINE void envoy_config_trace_v3_DatadogConfig_set_collector_hostname(envoy_config_trace_v3_DatadogConfig *msg, upb_StringView value) {
-  *UPB_PTR_AT(msg, UPB_SIZE(16, 32), upb_StringView) = value;
 }
 
 extern const upb_MiniTable_File envoy_config_trace_v3_datadog_proto_upb_file_layout;

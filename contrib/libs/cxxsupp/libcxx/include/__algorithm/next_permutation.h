@@ -11,12 +11,10 @@
 
 #include <__algorithm/comp.h>
 #include <__algorithm/comp_ref_type.h>
-#include <__algorithm/iterator_operations.h>
 #include <__algorithm/reverse.h>
 #include <__config>
 #include <__iterator/iterator_traits.h>
-#include <__utility/move.h>
-#include <__utility/pair.h>
+#include <__utility/swap.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -24,52 +22,49 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-template <class _AlgPolicy, class _Compare, class _BidirectionalIterator, class _Sentinel>
-_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 pair<_BidirectionalIterator, bool>
-__next_permutation(_BidirectionalIterator __first, _Sentinel __last, _Compare&& __comp)
+template <class _Compare, class _BidirectionalIterator>
+_LIBCPP_CONSTEXPR_AFTER_CXX17 bool
+__next_permutation(_BidirectionalIterator __first, _BidirectionalIterator __last, _Compare __comp)
 {
-    using _Result = pair<_BidirectionalIterator, bool>;
-
-    _BidirectionalIterator __last_iter = _IterOps<_AlgPolicy>::next(__first, __last);
-    _BidirectionalIterator __i = __last_iter;
+    _BidirectionalIterator __i = __last;
     if (__first == __last || __first == --__i)
-        return _Result(std::move(__last_iter), false);
-
+        return false;
     while (true)
     {
         _BidirectionalIterator __ip1 = __i;
         if (__comp(*--__i, *__ip1))
         {
-            _BidirectionalIterator __j = __last_iter;
+            _BidirectionalIterator __j = __last;
             while (!__comp(*__i, *--__j))
                 ;
-            _IterOps<_AlgPolicy>::iter_swap(__i, __j);
-            std::__reverse<_AlgPolicy>(__ip1, __last_iter);
-            return _Result(std::move(__last_iter), true);
+            swap(*__i, *__j);
+            _VSTD::reverse(__ip1, __last);
+            return true;
         }
         if (__i == __first)
         {
-            std::__reverse<_AlgPolicy>(__first, __last_iter);
-            return _Result(std::move(__last_iter), false);
+            _VSTD::reverse(__first, __last);
+            return false;
         }
     }
 }
 
 template <class _BidirectionalIterator, class _Compare>
-inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_CONSTEXPR_SINCE_CXX20
+inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_CONSTEXPR_AFTER_CXX17
 bool
 next_permutation(_BidirectionalIterator __first, _BidirectionalIterator __last, _Compare __comp)
 {
-  return std::__next_permutation<_ClassicAlgPolicy>(
-      std::move(__first), std::move(__last), static_cast<__comp_ref_type<_Compare> >(__comp)).second;
+    typedef typename __comp_ref_type<_Compare>::type _Comp_ref;
+    return _VSTD::__next_permutation<_Comp_ref>(__first, __last, __comp);
 }
 
 template <class _BidirectionalIterator>
-inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_CONSTEXPR_SINCE_CXX20
+inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_CONSTEXPR_AFTER_CXX17
 bool
 next_permutation(_BidirectionalIterator __first, _BidirectionalIterator __last)
 {
-    return _VSTD::next_permutation(__first, __last, __less<>());
+    return _VSTD::next_permutation(__first, __last,
+                                  __less<typename iterator_traits<_BidirectionalIterator>::value_type>());
 }
 
 _LIBCPP_END_NAMESPACE_STD

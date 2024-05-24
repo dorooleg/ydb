@@ -11,12 +11,8 @@ struct TTxCoordinator::TTxInit : public TTransactionBase<TTxCoordinator> {
     TVector<TTabletId> Mediators;
     TVector<TTabletId> Coordinators;
     ui64 PlanResolution;
-    ui64 ReducedResolution;
-    bool HaveProcessingParams = false;
     ui64 LastPlanned = 0;
     ui64 LastAcquired = 0;
-    TActorId LastBlockedActor;
-    ui64 LastBlockedStep = 0;
 
     TTxInit(TSelf *coordinator)
         : TBase(coordinator)
@@ -31,7 +27,6 @@ struct TTxCoordinator::TTxInit : public TTransactionBase<TTxCoordinator> {
         ready &= LoadDomainConfiguration(db);
         ready &= LoadLastPlanned(db);
         ready &= LoadLastAcquired(db);
-        ready &= LoadLastBlocked(db);
 
         return ready;
     }
@@ -52,18 +47,11 @@ struct TTxCoordinator::TTxInit : public TTransactionBase<TTxCoordinator> {
                 Mediators.swap(mediators);
                 Coordinators.clear();
                 PlanResolution = resolution;
-                ReducedResolution = Self->Config.ReducedResolution;
-                HaveProcessingParams = false;
-                auto encodedConfig = rowset.GetValue<Schema::DomainConfiguration::Config>();
-                if (!encodedConfig.empty()) {
-                    TProtoBox<NKikimrSubDomains::TProcessingParams> config(encodedConfig);
+                if (rowset.HaveValue<Schema::DomainConfiguration::Config>()) {
+                    TProtoBox<NKikimrSubDomains::TProcessingParams> config(rowset.GetValue<Schema::DomainConfiguration::Config>());
                     for (ui64 coordinator : config.GetCoordinators()) {
                         Coordinators.push_back(coordinator);
                     }
-                    if (config.HasIdlePlanResolution()) {
-                        ReducedResolution = Max(config.GetIdlePlanResolution(), PlanResolution);
-                    }
-                    HaveProcessingParams = true;
                 }
             }
 
@@ -75,41 +63,44 @@ struct TTxCoordinator::TTxInit : public TTransactionBase<TTxCoordinator> {
     }
 
     bool LoadLastPlanned(NIceDb::TNiceDb &db) {
-        return Schema::LoadState(db, Schema::State::KeyLastPlanned, LastPlanned);
-    }
+        auto rowset = db.Table<Schema::State>().Key(Schema::State::KeyLastPlanned).Select<Schema::State::StateValue>();
 
-    bool LoadLastAcquired(NIceDb::TNiceDb &db) {
-        return Schema::LoadState(db, Schema::State::AcquireReadStepLast, LastAcquired);
-    }
-
-    bool LoadLastBlocked(NIceDb::TNiceDb &db) {
-        ui64 x1 = 0;
-        ui64 x2 = 0;
-        ui64 step = 0;
-
-        bool ready = true;
-        ready &= Schema::LoadState(db, Schema::State::LastBlockedActorX1, x1);
-        ready &= Schema::LoadState(db, Schema::State::LastBlockedActorX2, x2);
-        ready &= Schema::LoadState(db, Schema::State::LastBlockedStep, step);
-
-        if (!ready) {
+        if (!rowset.IsReady())
             return false;
-        }
 
-        LastBlockedActor = TActorId(x1, x2);
-        LastBlockedStep = step;
+        if (rowset.IsValid())
+            LastPlanned = rowset.GetValue<Schema::State::StateValue>();
+
         return true;
     }
 
-    void Complete(const TActorContext &ctx) override {
-        if (!LastBlockedActor) {
-            // Assume worst case, everything up to LastBlockedStep was planned
-            LastPlanned = Max(LastPlanned, LastBlockedStep);
+    bool LoadLastAcquired(NIceDb::TNiceDb &db) {
+        auto rowset = db.Table<Schema::State>().Key(Schema::State::AcquireReadStepLast).Select<Schema::State::StateValue>();
+
+        if (!rowset.IsReady())
+            return false;
+
+        if (rowset.IsValid())
+            LastAcquired = rowset.GetValue<Schema::State::StateValue>();
+
+        return true;
+    }
+
+    bool IsTabletInStaticDomain(const TAppData *appdata) {
+        const ui32 selfDomain = appdata->DomainsInfo->GetDomainUidByTabletId(Self->TabletID());
+        Y_VERIFY(selfDomain != appdata->DomainsInfo->BadDomainId);
+        const auto& domain = appdata->DomainsInfo->GetDomain(selfDomain);
+
+        for (auto domainCoordinatorId: domain.Coordinators) {
+            if (Self->TabletID() == domainCoordinatorId) {
+                return true;
+            }
         }
 
-        // Assume worst case, last planned step was also acquired
-        LastAcquired = Max(LastAcquired, LastPlanned);
+        return false;
+    }
 
+    void Complete(const TActorContext &ctx) override {
         Self->VolatileState.LastPlanned = LastPlanned;
         Self->VolatileState.LastSentStep = LastPlanned;
         Self->VolatileState.LastAcquired = LastAcquired;
@@ -118,34 +109,20 @@ struct TTxCoordinator::TTxInit : public TTransactionBase<TTxCoordinator> {
             LOG_INFO_S(ctx, NKikimrServices::TX_COORDINATOR,
                  "tablet# " << Self->TabletID() <<
                  " CreateTxInit Complete");
-            Self->Config.Version = Version;
+            Self->Config.MediatorsVersion = Version;
             Self->Config.Mediators = new TMediators(std::move(Mediators));
             Self->Config.Coordinators = Coordinators;
             Self->Config.Resolution = PlanResolution;
-            Self->Config.ReducedResolution = ReducedResolution;
-            Self->Config.HaveProcessingParams = HaveProcessingParams;
-            Self->SetCounter(COUNTER_MISSING_CONFIG, HaveProcessingParams ? 1 : 0);
-
-            if (LastBlockedActor && LastPlanned < LastBlockedStep) {
-                Self->RestoreState(LastBlockedActor, LastBlockedStep);
-                return;
-            }
-
-            if (LastBlockedActor) {
-                // The previous state actor is no longer needed
-                ctx.Send(LastBlockedActor, new TEvents::TEvPoison);
-            }
-
             Self->Execute(Self->CreateTxRestoreTransactions(), ctx);
             return;
         }
 
         TAppData* appData = AppData(ctx);
-        if (Self->IsTabletInStaticDomain(appData)) {
+        if (IsTabletInStaticDomain(appData)) {
             LOG_INFO_S(ctx, NKikimrServices::TX_COORDINATOR,
                  "tablet# " << Self->TabletID() <<
                  " CreateTxInit initialize himself");
-            Self->DoConfiguration(*CreateDomainConfigurationFromStatic(appData), ctx);
+            Self->DoConfiguration(*CreateDomainConfigurationFromStatic(appData, Self->TabletID()), ctx);
             return;
         }
 

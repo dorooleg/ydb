@@ -17,7 +17,7 @@ TCoAtomList TKiReadTable::GetSelectColumns(TExprContext& ctx, const TKikimrTable
     bool withSystemColumns) const
 {
     if (Select().Maybe<TCoVoid>()) {
-        return BuildColumnsList(tableData, Pos(), ctx, withSystemColumns, true /*ignoreWriteOnlyColumns*/);
+        return BuildColumnsList(tableData, Pos(), ctx, withSystemColumns);
     }
 
     return Select().Cast<TCoAtomList>();

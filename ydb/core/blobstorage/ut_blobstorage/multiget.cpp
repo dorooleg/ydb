@@ -18,22 +18,26 @@ Y_UNIT_TEST_SUITE(MultiGet) {
         }
 
         ui32 numInFlight = 0;
+        auto wait = [&](ui32 max) {
+            for (; numInFlight > max; --numInFlight) {
+                auto res = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvPutResult>(edge, false);
+                UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::OK);
+            }
+        };
 
-        constexpr ui32 blobsToSend = 10'000;
-
-        for (ui32 i = 1; i <= blobsToSend; ++i) {
+        for (ui32 i = 1; i <= 1000000; ++i) {
             const TString buffer = "A SMALL BLOB 16b";
             const TLogoBlobID id(1, 1, i, 0, buffer.size(), 0);
             runtime->WrapInActorContext(edge, [&] {
                 SendToBSProxy(edge, groupId, new TEvBlobStorage::TEvPut(id, buffer, TInstant::Max()));
             });
             ++numInFlight;
+            wait(16);
+            if (i % 1000 == 0) {
+                Cerr << i << "\r";
+            }
         }
-
-        for (; numInFlight > 0; --numInFlight) {
-            auto res = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvPutResult>(edge, false);
-            UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::OK);
-        }
+        wait(0);
 
         auto rusage = TRusage::Get();
         const ui64 rssOnBegin = rusage.MaxRss;
@@ -46,7 +50,6 @@ Y_UNIT_TEST_SUITE(MultiGet) {
         });
         {
             auto res = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge, false);
-            UNIT_ASSERT_EQUAL(res->Get()->Responses.size(), blobsToSend);
             UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::OK);
         }
 

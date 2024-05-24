@@ -23,22 +23,21 @@ namespace NKikimr::NPublicHttp {
         return Request.get();
     }
 
-    NYdbGrpc::TAuthState& TGrpcRequestContextWrapper::GetAuthState() {
+    NGrpc::TAuthState& TGrpcRequestContextWrapper::GetAuthState() {
         return AuthState;
     }
 
     void TGrpcRequestContextWrapper::Reply(NProtoBuf::Message* resp, ui32 status) {
         Y_UNUSED(resp);
         Y_UNUSED(status);
-        Y_ABORT_UNLESS(resp);
+        Y_VERIFY(resp);
         ReplySender(RequestContext, JsonSettings, resp, status);
     }
 
-    void TGrpcRequestContextWrapper::Reply(grpc::ByteBuffer* resp, ui32 status, EStreamCtrl ctrl) {
+    void TGrpcRequestContextWrapper::Reply(grpc::ByteBuffer* resp, ui32 status) {
         Y_UNUSED(resp);
         Y_UNUSED(status);
-        Y_UNUSED(ctrl);
-        Y_ABORT_UNLESS(false, "TGrpcRequestContextWrapper::Reply");
+        Y_VERIFY(false, "TGrpcRequestContextWrapper::Reply");
     }
 
     void TGrpcRequestContextWrapper::ReplyUnauthenticated(const TString& in) {
@@ -77,9 +76,4 @@ namespace NKikimr::NPublicHttp {
     google::protobuf::Arena* TGrpcRequestContextWrapper::GetArena() {
         return &Arena;
     }
-
-    TString TGrpcRequestContextWrapper::GetPeer() const {
-       return RequestContext.GetPeer();
-    }
-
 } // namespace NKikimr::NPublicHttp

@@ -94,29 +94,7 @@ Y_UNIT_TEST_SUITE(SequenceProxy) {
             auto ev = runtime.GrabEdgeEventRethrow<TEvTxUserProxy::TEvProposeTransactionStatus>(edge);
             auto* msg = ev->Get();
             const auto status = static_cast<TEvTxUserProxy::TEvProposeTransactionStatus::EStatus>(msg->Record.GetStatus());
-            Y_ABORT_UNLESS(status == TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ExecInProgress);
-
-            ui64 schemeShardTabletId = msg->Record.GetSchemeShardTabletId();
-            auto notifyReq = MakeHolder<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletion>();
-            notifyReq->Record.SetTxId(msg->Record.GetTxId());
-            runtime.SendToPipe(schemeShardTabletId, edge, notifyReq.Release());
-            runtime.GrabEdgeEventRethrow<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletionResult>(edge);
-        }
-
-        void DropSequence(TTestActorRuntime& runtime, const TString& workingDir, const TString& name) {
-            auto edge = runtime.AllocateEdgeActor(0);
-            auto request = MakeHolder<TEvTxUserProxy::TEvProposeTransaction>();
-            auto* tx = request->Record.MutableTransaction()->MutableModifyScheme();
-            tx->SetOperationType(NKikimrSchemeOp::EOperationType::ESchemeOpDropSequence);
-            tx->SetWorkingDir(workingDir);
-            auto* op = tx->MutableDrop();
-            op->SetName(name);
-            runtime.Send(new IEventHandle(MakeTxProxyID(), edge, request.Release()));
-
-            auto ev = runtime.GrabEdgeEventRethrow<TEvTxUserProxy::TEvProposeTransactionStatus>(edge);
-            auto* msg = ev->Get();
-            const auto status = static_cast<TEvTxUserProxy::TEvProposeTransactionStatus::EStatus>(msg->Record.GetStatus());
-            Y_ABORT_UNLESS(status == TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ExecInProgress);
+            Y_VERIFY(status == TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ExecInProgress);
 
             ui64 schemeShardTabletId = msg->Record.GetSchemeShardTabletId();
             auto notifyReq = MakeHolder<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletion>();
@@ -133,7 +111,7 @@ Y_UNIT_TEST_SUITE(SequenceProxy) {
         i64 WaitNextValResult(TTestActorRuntime& runtime, const TActorId& sender, Ydb::StatusIds::StatusCode expectedStatus = Ydb::StatusIds::SUCCESS) {
             auto ev = runtime.GrabEdgeEventRethrow<TEvSequenceProxy::TEvNextValResult>(sender);
             auto* msg = ev->Get();
-            UNIT_ASSERT_VALUES_EQUAL(msg->Status, expectedStatus);
+            Y_VERIFY(msg->Status == expectedStatus);
             return msg->Status == Ydb::StatusIds::SUCCESS ? msg->Value : 0;
         }
 
@@ -159,7 +137,7 @@ Y_UNIT_TEST_SUITE(SequenceProxy) {
         DoNextVal(runtime, "/dc-1/noseq", Ydb::StatusIds::SCHEME_ERROR);
 
         ui64 allocateEvents = 0;
-        auto observerFunc = [&](auto& ev) {
+        auto observerFunc = [&](auto&, auto& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvSequenceShard::TEvAllocateSequence::EventType:
                     ++allocateEvents;
@@ -183,29 +161,6 @@ Y_UNIT_TEST_SUITE(SequenceProxy) {
         }
 
         UNIT_ASSERT_C(allocateEvents < 7, "Too many TEvAllocateSequence events: " << allocateEvents);
-    }
-
-    Y_UNIT_TEST(DropRecreate) {
-        TTenantTestRuntime runtime(MakeTenantTestConfig(false));
-        StartSchemeCache(runtime);
-
-        CreateSequence(runtime, "/dc-1", R"(
-            Name: "seq"
-        )");
-
-        i64 value = DoNextVal(runtime, "/dc-1/seq");
-        UNIT_ASSERT_VALUES_EQUAL(value, 1);
-
-        DropSequence(runtime, "/dc-1", "seq");
-
-        DoNextVal(runtime, "/dc-1/seq", Ydb::StatusIds::SCHEME_ERROR);
-
-        CreateSequence(runtime, "/dc-1", R"(
-            Name: "seq"
-        )");
-
-        value = DoNextVal(runtime, "/dc-1/seq");
-        UNIT_ASSERT_VALUES_EQUAL(value, 1);
     }
 
 } // Y_UNIT_TEST_SUITE(SequenceProxy)

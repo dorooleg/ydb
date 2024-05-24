@@ -40,15 +40,14 @@ EExecutionStatus TStoreDataTxUnit::Execute(TOperation::TPtr op,
                                            TTransactionContext &txc,
                                            const TActorContext &ctx)
 {
-    Y_ABORT_UNLESS(op->IsDataTx() || op->IsReadTable());
-    Y_ABORT_UNLESS(!op->IsAborted() && !op->IsInterrupted());
+    Y_VERIFY(op->IsDataTx() || op->IsReadTable());
+    Y_VERIFY(!op->IsAborted() && !op->IsInterrupted());
 
     TActiveTransaction *tx = dynamic_cast<TActiveTransaction*>(op.Get());
     Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
-    auto dataTx = tx->GetDataTx();
-    Y_ABORT_UNLESS(dataTx);
+    Y_VERIFY(tx->GetDataTx());
 
-    bool cached = Pipeline.SaveForPropose(dataTx);
+    bool cached = Pipeline.SaveForPropose(tx->GetDataTx());
     if (cached) {
         Pipeline.RegisterDistributedWrites(op, txc.DB);
     }

@@ -84,14 +84,14 @@ namespace NKikimr::NBlobDepot {
             auto& resolveContext = context->Obtain<TResolveContext>();
             if (msg.ResolvedKeysSize() == 1) {
                 const auto& item = msg.GetResolvedKeys(0);
-                Y_ABORT_UNLESS(item.GetKey() == resolveContext.Key);
+                Y_VERIFY(item.GetKey() == resolveContext.Key);
                 process(item, false);
             } else if (msg.ResolvedKeysSize() == 0) {
                 NKikimrBlobDepot::TEvResolveResult::TResolvedKey item;
                 item.SetKey(resolveContext.Key);
                 process(item, true);
             } else {
-                Y_ABORT("unexpected resolve response");
+                Y_FAIL("unexpected resolve response");
             }
         }
     }
@@ -115,11 +115,11 @@ namespace NKikimr::NBlobDepot {
         // register query-local request for the key
         const ui64 id = Agent.NextOtherRequestId++;
         const bool inserted1 = entry.PendingQueries.emplace(id, mustRestoreFirst).second;
-        Y_ABORT_UNLESS(inserted1);
+        Y_VERIFY(inserted1);
         auto cancelCallback = [&entry, id, self = weak_from_this()] {
             if (!self.expired()) {
                 const size_t numErased = entry.PendingQueries.erase(id);
-                Y_ABORT_UNLESS(numErased);
+                Y_VERIFY(numErased);
             }
         };
         Agent.RegisterRequest(id, query, std::move(context), std::move(cancelCallback), false);
@@ -161,7 +161,7 @@ namespace NKikimr::NBlobDepot {
                 }
             }
         } else {
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 

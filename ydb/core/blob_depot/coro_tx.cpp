@@ -63,21 +63,21 @@ namespace NKikimr::NBlobDepot {
             Outcome = EOutcome::UNSET;
 
             TExceptionSafeContext returnContext;
-            Y_ABORT_UNLESS(!BackContext);
+            Y_VERIFY(!BackContext);
             BackContext = &returnContext;
-            Y_DEBUG_ABORT_UNLESS(CurrentTx() || Aborted);
+            Y_VERIFY_DEBUG(CurrentTx() || Aborted);
             returnContext.SwitchTo(&Context);
-            Y_ABORT_UNLESS(BackContext == &returnContext);
+            Y_VERIFY(BackContext == &returnContext);
             BackContext = nullptr;
 
-            Y_ABORT_UNLESS(Outcome != EOutcome::UNSET);
+            Y_VERIFY(Outcome != EOutcome::UNSET);
             return Outcome;
         }
 
         void Return(EOutcome outcome) {
-            Y_ABORT_UNLESS(Outcome == EOutcome::UNSET);
+            Y_VERIFY(Outcome == EOutcome::UNSET);
             Outcome = outcome;
-            Y_ABORT_UNLESS(BackContext);
+            Y_VERIFY(BackContext);
             Context.SwitchTo(BackContext);
             if (IsExpired()) {
                 throw TExDead();
@@ -125,15 +125,15 @@ namespace NKikimr::NBlobDepot {
 
     bool TCoroTx::Execute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext&) {
         // prepare environment
-        Y_ABORT_UNLESS(TxContext == nullptr && Current == nullptr);
+        Y_VERIFY(TxContext == nullptr && Current == nullptr);
         TxContext = &txc;
         Current = this;
 
-        Y_ABORT_UNLESS(Context);
+        Y_VERIFY(Context);
         const EOutcome outcome = Context->Resume();
 
         // clear environment back
-        Y_ABORT_UNLESS(TxContext == &txc && Current == this);
+        Y_VERIFY(TxContext == &txc && Current == this);
         TxContext = nullptr;
         Current = nullptr;
 
@@ -145,20 +145,20 @@ namespace NKikimr::NBlobDepot {
                 return false;
 
             default:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 
     void TCoroTx::Complete(const TActorContext&) {
         // prepare environment
-        Y_ABORT_UNLESS(TxContext == nullptr && Current == nullptr);
+        Y_VERIFY(TxContext == nullptr && Current == nullptr);
         Current = this;
 
-        Y_ABORT_UNLESS(Context);
+        Y_VERIFY(Context);
         const EOutcome outcome = Context->Resume();
 
         // clear environment back
-        Y_ABORT_UNLESS(TxContext == nullptr && Current == this);
+        Y_VERIFY(TxContext == nullptr && Current == this);
         Current = nullptr;
 
         switch (outcome) {
@@ -170,7 +170,7 @@ namespace NKikimr::NBlobDepot {
                 break;
 
             default:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 
@@ -179,22 +179,22 @@ namespace NKikimr::NBlobDepot {
     }
 
     NTabletFlatExecutor::TTransactionContext *TCoroTx::GetTxc() {
-        Y_ABORT_UNLESS(Current->TxContext);
+        Y_VERIFY(Current->TxContext);
         return Current->TxContext;
     }
 
     void TCoroTx::FinishTx() {
-        Y_ABORT_UNLESS(Current);
+        Y_VERIFY(Current);
         Current->Context->Return(EOutcome::FINISH_TX);
     }
 
     void TCoroTx::RestartTx() {
-        Y_ABORT_UNLESS(Current);
+        Y_VERIFY(Current);
         Current->Context->Return(EOutcome::RESTART_TX);
     }
 
     void TCoroTx::RunSuccessorTx() {
-        Y_ABORT_UNLESS(Current);
+        Y_VERIFY(Current);
         Current->Context->Return(EOutcome::RUN_SUCCESSOR_TX);
     }
 

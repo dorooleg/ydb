@@ -22,12 +22,23 @@ public:
         , BufferSize(bufSize)
         , ValueType(vtype)
     {
-        Y_DEBUG_ABORT_UNLESS(!buf || vtype.GetTypeId() != 0);
+        Y_VERIFY_DEBUG(!buf || vtype.GetTypeId() != 0);
     }
 
     TRawTypeValue(TArrayRef<const char> ref, NScheme::TTypeInfo vtype)
         : TRawTypeValue((void*)ref.data(), ref.size(), vtype)
-    {}
+    {
+    }
+
+    TRawTypeValue(const void* buf, ui32 bufSize, NScheme::TTypeId typeId)
+        : TRawTypeValue(buf, bufSize, NScheme::TTypeInfo(typeId))
+    {
+    }
+
+    TRawTypeValue(TArrayRef<const char> ref, NScheme::TTypeId typeId)
+        : TRawTypeValue((void*)ref.data(), ref.size(), NScheme::TTypeInfo(typeId))
+    {
+    }
 
     const void* Data() const { return Buffer; }
     ui32 Size() const { return BufferSize; }
@@ -41,6 +52,8 @@ public:
 
     TString ToString() const {
         TStringBuilder builder;
+        // TODO: support pg types
+        Y_ENSURE(ValueType.GetTypeId() != NScheme::NTypeIds::Pg);
         builder << "(type:" << ValueType.GetTypeId();
         if (!IsEmpty()) {
             builder << ", value:" << TString((const char*)Buffer, BufferSize).Quote();

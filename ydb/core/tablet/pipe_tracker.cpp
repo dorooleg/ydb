@@ -29,11 +29,11 @@ bool TPipeTrackerBase::DetachTablet(ui64 txid, ui64 tabletid, ui64 cookie) {
     tabletSet.erase(tabIt);
 
     auto itTxTablets = TxTablets.find(txid);
-    Y_ABORT_UNLESS(itTxTablets != TxTablets.end());
+    Y_VERIFY(itTxTablets != TxTablets.end());
     auto itCookies = itTxTablets->second.find(tabletid);
-    Y_ABORT_UNLESS(itCookies != itTxTablets->second.end());
+    Y_VERIFY(itCookies != itTxTablets->second.end());
     auto itCookie = itCookies->second.find(cookie);
-    Y_ABORT_UNLESS(itCookie != itCookies->second.end());
+    Y_VERIFY(itCookie != itCookies->second.end());
     itCookies->second.erase(itCookie);
 
     // Cookies are empty when there are no more links between txid and tabletid
@@ -42,14 +42,14 @@ bool TPipeTrackerBase::DetachTablet(ui64 txid, ui64 tabletid, ui64 cookie) {
 
         // Check if txid has no more tablets
         if (itTxTablets->second.empty()) {
-            Y_ABORT_UNLESS(tabletSet.empty());
+            Y_VERIFY(tabletSet.empty());
             TxTablets.erase(itTxTablets);
             TxToTablet.erase(txIt);
         }
 
         // Unlink txid from tabletid
         auto it = TabletToTx.find(tabletid);
-        Y_ABORT_UNLESS(it != TabletToTx.end());
+        Y_VERIFY(it != TabletToTx.end());
         it->second.erase(txid);
         if (it->second.empty()) {
             TabletToTx.erase(it);

@@ -7,8 +7,6 @@
 
 namespace NKikimr::NDataStreams::V1 {
 
-const i64 TIMESTAMP_DELTA_ALLOWED_MS = 10'000;
-
 class TShardIterator {
 using TPartitionOffset =
     std::invoke_result_t<decltype(&NKikimrClient::TCmdReadResult_TResult::GetOffset),
@@ -27,7 +25,7 @@ using TYdsTimestamp =
                          NKikimrPQ::TYdsShardIterator>;
 static_assert(std::is_same<TCreationTimestamp, TYdsTimestamp>::value,
               "Types of partition message creation timestamp and yds record timestamp should match");
-
+                  
 public:
 static constexpr ui64 LIFETIME_MS = TDuration::Minutes(5).MilliSeconds();
 
@@ -78,7 +76,7 @@ static TShardIterator Cdc(const TString& streamName, const TString& streamArn,
 TString Serialize() const {
     TString data;
     bool result = Proto.SerializeToString(&data);
-    Y_ABORT_UNLESS(result);
+    Y_VERIFY(result);
     TString encoded;
     Base64Encode(data, encoded);
     return encoded;
@@ -113,7 +111,7 @@ void SetSequenceNumber(ui64 seqno) {
 }
 
 bool IsAlive(ui64 now) const {
-    return now + TIMESTAMP_DELTA_ALLOWED_MS >= Proto.GetCreationTimestampMs() && now -
+    return now >= Proto.GetCreationTimestampMs() && now -
         Proto.GetCreationTimestampMs() < LIFETIME_MS;
 }
 

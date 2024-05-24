@@ -71,9 +71,9 @@ public:
     bool Process(const arrow::RecordBatch& batch, TString& errorMessage);
 };
 
-arrow::Result<std::shared_ptr<arrow::RecordBatch>> ConvertColumns(const std::shared_ptr<arrow::RecordBatch>& batch,
-                                                                  const THashMap<TString, NScheme::TTypeInfo>& columnsToConvert);
-arrow::Result<std::shared_ptr<arrow::RecordBatch>> InplaceConvertColumns(const std::shared_ptr<arrow::RecordBatch>& batch,
-                                                                         const THashMap<TString, NScheme::TTypeInfo>& columnsToConvert);
+std::shared_ptr<arrow::RecordBatch> ConvertColumns(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                                   const THashMap<TString, NScheme::TTypeInfo>& columnsToConvert);
+std::shared_ptr<arrow::RecordBatch> InplaceConvertColumns(const std::shared_ptr<arrow::RecordBatch>& batch,
+                                                   const THashMap<TString, NScheme::TTypeInfo>& columnsToConvert);
 
 } // namespace NKikimr::NArrow

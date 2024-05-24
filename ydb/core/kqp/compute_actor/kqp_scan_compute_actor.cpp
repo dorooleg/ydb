@@ -3,12 +3,9 @@
 #include "kqp_compute_actor_impl.h"
 #include <ydb/core/grpc_services/local_rate_limiter.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/kqp/rm_service/kqp_rm_service.h>
 #include <ydb/core/kqp/runtime/kqp_tasks_runner.h>
-#include <ydb/core/kqp/runtime/kqp_scan_data.h>
 #include <ydb/core/kqp/common/kqp_resolve.h>
-#include <ydb/core/protos/kqp_stats.pb.h>
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor_impl.h>
 
@@ -23,15 +20,13 @@ static constexpr TDuration RL_MAX_BATCH_DELAY = TDuration::Seconds(50);
 
 } // anonymous namespace
 
-TKqpScanComputeActor::TKqpScanComputeActor(const TActorId& executerId, ui64 txId, NDqProto::TDqTask* task,
-    IDqAsyncIoFactory::TPtr asyncIoFactory,
-    const TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits, NWilson::TTraceId traceId,
-    TIntrusivePtr<NActors::TProtoArenaHolder> arena)
-    : TBase(executerId, txId, task, std::move(asyncIoFactory), settings,
-        memoryLimits, /* ownMemoryQuota = */ true, /* passExceptions = */ true, /*taskCounters = */ nullptr, std::move(traceId), std::move(arena))
+TKqpScanComputeActor::TKqpScanComputeActor(const TActorId& executerId, ui64 txId, NDqProto::TDqTask&& task,
+    IDqAsyncIoFactory::TPtr asyncIoFactory, const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
+    const TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits, NWilson::TTraceId traceId)
+    : TBase(executerId, txId, std::move(task), std::move(asyncIoFactory), functionRegistry, settings,
+        memoryLimits, /* ownMemoryQuota = */ true, /* passExceptions = */ true, /*taskCounters = */ nullptr, std::move(traceId))
     , ComputeCtx(settings.StatsMode)
 {
-    InitializeTask();
     YQL_ENSURE(GetTask().GetMeta().UnpackTo(&Meta), "Invalid task meta: " << GetTask().GetMeta().DebugString());
     YQL_ENSURE(!Meta.GetReads().empty());
     YQL_ENSURE(Meta.GetTable().GetTableKind() != (ui32)ETableKind::SysView);
@@ -113,10 +108,10 @@ void TKqpScanComputeActor::HandleEvWakeup(EEvWakeupTag tag) {
             ProcessRlNoResourceAndDie();
             break;
         case TimeoutTag:
-            Y_ABORT("TimeoutTag must be handled in base class");
+            Y_FAIL("TimeoutTag must be handled in base class");
             break;
         case PeriodicStatsTag:
-            Y_ABORT("PeriodicStatsTag must be handled in base class");
+            Y_FAIL("PeriodicStatsTag must be handled in base class");
             break;
     }
 }
@@ -132,7 +127,7 @@ void TKqpScanComputeActor::Handle(TEvScanExchange::TEvSendData::TPtr& ev) {
     auto& msg = *ev->Get();
     auto guard = TaskRunner->BindAllocator();
     if (!!msg.GetArrowBatch()) {
-        ScanData->AddData(NMiniKQL::TBatchDataAccessor(msg.GetArrowBatch(), std::move(msg.MutableDataIndexes())), msg.GetTabletId(), TaskRunner->GetHolderFactory());
+        ScanData->AddData(*msg.GetArrowBatch(), msg.GetTabletId(), TaskRunner->GetHolderFactory());
     } else {
         ScanData->AddData(std::move(msg.MutableRows()), msg.GetTabletId(), TaskRunner->GetHolderFactory());
     }
@@ -145,31 +140,35 @@ void TKqpScanComputeActor::Handle(TEvScanExchange::TEvSendData::TPtr& ev) {
 
 void TKqpScanComputeActor::Handle(TEvScanExchange::TEvRegisterFetcher::TPtr& ev) {
     ALS_DEBUG(NKikimrServices::KQP_COMPUTE) << "TEvRegisterFetcher: " << ev->Sender;
-    Y_ABORT_UNLESS(Fetchers.emplace(ev->Sender).second);
+    Y_VERIFY(Fetchers.emplace(ev->Sender).second);
     Send(ev->Sender, new TEvScanExchange::TEvAckData(CalculateFreeSpace()));
 }
 
 void TKqpScanComputeActor::Handle(TEvScanExchange::TEvFetcherFinished::TPtr& ev) {
     ALS_DEBUG(NKikimrServices::KQP_COMPUTE) << "TEvFetcherFinished: " << ev->Sender;
-    Y_ABORT_UNLESS(Fetchers.erase(ev->Sender) == 1);
+    Y_VERIFY(Fetchers.erase(ev->Sender) == 1);
     if (Fetchers.size() == 0) {
         ScanData->Finish();
         DoExecute();
     }
 }
 
-void TKqpScanComputeActor::PollSources(ui64 prevFreeSpace) {
+void TKqpScanComputeActor::PollSources(std::any prev) {
     if (!ScanData || ScanData->IsFinished()) {
         return;
     }
     const auto hasNewMemoryPred = [&]() {
+        if (!prev.has_value()) {
+            return false;
+        }
         const ui64 freeSpace = CalculateFreeSpace();
+        const ui64 prevFreeSpace = std::any_cast<ui64>(prev);
         return freeSpace > prevFreeSpace;
     };
     if (!hasNewMemoryPred() && ScanData->GetStoredBytes()) {
         return;
     }
-    const ui64 freeSpace = CalculateFreeSpace();
+    const ui32 freeSpace = CalculateFreeSpace();
     CA_LOG_D("POLL_SOURCES:START:" << Fetchers.size() << ";fs=" << freeSpace);
     for (auto&& i : Fetchers) {
         Send(i, new TEvScanExchange::TEvAckData(freeSpace));
@@ -182,17 +181,19 @@ void TKqpScanComputeActor::DoBootstrap() {
     NDq::TDqTaskRunnerContext execCtx;
     execCtx.FuncRegistry = AppData()->FunctionRegistry;
     execCtx.ComputeCtx = &ComputeCtx;
-    execCtx.ComputationFactory = NMiniKQL::GetKqpActorComputeFactory(&ComputeCtx, std::nullopt);
+    execCtx.ComputationFactory = NMiniKQL::GetKqpActorComputeFactory(&ComputeCtx);
     execCtx.RandomProvider = TAppData::RandomProvider.Get();
     execCtx.TimeProvider = TAppData::TimeProvider.Get();
     execCtx.ApplyCtx = nullptr;
+    execCtx.Alloc = nullptr;
     execCtx.TypeEnv = nullptr;
     execCtx.PatternCache = GetKqpResourceManager()->GetPatternCache();
 
     const TActorSystem* actorSystem = TlsActivationContext->ActorSystem();
 
     NDq::TDqTaskRunnerSettings settings;
-    settings.StatsMode = GetStatsMode();
+    settings.CollectBasicStats = GetStatsMode() >= NYql::NDqProto::DQ_STATS_MODE_BASIC;
+    settings.CollectProfileStats = GetStatsMode() >= NYql::NDqProto::DQ_STATS_MODE_PROFILE;
     settings.OptLLVM = (GetTask().HasUseLlvm() && GetTask().GetUseLlvm()) ? "--compile-options=disable-opt" : "OFF";
     settings.UseCacheForLLVM = AppData()->FeatureFlags.GetEnableLLVMCache();
 
@@ -204,10 +205,6 @@ void TKqpScanComputeActor::DoBootstrap() {
         settings.SecureParams[paramsName] = paramsValue;
     }
 
-    for (const auto& readRange : GetTask().GetReadRanges()) {
-        settings.ReadRanges.push_back(readRange);
-    }
-
     NDq::TLogFunc logger;
     if (IsDebugLogEnabled(actorSystem, NKikimrServices::KQP_TASKS_RUNNER)) {
         logger = [actorSystem, txId = TxId, taskId = GetTask().GetId()](const TString& message) {
@@ -216,11 +213,12 @@ void TKqpScanComputeActor::DoBootstrap() {
         };
     }
 
-    auto taskRunner = MakeDqTaskRunner(GetAllocator(), execCtx, settings, logger);
+    auto taskRunner = CreateKqpTaskRunner(execCtx, settings, logger);
     TBase::SetTaskRunner(taskRunner);
 
     auto wakeup = [this] { ContinueExecute(); };
-    TBase::PrepareTaskRunner(TKqpTaskRunnerExecutionContext(std::get<ui64>(TxId), RuntimeSettings.UseSpilling, std::move(wakeup)));
+    TBase::PrepareTaskRunner(TKqpTaskRunnerExecutionContext(std::get<ui64>(TxId), RuntimeSettings.UseSpilling, std::move(wakeup),
+        TlsActivationContext->AsActorContext()));
 
     ComputeCtx.AddTableScan(0, Meta, GetStatsMode());
     ScanData = &ComputeCtx.GetTableScan(0);

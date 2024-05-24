@@ -15,7 +15,7 @@ TSchemePrinterBase::TSchemePrinterBase(const TDriver& driver, TSettings&& settin
 {}
 
 void TSchemePrinterBase::Print() {
-    PrintDirectoryRecursive(Settings.Path, "").GetValueSync();
+    PrintDirectoryRecursive(Settings.Path, "");
 }
 
 bool TSchemePrinterBase::IsDirectoryLike(const NScheme::TSchemeEntry& entry) {
@@ -24,41 +24,30 @@ bool TSchemePrinterBase::IsDirectoryLike(const NScheme::TSchemeEntry& entry) {
         || entry.Type == NScheme::ESchemeEntryType::ColumnStore;
 }
 
-NThreading::TFuture<void> TSchemePrinterBase::PrintDirectoryRecursive(const TString& fullPath, const TString& relativePath) {
-    return SchemeClient.ListDirectory(
+void TSchemePrinterBase::PrintDirectoryRecursive(const TString& fullPath, const TString& relativePath) {
+    NScheme::TListDirectoryResult result = SchemeClient.ListDirectory(
         fullPath,
         Settings.ListDirectorySettings
-    ).Apply([this, fullPath, relativePath](const NScheme::TAsyncListDirectoryResult& resultFuture) {
-        const auto& result = resultFuture.GetValueSync();
-        ThrowOnError(result);
+    ).GetValueSync();
+    ThrowOnError(result);
 
-        if (relativePath || IsDirectoryLike(result.GetEntry())) {
-            std::lock_guard g(Lock);
-            PrintDirectory(relativePath, result);
-        } else {
-            std::lock_guard g(Lock);
-            PrintEntry(relativePath, result.GetEntry());
-        }
+    if (relativePath || IsDirectoryLike(result.GetEntry())) {
+        PrintDirectory(relativePath, result);
+    } else {
+        PrintEntry(relativePath, result.GetEntry());
+    }
 
-        TVector<NThreading::TFuture<void>> childFutures;
-        if (Settings.Recursive) {
-            for (const auto& child : result.GetChildren()) {
-                TString childRelativePath = relativePath + (relativePath ? "/" : "") + child.Name;
-                TString childFullPath = fullPath + "/" + child.Name;
-                if (IsDirectoryLike(child)) {
-                    childFutures.push_back(PrintDirectoryRecursive(childFullPath, childRelativePath));
-                    if (!Settings.Multithread) {
-                        childFutures.back().Wait();
-                        childFutures.back().TryRethrow();
-                    }
-                } else {
-                    std::lock_guard g(Lock);
-                    PrintEntry(childRelativePath, child);
-                }
+    if (Settings.Recursive) {
+        for (const auto& child : result.GetChildren()) {
+            TString childRelativePath = relativePath + (relativePath ? "/" : "") + child.Name;
+            TString childFullPath = fullPath + "/" + child.Name;
+            if (IsDirectoryLike(child)) {
+                PrintDirectoryRecursive(childFullPath, childRelativePath);
+            } else {
+                PrintEntry(childRelativePath, child);
             }
         }
-        return NThreading::WaitExceptionOrAll(childFutures);
-    });
+    }
 }
 
 NTable::TDescribeTableResult TSchemePrinterBase::DescribeTable(const TString& relativePath) {

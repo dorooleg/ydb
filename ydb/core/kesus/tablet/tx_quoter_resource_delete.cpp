@@ -69,7 +69,7 @@ struct TKesusTablet::TTxQuoterResourceDelete : public TTxBase {
             "[" << Self->TabletID() << "] TTxQuoterResourceDelete::Complete (sender=" << Sender
                 << ", cookie=" << Cookie << ")");
 
-        Y_ABORT_UNLESS(Reply);
+        Y_VERIFY(Reply);
         ctx.Send(Sender, std::move(Reply), 0, Cookie);
     }
 };

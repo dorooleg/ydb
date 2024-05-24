@@ -12,11 +12,6 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
-                                "Inputs": [
-                                    {
-                                        "ExternalPlanNodeId": 4
-                                    }
-                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -29,17 +24,15 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "Node Type": "TopSort",
+                                        "Node Type": "TopSort-Aggregate",
                                         "Operators": [
                                             {
-                                                "Inputs": [
-                                                    {
-                                                        "ExternalPlanNodeId": 2
-                                                    }
-                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
                                                 "TopSortBy": "row.string4"
+                                            },
+                                            {
+                                                "Name": "Aggregate"
                                             }
                                         ],
                                         "PlanNodeId": 3,
@@ -58,15 +51,9 @@
                                                             {
                                                                 "Aggregation": "state",
                                                                 "GroupBy": "row.string4",
-                                                                "Inputs": [
-                                                                    {
-                                                                        "InternalOperatorId": 1
-                                                                    }
-                                                                ],
                                                                 "Name": "Aggregate"
                                                             },
                                                             {
-                                                                "Inputs": [],
                                                                 "Name": "TableFullScan",
                                                                 "ReadColumns": [
                                                                     "string4"

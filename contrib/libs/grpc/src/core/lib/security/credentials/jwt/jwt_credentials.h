@@ -1,50 +1,36 @@
-//
-//
-// Copyright 2016 gRPC authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
+/*
+ *
+ * Copyright 2016 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-#ifndef GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_JWT_JWT_CREDENTIALS_H
-#define GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_JWT_JWT_CREDENTIALS_H
+#ifndef GRPC_CORE_LIB_SECURITY_CREDENTIALS_JWT_JWT_CREDENTIALS_H
+#define GRPC_CORE_LIB_SECURITY_CREDENTIALS_JWT_JWT_CREDENTIALS_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stdint.h>
-
-#include <initializer_list>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
 
-#include "y_absl/status/statusor.h"
 #include "y_absl/strings/str_format.h"
-#include "y_absl/strings/string_view.h"
 #include "y_absl/time/time.h"
-#include "y_absl/types/optional.h"
 
-#include <grpc/grpc_security.h>
-#include <grpc/support/sync.h>
 #include <grpc/support/time.h>
 
-#include "src/core/lib/gpr/useful.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/unique_type_name.h"
-#include "src/core/lib/promise/arena_promise.h"
 #include "src/core/lib/security/credentials/credentials.h"
 #include "src/core/lib/security/credentials/jwt/json_token.h"
-#include "src/core/lib/slice/slice.h"
-#include "src/core/lib/transport/transport.h"
 
 class grpc_service_account_jwt_access_credentials
     : public grpc_call_credentials {
@@ -53,8 +39,8 @@ class grpc_service_account_jwt_access_credentials
                                               gpr_timespec token_lifetime);
   ~grpc_service_account_jwt_access_credentials() override;
 
-  grpc_core::ArenaPromise<y_absl::StatusOr<grpc_core::ClientMetadataHandle>>
-  GetRequestMetadata(grpc_core::ClientMetadataHandle initial_metadata,
+  grpc_core::ArenaPromise<y_absl::StatusOr<grpc_core::ClientInitialMetadata>>
+  GetRequestMetadata(grpc_core::ClientInitialMetadata initial_metadata,
                      const GetRequestMetadataArgs* args) override;
 
   const gpr_timespec& jwt_lifetime() const { return jwt_lifetime_; }
@@ -66,10 +52,6 @@ class grpc_service_account_jwt_access_credentials
         y_absl::FormatTime(y_absl::FromUnixMicros(
             static_cast<int64_t>(gpr_timespec_to_micros(jwt_lifetime_)))));
   };
-
-  static grpc_core::UniqueTypeName Type();
-
-  grpc_core::UniqueTypeName type() const override { return Type(); }
 
  private:
   int cmp_impl(const grpc_call_credentials* other) const override {
@@ -105,4 +87,4 @@ y_absl::StatusOr<TString> RemoveServiceNameFromJwtUri(y_absl::string_view uri);
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_JWT_JWT_CREDENTIALS_H
+#endif /* GRPC_CORE_LIB_SECURITY_CREDENTIALS_JWT_JWT_CREDENTIALS_H */

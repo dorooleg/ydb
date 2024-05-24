@@ -29,9 +29,6 @@ public:
             case EUploadRowsMode::WriteToTableShadow:
                 WriteToTableShadow = true;
                 break;
-            case EUploadRowsMode::UpsertIfExists:
-                UpsertIfExists = true;
-                break;
         }
     }
 

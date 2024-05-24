@@ -8,15 +8,12 @@ namespace NDataShard {
 
 class TReadTableProd : public IDestructable {
 public:
-    TReadTableProd(const TString& error, bool IsFatalError, bool schemaChanged)
+    TReadTableProd(const TString &error, bool schemaChanged = false)
         : Error(error)
-        , IsFatalError(IsFatalError)
         , SchemaChanged(schemaChanged)
-    {
-    }
+    {}
 
     TString Error;
-    bool IsFatalError;
     bool SchemaChanged;
 };
 

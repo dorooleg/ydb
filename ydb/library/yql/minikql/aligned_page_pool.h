@@ -39,54 +39,28 @@ public:
     virtual ~TMemoryLimitExceededException() = default;
 };
 
-class TSystemMmap {
-public:
-    static void* Mmap(size_t size);
-    static int Munmap(void* addr, size_t size);
-};
-
-class TFakeAlignedMmap {
-public:
-    static std::function<void(size_t size)> OnMmap;
-    static std::function<void(void* addr, size_t size)> OnMunmap;
-
-    static void* Mmap(size_t size);
-    static int Munmap(void* addr, size_t size);
-};
-
-class TFakeUnalignedMmap {
-public:
-    static std::function<void(size_t size)> OnMmap;
-    static std::function<void(void* addr, size_t size)> OnMunmap;
-
-    static void* Mmap(size_t size);
-    static int Munmap(void* addr, size_t size);
-};
-
-template<typename TMmap = TSystemMmap>
-class TAlignedPagePoolImpl {
+class TAlignedPagePool {
 public:
     static constexpr ui64 POOL_PAGE_SIZE = 1ULL << 16; // 64k
     static constexpr ui64 PAGE_ADDR_MASK = ~(POOL_PAGE_SIZE - 1);
-    static constexpr ui64 ALLOC_AHEAD_PAGES = 31;
 
-    explicit TAlignedPagePoolImpl(const TSourceLocation& location,
+    explicit TAlignedPagePool(const TSourceLocation& location,
             const TAlignedPagePoolCounters& counters = TAlignedPagePoolCounters())
         : Counters(counters)
-        , DebugInfo(location)
+        , DebugInfo(TStringBuilder() << location)
     {
         if (Counters.PoolsCntr) {
             ++(*Counters.PoolsCntr);
         }
     }
 
-    TAlignedPagePoolImpl(const TAlignedPagePoolImpl&) = delete;
-    TAlignedPagePoolImpl(TAlignedPagePoolImpl&& other) = delete;
+    TAlignedPagePool(const TAlignedPagePool&) = delete;
+    TAlignedPagePool(TAlignedPagePool&& other) = delete;
 
-    TAlignedPagePoolImpl& operator = (const TAlignedPagePoolImpl&) = delete;
-    TAlignedPagePoolImpl& operator = (TAlignedPagePoolImpl&& other) = delete;
+    TAlignedPagePool& operator = (const TAlignedPagePool&) = delete;
+    TAlignedPagePool& operator = (TAlignedPagePool&& other) = delete;
 
-    ~TAlignedPagePoolImpl();
+    ~TAlignedPagePool();
 
     inline size_t GetAllocated() const noexcept {
         return TotalAllocated;
@@ -112,7 +86,7 @@ public:
 
     void ReturnPage(void* addr) noexcept;
 
-    void Swap(TAlignedPagePoolImpl& other) {
+    void Swap(TAlignedPagePool& other) {
         DoSwap(FreePages, other.FreePages);
         DoSwap(AllPages, other.AllPages);
         DoSwap(ActiveBlocks, other.ActiveBlocks);
@@ -136,8 +110,8 @@ public:
 
     void PrintStat(size_t usedPages, IOutputStream& out) const;
 
-    TString GetDebugInfo() const {
-        return ToString(DebugInfo);
+    const TString& GetInfo() const {
+        return DebugInfo;
     }
 
     void* GetBlock(size_t size);
@@ -212,16 +186,6 @@ public:
         IncreaseMemoryLimitCallback = std::move(callback);
     }
 
-    static void ResetGlobalsUT();
-
-    void SetMaximumLimitValueReached(bool isReached) noexcept {
-        IsMaximumLimitValueReached = isReached;
-    }
-
-    bool IsMemoryYellowZoneEnabled() const noexcept {
-        return IsMemoryYellowZoneReached;
-    }
-    
 protected:
     void* Alloc(size_t size);
     void Free(void* ptr, size_t size) noexcept;
@@ -229,11 +193,7 @@ protected:
     void UpdatePeaks() {
         PeakAllocated = Max(PeakAllocated, GetAllocated());
         PeakUsed = Max(PeakUsed, GetUsed());
-
-        UpdateMemoryYellowZone();
     }
-
-    void UpdateMemoryYellowZone();
 
     bool TryIncreaseLimit(ui64 required);
 
@@ -264,21 +224,7 @@ protected:
     ui64 AllocNotifyCurrentBytes = 0;
 
     TIncreaseMemoryLimitCallback IncreaseMemoryLimitCallback;
-    const TSourceLocation DebugInfo;
-
-    // Indicates when memory limit is almost reached.
-    bool IsMemoryYellowZoneReached = false;
-    // This theshold is used to determine is memory limit is almost reached.
-    // If TIncreaseMemoryLimitCallback is set this thresholds should be ignored.
-    // The yellow zone turns on when memory consumption reaches 80% and turns off when consumption drops below 50%.
-    const ui8 EnableMemoryYellowZoneThreshold = 80;
-    const ui8 DisableMemoryYellowZoneThreshold = 50;
-
-    // This flag indicates that value of memory limit reached it's maximum.
-    // Next TryIncreaseLimit call most likely will return false.
-    bool IsMaximumLimitValueReached = false;
+    TString DebugInfo;
 };
-
-using TAlignedPagePool = TAlignedPagePoolImpl<>;
 
 } // NKikimr

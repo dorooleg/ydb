@@ -25,17 +25,19 @@ namespace NKikimr::NBlobDepot {
     }
 
     void TBlobDepotAgent::ConnectToBlobDepot() {
-        Y_ABORT_UNLESS(!PipeId);
+        Y_VERIFY(!PipeId);
         PipeId = Register(NTabletPipe::CreateClient(SelfId(), TabletId, NTabletPipe::TClientRetryPolicy::WithRetries()));
         NextTabletRequestId = 1;
         const ui64 id = NextTabletRequestId++;
-        STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA05, "ConnectToBlobDepot", (AgentId, LogId), (PipeId, PipeId), (RequestId, id));
+        STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA05, "ConnectToBlobDepot", (AgentId, LogId),
+            (PipeId, PipeId), (RequestId, id));
         NTabletPipe::SendData(SelfId(), PipeId, new TEvBlobDepot::TEvRegisterAgent(VirtualGroupId, AgentInstanceId), id);
         RegisterRequest(id, this, nullptr, {}, true);
     }
 
     void TBlobDepotAgent::Handle(TRequestContext::TPtr /*context*/, NKikimrBlobDepot::TEvRegisterAgentResult& msg) {
-        STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA06, "TEvRegisterAgentResult", (AgentId, LogId), (Msg, msg));
+        STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA06, "TEvRegisterAgentResult", (AgentId, LogId),
+            (Msg, msg));
         BlobDepotGeneration = msg.GetGeneration();
         DecommitGroupId = msg.HasDecommitGroupId() ? std::make_optional(msg.GetDecommitGroupId()) : std::nullopt;
 
@@ -109,11 +111,11 @@ namespace NKikimr::NBlobDepot {
             << " Msg# " << SingleLineProto(msg));
         auto& kind = it->second;
 
-        Y_ABORT_UNLESS(kind.IdAllocInFlight);
+        Y_VERIFY(kind.IdAllocInFlight);
         kind.IdAllocInFlight = false;
 
-        Y_ABORT_UNLESS(msg.GetChannelKind() == allocateIdsContext.ChannelKind);
-        Y_ABORT_UNLESS(msg.GetGeneration() == BlobDepotGeneration);
+        Y_VERIFY(msg.GetChannelKind() == allocateIdsContext.ChannelKind);
+        Y_VERIFY(msg.GetGeneration() == BlobDepotGeneration);
 
         if (msg.HasGivenIdRange()) {
             kind.IssueGivenIdRange(msg.GetGivenIdRange());
@@ -195,9 +197,9 @@ namespace NKikimr::NBlobDepot {
 
         for (const auto& item : msg.GetInvalidatedSteps()) {
             const ui8 channel = item.GetChannel();
-            Y_ABORT_UNLESS(item.GetGeneration() == BlobDepotGeneration);
+            Y_VERIFY(item.GetGeneration() == BlobDepotGeneration);
             const auto it = ChannelToKind.find(channel);
-            Y_ABORT_UNLESS(it != ChannelToKind.end());
+            Y_VERIFY(it != ChannelToKind.end());
             TChannelKind& kind = *it->second;
             const ui32 numAvailableItemsBefore = kind.GetNumAvailableItems();
             kind.Trim(channel, item.GetGeneration(), item.GetInvalidatedStep());

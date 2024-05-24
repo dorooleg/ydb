@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ydb_command.h"
+#include "ydb_common.h"
 
 #include <ydb/public/sdk/cpp/client/ydb_import/import.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
@@ -8,7 +9,8 @@
 #include <ydb/public/lib/ydb_cli/common/format.h>
 #include <ydb/public/lib/ydb_cli/common/parseable_struct.h>
 
-namespace NYdb::NConsoleClient {
+namespace NYdb {
+namespace NConsoleClient {
 
 class TCommandImport : public TClientCommandTree {
 public:
@@ -37,7 +39,6 @@ private:
     TVector<TItem> Items;
     TString Description;
     ui32 NumberOfRetries = 10;
-    bool UseVirtualAddressing = true;
 };
 
 class TCommandImportFromFile : public TClientCommandTree {
@@ -116,5 +117,5 @@ public:
     void Config(TConfig& config) override;
     int Run(TConfig& config) override;
 };
-
+}
 }

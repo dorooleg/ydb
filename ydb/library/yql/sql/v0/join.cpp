@@ -317,7 +317,7 @@ protected:
             }
             KeysGround = ctx.GroundBlockShortcuts(GetPos(), KeysGround);
 
-            Y_DEBUG_ABORT_UNLESS(leftSource);
+            Y_VERIFY_DEBUG(leftSource);
             if (sameColumnNamePtr) {
                 SameKeyMap[*sameColumnNamePtr].insert(*leftSource);
                 SameKeyMap[*sameColumnNamePtr].insert(*rightSource);

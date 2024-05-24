@@ -25,8 +25,8 @@ namespace {
             TVector<TCell> firstKey{ TCell::Make(firstRowId) };
             TVector<TCell> lastKey{ TCell::Make(lastRowId) };
             Run->emplace_back(
-                TSerializedCellVec(firstKey),
-                TSerializedCellVec(lastKey),
+                TSerializedCellVec(TSerializedCellVec::Serialize(firstKey)),
+                TSerializedCellVec(TSerializedCellVec::Serialize(lastKey)),
                 firstRowId,
                 lastRowId,
                 firstInclusive,

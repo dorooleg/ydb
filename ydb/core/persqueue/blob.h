@@ -12,6 +12,9 @@
 namespace NKikimr {
 namespace NPQ {
 
+
+void CheckBlob(const TKey& key, const TString& blob);
+
 struct TPartData {
     ui16 PartNo;
     ui16 TotalParts;
@@ -59,7 +62,7 @@ struct TClientBlob {
         , PartitionKey(partitionKey)
         , ExplicitHashKey(explicitHashKey)
     {
-        Y_ABORT_UNLESS(PartitionKey.size() <= 256);
+        Y_VERIFY(PartitionKey.size() <= 256);
     }
 
     ui32 GetPartDataSize() const {
@@ -88,12 +91,11 @@ struct TClientBlob {
         return !PartData || PartData->PartNo + 1 == PartData->TotalParts;
     }
 
-    static constexpr ui32 OVERHEAD = sizeof(ui32)/*totalSize*/ + sizeof(ui64)/*SeqNo*/ + sizeof(ui16) /*SourceId*/ + sizeof(ui64) /*WriteTimestamp*/ + sizeof(ui64) /*CreateTimestamp*/;
+    static const ui32 OVERHEAD = sizeof(ui32)/*totalSize*/ + sizeof(ui64)/*SeqNo*/ + sizeof(ui16) /*SourceId*/ + sizeof(ui64) /*WriteTimestamp*/ + sizeof(ui64) /*CreateTimestamp*/;
 
     void SerializeTo(TBuffer& buffer) const;
     static TClientBlob Deserialize(const char *data, ui32 size);
 
-    static void CheckBlob(const TKey& key, const TString& blob); 
 };
 
 static constexpr const ui32 MAX_BLOB_SIZE = 8_MB;
@@ -186,7 +188,7 @@ struct TBatch {
         , PackedData(data, header.GetPayloadSize())
     {}
 
-    ui32 GetPackedSize() const { Y_ABORT_UNLESS(Packed); return sizeof(ui16) + PackedData.size() + Header.ByteSize(); }
+    ui32 GetPackedSize() const { Y_VERIFY(Packed); return sizeof(ui16) + PackedData.size() + Header.ByteSize(); }
     void Pack();
     void Unpack();
     void UnpackTo(TVector<TClientBlob> *result);
@@ -201,17 +203,21 @@ struct TBatch {
 
 class TBlobIterator {
 public:
-    TBlobIterator(const TKey& key, const TString& blob);
+    TBlobIterator(const TKey& key, const TString& blob, bool createBatch = true);
 
     //return true is there is batch
     bool IsValid();
     //get next batch and return false if there is no next batch
     bool Next();
 
-    TBatch GetBatch();
+    const TBatch& GetBatch();
 private:
-    void ParseBatch();
+    void ParseBatch(bool isFirst);
 
+    // if true, Batch is filled, otherwise only Header.
+    bool CreateBatch;
+
+    TBatch Batch;
     NKikimrPQ::TBatchHeader Header;
 
     const TKey& Key;
@@ -264,7 +270,7 @@ public:
 
     TPartitionedBlob(const TPartitionedBlob& x);
 
-    TPartitionedBlob(const TPartitionId& partition, const ui64 offset, const TString& sourceId, const ui64 seqNo,
+    TPartitionedBlob(const ui32 partition, const ui64 offset, const TString& sourceId, const ui64 seqNo,
                      const ui16 totalParts, const ui32 totalSize, THead& head, THead& newHead, bool headCleared, bool needCompactHead, const ui32 maxBlobSize);
 
     std::optional<std::pair<TKey, TString>> Add(TClientBlob&& blob);
@@ -287,7 +293,7 @@ private:
     TString CompactHead(bool glueHead, THead& head, bool glueNewHead, THead& newHead, ui32 estimatedSize);
 
 private:
-    TPartitionId Partition;
+    ui32 Partition;
     ui64 Offset;
     ui16 InternalPartsCount;
     ui64 StartOffset;

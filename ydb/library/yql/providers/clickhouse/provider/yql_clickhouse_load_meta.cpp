@@ -113,18 +113,7 @@ public:
             auto promise = NThreading::NewPromise();
             handles.emplace_back(promise.GetFuture());
 
-            auto result = Results_.emplace( item, std::make_shared<TMapType::mapped_type::element_type>()).first->second;
-
-            Gateway_->Upload(
-                std::move(url),
-                {},
-                std::move(sql),
-                std::bind(
-                    &TClickHouseLoadTableMetadataTransformer::OnDiscovery,
-                    std::move(result),
-                    std::placeholders::_1,
-                    std::move(promise))
-                );
+            Gateway_->Upload(std::move(url), {}, std::move(sql), std::bind(&TClickHouseLoadTableMetadataTransformer::OnDiscovery, Results_.emplace(item, std::make_shared<TMapType::mapped_type::element_type>()).first->second, std::placeholders::_1, std::move(promise)));
         }
 
         if (handles.empty()) {
@@ -273,7 +262,7 @@ private:
                 const auto astRoot = TAstNode::NewList({}, pool,
                     TAstNode::NewList({}, pool, TAstNode::NewLiteralAtom({}, TStringBuf("return"), pool), parsedType));
                 TExprNode::TPtr exprRoot;
-                YQL_ENSURE(CompileExpr(*astRoot, exprRoot, ctx, nullptr, nullptr), "Failed to compile.");
+                YQL_ENSURE(CompileExpr(*astRoot, exprRoot, ctx, nullptr), "Failed to compile.");
 
                 // TODO: Collect type annotation directly from AST.
                 const auto callableTransformer = CreateExtCallableTypeAnnotationTransformer(*State_->Types);

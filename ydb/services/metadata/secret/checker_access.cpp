@@ -6,7 +6,7 @@
 namespace NKikimr::NMetadata::NSecret {
 
 void TAccessPreparationActor::StartChecker() {
-    Y_ABORT_UNLESS(Secrets);
+    Y_VERIFY(Secrets);
     auto g = PassAwayGuard();
     for (auto&& i : Objects) {
         if (Context.GetActivityType() == NModifications::IOperationsManager::EActivityType::Create) {

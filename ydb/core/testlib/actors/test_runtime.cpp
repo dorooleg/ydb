@@ -7,9 +7,9 @@
 #include <ydb/core/mon_alloc/profiler.h>
 #include <ydb/core/tablet/tablet_impl.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 
 
 /**** ACHTUNG: Do not make here any new dependecies on kikimr ****/
@@ -85,7 +85,7 @@ namespace NActors {
     }
 
     void TTestActorRuntime::AddAppDataInit(std::function<void(ui32, NKikimr::TAppData&)> callback) {
-        Y_ABORT_UNLESS(!IsInitialized, "Actor system is already initialized");
+        Y_VERIFY(!IsInitialized, "Actor system is already initialized");
         AppDataInit_.push_back(std::move(callback));
     }
 
@@ -108,8 +108,8 @@ namespace NActors {
             const auto* app0 = App0.Get();
             if (!SingleSysEnv) {
                 const TIntrusivePtr<::NMonitoring::TDynamicCounters> profilerCounters = NKikimr::GetServiceCounters(node->DynamicCounters, "utils");
-                TTestActorSetupCmd profilerSetup{CreateProfilerActor(profilerCounters, "."), TMailboxType::Simple, 0};
-                node->LocalServices.push_back(std::pair<TActorId, TTestActorSetupCmd>(MakeProfilerID(FirstNodeId + nodeIndex), profilerSetup));
+                TActorSetupCmd profilerSetup(CreateProfilerActor(profilerCounters, "."), TMailboxType::Simple, 0);
+                node->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(MakeProfilerID(FirstNodeId + nodeIndex), profilerSetup));
             }
 
             if (!UseRealThreads) {
@@ -136,22 +136,16 @@ namespace NActors {
             nodeAppData->StreamingConfig.SetEnableOutputStreams(true);
             nodeAppData->PQConfig = app0->PQConfig;
             nodeAppData->NetClassifierConfig.CopyFrom(app0->NetClassifierConfig);
+            nodeAppData->StaticBlobStorageConfig->CopyFrom(*app0->StaticBlobStorageConfig);
             nodeAppData->EnableKqpSpilling = app0->EnableKqpSpilling;
             nodeAppData->FeatureFlags = app0->FeatureFlags;
             nodeAppData->CompactionConfig = app0->CompactionConfig;
-            nodeAppData->HiveConfig.SetWarmUpBootWaitingPeriod(10);
-            nodeAppData->HiveConfig.SetMaxNodeUsageToKick(100);
-            nodeAppData->HiveConfig.SetMinCounterScatterToBalance(100);
-            nodeAppData->HiveConfig.SetMinScatterToBalance(100);
-            nodeAppData->HiveConfig.SetObjectImbalanceToBalance(100);
-            nodeAppData->HiveConfig.CopyFrom(app0->HiveConfig);
+            nodeAppData->HiveConfig = app0->HiveConfig;
             nodeAppData->SchemeShardConfig = app0->SchemeShardConfig;
             nodeAppData->DataShardConfig = app0->DataShardConfig;
             nodeAppData->ColumnShardConfig = app0->ColumnShardConfig;
             nodeAppData->MeteringConfig = app0->MeteringConfig;
             nodeAppData->AwsCompatibilityConfig = app0->AwsCompatibilityConfig;
-            nodeAppData->S3ProxyResolverConfig = app0->S3ProxyResolverConfig;
-            nodeAppData->GraphConfig = app0->GraphConfig;
             nodeAppData->EnableMvccSnapshotWithLegacyDomainRoot = app0->EnableMvccSnapshotWithLegacyDomainRoot;
             nodeAppData->IoContextFactory = app0->IoContextFactory;
             if (KeyConfigGenerator) {
@@ -190,23 +184,20 @@ namespace NActors {
     }
 
     ui16 TTestActorRuntime::GetMonPort(ui32 nodeIndex) const {
-        Y_ABORT_UNLESS(nodeIndex < MonPorts.size(), "Unknown MonPort for nodeIndex = %" PRIu32, nodeIndex);
+        Y_VERIFY(nodeIndex < MonPorts.size(), "Unknown MonPort for nodeIndex = %" PRIu32, nodeIndex);
         return MonPorts[nodeIndex];
     }
 
-    void TTestActorRuntime::InitActorSystemSetup(TActorSystemSetup& /*setup*/) {
+    void TTestActorRuntime::InitActorSystemSetup(TActorSystemSetup& setup) {
+        setup.MaxActivityType = GetActivityTypeCount();
     }
 
     NKikimr::TAppData& TTestActorRuntime::GetAppData(ui32 nodeIndex) {
         TGuard<TMutex> guard(Mutex);
-        Y_ABORT_UNLESS(nodeIndex < NodeCount);
+        Y_VERIFY(nodeIndex < NodeCount);
         ui32 nodeId = FirstNodeId + nodeIndex;
         auto* node = GetNodeById(nodeId);
         return *node->GetAppData<NKikimr::TAppData>();
-    }
-
-    ui32 TTestActorRuntime::GetFirstNodeId() {
-        return FirstNodeId;
     }
 
     bool TTestActorRuntime::DefaultScheduledFilterFunc(TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event, TDuration delay, TInstant& deadline) {
@@ -244,13 +235,13 @@ namespace NActors {
         GrabEdgeEventRethrow<TEvents::TEvWakeup>(SleepEdgeActor);
     }
 
-    void TTestActorRuntime::SendToPipe(ui64 tabletId, const TActorId& sender, IEventBase* payload, ui32 nodeIndex, const NKikimr::NTabletPipe::TClientConfig& pipeConfig, TActorId clientId, ui64 cookie, NWilson::TTraceId traceId) {
+    void TTestActorRuntime::SendToPipe(ui64 tabletId, const TActorId& sender, IEventBase* payload, ui32 nodeIndex, const NKikimr::NTabletPipe::TClientConfig& pipeConfig, TActorId clientId, ui64 cookie) {
         bool newPipe = (clientId == TActorId());
         if (newPipe) {
             clientId = ConnectToPipe(tabletId, sender, nodeIndex, pipeConfig);
         }
 
-        SendToPipe(clientId, sender, payload, nodeIndex, cookie, std::move(traceId));
+        SendToPipe(clientId, sender, payload, nodeIndex, cookie);
 
         if (newPipe) {
             ClosePipe(clientId, sender, nodeIndex);
@@ -258,8 +249,8 @@ namespace NActors {
     }
 
     void TTestActorRuntime::SendToPipe(TActorId clientId, const TActorId& sender, IEventBase* payload,
-                                       ui32 nodeIndex, ui64 cookie, NWilson::TTraceId traceId) {
-        auto pipeEv = new IEventHandle(clientId, sender, payload, 0, cookie, nullptr, std::move(traceId));
+                                       ui32 nodeIndex, ui64 cookie) {
+        auto pipeEv = new IEventHandle(clientId, sender, payload, 0, cookie);
         pipeEv->Rewrite(NKikimr::TEvTabletPipe::EvSend, clientId);
         Send(pipeEv, nodeIndex, true);
     }

@@ -47,7 +47,8 @@
 #include <__charconv/chars_format.h>
 #include <__charconv/to_chars_result.h>
 #include <__config>
-#include <__system_error/errc.h>
+#include <__debug>
+#include <__errc>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
@@ -57,7 +58,7 @@
 #include "include/ryu/d2fixed.h"
 
 #if defined(_MSC_VER)
-#include <intrin.h> // for _umul128(), __shiftright128(), _BitScanForward{,64}
+#include <intrin.h> // for _umul128() and __shiftright128()
 #endif // defined(_MSC_VER)
 
 #if defined(_WIN64) || defined(_M_AMD64) || defined(__x86_64__) ||  defined(__aarch64__)

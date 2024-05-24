@@ -4,16 +4,17 @@
 #include "events.h"
 
 #include <ydb/core/persqueue/events/global.h>
-#include <ydb/core/persqueue/utils.h>
-#include <ydb/core/persqueue/pq_rl_helpers.h>
 #include <ydb/core/persqueue/write_meta.h>
 #include <ydb/core/protos/msgbus_pq.pb.h>
 #include <ydb/core/protos/grpc_pq_old.pb.h>
 
+#include <ydb/services/lib/actors/pq_rl_helpers.h>
 #include <ydb/services/lib/actors/pq_schema_actor.h>
 #include <ydb/services/lib/sharding/sharding.h>
 
 #include <library/cpp/digest/md5/md5.h>
+
+#define PUT_UNIT_SIZE 40960u // 40Kb
 
 namespace NKikimr::NDataStreams::V1 {
 
@@ -27,15 +28,13 @@ namespace NKikimr::NDataStreams::V1 {
     TString GetSerializedData(const TPutRecordsItem& item) {
         NKikimrPQClient::TDataChunk proto;
 
-        //TODO: get ip from client, not grpc;
-        // proto.SetIp(item.Ip);
-
+        proto.SetIp(item.Ip);
         proto.SetCodec(0); // NPersQueue::CODEC_RAW
         proto.SetData(item.Data);
 
         TString str;
         bool res = proto.SerializeToString(&str);
-        Y_ABORT_UNLESS(res);
+        Y_VERIFY(res);
         return str;
     }
 
@@ -114,7 +113,10 @@ namespace NKikimr::NDataStreams::V1 {
             }
 
             if (ShouldBeCharged) {
-                request.MutablePartitionRequest()->SetPutUnitsSize(NPQ::PutUnitsSize(totalSize));
+                ui64 putUnitsCount = totalSize / PUT_UNIT_SIZE;
+                if (totalSize % PUT_UNIT_SIZE != 0)
+                    putUnitsCount++;
+                request.MutablePartitionRequest()->SetPutUnitsSize(putUnitsCount);
             }
 
             TAutoPtr<TEvPersQueue::TEvRequest> req(new TEvPersQueue::TEvRequest);
@@ -128,7 +130,7 @@ namespace NKikimr::NDataStreams::V1 {
                 return;
             }
 
-            Y_ABORT_UNLESS(ev->Get()->Record.HasPartitionResponse());
+            Y_VERIFY(ev->Get()->Record.HasPartitionResponse());
             Y_ENSURE(ev->Get()->Record.GetPartitionResponse().GetCmdWriteResult().size() > 0, "Wrong number of cmd write commands");
             auto offset = ev->Get()->Record.GetPartitionResponse().GetCmdWriteResult(0).GetOffset();
             ReplySuccessAndDie(ctx, offset);
@@ -213,7 +215,7 @@ namespace NKikimr::NDataStreams::V1 {
     template<class TDerived, class TProto>
     class TPutRecordsActorBase
         : public NGRpcProxy::V1::TPQGrpcSchemaBase<TPutRecordsActorBase<TDerived, TProto>, TProto>
-        , private NPQ::TRlHelpers
+        , private NGRpcProxy::V1::TRlHelpers
     {
         using TBase = NGRpcProxy::V1::TPQGrpcSchemaBase<TPutRecordsActorBase<TDerived, TProto>, TProto>;
 
@@ -223,8 +225,7 @@ namespace NKikimr::NDataStreams::V1 {
 
         void Bootstrap(const NActors::TActorContext &ctx);
         void PreparePartitionActors(const NActors::TActorContext& ctx);
-        void HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev);
-        void Die(const TActorContext& ctx) override;
+        void HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const TActorContext& ctx);
 
     protected:
         void Write(const TActorContext& ctx);
@@ -260,15 +261,9 @@ namespace NKikimr::NDataStreams::V1 {
     };
 
     template<class TDerived, class TProto>
-    void TPutRecordsActorBase<TDerived, TProto>::Die(const TActorContext& ctx) {
-        TRlHelpers::PassAway(TDerived::SelfId());
-        TBase::Die(ctx);
-    }
-
-    template<class TDerived, class TProto>
     TPutRecordsActorBase<TDerived, TProto>::TPutRecordsActorBase(NGRpcService::IRequestOpCtx* request)
             : TBase(request, dynamic_cast<const typename TProto::TRequest*>(request->GetRequest())->stream_name())
-            , TRlHelpers({}, request, 4_KB, false, TDuration::Seconds(1))
+            , TRlHelpers(request, 4_KB, TDuration::Seconds(1))
             , Ip(request->GetPeerName())
     {
         Y_ENSURE(request);
@@ -308,7 +303,7 @@ namespace NKikimr::NDataStreams::V1 {
     void TPutRecordsActorBase<TDerived, TProto>::SendNavigateRequest(const TActorContext& ctx) {
         auto schemeCacheRequest = std::make_unique<NSchemeCache::TSchemeCacheNavigate>();
         NSchemeCache::TSchemeCacheNavigate::TEntry entry;
-        entry.Path = NKikimr::SplitPath(this->GetTopicPath());
+        entry.Path = NKikimr::SplitPath(this->GetTopicPath(ctx));
         entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpList;
         entry.SyncVersion = true;
         schemeCacheRequest->ResultSet.emplace_back(entry);
@@ -316,14 +311,14 @@ namespace NKikimr::NDataStreams::V1 {
     }
 
     template<class TDerived, class TProto>
-    void TPutRecordsActorBase<TDerived, TProto>::HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
-        if (TBase::ReplyIfNotTopic(ev)) {
+    void TPutRecordsActorBase<TDerived, TProto>::HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const TActorContext& ctx) {
+        if (TBase::ReplyIfNotTopic(ev, ctx)) {
             return;
         }
 
         const NSchemeCache::TSchemeCacheNavigate* navigate = ev->Get()->Request.Get();
         auto topicInfo = navigate->ResultSet.begin();
-        if (AppData(this->ActorContext())->PQConfig.GetRequireCredentialsInNewProtocol()) {
+        if (AppData(ctx)->PQConfig.GetRequireCredentialsInNewProtocol()) {
             NACLib::TUserToken token(this->Request_->GetSerializedToken());
             if (!topicInfo->SecurityObject->CheckAccess(NACLib::EAccessRights::UpdateRow, token)) {
                 return this->ReplyWithError(Ydb::StatusIds::UNAUTHORIZED,
@@ -331,7 +326,7 @@ namespace NKikimr::NDataStreams::V1 {
                                             TStringBuilder() << "Access for stream "
                                             << this->GetProtoRequest()->stream_name()
                                             << " is denied for subject "
-                                            << token.GetUserSID(), this->ActorContext());
+                                            << token.GetUserSID(), ctx);
             }
         }
 
@@ -339,21 +334,21 @@ namespace NKikimr::NDataStreams::V1 {
         PQGroupInfo = topicInfo->PQGroupInfo;
         SetMeteringMode(PQGroupInfo->Description.GetPQTabletConfig().GetMeteringMode());
 
-        if (!AppData(this->ActorContext())->PQConfig.GetTopicsAreFirstClassCitizen() && !PQGroupInfo->Description.GetPQTabletConfig().GetLocalDC()) {
+        if (!AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen() && !PQGroupInfo->Description.GetPQTabletConfig().GetLocalDC()) {
 
             return this->ReplyWithError(Ydb::StatusIds::BAD_REQUEST,
                                         Ydb::PersQueue::ErrorCode::BAD_REQUEST,
                                         TStringBuilder() << "write to mirrored stream "
                                         << this->GetProtoRequest()->stream_name()
-                                        << " is forbidden", this->ActorContext());
+                                        << " is forbidden", ctx);
         }
 
 
         if (IsQuotaRequired()) {
             const auto ru = 1 + CalcRuConsumption(GetPayloadSize());
-            Y_ABORT_UNLESS(MaybeRequestQuota(ru, EWakeupTag::RlAllowed, this->ActorContext()));
+            Y_VERIFY(MaybeRequestQuota(ru, EWakeupTag::RlAllowed, ctx));
         } else {
-            Write(this->ActorContext());
+            Write(ctx);
         }
     }
 
@@ -372,7 +367,7 @@ namespace NKikimr::NDataStreams::V1 {
             if (items[part].empty()) continue;
             PartitionToActor[part].ActorId = ctx.Register(
                 new TDatastreamsPartitionActor(ctx.SelfID, partition.GetTabletId(), part,
-                                               this->GetTopicPath(), std::move(items[part]),
+                                               this->GetTopicPath(ctx), std::move(items[part]),
                                                ShouldBeCharged));
         }
         this->CheckFinish(ctx);
@@ -427,7 +422,7 @@ namespace NKikimr::NDataStreams::V1 {
                 for (int i = 0; i < PutRecordsResult.failed_record_count(); ++i) {
                     PutRecordsResult.add_records()->set_error_code("ThrottlingException");
                 }
-                return this->CheckFinish(ctx);
+                this->CheckFinish(ctx);
             default:
                 return this->HandleWakeup(ev, ctx);
         }
@@ -521,11 +516,10 @@ namespace NKikimr::NDataStreams::V1 {
             if (putRecordsResult.records(0).error_code() == "ProvisionedThroughputExceededException"
                 || putRecordsResult.records(0).error_code() == "ThrottlingException")
             {
-                return ReplyWithError(Ydb::StatusIds::OVERLOADED, Ydb::PersQueue::ErrorCode::OVERLOAD, putRecordsResult.records(0).error_message(), ctx);
+                return ReplyWithResult(Ydb::StatusIds::OVERLOADED, ctx);
             }
             //TODO: other codes - access denied and so on
-            return ReplyWithError(Ydb::StatusIds::INTERNAL_ERROR, Ydb::PersQueue::ErrorCode::ERROR, putRecordsResult.records(0).error_message(), ctx);
-
+            return ReplyWithResult(Ydb::StatusIds::INTERNAL_ERROR, ctx);
         }
     }
 

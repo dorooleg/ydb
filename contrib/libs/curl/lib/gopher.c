@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -30,7 +30,6 @@
 #include <curl/curl.h>
 #include "transfer.h"
 #include "sendf.h"
-#include "cfilters.h"
 #include "connect.h"
 #include "progress.h"
 #include "gopher.h"
@@ -118,9 +117,7 @@ static CURLcode gopher_connect(struct Curl_easy *data, bool *done)
 static CURLcode gopher_connecting(struct Curl_easy *data, bool *done)
 {
   struct connectdata *conn = data->conn;
-  CURLcode result;
-
-  result = Curl_conn_connect(data, FIRSTSOCKET, TRUE, done);
+  CURLcode result = Curl_ssl_connect(data, conn, FIRSTSOCKET);
   if(result)
     connclose(conn, "Failed TLS connection");
   *done = TRUE;
@@ -185,7 +182,7 @@ static CURLcode gopher_do(struct Curl_easy *data, bool *done)
     if(strlen(sel) < 1)
       break;
 
-    result = Curl_nwrite(data, FIRSTSOCKET, sel, k, &amount);
+    result = Curl_write(data, sockfd, sel, k, &amount);
     if(!result) { /* Which may not have written it all! */
       result = Curl_client_write(data, CLIENTWRITE_HEADER, sel, amount);
       if(result)
@@ -227,7 +224,7 @@ static CURLcode gopher_do(struct Curl_easy *data, bool *done)
   free(sel_org);
 
   if(!result)
-    result = Curl_nwrite(data, FIRSTSOCKET, "\r\n", 2, &amount);
+    result = Curl_write(data, sockfd, "\r\n", 2, &amount);
   if(result) {
     failf(data, "Failed sending Gopher request");
     return result;
@@ -239,4 +236,4 @@ static CURLcode gopher_do(struct Curl_easy *data, bool *done)
   Curl_setup_transfer(data, FIRSTSOCKET, -1, FALSE, -1);
   return CURLE_OK;
 }
-#endif /* CURL_DISABLE_GOPHER */
+#endif /*CURL_DISABLE_GOPHER*/

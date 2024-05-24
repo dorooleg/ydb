@@ -436,7 +436,7 @@ Y_UNIT_TEST(Decimal) {
 Y_UNIT_TEST(GenericVoid) {
     TScopedAlloc alloc(__LOCATION__);
     TTypeEnvironment env(alloc);
-    auto type = env.GetVoidLazy()->GetType();
+    auto type = env.GetVoid()->GetType();
     NUdf::TUnboxedValue value = NUdf::TUnboxedValuePod::Void();
     TGenericPresortEncoder encoder(type);
     auto buf = encoder.Encode(value, false);
@@ -521,7 +521,7 @@ Y_UNIT_TEST(GenericList) {
     auto type = TListType::Create(TDataType::Create(NUdf::TDataType<bool>::Id, env), env);
     TMemoryUsageInfo memInfo("test");
     THolderFactory holderFactory(alloc.Ref(), memInfo);
-    auto value = holderFactory.GetEmptyContainerLazy();
+    auto value = holderFactory.GetEmptyContainer();
     TGenericPresortEncoder encoder(type);
     auto buf = encoder.Encode(value, false);
     UNIT_ASSERT_NO_DIFF(buf, TStringBuf("\x00"sv));
@@ -626,7 +626,7 @@ Y_UNIT_TEST(GenericDict) {
     UNIT_ASSERT(!useIHash);
     TMemoryUsageInfo memInfo("test");
     THolderFactory holderFactory(alloc.Ref(), memInfo);
-    auto value = holderFactory.GetEmptyContainerLazy();
+    auto value = holderFactory.GetEmptyContainer();
     TGenericPresortEncoder encoder(type);
     auto buf = encoder.Encode(value, false);
     UNIT_ASSERT_NO_DIFF(buf, TStringBuf("\x00"sv));

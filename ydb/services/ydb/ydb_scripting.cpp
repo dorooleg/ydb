@@ -8,7 +8,7 @@
 namespace NKikimr {
 namespace NGRpcService {
 
-void TGRpcYdbScriptingService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcYdbScriptingService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     using Ydb::Scripting::ExecuteYqlRequest;
     using Ydb::Scripting::ExecuteYqlResponse;
     using Ydb::Scripting::ExecuteYqlPartialResponse;
@@ -22,7 +22,7 @@ void TGRpcYdbScriptingService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger
 #endif
 #define ADD_REQUEST(NAME, IN, OUT, ACTION) \
     MakeIntrusive<TGRpcRequest<Ydb::Scripting::IN, Ydb::Scripting::OUT, TGRpcYdbScriptingService>>(this, &Service_, CQ_, \
-        [this](NYdbGrpc::IRequestContextBase *ctx) { \
+        [this](NGrpc::IRequestContextBase *ctx) { \
             NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer()); \
             ACTION; \
         }, &Ydb::Scripting::V1::ScriptingService::AsyncService::Request ## NAME, \
@@ -31,13 +31,13 @@ void TGRpcYdbScriptingService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger
     ADD_REQUEST(ExecuteYql, ExecuteYqlRequest, ExecuteYqlResponse, {
         ActorSystem_->Send(GRpcRequestProxyId_,
             new TGrpcRequestOperationCall<ExecuteYqlRequest, ExecuteYqlResponse>
-                (ctx, &DoExecuteYqlScript, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Ru), nullptr, TAuditMode::Auditable}));
+                (ctx, &DoExecuteYqlScript, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Ru), nullptr}));
     })
 
     ADD_REQUEST(StreamExecuteYql, ExecuteYqlRequest, ExecuteYqlPartialResponse, {
         ActorSystem_->Send(GRpcRequestProxyId_,
             new TGrpcRequestNoOperationCall<ExecuteYqlRequest, ExecuteYqlPartialResponse>
-                (ctx, &DoStreamExecuteYqlScript, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr, TAuditMode::Auditable}));
+                (ctx, &DoStreamExecuteYqlScript, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
     })
 
     ADD_REQUEST(ExplainYql, ExplainYqlRequest, ExplainYqlResponse, {

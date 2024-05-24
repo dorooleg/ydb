@@ -61,7 +61,7 @@ template <>
 class TCoderMask<false> {
 public:
     inline size_t MaxSize() const { return 0; }
-    inline void AddNull() { Y_ABORT("Null values are not supported."); }
+    inline void AddNull() { Y_FAIL("Null values are not supported."); }
     inline void AddNonNull() { }
     inline void Seal(TBuffer&) { }
 };
@@ -88,7 +88,7 @@ public:
 
 protected:
     void DoAddData(const char* data, size_t size) override {
-        Y_ABORT_UNLESS(size == Size, "Size mismatch.");
+        Y_VERIFY(size == Size, "Size mismatch.");
         Mask.AddNonNull();
         DataSize += Size;
         Output.Append(data, size);
@@ -217,7 +217,7 @@ public:
 
 protected:
     void DoAddData(const char* data, size_t size) override {
-        Y_ABORT_UNLESS(size == sizeof(TType));
+        Y_VERIFY(size == sizeof(TType));
         Mask.AddNonNull();
         DataSize += ValueCoder.Save(Output, ReadUnaligned<TType>(data));
     }
@@ -294,14 +294,14 @@ public:
 
 protected:
     void DoAddData(const char* data, size_t size) override {
-        Y_DEBUG_ABORT_UNLESS(size == sizeof(bool));
+        Y_VERIFY_DEBUG(size == sizeof(bool));
         if (IsNullable)
             Mask.Append(1, 1);
         Mask.Append(*(const bool*)data, 1);
     }
 
     void DoAddNull() override {
-        Y_ABORT_UNLESS(IsNullable, "Null values are not supported.");
+        Y_VERIFY(IsNullable, "Null values are not supported.");
         Mask.Append(0, 2);
     }
 

@@ -21,7 +21,6 @@
 #include <util/system/thread.h>
 
 #include <functional>
-#include <atomic>
 
 #if defined(_unix_)
 #include <pthread.h>
@@ -135,8 +134,10 @@ public:
 
     private:
         void Reinit() {
-            for (auto& v : Registered) {
-                v.ResetAtFork();
+            with_lock (Mutex) {
+                for (auto& v : Registered) {
+                    v.ResetRandom();
+                }
             }
         }
 
@@ -154,9 +155,6 @@ public:
         , IsTemp(storagePath.empty())
         , MaxFiles(maxFiles)
         , MaxSize(maxSize)
-        , CurrentFiles(0)
-        , CurrentSize(0)
-        , Dirty(false)
     {
         // TFsPath is not thread safe. It can initialize internal Split at any time. Force do it right now
         StorageDir.PathSplit();
@@ -176,8 +174,8 @@ public:
         TAtforkReinit::Get().Register(this);
         YQL_LOG(INFO) << "FileStorage initialized in " << StorageDir.GetPath().Quote()
             << ", temporary dir: " << ProcessTempDir.GetPath().Quote()
-            << ", files: " << CurrentFiles.load()
-            << ", total size: " << CurrentSize.load();
+            << ", files: " << CurrentFiles
+            << ", total size: " << CurrentSize;
     }
 
     ~TImpl() {
@@ -223,8 +221,8 @@ public:
             SetCacheFilePermissionsNoThrow(hardlinkFile);
 
             if (NFs::HardLink(hardlinkFile, storageFile)) {
-                ++CurrentFiles;
-                CurrentSize += fileSize;
+                AtomicIncrement(CurrentFiles);
+                AtomicAdd(CurrentSize, fileSize);
             }
             // Ignore HardLink fail. Another process managed to download before us
             TouchFile(storageFile.c_str());
@@ -285,10 +283,10 @@ public:
         const i64 newFileSize = Max<i64>(0, GetFileLength(dstStorageFile.c_str()));
 
         if (!prevFileExisted) {
-            ++CurrentFiles;
+            AtomicIncrement(CurrentFiles);
         }
 
-        CurrentSize += newFileSize - prevFileSize;
+        AtomicAdd(CurrentSize, newFileSize - prevFileSize);
     }
 
     bool RemoveFromStorage(const TString& existingStorageFileName) {
@@ -304,19 +302,19 @@ public:
         const bool result = NFs::Remove(storageFile);
 
         if (result || !storageFile.Exists()) {
-            ++CurrentFiles;
-            CurrentSize -= prevFileSize;
+            AtomicDecrement(CurrentFiles);
+            AtomicAdd(CurrentSize, -prevFileSize);
         }
 
         return result;
     }
 
     ui64 GetOccupiedSize() const {
-        return CurrentSize.load();
+        return AtomicGet(CurrentSize);
     }
 
     size_t GetCount() const {
-        return CurrentFiles.load();
+        return AtomicGet(CurrentFiles);
     }
 
     TString GetTempName() {
@@ -369,17 +367,15 @@ private:
         CurrentSize = actualSize;
     }
 
-    bool NeedToCleanup() const {
-        return Dirty.load()
-            || static_cast<ui64>(CurrentFiles.load()) > MaxFiles
-            || static_cast<ui64>(CurrentSize.load()) > MaxSize;
+    bool NeedToCleanup() {
+        return static_cast<ui64>(AtomicGet(CurrentFiles)) > MaxFiles ||
+                static_cast<ui64>(AtomicGet(CurrentSize)) > MaxSize;
     }
 
     void Cleanup() {
         if (!NeedToCleanup()) {
             return;
         }
-        Dirty.store(false);
 
         with_lock (CleanupLock) {
             TVector<TString> names;
@@ -428,17 +424,15 @@ private:
                 }
             }
 
-            CurrentFiles.store(actualFiles);
-            CurrentSize.store(actualSize);
+            AtomicSet(CurrentFiles, actualFiles);
+            AtomicSet(CurrentSize, actualSize);
         }
     }
 
-    void ResetAtFork() {
+    void ResetRandom() {
         with_lock(RndLock) {
             Rnd.ResetSeed();
         }
-        // Force cleanup on next file add, because other processes may change the state
-        Dirty.store(true);
     }
 
 private:
@@ -449,9 +443,8 @@ private:
     const bool IsTemp;
     const ui64 MaxFiles;
     const ui64 MaxSize;
-    std::atomic<i64> CurrentFiles = 0;
-    std::atomic<i64> CurrentSize = 0;
-    std::atomic_bool Dirty;
+    TAtomic CurrentFiles = 0;
+    TAtomic CurrentSize = 0;
     TMutex RndLock;
     TRandGuid Rnd;
 };

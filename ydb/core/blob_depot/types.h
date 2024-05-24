@@ -44,14 +44,8 @@ namespace NKikimr::NBlobDepot {
         friend bool operator > (const TBlobSeqId& x, const TBlobSeqId& y) { return x.AsTuple() >  y.AsTuple(); }
         friend bool operator >=(const TBlobSeqId& x, const TBlobSeqId& y) { return x.AsTuple() >= y.AsTuple(); }
 
-        void Output(IOutputStream& s) const {
-            s << "{" << Channel << ":" << Generation << ":" << Step << ":" << Index << "}";
-        }
-
         TString ToString() const {
-            TStringStream s;
-            Output(s);
-            return s.Str();
+            return TStringBuilder() << "{" << Channel << ":" << Generation << ":" << Step << ":" << Index << "}";
         }
 
         explicit operator bool() const {
@@ -102,18 +96,18 @@ namespace NKikimr::NBlobDepot {
                 case EBlobType::VG_FOOTER_BLOB:
                 case EBlobType::VG_GC_BLOB:
                     static constexpr ui32 typeBits = 24 - IndexBits;
-                    Y_ABORT_UNLESS(static_cast<ui32>(type) < (1 << typeBits));
-                    Y_ABORT_UNLESS(!part);
+                    Y_VERIFY(static_cast<ui32>(type) < (1 << typeBits));
+                    Y_VERIFY(!part);
                     return Index << typeBits | static_cast<ui32>(type);
             }
 
-            Y_ABORT();
+            Y_FAIL();
         }
 
         static ui32 IndexFromCookie(ui32 cookie) {
             static constexpr ui32 typeBits = 24 - IndexBits;
             const auto type = static_cast<EBlobType>(cookie & ((1 << typeBits) - 1));
-            Y_ABORT_UNLESS(type == EBlobType::VG_COMPOSITE_BLOB || type == EBlobType::VG_DATA_BLOB ||
+            Y_VERIFY(type == EBlobType::VG_COMPOSITE_BLOB || type == EBlobType::VG_DATA_BLOB ||
                 type == EBlobType::VG_FOOTER_BLOB || type == EBlobType::VG_GC_BLOB);
             return cookie >> typeBits;
         }
@@ -182,11 +176,11 @@ namespace NKikimr::NBlobDepot {
         for (int i = 0; i < x.size(); ++i) {
             TString a;
             bool success = x[i].SerializeToString(&a);
-            Y_ABORT_UNLESS(success);
+            Y_VERIFY(success);
 
             TString b;
             success = y[i].SerializeToString(&b);
-            Y_ABORT_UNLESS(success);
+            Y_VERIFY(success);
 
             if (a != b) {
                 return false;
@@ -239,11 +233,6 @@ namespace NKikimr::NBlobDepot {
             TStringStream s;
             Output(s);
             return s.Str();
-        }
-
-        TGenStep Previous() const {
-            Y_ABORT_UNLESS(Value);
-            return TGenStep(Value - 1);
         }
 
         friend bool operator ==(const TGenStep& x, const TGenStep& y) { return x.Value == y.Value; }

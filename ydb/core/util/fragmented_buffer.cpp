@@ -1,79 +1,110 @@
 #include "fragmented_buffer.h"
 
 #include <util/stream/str.h>
-#include <ydb/library/actors/util/shared_data_rope_backend.h>
+#include <library/cpp/actors/util/shared_data_rope_backend.h>
 
 namespace NKikimr {
+
+TFragmentedBuffer::TFragmentedBuffer() {
+}
+
+void TFragmentedBuffer::Insert(i32 begin, const char* source, i32 bytesToCopy) {
+    Y_VERIFY(bytesToCopy);
+    BufferForOffset[begin] = TRope(TSharedData::Copy(source, bytesToCopy));
+}
+
 
 bool TFragmentedBuffer::IsMonolith() const {
     return (BufferForOffset.size() == 1 && BufferForOffset.begin()->first == 0);
 }
 
 TRope TFragmentedBuffer::GetMonolith() {
-    Y_ABORT_UNLESS(IsMonolith());
+    Y_VERIFY(IsMonolith());
     return BufferForOffset.begin()->second;
 }
 
-void TFragmentedBuffer::SetMonolith(TRope&& data) {
-    Y_ABORT_UNLESS(data);
+void TFragmentedBuffer::SetMonolith(TRope &data) {
+    Y_VERIFY(data);
     BufferForOffset.clear();
-    BufferForOffset[0] = std::move(data);
+    BufferForOffset.emplace(0, data);
 }
 
-void TFragmentedBuffer::Write(ui32 begin, const char* buffer, ui32 size) {
-    Write(begin, TRcBuf::Copy(buffer, size));
-}
-
-void TFragmentedBuffer::Write(ui32 begin, TRope&& data) {
+void TFragmentedBuffer::Write(i32 begin, const char* buffer, i32 size) {
+    Y_VERIFY(size);
+    if (BufferForOffset.empty()) {
+        Insert(begin, buffer, size);
+        return;
+    }
     auto it = BufferForOffset.upper_bound(begin);
     if (it != BufferForOffset.begin()) {
-        auto& [prevOffset, prevRope] = *--it;
-        if (begin <= prevOffset + prevRope.size()) {
-            const ui32 overlap = prevOffset + prevRope.size() - begin;
-            if (data.size() < overlap) {
-                const ui32 offset = begin - prevOffset;
-                prevRope.Erase(prevRope.Position(offset), prevRope.Position(offset + data.size()));
-                prevRope.Insert(prevRope.Position(offset), std::exchange(data, {}));
-            } else {
-                prevRope.EraseBack(overlap);
-                prevRope.Insert(prevRope.End(), std::exchange(data, {}));
-            }
-        } else {
-            ++it;
+        it--;
+    }
+    if (it != BufferForOffset.end() && it->first < begin && it->first + i32(it->second.size()) <= begin) {
+        // b....e
+        //         X....Y
+        // skip
+        it++;
+    }
+
+    const char* source = buffer;
+    i32 bytesToCopy = size;
+    i32 offset = begin;
+    while (bytesToCopy) {
+        if (it == BufferForOffset.end()) {
+            Insert(offset, source, bytesToCopy);
+            break;
+        } else if (it->first > offset) {
+            i32 bytesToNext = it->first - offset;
+            i32 bytesToInsert = Min(bytesToCopy, bytesToNext);
+            Insert(offset, source, bytesToInsert);
+            source += bytesToInsert;
+            offset += bytesToInsert;
+            bytesToCopy -= bytesToInsert;
+        } else if (it->first <= offset) {
+            Y_VERIFY(it->second.size());
+            Y_VERIFY(it->first + i32(it->second.size()) > offset);
+            i32 bytesToNext = it->first + it->second.size() - offset;
+            i32 bytesToInsert = Min(bytesToCopy, bytesToNext);
+            char *destination = it->second.UnsafeGetContiguousSpanMut().data() + offset - it->first;
+            memcpy(destination, source, bytesToInsert);
+            source += bytesToInsert;
+            offset += bytesToInsert;
+            bytesToCopy -= bytesToInsert;
+            it++;
         }
     }
 
-    if (data) {
-        it = BufferForOffset.try_emplace(it, begin, std::move(data));
-    }
-
-    // consume or join succeeding intervals
-    auto& [prevOffset, prevRope] = *it++;
-    const ui32 end = prevOffset + prevRope.size();
-    auto endIt = BufferForOffset.upper_bound(end);
-    Y_DEBUG_ABORT_UNLESS(endIt != BufferForOffset.begin());
-    auto& [lastOffset, lastRope] = *std::prev(endIt);
-    const ui32 bytesToCut = end - lastOffset;
-    if (bytesToCut < lastRope.size()) {
-        lastRope.EraseFront(bytesToCut);
-        prevRope.Insert(prevRope.End(), std::move(lastRope));
-    }
-    BufferForOffset.erase(it, endIt);
 }
 
-void TFragmentedBuffer::Read(ui32 begin, char* buffer, ui32 size) const {
-    Read(begin, size).ExtractFrontPlain(buffer, size);
-}
-
-TRope TFragmentedBuffer::Read(ui32 begin, ui32 size) const {
-    // X....Y X.....Y X'.....Y'
-    //        b.b.e.e
+void TFragmentedBuffer::Read(i32 begin, char* buffer, i32 size) const {
+    Y_VERIFY(size);
+    Y_VERIFY(!BufferForOffset.empty());
     auto it = BufferForOffset.upper_bound(begin);
-    Y_ABORT_UNLESS(it != BufferForOffset.begin());
-    --it;
-    Y_ABORT_UNLESS(it->first <= begin && begin + size <= it->first + it->second.size());
-    const auto iter = it->second.begin() + (begin - it->first);
-    return {iter, iter + size};
+    if (it != BufferForOffset.begin()) {
+        it--;
+    }
+    if (it != BufferForOffset.end() && it->first < begin && it->first + i32(it->second.size()) <= begin) {
+        Y_VERIFY(false);
+        // b....e
+        //         X....Y
+    }
+
+    char* destination = buffer;
+    i32 bytesToCopy = size;
+    i32 offset = begin;
+    while (bytesToCopy) {
+        Y_VERIFY(it != BufferForOffset.end(), "offset# %" PRIi32 " Print# %s", (i32)offset, Print().c_str());
+        Y_VERIFY(it->first <= offset, "offset# %" PRIi32 " Print# %s", (i32)offset, Print().c_str());
+        Y_VERIFY(it->first + i32(it->second.size()) > offset);
+        i32 bytesToNext = it->first + it->second.size() - offset;
+        i32 bytesToInsert = Min(bytesToCopy, bytesToNext);
+        const char *source = const_cast<TRope&>(it->second).GetContiguousSpan().data() + offset - it->first;
+        memcpy(destination, source, bytesToInsert);
+        destination += bytesToInsert;
+        offset += bytesToInsert;
+        bytesToCopy -= bytesToInsert;
+        it++;
+    }
 }
 
 TString TFragmentedBuffer::Print() const {
@@ -89,19 +120,27 @@ TString TFragmentedBuffer::Print() const {
     return str.Str();
 }
 
-void TFragmentedBuffer::CopyFrom(const TFragmentedBuffer& from, const TIntervalSet<i32>& range, i32 offset) {
-    for (auto [begin, end] : range) {
-        Write(begin + offset, from.Read(begin, end - begin));
-    }
+std::pair<const char*, i32> TFragmentedBuffer::Get(i32 begin) const {
+    auto it = BufferForOffset.upper_bound(begin);
+    Y_VERIFY(it != BufferForOffset.begin());
+    --it;
+    const i32 offset = begin - it->first;
+    Y_VERIFY(offset >= 0 && (size_t)offset < it->second.size());
+    return std::make_pair(const_cast<TRope&>(it->second).GetContiguousSpan().data() + offset, it->second.size() - offset);
 }
 
-TIntervalSet<i32> TFragmentedBuffer::GetIntervalSet() const {
-    TIntervalSet<i32> res;
-    for (auto& [offset, buffer] : BufferForOffset) {
-        Y_DEBUG_ABORT_UNLESS(buffer);
-        res.Add(offset, offset + buffer.size());
+void TFragmentedBuffer::CopyFrom(const TFragmentedBuffer& from, const TIntervalSet<i32>& range) {
+    Y_VERIFY(range);
+    for (auto it = range.begin(); it != range.end(); ++it) {
+        auto [begin, end] = *it;
+        i32 offset = begin;
+        while (offset < end) {
+            const auto& [data, maxLen] = from.Get(offset);
+            i32 len = Min(maxLen, end - offset);
+            Write(offset, data, len);
+            offset += len;
+        }
     }
-    return res;
 }
 
 } // NKikimr

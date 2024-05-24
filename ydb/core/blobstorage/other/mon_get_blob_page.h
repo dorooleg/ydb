@@ -6,10 +6,6 @@
 
 namespace NKikimr {
 
-    inline TActorId MakeMonGetBlobId() {
-        return TActorId(0, TStringBuf("get_blob_mon", 12));
-    }
-
-    IActor *CreateMonGetBlobActor();
+    NMonitoring::IMonPage *CreateMonGetBlobPage(const TString& path, TActorSystem *actorSystem);
 
 } // NKikimr

@@ -4,8 +4,6 @@
 
 #include <library/cpp/yt/misc/enum.h>
 
-#include <library/cpp/yt/containers/enum_indexed_array.h>
-
 #include <util/system/types.h>
 
 #include <util/generic/size_literals.h>
@@ -291,28 +289,28 @@ DEFINE_ENUM(ETotalCounter,
 );
 
 // Returns statistics for all user allocations.
-TEnumIndexedArray<ETotalCounter, ssize_t> GetTotalAllocationCounters();
+TEnumIndexedVector<ETotalCounter, ssize_t> GetTotalAllocationCounters();
 
 // Returns statistics for small allocations; these are included into total statistics.
-TEnumIndexedArray<ESmallCounter, ssize_t> GetSmallAllocationCounters();
+TEnumIndexedVector<ESmallCounter, ssize_t> GetSmallAllocationCounters();
 
 // Returns statistics for large allocations; these are included into total statistics.
-TEnumIndexedArray<ELargeCounter, ssize_t> GetLargeAllocationCounters();
+TEnumIndexedVector<ELargeCounter, ssize_t> GetLargeAllocationCounters();
 
 // Returns per-arena statistics for small allocations; these are included into total statistics.
-std::array<TEnumIndexedArray<ESmallArenaCounter, ssize_t>, SmallRankCount> GetSmallArenaAllocationCounters();
+std::array<TEnumIndexedVector<ESmallArenaCounter, ssize_t>, SmallRankCount> GetSmallArenaAllocationCounters();
 
 // Returns per-arena statistics for large allocations; these are included into total statistics.
-std::array<TEnumIndexedArray<ELargeArenaCounter, ssize_t>, LargeRankCount> GetLargeArenaAllocationCounters();
+std::array<TEnumIndexedVector<ELargeArenaCounter, ssize_t>, LargeRankCount> GetLargeArenaAllocationCounters();
 
 // Returns statistics for huge allocations; these are included into total statistics.
-TEnumIndexedArray<EHugeCounter, ssize_t> GetHugeAllocationCounters();
+TEnumIndexedVector<EHugeCounter, ssize_t> GetHugeAllocationCounters();
 
 // Returns statistics for all system allocations; these are not included into total statistics.
-TEnumIndexedArray<ESystemCounter, ssize_t> GetSystemAllocationCounters();
+TEnumIndexedVector<ESystemCounter, ssize_t> GetSystemAllocationCounters();
 
 // Returns statistics for undumpable allocations.
-TEnumIndexedArray<EUndumpableCounter, ssize_t> GetUndumpableAllocationCounters();
+TEnumIndexedVector<EUndumpableCounter, ssize_t> GetUndumpableAllocationCounters();
 
 DEFINE_ENUM(ETimingEventType,
     (Mmap)
@@ -335,7 +333,7 @@ struct TTimingEventCounters
 
 // Returns statistics for timing events happened since start.
 // See SetTimingEventThreshold.
-TEnumIndexedArray<ETimingEventType, TTimingEventCounters> GetTimingEventCounters();
+TEnumIndexedVector<ETimingEventType, TTimingEventCounters> GetTimingEventCounters();
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -351,7 +349,7 @@ struct TBacktrace
 struct TProfiledAllocation
 {
     TBacktrace Backtrace;
-    TEnumIndexedArray<EBasicCounter, ssize_t> Counters;
+    TEnumIndexedVector<EBasicCounter, ssize_t> Counters;
 };
 
 // Returns statistics for profiled allocations (available when allocation

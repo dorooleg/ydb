@@ -90,7 +90,6 @@ namespace NTypeAnnImpl {
     IGraphTransformer::TStatus CombineByKeyWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus ExtractWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus ExtractMembersWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
-    template<bool Chopped>
     IGraphTransformer::TStatus AssumeConstraintWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus AssumeColumnOrderWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExtContext& ctx);
     IGraphTransformer::TStatus AggregationTraitsWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
@@ -128,13 +127,9 @@ namespace NTypeAnnImpl {
     template <bool AllOrAny>
     IGraphTransformer::TStatus ListAllAnyWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus ListNotNullWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
-    IGraphTransformer::TStatus ListUniqWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
-    IGraphTransformer::TStatus ListUniqStableWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
-    IGraphTransformer::TStatus UniqWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus ListFlattenWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus IterableWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus SqueezeToListWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
     IGraphTransformer::TStatus EmptyFromWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
-    IGraphTransformer::TStatus TimeOrderRecoverWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx);
 } // namespace NTypeAnnImpl
 } // namespace NYql

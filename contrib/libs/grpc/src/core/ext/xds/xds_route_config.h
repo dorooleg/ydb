@@ -14,48 +14,36 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_XDS_XDS_ROUTE_CONFIG_H
-#define GRPC_SRC_CORE_EXT_XDS_XDS_ROUTE_CONFIG_H
+#ifndef GRPC_CORE_EXT_XDS_XDS_ROUTE_CONFIG_H
+#define GRPC_CORE_EXT_XDS_XDS_ROUTE_CONFIG_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stdint.h>
-
-#include <algorithm>
 #include <map>
-#include <memory>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
 #include <vector>
 
-#include "y_absl/strings/string_view.h"
 #include "y_absl/types/optional.h"
 #include "y_absl/types/variant.h"
 #include "envoy/config/route/v3/route.upb.h"
 #include "envoy/config/route/v3/route.upbdefs.h"
 #include "re2/re2.h"
-#include "upb/def.h"
 
-#include "src/core/ext/xds/xds_bootstrap_grpc.h"
 #include "src/core/ext/xds/xds_client.h"
-#include "src/core/ext/xds/xds_cluster_specifier_plugin.h"
+#include "src/core/ext/xds/xds_common_types.h"
 #include "src/core/ext/xds/xds_http_filters.h"
-#include "src/core/ext/xds/xds_resource_type.h"
 #include "src/core/ext/xds/xds_resource_type_impl.h"
 #include "src/core/lib/channel/status_util.h"
-#include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/gprpp/validation_errors.h"
 #include "src/core/lib/matchers/matchers.h"
 
 namespace grpc_core {
 
-struct XdsRouteConfigResource : public XdsResourceType::ResourceData {
+bool XdsRbacEnabled();
+
+struct XdsRouteConfigResource {
   using TypedPerFilterConfig =
       std::map<TString, XdsHttpFilterImpl::FilterConfig>;
-
-  using ClusterSpecifierPluginMap =
-      std::map<TString /*cluster_specifier_plugin_name*/,
-               TString /*LB policy config*/>;
 
   struct RetryPolicy {
     internal::StatusCodeSet retry_on;
@@ -80,6 +68,8 @@ struct XdsRouteConfigResource : public XdsResourceType::ResourceData {
     TString ToString() const;
   };
 
+  // TODO(donnadionne): When we can use y_absl::variant<>, consider using that
+  // for: PathMatcher, HeaderMatcher, cluster_name and weighted_clusters
   struct Route {
     // Matchers for this route.
     struct Matchers {
@@ -103,44 +93,26 @@ struct XdsRouteConfigResource : public XdsResourceType::ResourceData {
 
     struct RouteAction {
       struct HashPolicy {
-        struct Header {
-          TString header_name;
-          std::unique_ptr<RE2> regex;
-          TString regex_substitution;
-
-          Header() = default;
-
-          // Copyable.
-          Header(const Header& other);
-          Header& operator=(const Header& other);
-
-          // Movable.
-          Header(Header&& other) noexcept;
-          Header& operator=(Header&& other) noexcept;
-
-          bool operator==(const Header& other) const;
-          TString ToString() const;
-        };
-
-        struct ChannelId {
-          bool operator==(const ChannelId&) const { return true; }
-        };
-
-        y_absl::variant<Header, ChannelId> policy;
+        enum Type { HEADER, CHANNEL_ID };
+        Type type;
         bool terminal = false;
+        // Fields used for type HEADER.
+        TString header_name;
+        std::unique_ptr<RE2> regex = nullptr;
+        TString regex_substitution;
 
-        bool operator==(const HashPolicy& other) const {
-          return policy == other.policy && terminal == other.terminal;
-        }
+        HashPolicy() {}
+
+        // Copyable.
+        HashPolicy(const HashPolicy& other);
+        HashPolicy& operator=(const HashPolicy& other);
+
+        // Moveable.
+        HashPolicy(HashPolicy&& other) noexcept;
+        HashPolicy& operator=(HashPolicy&& other) noexcept;
+
+        bool operator==(const HashPolicy& other) const;
         TString ToString() const;
-      };
-
-      struct ClusterName {
-        TString cluster_name;
-
-        bool operator==(const ClusterName& other) const {
-          return cluster_name == other.cluster_name;
-        }
       };
 
       struct ClusterWeight {
@@ -155,22 +127,14 @@ struct XdsRouteConfigResource : public XdsResourceType::ResourceData {
         TString ToString() const;
       };
 
-      struct ClusterSpecifierPluginName {
-        TString cluster_specifier_plugin_name;
-
-        bool operator==(const ClusterSpecifierPluginName& other) const {
-          return cluster_specifier_plugin_name ==
-                 other.cluster_specifier_plugin_name;
-        }
-      };
-
       std::vector<HashPolicy> hash_policies;
       y_absl::optional<RetryPolicy> retry_policy;
 
       // Action for this route.
-      y_absl::variant<ClusterName, std::vector<ClusterWeight>,
-                    ClusterSpecifierPluginName>
-          action;
+      // TODO(roth): When we can use y_absl::variant<>, consider using that
+      // here, to enforce the fact that only one of the two fields can be set.
+      TString cluster_name;
+      std::vector<ClusterWeight> weighted_clusters;
       // Storing the timeout duration from route action:
       // RouteAction.max_stream_duration.grpc_timeout_header_max or
       // RouteAction.max_stream_duration.max_stream_duration if the former is
@@ -179,7 +143,9 @@ struct XdsRouteConfigResource : public XdsResourceType::ResourceData {
 
       bool operator==(const RouteAction& other) const {
         return hash_policies == other.hash_policies &&
-               retry_policy == other.retry_policy && action == other.action &&
+               retry_policy == other.retry_policy &&
+               cluster_name == other.cluster_name &&
+               weighted_clusters == other.weighted_clusters &&
                max_stream_duration == other.max_stream_duration;
       }
       TString ToString() const;
@@ -213,18 +179,16 @@ struct XdsRouteConfigResource : public XdsResourceType::ResourceData {
   };
 
   std::vector<VirtualHost> virtual_hosts;
-  ClusterSpecifierPluginMap cluster_specifier_plugin_map;
 
   bool operator==(const XdsRouteConfigResource& other) const {
-    return virtual_hosts == other.virtual_hosts &&
-           cluster_specifier_plugin_map == other.cluster_specifier_plugin_map;
+    return virtual_hosts == other.virtual_hosts;
   }
   TString ToString() const;
 
-  static XdsRouteConfigResource Parse(
-      const XdsResourceType::DecodeContext& context,
+  static grpc_error_handle Parse(
+      const XdsEncodingContext& context,
       const envoy_config_route_v3_RouteConfiguration* route_config,
-      ValidationErrors* errors);
+      XdsRouteConfigResource* rds_update);
 };
 
 class XdsRouteConfigResourceType
@@ -234,20 +198,19 @@ class XdsRouteConfigResourceType
   y_absl::string_view type_url() const override {
     return "envoy.config.route.v3.RouteConfiguration";
   }
+  y_absl::string_view v2_type_url() const override {
+    return "envoy.api.v2.RouteConfiguration";
+  }
 
-  DecodeResult Decode(const XdsResourceType::DecodeContext& context,
-                      y_absl::string_view serialized_resource) const override;
+  y_absl::StatusOr<DecodeResult> Decode(const XdsEncodingContext& context,
+                                      y_absl::string_view serialized_resource,
+                                      bool /*is_v2*/) const override;
 
-  void InitUpbSymtab(XdsClient* xds_client,
-                     upb_DefPool* symtab) const override {
+  void InitUpbSymtab(upb_DefPool* symtab) const override {
     envoy_config_route_v3_RouteConfiguration_getmsgdef(symtab);
-    const auto& cluster_specifier_plugin_registry =
-        static_cast<const GrpcXdsBootstrap&>(xds_client->bootstrap())
-            .cluster_specifier_plugin_registry();
-    cluster_specifier_plugin_registry.PopulateSymtab(symtab);
   }
 };
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_XDS_XDS_ROUTE_CONFIG_H
+#endif  // GRPC_CORE_EXT_XDS_XDS_ROUTE_CONFIG_H

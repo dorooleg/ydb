@@ -56,7 +56,7 @@ void TTierPreparationActor::Handle(NSchemeShard::TEvSchemeShard::TEvProcessingRe
             StartChecker();
         }
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
 }
 
@@ -86,7 +86,7 @@ void TTierPreparationActor::Handle(NMetadata::NProvider::TEvRefreshSubscriberDat
             Register(new TSSFetchingActor(SSFetcher, std::make_shared<TSSFetchingController>(SelfId()), TDuration::Seconds(10)));
         }
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
     StartChecker();
 }

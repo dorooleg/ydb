@@ -14,25 +14,17 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_FAULT_INJECTION_FAULT_INJECTION_FILTER_H
-#define GRPC_SRC_CORE_EXT_FILTERS_FAULT_INJECTION_FAULT_INJECTION_FILTER_H
+#ifndef GRPC_CORE_EXT_FILTERS_FAULT_INJECTION_FAULT_INJECTION_FILTER_H
+#define GRPC_CORE_EXT_FILTERS_FAULT_INJECTION_FAULT_INJECTION_FILTER_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stddef.h>
+#include "src/core/ext/filters/fault_injection/service_config_parser.h"
+#include "src/core/lib/channel/channel_stack.h"
 
-#include <memory>
-
-#include "y_absl/base/thread_annotations.h"
-#include "y_absl/random/random.h"
-#include "y_absl/status/statusor.h"
-
-#include "src/core/lib/channel/channel_args.h"
-#include "src/core/lib/channel/channel_fwd.h"
-#include "src/core/lib/channel/promise_based_filter.h"
-#include "src/core/lib/gprpp/sync.h"
-#include "src/core/lib/promise/arena_promise.h"
-#include "src/core/lib/transport/transport.h"
+// Channel arg key for enabling parsing fault injection via method config.
+#define GRPC_ARG_PARSE_FAULT_INJECTION_METHOD_CONFIG \
+  "grpc.parse_fault_injection_method_config"
 
 namespace grpc_core {
 
@@ -40,32 +32,8 @@ namespace grpc_core {
 // of the ordinary channel stack. The fault injection filter fetches fault
 // injection policy from the method config of service config returned by the
 // resolver, and enforces the fault injection policy.
-class FaultInjectionFilter : public ChannelFilter {
- public:
-  static const grpc_channel_filter kFilter;
-
-  static y_absl::StatusOr<FaultInjectionFilter> Create(
-      const ChannelArgs& args, ChannelFilter::Args filter_args);
-
-  // Construct a promise for one call.
-  ArenaPromise<ServerMetadataHandle> MakeCallPromise(
-      CallArgs call_args, NextPromiseFactory next_promise_factory) override;
-
- private:
-  explicit FaultInjectionFilter(ChannelFilter::Args filter_args);
-
-  class InjectionDecision;
-  InjectionDecision MakeInjectionDecision(
-      const ClientMetadataHandle& initial_metadata);
-
-  // The relative index of instances of the same filter.
-  size_t index_;
-  const size_t service_config_parser_index_;
-  std::unique_ptr<Mutex> mu_;
-  y_absl::InsecureBitGen abort_rand_generator_ Y_ABSL_GUARDED_BY(mu_);
-  y_absl::InsecureBitGen delay_rand_generator_ Y_ABSL_GUARDED_BY(mu_);
-};
+extern const grpc_channel_filter FaultInjectionFilterVtable;
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_FAULT_INJECTION_FAULT_INJECTION_FILTER_H
+#endif  // GRPC_CORE_EXT_FILTERS_FAULT_INJECTION_FAULT_INJECTION_FILTER_H

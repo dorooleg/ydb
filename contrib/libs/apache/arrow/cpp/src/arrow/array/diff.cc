@@ -629,44 +629,42 @@ class MakeFormatterImpl {
       auto fmt = fmt_str.c_str();
       auto unit = checked_cast<const T&>(*array.type()).unit();
       auto value = checked_cast<const NumericArray<T>&>(array).Value(index);
-      // Using unqualified `format` directly would produce ambiguous
-      // lookup because of `std::format` (ARROW-15520).
-      namespace avd = arrow_vendored::date;
+      using arrow_vendored::date::format;
       using std::chrono::nanoseconds;
       using std::chrono::microseconds;
       using std::chrono::milliseconds;
       using std::chrono::seconds;
       if (AddEpoch) {
-        static avd::sys_days epoch{avd::jan / 1 / 1970};
+        static arrow_vendored::date::sys_days epoch{arrow_vendored::date::jan / 1 / 1970};
 
         switch (unit) {
           case TimeUnit::NANO:
-            *os << avd::format(fmt, static_cast<nanoseconds>(value) + epoch);
+            *os << format(fmt, static_cast<nanoseconds>(value) + epoch);
             break;
           case TimeUnit::MICRO:
-            *os << avd::format(fmt, static_cast<microseconds>(value) + epoch);
+            *os << format(fmt, static_cast<microseconds>(value) + epoch);
             break;
           case TimeUnit::MILLI:
-            *os << avd::format(fmt, static_cast<milliseconds>(value) + epoch);
+            *os << format(fmt, static_cast<milliseconds>(value) + epoch);
             break;
           case TimeUnit::SECOND:
-            *os << avd::format(fmt, static_cast<seconds>(value) + epoch);
+            *os << format(fmt, static_cast<seconds>(value) + epoch);
             break;
         }
         return;
       }
       switch (unit) {
         case TimeUnit::NANO:
-          *os << avd::format(fmt, static_cast<nanoseconds>(value));
+          *os << format(fmt, static_cast<nanoseconds>(value));
           break;
         case TimeUnit::MICRO:
-          *os << avd::format(fmt, static_cast<microseconds>(value));
+          *os << format(fmt, static_cast<microseconds>(value));
           break;
         case TimeUnit::MILLI:
-          *os << avd::format(fmt, static_cast<milliseconds>(value));
+          *os << format(fmt, static_cast<milliseconds>(value));
           break;
         case TimeUnit::SECOND:
-          *os << avd::format(fmt, static_cast<seconds>(value));
+          *os << format(fmt, static_cast<seconds>(value));
           break;
       }
     };

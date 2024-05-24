@@ -5,7 +5,7 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/tablet_flat/shared_sausagecache.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NConsole {
 
@@ -45,8 +45,8 @@ public:
         }
         if (record.GetConfig().HasSharedCacheConfig()) {
             cfg.MergeFrom(record.GetConfig().GetSharedCacheConfig());
-        } else if (appData->SharedCacheConfigPtr) {
-            cfg.MergeFrom(*appData->SharedCacheConfigPtr);
+        } else if (appData->SharedCacheConfig) {
+            cfg.MergeFrom(*appData->SharedCacheConfig);
         }
 
         ApplyConfig(std::move(cfg), ctx);
@@ -71,7 +71,7 @@ public:
             IgnoreFunc(TEvConfigsDispatcher::TEvSetConfigSubscriptionResponse);
 
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }

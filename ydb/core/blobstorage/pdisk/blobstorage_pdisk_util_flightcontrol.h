@@ -1,10 +1,7 @@
 #pragma once
 #include "defs.h"
-#include "blobstorage_pdisk_mon.h"
-
-#include <library/cpp/deprecated/atomic/atomic.h>
-
 #include <util/generic/vector.h>
+#include <library/cpp/deprecated/atomic/atomic.h>
 #include <util/system/condvar.h>
 
 namespace NKikimr {
@@ -34,7 +31,7 @@ public:
     ui64 TrySchedule();
 
     // Blocking version of TrySchedule
-    ui64 Schedule(double& blockedMs);
+    ui64 Schedule();
 
     void MarkComplete(ui64 idx);
     ui64 FirstIncompleteIdx();

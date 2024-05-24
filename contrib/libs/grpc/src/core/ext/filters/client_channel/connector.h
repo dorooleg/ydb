@@ -14,22 +14,16 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONNECTOR_H
-#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONNECTOR_H
+#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONNECTOR_H
+#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONNECTOR_H
 
 #include <grpc/support/port_platform.h>
 
-#include "src/core/lib/channel/channel_args.h"
+#include "src/core/lib/channel/channel_stack.h"
 #include "src/core/lib/channel/channelz.h"
 #include "src/core/lib/gprpp/orphanable.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/time.h"
-#include "src/core/lib/iomgr/closure.h"
-#include "src/core/lib/iomgr/error.h"
-#include "src/core/lib/iomgr/iomgr_fwd.h"
-#include "src/core/lib/iomgr/resolved_address.h"
+#include "src/core/lib/iomgr/resolve_address.h"
 #include "src/core/lib/transport/transport.h"
-#include "src/core/lib/transport/transport_fwd.h"
 
 namespace grpc_core {
 
@@ -46,23 +40,20 @@ class SubchannelConnector : public InternallyRefCounted<SubchannelConnector> {
     // Deadline for connection.
     Timestamp deadline;
     // Channel args to be passed to handshakers and transport.
-    ChannelArgs channel_args;
+    const grpc_channel_args* channel_args;
   };
 
   struct Result {
     // The connected transport.
     grpc_transport* transport = nullptr;
     // Channel args to be passed to filters.
-    ChannelArgs channel_args;
+    const grpc_channel_args* channel_args = nullptr;
     // Channelz socket node of the connected transport, if any.
     RefCountedPtr<channelz::SocketNode> socket_node;
 
     void Reset() {
-      if (transport != nullptr) {
-        grpc_transport_destroy(transport);
-        transport = nullptr;
-      }
-      channel_args = ChannelArgs();
+      transport = nullptr;
+      channel_args = nullptr;
       socket_node.reset();
     }
   };
@@ -78,11 +69,11 @@ class SubchannelConnector : public InternallyRefCounted<SubchannelConnector> {
   virtual void Shutdown(grpc_error_handle error) = 0;
 
   void Orphan() override {
-    Shutdown(GRPC_ERROR_CREATE("Subchannel disconnected"));
+    Shutdown(GRPC_ERROR_CREATE_FROM_STATIC_STRING("Subchannel disconnected"));
     Unref();
   }
 };
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONNECTOR_H
+#endif  // GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_CONNECTOR_H

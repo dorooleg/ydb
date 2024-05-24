@@ -6,7 +6,7 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_dbtype.h>
 #include <ydb/core/blobstorage/vdisk/ingress/blobstorage_ingress.h>
 #include <ydb/core/protos/blobstorage.pb.h>
-#include <ydb/library/actors/util/named_tuple.h>
+#include <library/cpp/actors/util/named_tuple.h>
 
 namespace NKikimr {
 
@@ -139,7 +139,7 @@ namespace NKikimr {
         {}
 
         void Merge(const TMemRecBarrier& rec, const TKeyBarrier& key) {
-            Y_ABORT_UNLESS(CollectGen == rec.CollectGen && CollectStep == rec.CollectStep,
+            Y_VERIFY(CollectGen == rec.CollectGen && CollectStep == rec.CollectStep,
                    "Barriers MUST be equal; CollectGen# %" PRIu32 " CollectStep# %" PRIu32
                    " rec.CollectGen# %" PRIu32 " rec.CollectStep %" PRIu32
                    " key# %s", CollectGen, CollectStep, rec.CollectGen, rec.CollectStep,
@@ -161,22 +161,22 @@ namespace NKikimr {
         }
 
         void SetHugeBlob(const TDiskPart &) {
-            Y_ABORT("Must not be called");
+            Y_FAIL("Must not be called");
         }
 
         void SetManyHugeBlobs(ui32, ui32, ui32) {
-            Y_ABORT("Must not be called");
+            Y_FAIL("Must not be called");
         }
 
         void SetMemBlob(ui64, ui32) {
-            Y_ABORT("Must not be called");
+            Y_FAIL("Must not be called");
         }
 
         void SetNoBlob() {
         }
 
         void SetType(TBlobType::EType t) {
-            Y_DEBUG_ABORT_UNLESS(t == TBlobType::DiskBlob);
+            Y_VERIFY_DEBUG(t == TBlobType::DiskBlob);
             Y_UNUSED(t);
         }
 
@@ -186,7 +186,7 @@ namespace NKikimr {
         }
 
         TMemPart GetMemData() const {
-            Y_ABORT("Must not be called");
+            Y_FAIL("Must not be called");
         }
 
         NMatrix::TVectorType GetLocalParts(TBlobStorageGroupType) const {

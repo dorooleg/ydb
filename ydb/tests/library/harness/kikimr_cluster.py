@@ -88,14 +88,10 @@ class ExternalKiKiMRCluster(KiKiMRClusterInterface):
     def _run_on(instances, *funcs):
         with futures.ThreadPoolExecutor(8) as executor:
             for func in funcs:
-                results = executor.map(
+                executor.map(
                     func,
                     instances.values()
                 )
-                # raising exceptions here if they occured
-                # also ensure that funcs[0] finished before func[1]
-                for _ in results:
-                    pass
 
     def _deploy_secrets(self):
         self._run_on(

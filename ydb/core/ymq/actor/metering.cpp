@@ -34,7 +34,7 @@ TProcessedRequestsAggregator::TProcessedRequestsAggregator(const NKikimrConfig::
     auto enumValues = GetEnumNames<ENetworkClass>();
     TVector<TString> labels(enumValues.size());
     for (auto enumItem : enumValues) {
-        Y_ABORT_UNLESS(enumItem.first < labels.size());
+        Y_VERIFY(enumItem.first < labels.size());
         labels[enumItem.first] = enumItem.second;
     }
     Counters = new TMeteringCounters(config, GetSqsServiceCounters(AppData()->Counters, "metering"), labels);
@@ -99,8 +99,8 @@ bool TProcessedRequestsAggregator::Add(const TProcessedRequestAttributes& attrs)
     }
     const auto networkClassLabel = ClassifyNetwork(attrs.SourceAddress);
 
-    Y_ABORT_UNLESS(attrs.RequestSizeInBytes);
-    Y_ABORT_UNLESS(attrs.ResponseSizeInBytes);
+    Y_VERIFY(attrs.RequestSizeInBytes);
+    Y_VERIFY(attrs.ResponseSizeInBytes);
 
     ReportedTraffic[attrs.FolderId][{resourceId, ETrafficType::ingress, networkClassLabel}] += attrs.RequestSizeInBytes;
     ReportedTraffic[attrs.FolderId][{resourceId, ETrafficType::egress, networkClassLabel}] += attrs.ResponseSizeInBytes;
@@ -248,7 +248,7 @@ public:
     }
 
     void FlushProcessedRequestsAttributes() {
-        Y_ABORT_UNLESS(Aggregator);
+        Y_VERIFY(Aggregator);
 
         Schedule(TDuration::MilliSeconds(Cfg().GetMeteringFlushingIntervalMs()), new TEvWakeup());
 
@@ -278,7 +278,7 @@ public:
     }
 
     void HandleReportProcessedRequestAttributes(TSqsEvents::TEvReportProcessedRequestAttributes::TPtr& ev) {
-        Y_ABORT_UNLESS(Aggregator);
+        Y_VERIFY(Aggregator);
 
         Aggregator->Add(ev->Get()->Data);
     }

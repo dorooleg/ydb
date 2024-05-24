@@ -1,7 +1,7 @@
 #include "dq_compute_actor_checkpoints.h"
 #include "dq_checkpoints.h"
 #include "dq_compute_actor_impl.h"
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 #include <ydb/library/yql/minikql/comp_nodes/mkql_saveload.h>
 
@@ -151,7 +151,6 @@ STRICT_STFUNC_EXC(TDqComputeActorCheckpoints::StateFunc,
     hFunc(TEvDqCompute::TEvRun, Handle);
     hFunc(NActors::TEvInterconnect::TEvNodeDisconnected, Handle);
     hFunc(NActors::TEvInterconnect::TEvNodeConnected, Handle);
-    hFunc(NActors::TEvents::TEvUndelivered, Handle);
     hFunc(TEvRetryQueuePrivate::TEvRetry, Handle);
     hFunc(TEvents::TEvWakeup, Handle);
     cFunc(TEvents::TEvPoisonPill::EventType, PassAway);,
@@ -187,7 +186,7 @@ ui64 GetGeneration(const TEvDqCompute::TEvSaveTaskStateResult::TPtr& ev) {
 template <class E>
 bool TDqComputeActorCheckpoints::ShouldIgnoreOldCoordinator(const E& ev, bool verifyOnGenerationFromFuture) {
     const ui64 generation = GetGeneration(ev);
-    Y_ABORT_UNLESS(!verifyOnGenerationFromFuture || !CheckpointCoordinator || generation <= CheckpointCoordinator->Generation,
+    Y_VERIFY(!verifyOnGenerationFromFuture || !CheckpointCoordinator || generation <= CheckpointCoordinator->Generation,
         "Got incorrect checkpoint coordinator generation: %lu > %lu", generation, CheckpointCoordinator->Generation);
     if (CheckpointCoordinator && generation < CheckpointCoordinator->Generation) {
         LOG_W("Ignoring event " << ev->Get()->ToStringHeader() << " from previous coordinator: "
@@ -205,8 +204,8 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvNewCheckpointCoordinato
     LOG_D("Got TEvNewCheckpointCoordinator event: generation " << newGeneration << ", actorId: " << ev->Sender);
 
     if (CheckpointCoordinator && CheckpointCoordinator->Generation == newGeneration) { // The same message. It was retry from coordinator.
-        Y_ABORT_UNLESS(CheckpointCoordinator->ActorId == ev->Sender, "there shouldn't be two different checkpoint coordinators with the same generation");
-        Y_ABORT_UNLESS(GraphId == ev->Get()->Record.GetGraphId());
+        Y_VERIFY(CheckpointCoordinator->ActorId == ev->Sender, "there shouldn't be two different checkpoint coordinators with the same generation");
+        Y_VERIFY(GraphId == ev->Get()->Record.GetGraphId());
         return;
     }
 
@@ -220,7 +219,7 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvNewCheckpointCoordinato
     GraphId = ev->Get()->Record.GetGraphId();
 
     EventsQueue.OnNewRecipientId(ev->Sender);
-    Y_ABORT_UNLESS(EventsQueue.OnEventReceived(ev->Get()));
+    Y_VERIFY(EventsQueue.OnEventReceived(ev->Get()));
     EventsQueue.Send(new TEvDqCompute::TEvNewCheckpointCoordinatorAck());
 
     const bool resumeInputs = bool(PendingCheckpoint);
@@ -245,7 +244,7 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvInjectCheckpoint::TPtr&
 
     StartCheckpoint(ev->Get()->Record.GetCheckpoint());
     LOG_PCP_D("TEvInjectCheckpoint");
-    ComputeActor->ResumeExecution(EResumeSource::CheckpointInject);
+    ComputeActor->ResumeExecution();
 }
 
 void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvSaveTaskStateResult::TPtr& ev) {
@@ -274,7 +273,7 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvRestoreFromCheckpoint::
     switch (StateLoadPlan.GetStateType()) {
     case NDqProto::NDqStateLoadPlan::STATE_TYPE_EMPTY:
         {
-            EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::OK, NYql::TIssues{}));
+            EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::OK));
             break;
         }
     case NDqProto::NDqStateLoadPlan::STATE_TYPE_OWN:
@@ -301,12 +300,9 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvRestoreFromCheckpoint::
         }
     default:
         {
-            auto message = TStringBuilder() << "Unsupported state type: "
-                  << NDqProto::NDqStateLoadPlan::EStateType_Name(StateLoadPlan.GetStateType()) << " (" << static_cast<int>(StateLoadPlan.GetStateType()) << ")";
-            LOG_CP_E(checkpoint, message);
-            NYql::TIssues issues;
-            issues.AddIssue(message);
-            EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::INTERNAL_ERROR, issues));
+            LOG_CP_E(checkpoint, "Unsupported state type: "
+                  << NDqProto::NDqStateLoadPlan::EStateType_Name(StateLoadPlan.GetStateType()) << " (" << static_cast<int>(StateLoadPlan.GetStateType()) << ")");
+            EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::INTERNAL_ERROR));
             break;
         }
     }
@@ -327,17 +323,13 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvGetTaskStateResult::TPt
 
     if (!ev->Get()->Issues.Empty()) {
         LOG_CP_E(checkpoint, "TEvGetTaskStateResult error: " << ev->Get()->Issues.ToOneLineString());
-        EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::STORAGE_ERROR, ev->Get()->Issues), ev->Cookie);
+        EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::STORAGE_ERROR), ev->Cookie);
         return;
     }
 
     if (ev->Get()->States.size() != taskIdsSize) {
-
-        auto message = TStringBuilder() << "TEvGetTaskStateResult unexpected states count: " << ev->Get()->States.size() << ", expected: " << taskIdsSize;
-        LOG_CP_E(checkpoint, message);
-        NYql::TIssues issues;
-        issues.AddIssue(message);
-        EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::STORAGE_ERROR, issues), ev->Cookie);
+        LOG_CP_E(checkpoint, "TEvGetTaskStateResult unexpected states count: " << ev->Get()->States.size() << ", expected: " << taskIdsSize);
+        EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::STORAGE_ERROR), ev->Cookie);
         return;
     }
 
@@ -350,7 +342,7 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvGetTaskStateResult::TPt
         NDqProto::TComputeActorState state = CombineForeignState(StateLoadPlan, ev->Get()->States, taskIds);
         ComputeActor->LoadState(std::move(state));
     } else {
-        Y_ABORT("Unprocessed state type %s (%d)",
+        Y_FAIL("Unprocessed state type %s (%d)",
             NDqProto::NDqStateLoadPlan::EStateType_Name(StateLoadPlan.GetStateType()).c_str(),
             static_cast<int>(StateLoadPlan.GetStateType()));
     }
@@ -359,14 +351,11 @@ void TDqComputeActorCheckpoints::Handle(TEvDqCompute::TEvGetTaskStateResult::TPt
 void TDqComputeActorCheckpoints::AfterStateLoading(const TMaybe<TString>& error) {
     auto& checkpoint = RestoringTaskRunnerForCheckpoint;
     if (error.Defined()) {
-        auto message = TStringBuilder() << "Failed to load state: " << error << ", ABORTED";        
-        LOG_CP_E(checkpoint, message);
-        NYql::TIssues issues;
-        issues.AddIssue(message);
-        EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::INTERNAL_ERROR, issues), RestoringTaskRunnerForEvent);
+        LOG_CP_E(checkpoint, "Failed to load state: " << error << "ABORTED");
+        EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::INTERNAL_ERROR), RestoringTaskRunnerForEvent);
         return;
     }
-    EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::OK, NYql::TIssues{}), RestoringTaskRunnerForEvent);
+    EventsQueue.Send(MakeHolder<TEvDqCompute::TEvRestoreFromCheckpointResult>(checkpoint, Task.GetId(), NDqProto::TEvRestoreFromCheckpointResult::OK), RestoringTaskRunnerForEvent);
     LOG_CP_D(checkpoint, "Checkpoint state restored");
 }
 
@@ -404,13 +393,6 @@ void TDqComputeActorCheckpoints::Handle(NActors::TEvInterconnect::TEvNodeConnect
     EventsQueue.HandleNodeConnected(ev->Get()->NodeId);
 }
 
-void TDqComputeActorCheckpoints::Handle(NActors::TEvents::TEvUndelivered::TPtr& ev) {
-    LOG_D("Handle undelivered");
-    if (!EventsQueue.HandleUndelivered(ev)) {
-        LOG_E("TEvUndelivered: " << ev->Get()->SourceType);
-    }
-}
-
 void TDqComputeActorCheckpoints::Handle(TEvRetryQueuePrivate::TEvRetry::TPtr& ev) {
     Y_UNUSED(ev);
     EventsQueue.Retry();
@@ -444,13 +426,13 @@ bool TDqComputeActorCheckpoints::ComputeActorStateSaved() const {
 }
 
 NDqProto::TCheckpoint TDqComputeActorCheckpoints::GetPendingCheckpoint() const {
-    Y_ABORT_UNLESS(PendingCheckpoint);
+    Y_VERIFY(PendingCheckpoint);
     return *PendingCheckpoint.Checkpoint;
 }
 
 void TDqComputeActorCheckpoints::DoCheckpoint() {
-    Y_ABORT_UNLESS(CheckpointCoordinator);
-    Y_ABORT_UNLESS(PendingCheckpoint);
+    Y_VERIFY(CheckpointCoordinator);
+    Y_VERIFY(PendingCheckpoint);
 
     LOG_PCP_D("Performing task checkpoint");
     if (SaveState()) {
@@ -463,7 +445,7 @@ void TDqComputeActorCheckpoints::DoCheckpoint() {
 [[nodiscard]]
 bool TDqComputeActorCheckpoints::SaveState() {
     try {
-        Y_ABORT_UNLESS(!PendingCheckpoint.SavedComputeActorState);
+        Y_VERIFY(!PendingCheckpoint.SavedComputeActorState);
         PendingCheckpoint.SavedComputeActorState = true;
         ComputeActor->SaveState(*PendingCheckpoint.Checkpoint, PendingCheckpoint.ComputeActorState);
     } catch (const std::exception& e) {
@@ -490,8 +472,8 @@ void TDqComputeActorCheckpoints::RegisterCheckpoint(const NDqProto::TCheckpoint&
         YQL_ENSURE(PendingCheckpoint.Checkpoint->GetGeneration() == checkpoint.GetGeneration());
         YQL_ENSURE(PendingCheckpoint.Checkpoint->GetId() == checkpoint.GetId());
     }
-    LOG_PCP_T("Got checkpoint barrier from channel " << channelId);
-    ComputeActor->ResumeExecution(EResumeSource::CheckpointRegister);
+    LOG_PCP_D("Got checkpoint barrier from channel " << channelId);
+    ComputeActor->ResumeExecution();
 }
 
 void TDqComputeActorCheckpoints::StartCheckpoint(const NDqProto::TCheckpoint& checkpoint) {
@@ -512,18 +494,18 @@ void TDqComputeActorCheckpoints::AbortCheckpoint() {
 }
 
 void TDqComputeActorCheckpoints::OnSinkStateSaved(NDqProto::TSinkState&& state, ui64 outputIndex, const NDqProto::TCheckpoint& checkpoint) {
-    Y_ABORT_UNLESS(CheckpointCoordinator);
-    Y_ABORT_UNLESS(checkpoint.GetGeneration() <= CheckpointCoordinator->Generation);
+    Y_VERIFY(CheckpointCoordinator);
+    Y_VERIFY(checkpoint.GetGeneration() <= CheckpointCoordinator->Generation);
     if (checkpoint.GetGeneration() < CheckpointCoordinator->Generation) {
         LOG_W("Ignoring sink[" << outputIndex << "] state saved event from previous coordinator: "
             << checkpoint.GetGeneration() << " < " << CheckpointCoordinator->Generation);
         return;
     }
-    Y_ABORT_UNLESS(PendingCheckpoint);
-    Y_ABORT_UNLESS(PendingCheckpoint.Checkpoint->GetId() == checkpoint.GetId(),
+    Y_VERIFY(PendingCheckpoint);
+    Y_VERIFY(PendingCheckpoint.Checkpoint->GetId() == checkpoint.GetId(),
         "Expected pending checkpoint id %lu, but got %lu", PendingCheckpoint.Checkpoint->GetId(), checkpoint.GetId());
     for (const NDqProto::TSinkState& sinkState : PendingCheckpoint.ComputeActorState.GetSinks()) {
-        Y_ABORT_UNLESS(sinkState.GetOutputIndex() != outputIndex, "Double save sink[%lu] state", outputIndex);
+        Y_VERIFY(sinkState.GetOutputIndex() != outputIndex, "Double save sink[%lu] state", outputIndex);
     }
 
     NDqProto::TSinkState* sinkState = PendingCheckpoint.ComputeActorState.AddSinks();
@@ -536,7 +518,7 @@ void TDqComputeActorCheckpoints::OnSinkStateSaved(NDqProto::TSinkState&& state, 
 }
 
 void TDqComputeActorCheckpoints::TryToSavePendingCheckpoint() {
-    Y_ABORT_UNLESS(PendingCheckpoint);
+    Y_VERIFY(PendingCheckpoint);
     if (PendingCheckpoint.IsReady()) {
         auto saveTaskStateRequest = MakeHolder<TEvDqCompute::TEvSaveTaskState>(GraphId, Task.GetId(), *PendingCheckpoint.Checkpoint);
         saveTaskStateRequest->State.Swap(&PendingCheckpoint.ComputeActorState);
@@ -549,7 +531,7 @@ void TDqComputeActorCheckpoints::TryToSavePendingCheckpoint() {
 }
 
 TDqComputeActorCheckpoints::TPendingCheckpoint& TDqComputeActorCheckpoints::TPendingCheckpoint::operator=(const NDqProto::TCheckpoint& checkpoint) {
-    Y_ABORT_UNLESS(!Checkpoint);
+    Y_VERIFY(!Checkpoint);
     Checkpoint = checkpoint;
     return *this;
 }

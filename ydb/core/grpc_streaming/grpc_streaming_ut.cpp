@@ -31,7 +31,7 @@ namespace {
 }
 
 template<class TImplActor>
-class TStreamingService : public NYdbGrpc::TGrpcServiceBase<NStreamingTest::TStreamingService> {
+class TStreamingService : public NGrpc::TGrpcServiceBase<NStreamingTest::TStreamingService> {
 public:
     using TSelf = TStreamingService<TImplActor>;
 
@@ -46,7 +46,7 @@ public:
         , Counters(std::move(counters))
     { }
 
-    void InitService(grpc::ServerCompletionQueue* cq, NYdbGrpc::TLoggerPtr) override {
+    void InitService(grpc::ServerCompletionQueue* cq, NGrpc::TLoggerPtr) override {
         CQ = cq;
 
         auto getCounterBlock = NGRpcService::CreateCounterCb(Counters, &ActorSystem);
@@ -64,7 +64,7 @@ public:
             getCounterBlock("streaming", "Session"));
     }
 
-    void SetGlobalLimiterHandle(NYdbGrpc::TGlobalLimiter* limiter) override {
+    void SetGlobalLimiterHandle(NGrpc::TGlobalLimiter* limiter) override {
         Limiter = limiter;
     }
 
@@ -81,7 +81,7 @@ private:
     TIntrusivePtr<::NMonitoring::TDynamicCounters> const Counters;
 
     grpc::ServerCompletionQueue* CQ = nullptr;
-    NYdbGrpc::TGlobalLimiter* Limiter = nullptr;
+    NGrpc::TGlobalLimiter* Limiter = nullptr;
 };
 
 template<class TImplActor>
@@ -96,9 +96,9 @@ public:
 
         Server->GetRuntime()->SetLogPriority(NKikimrServices::GRPC_SERVER, NActors::NLog::PRI_DEBUG);
 
-        NYdbGrpc::TServerOptions options;
+        NGrpc::TServerOptions options;
         options.SetPort(grpc);
-        GRpcServer.Reset(new NYdbGrpc::TGRpcServer(options));
+        GRpcServer.Reset(new NGrpc::TGRpcServer(options));
 
         auto* as = Server->GetRuntime()->GetAnyNodeActorSystem();
         TIntrusivePtr<::NMonitoring::TDynamicCounters> counters(MakeIntrusive<::NMonitoring::TDynamicCounters>());
@@ -118,7 +118,7 @@ public:
 public:
     TServerSettings::TPtr ServerSettings;
     TServer::TPtr Server;
-    THolder<NYdbGrpc::TGRpcServer> GRpcServer;
+    THolder<NGrpc::TGRpcServer> GRpcServer;
     TString GRpcEndpoint;
 
 private:
@@ -179,13 +179,13 @@ public:
 
     void Handle(IContext::TEvReadFinished::TPtr& ev, const TActorContext& ctx) {
         LOG_DEBUG_S(ctx, NKikimrServices::GRPC_SERVER, "Received TEvReadFinished, success = " << ev->Get()->Success);
-        Y_ABORT_UNLESS(!ev->Get()->Success, "Unexpected read success");
+        Y_VERIFY(!ev->Get()->Success, "Unexpected read success");
         Step();
     }
 
     void Handle(IContext::TEvWriteFinished::TPtr& ev, const TActorContext& ctx) {
         LOG_DEBUG_S(ctx, NKikimrServices::GRPC_SERVER, "Received TEvWriteFinished, success = " << ev->Get()->Success);
-        Y_ABORT_UNLESS(ev->Get()->Success, "Unexpected write failure");
+        Y_VERIFY(ev->Get()->Success, "Unexpected write failure");
         Step();
     }
 
@@ -300,7 +300,7 @@ public:
 
     void Handle(IContext::TEvReadFinished::TPtr& ev, const TActorContext& ctx) {
         LOG_DEBUG_S(ctx, NKikimrServices::GRPC_SERVER, "Received TEvReadFinished, success = " << ev->Get()->Success);
-        Y_ABORT_UNLESS(ev->Get()->Success == false, "Unexpected Read success");
+        Y_VERIFY(ev->Get()->Success == false, "Unexpected Read success");
         ReadFinished.Signal();
 
         // It should be possible to reply with an OK status here

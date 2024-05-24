@@ -4,7 +4,7 @@
 
 #include <ydb/services/persqueue_v1/actors/read_session_actor.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 
 namespace NKikimr {
@@ -79,7 +79,7 @@ public:
     }
 private:
     void SendStatusRequest(const TString& sessionName, TActorId actorId, const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(sessionName.EndsWith("_v1"));
+        Y_VERIFY(sessionName.EndsWith("_v1"));
         SendStatusRequest<NGRpcProxy::V1::TEvPQProxy::TEvReadSessionStatus>(actorId, ctx);
     }
 };

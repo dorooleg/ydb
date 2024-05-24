@@ -12,10 +12,9 @@
 #include <__compare/ordering.h>
 #include <__compare/strong_order.h>
 #include <__config>
-#include <__type_traits/decay.h>
-#include <__type_traits/is_same.h>
 #include <__utility/forward.h>
 #include <__utility/priority_tag.h>
+#include <type_traits>
 
 #ifndef _LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
 #  pragma GCC system_header
@@ -23,7 +22,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if _LIBCPP_STD_VER >= 20
+#if !defined(_LIBCPP_HAS_NO_CONCEPTS)
 
 // [cmp.alg]
 namespace __compare_strong_order_fallback {
@@ -64,7 +63,7 @@ inline namespace __cpo {
     inline constexpr auto compare_strong_order_fallback = __compare_strong_order_fallback::__fn{};
 } // namespace __cpo
 
-#endif // _LIBCPP_STD_VER >= 20
+#endif // !defined(_LIBCPP_HAS_NO_CONCEPTS)
 
 _LIBCPP_END_NAMESPACE_STD
 

@@ -34,7 +34,7 @@
 #endif
 
 #if defined(BOOST_OLD_IOSTREAMS)
-#  error #include <iostream.h>
+#  include <iostream.h>
 #  include <ctype.h> // for isspace
 #else
 #  include <istream>

@@ -7,8 +7,7 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/util/operation_queue.h>
 
-#include <ydb/library/actors/core/monotonic_provider.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 // TODO: TOperationQueueWithTimer is a good candidate for core/util, but since
 // it uses actorlib_impl, which depends on core/util, it
@@ -324,13 +323,13 @@ public:
     const TShardCompactionInfo& Front() const {
         switch (ActiveQueue) {
         case EActiveQueue::ByLastCompaction:
-            Y_ABORT_UNLESS(!QueueLastCompaction.Empty(), "QueueLastCompaction empty");
+            Y_VERIFY(!QueueLastCompaction.Empty(), "QueueLastCompaction empty");
             return QueueLastCompaction.Front();
         case EActiveQueue::BySearchHeight:
-            Y_ABORT_UNLESS(!QueueSearchHeight.Empty(), "QueueSearchHeight empty");
+            Y_VERIFY(!QueueSearchHeight.Empty(), "QueueSearchHeight empty");
             return QueueSearchHeight.Front();
         case EActiveQueue::ByRowDeletes:
-            Y_ABORT_UNLESS(!QueueRowDeletes.Empty(), "QueueRowDeletes empty");
+            Y_VERIFY(!QueueRowDeletes.Empty(), "QueueRowDeletes empty");
             return QueueRowDeletes.Front();
         }
     }

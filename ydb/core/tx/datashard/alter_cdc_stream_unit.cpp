@@ -17,7 +17,7 @@ public:
     }
 
     EExecutionStatus Execute(TOperation::TPtr op, TTransactionContext& txc, const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(op->IsSchemeTx());
+        Y_VERIFY(op->IsSchemeTx());
 
         TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
         Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
@@ -33,33 +33,26 @@ public:
         const auto state = streamDesc.GetState();
 
         const auto pathId = PathIdFromPathId(params.GetPathId());
-        Y_ABORT_UNLESS(pathId.OwnerId == DataShard.GetPathOwnerId());
+        Y_VERIFY(pathId.OwnerId == DataShard.GetPathOwnerId());
 
         const auto version = params.GetTableSchemaVersion();
-        Y_ABORT_UNLESS(version);
+        Y_VERIFY(version);
 
         TUserTable::TPtr tableInfo;
         switch (state) {
         case NKikimrSchemeOp::ECdcStreamStateDisabled:
-            tableInfo = DataShard.AlterTableSwitchCdcStreamState(ctx, txc, pathId, version, streamPathId, state);
-            DataShard.GetCdcStreamHeartbeatManager().DropCdcStream(txc.DB, pathId, streamPathId);
-            break;
-
         case NKikimrSchemeOp::ECdcStreamStateReady:
             tableInfo = DataShard.AlterTableSwitchCdcStreamState(ctx, txc, pathId, version, streamPathId, state);
+            if (state == NKikimrSchemeOp::ECdcStreamStateReady) {
+                if (params.HasDropSnapshot()) {
+                    const auto& snapshot = params.GetDropSnapshot();
+                    Y_VERIFY(snapshot.GetStep() != 0);
 
-            if (params.HasDropSnapshot()) {
-                const auto& snapshot = params.GetDropSnapshot();
-                Y_ABORT_UNLESS(snapshot.GetStep() != 0);
-
-                const TSnapshotKey key(pathId, snapshot.GetStep(), snapshot.GetTxId());
-                DataShard.GetSnapshotManager().RemoveSnapshot(txc.DB, key);
-            } else {
-                Y_DEBUG_ABORT("Absent snapshot");
-            }
-
-            if (const auto heartbeatInterval = TDuration::MilliSeconds(streamDesc.GetResolvedTimestampsIntervalMs())) {
-                DataShard.GetCdcStreamHeartbeatManager().AddCdcStream(txc.DB, pathId, streamPathId, heartbeatInterval);
+                    const TSnapshotKey key(pathId, snapshot.GetStep(), snapshot.GetTxId());
+                    DataShard.GetSnapshotManager().RemoveSnapshot(txc.DB, key);
+                } else {
+                    Y_VERIFY_DEBUG(false, "Absent snapshot");
+                }
             }
             break;
 
@@ -68,7 +61,7 @@ public:
                 << ": params# " << params.ShortDebugString());
         }
 
-        Y_ABORT_UNLESS(tableInfo);
+        Y_VERIFY(tableInfo);
         DataShard.AddUserTable(pathId, tableInfo);
 
         if (tableInfo->NeedSchemaSnapshots()) {
@@ -89,7 +82,6 @@ public:
     }
 
     void Complete(TOperation::TPtr, const TActorContext&) override {
-        DataShard.EmitHeartbeats();
     }
 };
 

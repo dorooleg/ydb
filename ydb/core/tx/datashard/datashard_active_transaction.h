@@ -1,7 +1,7 @@
 #pragma once
 
 #include "datashard.h"
-#include <ydb/core/tx/locks/locks.h>
+#include "datashard_locks.h"
 #include "datashard__engine_host.h"
 #include "operation.h"
 
@@ -23,7 +23,6 @@ using NTabletFlatExecutor::TTransactionContext;
 using NTabletFlatExecutor::TTableSnapshotContext;
 
 class TDataShard;
-class TDataShardUserDb;
 class TSysLocks;
 struct TReadSetKey;
 class TActiveTransaction;
@@ -114,7 +113,7 @@ struct TSchemaOperation {
 };
 
 /// @note This class incapsulates Engine stuff for minor needs. Do not return TEngine out of it.
-class TValidatedDataTx : TNonCopyable, public TValidatedTx {
+class TValidatedDataTx : TNonCopyable {
 public:
     using TPtr = std::shared_ptr<TValidatedDataTx>;
 
@@ -128,15 +127,14 @@ public:
 
     ~TValidatedDataTx();
 
-    EType GetType() const override { return EType::DataTx; };
-
     static constexpr ui64 MaxReorderTxKeys() { return 100; }
 
     NKikimrTxDataShard::TError::EKind Code() const { return ErrCode; }
     const TString GetErrors() const { return ErrStr; }
 
     TStepOrder StepTxId() const { return StepTxId_; }
-    ui64 GetTxId() const override { return StepTxId_.TxId; }
+    ui64 TxId() const { return StepTxId_.TxId; }
+    ui64 TabletId() const { return TabletId_; }
     const TString& Body() const { return TxBody; }
 
     ui64 LockTxId() const { return Tx.GetLockTxId(); }
@@ -152,6 +150,7 @@ public:
 
     bool Ready() const { return ErrCode == NKikimrTxDataShard::TError::OK; }
     bool RequirePrepare() const { return ErrCode == NKikimrTxDataShard::TError::SNAPSHOT_NOT_READY_YET; }
+    bool RequireWrites() const { return TxInfo().HasWrites() || !Immediate(); }
     bool HasWrites() const { return TxInfo().HasWrites(); }
     bool HasLockedWrites() const { return HasWrites() && LockTxId(); }
     bool HasDynamicWrites() const { return TxInfo().DynKeysCount != 0; }
@@ -175,15 +174,16 @@ public:
     const NMiniKQL::TEngineHostCounters& GetCounters() { return EngineBay.GetCounters(); }
     void ResetCounters() { EngineBay.ResetCounters(); }
 
-    TDataShardUserDb& GetUserDb();
-    const TDataShardUserDb& GetUserDb() const;
-
     bool CanCancel();
-    bool CheckCancelled(ui64 tabletId);
+    bool CheckCancelled();
 
     void SetWriteVersion(TRowVersion writeVersion) { EngineBay.SetWriteVersion(writeVersion); }
     void SetReadVersion(TRowVersion readVersion) { EngineBay.SetReadVersion(readVersion); }
     void SetVolatileTxId(ui64 txId) { EngineBay.SetVolatileTxId(txId); }
+
+    void CommitChanges(const TTableId& tableId, ui64 lockId, const TRowVersion& writeVersion) {
+        EngineBay.CommitChanges(tableId, lockId, writeVersion);
+    }
 
     TVector<IDataShardChangeCollector::TChange> GetCollectedChanges() const { return EngineBay.GetCollectedChanges(); }
     void ResetCollectedChanges() { EngineBay.ResetCollectedChanges(); }
@@ -192,9 +192,11 @@ public:
     const absl::flat_hash_set<ui64>& GetVolatileDependencies() const { return EngineBay.GetVolatileDependencies(); }
     std::optional<ui64> GetVolatileChangeGroup() const { return EngineBay.GetVolatileChangeGroup(); }
     bool GetVolatileCommitOrdered() const { return EngineBay.GetVolatileCommitOrdered(); }
-    bool GetPerformedUserReads() const { return EngineBay.GetPerformedUserReads(); }
 
+    TActorId Source() const { return Source_; }
+    void SetSource(const TActorId& actorId) { Source_ = actorId; }
     void SetStep(ui64 step) { StepTxId_.Step = step; }
+    bool IsProposed() const { return Source_ != TActorId(); }
 
     bool IsTableRead() const { return Tx.HasReadTableTransaction(); }
 
@@ -209,34 +211,34 @@ public:
     }
 
     bool GetUseGenericReadSets() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         return Tx.GetKqpTransaction().GetUseGenericReadSets();
     }
 
-    inline const ::NKikimrDataEvents::TKqpLocks& GetKqpLocks() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+    inline const ::NKikimrTxDataShard::TKqpLocks& GetKqpLocks() const {
+        Y_VERIFY(IsKqpDataTx());
         return Tx.GetKqpTransaction().GetLocks();
     }
 
     inline bool HasKqpLocks() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         return Tx.GetKqpTransaction().HasLocks();
     }
 
     inline bool HasKqpSnapshot() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         return Tx.GetKqpTransaction().HasSnapshot();
     }
 
     inline const ::NKikimrKqp::TKqpSnapshot& GetKqpSnapshot() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         return Tx.GetKqpTransaction().GetSnapshot();
     }
 
     inline const ::google::protobuf::RepeatedPtrField<::NYql::NDqProto::TDqTask>& GetTasks() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         // ensure that GetTasks is not called after task runner is built
-        Y_ABORT_UNLESS(!BuiltTaskRunner);
+        Y_VERIFY(!BuiltTaskRunner);
         return Tx.GetKqpTransaction().GetTasks();
     }
 
@@ -250,30 +252,30 @@ public:
     }
 
     NKqp::TKqpTasksRunner& GetKqpTasksRunner() {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         BuiltTaskRunner = true;
         return EngineBay.GetKqpTasksRunner(*Tx.MutableKqpTransaction());
     }
 
     ::NYql::NDqProto::EDqStatsMode GetKqpStatsMode() const {
-        Y_ABORT_UNLESS(IsKqpDataTx());
+        Y_VERIFY(IsKqpDataTx());
         return Tx.GetKqpTransaction().GetRuntimeSettings().GetStatsMode();
     }
 
-    NMiniKQL::TKqpDatashardComputeContext& GetKqpComputeCtx() { Y_ABORT_UNLESS(IsKqpDataTx()); return EngineBay.GetKqpComputeCtx(); }
+    NMiniKQL::TKqpDatashardComputeContext& GetKqpComputeCtx() { Y_VERIFY(IsKqpDataTx()); return EngineBay.GetKqpComputeCtx(); }
 
     bool HasStreamResponse() const { return Tx.GetStreamResponse(); }
     TActorId GetSink() const { return ActorIdFromProto(Tx.GetSink()); }
     const NKikimrTxDataShard::TReadTableTransaction &GetReadTableTransaction() const { return Tx.GetReadTableTransaction(); }
 
     ui32 ExtractKeys(bool allowErrors);
-    bool ReValidateKeys(const NTable::TScheme& scheme);
+    bool ReValidateKeys();
 
     ui64 GetTxSize() const { return TxSize; }
     ui32 KeysCount() const { return TxInfo().ReadsCount + TxInfo().WritesCount; }
-    ui64 GetMemoryConsumption() const override {
-        return GetTxSize() + GetMemoryAllocated();
-    }
+
+    void SetTxCacheUsage(ui64 val) { TxCacheUsage = val; }
+    ui64 GetTxCacheUsage() const { return TxCacheUsage; }
 
     void ReleaseTxData();
     bool IsTxDataReleased() const { return IsReleased; }
@@ -289,12 +291,15 @@ public:
 
 private:
     TStepOrder StepTxId_;
+    ui64 TabletId_;
     TString TxBody;
+    TActorId Source_;
     TEngineBay EngineBay;
     NKikimrTxDataShard::TDataTransaction Tx;
     NKikimrTxDataShard::TError::EKind ErrCode;
     TString ErrStr;
     ui64 TxSize;
+    ui64 TxCacheUsage;
     bool IsReleased;
     bool BuiltTaskRunner;
     TMaybe<ui64> PerShardKeysSizeLimitBytes_;
@@ -306,6 +311,12 @@ private:
 
     void ComputeTxSize();
     void ComputeDeadline();
+};
+
+enum class ERestoreDataStatus {
+    Ok,
+    Restart,
+    Error,
 };
 
 ///
@@ -378,6 +389,17 @@ public:
         TrackMemory();
     }
 
+    TActiveTransaction(const TBasicOpInfo &op,
+                       TValidatedDataTx::TPtr savedTx);
+    TActiveTransaction(TDataShard *self,
+                       TTransactionContext &txc,
+                       const TActorContext &ctx,
+                       const TBasicOpInfo &op,
+                       const TActorId &target,
+                       const TString &txBody,
+                       const TVector<TSysTables::TLocksTable::TLock> &locks,
+                       ui64 artifactFlags);
+
     ~TActiveTransaction();
 
     void FillTxData(TValidatedDataTx::TPtr dataTx);
@@ -441,21 +463,21 @@ public:
     TSchemaOperation::EType GetSchemeTxType() const { return SchemeTxType; }
 
     const NKikimrTxDataShard::TSnapshotTransaction& GetSnapshotTx() const {
-        Y_DEBUG_ABORT_UNLESS(SnapshotTx);
+        Y_VERIFY_DEBUG(SnapshotTx);
         return *SnapshotTx;
     }
     bool BuildSnapshotTx();
     void ClearSnapshotTx() { SnapshotTx = nullptr; }
 
     const TDistributedEraseTx::TPtr& GetDistributedEraseTx() const {
-        Y_DEBUG_ABORT_UNLESS(DistributedEraseTx);
+        Y_VERIFY_DEBUG(DistributedEraseTx);
         return DistributedEraseTx;
     }
     bool BuildDistributedEraseTx();
     void ClearDistributedEraseTx() { DistributedEraseTx = nullptr; }
 
     const TCommitWritesTx::TPtr& GetCommitWritesTx() const {
-        Y_DEBUG_ABORT_UNLESS(CommitWritesTx);
+        Y_VERIFY_DEBUG(CommitWritesTx);
         return CommitWritesTx;
     }
     bool BuildCommitWritesTx();
@@ -469,9 +491,9 @@ public:
         return 0;
     }
 
-    bool ReValidateKeys(const NTable::TScheme& scheme) {
+    bool ReValidateKeys() {
         if (DataTx && (DataTx->ProgramSize() || DataTx->IsKqpDataTx()))
-            return DataTx->ReValidateKeys(scheme);
+            return DataTx->ReValidateKeys();
         return true;
     }
 
@@ -505,17 +527,17 @@ public:
         return ArtifactFlags & LOCKS_STORED;
     }
 
-    void DbStoreLocksAccessLog(ui64 tabletId,
+    void DbStoreLocksAccessLog(TDataShard * self,
                                TTransactionContext &txc,
                                const TActorContext &ctx);
-    void DbStoreArtifactFlags(ui64 tabletId,
+    void DbStoreArtifactFlags(TDataShard * self,
                               TTransactionContext &txc,
                               const TActorContext &ctx);
 
     ui64 GetMemoryConsumption() const;
 
     ui64 GetRequiredMemory() const {
-        Y_ABORT_UNLESS(!GetTxCacheUsage() || !IsTxDataReleased());
+        Y_VERIFY(!GetTxCacheUsage() || !IsTxDataReleased());
         ui64 requiredMem = GetTxCacheUsage() + GetReleasedTxDataSize();
         if (!requiredMem)
             requiredMem = GetMemoryConsumption();
@@ -541,10 +563,10 @@ public:
     const NMiniKQL::IEngineFlat::TValidationInfo &GetKeysInfo() const override
     {
         if (DataTx) {
-            Y_ABORT_UNLESS(DataTx->TxInfo().Loaded);
+            Y_VERIFY(DataTx->TxInfo().Loaded);
             return DataTx->TxInfo();
         }
-        Y_DEBUG_ABORT_UNLESS(IsSchemeTx() || IsSnapshotTx() || IsDistributedEraseTx() || IsCommitWritesTx(),
+        Y_VERIFY_DEBUG(IsSchemeTx() || IsSnapshotTx() || IsDistributedEraseTx() || IsCommitWritesTx(),
             "Unexpected access to invalidated keys: non-scheme tx %" PRIu64, GetTxId());
         // For scheme tx global reader and writer flags should
         // result in all required dependencies.
@@ -593,9 +615,6 @@ public:
     ui64 IncrementPageFaultCount() {
         return ++PageFaultCount;
     }
-
-    bool OnStopping(TDataShard& self, const TActorContext& ctx) override;
-    void OnCleanup(TDataShard& self, std::vector<std::unique_ptr<IEventHandle>>& replies) override;
 
 private:
     void TrackMemory() const;

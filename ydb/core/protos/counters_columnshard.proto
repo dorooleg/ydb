@@ -49,7 +49,6 @@ enum ESimpleCounters {
     COUNTER_EVICTED_BYTES = 39                              [(CounterOpts) = {Name: "Index/EvictedBytes"}];
     COUNTER_EVICTED_RAW_BYTES = 40                          [(CounterOpts) = {Name: "Index/EvictedBytesRaw"}];
     COUNTER_WRITES_IN_FLY = 41                              [(CounterOpts) = {Name: "WritesInFly"}];
-    COUNTER_TX_COMPLETE_LAG = 42                            [(CounterOpts) = {Name: "TxCompleteLag"}];
 }
 
 enum ECumulativeCounters {
@@ -128,13 +127,6 @@ enum ECumulativeCounters {
     COUNTER_WRITE_OVERLOAD_SHARD = 72                       [(CounterOpts) = {Name: "WriteOverloadShard"}];
     COUNTER_INDEXING_TIME = 73                              [(CounterOpts) = {Name: "IndexingTime"}];
     COUNTER_COMPACTION_TIME = 74                            [(CounterOpts) = {Name: "CompactionTime"}];
-    COUNTER_EXPORTING_BLOBS = 75                            [(CounterOpts) = {Name: "ExportingBlobs"}];
-    COUNTER_EXPORTING_BYTES = 76                            [(CounterOpts) = {Name: "ExportingBytes"}];
-    COUNTER_FORGETTING_BLOBS = 77                           [(CounterOpts) = {Name: "ForgettingBlobs"}];
-    COUNTER_FORGETTING_BYTES = 78                           [(CounterOpts) = {Name: "ForgettingBytes"}];
-    COUNTER_READING_EXPORTED_BLOBS = 79                     [(CounterOpts) = {Name: "ReadingExportedBlobs"}];
-    COUNTER_READING_EXPORTED_BYTES = 80                     [(CounterOpts) = {Name: "ReadingExportedBytes"}];
-    COUNTER_READING_EXPORTED_RANGES = 81                    [(CounterOpts) = {Name: "ReadingExportedRanges"}];
 }
 
 enum EPercentileCounters {
@@ -175,23 +167,4 @@ enum ETxTypes {
     TXTYPE_READ_BLOB_RANGES = 12                            [(TxTypeOpts) = {Name: "TxReadBlobRanges"}];
     TXTYPE_EXPORT = 13                                      [(TxTypeOpts) = {Name: "TxExport"}];
     TXTYPE_FORGET = 14                                      [(TxTypeOpts) = {Name: "TxForget"}];
-    TXTYPE_WRITE_DRAFT = 15                                 [(TxTypeOpts) = {Name: "TxWriteDraft"}];
-    TXTYPE_CLEANUP_INSERT_TABLE = 16                        [(TxTypeOpts) = {Name: "TxInsertTableCleanup"}];
-    TXTYPE_GC_FINISHED = 17                                 [(TxTypeOpts) = {Name: "TxGarbageCollectionFinished"}];
-    TXTYPE_DELETE_SHARED_BLOBS = 18                         [(TxTypeOpts) = {Name: "TxDeleteSharedBlobs"}];
-    TXTYPE_DATA_SHARING_FINISH_ACK_TO_SOURCE = 19           [(TxTypeOpts) = {Name: "TxDataSharingFinishAckToSource"}];
-    TXTYPE_DATA_SHARING_START_TO_SOURCE = 20                [(TxTypeOpts) = {Name: "TxDataSharingStartToSource"}];
-    TXTYPE_DATA_SHARING_DATA_ACK_TO_SOURCE = 21             [(TxTypeOpts) = {Name: "TxDataSharingDataAckToSource"}];
-    TXTYPE_DATA_SHARING_DATA_FROM_SOURCE = 22               [(TxTypeOpts) = {Name: "TxDataSharingDataFromSource"}];
-    TXTYPE_DATA_SHARING_FINISH_ACK_FROM_INITIATOR = 23      [(TxTypeOpts) = {Name: "TxDataSharingFinishAckFromInitiator"}];
-    TXTYPE_DATA_SHARING_FINISH_FROM_SOURCE = 24             [(TxTypeOpts) = {Name: "TxDataSharingFinishFromSource"}];
-    TXTYPE_DATA_SHARING_PROPOSE_FROM_INITIATOR = 25         [(TxTypeOpts) = {Name: "TxDataSharingProposeFromInitiator"}];
-    TXTYPE_DATA_SHARING_CONFIRM_FROM_INITIATOR = 26         [(TxTypeOpts) = {Name: "TxDataSharingConfirmFromInitiator"}];
-    TXTYPE_DATA_SHARING_APPLY_LINKS_MODIFICATION = 27       [(TxTypeOpts) = {Name: "TxDataSharingApplyLinksModification"}];
-    TXTYPE_DATA_SHARING_WRITE_SOURCE_CURSOR = 28            [(TxTypeOpts) = {Name: "TxDataSharingWriteSourceCursor"}];
-    TXTYPE_EXPORT_SAVE_CURSOR = 29                          [(TxTypeOpts) = {Name: "TxExportSaveCursor"}];
-    TXTYPE_REMOVE_BACKGROUND_SESSION = 30                   [(TxTypeOpts) = {Name: "TxRemoveBackgroundSession"}];
-    TXTYPE_ADD_BACKGROUND_SESSION = 31                      [(TxTypeOpts) = {Name: "TxAddBackgroundSession"}];
-    TXTYPE_SAVE_BACKGROUND_SESSION_PROGRESS = 32            [(TxTypeOpts) = {Name: "TxSaveBackgroundSessionProgress"}];
-    TXTYPE_SAVE_BACKGROUND_SESSION_STATE = 33               [(TxTypeOpts) = {Name: "TxSaveBackgroundSessionState"}];
 }

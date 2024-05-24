@@ -3,15 +3,15 @@
 #include <ydb/core/fq/libs/common/util.h>
 #include <ydb/core/fq/libs/events/events.h>
 
-#include <ydb/library/services/services.pb.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/core/protos/services.pb.h>
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_public/persqueue.h>
 
 #include <ydb/library/yql/providers/dq/api/protos/service.pb.h>
 #include <ydb/library/yql/providers/pq/proto/dq_task_params.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #define LOG_E(stream) \
     LOG_ERROR_S(*TlsActivationContext, NKikimrServices::STREAMS, QueryId << ": " << stream)
@@ -79,7 +79,7 @@ public:
         , QueryId(std::move(queryId))
         , TopicConsumer(topicConsumer)
         , YdbDriver(std::move(ydbDriver))
-        , TopicClient(YdbDriver, GetTopicClientSettings(std::move(credentialsProvider)))
+        , PqClient(YdbDriver, GetPqClientSettings(std::move(credentialsProvider)))
         , Index(index)
     {
     }
@@ -102,32 +102,32 @@ public:
     }
 
     void StartRequest() {
-        Y_ABORT_UNLESS(!RequestInFlight);
+        Y_VERIFY(!RequestInFlight);
         RequestInFlight = true;
         LOG_D("Make request for read rule creation for topic `" << TopicConsumer.topic_path() << "` [" << Index << "]");
-
-        const NYdb::NTopic::TAlterTopicSettings alterTopicSettings =
-            NYdb::NTopic::TAlterTopicSettings()
-                .BeginAddConsumer(TopicConsumer.consumer_name())
-                .SetSupportedCodecs(
-                    {
-                        NYdb::NTopic::ECodec::RAW,
-                        NYdb::NTopic::ECodec::GZIP,
-                        NYdb::NTopic::ECodec::LZOP,
-                        NYdb::NTopic::ECodec::ZSTD
-                    })
-                .EndAddConsumer();
-
-        TopicClient.AlterTopic(GetTopicPath(), alterTopicSettings)
-            .Subscribe([actorSystem = TActivationContext::ActorSystem(),
-                        selfId = SelfId()](const NYdb::TAsyncStatus& status) {
-              actorSystem->Send(selfId, new TEvPrivate::TEvAddReadRuleStatus(
-                                            status.GetValue()));
-            });
+        PqClient.AddReadRule(
+            GetTopicPath(),
+            NYdb::NPersQueue::TAddReadRuleSettings()
+                .ReadRule(
+                    NYdb::NPersQueue::TReadRuleSettings()
+                        .ConsumerName(TopicConsumer.consumer_name())
+                        .ServiceType("yandex-query")
+                        .SupportedCodecs({
+                            NYdb::NPersQueue::ECodec::RAW,
+                            NYdb::NPersQueue::ECodec::GZIP,
+                            NYdb::NPersQueue::ECodec::LZOP,
+                            NYdb::NPersQueue::ECodec::ZSTD
+                        })
+                )
+        ).Subscribe(
+            [actorSystem = TActivationContext::ActorSystem(), selfId = SelfId()](const NYdb::TAsyncStatus& status) {
+                actorSystem->Send(selfId, new TEvPrivate::TEvAddReadRuleStatus(status.GetValue()));
+            }
+        );
     }
 
     void Handle(TEvPrivate::TEvAddReadRuleStatus::TPtr& ev) {
-        Y_ABORT_UNLESS(RequestInFlight);
+        Y_VERIFY(RequestInFlight);
         RequestInFlight = false;
         const NYdb::TStatus& status = ev->Get()->Status;
         if (status.IsSuccess() || status.GetStatus() == NYdb::EStatus::ALREADY_EXISTS) {
@@ -135,7 +135,7 @@ public:
             PassAway();
         } else {
             if (!RetryState) {
-                RetryState = NYdb::NTopic::IRetryPolicy::GetExponentialBackoffPolicy()->CreateRetryState();
+                RetryState = NYdb::NPersQueue::IRetryPolicy::GetExponentialBackoffPolicy()->CreateRetryState();
             }
             TMaybe<TDuration> nextRetryDelay = RetryState->GetNextRetryDelay(status.GetStatus());
             if (status.GetStatus() == NYdb::EStatus::SCHEME_ERROR) {
@@ -161,7 +161,7 @@ public:
     }
 
     void Handle(NActors::TEvents::TEvPoison::TPtr& ev) {
-        Y_ABORT_UNLESS(ev->Sender == Owner);
+        Y_VERIFY(ev->Sender == Owner);
         Finishing = true;
         CheckFinish();
     }
@@ -182,8 +182,9 @@ public:
     )
 
 private:
-    NYdb::NTopic::TTopicClientSettings GetTopicClientSettings(std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProvider) {
-        return NYdb::NTopic::TTopicClientSettings()
+    NYdb::NPersQueue::TPersQueueClientSettings GetPqClientSettings(std::shared_ptr<NYdb::ICredentialsProviderFactory> credentialsProvider) {
+        return NYdb::NPersQueue::TPersQueueClientSettings()
+            .ClusterDiscoveryMode(NYdb::NPersQueue::EClusterDiscoveryMode::Off)
             .Database(TopicConsumer.database())
             .DiscoveryEndpoint(TopicConsumer.cluster_endpoint())
             .CredentialsProviderFactory(std::move(credentialsProvider))
@@ -196,9 +197,9 @@ private:
     const TString QueryId;
     const Fq::Private::TopicConsumer TopicConsumer;
     NYdb::TDriver YdbDriver;
-    NYdb::NTopic::TTopicClient TopicClient;
+    NYdb::NPersQueue::TPersQueueClient PqClient;
     ui64 Index = 0;
-    NYdb::NTopic::IRetryPolicy::IRetryState::TPtr RetryState;
+    NYdb::NPersQueue::IRetryPolicy::IRetryState::TPtr RetryState;
     bool RequestInFlight = false;
     bool Finishing = false;
 };
@@ -219,7 +220,7 @@ public:
         , TopicConsumers(VectorFromProto(topicConsumers))
         , Credentials(std::move(credentials))
     {
-        Y_ABORT_UNLESS(!TopicConsumers.empty());
+        Y_VERIFY(!TopicConsumers.empty());
         Results.resize(TopicConsumers.size());
     }
 
@@ -238,7 +239,7 @@ public:
 
     void Handle(TEvPrivate::TEvSingleReadRuleCreatorResult::TPtr& ev) {
         const ui64 index = ev->Cookie;
-        Y_ABORT_UNLESS(!Results[index]);
+        Y_VERIFY(!Results[index]);
         if (ev->Get()->Issues) {
             Ok = false;
         }
@@ -248,14 +249,14 @@ public:
     }
 
     void Handle(NActors::TEvents::TEvPoison::TPtr& ev) {
-        Y_ABORT_UNLESS(ev->Sender == Owner);
+        Y_VERIFY(ev->Sender == Owner);
         for (const NActors::TActorId& child : Children) {
             Send(child, new NActors::TEvents::TEvPoison());
         }
     }
 
     void SendResultsAndPassAwayIfDone() {
-        Y_ABORT_UNLESS(ResultsGot <= TopicConsumers.size());
+        Y_VERIFY(ResultsGot <= TopicConsumers.size());
         if (ResultsGot == TopicConsumers.size()) {
             NYql::TIssues issues;
             if (!Ok) {

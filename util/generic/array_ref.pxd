@@ -3,23 +3,23 @@ from libcpp cimport bool as bool_t
 
 cdef extern from "util/generic/array_ref.h" nogil:
     cdef cppclass TArrayRef[T]:
-        TArrayRef(...)
+        TArrayRef(...) except +
 
         T& operator[](size_t)
 
         bool_t empty()
-        T* data()
-        size_t size()
-        T* begin()
-        T* end()
+        T* data() except +
+        size_t size() except +
+        T* begin() except +
+        T* end() except +
 
     cdef cppclass TConstArrayRef[T]:
-        TConstArrayRef(...)
+        TConstArrayRef(...) except +
 
         const T& operator[](size_t)
 
         bool_t empty()
-        const T* data()
-        size_t size()
-        const T* begin()
-        const T* end()
+        const T* data() except +
+        size_t size() except +
+        const T* begin() except +
+        const T* end() except +

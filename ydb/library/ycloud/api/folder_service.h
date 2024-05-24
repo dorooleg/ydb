@@ -10,17 +10,20 @@ namespace NCloud {
     struct TEvFolderService {
         enum EEv {
             // requests
-            EvResolveFoldersRequest = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE) + 1024,
+            EvListFolderRequest = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE),
 
             // replies
-            EvResolveFoldersResponse = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE) + 1024 + 512,
+            EvListFolderResponse = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE) + 512,
 
             EvEnd
         };
 
         static_assert(EvEnd < EventSpaceEnd(TKikimrEvents::ES_FOLDER_SERVICE), "expect EvEnd < EventSpaceEnd(TKikimrEvents::ES_FOLDER_SERVICE)");
 
-        struct TEvResolveFoldersRequest : TEvGrpcProtoRequest<TEvResolveFoldersRequest, EvResolveFoldersRequest, yandex::cloud::priv::resourcemanager::v1::ResolveFoldersRequest> {};
-        struct TEvResolveFoldersResponse : TEvGrpcProtoResponse<TEvResolveFoldersResponse, EvResolveFoldersResponse, yandex::cloud::priv::resourcemanager::v1::ResolveFoldersResponse> {};
+        // https://a.yandex-team.ru/arc/trunk/arcadia/cloud/identity/proto/resourcemanager/v1/folder.proto
+        // https://a.yandex-team.ru/arc/trunk/arcadia/cloud/identity/proto/resourcemanager/v1/transitional/folder_service.proto
+
+        struct TEvListFolderRequest : TEvGrpcProtoRequest<TEvListFolderRequest, EvListFolderRequest, yandex::cloud::priv::resourcemanager::v1::transitional::ListFoldersRequest> {};
+        struct TEvListFolderResponse : TEvGrpcProtoResponse<TEvListFolderResponse, EvListFolderResponse, yandex::cloud::priv::resourcemanager::v1::transitional::ListFoldersResponse> {};
     };
 }

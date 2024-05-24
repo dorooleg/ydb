@@ -178,7 +178,6 @@ void TParametersParser::Append(const TString& name, const TString& value) {
     const unsigned char *ts, *te;
     %% write init;
 
-    Y_UNUSED(Dc);
     Y_UNUSED(ts);
     Y_UNUSED(act);
 

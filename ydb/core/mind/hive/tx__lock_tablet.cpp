@@ -27,7 +27,7 @@ public:
         , Sender(sender)
         , Cookie(cookie)
     {
-        Y_ABORT_UNLESS(!!Sender);
+        Y_VERIFY(!!Sender);
     }
 
     TTxType GetTxType() const override { return NHive::TXTYPE_LOCK_TABLET_EXECUTION; }

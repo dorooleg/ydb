@@ -15,14 +15,25 @@ namespace NKikimr {
 namespace NSchemeShard {
 
 TVector<ISubOperation::TPtr> ApplyBuildIndex(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context) {
-    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpApplyIndexBuild);
+    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpApplyIndexBuild);
 
     auto config = tx.GetApplyIndexBuild();
     TString tablePath = config.GetTablePath();
     TString indexName = config.GetIndexName();
 
     TPath table = TPath::Resolve(tablePath, context.SS);
+    TPath index = table.Child(indexName);
+    TPath implIndexTable = index.Child("indexImplTable");
+
+
+    TTableInfo::TPtr implIndexTableInfo = context.SS->Tables.at(implIndexTable.Base()->PathId);
+
+    //check idempotence
+
+    //check limits
+
     TVector<ISubOperation::TPtr> result;
+
     {
         auto finalize = TransactionTemplate(table.Parent().PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpFinalizeBuildIndexMainTable);
         *finalize.MutableLockGuard() = tx.GetLockGuard();
@@ -35,9 +46,7 @@ TVector<ISubOperation::TPtr> ApplyBuildIndex(TOperationId nextId, const TTxTrans
         result.push_back(CreateFinalizeBuildIndexMainTable(NextPartId(nextId, result), finalize));
     }
 
-    if (!indexName.empty())
     {
-        TPath index = table.Child(indexName);
         auto tableIndexAltering = TransactionTemplate(table.PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpAlterTableIndex);
         *tableIndexAltering.MutableLockGuard() = tx.GetLockGuard();
         auto alterIndex = tableIndexAltering.MutableAlterTableIndex();
@@ -47,11 +56,7 @@ TVector<ISubOperation::TPtr> ApplyBuildIndex(TOperationId nextId, const TTxTrans
         result.push_back(CreateAlterTableIndex(NextPartId(nextId, result), tableIndexAltering));
     }
 
-    if (!indexName.empty())
     {
-        TPath index = table.Child(indexName);
-        TPath implIndexTable = index.Child("indexImplTable");
-        TTableInfo::TPtr implIndexTableInfo = context.SS->Tables.at(implIndexTable.Base()->PathId);
         auto indexImplTableAltering = TransactionTemplate(index.PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpFinalizeBuildIndexImplTable);
         auto alterTable = indexImplTableAltering.MutableAlterTable();
         alterTable->SetName(implIndexTable.LeafName());
@@ -66,15 +71,21 @@ TVector<ISubOperation::TPtr> ApplyBuildIndex(TOperationId nextId, const TTxTrans
 }
 
 TVector<ISubOperation::TPtr> CancelBuildIndex(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context) {
-    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCancelIndexBuild);
+    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCancelIndexBuild);
 
     auto config = tx.GetCancelIndexBuild();
     TString tablePath = config.GetTablePath();
     TString indexName = config.GetIndexName();
 
     TPath table = TPath::Resolve(tablePath, context.SS);
-    
+    TPath index = table.Child(indexName);
+
+    //check idempotence
+
+    //check limits
+
     TVector<ISubOperation::TPtr> result;
+
     {
         auto finalize = TransactionTemplate(table.Parent().PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpFinalizeBuildIndexMainTable);
         *finalize.MutableLockGuard() = tx.GetLockGuard();
@@ -82,18 +93,12 @@ TVector<ISubOperation::TPtr> CancelBuildIndex(TOperationId nextId, const TTxTran
         op->SetTableName(table.LeafName());
         op->SetSnapshotTxId(config.GetSnaphotTxId());
         op->SetBuildIndexId(config.GetBuildIndexId());
-
-        if (!indexName.empty()) {
-            TPath index = table.Child(indexName);
-            PathIdFromPathId(index.Base()->PathId, op->MutableOutcome()->MutableCancel()->MutableIndexPathId());
-        }
+        PathIdFromPathId(index.Base()->PathId, op->MutableOutcome()->MutableCancel()->MutableIndexPathId());
 
         result.push_back(CreateFinalizeBuildIndexMainTable(NextPartId(nextId, result), finalize));
     }
 
-    if (!indexName.empty())
     {
-        TPath index = table.Child(indexName);
         auto tableIndexDropping = TransactionTemplate(table.PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpDropTableIndex);
         auto operation = tableIndexDropping.MutableDrop();
         operation->SetName(ToString(index.Base()->Name));
@@ -101,37 +106,34 @@ TVector<ISubOperation::TPtr> CancelBuildIndex(TOperationId nextId, const TTxTran
         result.push_back(CreateDropTableIndex(NextPartId(nextId, result), tableIndexDropping));
     }
 
-    if (!indexName.empty()) {
-        TPath index = table.Child(indexName);
-        Y_ABORT_UNLESS(index.Base()->GetChildren().size() == 1);
-        for (auto& indexChildItems: index.Base()->GetChildren()) {
-            const TString& implTableName = indexChildItems.first;
-            Y_ABORT_UNLESS(implTableName == "indexImplTable", "unexpected name %s", implTableName.c_str());
+    Y_VERIFY(index.Base()->GetChildren().size() == 1);
+    for (auto& indexChildItems: index.Base()->GetChildren()) {
+        const TString& implTableName = indexChildItems.first;
+        Y_VERIFY(implTableName == "indexImplTable", "unexpected name %s", implTableName.c_str());
 
-            TPath implTable = index.Child(implTableName);
-            {
-                TPath::TChecker checks = implTable.Check();
-                checks.NotEmpty()
-                    .IsResolved()
-                    .NotDeleted()
-                    .IsTable()
-                    .IsInsideTableIndexPath()
-                    .NotUnderDeleting()
-                    .NotUnderOperation();
+        TPath implTable = index.Child(implTableName);
+        {
+            TPath::TChecker checks = implTable.Check();
+            checks.NotEmpty()
+                .IsResolved()
+                .NotDeleted()
+                .IsTable()
+                .IsInsideTableIndexPath()
+                .NotUnderDeleting()
+                .NotUnderOperation();
 
-                if (!checks) {
-                    return {CreateReject(nextId, checks.GetStatus(), checks.GetError())};
-                }
+            if (!checks) {
+                return {CreateReject(nextId, checks.GetStatus(), checks.GetError())};
             }
-            Y_ABORT_UNLESS(implTable.Base()->PathId == indexChildItems.second);
+        }
+        Y_VERIFY(implTable.Base()->PathId == indexChildItems.second);
 
-            {
-                auto implTableDropping = TransactionTemplate(index.PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpDropTable);
-                auto operation = implTableDropping.MutableDrop();
-                operation->SetName(ToString(implTable.Base()->Name));
+        {
+            auto implTableDropping = TransactionTemplate(index.PathString(), NKikimrSchemeOp::EOperationType::ESchemeOpDropTable);
+            auto operation = implTableDropping.MutableDrop();
+            operation->SetName(ToString(implTable.Base()->Name));
 
-                result.push_back(CreateDropTable(NextPartId(nextId,result), implTableDropping));
-            }
+            result.push_back(CreateDropTable(NextPartId(nextId,result), implTableDropping));
         }
     }
 

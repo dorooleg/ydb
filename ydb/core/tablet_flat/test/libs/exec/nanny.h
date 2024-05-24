@@ -7,7 +7,7 @@
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/tablet_flat/ut/flat_test_db.h>
 #include <ydb/core/tablet_flat/ut/flat_test_db_helpers.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NKikimr {
 namespace NFake {
@@ -28,13 +28,13 @@ namespace NFake {
 
         ~TFuncTx()
         {
-            Y_ABORT_UNLESS(Completed, "Destroying incomplted transaction");
+            Y_VERIFY(Completed, "Destroying incomplted transaction");
         }
 
     private:
         bool Execute(TTransactionContext &txc, const TActorContext&) override
         {
-            Y_ABORT_UNLESS(!Completed, "TFuncTx is already completed");
+            Y_VERIFY(!Completed, "TFuncTx is already completed");
 
             Local.SetDb(&txc.DB);
 
@@ -50,7 +50,7 @@ namespace NFake {
 
         void Complete(const TActorContext &ctx) override
         {
-            Y_ABORT_UNLESS(Completed, "Finalizing incomplteted transaction");
+            Y_VERIFY(Completed, "Finalizing incomplteted transaction");
 
             ctx.Send(Owner, new NFake::TEvResult);
             Local.SetDb(nullptr);
@@ -79,7 +79,7 @@ namespace NFake {
         };
 
         TNanny()
-            : ::NActors::IActorCallback(static_cast<TReceiveFunc>(&TNanny::Inbox), NActors::EInternalActorType::OTHER)
+            : ::NActors::IActorCallback(static_cast<TReceiveFunc>(&TNanny::Inbox))
             , Fake(NTable::CreateFakeDb())
         {
             Fake->Init(NTable::TScheme());
@@ -141,11 +141,11 @@ namespace NFake {
         void Handle(NFake::TEvReady &ev) noexcept
         {
             if (std::exchange(State, EDo::More) != EDo::Born) {
-                Y_ABORT("Got an unexpected TEvReady{ } event");
+                Y_FAIL("Got an unexpected TEvReady{ } event");
             } else if (std::exchange(Tablet, ev.ActorId)) {
-                Y_ABORT("Child tablet actor is still alive");
+                Y_FAIL("Child tablet actor is still alive");
             } else if (TxInFlight > 0) {
-                Y_ABORT("Just bron(rebooted) tablet has pending tx");
+                Y_FAIL("Just bron(rebooted) tablet has pending tx");
             }
 
             QueueTx(CompareDbs);
@@ -153,20 +153,20 @@ namespace NFake {
 
         void Handle(NFake::TEvResult&) noexcept
         {
-            Y_ABORT_UNLESS(TxInFlight-- > 0, "Tx counter is underflowed");
+            Y_VERIFY(TxInFlight-- > 0, "Tx counter is underflowed");
 
             if (State == EDo::More) State = Run();
 
             if (TxInFlight > 0) {
                 /* Should wait for pending tx completion before tablet kill */
             } else if (State == EDo::Born) {
-                Y_ABORT_UNLESS(Tablet, "Tabled has been already restarted");
+                Y_VERIFY(Tablet, "Tabled has been already restarted");
 
                 Send(std::exchange(Tablet, { }), new TEvents::TEvPoison);
             } else if (State == EDo::Stop) {
                 Send(std::exchange(Tablet, { }), new TEvents::TEvPoison);
             } else {
-                Y_ABORT("TNanny actor cannot progress: no tx, no EDo");
+                Y_FAIL("TNanny actor cannot progress: no tx, no EDo");
             }
         }
 
@@ -194,7 +194,7 @@ namespace NFake {
         }
 
     private:
-        const ui64 MyId = MakeTabletID(false, 1);
+        const ui64 MyId = MakeTabletID(0, 0, 1);
         TAutoPtr<NUtil::ILogger> Logger;
         TActorId Owner;
         TActorId Tablet;

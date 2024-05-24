@@ -1,21 +1,20 @@
 #include "cms_impl.h"
-#include "cms_state.h"
 #include "sentinel.h"
 #include "sentinel_impl.h"
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/algorithm.h>
+#include <util/generic/hash_set.h>
+#include <util/generic/map.h>
 #include <util/string/builder.h>
 #include <util/string/join.h>
 
@@ -62,11 +61,6 @@ void TPDiskStatusComputer::AddState(EPDiskState state) {
 }
 
 EPDiskStatus TPDiskStatusComputer::Compute(EPDiskStatus current, TString& reason) const {
-    if (ForcedStatus) {
-        reason = "Forced status";
-        return *ForcedStatus;
-    }
-
     if (!StateCounter) {
         reason = "Uninitialized StateCounter";
         return current;
@@ -77,12 +71,12 @@ EPDiskStatus TPDiskStatusComputer::Compute(EPDiskStatus current, TString& reason
 
     if (!stateLimit || StateCounter < stateLimit) {
         reason = TStringBuilder()
-            <<  "PrevState# " << PrevState
+            << " PrevState# " << PrevState
             << " State# " << State
             << " StateCounter# " << StateCounter
             << " current# " << current;
         switch (PrevState) {
-            case NKikimrBlobStorage::TPDiskState::Unknown:
+            case  NKikimrBlobStorage::TPDiskState::Unknown:
                 return current;
             default:
                 return EPDiskStatus::INACTIVE;
@@ -90,7 +84,7 @@ EPDiskStatus TPDiskStatusComputer::Compute(EPDiskStatus current, TString& reason
     }
 
     reason = TStringBuilder()
-        <<  "PrevState# " << PrevState
+        << " PrevState# " << PrevState
         << " State# " << State
         << " StateCounter# " << StateCounter
         << " StateLimit# " << stateLimit;
@@ -121,14 +115,6 @@ void TPDiskStatusComputer::Reset() {
     StateCounter = 0;
 }
 
-void TPDiskStatusComputer::SetForcedStatus(EPDiskStatus status) {
-    ForcedStatus = status;
-}
-
-void TPDiskStatusComputer::ResetForcedStatus() {
-    ForcedStatus.Clear();
-}
-
 /// TPDiskStatus
 
 TPDiskStatus::TPDiskStatus(EPDiskStatus initialStatus, const ui32& defaultStateLimit, const TLimitsMap& stateLimits)
@@ -142,9 +128,13 @@ void TPDiskStatus::AddState(EPDiskState state) {
     TPDiskStatusComputer::AddState(state);
 }
 
+bool TPDiskStatus::IsChanged(TString& reason) const {
+    return Current != Compute(Current, reason);
+}
+
 bool TPDiskStatus::IsChanged() const {
     TString unused;
-    return Current != Compute(Current, unused);
+    return IsChanged(unused);
 }
 
 void TPDiskStatus::ApplyChanges(TString& reason) {
@@ -205,13 +195,6 @@ void TPDiskInfo::AddState(EPDiskState state) {
     Touch();
 }
 
-/// TNodeInfo
-
-bool TNodeInfo::HasFaultyMarker() const {
-    return Markers.contains(NKikimrCms::MARKER_DISK_FAULTY)
-        || Markers.contains(NKikimrCms::MARKER_DISK_BROKEN);
-}
-
 /// TClusterMap
 
 TClusterMap::TClusterMap(TSentinelState::TPtr state)
@@ -220,7 +203,7 @@ TClusterMap::TClusterMap(TSentinelState::TPtr state)
 }
 
 void TClusterMap::AddPDisk(const TPDiskID& id) {
-    Y_ABORT_UNLESS(State->Nodes.contains(id.NodeId));
+    Y_VERIFY(State->Nodes.contains(id.NodeId));
     const auto& location = State->Nodes[id.NodeId].Location;
 
     ByDataCenter[location.HasKey(TNodeLocation::TKeys::DataCenter) ? location.GetDataCenterId() : ""].insert(id);
@@ -254,7 +237,7 @@ TClusterMap::TPDiskIDSet TGuardian::GetAllowedPDisks(const TClusterMap& all, TSt
             << ", affected pdisks# " << JoinSeq(", ", kv.second) << Endl
 
     for (const auto& kv : ByDataCenter) {
-        Y_ABORT_UNLESS(all.ByDataCenter.contains(kv.first));
+        Y_VERIFY(all.ByDataCenter.contains(kv.first));
 
         if (!kv.first || CheckRatio(kv, all.ByDataCenter, DataCenterRatio)) {
             result.insert(kv.second.begin(), kv.second.end());
@@ -267,7 +250,7 @@ TClusterMap::TPDiskIDSet TGuardian::GetAllowedPDisks(const TClusterMap& all, TSt
     }
 
     for (const auto& kv : ByRoom) {
-        Y_ABORT_UNLESS(all.ByRoom.contains(kv.first));
+        Y_VERIFY(all.ByRoom.contains(kv.first));
 
         if (kv.first && !CheckRatio(kv, all.ByRoom, RoomRatio)) {
             LOG_IGNORED(Room);
@@ -281,7 +264,7 @@ TClusterMap::TPDiskIDSet TGuardian::GetAllowedPDisks(const TClusterMap& all, TSt
     }
 
     for (const auto& kv : ByRack) {
-        Y_ABORT_UNLESS(all.ByRack.contains(kv.first));
+        Y_VERIFY(all.ByRack.contains(kv.first));
         // ignore check if there is only one node in a rack
         auto it = NodeByRack.find(kv.first);
         if (it != NodeByRack.end() && it->second.size() == 1) {
@@ -304,20 +287,29 @@ TClusterMap::TPDiskIDSet TGuardian::GetAllowedPDisks(const TClusterMap& all, TSt
     return result;
 }
 
-/// Misc
-
-IActor* CreateBSControllerPipe(TCmsStatePtr cmsState) {
-    const ui64 bscId = MakeBSControllerID();
-
-    NTabletPipe::TClientConfig config;
-    config.RetryPolicy = NTabletPipe::TClientRetryPolicy::WithRetries();
-    return NTabletPipe::CreateClient(cmsState->CmsActorId, bscId, config);
-}
-
 /// Actors
 
+template <typename TDerived>
+class TSentinelChildBase: public TActorBootstrapped<TDerived> {
+public:
+    using TBase = TSentinelChildBase<TDerived>;
+
+    explicit TSentinelChildBase(const TActorId& parent, TCmsStatePtr cmsState)
+        : Parent(parent)
+        , CmsState(cmsState)
+        , Config(CmsState->Config.SentinelConfig)
+    {
+    }
+
+protected:
+    const TActorId Parent;
+    TCmsStatePtr CmsState;
+    const TCmsSentinelConfig& Config;
+
+}; // TSentinelChildBase
+
 template <typename TEvUpdated, typename TDerived>
-class TUpdaterBase: public TActorBootstrapped<TDerived> {
+class TUpdaterBase: public TSentinelChildBase<TDerived> {
 public:
     using TBase = TUpdaterBase<TEvUpdated, TDerived>;
 
@@ -329,10 +321,8 @@ protected:
 
 public:
     explicit TUpdaterBase(const TActorId& parent, TCmsStatePtr cmsState, TSentinelState::TPtr sentinelState)
-        : Parent(parent)
-        , CmsState(cmsState)
+        : TSentinelChildBase<TDerived>(parent, cmsState)
         , SentinelState(sentinelState)
-        , Config(CmsState->Config.SentinelConfig)
     {
         for (auto& [_, info] : SentinelState->PDisks) {
             info->ClearTouched();
@@ -340,10 +330,7 @@ public:
     }
 
 protected:
-    const TActorId Parent;
-    TCmsStatePtr CmsState;
     TSentinelState::TPtr SentinelState;
-    const TCmsSentinelConfig& Config;
 
 }; // TUpdaterBase
 
@@ -370,13 +357,16 @@ class TConfigUpdater: public TUpdaterBase<TEvSentinel::TEvConfigUpdated, TConfig
     }
 
     void OnRetry(TEvents::TEvWakeup::TPtr& ev) {
-        switch (static_cast<RetryCookie>(ev->Get()->Tag)) {
+        const auto* msg = ev->Get();
+        switch (static_cast<RetryCookie>(msg->Tag)) {
             case RetryCookie::BSC:
-                return RequestBSConfig();
+                RequestBSConfig();
+                break;
             case RetryCookie::CMS:
-                return RequestCMSClusterState();
+                RequestCMSClusterState();
+                break;
             default:
-                Y_ABORT("Unexpected case");
+                Y_FAIL("Unexpected case");
         }
     }
 
@@ -385,7 +375,7 @@ class TConfigUpdater: public TUpdaterBase<TEvSentinel::TEvConfigUpdated, TConfig
             << ": attempt# " << SentinelState->ConfigUpdaterState.BSCAttempt);
 
         if (!CmsState->BSControllerPipe) {
-            CmsState->BSControllerPipe = this->Register(CreateBSControllerPipe(CmsState));
+            CmsState->BSControllerPipe = this->Register(CreateBSCClientActor(CmsState));
         }
 
         auto request = MakeHolder<TEvBlobStorage::TEvControllerConfigRequest>();
@@ -426,15 +416,9 @@ class TConfigUpdater: public TUpdaterBase<TEvSentinel::TEvConfigUpdated, TConfig
             SentinelState->Nodes.clear();
             for (const auto& host : record.GetState().GetHosts()) {
                 if (host.HasNodeId() && host.HasLocation() && host.HasName()) {
-                    THashSet<NKikimrCms::EMarker> markers;
-                    for (auto marker : host.GetMarkers()) {
-                        markers.insert(static_cast<NKikimrCms::EMarker>(marker));
-                    }
-
                     SentinelState->Nodes.emplace(host.GetNodeId(), TNodeInfo{
                         .Host = host.GetName(),
                         .Location = NActors::TNodeLocation(host.GetLocation()),
-                        .Markers = std::move(markers),
                     });
                 }
             }
@@ -573,7 +557,7 @@ class TStateUpdater: public TUpdaterBase<TEvSentinel::TEvStateUpdated, TStateUpd
                 continue;
             }
 
-            Y_ABORT_UNLESS(!it->second->IsTouched());
+            Y_VERIFY(!it->second->IsTouched());
             it->second->AddState(state);
             ++it;
         }
@@ -815,7 +799,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
     }
 
     void EnsureAllTouched() const {
-        Y_ABORT_UNLESS(AllOf(SentinelState->PDisks, [](const auto& kv) {
+        Y_VERIFY(AllOf(SentinelState->PDisks, [](const auto& kv) {
             return kv.second->IsTouched();
         }));
     }
@@ -829,7 +813,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         action.SetCurrentStatus(status);
         action.SetRequiredStatus(requiredStatus);
 
-        Y_ABORT_UNLESS(SentinelState->Nodes.contains(id.NodeId));
+        Y_VERIFY(SentinelState->Nodes.contains(id.NodeId));
         action.SetHost(SentinelState->Nodes[id.NodeId].Host);
 
         if (reason) {
@@ -882,18 +866,11 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
             const TPDiskID& id = pdisk.first;
             TPDiskInfo& info = *(pdisk.second);
 
-            auto it = SentinelState->Nodes.find(id.NodeId);
-            if (it == SentinelState->Nodes.end()) {
+            if (!SentinelState->Nodes.contains(id.NodeId)) {
                 LOG_E("Missing node info"
                     << ": pdiskId# " << id);
                 info.IgnoreReason = NKikimrCms::TPDiskInfo::MISSING_NODE;
                 continue;
-            }
-
-            if (it->second.HasFaultyMarker()) {
-                info.SetForcedStatus(EPDiskStatus::FAULTY);
-            } else {
-                info.ResetForcedStatus();
             }
 
             all.AddPDisk(id);
@@ -918,7 +895,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         SentinelState->ChangeRequests.clear();
 
         for (const auto& id : allowed) {
-            Y_ABORT_UNLESS(SentinelState->PDisks.contains(id));
+            Y_VERIFY(SentinelState->PDisks.contains(id));
             TPDiskInfo::TPtr info = SentinelState->PDisks.at(id);
 
             info->IgnoreReason = NKikimrCms::TPDiskInfo::NOT_IGNORED;
@@ -948,7 +925,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         }
 
         for (const auto& [id, reason] : disallowed) {
-            Y_ABORT_UNLESS(SentinelState->PDisks.contains(id));
+            Y_VERIFY(SentinelState->PDisks.contains(id));
             auto& pdisk = SentinelState->PDisks.at(id);
             pdisk->DisallowChanging();
             pdisk->IgnoreReason = reason;
@@ -971,7 +948,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         }
 
         if (!CmsState->BSControllerPipe) {
-            CmsState->BSControllerPipe = Register(CreateBSControllerPipe(CmsState));
+            CmsState->BSControllerPipe = Register(CreateBSCClientActor(CmsState));
         }
 
         LOG_D("Change pdisk status"
@@ -986,18 +963,6 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         }
 
         NTabletPipe::SendData(SelfId(), CmsState->BSControllerPipe, request.Release(), ++SentinelState->ChangeRequestId);
-    }
-
-    void Handle(TEvSentinel::TEvUpdateHostMarkers::TPtr& ev) {
-        for (auto& [nodeId, markers] : ev->Get()->HostMarkers) {
-            auto it = SentinelState->Nodes.find(nodeId);
-            if (it == SentinelState->Nodes.end()) {
-                // markers will be updated upon next ConfigUpdate iteration
-                continue;
-            }
-
-            it->second.Markers = std::move(markers);
-        }
     }
 
     void Handle(TEvCms::TEvGetSentinelStateRequest::TPtr& ev) {
@@ -1099,18 +1064,13 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         const auto& response = ev->Get()->Record.GetResponse();
 
         LOG_D("Handle TEvBlobStorage::TEvControllerConfigResponse"
-            << ": response# " << response.ShortDebugString()
-            << ", cookie# " << ev->Cookie);
+            << ": response# " << response.ShortDebugString());
 
         if (ev->Cookie != SentinelState->ChangeRequestId) {
-            LOG_W("Ignore TEvBlobStorage::TEvControllerConfigResponse"
-                << ": cookie# " << ev->Cookie
-                << ", expected# " << SentinelState->ChangeRequestId);
             return;
         }
 
         if (SentinelState->ChangeRequests.empty()) {
-            LOG_W("Ignore TEvBlobStorage::TEvControllerConfigResponse: empty queue");
             return;
         }
 
@@ -1129,7 +1089,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
         };
 
         if (!response.GetSuccess() || !response.StatusSize() || !response.GetStatus(0).GetSuccess()) {
-            Y_ABORT_UNLESS(SentinelState->ChangeRequests.size() == response.StatusSize());
+            Y_VERIFY(SentinelState->ChangeRequests.size() == response.StatusSize());
             auto it = SentinelState->ChangeRequests.begin();
             for (const auto& status : response.GetStatus()) {
                 if (!status.GetSuccess()) {
@@ -1180,7 +1140,7 @@ class TSentinel: public TActorBootstrapped<TSentinel> {
     }
 
     void OnPipeDisconnected() {
-        if (const TActorId& actor = ConfigUpdater.Id) {
+        if (const TActorId& actor = std::exchange(ConfigUpdater.Id, {})) {
             Send(actor, new TEvSentinel::TEvBSCPipeDisconnected());
         }
 
@@ -1231,7 +1191,6 @@ public:
             sFunc(TEvSentinel::TEvConfigUpdated, OnConfigUpdated);
             sFunc(TEvSentinel::TEvUpdateState, UpdateState);
             sFunc(TEvSentinel::TEvStateUpdated, OnStateUpdated);
-            hFunc(TEvSentinel::TEvUpdateHostMarkers, Handle);
             sFunc(TEvSentinel::TEvBSCPipeDisconnected, OnPipeDisconnected);
 
             hFunc(TEvCms::TEvGetSentinelStateRequest, Handle);
@@ -1252,6 +1211,16 @@ private:
     TSentinelState::TPtr SentinelState;
 
 }; // TSentinel
+
+IActor* CreateBSCClientActor(const TCmsStatePtr& cmsState) {
+    auto domains = AppData()->DomainsInfo;
+    const ui32 domainUid = domains->GetDomainUidByTabletId(cmsState->CmsTabletId);
+    const ui64 bscId = MakeBSControllerID(domains->GetDefaultStateStorageGroup(domainUid));
+
+    NTabletPipe::TClientConfig config;
+    config.RetryPolicy = NTabletPipe::TClientRetryPolicy::WithRetries();
+    return NTabletPipe::CreateClient(cmsState->CmsActorId, bscId, config);
+}
 
 } // NSentinel
 

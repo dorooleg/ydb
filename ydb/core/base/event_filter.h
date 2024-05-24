@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/interconnect/interconnect_common.h>
+#include <library/cpp/actors/interconnect/interconnect_common.h>
 
 
 namespace NKikimr {
@@ -30,12 +30,12 @@ namespace NKikimr {
         }
 
         ui64 GetPathItemId() const {
-            Y_ABORT_UNLESS(GetSchemeshardId() != 0);
+            Y_VERIFY(GetSchemeshardId() != 0);
             return ScopeId.second;
         }
 
         ui64 GetDomainId() const {
-            Y_ABORT_UNLESS(GetSchemeshardId() == 0);
+            Y_VERIFY(GetSchemeshardId() == 0);
             return ScopeId.second;
         }
 

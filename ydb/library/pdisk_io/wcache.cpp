@@ -1,6 +1,6 @@
 #include "wcache.h"
-//#include <ydb/library/actors/core/log.h>
-//#include <ydb/library/services/services.pb.h>
+//#include <library/cpp/actors/core/log.h>
+//#include <ydb/core/protos/services.pb.h>
 
 #include <util/generic/yexception.h>
 #include <util/stream/file.h>
@@ -46,7 +46,7 @@ std::optional<TDriveData> GetDriveData(const TString &path, TStringStream *outDe
 }
 
 EWriteCacheResult GetWriteCache(FHANDLE file, const TString &path, TDriveData *outDriveData, TStringStream *outDetails) {
-    Y_ABORT_UNLESS(outDriveData);
+    Y_VERIFY(outDriveData);
     Y_UNUSED(file);
     if (outDetails) {
         (*outDetails) << "GetWriteCache is not implemented, path# \"" << path << "\"";
@@ -301,7 +301,7 @@ enum EAtaOperationCode {
 
 EWriteCacheResult AtaPassThrough(FHANDLE file, ui8 command, ui8 features, ui8 dataCount, ui8 *data, bool preferAta12,
         ui32 timeoutMs, TStringStream *outDetails) {
-    Y_ABORT_UNLESS(!dataCount || data);
+    Y_VERIFY(!dataCount || data);
     ui32 dataBytes = dataCount * 512;
     ui8 isLba48 = (command == ATA_OP_FLUSHCACHE_EXT || command == ATA_OP_PIDENTIFY);
     union {
@@ -431,17 +431,17 @@ struct TIdentifyData {
     bool IsAta12 = true;
 
     bool IsKnowable(ui32 wordIdx) const {
-        Y_ABORT_UNLESS(Id);
+        Y_VERIFY(Id);
         return ((Id[wordIdx] & 0xc000) == 0x4000);
     }
 
     TString GetString(ui32 offsetWords, ui32 sizeBytes) const {
-        Y_ABORT_UNLESS(Id);
+        Y_VERIFY(Id);
         TString string;
         string.resize(sizeBytes);
         char *dst = string.Detach();
         char *src = reinterpret_cast<char*>(&Id[offsetWords]);
-        Y_ABORT_UNLESS((sizeBytes & 1) == 0);
+        Y_VERIFY((sizeBytes & 1) == 0);
         for (ui32 i = 0; i < sizeBytes; i += 2) {
             dst[i + 0] = src[i + 1];
             dst[i + 1] = src[i + 0];
@@ -543,7 +543,7 @@ EWriteCacheResult FlushWriteCache(FHANDLE file, const TString &path, TStringStre
         }
         return res;
     }
-    Y_ABORT_UNLESS(identify.Id);
+    Y_VERIFY(identify.Id);
     bool useExt = (identify.Is3FlushCacheExtSuppored() == TVL_TRUE);
     res = AtaPassThrough(file, useExt ? ATA_OP_FLUSHCACHE_EXT : ATA_OP_FLUSHCACHE,
             0, 0, nullptr, useExt, 60000, outDetails);
@@ -692,7 +692,7 @@ std::optional<TDriveData> GetDriveData(const TString &path, TStringStream *outDe
 
 EWriteCacheResult GetWriteCache(FHANDLE file, const TString &path, TDriveData *outDriveData,
         TStringStream *outDetails) {
-    Y_ABORT_UNLESS(outDriveData);
+    Y_VERIFY(outDriveData);
     TIdentifyData identify;
     EWriteCacheResult res = identify.Gather(file, outDetails);
     if (res != WriteCacheResultOk) {
@@ -701,7 +701,7 @@ EWriteCacheResult GetWriteCache(FHANDLE file, const TString &path, TDriveData *o
         }
         return res;
     }
-    Y_ABORT_UNLESS(identify.Id);
+    Y_VERIFY(identify.Id);
     EThreeValuedLogic wcache = identify.Is3WriteCacheEnabled();
     if (wcache == TVL_UNKNOWABLE) {
         (*outDetails) << "GetWriteCache failed, write cache state is unknowable, path# \"" << path << "\"";

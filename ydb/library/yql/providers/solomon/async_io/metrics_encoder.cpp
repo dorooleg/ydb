@@ -32,15 +32,11 @@ void BeginMetric(
     }
 }
 
-TMaybe<TInstant> ParseTimestamp(
+TInstant ParseTimestamp(
     const NUdf::TUnboxedValue& unboxedValue,
     const NYql::NSo::NProto::TDqSolomonSchemeItem& scheme)
 {
-    const NUdf::TUnboxedValue timestampValue = unboxedValue.GetElement(scheme.GetIndex());
-    if (!timestampValue) {
-        return {};
-    }
-
+    const auto& timestampValue = unboxedValue.GetElement(scheme.GetIndex());
     switch (scheme.GetDataTypeId()) {
         case NUdf::TDataType<NUdf::TDate>::Id:
         case NUdf::TDataType<NUdf::TTzDate>::Id:
@@ -119,11 +115,7 @@ void TMetricsEncoder::BeginNew() {
 
 ui64 TMetricsEncoder::Append(const NUdf::TUnboxedValue& value)
 {
-    TMaybe<TInstant> timestamp = ParseTimestamp(value, Scheme.GetTimestamp());
-
-    if (!timestamp) {
-        return Scheme.GetSensors().size();
-    }
+    TInstant timestamp = ParseTimestamp(value, Scheme.GetTimestamp());
 
     for (const auto& sensor : Scheme.GetSensors()) {
         BeginMetric(SolomonEncoder, sensor);
@@ -137,7 +129,7 @@ ui64 TMetricsEncoder::Append(const NUdf::TUnboxedValue& value)
         SolomonEncoder->OnLabelsEnd();
 
         const auto& sensorValue = value.GetElement(sensor.GetIndex());
-        EncodeSensorValue(SolomonEncoder, *timestamp, sensorValue, sensor);
+        EncodeSensorValue(SolomonEncoder, timestamp, sensorValue, sensor);
 
         SolomonEncoder->OnMetricEnd();
     }

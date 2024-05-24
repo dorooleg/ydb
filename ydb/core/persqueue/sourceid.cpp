@@ -7,14 +7,15 @@
 
 #include <algorithm>
 
-namespace NKikimr::NPQ {
+namespace NKikimr {
+namespace NPQ {
 
 static constexpr ui64 MAX_DELETE_COMMAND_SIZE = 10_MB;
 static constexpr ui64 MAX_DELETE_COMMAND_COUNT = 1000;
 
 template <typename T>
 T ReadAs(const TString& data, ui32& pos) {
-    auto result = ReadUnaligned<T>(data.c_str() + pos);
+    auto result = *((T*)(data.c_str() + pos));
     pos += sizeof(T);
     return result;
 }
@@ -70,59 +71,26 @@ void FillDelete(const TKeyPrefix& key, NKikimrClient::TKeyValueRequest::TCmdDele
     range.SetIncludeTo(true);
 }
 
-void FillDelete(const TPartitionId& partition, const TString& sourceId, TKeyPrefix::EMark mark, NKikimrClient::TKeyValueRequest::TCmdDeleteRange& cmd) {
+void FillDelete(ui32 partition, const TString& sourceId, TKeyPrefix::EMark mark, NKikimrClient::TKeyValueRequest::TCmdDeleteRange& cmd) {
     TKeyPrefix key(TKeyPrefix::TypeInfo, partition, mark);
     key.Append(sourceId.c_str(), sourceId.size());
     FillDelete(key, cmd);
 }
 
-void FillDelete(const TPartitionId& partition, const TString& sourceId, NKikimrClient::TKeyValueRequest::TCmdDeleteRange& cmd) {
+void FillDelete(ui32 partition, const TString& sourceId, NKikimrClient::TKeyValueRequest::TCmdDeleteRange& cmd) {
     FillDelete(partition, sourceId, TKeyPrefix::MarkProtoSourceId, cmd);
-}
-
-void THeartbeatProcessor::ApplyHeartbeat(const TString& sourceId, const TRowVersion& version) {
-    SourceIdsWithHeartbeat.insert(sourceId);
-    SourceIdsByHeartbeat[version].insert(sourceId);
-}
-
-void THeartbeatProcessor::ForgetHeartbeat(const TString& sourceId, const TRowVersion& version) {
-    auto it = SourceIdsByHeartbeat.find(version);
-    if (it == SourceIdsByHeartbeat.end()) {
-        return;
-    }
-
-    it->second.erase(sourceId);
-    if (it->second.empty()) {
-        SourceIdsByHeartbeat.erase(it);
-    }
-}
-
-void THeartbeatProcessor::ForgetSourceId(const TString& sourceId) {
-    SourceIdsWithHeartbeat.erase(sourceId);
 }
 
 TSourceIdInfo::TSourceIdInfo(ui64 seqNo, ui64 offset, TInstant createTs)
     : SeqNo(seqNo)
-    , MinSeqNo(seqNo)
     , Offset(offset)
     , WriteTimestamp(createTs)
     , CreateTimestamp(createTs)
-{
-}
-
-TSourceIdInfo::TSourceIdInfo(ui64 seqNo, ui64 offset, TInstant createTs, THeartbeat&& heartbeat)
-    : SeqNo(seqNo)
-    , MinSeqNo(seqNo)
-    , Offset(offset)
-    , WriteTimestamp(createTs)
-    , CreateTimestamp(createTs)
-    , LastHeartbeat(std::move(heartbeat))
 {
 }
 
 TSourceIdInfo::TSourceIdInfo(ui64 seqNo, ui64 offset, TInstant createTs, TMaybe<TPartitionKeyRange>&& keyRange, bool isInSplit)
     : SeqNo(seqNo)
-    , MinSeqNo(seqNo)
     , Offset(offset)
     , CreateTimestamp(createTs)
     , Explicit(true)
@@ -136,24 +104,14 @@ TSourceIdInfo::TSourceIdInfo(ui64 seqNo, ui64 offset, TInstant createTs, TMaybe<
 TSourceIdInfo TSourceIdInfo::Updated(ui64 seqNo, ui64 offset, TInstant writeTs) const {
     auto copy = *this;
     copy.SeqNo = seqNo;
-    if (copy.MinSeqNo == 0) {
-        copy.MinSeqNo = seqNo;
-    }
     copy.Offset = offset;
     copy.WriteTimestamp = writeTs;
 
     return copy;
 }
 
-TSourceIdInfo TSourceIdInfo::Updated(ui64 seqNo, ui64 offset, TInstant writeTs, THeartbeat&& heartbeat) const {
-    auto copy = Updated(seqNo, offset, writeTs);
-    copy.LastHeartbeat = std::move(heartbeat);
-
-    return copy;
-}
-
 TSourceIdInfo TSourceIdInfo::Parse(const TString& data, TInstant now) {
-    Y_ABORT_UNLESS(data.size() >= 2 * sizeof(ui64), "Data must contain at least SeqNo & Offset");
+    Y_VERIFY(data.size() >= 2 * sizeof(ui64), "Data must contain at least SeqNo & Offset");
     ui32 pos = 0;
 
     TSourceIdInfo result;
@@ -162,15 +120,15 @@ TSourceIdInfo TSourceIdInfo::Parse(const TString& data, TInstant now) {
     result.WriteTimestamp = TInstant::MilliSeconds(ReadAs<ui64>(data, pos, now.MilliSeconds()));
     result.CreateTimestamp = TInstant::MilliSeconds(ReadAs<ui64>(data, pos, now.MilliSeconds()));
 
-    Y_ABORT_UNLESS(result.SeqNo <= (ui64)Max<i64>(), "SeqNo is too big: %" PRIu64, result.SeqNo);
-    Y_ABORT_UNLESS(result.Offset <= (ui64)Max<i64>(), "Offset is too big: %" PRIu64, result.Offset);
+    Y_VERIFY(result.SeqNo <= (ui64)Max<i64>(), "SeqNo is too big: %" PRIu64, result.SeqNo);
+    Y_VERIFY(result.Offset <= (ui64)Max<i64>(), "Offset is too big: %" PRIu64, result.Offset);
 
     return result;
 }
 
 void TSourceIdInfo::Serialize(TBuffer& data) const {
-    Y_ABORT_UNLESS(!Explicit);
-    Y_ABORT_UNLESS(!KeyRange);
+    Y_VERIFY(!Explicit);
+    Y_VERIFY(!KeyRange);
 
     data.Resize(4 * sizeof(ui64));
     ui32 pos = 0;
@@ -184,7 +142,6 @@ void TSourceIdInfo::Serialize(TBuffer& data) const {
 TSourceIdInfo TSourceIdInfo::Parse(const NKikimrPQ::TMessageGroupInfo& proto) {
     TSourceIdInfo result;
     result.SeqNo = proto.GetSeqNo();
-    result.MinSeqNo = proto.GetMinSeqNo();
     result.Offset = proto.GetOffset();
     result.WriteTimestamp = TInstant::FromValue(proto.GetWriteTimestamp());
     result.CreateTimestamp = TInstant::FromValue(proto.GetCreateTimestamp());
@@ -195,16 +152,12 @@ TSourceIdInfo TSourceIdInfo::Parse(const NKikimrPQ::TMessageGroupInfo& proto) {
     if (proto.HasKeyRange()) {
         result.KeyRange = TPartitionKeyRange::Parse(proto.GetKeyRange());
     }
-    if (proto.HasLastHeartbeat()) {
-        result.LastHeartbeat = THeartbeat::Parse(proto.GetLastHeartbeat());
-    }
 
     return result;
 }
 
 void TSourceIdInfo::Serialize(NKikimrPQ::TMessageGroupInfo& proto) const {
     proto.SetSeqNo(SeqNo);
-    proto.SetMinSeqNo(MinSeqNo);
     proto.SetOffset(Offset);
     proto.SetWriteTimestamp(WriteTimestamp.GetValue());
     proto.SetCreateTimestamp(CreateTimestamp.GetValue());
@@ -214,9 +167,6 @@ void TSourceIdInfo::Serialize(NKikimrPQ::TMessageGroupInfo& proto) const {
     }
     if (KeyRange) {
         KeyRange->Serialize(*proto.MutableKeyRange());
-    }
-    if (LastHeartbeat) {
-        LastHeartbeat->Serialize(*proto.MutableLastHeartbeat());
     }
 }
 
@@ -241,7 +191,7 @@ void TSourceIdInfo::Out(IOutputStream& out) const {
 }
 
 bool TSourceIdInfo::IsExpired(TDuration ttl, TInstant now) const {
-    Y_DEBUG_ABORT_UNLESS(!Explicit);
+    Y_VERIFY_DEBUG(!Explicit);
     return !Explicit && ((WriteTimestamp + ttl) <= now);
 }
 
@@ -252,16 +202,7 @@ void TSourceIdStorage::DeregisterSourceId(const TString& sourceId) {
         return;
     }
 
-    ForgetSourceId(sourceId);
-    if (const auto& heartbeat = it->second.LastHeartbeat) {
-        ForgetHeartbeat(sourceId, heartbeat->Version);
-    }
-
-    if (it->second.Explicit) {
-        ExplicitSourceIds.erase(sourceId);
-    }
-
-    SourceIdsByOffset[it->second.Explicit].erase(std::make_pair(it->second.Offset, sourceId));
+    SourceIdsByOffset.erase(std::make_pair(it->second.Offset, sourceId));
     InMemorySourceIds.erase(it);
 
     auto jt = SourceIdOwners.find(sourceId);
@@ -271,7 +212,7 @@ void TSourceIdStorage::DeregisterSourceId(const TString& sourceId) {
     }
 }
 
-bool TSourceIdStorage::DropOldSourceIds(TEvKeyValue::TEvRequest* request, TInstant now, ui64 startOffset, const TPartitionId& partition, const NKikimrPQ::TPartitionConfig& config) {
+bool TSourceIdStorage::DropOldSourceIds(TEvKeyValue::TEvRequest* request, TInstant now, ui64 startOffset, ui32 partition, const NKikimrPQ::TPartitionConfig& config) {
     TVector<std::pair<ui64, TString>> toDelOffsets;
 
     ui64 maxDeleteSourceIds = 0;
@@ -280,18 +221,18 @@ bool TSourceIdStorage::DropOldSourceIds(TEvKeyValue::TEvRequest* request, TInsta
         maxDeleteSourceIds = Min(maxDeleteSourceIds, MAX_DELETE_COMMAND_COUNT);
     }
 
-    Y_ABORT_UNLESS(maxDeleteSourceIds <= InMemorySourceIds.size());
+    Y_VERIFY(maxDeleteSourceIds <= InMemorySourceIds.size());
 
     const auto ttl = TDuration::Seconds(config.GetSourceIdLifetimeSeconds());
     ui32 size = request->Record.ByteSize();
 
-    for (const auto& [offset, sourceId] : SourceIdsByOffset[0]) {
+    for (const auto& [offset, sourceId] : SourceIdsByOffset) {
         if (offset >= startOffset && toDelOffsets.size() >= maxDeleteSourceIds) {
             break;
         }
 
         auto it = InMemorySourceIds.find(sourceId);
-        Y_ABORT_UNLESS(it != InMemorySourceIds.end());
+        Y_VERIFY(it != InMemorySourceIds.end());
         if (it->second.Explicit) {
             continue;
         }
@@ -329,10 +270,10 @@ bool TSourceIdStorage::DropOldSourceIds(TEvKeyValue::TEvRequest* request, TInsta
     for (auto& t : toDelOffsets) {
         // delete sourceId from memory
         size_t res = InMemorySourceIds.erase(t.second);
-        Y_ABORT_UNLESS(res == 1);
+        Y_VERIFY(res == 1);
         // delete sourceID from offsets
-        res = SourceIdsByOffset[0].erase(t);
-        Y_ABORT_UNLESS(res == 1);
+        res = SourceIdsByOffset.erase(t);
+        Y_VERIFY(res == 1);
         // save owners to drop and delete records from map
         auto it = SourceIdOwners.find(t.second);
         if (it != SourceIdOwners.end()) {
@@ -345,7 +286,7 @@ bool TSourceIdStorage::DropOldSourceIds(TEvKeyValue::TEvRequest* request, TInsta
 }
 
 void TSourceIdStorage::LoadSourceIdInfo(const TString& key, const TString& data, TInstant now) {
-    Y_ABORT_UNLESS(key.size() >= TKeyPrefix::MarkedSize());
+    Y_VERIFY(key.size() >= TKeyPrefix::MarkedSize());
 
     const auto mark = TKeyPrefix::EMark(key[TKeyPrefix::MarkPosition()]);
     switch (mark) {
@@ -359,19 +300,19 @@ void TSourceIdStorage::LoadSourceIdInfo(const TString& key, const TString& data,
 }
 
 void TSourceIdStorage::LoadRawSourceIdInfo(const TString& key, const TString& data, TInstant now) {
-    Y_ABORT_UNLESS(key.size() >= TKeyPrefix::MarkedSize());
-    Y_ABORT_UNLESS(key[TKeyPrefix::MarkPosition()] == TKeyPrefix::MarkSourceId);
+    Y_VERIFY(key.size() >= TKeyPrefix::MarkedSize());
+    Y_VERIFY(key[TKeyPrefix::MarkPosition()] == TKeyPrefix::MarkSourceId);
 
     RegisterSourceIdInfo(key.substr(TKeyPrefix::MarkedSize()), TSourceIdInfo::Parse(data, now), true);
 }
 
 void TSourceIdStorage::LoadProtoSourceIdInfo(const TString& key, const TString& data) {
-    Y_ABORT_UNLESS(key.size() >= TKeyPrefix::MarkedSize());
-    Y_ABORT_UNLESS(key[TKeyPrefix::MarkPosition()] == TKeyPrefix::MarkProtoSourceId);
+    Y_VERIFY(key.size() >= TKeyPrefix::MarkedSize());
+    Y_VERIFY(key[TKeyPrefix::MarkPosition()] == TKeyPrefix::MarkProtoSourceId);
 
     NKikimrPQ::TMessageGroupInfo proto;
     const bool ok = proto.ParseFromString(data);
-    Y_ABORT_UNLESS(ok);
+    Y_VERIFY(ok);
 
     RegisterSourceIdInfo(key.substr(TKeyPrefix::MarkedSize()), TSourceIdInfo::Parse(proto), true);
 }
@@ -380,31 +321,18 @@ void TSourceIdStorage::RegisterSourceIdInfo(const TString& sourceId, TSourceIdIn
     auto it = InMemorySourceIds.find(sourceId);
     if (it != InMemorySourceIds.end()) {
         if (!load || it->second.Offset < sourceIdInfo.Offset) {
-            const auto res = SourceIdsByOffset[sourceIdInfo.Explicit].erase(std::make_pair(it->second.Offset, sourceId));
-            Y_ABORT_UNLESS(res == 1);
+            const auto res = SourceIdsByOffset.erase(std::make_pair(it->second.Offset, sourceId));
+            Y_VERIFY(res == 1);
         } else {
             return;
         }
     }
 
-    const bool res = SourceIdsByOffset[sourceIdInfo.Explicit].emplace(sourceIdInfo.Offset, sourceId).second;
-    Y_ABORT_UNLESS(res);
-
-    if (sourceIdInfo.Explicit) {
-        ExplicitSourceIds.insert(sourceId);
-    }
-
-    if (const auto& heartbeat = sourceIdInfo.LastHeartbeat) {
-        Y_ABORT_UNLESS(sourceIdInfo.Explicit);
-
-        if (it != InMemorySourceIds.end() && it->second.LastHeartbeat) {
-            ForgetHeartbeat(sourceId, it->second.LastHeartbeat->Version);
-        }
-
-        ApplyHeartbeat(sourceId, heartbeat->Version);
-    }
-
+    const auto offset = sourceIdInfo.Offset;
     InMemorySourceIds[sourceId] = std::move(sourceIdInfo);
+
+    const bool res = SourceIdsByOffset.emplace(offset, sourceId).second;
+    Y_VERIFY(res);
 }
 
 void TSourceIdStorage::RegisterSourceIdOwner(const TString& sourceId, const TStringBuf& ownerCookie) {
@@ -429,12 +357,10 @@ void TSourceIdStorage::MarkOwnersForDeletedSourceId(THashMap<TString, TOwnerInfo
 
 TInstant TSourceIdStorage::MinAvailableTimestamp(TInstant now) const {
     TInstant ds = now;
-    for (ui32 i = 0 ; i < 2; ++i) {
-        if (!SourceIdsByOffset[i].empty()) {
-            auto it = InMemorySourceIds.find(SourceIdsByOffset[i].begin()->second);
-            Y_ABORT_UNLESS(it != InMemorySourceIds.end());
-            ds = Min(ds, it->second.WriteTimestamp);
-        }
+    if (!SourceIdsByOffset.empty()) {
+        auto it = InMemorySourceIds.find(SourceIdsByOffset.begin()->second);
+        Y_VERIFY(it != InMemorySourceIds.end());
+        ds = Min(ds, it->second.WriteTimestamp);
     }
 
     return ds;
@@ -488,7 +414,7 @@ TKeyPrefix::EMark TSourceIdWriter::FormatToMark(ESourceIdFormat format) {
     }
 }
 
-void TSourceIdWriter::FillRequest(TEvKeyValue::TEvRequest* request, const TPartitionId& partition) {
+void TSourceIdWriter::FillRequest(TEvKeyValue::TEvRequest* request, ui32 partition) {
     TKeyPrefix key(TKeyPrefix::TypeInfo, partition, FormatToMark(Format));
     TBuffer data;
 
@@ -502,103 +428,5 @@ void TSourceIdWriter::FillRequest(TEvKeyValue::TEvRequest* request, const TParti
     }
 }
 
-/// THeartbeatEmitter
-THeartbeatEmitter::THeartbeatEmitter(const TSourceIdStorage& storage)
-    : Storage(storage)
-{
-}
-
-void THeartbeatEmitter::Process(const TString& sourceId, THeartbeat&& heartbeat) {
-    auto it = Storage.InMemorySourceIds.find(sourceId);
-    if (it != Storage.InMemorySourceIds.end() && it->second.LastHeartbeat) {
-        if (heartbeat.Version <= it->second.LastHeartbeat->Version) {
-            return;
-        }
-    }
-
-    if (!Storage.SourceIdsWithHeartbeat.contains(sourceId)) {
-        NewSourceIdsWithHeartbeat.insert(sourceId);
-    }
-
-    if (Heartbeats.contains(sourceId)) {
-        ForgetHeartbeat(sourceId, Heartbeats.at(sourceId).Version);
-    }
-
-    ApplyHeartbeat(sourceId, heartbeat.Version);
-    Heartbeats[sourceId] = std::move(heartbeat);
-}
-
-TMaybe<THeartbeat> THeartbeatEmitter::CanEmit() const {
-    if (Storage.ExplicitSourceIds.size() != (Storage.SourceIdsWithHeartbeat.size() + NewSourceIdsWithHeartbeat.size())) {
-        return Nothing();
-    }
-
-    if (SourceIdsByHeartbeat.empty()) {
-        return Nothing();
-    }
-
-    if (!NewSourceIdsWithHeartbeat.empty()) { // just got quorum
-        if (!Storage.SourceIdsByHeartbeat.empty() && Storage.SourceIdsByHeartbeat.begin()->first < SourceIdsByHeartbeat.begin()->first) {
-            return GetFromStorage(Storage.SourceIdsByHeartbeat.begin());
-        } else {
-            return GetFromDiff(SourceIdsByHeartbeat.begin());
-        }
-    } else if (SourceIdsByHeartbeat.begin()->first > Storage.SourceIdsByHeartbeat.begin()->first) {
-        auto storage = Storage.SourceIdsByHeartbeat.begin();
-        auto diff = SourceIdsByHeartbeat.begin();
-
-        TMaybe<TRowVersion> newVersion;
-        while (storage != Storage.SourceIdsByHeartbeat.end()) {
-            const auto& [version, sourceIds] = *storage;
-
-            auto rest = sourceIds.size();
-            for (const auto& sourceId : sourceIds) {
-                auto it = Heartbeats.find(sourceId);
-                if (it != Heartbeats.end() && it->second.Version > version && version <= diff->first) {
-                    --rest;
-                } else {
-                    break;
-                }
-            }
-
-            if (!rest) {
-                if (++storage != Storage.SourceIdsByHeartbeat.end()) {
-                    newVersion = storage->first;
-                } else {
-                    newVersion = diff->first;
-                }
-            } else {
-                break;
-            }
-        }
-
-        if (newVersion) {
-            storage = Storage.SourceIdsByHeartbeat.find(*newVersion);
-            if (storage != Storage.SourceIdsByHeartbeat.end()) {
-                return GetFromStorage(storage);
-            } else {
-                return GetFromDiff(diff);
-            }
-        }
-    }
-
-    return Nothing();
-}
-
-TMaybe<THeartbeat> THeartbeatEmitter::GetFromStorage(TSourceIdsByHeartbeat::const_iterator it) const {
-    Y_ABORT_UNLESS(!it->second.empty());
-    const auto& someSourceId = *it->second.begin();
-
-    Y_ABORT_UNLESS(Storage.InMemorySourceIds.contains(someSourceId));
-    return Storage.InMemorySourceIds.at(someSourceId).LastHeartbeat;
-}
-
-TMaybe<THeartbeat> THeartbeatEmitter::GetFromDiff(TSourceIdsByHeartbeat::const_iterator it) const {
-    Y_ABORT_UNLESS(!it->second.empty());
-    const auto& someSourceId = *it->second.begin();
-
-    Y_ABORT_UNLESS(Heartbeats.contains(someSourceId));
-    return Heartbeats.at(someSourceId);
-}
-
-}
+} // NPQ
+} // NKikimr

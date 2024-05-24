@@ -5,7 +5,7 @@
 #include <ydb/library/yql/dq/proto/dq_tasks.pb.h>
 #include <ydb/library/yql/ast/yql_expr.h>
 
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/actorid.h>
 
 #include <variant>
 
@@ -15,7 +15,6 @@ struct TStageId {
     ui64 TxId = 0;
     ui64 StageId = 0;
 
-    TStageId() = default;
     TStageId(ui64 txId, ui64 stageId)
         : TxId(txId)
         , StageId(stageId) {}
@@ -80,17 +79,13 @@ struct TStageInfo : private TMoveOnly {
 
 struct TChannel {
     ui64 Id = 0;
-    TStageId SrcStageId;
     ui64 SrcTask = 0;
     ui32 SrcOutputIndex = 0;
-    TStageId DstStageId;
     ui64 DstTask = 0;
     ui32 DstInputIndex = 0;
     bool InMemory = true;
     NDqProto::ECheckpointingMode CheckpointingMode = NDqProto::CHECKPOINTING_MODE_DEFAULT;
     NDqProto::EWatermarksMode WatermarksMode = NDqProto::WATERMARKS_MODE_DISABLED;
-
-    TChannel() = default;
 };
 
 using TChannelList = TVector<ui64>;
@@ -285,8 +280,7 @@ public:
     }
 
     TChannel& AddChannel() {
-        TChannel channel;
-        channel.Id = Channels.size() + 1;
+        TChannel channel{Channels.size() + 1};
         return Channels.emplace_back(channel);
     }
 

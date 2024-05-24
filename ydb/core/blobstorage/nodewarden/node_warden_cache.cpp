@@ -4,20 +4,20 @@ using namespace NKikimr;
 using namespace NStorage;
 
 void TNodeWarden::InvokeSyncOp(std::unique_ptr<IActor> actor) {
-    Y_ABORT_UNLESS(!SyncActorId);
+    Y_VERIFY(!SyncActorId);
     SyncActorId = Register(actor.release(), TMailboxType::Simple, AppData()->IOPoolId);
 }
 
 void TNodeWarden::Handle(TEvents::TEvInvokeResult::TPtr ev) {
     // reset actor
-    Y_ABORT_UNLESS(SyncActorId == ev->Sender);
+    Y_VERIFY(SyncActorId == ev->Sender);
     SyncActorId = {};
 
     // process message
     try {
         ev->Get()->Process(ActorContext());
     } catch (const std::exception&) {
-        Y_ABORT("Exception while executing sync callback: %s", CurrentExceptionMessage().data());
+        Y_FAIL("Exception while executing sync callback: %s", CurrentExceptionMessage().data());
     }
 
     // issue other operation if pending (and if not already issued)
@@ -29,7 +29,7 @@ void TNodeWarden::Handle(TEvents::TEvInvokeResult::TPtr ev) {
 
 void TNodeWarden::EnqueueSyncOp(std::function<std::function<void()>(const TActorContext&)> callback) {
     auto complete = [](auto&& resGetter, const TActorContext&) { resGetter()(); };
-    auto actor = CreateInvokeActor(std::move(callback), std::move(complete), NKikimrServices::TActivity::NODE_WARDEN);
+    auto actor = CreateInvokeActor<NKikimrServices::TActivity::NODE_WARDEN>(std::move(callback), std::move(complete));
     if (SyncActorId) {
         // there is other operation currently going on, we have to wait for a while
         SyncOpQ.push(std::move(actor));
@@ -163,7 +163,7 @@ TNodeWarden::TWrappedCacheOp TNodeWarden::UpdateServiceSet(const NKikimrBlobStor
             std::map<TVSlotId, const NKikimrBlobStorage::TNodeWardenServiceSet::TVDisk*> vdisks;
             for (const auto& x : newServices.GetVDisks()) {
                 const TVSlotId key(x.GetVDiskLocation());
-                Y_ABORT_UNLESS(!pdisksToDestroy.count({key.NodeId, key.PDiskId}) || x.GetDoDestroy(), "inconsistent ServiceSet");
+                Y_VERIFY(!pdisksToDestroy.count({key.NodeId, key.PDiskId}) || x.GetDoDestroy(), "inconsistent ServiceSet");
                 vdisks.emplace(key, pdisksToDestroy.count({key.NodeId, key.PDiskId}) ? nullptr : &x);
             }
             applyDiff(services->MutableVDisks(), vdisks);

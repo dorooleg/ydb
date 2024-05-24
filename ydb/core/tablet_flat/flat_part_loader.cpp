@@ -3,8 +3,8 @@
 #include "flat_part_overlay.h"
 #include "flat_part_keys.h"
 #include "util_fmt_abort.h"
-#include "ydb/core/base/appdata_fwd.h"
-#include "ydb/core/base/feature_flags.h"
+
+#include <typeinfo>
 
 namespace NKikimr {
 namespace NTable {
@@ -38,7 +38,7 @@ void TLoader::StageParseMeta() noexcept
 
     TPageId pageId = meta.TotalPages();
 
-    Y_ABORT_UNLESS(pageId > 0, "Got page collection without pages");
+    Y_VERIFY(pageId > 0, "Got page collection without pages");
 
     if (EPage(meta.Page(pageId - 1).Type) == EPage::Schem2) {
         /* New styled page collection with layout meta. Later root meta will
@@ -50,7 +50,7 @@ void TLoader::StageParseMeta() noexcept
 
         ParseMeta(meta.GetPageInplaceData(SchemeId));
 
-        Y_ABORT_UNLESS(Root.HasLayout(), "Rooted page collection has no layout");
+        Y_VERIFY(Root.HasLayout(), "Rooted page collection has no layout");
 
         if (auto *abi = Root.HasEvol() ? &Root.GetEvol() : nullptr)
             TAbi().Check(abi->GetTail(), abi->GetHead(), "part");
@@ -58,6 +58,7 @@ void TLoader::StageParseMeta() noexcept
         const auto &layout = Root.GetLayout();
 
         SchemeId = layout.HasScheme() ? layout.GetScheme() : SchemeId;
+        IndexId = layout.HasIndex() ? layout.GetIndex() : IndexId;
         GlobsId = layout.HasGlobs() ? layout.GetGlobs() : GlobsId;
         LargeId = layout.HasLarge() ? layout.GetLarge() : LargeId;
         SmallId = layout.HasSmall() ? layout.GetSmall() : SmallId;
@@ -65,41 +66,14 @@ void TLoader::StageParseMeta() noexcept
         GarbageStatsId = layout.HasGarbageStats() ? layout.GetGarbageStats() : GarbageStatsId;
         TxIdStatsId = layout.HasTxIdStats() ? layout.GetTxIdStats() : TxIdStatsId;
 
-        FlatGroupIndexes.clear();
-        FlatHistoricIndexes.clear();
-        if (layout.HasIndex() && layout.GetIndex() != Max<TPageId>()) {
-            FlatGroupIndexes.push_back(layout.GetIndex());
-        }
+        GroupIndexesIds.clear();
         for (ui32 id : layout.GetGroupIndexes()) {
-            FlatGroupIndexes.push_back(id);
+            GroupIndexesIds.push_back(id);
         }
+
+        HistoricIndexesIds.clear();
         for (ui32 id : layout.GetHistoricIndexes()) {
-            FlatHistoricIndexes.push_back(id);
-        }
-
-        BTreeGroupIndexes.clear();
-        BTreeHistoricIndexes.clear();
-        for (bool history : {false, true}) {
-            for (const auto &meta : history ? layout.GetBTreeHistoricIndexes() : layout.GetBTreeGroupIndexes()) {
-                NPage::TBtreeIndexMeta converted{{
-                    meta.GetRootPageId(), 
-                    meta.GetRowCount(), 
-                    meta.GetDataSize(),
-                    meta.GetGroupDataSize(),
-                    meta.GetErasedRowCount()}, 
-                    meta.GetLevelCount(), 
-                    meta.GetIndexSize()};
-                (history ? BTreeHistoricIndexes : BTreeGroupIndexes).push_back(converted);
-            }
-        }
-
-        if (!AppData()->FeatureFlags.GetEnableLocalDBBtreeIndex() && FlatGroupIndexes) {
-            BTreeGroupIndexes.clear();
-            BTreeHistoricIndexes.clear();
-        }
-        if (!AppData()->FeatureFlags.GetEnableLocalDBFlatIndex() && BTreeGroupIndexes) {
-            FlatGroupIndexes.clear();
-            FlatHistoricIndexes.clear();
+            HistoricIndexesIds.push_back(id);
         }
 
     } else { /* legacy page collection w/o layout data, (Evolution < 14) */
@@ -109,7 +83,7 @@ void TLoader::StageParseMeta() noexcept
 
             switch (type) {
             case EPage::Scheme: SchemeId = pageId; break;
-            case EPage::FlatIndex: FlatGroupIndexes = {pageId}; break;
+            case EPage::Index: IndexId = pageId; break;
             /* All special pages have to be placed after the index
                 page, hack is required for legacy page collections without
                 topology data in metablob.
@@ -131,14 +105,12 @@ void TLoader::StageParseMeta() noexcept
 
     if (!HasBasics() || (Rooted && SchemeId != meta.TotalPages() - 1)
         || (LargeId == Max<TPageId>()) != (GlobsId == Max<TPageId>())
-        || (Max(BTreeGroupIndexes.size(), FlatGroupIndexes.size()) + (SmallId == Max<TPageId>() ? 0 : 1)) != Packs.size())
+        || (1 + GroupIndexesIds.size() + (SmallId == Max<TPageId>() ? 0 : 1)) != Packs.size())
     {
         Y_Fail("Part " << Packs[0]->PageCollection->Label() << " has"
             << " invalid layout : " << (Rooted ? "rooted" : "legacy")
             << " " << Packs.size() << "s " << meta.TotalPages() << "pg"
-            << ", Scheme " << SchemeId 
-            << ", FlatIndex " << (FlatGroupIndexes.size() ? FlatGroupIndexes[0] : Max<TPageId>())
-            << ", BTreeIndex " << (BTreeGroupIndexes.size() ? BTreeGroupIndexes[0].PageId : Max<TPageId>())
+            << ", Scheme " << SchemeId << ", Index " << IndexId
             << ", Blobs " << GlobsId << ", Small " << SmallId
             << ", Large " << LargeId << ", ByKey " << ByKeyId
             << ", Garbage " << GarbageStatsId
@@ -148,15 +120,25 @@ void TLoader::StageParseMeta() noexcept
 
 TAutoPtr<NPageCollection::TFetch> TLoader::StageCreatePartView() noexcept
 {
-    Y_ABORT_UNLESS(!PartView, "PartView already initialized in CreatePartView stage");
-    Y_ABORT_UNLESS(Packs && Packs.front());
+    Y_VERIFY(!PartView, "PartView already initialized in CreatePartView stage");
+    Y_VERIFY(Packs && Packs.front());
 
     TVector<TPageId> load;
-    for (auto page: { SchemeId, GlobsId,
+    for (auto page: { SchemeId, IndexId, GlobsId,
                         SmallId, LargeId, ByKeyId,
                         GarbageStatsId, TxIdStatsId }) {
         if (page != Max<TPageId>() && !Packs[0]->Lookup(page))
             load.push_back(page);
+    }
+    for (auto page : GroupIndexesIds) {
+        if (!Packs[0]->Lookup(page)) {
+            load.push_back(page);
+        }
+    }
+    for (auto page : HistoricIndexesIds) {
+        if (!Packs[0]->Lookup(page)) {
+            load.push_back(page);
+        }
     }
 
     if (load) {
@@ -164,6 +146,7 @@ TAutoPtr<NPageCollection::TFetch> TLoader::StageCreatePartView() noexcept
     }
 
     auto *scheme = GetPage(SchemeId);
+    auto *index = GetPage(IndexId);
     auto *large = GetPage(LargeId);
     auto *small = GetPage(SmallId);
     auto *blobs = GetPage(GlobsId);
@@ -171,12 +154,31 @@ TAutoPtr<NPageCollection::TFetch> TLoader::StageCreatePartView() noexcept
     auto *garbageStats = GetPage(GarbageStatsId);
     auto *txIdStats = GetPage(TxIdStatsId);
 
-    if (scheme == nullptr) {
-        Y_ABORT("Scheme page is not loaded");
+    if (scheme == nullptr || index == nullptr) {
+        Y_FAIL("One of scheme or index pages is not loaded");
     } else if (ByKeyId != Max<TPageId>() && !byKey) {
-        Y_ABORT("Filter page must be loaded if it exists");
-    } else if (small && Packs.size() != (1 + Max(BTreeGroupIndexes.size(), FlatGroupIndexes.size()))) {
+        Y_FAIL("Filter page must be loaded if it exists");
+    } else if (small && Packs.size() != (1 + GroupIndexesIds.size() + 1)) {
         Y_Fail("TPart has small blobs, " << Packs.size() << " page collections");
+    }
+
+    TVector<TSharedData> groupIndexes;
+    groupIndexes.reserve(GroupIndexesIds.size());
+    for (auto pageId : GroupIndexesIds) {
+        auto* page = GetPage(pageId);
+        if (!page) {
+            Y_Fail("Missing group index page " << pageId);
+        }
+        groupIndexes.emplace_back(*page);
+    }
+
+    TVector<TSharedData> historicIndexes(Reserve(HistoricIndexesIds.size()));
+    for (auto pageId : HistoricIndexesIds) {
+        auto* page = GetPage(pageId);
+        if (!page) {
+            Y_Fail("Missing historic index page " << pageId);
+        }
+        historicIndexes.emplace_back(*page);
     }
 
     const auto extra = BlobsLabelFor(Packs[0]->PageCollection->Label());
@@ -186,31 +188,18 @@ TAutoPtr<NPageCollection::TFetch> TLoader::StageCreatePartView() noexcept
     // Use epoch from metadata unless it has been provided to loader externally
     TEpoch epoch = Epoch != TEpoch::Max() ? Epoch : TEpoch(Root.GetEpoch());
 
-    // TODO: put index size to stat?
-    // TODO: include history indexes bytes
-    size_t indexesRawSize = 0;
-    if (BTreeGroupIndexes) {
-        for (const auto &meta : BTreeGroupIndexes) {
-            indexesRawSize += meta.IndexSize;
-        }
-        // Note: although we also have flat index, it shouldn't be loaded; so let's not count it here
-    } else {
-        for (auto indexPage : FlatGroupIndexes) {
-            indexesRawSize += GetPageSize(indexPage);
-        }
-    }
-
     auto *partStore = new TPartStore(
         Packs.front()->PageCollection->Label(),
         {
             epoch,
             TPartScheme::Parse(*scheme, Rooted),
-            { FlatGroupIndexes, FlatHistoricIndexes, BTreeGroupIndexes, BTreeHistoricIndexes },
+            *index,
             blobs ? new NPage::TExtBlobs(*blobs, extra) : nullptr,
             byKey ? new NPage::TBloom(*byKey) : nullptr,
             large ? new NPage::TFrames(*large) : nullptr,
             small ? new NPage::TFrames(*small) : nullptr,
-            indexesRawSize,
+            std::move(groupIndexes),
+            std::move(historicIndexes),
             MinRowVersion,
             MaxRowVersion,
             garbageStats ? new NPage::TGarbageStats(*garbageStats) : nullptr,
@@ -231,7 +220,7 @@ TAutoPtr<NPageCollection::TFetch> TLoader::StageCreatePartView() noexcept
     partStore->PageCollections = std::move(Packs);
 
     if (partStore->Blobs) {
-        Y_ABORT_UNLESS(partStore->Large, "Cannot use blobs without frames");
+        Y_VERIFY(partStore->Large, "Cannot use blobs without frames");
 
         partStore->Pseudo = new TCache(partStore->Blobs);
     }
@@ -247,7 +236,7 @@ TAutoPtr<NPageCollection::TFetch> TLoader::StageCreatePartView() noexcept
 
 TAutoPtr<NPageCollection::TFetch> TLoader::StageSliceBounds() noexcept
 {
-    Y_ABORT_UNLESS(PartView, "Cannot generate bounds for a missing part");
+    Y_VERIFY(PartView, "Cannot generate bounds for a missing part");
 
     if (PartView.Slices) {
         TOverlay{ PartView.Screen, PartView.Slices }.Validate();
@@ -267,14 +256,14 @@ TAutoPtr<NPageCollection::TFetch> TLoader::StageSliceBounds() noexcept
     } else if (auto fetches = KeysEnv->GetFetches()) {
         return fetches;
     } else {
-        Y_ABORT("Screen keys loader stalled without result");
+        Y_FAIL("Screen keys loader stalled withoud result");
     }
 }
 
 void TLoader::StageDeltas() noexcept
 {
-    Y_ABORT_UNLESS(PartView, "Cannot apply deltas to a missing part");
-    Y_ABORT_UNLESS(PartView.Slices, "Missing slices in deltas stage");
+    Y_VERIFY(PartView, "Cannot apply deltas to a missing part");
+    Y_VERIFY(PartView.Slices, "Missing slices in deltas stage");
 
     for (const TString& rawDelta : Deltas) {
         TOverlay overlay{ std::move(PartView.Screen), std::move(PartView.Slices) };
@@ -288,7 +277,7 @@ void TLoader::StageDeltas() noexcept
 
 void TLoader::Save(ui64 cookie, TArrayRef<NSharedCache::TEvResult::TLoaded> blocks) noexcept
 {
-    Y_ABORT_UNLESS(cookie == 0, "Only the leader pack is used on load");
+    Y_VERIFY(cookie == 0, "Only the leader pack is used on load");
 
     if (Stage == EStage::PartView) {
         for (auto& loaded : blocks) {

@@ -3,7 +3,6 @@
 #include <ydb/core/scheme/tablet_scheme.h>
 #include <ydb/core/scheme/scheme_types_defs.h>
 #include <ydb/core/scheme/scheme_type_registry.h>
-#include <ydb/core/protos/tx_scheme.pb.h>
 
 namespace NKikimr {
 namespace NDriverClient {
@@ -81,10 +80,10 @@ void TCmdSchemeInitShardConfig::Parse(int argc, char **argv) {
 #if 0
     if (!configPbFile.empty()) {
         GlobalConfig.Reset(new NKikimrTxScheme::TConfig);
-        Y_ABORT_UNLESS(ParsePBFromFile(configPbFile, GlobalConfig.Get()));
+        Y_VERIFY(ParsePBFromFile(configPbFile, GlobalConfig.Get()));
     } else if (!configPb.empty()) {
         GlobalConfig.Reset(new NKikimrTxScheme::TConfig);
-        Y_ABORT_UNLESS(::google::protobuf::TextFormat::ParseFromString(configPb, GlobalConfig.Get()));
+        Y_VERIFY(::google::protobuf::TextFormat::ParseFromString(configPb, GlobalConfig.Get()));
     }
 #else
     Cout << "config options for init-root are not used anymore (deprecated)" << Endl;

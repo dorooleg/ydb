@@ -3,19 +3,21 @@
 
 #include <ydb/core/client/server/msgbus_server_persqueue.h>
 #include <ydb/core/grpc_services/grpc_helper.h>
-#include <ydb/library/grpc/server/grpc_request.h>
-#include <ydb/library/grpc/server/grpc_counters.h>
-#include <ydb/library/grpc/server/grpc_async_ctx_base.h>
+#include <library/cpp/grpc/server/grpc_request.h>
+#include <library/cpp/grpc/server/grpc_counters.h>
+#include <library/cpp/grpc/server/grpc_async_ctx_base.h>
 
 #include <library/cpp/json/json_writer.h>
 
 #include <util/string/join.h>
 
-#include <grpcpp/resource_quota.h>
-#include <grpcpp/security/server_credentials.h>
-#include <grpcpp/server_builder.h>
-#include <grpcpp/server_context.h>
-#include <grpcpp/server.h>
+#include <google/protobuf/text_format.h>
+
+#include <grpc++/resource_quota.h>
+#include <grpc++/security/server_credentials.h>
+#include <grpc++/server_builder.h>
+#include <grpc++/server_context.h>
+#include <grpc++/server.h>
 
 using grpc::Server;
 using grpc::ServerContext;
@@ -29,7 +31,7 @@ using grpc::CompletionQueue;
 using NKikimrClient::TResponse;
 using NKikimrClient::TPersQueueRequest;
 
-using NYdbGrpc::IQueueEvent;
+using NGrpc::IQueueEvent;
 
 using namespace NActors;
 using namespace NThreading;
@@ -38,7 +40,7 @@ namespace NKikimr {
 namespace NGRpcProxy {
 namespace {
 
-using TGrpcBaseAsyncContext = NYdbGrpc::TBaseAsyncContext<NGRpcProxy::TGRpcService>;
+using TGrpcBaseAsyncContext = NGrpc::TBaseAsyncContext<NGRpcProxy::TGRpcService>;
 
 template <typename TIn, typename TOut = TResponse>
 class TSimpleRequest
@@ -60,7 +62,7 @@ public:
                    TRequestCallback requestCallback,
                    TActorSystem& as,
                    const char* name,
-                   NYdbGrpc::ICounterBlockPtr counters)
+                   NGrpc::ICounterBlockPtr counters)
         : TGrpcBaseAsyncContext(service, cq)
         , Server(server)
         , Cb(cb)
@@ -114,7 +116,7 @@ public:
     }
 
     void DestroyRequest() override {
-        Y_ABORT_UNLESS(!CallInProgress_, "Unexpected DestroyRequest while another grpc call is still in progress");
+        Y_VERIFY(!CallInProgress_, "Unexpected DestroyRequest while another grpc call is still in progress");
         RequestDestroyed_ = true;
         if (RequestRegistered_) {
             Server->DeregisterRequestCtx(this);
@@ -125,16 +127,16 @@ public:
 
 private:
     void OnBeforeCall() {
-        Y_ABORT_UNLESS(!RequestDestroyed_, "Cannot start grpc calls after request is already destroyed");
-        Y_ABORT_UNLESS(!Finished_, "Cannot start grpc calls after request is finished");
+        Y_VERIFY(!RequestDestroyed_, "Cannot start grpc calls after request is already destroyed");
+        Y_VERIFY(!Finished_, "Cannot start grpc calls after request is finished");
         bool wasInProgress = std::exchange(CallInProgress_, true);
-        Y_ABORT_UNLESS(!wasInProgress, "Another grpc call is already in progress");
+        Y_VERIFY(!wasInProgress, "Another grpc call is already in progress");
     }
 
     void OnAfterCall() {
-        Y_ABORT_UNLESS(!RequestDestroyed_, "Finished grpc call after request is already destroyed");
+        Y_VERIFY(!RequestDestroyed_, "Finished grpc call after request is already destroyed");
         bool wasInProgress = std::exchange(CallInProgress_, false);
-        Y_ABORT_UNLESS(wasInProgress, "Finished grpc call that was not in progress");
+        Y_VERIFY(wasInProgress, "Finished grpc call that was not in progress");
     }
 
 public:
@@ -152,11 +154,27 @@ public:
         }
     }
 
+    void Reply(const NKikimrClient::TDsTestLoadResponse& resp) override {
+        if (const TOut* x = dynamic_cast<const TOut*>(&resp)) {
+            Finish(*x, 0);
+        } else {
+            ReplyError("request failed");
+        }
+    }
+
+    void Reply(const NKikimrClient::TBsTestLoadResponse& resp) override {
+        if (const TOut* x = dynamic_cast<const TOut*>(&resp)) {
+            Finish(*x, 0);
+        } else {
+            ReplyError("request failed");
+        }
+    }
+
     void Reply(const NKikimrClient::TJSON& resp) override {
         try {
             Finish(dynamic_cast<const TOut&>(resp), 0);
         } catch (const std::bad_cast&) {
-            Y_ABORT("unexpected response type generated");
+            Y_FAIL("unexpected response type generated");
         }
     }
 
@@ -164,7 +182,7 @@ public:
         try {
             Finish(dynamic_cast<const TOut&>(resp), 0);
         } catch (const std::bad_cast&) {
-            Y_ABORT("unexpected response type generated");
+            Y_FAIL("unexpected response type generated");
         }
     }
 
@@ -172,7 +190,7 @@ public:
         try {
             Finish(dynamic_cast<const TOut&>(resp), 0);
         } catch (const std::bad_cast&) {
-            Y_ABORT("unexpected response type generated");
+            Y_FAIL("unexpected response type generated");
         }
     }
 
@@ -180,7 +198,7 @@ public:
         try {
             Finish(dynamic_cast<const TOut&>(resp), 0);
         } catch (const std::bad_cast&) {
-            Y_ABORT("unexpected response type generated");
+            Y_FAIL("unexpected response type generated");
         }
     }
 
@@ -188,7 +206,7 @@ public:
         try {
             Finish(dynamic_cast<const TOut&>(resp), 0);
         } catch (const std::bad_cast&) {
-            Y_ABORT("unexpected response type generated");
+            Y_FAIL("unexpected response type generated");
         }
     }
 
@@ -248,8 +266,15 @@ private:
     }
 
     void Finish(const TOut& resp, ui32 status) {
+        auto makeResponseString = [&] {
+            TString x;
+            google::protobuf::TextFormat::Printer printer;
+            printer.SetSingleLineMode(true);
+            printer.PrintToString(resp, &x);
+            return x;
+        };
         LOG_DEBUG(ActorSystem, NKikimrServices::GRPC_SERVER, "[%p] issuing response Name# %s data# %s peer# %s", this,
-            Name, NYdbGrpc::FormatMessage<TOut>(resp).data(), GetPeerName().c_str());
+            Name, makeResponseString().data(), Context.peer().c_str());
         ResponseSize = resp.ByteSize();
         ResponseStatus = status;
         StateFunc = &TSimpleRequest::FinishDone;
@@ -262,7 +287,7 @@ private:
         TOut resp;
         TString msg = "no resource";
         LOG_DEBUG(ActorSystem, NKikimrServices::GRPC_SERVER, "[%p] issuing response Name# %s nodata (no resources) peer# %s", this,
-            Name, GetPeerName().c_str());
+            Name, Context.peer().c_str());
 
         StateFunc = &TSimpleRequest::FinishDoneWithoutProcessing;
         OnBeforeCall();
@@ -275,11 +300,22 @@ private:
     bool RequestDone(bool ok) {
         OnAfterCall();
 
+        auto makeRequestString = [&] {
+            TString resp;
+            if (ok) {
+                google::protobuf::TextFormat::Printer printer;
+                printer.SetSingleLineMode(true);
+                printer.PrintToString(Request, &resp);
+            } else {
+                resp = "<not ok>";
+            }
+            return resp;
+        };
         LOG_DEBUG(ActorSystem, NKikimrServices::GRPC_SERVER, "[%p] received request Name# %s ok# %s data# %s peer# %s current inflight# %li", this,
-            Name, ok ? "true" : "false", NYdbGrpc::FormatMessage<TIn>(Request, ok).data(), GetPeerName().c_str(), Server->GetCurrentInFlight());
+            Name, ok ? "true" : "false", makeRequestString().data(), Context.peer().c_str(), Server->GetCurrentInFlight());
 
         if (Context.c_call() == nullptr) {
-            Y_ABORT_UNLESS(!ok);
+            Y_VERIFY(!ok);
         } else if (!(RequestRegistered_ = Server->RegisterRequestCtx(this))) {
             // Request cannot be registered due to shutdown
             // It's unsafe to continue, so drop this request without processing
@@ -314,7 +350,7 @@ private:
     bool FinishDone(bool ok) {
         OnAfterCall();
         LOG_DEBUG(ActorSystem, NKikimrServices::GRPC_SERVER, "[%p] finished request Name# %s ok# %s peer# %s", this,
-            Name, ok ? "true" : "false", GetPeerName().c_str());
+            Name, ok ? "true" : "false", Context.peer().c_str());
         Counters->FinishProcessing(RequestSize, ResponseSize, ok, ResponseStatus,
             TDuration::Seconds(RequestTimer.Passed()));
         Server->DecRequest();
@@ -326,7 +362,7 @@ private:
     bool FinishDoneWithoutProcessing(bool ok) {
         OnAfterCall();
         LOG_DEBUG(ActorSystem, NKikimrServices::GRPC_SERVER, "[%p] finished request without processing Name# %s ok# %s peer# %s", this,
-            Name, ok ? "true" : "false", GetPeerName().c_str());
+            Name, ok ? "true" : "false", Context.peer().c_str());
 
         return false;
     }
@@ -339,7 +375,7 @@ private:
     TRequestCallback RequestCallback;
     TActorSystem& ActorSystem;
     const char* const Name;
-    NYdbGrpc::ICounterBlockPtr Counters;
+    NGrpc::ICounterBlockPtr Counters;
 
     THolder<ServerAsyncResponseWriter<TOut>> Writer;
 
@@ -364,7 +400,7 @@ TGRpcService::TGRpcService()
     : ActorSystem(nullptr)
 {}
 
-void TGRpcService::InitService(grpc::ServerCompletionQueue *cq, NYdbGrpc::TLoggerPtr) {
+void TGRpcService::InitService(grpc::ServerCompletionQueue *cq, NGrpc::TLoggerPtr) {
     CQ = cq;
     Y_ASSERT(InitCb_);
     InitCb_();
@@ -388,7 +424,7 @@ TFuture<void> TGRpcService::Prepare(TActorSystem* system, const TActorId& pqMeta
     return promise.GetFuture();
 }
 
-void TGRpcService::SetGlobalLimiterHandle(NYdbGrpc::TGlobalLimiter *limiter) {
+void TGRpcService::SetGlobalLimiterHandle(NGrpc::TGlobalLimiter *limiter) {
     Limiter_ = limiter;
 }
 
@@ -406,7 +442,7 @@ i64 TGRpcService::GetCurrentInFlight() const {
 }
 
 void TGRpcService::Start() {
-    Y_ABORT_UNLESS(ActorSystem);
+    Y_VERIFY(ActorSystem);
     ui32 nodeId = ActorSystem->NodeId;
     ActorSystem->Send(MakeGRpcProxyStatusID(nodeId), new TEvGRpcProxyStatus::TEvSetup(true, PersQueueWriteSessionsMaxCount,
                                         PersQueueReadSessionsMaxCount));
@@ -438,6 +474,7 @@ void TGRpcService::SetupIncomingRequests() {
 
 
     // actor requests
+    ADD_ACTOR_REQUEST(BSAdm,                     TBSAdm,                            MTYPE_CLIENT_BSADM)
     ADD_ACTOR_REQUEST(BlobStorageConfig,         TBlobStorageConfigRequest,         MTYPE_CLIENT_BLOB_STORAGE_CONFIG_REQUEST)
     ADD_ACTOR_REQUEST(HiveCreateTablet,          THiveCreateTablet,                 MTYPE_CLIENT_HIVE_CREATE_TABLET)
     ADD_ACTOR_REQUEST(LocalEnumerateTablets,     TLocalEnumerateTablets,            MTYPE_CLIENT_LOCAL_ENUMERATE_TABLETS)
@@ -447,6 +484,8 @@ void TGRpcService::SetupIncomingRequests() {
     ADD_ACTOR_REQUEST(LocalSchemeTx,             TLocalSchemeTx,                    MTYPE_CLIENT_LOCAL_SCHEME_TX)
     ADD_ACTOR_REQUEST(TabletKillRequest,         TTabletKillRequest,                MTYPE_CLIENT_TABLET_KILL_REQUEST)
     ADD_ACTOR_REQUEST(SchemeOperationStatus,     TSchemeOperationStatus,            MTYPE_CLIENT_FLAT_TX_STATUS_REQUEST)
+    ADD_ACTOR_REQUEST(BlobStorageLoadRequest,    TBsTestLoadRequest,                MTYPE_CLIENT_LOAD_REQUEST)
+    ADD_ACTOR_REQUEST(BlobStorageGetRequest,     TBsGetRequest,                     MTYPE_CLIENT_GET_REQUEST)
     ADD_ACTOR_REQUEST(ChooseProxy,               TChooseProxyRequest,               MTYPE_CLIENT_CHOOSE_PROXY)
     ADD_ACTOR_REQUEST(WhoAmI,                    TWhoAmI,                           MTYPE_CLIENT_WHOAMI)
     ADD_ACTOR_REQUEST(ResolveNode,               TResolveNodeRequest,               MTYPE_CLIENT_RESOLVE_NODE)

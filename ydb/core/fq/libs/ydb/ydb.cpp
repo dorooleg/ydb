@@ -4,6 +4,11 @@
 
 #include <util/stream/str.h>
 #include <util/string/printf.h>
+#include <util/stream/file.h>
+#include <util/string/strip.h>
+#include <util/system/env.h>
+
+#include <ydb/library/security/ydb_credentials_provider_factory.h>
 
 namespace NFq {
 
@@ -16,6 +21,9 @@ using NYql::TIssues;
 namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
+
+template <class TSettings>
+TSettings GetClientSettings(const NConfig::TYdbStorageConfig& config, const NKikimr::TYdbCredentialsProviderFactory& credProviderFactory);
 
 TFuture<TDataQueryResult> SelectGeneration(const TGenerationContextPtr& context) {
     // TODO: use prepared queries
@@ -161,6 +169,46 @@ TFuture<TStatus> RegisterGenerationWrapper(
         });
 }
 
+template <class TSettings>
+TSettings GetClientSettings(const NConfig::TYdbStorageConfig& config,
+                                                     const NKikimr::TYdbCredentialsProviderFactory& credProviderFactory) {
+    TString oauth;
+    if (config.GetToken()) {
+        oauth = config.GetToken();
+    } else if (config.GetOAuthFile()) {
+        oauth = StripString(TFileInput(config.GetOAuthFile()).ReadAll());
+    } else {
+        oauth = GetEnv("YDB_TOKEN");
+    }
+
+    const TString iamEndpoint = config.GetIamEndpoint();
+    const TString saKeyFile = config.GetSaKeyFile();
+
+    TSettings settings;
+    settings
+        .DiscoveryEndpoint(config.GetEndpoint())
+        .Database(config.GetDatabase());
+
+    NKikimr::TYdbCredentialsSettings credSettings;
+    credSettings.UseLocalMetadata = config.GetUseLocalMetadataService();
+    credSettings.OAuthToken = oauth;
+    credSettings.SaKeyFile = config.GetSaKeyFile();
+    credSettings.IamEndpoint = config.GetIamEndpoint();
+
+    settings.CredentialsProviderFactory(credProviderFactory(credSettings));
+
+    if (config.GetUseLocalMetadataService()) {
+        settings.SslCredentials(TSslCredentials(true));
+    }
+
+    if (config.GetCertificateFile()) {
+        auto cert = StripString(TFileInput(config.GetCertificateFile()).ReadAll());
+        settings.SslCredentials(TSslCredentials(true, cert));
+    }
+
+    return settings;
+}
+
 } // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -210,13 +258,7 @@ NYql::TIssues StatusToIssues(const NYdb::TStatus& status) {
 TFuture<TIssues> StatusToIssues(const TFuture<TStatus>& future) {
     return future.Apply(
         [] (const TFuture<TStatus>& future) {
-            try {
-                return StatusToIssues(future.GetValue());
-            } catch (...) {
-                TIssues issues;
-                issues.AddIssue("StatusToIssues failed with exception: " + CurrentExceptionMessage());
-                return issues;
-            }
+            return StatusToIssues(future.GetValue());
     });
 }
 
@@ -300,24 +342,6 @@ TFuture<TStatus> RollbackTransaction(const TGenerationContextPtr& context) {
     auto future = context->Transaction->Rollback();
     context->Transaction.Clear();
     return future;
-}
-
-NKikimr::TYdbCredentialsSettings GetYdbCredentialSettings(const NConfig::TYdbStorageConfig& config) {
-    TString oauth;
-    if (config.GetToken()) {
-        oauth = config.GetToken();
-    } else if (config.GetOAuthFile()) {
-        oauth = StripString(TFileInput(config.GetOAuthFile()).ReadAll());
-    } else {
-        oauth = GetEnv("YDB_TOKEN");
-    }
-
-    NKikimr::TYdbCredentialsSettings credSettings;
-    credSettings.UseLocalMetadata = config.GetUseLocalMetadataService();
-    credSettings.OAuthToken = oauth;
-    credSettings.SaKeyFile = config.GetSaKeyFile();
-    credSettings.IamEndpoint = config.GetIamEndpoint();
-    return credSettings;
 }
 
 } // namespace NFq

@@ -390,7 +390,7 @@ private:
         TVector<TString> to = {TString("zzz")};
         AddRangeQuery(*request, from, true, to, true);
 
-        record.SetResultFormat(::NKikimrDataEvents::FORMAT_CELLVEC);
+        record.SetResultFormat(::NKikimrTxDataShard::EScanDataFormat::CELLVEC);
 
         TSubLoadId subId(Id.Tag, SelfId(), ++LastSubTag);
         auto* actor = CreateReadIteratorScan(request.release(), TabletId, SelfId(), subId, sampleKeys);

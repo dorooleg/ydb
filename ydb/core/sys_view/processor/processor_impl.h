@@ -14,8 +14,8 @@
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/tx.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/util/memory_track.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/util/memory_track.h>
 
 namespace NKikimr {
 namespace NSysView {
@@ -28,7 +28,7 @@ public:
         return NKikimrServices::TActivity::SYSTEM_VIEW_PROCESSOR;
     }
 
-    TSysViewProcessor(const NActors::TActorId& tablet, TTabletStorageInfo* info, EProcessorMode processorMode);
+    TSysViewProcessor(const TActorId& tablet, TTabletStorageInfo* info, EProcessorMode processorMode);
 
 private:
     using Schema = TProcessorSchema;
@@ -130,6 +130,7 @@ private:
     void Handle(TEvTxProxySchemeCache::TEvWatchNotifyUpdated::TPtr& ev);
     void Handle(TEvTxProxySchemeCache::TEvWatchNotifyDeleted::TPtr& ev);
 
+    void Handle(TEvents::TEvPoisonPill::TPtr& ev);
     void Handle(TEvents::TEvUndelivered::TPtr& ev);
     void Handle(TEvInterconnect::TEvNodeDisconnected::TPtr& ev);
 
@@ -172,7 +173,7 @@ private:
     static void EntryToProto(NKikimrSysView::TTopPartitionsEntry& dst, const NKikimrSysView::TTopPartitionsInfo& src);
 
     template <typename TResponse>
-    void ReplyOverloaded(const NActors::TActorId& sender);
+    void ReplyOverloaded(const TActorId& sender);
 
     template <typename TMap, typename TRequest, typename TResponse>
     void Reply(typename TRequest::TPtr& ev);
@@ -188,6 +189,7 @@ private:
     STFUNC(StateInit) {
         switch(ev->GetTypeRewrite()) {
             hFunc(TEvSysView::TEvConfigureProcessor, Handle);
+            hFunc(TEvents::TEvPoisonPill, Handle);
             IgnoreFunc(TEvSysView::TEvIntervalQuerySummary);
             IgnoreFunc(TEvSysView::TEvGetIntervalMetricsResponse);
             IgnoreFunc(TEvSysView::TEvGetQueryMetricsRequest);
@@ -204,6 +206,7 @@ private:
 
     STFUNC(StateOffline) {
         switch(ev->GetTypeRewrite()) {
+            hFunc(TEvents::TEvPoisonPill, Handle);
             hFunc(TEvSysView::TEvConfigureProcessor, Handle);
             IgnoreFunc(TEvSysView::TEvIntervalQuerySummary);
             IgnoreFunc(TEvSysView::TEvGetIntervalMetricsResponse);
@@ -241,6 +244,7 @@ private:
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
             hFunc(TEvTxProxySchemeCache::TEvWatchNotifyUpdated, Handle);
             hFunc(TEvTxProxySchemeCache::TEvWatchNotifyDeleted, Handle);
+            hFunc(TEvents::TEvPoisonPill, Handle);
             hFunc(TEvents::TEvUndelivered, Handle);
             hFunc(TEvInterconnect::TEvNodeDisconnected, Handle);
             IgnoreFunc(TEvInterconnect::TEvNodeConnected);
@@ -252,6 +256,10 @@ private:
                         "TSysViewProcessor StateWork unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
                 }
         }
+    }
+
+    STFUNC(StateBroken) {
+        HandleDefaultEvents(ev, SelfId());
     }
 
 private:

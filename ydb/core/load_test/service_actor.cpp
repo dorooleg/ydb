@@ -7,22 +7,19 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/load_test/ycsb/test_load_actor.h>
 
 #include <ydb/public/lib/base/msgbus.h>
 
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
 #include <library/cpp/json/writer/json_value.h>
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/time_provider/time_provider.h>
 
 #include <google/protobuf/text_format.h>
-#include <google/protobuf/util/json_util.h>
 
 #include <util/generic/algorithm.h>
 #include <util/generic/guid.h>
@@ -381,7 +378,7 @@ private:
 
     void GenerateArchiveJsonResponse(ui32 requestId) {
         auto it = InfoRequests.find(requestId);
-        Y_ABORT_UNLESS(it != InfoRequests.end(), "failed to find request id %" PRIu32, requestId);
+        Y_VERIFY(it != InfoRequests.end(), "failed to find request id %" PRIu32, requestId);
         THttpInfoRequest& info = it->second;
 
         NJson::TJsonArray array;
@@ -459,14 +456,6 @@ public:
         }
         response->Record.SetTag(record.HasTag() ? record.GetTag() : 0);
         Send(ev->Sender, response.release());
-    }
-
-    void Handle(TEvLoad::TEvLoadTestResponse::TPtr& ev) {
-        if (ev->Get()->Record.GetStatus() != NMsgBusProxy::MSTATUS_OK) {
-            LOG_E("Receieved non-OK LoadTestResponse from another node, Record# " << ev->ToString());
-        } else {
-            LOG_N("Receieved OK LoadTestResponse from another node# " << ev->ToString());
-        }
     }
 
     ui64 ProcessCmd(const NKikimr::TEvLoadTestRequest& record) {
@@ -615,7 +604,7 @@ public:
     void Handle(TEvLoad::TEvLoadTestFinished::TPtr& ev) {
         const auto& msg = ev->Get();
         auto iter = LoadActors.find(msg->Tag);
-        Y_ABORT_UNLESS(iter != LoadActors.end());
+        Y_VERIFY(iter != LoadActors.end());
         LOG_D("Load actor with tag# " << msg->Tag << " finished");
         LoadActors.erase(iter);
         const TInstant finishTime = TAppData::TimeProvider->Now();
@@ -701,12 +690,19 @@ public:
         }
     }
 
-    void RunRecordOnAllNodes(const TEvLoadTestRequest& record, ui64& tag, TString& uuid, TString& /*msg*/) {
+    void RunRecordOnAllNodes(const TEvLoadTestRequest& record, ui64& tag, TString& uuid, TString& msg) {
         const auto& modifiedRequest = AddRequestInProcessing(record, /* legacyRequest */ false);
         AllNodesLoadConfigs.push_back(modifiedRequest);
+
+        if (AppData()->DomainsInfo->Domains.empty()) {
+            msg = "error while retrieving domain nodes info";
+            return;
+        }
+        auto domainInfo = AppData()->DomainsInfo->Domains.begin()->second;
         auto name = AppData()->TenantName;
         RegisterWithSameMailbox(CreateBoardLookupActor(MakeEndpointsBoardPath(name),
                                                         SelfId(),
+                                                        domainInfo->DefaultStateStorageGroup,
                                                         EBoardLookupMode::Second));
         tag = modifiedRequest.GetTag();
         uuid = modifiedRequest.GetUuid();
@@ -822,7 +818,7 @@ public:
             auto status = google::protobuf::util::JsonStringToMessage(content, &*record);
             success = status.ok();
         } else {
-            LOG_D("Unable to parse request, content: " << content.Quote());
+            Y_FAIL_S("content: " << content.Quote());
         }
         if (!success) {
             record.reset();
@@ -911,7 +907,7 @@ public:
                 HandlePost(request, info, id);
                 break;
             default:
-                Y_ABORT();
+                Y_FAIL();
         }
     }
 
@@ -954,17 +950,17 @@ public:
         ui32 id = static_cast<NMon::TEvHttpInfoRes *>(msg)->SubRequestId;
 
         auto it = InfoRequests.find(id);
-        Y_ABORT_UNLESS(it != InfoRequests.end());
+        Y_VERIFY(it != InfoRequests.end());
         THttpInfoRequest& info = it->second;
         LOG_I("Handle TEvHttpInfoRes, pending: " << info.HttpInfoResPending);
 
         auto actorIt = info.ActorMap.find(ev->Sender);
-        Y_ABORT_UNLESS(actorIt != info.ActorMap.end());
+        Y_VERIFY(actorIt != info.ActorMap.end());
         TActorInfo& perActorInfo = actorIt->second;
 
         TStringStream stream;
         msg->Output(stream);
-        Y_ABORT_UNLESS(!perActorInfo.Data);
+        Y_VERIFY(!perActorInfo.Data);
         perActorInfo.Data = stream.Str();
 
         if (!--info.HttpInfoResPending) {
@@ -974,7 +970,7 @@ public:
 
     void GenerateJsonTagInfoRes(ui32 id, ui64 tag, TString uuid, TString errorMsg) {
         auto it = InfoRequests.find(id);
-        Y_ABORT_UNLESS(it != InfoRequests.end());
+        Y_VERIFY(it != InfoRequests.end());
         THttpInfoRequest& info = it->second;
 
         TStringStream str;
@@ -996,7 +992,7 @@ public:
 
     void GenerateJsonInfoRes(ui32 id) {
         auto it = InfoRequests.find(id);
-        Y_ABORT_UNLESS(it != InfoRequests.end());
+        Y_VERIFY(it != InfoRequests.end());
         THttpInfoRequest& info = it->second;
 
         NJson::TJsonArray array;
@@ -1130,7 +1126,7 @@ public:
 
     void GenerateHttpInfoRes(const TString& mode, ui32 id) {
         auto it = InfoRequests.find(id);
-        Y_ABORT_UNLESS(it != InfoRequests.end());
+        Y_VERIFY(it != InfoRequests.end());
         THttpInfoRequest& info = it->second;
 
         TStringStream str;
@@ -1318,7 +1314,6 @@ public:
 
     STRICT_STFUNC(StateFunc,
         hFunc(TEvLoad::TEvLoadTestRequest, Handle)
-        hFunc(TEvLoad::TEvLoadTestResponse, Handle)
         hFunc(TEvLoad::TEvLoadTestFinished, Handle)
         hFunc(TEvLoad::TEvNodeFinishResponse, Handle)
         hFunc(NMon::TEvHttpInfo, Handle)

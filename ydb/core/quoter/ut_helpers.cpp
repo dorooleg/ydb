@@ -75,7 +75,7 @@ void TKesusQuoterTestSetup::CreateKesusResource(const TString& kesusPath, const 
 
     TAutoPtr<NKesus::TEvKesus::TEvAddQuoterResource> request(new NKesus::TEvKesus::TEvAddQuoterResource());
     request->Record.MutableResource()->SetResourcePath(resourcePath);
-    *request->Record.MutableResource()->MutableHierarchicalDRRResourceConfig() = cfg;
+    *request->Record.MutableResource()->MutableHierarhicalDRRResourceConfig() = cfg;
 
     TActorId sender = GetEdgeActor();
     Cerr << "AddQuoterResource: " << request->Record << Endl;
@@ -237,23 +237,12 @@ void TKesusProxyTestSetup::WaitProxyStart() {
 
 void TKesusProxyTestSetup::SendNotConnected(TTestTabletPipeFactory::TTestTabletPipe* pipe) {
     WaitProxyStart();
-    Runtime->Send(
-        new IEventHandle(
-            KesusProxyId, pipe->GetSelfID(),
-            new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::ERROR, pipe->GetSelfID(), TActorId(), true, false, 0)
-        ),
-        0, true
-    );
+    Runtime->Send(new IEventHandle(KesusProxyId, pipe->GetSelfID(), new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::ERROR, pipe->GetSelfID(), TActorId(), true, false)), 0, true);
 }
 
 void TKesusProxyTestSetup::SendConnected(TTestTabletPipeFactory::TTestTabletPipe* pipe) {
     WaitProxyStart();
-    Runtime->Send(
-        new IEventHandle(
-            KesusProxyId, pipe->GetSelfID(),
-            new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::OK, pipe->GetSelfID(), pipe->GetSelfID(), true, false, 0)
-        ), 0, true
-    );
+    Runtime->Send(new IEventHandle(KesusProxyId, pipe->GetSelfID(), new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::OK, pipe->GetSelfID(), pipe->GetSelfID(), true, false)), 0, true);
 }
 
 void TKesusProxyTestSetup::SendDestroyed(TTestTabletPipeFactory::TTestTabletPipe* pipe) {
@@ -339,13 +328,13 @@ void TKesusProxyTestSetup::SendCloseSession(const TString& resource, ui64 resour
 }
 
 void TKesusProxyTestSetup::SendResourcesAllocated(TTestTabletPipeFactory::TTestTabletPipe* pipe, ui64 resId, double amount, Ydb::StatusIds::StatusCode status) {
-    auto ev = std::make_unique<NKesus::TEvKesus::TEvResourcesAllocated>();
-    auto* resInfo = ev->Record.AddResourcesInfo();
+    NKikimrKesus::TEvResourcesAllocated ev;
+    auto* resInfo = ev.AddResourcesInfo();
     resInfo->SetResourceId(resId);
     resInfo->SetAmount(amount);
     resInfo->MutableStateNotification()->SetStatus(status);
 
-    Runtime->Send(new IEventHandle(KesusProxyId, pipe->GetSelfID(), ev.release(), 0, true));
+    Runtime->Send(new IEventHandle(KesusProxyId, pipe->GetSelfID(), new NKesus::TEvKesus::TEvResourcesAllocated(std::move(ev))), 0, true);
 }
 
 bool TKesusProxyTestSetup::ConsumeResource(ui64 resId, double amount, TDuration tickSize, std::function<void()> afterStat, const size_t maxUpdates) {
@@ -488,17 +477,11 @@ void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::HandleResour
 }
 
 void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::SendNotConnected() {
-    Send(
-        Parent->Parent->KesusProxyId,
-        new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::ERROR, SelfID, TActorId(), true, false, 0)
-    );
+    Send(Parent->Parent->KesusProxyId, new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::ERROR, SelfID, TActorId(), true, false));
 }
 
 void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::SendConnected() {
-    Send(
-        Parent->Parent->KesusProxyId,
-        new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::OK, SelfID, SelfID, true, false, 0)
-    );
+    Send(Parent->Parent->KesusProxyId, new TEvTabletPipe::TEvClientConnected(KESUS_TABLET_ID, NKikimrProto::OK, SelfID, SelfID, true, false));
 }
 
 void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::SendDestroyed() {
@@ -506,14 +489,12 @@ void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::SendDestroye
 }
 
 void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::SendSubscribeOnResourceResult(const NKikimrKesus::TEvSubscribeOnResourcesResult& record, ui64 cookie) {
-    auto ev = std::make_unique<NKesus::TEvKesus::TEvSubscribeOnResourcesResult>();
-    ev->Record.CopyFrom(record);
-    Send(Parent->Parent->KesusProxyId, ev.release(), 0, cookie);
+    Send(Parent->Parent->KesusProxyId, new NKesus::TEvKesus::TEvSubscribeOnResourcesResult(record), 0, cookie);
 }
 
 void TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::SendUpdateConsumptionStateAck() {
-    auto ev = std::make_unique<NKesus::TEvKesus::TEvUpdateConsumptionStateAck>();
-    Send(Parent->Parent->KesusProxyId, ev.release());
+    NKikimrKesus::TEvUpdateConsumptionStateAck ack;
+    Send(Parent->Parent->KesusProxyId, new NKesus::TEvKesus::TEvUpdateConsumptionStateAck(ack));
 }
 
 THolder<IEventHandle> TKesusProxyTestSetup::TTestTabletPipeFactory::TTestTabletPipe::GetDestroyedEventHandle() {

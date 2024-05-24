@@ -1,8 +1,6 @@
 #include "dynamic_nameserver_impl.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/core/base/nameservice.h>
 #include <ydb/core/base/location.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -175,10 +173,6 @@ void TDynamicNameserver::Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext
                 << "      <td>" << config->MaxStaticNodeId << "</td>" << Endl
                 << "    </tr>" << Endl
                 << "    <tr>" << Endl
-                << "      <td class='right-align'>Min dynamic node ID:</td>" << Endl
-                << "      <td>" << config->MinDynamicNodeId << "</td>" << Endl
-                << "    </tr>" << Endl
-                << "    <tr>" << Endl
                 << "      <td class='right-align'>Max dynamic node ID:</td>" << Endl
                 << "      <td>" << config->MaxDynamicNodeId << "</td>" << Endl
                 << "    </tr>" << Endl
@@ -187,8 +181,11 @@ void TDynamicNameserver::Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext
 
         OutputStaticNodes(*StaticConfig, str);
 
-        if (const auto& domain = AppData(ctx)->DomainsInfo->Domain) {
-            OutputDynamicNodes(domain->Name, DynamicConfigs[domain->DomainUid], str);
+        auto dinfo = AppData(ctx)->DomainsInfo;
+        for (auto &pr : dinfo->Domains) {
+            auto name = pr.second->Name;
+            auto config = DynamicConfigs[pr.first];
+            OutputDynamicNodes(name, config, str);
         }
     }
     ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes(str.Str()));

@@ -38,7 +38,7 @@ struct TVectorIt {
     }
 
     void Next() {
-        Y_DEBUG_ABORT_UNLESS(Valid());
+        Y_VERIFY_DEBUG(Valid());
         ++It;
     }
 
@@ -50,7 +50,7 @@ struct TVectorIt {
     }
 
     int GetCurKey() const {
-        Y_DEBUG_ABORT_UNLESS(Valid());
+        Y_VERIFY_DEBUG(Valid());
         return *It;
     }
 
@@ -63,7 +63,7 @@ struct TVectorIt {
     }
 
     TString ToString() const {
-        Y_DEBUG_ABORT_UNLESS(Valid());
+        Y_VERIFY_DEBUG(Valid());
         return Sprintf("%d", *It);
     }
 

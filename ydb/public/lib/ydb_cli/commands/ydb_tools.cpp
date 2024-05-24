@@ -1,16 +1,12 @@
 #include "ydb_tools.h"
 
 #include <ydb/public/lib/ydb_cli/common/normalize_path.h>
-#include <ydb/public/lib/ydb_cli/common/pg_dump_parser.h>
 #include <ydb/public/lib/ydb_cli/dump/dump.h>
 #include <ydb/library/backup/backup.h>
 #include <ydb/library/backup/util.h>
 
 #include <util/stream/format.h>
 #include <util/string/split.h>
-
-#include <algorithm>
-#include <queue>
 
 namespace NYdb::NConsoleClient {
 
@@ -21,7 +17,6 @@ TCommandTools::TCommandTools()
     AddCommand(std::make_unique<TCommandRestore>());
     AddCommand(std::make_unique<TCommandCopy>());
     AddCommand(std::make_unique<TCommandRename>());
-    AddCommand(std::make_unique<TCommandPgConvert>());
 }
 
 TToolsCommand::TToolsCommand(const TString& name, const std::initializer_list<TString>& aliases, const TString& description)
@@ -74,8 +69,6 @@ void TCommandDump::Config(TConfig& config) {
             " Takes more time and is more likely to impact workload;\n"
             "table - take consistent snapshot per each table independently.")
         .DefaultValue("database").StoreResult(&ConsistencyLevel);
-    config.Opts->AddLongOption("ordered", "Preserve order by primary key in backup files.")
-            .StoreTrue(&Ordered);
 }
 
 void TCommandDump::Parse(TConfig& config) {
@@ -99,7 +92,7 @@ int TCommandDump::Run(TConfig& config) {
     try {
         TString relPath = NYdb::RelPathFromAbsolute(config.Database, Path);
         NYdb::NBackup::BackupFolder(CreateDriver(config), config.Database, relPath, FilePath, ExclusionPatterns,
-            IsSchemeOnly, useConsistentCopyTable, AvoidCopy, SavePartialResult, PreservePoolKinds, Ordered);
+            IsSchemeOnly, useConsistentCopyTable, AvoidCopy, SavePartialResult, PreservePoolKinds);
     } catch (const NYdb::NBackup::TYdbErrorException& e) {
         e.LogToStderr();
         return EXIT_FAILURE;
@@ -379,40 +372,6 @@ int TCommandRename::Run(TConfig& config) {
             FillSettings(NTable::TRenameTablesSettings())
         ).GetValueSync()
     );
-    return EXIT_SUCCESS;
-}
-
-TCommandPgConvert::TCommandPgConvert()
-    : TToolsCommand("pg-convert", {}, "Convert pg_dump result SQL file to format readable by YDB postgres layer")
-{}
-
-void TCommandPgConvert::Config(TConfig& config) {
-    TToolsCommand::Config(config);
-    config.NeedToConnect = false;
-    config.SetFreeArgsNum(0);
-
-    config.Opts->AddLongOption('i', "input", "Path to input SQL file. Read from stdin if not specified.").StoreResult(&Path);
-    config.Opts->AddLongOption("ignore-unsupported", "Comment unsupported statements in result dump file if specified.").StoreTrue(&IgnoreUnsupported);
-}
-
-void TCommandPgConvert::Parse(TConfig& config) {
-    TToolsCommand::Parse(config);
-}
-
-int TCommandPgConvert::Run(TConfig& config) {
-    Y_UNUSED(config);
-    TPgDumpParser parser(Cout, IgnoreUnsupported);
-    if (Path) {
-        std::unique_ptr<TFileInput> fileInput = std::make_unique<TFileInput>(Path);
-        parser.Prepare(*fileInput);
-        fileInput = std::make_unique<TFileInput>(Path);
-        parser.WritePgDump(*fileInput);
-    } else {
-        TFixedStringStream stream(Cin.ReadAll());
-        parser.Prepare(stream);
-        stream.MovePointer();
-        parser.WritePgDump(stream);
-    }
     return EXIT_SUCCESS;
 }
 

@@ -1,9 +1,10 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/services/services.pb.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/viewer/json/json.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include "viewer.h"
 #include "json_pipe_req.h"
 
@@ -60,8 +61,6 @@ protected:
     ui32 PDiskId = 0;
     ui32 VSlotId = 0;
 
-    std::optional<TActorId> TcpProxyId;
-
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::VIEWER_HANDLER;
@@ -113,7 +112,6 @@ public:
             hFunc(ResponseType, Handle);
             cFunc(TEvRetryNodeRequest::EventType, HandleRetry);
             cFunc(TEvents::TEvUndelivered::EventType, Undelivered);
-            hFunc(TEvInterconnect::TEvNodeConnected, Connected);
             cFunc(TEvInterconnect::TEvNodeDisconnected::EventType, Disconnected);
             cFunc(TEvents::TSystem::Wakeup, HandleTimeout);
         }
@@ -146,12 +144,7 @@ public:
         }
     }
 
-    void Connected(TEvInterconnect::TEvNodeConnected::TPtr &ev) {
-        TcpProxyId = ev->Sender;
-    }
-
     void Disconnected() {
-        TcpProxyId = {};
         if (!RetryRequest()) {
             TBase::RequestDone();
         }
@@ -178,13 +171,6 @@ public:
         }
     }
 
-    void PassAway() override {
-        if (TcpProxyId) {
-            this->Send(*TcpProxyId, new TEvents::TEvUnsubscribe);
-        }
-        TBase::PassAway();
-    }
-
     void ReplyAndPassAway(const TString &error = "") {
         try {
             TStringStream json;
@@ -197,8 +183,10 @@ public:
         } catch (const std::exception& e) {
             TBase::Send(Initiator, new NMon::TEvHttpInfoRes(TString("HTTP/1.1 400 Bad Request\r\n\r\n") + e.what(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         }
-        PassAway();
+        TBase::PassAway();
     }
+
+
 };
 
 template <typename RequestType, typename ResponseType>

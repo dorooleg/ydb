@@ -1,6 +1,4 @@
-#include <ydb/core/kqp/counters/kqp_counters.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
-#include <ydb/core/base/counters.h>
 
 #include <library/cpp/threading/local_executor/local_executor.h>
 
@@ -68,11 +66,6 @@ Y_UNIT_TEST_SUITE(KqpService) {
 
     Y_UNIT_TEST(CloseSessionsWithLoad) {
         auto kikimr = std::make_shared<TKikimrRunner>();
-        kikimr->GetTestServer().GetRuntime()->SetLogPriority(NKikimrServices::KQP_EXECUTER, NLog::PRI_DEBUG);
-        kikimr->GetTestServer().GetRuntime()->SetLogPriority(NKikimrServices::KQP_SESSION, NLog::PRI_DEBUG);
-        kikimr->GetTestServer().GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPILE_ACTOR, NLog::PRI_DEBUG);
-        kikimr->GetTestServer().GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPILE_SERVICE, NLog::PRI_DEBUG);
-
         auto db = kikimr->GetTableClient();
 
         const ui32 SessionsCount = 50;
@@ -87,32 +80,13 @@ Y_UNIT_TEST_SUITE(KqpService) {
         }
 
         NPar::LocalExecutor().RunAdditionalThreads(SessionsCount + 1);
-        NPar::LocalExecutor().ExecRange([&kikimr, sessions, WaitDuration](int id) mutable {
+        NPar::LocalExecutor().ExecRange([kikimr, sessions, WaitDuration](int id) mutable {
             if (id == (i32)sessions.size()) {
                 Sleep(WaitDuration);
-                Cerr << "start sessions close....." << Endl;
+
                 for (ui32 i = 0; i < sessions.size(); ++i) {
                     sessions[i].Close();
                 }
-
-                Cerr << "finished sessions close....." << Endl;
-                auto counters = GetServiceCounters(kikimr->GetTestServer().GetRuntime()->GetAppData(0).Counters,  "ydb");
-
-                ui64 pendingCompilations = 0;
-                do {
-                    Sleep(WaitDuration);
-                    pendingCompilations = counters->GetNamedCounter("name", "table.query.compilation.active_count", false)->Val();
-                    Cerr << "still compiling... " << pendingCompilations << Endl;
-                } while (pendingCompilations != 0);
-
-                ui64 pendingSessions = 0;
-                do {
-                    Sleep(WaitDuration);
-                    pendingSessions = counters->GetNamedCounter("name", "table.session.active_count", false)->Val();
-                    Cerr << "still active sessions ... " << pendingSessions << Endl;
-                } while (pendingSessions != 0);
-
-                Sleep(TDuration::Seconds(5));
 
                 return;
             }
@@ -145,8 +119,6 @@ Y_UNIT_TEST_SUITE(KqpService) {
 
                 auto result = session.ExecuteDataQuery(query, TTxControl::BeginTx()).GetValueSync();
                 if (!result.IsSuccess()) {
-                    Sleep(TDuration::Seconds(5));
-                    Cerr << "received non-success status for session " << id << Endl;
                     return;
                 }
 
@@ -252,96 +224,49 @@ Y_UNIT_TEST_SUITE(KqpService) {
          UNIT_ASSERT_VALUES_EQUAL_C(status.GetStatus(), EStatus::SUCCESS, status.GetIssues().ToString());
     }
 
-    void ConfigureSettings(TKikimrSettings & settings, bool useCache, bool useAsyncPatternCompilation, bool useCompiledCapacityBytesLimit) {
-        size_t cacheSize = 0;
-        if (useCache) {
-            cacheSize = useAsyncPatternCompilation ? 10_MB : 1_MB;
-        }
-
-        auto * tableServiceConfig = settings.AppConfig.MutableTableServiceConfig();
-        tableServiceConfig->MutableResourceManager()->SetKqpPatternCacheCapacityBytes(cacheSize);
-        if (useCompiledCapacityBytesLimit) {
-            tableServiceConfig->MutableResourceManager()->SetKqpPatternCacheCompiledCapacityBytes(1_MB * 0.1);
-        }
-
-        tableServiceConfig->SetEnableAsyncComputationPatternCompilation(useAsyncPatternCompilation);
-
-        if (useAsyncPatternCompilation) {
-            tableServiceConfig->MutableCompileComputationPatternServiceConfig()->SetWakeupIntervalMs(1);
-            tableServiceConfig->MutableResourceManager()->SetKqpPatternCachePatternAccessTimesBeforeTryToCompile(0);
-        }
-    }
-
-    enum AsyncPatternCompilationStrategy {
-        Off,
-        On,
-        OnWithLimit,
-    };
-
-    void PatternCacheImpl(bool useCache, AsyncPatternCompilationStrategy asyncPatternCompilationStrategy) {
-        bool useAsyncPatternCompilation = asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::On ||
-            asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::OnWithLimit;
-        bool useCompiledCapacityBytesLimit = asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::OnWithLimit;
-
+    Y_UNIT_TEST_TWIN(PatternCache, UseCache) {
         auto settings = TKikimrSettings()
             .SetWithSampleTables(false);
-        ConfigureSettings(settings, useCache, useAsyncPatternCompilation, useCompiledCapacityBytesLimit);
-
+        size_t cacheSize = UseCache ? 1_MB : 0;
+        settings.AppConfig.MutableTableServiceConfig()->MutableResourceManager()->SetKqpPatternCacheCapacityBytes(cacheSize);
         auto kikimr = TKikimrRunner{settings};
         auto driver = kikimr.GetDriver();
 
-        NKqp::TKqpCounters counters(kikimr.GetTestServer().GetRuntime()->GetAppData().Counters);
-
-        static constexpr i64 AsyncPatternCompilationUniqueRequestsSize = 5;
-
-        auto async_compilation_condition = [&]() {
-            if (useCache) {
-                if (asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::On) {
-                    return *counters.CompiledComputationPatterns != AsyncPatternCompilationUniqueRequestsSize;
-                } else if (asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::OnWithLimit) {
-                    return *counters.CompiledComputationPatterns < AsyncPatternCompilationUniqueRequestsSize * 4;
-                }
-            }
-
-            return false;
-        };
-
         size_t InFlight = 10;
         NPar::LocalExecutor().RunAdditionalThreads(InFlight);
-        NPar::LocalExecutor().ExecRange([&](int /*id*/) {
+        NPar::LocalExecutor().ExecRange([&driver](int /*id*/) {
+            TTimer t;
             NYdb::NTable::TTableClient db(driver);
             auto session = db.CreateSession().GetValueSync().GetSession();
-
-            for (ui32 i = 0; i < 500 || async_compilation_condition(); ++i) {
-                ui32 value = useCache && useAsyncPatternCompilation ? i % AsyncPatternCompilationUniqueRequestsSize : i / 5;
+                for (ui32 i = 0; i < 500; ++i) {
                 ui64 total = 100500;
                 TString request = (TStringBuilder() << R"_(
                     $data = AsList(
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
 
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("aaa" AS Key,)_" << value << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << i / 5 << R"_(u AS Value),
 
-                        AsStruct("aaa" AS Key,)_" << total - 10 * value << R"_(u AS Value),
+                        AsStruct("aaa" AS Key,)_" << total - 10 * (i / 5) << R"_(u AS Value),
 
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
 
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value),
-                        AsStruct("bbb" AS Key,)_" << value << R"_(u AS Value)
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value),
+                        AsStruct("bbb" AS Key,)_" << i / 5 << R"_(u AS Value)
                     );
 
                     SELECT * FROM (
@@ -361,23 +286,6 @@ Y_UNIT_TEST_SUITE(KqpService) {
                 CompareYson(R"( [ ["aaa";100500u] ])", FormatResultSetYson(result.GetResultSet(0)));
             }
         }, 0, InFlight, NPar::TLocalExecutor::WAIT_COMPLETE | NPar::TLocalExecutor::MED_PRIORITY);
-
-        if (useCache) {
-            if (asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::On) {
-                UNIT_ASSERT(*counters.CompiledComputationPatterns == AsyncPatternCompilationUniqueRequestsSize);
-            } else if (asyncPatternCompilationStrategy == AsyncPatternCompilationStrategy::OnWithLimit) {
-                UNIT_ASSERT(*counters.CompiledComputationPatterns >= AsyncPatternCompilationUniqueRequestsSize);
-            }
-        }
-    }
-
-    Y_UNIT_TEST(PatternCache) {
-        PatternCacheImpl(false, AsyncPatternCompilationStrategy::Off);
-        PatternCacheImpl(false, AsyncPatternCompilationStrategy::On);
-        PatternCacheImpl(false, AsyncPatternCompilationStrategy::OnWithLimit);
-        PatternCacheImpl(true, AsyncPatternCompilationStrategy::Off);
-        PatternCacheImpl(true, AsyncPatternCompilationStrategy::On);
-        PatternCacheImpl(true, AsyncPatternCompilationStrategy::OnWithLimit);
     }
 
     // YQL-15582
@@ -419,157 +327,6 @@ Y_UNIT_TEST_SUITE(KqpService) {
                     FormatResultSetYson(result.GetResultSet(0)));
             }
         }, 0, InFlight, NPar::TLocalExecutor::WAIT_COMPLETE | NPar::TLocalExecutor::MED_PRIORITY);
-    }
-
-    Y_UNIT_TEST_TWIN(SwitchCache, UseCache) {
-        auto settings = TKikimrSettings()
-            .SetWithSampleTables(true);
-        size_t cacheSize = UseCache ? 1_MB : 0;
-        settings.AppConfig.MutableTableServiceConfig()->MutableResourceManager()->SetKqpPatternCacheCapacityBytes(cacheSize);
-        auto kikimr = TKikimrRunner{settings};
-        auto driver = kikimr.GetDriver();
-
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-        auto res = session.ExecuteSchemeQuery(R"(
-            CREATE TABLE `/Root/TwoKeys` (
-                Key1 Int32,
-                Key2 Int32,
-                Value Int32,
-                PRIMARY KEY (Key1, Key2)
-            );
-        )").GetValueSync();
-        UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
-
-        auto result = session.ExecuteDataQuery(R"(
-            REPLACE INTO `/Root/TwoKeys` (Key1, Key2, Value) VALUES
-                (1, 1, 1),
-                (2, 1, 2),
-                (3, 2, 3),
-                (4, 2, 4),
-                (5, 3, 5),
-                (6, 3, 6),
-                (7, 4, 7),
-                (8, 4, 8);
-        )", TTxControl::BeginTx().CommitTx()).GetValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        size_t InFlight = 10;
-        NPar::LocalExecutor().RunAdditionalThreads(InFlight);
-        NPar::LocalExecutor().ExecRange([&driver](int /*id*/) {
-            TTimer t;
-            NYdb::NTable::TTableClient db(driver);
-            auto session = db.CreateSession().GetValueSync().GetSession();
-            auto query = TStringBuilder()
-                << Q_(R"(
-                $values = SELECT Key1, Key2, Value FROM `/Root/TwoKeys` WHERE Value > 4;
-                $cnt = SELECT count(*) FROM $values;
-                $sum = SELECT sum(Key1) FROM $values WHERE Key1 > 4;
-
-                SELECT $cnt + $sum;
-            )");
-
-            for (ui32 i = 0; i < 20; ++i) {
-                auto result = session.ExecuteDataQuery(query,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-                AssertSuccessResult(result);
-
-                CompareYson(
-                    R"([[[30]]])",
-                    FormatResultSetYson(result.GetResultSet(0)));
-            }
-        }, 0, InFlight, NPar::TLocalExecutor::WAIT_COMPLETE | NPar::TLocalExecutor::MED_PRIORITY);
-    }
-
-struct TDictCase {
-    const std::vector<TString> DictSet = {"($i.1)", "(Yql::Void)"};
-    const std::vector<TString> Compact = {"", "AsAtom('Compact')"};
-    const std::vector<TString> OneMany = {"One", "Many"};
-    const std::vector<TString> SortedHashed = {"Sorted", "Hashed"};
-
-    TString Expected;
-
-    ui32 MaxCase = DictSet.size() * Compact.size() * OneMany.size() * SortedHashed.size();
-    ui32 Case = 0;
-
-    bool InTheEnd() const {
-        return Case == MaxCase;
-    }
-
-    bool GetCase(size_t shift) {
-        return (Case >> shift) & 1;
-    }
-
-    TString GetExpected() const {
-        return Expected;
-    }
-
-    TString Get() {
-        if (InTheEnd()) {
-            Expected = "";
-            return {};
-        }
-
-        {
-            TStringStream expected;
-            expected << "[[[[1;";
-            if (OneMany[GetCase(1)] == "Many") {
-                expected << "[";
-            }
-            if (DictSet[GetCase(3)] == "(Yql::Void)") {
-                expected << "\"Void\"";
-            } else {
-                expected << "2";
-            }
-            if (OneMany[GetCase(1)] == "Many") {
-                expected << "]";
-            }
-            expected << "]]]]";
-            Expected = expected.Str();
-        }
-
-        TStringStream res;
-        res << "SELECT Yql::ToDict([(1, 2)], ($i) -> ($i.0), ($i) -> " << DictSet[GetCase(3)] << ", AsTuple(";
-        if (auto c = Compact[GetCase(2)]) {
-            res << c << ", ";
-        }
-        res << "AsAtom('" << OneMany[GetCase(1)] << "'), AsAtom('" << SortedHashed[GetCase(0)] << "')));";
-        ++Case;
-        return res.Str();
-    }
-};
-
-    // KIKIMR-18169
-    Y_UNIT_TEST_TWIN(ToDictCache, UseCache) {
-        auto settings = TKikimrSettings()
-            .SetWithSampleTables(false);
-        size_t cacheSize = UseCache ? 1_MB : 0;
-        settings.AppConfig.MutableTableServiceConfig()->MutableResourceManager()->SetKqpPatternCacheCapacityBytes(cacheSize);
-        auto kikimr = TKikimrRunner{settings};
-        auto driver = kikimr.GetDriver();
-
-        size_t InFlight = 4;
-        NPar::LocalExecutor().RunAdditionalThreads(InFlight);
-
-        TDictCase gen;
-        while (!gen.InTheEnd()) {
-            auto query = gen.Get();
-            Cout << query << Endl;
-            NPar::LocalExecutor().ExecRange([&driver, &query, &gen](int /*id*/) {
-                TTimer t;
-                NYdb::NTable::TTableClient db(driver);
-                auto session = db.CreateSession().GetValueSync().GetSession();
-                for (ui32 i = 0; i < 10; ++i) {
-                    auto params = TParamsBuilder();
-
-                    auto result = session.ExecuteDataQuery(query,
-                        TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx(), params.Build()).ExtractValueSync();
-                    AssertSuccessResult(result);
-
-                    CompareYson(gen.GetExpected(), FormatResultSetYson(result.GetResultSet(0)));
-                }
-            }, 0, InFlight, NPar::TLocalExecutor::WAIT_COMPLETE | NPar::TLocalExecutor::MED_PRIORITY);
-        }
     }
 }
 

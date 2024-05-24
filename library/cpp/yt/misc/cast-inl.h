@@ -4,8 +4,6 @@
 #include "cast.h"
 #endif
 
-#include "enum.h"
-
 #include <util/string/cast.h>
 #include <util/string/printf.h>
 
@@ -18,38 +16,27 @@ namespace NYT {
 namespace NDetail {
 
 template <class T, class S>
-bool IsInIntegralRange(S value)
-    requires std::is_signed_v<T> && std::is_signed_v<S>
+typename std::enable_if<std::is_signed<T>::value && std::is_signed<S>::value, bool>::type IsInIntegralRange(S value)
 {
     return value >= std::numeric_limits<T>::min() && value <= std::numeric_limits<T>::max();
 }
 
 template <class T, class S>
-bool IsInIntegralRange(S value)
-    requires std::is_signed_v<T> && std::is_unsigned_v<S>
+static typename std::enable_if<std::is_signed<T>::value && std::is_unsigned<S>::value, bool>::type IsInIntegralRange(S value)
 {
     return value <= static_cast<typename std::make_unsigned<T>::type>(std::numeric_limits<T>::max());
 }
 
 template <class T, class S>
-bool IsInIntegralRange(S value)
-    requires std::is_unsigned_v<T> && std::is_signed_v<S>
+static typename std::enable_if<std::is_unsigned<T>::value && std::is_signed<S>::value, bool>::type IsInIntegralRange(S value)
 {
     return value >= 0 && static_cast<typename std::make_unsigned<S>::type>(value) <= std::numeric_limits<T>::max();
 }
 
 template <class T, class S>
-bool IsInIntegralRange(S value)
-    requires std::is_unsigned_v<T> && std::is_unsigned_v<S>
+typename std::enable_if<std::is_unsigned<T>::value && std::is_unsigned<S>::value, bool>::type IsInIntegralRange(S value)
 {
     return value <= std::numeric_limits<T>::max();
-}
-
-template <class T, class S>
-bool IsInIntegralRange(S value)
-    requires std::is_enum_v<S>
-{
-    return IsInIntegralRange<T>(static_cast<std::underlying_type_t<S>>(value));
 }
 
 template <class T>
@@ -77,8 +64,6 @@ inline TString FormatInvalidCastValue(char8_t value)
 
 } // namespace NDetail
 
-////////////////////////////////////////////////////////////////////////////////
-
 template <class T, class S>
 bool TryIntegralCast(S value, T* result)
 {
@@ -94,12 +79,8 @@ T CheckedIntegralCast(S value)
 {
     T result;
     if (!TryIntegralCast<T>(value, &result)) {
-        throw TSimpleException(Sprintf("Error casting %s value \"%s\" to %s: value is out of expected range [%s; %s]",
-            TypeName<S>().c_str(),
-            NYT::NDetail::FormatInvalidCastValue(value).c_str(),
-            TypeName<T>().c_str(),
-            ::ToString(std::numeric_limits<T>::min()).c_str(),
-            ::ToString(std::numeric_limits<T>::max()).c_str()));
+        throw TSimpleException(Sprintf("Argument value %s is out of expected range",
+            NYT::NDetail::FormatInvalidCastValue(value).c_str()));
     }
     return result;
 }
@@ -107,11 +88,7 @@ T CheckedIntegralCast(S value)
 template <class T, class S>
 bool TryEnumCast(S value, T* result)
 {
-    std::underlying_type_t<T> underlying;
-    if (!TryIntegralCast<std::underlying_type_t<T>>(value, &underlying)) {
-        return false;
-    }
-    auto candidate = static_cast<T>(underlying);
+    auto candidate = static_cast<T>(value);
     if (!TEnumTraits<T>::FindLiteralByValue(candidate)) {
         return false;
     }
@@ -124,8 +101,7 @@ T CheckedEnumCast(S value)
 {
     T result;
     if (!TryEnumCast<T>(value, &result)) {
-        throw TSimpleException(Sprintf("Error casting %s value \"%d\" to enum %s",
-            TypeName<S>().c_str(),
+        throw TSimpleException(Sprintf("Invalid value %d of enum type %s",
             static_cast<int>(value),
             TEnumTraits<T>::GetTypeName().data()));
     }

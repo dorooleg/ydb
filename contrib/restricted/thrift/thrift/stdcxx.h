@@ -36,9 +36,9 @@
 
 #if defined(BOOST_NO_CXX11_HDR_FUNCTIONAL) || (defined(_MSC_VER) && _MSC_VER < 1800) || defined(FORCE_BOOST_FUNCTIONAL)
 #if (BOOST_VERSION <= 106500)
-#error #include <boost/tr1/functional.hpp>
+#include <boost/tr1/functional.hpp> // Y_IGNORE
 #else
-#error #include <tr1/functional>
+#include <tr1/functional>
 #endif
 #define _THRIFT_FUNCTIONAL_TR1_ 1
 #endif

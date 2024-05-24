@@ -2,11 +2,13 @@
 
 #include "datashard_user_table.h"
 
-#include <ydb/core/change_exchange/change_record.h>
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <library/cpp/json/json_value.h>
+
+#include <ydb/core/base/pathid.h>
 #include <ydb/core/scheme/scheme_tablecell.h>
 
 #include <util/generic/maybe.h>
+#include <util/generic/string.h>
 
 namespace NKikimrChangeExchange {
     class TChangeRecord;
@@ -16,40 +18,57 @@ namespace NKikimr::NDataShard {
 
 class TChangeRecordBuilder;
 
-class TChangeRecord: public NChangeExchange::TChangeRecordBase {
+class TChangeRecord {
     friend class TChangeRecordBuilder;
 
 public:
-    ui64 GetGroup() const override { return Group; }
-    ui64 GetStep() const override { return Step; }
-    ui64 GetTxId() const override { return TxId; }
-    EKind GetKind() const override { return Kind; }
+    enum class EKind: ui8 {
+        AsyncIndex,
+        CdcDataChange,
+    };
+
+    struct TAwsJsonOptions {
+        TString AwsRegion;
+        NKikimrSchemeOp::ECdcStreamMode StreamMode;
+        ui64 ShardId;
+    };
+
+public:
+    ui64 GetOrder() const { return Order; }
+    ui64 GetGroup() const { return Group; }
+    ui64 GetStep() const { return Step; }
+    ui64 GetTxId() const { return TxId; }
     ui64 GetLockId() const { return LockId; }
     ui64 GetLockOffset() const { return LockOffset; }
     const TPathId& GetPathId() const { return PathId; }
+    EKind GetKind() const { return Kind; }
+    const TString& GetBody() const { return Body; }
 
     const TPathId& GetTableId() const { return TableId; }
     ui64 GetSchemaVersion() const { return SchemaVersion; }
-    TUserTable::TCPtr GetSchema() const { return Schema; }
 
-    void Serialize(NKikimrChangeExchange::TChangeRecord& record) const;
+    void SerializeToProto(NKikimrChangeExchange::TChangeRecord& record) const;
+    void SerializeToYdbJson(NJson::TJsonValue& json, bool virtualTimestamps) const;
+    void SerializeToDynamoDBStreamsJson(NJson::TJsonValue& json, const TAwsJsonOptions& opts) const;
 
     TConstArrayRef<TCell> GetKey() const;
-    TString GetPartitionKey() const;
     i64 GetSeqNo() const;
+    TString GetPartitionKey() const;
     TInstant GetApproximateCreationDateTime() const;
-    bool IsBroadcast() const override;
 
-    void Out(IOutputStream& out) const override;
+    TString ToString() const;
+    void Out(IOutputStream& out) const;
 
 private:
+    ui64 Order = Max<ui64>();
     ui64 Group = 0;
     ui64 Step = 0;
     ui64 TxId = 0;
-    EKind Kind;
     ui64 LockId = 0;
     ui64 LockOffset = 0;
     TPathId PathId;
+    EKind Kind;
+    TString Body;
 
     ui64 SchemaVersion;
     TPathId TableId;
@@ -60,60 +79,32 @@ private:
 
 }; // TChangeRecord
 
-class TChangeRecordBuilder: public NChangeExchange::TChangeRecordBuilder<TChangeRecord, TChangeRecordBuilder> {
+class TChangeRecordBuilder {
+    using EKind = TChangeRecord::EKind;
+
 public:
-    using TBase::TBase;
+    explicit TChangeRecordBuilder(EKind kind);
 
-    explicit TChangeRecordBuilder(EKind kind)
-        : TBase()
-    {
-        GetRecord()->Kind = kind;
-    }
+    TChangeRecordBuilder& WithLockId(ui64 lockId);
+    TChangeRecordBuilder& WithLockOffset(ui64 lockOffset);
 
-    TSelf& WithGroup(ui64 group) {
-        GetRecord()->Group = group;
-        return static_cast<TSelf&>(*this);
-    }
+    TChangeRecordBuilder& WithOrder(ui64 order);
+    TChangeRecordBuilder& WithGroup(ui64 group);
+    TChangeRecordBuilder& WithStep(ui64 step);
+    TChangeRecordBuilder& WithTxId(ui64 txId);
+    TChangeRecordBuilder& WithPathId(const TPathId& pathId);
 
-    TSelf& WithStep(ui64 step) {
-        GetRecord()->Step = step;
-        return static_cast<TSelf&>(*this);
-    }
+    TChangeRecordBuilder& WithTableId(const TPathId& tableId);
+    TChangeRecordBuilder& WithSchemaVersion(ui64 version);
+    TChangeRecordBuilder& WithSchema(TUserTable::TCPtr schema);
 
-    TSelf& WithTxId(ui64 txId) {
-        GetRecord()->TxId = txId;
-        return static_cast<TSelf&>(*this);
-    }
+    TChangeRecordBuilder& WithBody(const TString& body);
+    TChangeRecordBuilder& WithBody(TString&& body);
 
-    TSelf& WithLockId(ui64 lockId) {
-        GetRecord()->LockId = lockId;
-        return static_cast<TSelf&>(*this);
-    }
+    TChangeRecord&& Build();
 
-    TSelf& WithLockOffset(ui64 lockOffset) {
-        GetRecord()->LockOffset = lockOffset;
-        return static_cast<TSelf&>(*this);
-    }
-
-    TSelf& WithPathId(const TPathId& pathId) {
-        GetRecord()->PathId = pathId;
-        return static_cast<TSelf&>(*this);
-    }
-
-    TSelf& WithTableId(const TPathId& tableId) {
-        GetRecord()->TableId = tableId;
-        return static_cast<TSelf&>(*this);
-    }
-
-    TSelf& WithSchemaVersion(ui64 version) {
-        GetRecord()->SchemaVersion = version;
-        return static_cast<TSelf&>(*this);
-    }
-
-    TSelf& WithSchema(TUserTable::TCPtr schema) {
-        GetRecord()->Schema = schema;
-        return static_cast<TSelf&>(*this);
-    }
+private:
+    TChangeRecord Record;
 
 }; // TChangeRecordBuilder
 

@@ -3,11 +3,10 @@
 #include "ydb_command.h"
 #include "ydb_common.h"
 
+#include <ydb/public/sdk/cpp/client/ydb_table/table.h>
+#include <ydb/public/sdk/cpp/client/draft/ydb_scripting.h>
 #include <ydb/public/lib/ydb_cli/common/format.h>
 #include <ydb/public/lib/ydb_cli/common/interruptible.h>
-#include <ydb/public/sdk/cpp/client/draft/ydb_scripting.h>
-#include <ydb/public/sdk/cpp/client/ydb_query/client.h>
-#include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/public/lib/ydb_cli/common/parameters.h>
 #include <ydb/public/lib/json_value/ydb_json_value.h>
 
@@ -93,7 +92,7 @@ protected:
 };
 
 class TCommandExecuteQuery : public TTableCommand, TCommandQueryBase, TCommandWithParameters,
-    public TInterruptibleCommand
+    public TCommandWithFormat, public TInterruptibleCommand
 {
 public:
     TCommandExecuteQuery();
@@ -106,20 +105,11 @@ public:
 
     int ExecuteSchemeQuery(TConfig& config);
 
-    int ExecuteGenericQuery(TConfig& config);
     int ExecuteScanQuery(TConfig& config);
-
-    template <typename TClient>
-    int ExecuteQueryImpl(TConfig& config);
-
-    template <typename TIterator>
-    bool PrintQueryResponse(TIterator& result);
-
-    void PrintFlameGraph(const TMaybe<TString>& plan);
+    bool PrintScanQueryResponse(NTable::TScanQueryPartIterator& result);
 
 private:
     TString CollectStatsMode;
-    TMaybe<TString> FlameGraphPath;
     TString TxMode;
     TString QueryType;
     bool BasicStats = false;
@@ -128,20 +118,15 @@ private:
 class TCommandExplain : public TTableCommand, public TCommandWithFormat, TCommandQueryBase, TInterruptibleCommand {
 public:
     TCommandExplain();
-    TCommandExplain(TString query, TString queryType = "data", bool printAst = false);
-
     virtual void Config(TConfig& config) override;
     virtual void Parse(TConfig& config) override;
     virtual int Run(TConfig& config) override;
 
 private:
-    static void SaveDiagnosticsToFile(const TString& diagnostics);
 
     bool PrintAst = false;
     TString QueryType;
     bool Analyze = false;
-    TMaybe<TString> FlameGraphPath;
-    bool CollectFullDiagnostics = false;
 };
 
 class TCommandReadTable : public TYdbCommand, public TCommandWithPath,

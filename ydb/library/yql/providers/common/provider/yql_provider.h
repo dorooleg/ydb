@@ -34,10 +34,9 @@ namespace NCommon {
 
 struct TWriteTableSettings {
     NNodes::TMaybeNode<NNodes::TCoAtom> Mode;
-    NNodes::TMaybeNode<NNodes::TCoAtom> Temporary;
     NNodes::TMaybeNode<NNodes::TExprList> Columns;
-    NNodes::TMaybeNode<NNodes::TExprList> ReturningList;
     NNodes::TMaybeNode<NNodes::TCoAtomList> PrimaryKey;
+    NNodes::TMaybeNode<NNodes::TCoAtomList> NotNullColumns;
     NNodes::TMaybeNode<NNodes::TCoAtomList> PartitionBy;
     NNodes::TMaybeNode<NNodes::TCoNameValueTupleList> OrderBy;
     NNodes::TMaybeNode<NNodes::TCoLambda> Filter;
@@ -46,25 +45,11 @@ struct TWriteTableSettings {
     NNodes::TMaybeNode<NNodes::TCoChangefeedList> Changefeeds;
     NNodes::TCoNameValueTupleList Other;
     NNodes::TMaybeNode<NNodes::TExprList> ColumnFamilies;
-    NNodes::TMaybeNode<NNodes::TCoNameValueTupleList> ColumnsDefaultValues;
     NNodes::TMaybeNode<NNodes::TCoNameValueTupleList> TableSettings;
     NNodes::TMaybeNode<NNodes::TCoNameValueTupleList> AlterActions;
     NNodes::TMaybeNode<NNodes::TCoAtom> TableType;
-    NNodes::TMaybeNode<NNodes::TCallable> PgFilter;
 
     TWriteTableSettings(const NNodes::TCoNameValueTupleList& other)
-        : Other(other) {}
-};
-
-struct TWriteSequenceSettings {
-    NNodes::TMaybeNode<NNodes::TCoAtom> Mode;
-    NNodes::TMaybeNode<NNodes::TCoAtom> ValueType;
-    NNodes::TMaybeNode<NNodes::TCoAtom> Temporary;
-    NNodes::TMaybeNode<NNodes::TCoNameValueTupleList> SequenceSettings;
-
-    NNodes::TCoNameValueTupleList Other;
-
-    TWriteSequenceSettings(const NNodes::TCoNameValueTupleList& other)
         : Other(other) {}
 };
 
@@ -83,47 +68,22 @@ struct TWriteTopicSettings {
 
 };
 
-struct TWriteReplicationSettings {
-    NNodes::TMaybeNode<NNodes::TCoAtom> Mode;
-    NNodes::TMaybeNode<NNodes::TCoReplicationTargetList> Targets;
-    NNodes::TMaybeNode<NNodes::TCoNameValueTupleList> ReplicationSettings;
-    NNodes::TCoNameValueTupleList Other;
-
-    TWriteReplicationSettings(const NNodes::TCoNameValueTupleList& other)
-        : Other(other)
-    {}
-};
-
 struct TWriteRoleSettings {
     NNodes::TMaybeNode<NNodes::TCoAtom> Mode;
     NNodes::TMaybeNode<NNodes::TCoAtomList> Roles;
-    NNodes::TMaybeNode<NNodes::TCoAtom> NewName;
     NNodes::TCoNameValueTupleList Other;
 
     TWriteRoleSettings(const NNodes::TCoNameValueTupleList& other)
         : Other(other) {}
 };
 
-struct TWritePermissionSettings {
-    NNodes::TMaybeNode<NNodes::TCoAtomList> Permissions;
-    NNodes::TMaybeNode<NNodes::TCoAtomList> Paths;
-    NNodes::TMaybeNode<NNodes::TCoAtomList> RoleNames;
-
-    TWritePermissionSettings(NNodes::TMaybeNode<NNodes::TCoAtomList>&& permissions, NNodes::TMaybeNode<NNodes::TCoAtomList>&& paths, NNodes::TMaybeNode<NNodes::TCoAtomList>&& roleNames)
-        : Permissions(std::move(permissions))
-        , Paths(std::move(paths))
-        , RoleNames(std::move(roleNames)) {}
-};
-
 struct TWriteObjectSettings {
     NNodes::TMaybeNode<NNodes::TCoAtom> Mode;
     NNodes::TCoNameValueTupleList Features;
-    NNodes::TCoAtomList ResetFeatures;
-    TWriteObjectSettings(NNodes::TMaybeNode<NNodes::TCoAtom>&& mode, NNodes::TCoNameValueTupleList&& kvFeatures, NNodes::TCoAtomList&& resetFeatures)
+    TWriteObjectSettings(NNodes::TMaybeNode<NNodes::TCoAtom>&& mode, NNodes::TCoNameValueTupleList&& kvFeatures)
         : Mode(std::move(mode))
-        , Features(std::move(kvFeatures))
-        , ResetFeatures(std::move(resetFeatures))
-    {
+        , Features(std::move(kvFeatures)) {
+
     }
 };
 
@@ -144,16 +104,6 @@ struct TCommitSettings
     bool EnsureOtherEmpty(TExprContext& ctx);
 };
 
-struct TPgObjectSettings
-{
-    NNodes::TMaybeNode<NNodes::TCoAtom> Mode;
-    NNodes::TMaybeNode<NNodes::TCoAtom> IfExists;
-
-    TPgObjectSettings(NNodes::TMaybeNode<NNodes::TCoAtom>&& mode, NNodes::TMaybeNode<NNodes::TCoAtom>&& ifExists)
-        : Mode(std::move(mode))
-        , IfExists(std::move(ifExists)) {}
-};
-
 const TStructExprType* BuildCommonTableListType(TExprContext& ctx);
 
 TExprNode::TPtr BuildTypeExpr(TPositionHandle pos, const TTypeAnnotationNode& ann, TExprContext& ctx);
@@ -164,18 +114,11 @@ TVector<TString> GetResOrPullColumnHints(const TExprNode& node);
 
 TWriteTableSettings ParseWriteTableSettings(NNodes::TExprList node, TExprContext& ctx);
 TWriteTopicSettings ParseWriteTopicSettings(NNodes::TExprList node, TExprContext& ctx);
-TWriteReplicationSettings ParseWriteReplicationSettings(NNodes::TExprList node, TExprContext& ctx);
 
 TWriteRoleSettings ParseWriteRoleSettings(NNodes::TExprList node, TExprContext& ctx);
 TWriteObjectSettings ParseWriteObjectSettings(NNodes::TExprList node, TExprContext& ctx);
 
-TWritePermissionSettings ParseWritePermissionsSettings(NNodes::TExprList node, TExprContext& ctx);
-
 TCommitSettings ParseCommitSettings(NNodes::TCoCommit node, TExprContext& ctx);
-
-TPgObjectSettings ParsePgObjectSettings(NNodes::TExprList node, TExprContext& ctx);
-
-TWriteSequenceSettings ParseSequenceSettings(NNodes::TExprList node, TExprContext& ctx);
 
 TString FullTableName(const TStringBuf& cluster, const TStringBuf& table);
 
@@ -207,36 +150,17 @@ void WriteStreams(NYson::TYsonWriter& writer, TStringBuf name, const NNodes::TCo
 
 double GetDataReplicationFactor(const TExprNode& lambda, TExprContext& ctx);
 
-void WriteStatistics(NYson::TYsonWriter& writer, bool totalOnly, const THashMap<ui32, TOperationStatistics>& statistics, bool addTotalKey = true, bool addExternalMap = true);
-void WriteStatistics(NYson::TYsonWriter& writer, const TOperationStatistics& statistics);
+void WriteStatistics(NYson::TYsonWriter& writer, bool totalOnly, const THashMap<ui32, TOperationStatistics>& statistics);
 
 bool ValidateCompressionForInput(std::string_view format, std::string_view compression, TExprContext& ctx);
 bool ValidateCompressionForOutput(std::string_view format, std::string_view compression, TExprContext& ctx);
 
-bool ValidateFormatForInput(std::string_view format, const TStructExprType* schemaStructRowType, const std::function<bool(TStringBuf)>& excludeFields, TExprContext& ctx);
+bool ValidateFormatForInput(std::string_view format, TExprContext& ctx);
 bool ValidateFormatForOutput(std::string_view format, TExprContext& ctx);
 
 bool ValidateIntervalUnit(std::string_view unit, TExprContext& ctx);
 bool ValidateDateTimeFormatName(std::string_view formatName, TExprContext& ctx);
 bool ValidateTimestampFormatName(std::string_view formatName, TExprContext& ctx);
 
-bool TransformPgSetItemOption(
-    const NNodes::TCoPgSelect& pgSelect,
-    TStringBuf optionName,
-    std::function<void(const NNodes::TExprBase&)> lambda
-);
-
-TExprNode::TPtr GetSetItemOption(const NNodes::TCoPgSelect& pgSelect, TStringBuf optionName);
-
-TExprNode::TPtr GetSetItemOptionValue(const NNodes::TExprBase& setItemOption);
-
-bool NeedToRenamePgSelectColumns(const NNodes::TCoPgSelect& pgSelect);
-
-bool RenamePgSelectColumns(
-    const NNodes::TCoPgSelect& node,
-    TExprNode::TPtr& output,
-    const TMaybe<TColumnOrder>& tableColumnOrder,
-    TExprContext& ctx,
-    TTypeAnnotationContext& types);
 } // namespace NCommon
 } // namespace NYql

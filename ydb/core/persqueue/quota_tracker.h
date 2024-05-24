@@ -8,7 +8,7 @@ namespace NKikimr::NPQ {
     public:
         TQuotaTracker(const ui64 maxBurst, const ui64 speedPerSecond, const TInstant timestamp);
 
-        bool UpdateConfigIfChanged(const ui64 maxBurst, const ui64 speedPerSecond);
+        void UpdateConfig(const ui64 maxBurst, const ui64 speedPerSecond);
         void Update(const TInstant timestamp);
 
         bool CanExaust(const TInstant timestamp) ;

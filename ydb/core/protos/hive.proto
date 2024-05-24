@@ -1,4 +1,4 @@
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/core/protos/base.proto";
 import "ydb/core/protos/tablet.proto";
 import "ydb/core/protos/subdomains.proto";
@@ -45,12 +45,6 @@ enum EMigrationState {
     MIGRATION_READY = 1;
     MIGRATION_ACTIVE = 2;
     MIGRATION_COMPLETE = 3;
-}
-
-enum EDrainDownPolicy {
-    DRAIN_POLICY_NO_DOWN = 0;
-    DRAIN_POLICY_KEEP_DOWN_UNTIL_RESTART = 1;
-    DRAIN_POLICY_KEEP_DOWN = 2;
 }
 
 message TChannelInfo {
@@ -252,7 +246,6 @@ message TEvReassignTablet {
     enum EHiveReassignReason {
         HIVE_REASSIGN_REASON_NO = 0;
         HIVE_REASSIGN_REASON_SPACE = 1;
-        HIVE_REASSIGN_REASON_BALANCE = 2; // internal to Hive
     }
 
     optional fixed64 TabletID = 1;
@@ -308,9 +301,7 @@ message TEvResponseHiveDomainStats {
 message TEvRequestHiveNodeStats {
     optional bool ReturnMetrics = 5;
     optional bool ReturnExtendedTabletInfo = 6;
-    // The next 2 fields should always be used together
     optional uint64 FilterTabletsByPathId = 7;
-    optional uint64 FilterTabletsBySchemeShardId = 8;
 }
 
 message THiveNodeStats {
@@ -320,7 +311,6 @@ message THiveNodeStats {
     optional uint32 RestartsPerPeriod = 6;
     optional uint64 LastAliveTimestamp = 7;
     optional NKikimrSubDomains.TDomainKey NodeDomain = 8;
-    optional string NodeName = 9;
 }
 
 message TEvResponseHiveNodeStats {
@@ -361,9 +351,8 @@ message TTabletOwner {
 message TEvDrainNode {
     optional uint32 NodeID = 1;
     optional bool Persist = 3 [default = true];
-    optional bool KeepDown = 4 [default = false]; // deprecated in favor of DownPolicy
+    optional bool KeepDown = 4 [default = false];
     optional uint32 DrainInFlight = 5;
-    optional EDrainDownPolicy DownPolicy = 6 [default = DRAIN_POLICY_KEEP_DOWN_UNTIL_RESTART];
 }
 
 message TEvDrainNodeResult {
@@ -550,28 +539,4 @@ message TTabletOwnerRecord {
 
 message TEvTabletOwnersReply {
     repeated TTabletOwnerRecord TabletOwners = 1;
-}
-
-message TEvUpdateTabletsObject {
-    optional uint64 ObjectId = 1;
-    repeated fixed64 TabletIds = 2;
-    optional uint64 TxId = 3;
-    optional uint64 TxPartId = 4;
-}
-
-message TEvUpdateTabletsObjectReply {
-    optional NKikimrProto.EReplyStatus Status = 1;
-    optional uint64 TxId = 2;
-    optional uint64 TxPartId = 3;
-}
-
-message TEvUpdateDomain {
-    optional NKikimrSubDomains.TDomainKey DomainKey = 1;
-    optional NKikimrSubDomains.EServerlessComputeResourcesMode ServerlessComputeResourcesMode = 2;
-    optional uint64 TxId = 3;
-}
-
-message TEvUpdateDomainReply {
-    optional fixed64 Origin = 1;
-    optional uint64 TxId = 2;
 }

@@ -1,13 +1,12 @@
 
 #include "node_tablet_monitor.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/core/base/domain.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/base/appdata.h>
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 #include <util/generic/algorithm.h>
 #include <ydb/core/base/tablet_types.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
@@ -83,6 +82,30 @@ public:
                 }
             }
             HTML_TAG() {str << "<a href=\"nodetabmon?action=browse_tablets\">All tablets of the cluster</a>";}
+            TAG(TH3) {
+                str << "State Storages";
+            }
+            TABLE_SORTABLE_CLASS("table") {
+                TABLEHEAD() {
+                    TABLER() {
+                        TABLEH() {str << "StateStorageId";}
+                        TABLEH() {str << "Domain";}
+                    }
+                }
+                TABLEBODY() {
+
+                    for (const auto& ni : AppData(ctx)->DomainsInfo->Domains) {
+                        const TDomainsInfo::TDomain &domain = *ni.second;
+                        for (const auto ssId : domain.StateStorageGroups) {
+                            TABLER() {
+                                TABLED() {str << "<a href=\"nodetabmon?action=browse_ss&ss_id=" << ssId << "\">"
+                                        << ssId << "</a>";}
+                                TABLED() {str << domain.Name;}
+                            }
+                        }
+                    }
+                }
+            }
         }
         ctx.Send(Sender, new NMon::TEvHttpInfoRes(str.Str()));
         Die(ctx);
@@ -278,8 +301,9 @@ public:
         return NKikimrServices::TActivity::TABLET_FORWARDING_ACTOR;
     }
 
-    TStateStorageTabletList(const TActorId &sender)
+    TStateStorageTabletList(const TActorId &sender, ui32 stateStorageId)
         : Sender(sender)
+        , StateStorageId(stateStorageId)
     {}
 
     void Bootstrap(const TActorContext& ctx) {
@@ -299,7 +323,7 @@ public:
 
     void Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev, const TActorContext &ctx) {
         NodesInfo = ev->Release();
-        const TActorId proxyActorID = MakeStateStorageProxyID();
+        const TActorId proxyActorID = MakeStateStorageProxyID(StateStorageId);
         ctx.Send(proxyActorID, new TEvStateStorage::TEvRequestReplicasDumps());
     }
 
@@ -316,7 +340,7 @@ public:
         TStringStream str;
         HTML(str) {
             TAG(TH3) {
-                str << "Tablets of StateStorage";
+                str << "Tablets of StateStorage " << StateStorageId;
             }
             TABLE_CLASS("table table-bordered") {
                 TABLEHEAD() {
@@ -381,6 +405,7 @@ public:
 
 protected:
     TActorId Sender;
+    ui32 StateStorageId;
     TAutoPtr<TEvInterconnect::TEvNodesInfo> NodesInfo;
 };
 
@@ -442,8 +467,8 @@ private:
                     filterNodeId = FromStringWithDefault<ui32>(cgi.Get("node_id"));
                 ctx.ExecutorThread.RegisterActor(new TTabletList(ev->Sender, filterNodeId, StateClassifier, TableRenderer));
                 return;
-            } else if (actionParam == "browse_ss") {
-                ctx.ExecutorThread.RegisterActor(new TStateStorageTabletList(ev->Sender));
+            } else if (actionParam == "browse_ss" && cgi.Has("ss_id")) {
+                ctx.ExecutorThread.RegisterActor(new TStateStorageTabletList(ev->Sender, FromStringWithDefault<ui32>(cgi.Get("ss_id"))));
                 return;
             }
         }

@@ -21,17 +21,6 @@ SELECT * FROM test;`
 
 Префикс не добавляется, если имя таблицы указано как абсолютный путь (начинается с /).
 
-### UDF {#udf}
-
-| Тип значения | По умолчанию | Статическая /<br/>динамическая |
-| --- | --- | --- |
-| Строка | — | Статическая |
-| Строка - имя префикса, добавляемого ко всем модулям | "" | Статическая |
-
-Импорт всех UDF из указанной приложенной к запросу скомпилированной под Linux x64 разделяемой библиотеки (.so).
-При указании префикса, он добавляется перед названием всех загруженных модулей, например, CustomPrefixIp::IsIPv4 вместо Ip::IsIPv4.
-Указание префикса позволяет подгрузить одну и ту же UDF разных версий.
-
 ### UseTablePrefixForEach {#use-table-prefix-for-each}
 
 | Тип значения | По умолчанию |
@@ -141,6 +130,7 @@ StrictJoinKeyTypes является [scoped](#pragmascope) настройкой.
 `1 IN (2, 3, NULL) = NULL (было Just(False))`
 `NULL IN () = Just(False) (было NULL)`
 `(1, null) IN ((2, 2), (3, 3)) = Just(False) (было NULL)`
+`2147483648u IN (1, 2147483648u) = True (было False)`
 
 Подробнее про поведение `IN` при наличии `NULL`ов в операндах можно почитать [здесь](../../expressions.md#in). Явным образом выбрать старое поведение можно указав прагму `DisableAnsiInForEmptyOrNullableItemsCollections`. Если никакой прагмы не задано, то выдается предупреждение и работает старый вариант.
 
@@ -205,28 +195,6 @@ ClassicDivision является [scoped](#pragmascope) настройкой.
 Если отключить - переполнение не проверяется. 
 Не влияет на операции с числами с  плавающей точкой или `Decimal`.
 CheckedOps является [scoped](#pragmascope) настройкой.
-
-### UnicodeLiterals
-
-`UnicodeLiterals`/`DisableUnicodeLiterals`
-
-| Тип значения | По умолчанию |
-| --- | --- |
-| Флаг | false |
-
-При включенном режиме строковые литералы без суффиксов вида "foo"/'bar'/@@multiline@@ будут иметь тип `Utf8`, при выключенном - `String`.
-UnicodeLiterals является [scoped](#pragmascope) настройкой.
-
-### WarnUntypedStringLiterals
-
-`WarnUntypedStringLiterals`/`DisableWarnUntypedStringLiterals`
-
-| Тип значения | По умолчанию |
-| --- | --- |
-| Флаг | false |
-
-При включенном режиме для строковых литералов без суффиксов вида "foo"/'bar'/@@multiline@@ будет генерироваться предупреждение. Его можно подавить, если явно выбрать суффикс `s` для типа `String`, либо `u` для типа `Utf8`.
-WarnUntypedStringLiterals является [scoped](#pragmascope) настройкой.
 
 ### AllowDotInAlias
 

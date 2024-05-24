@@ -38,9 +38,8 @@ private:
 };
 
 bool ReadFromFileIfExists(TString& filePath, const TString& fileName, TString& output, bool allowEmpty = false);
-bool ReadFromFileIfExists(const TString& filePath, const TString& fileName, TString& output, bool allowEmpty = false);
 TString ReadFromFile(TString& filePath, const TString& fileName, bool allowEmpty = false);
-TString ReadFromFile(const TString& filePath, const TString& fileName, bool allowEmpty = false);
+size_t TermWidth();
 TString InputPassword();
 
 }

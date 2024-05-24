@@ -20,8 +20,6 @@
 
 #include "src/core/ext/filters/client_channel/global_subchannel_pool.h"
 
-#include <utility>
-
 #include "src/core/ext/filters/client_channel/subchannel.h"
 
 namespace grpc_core {

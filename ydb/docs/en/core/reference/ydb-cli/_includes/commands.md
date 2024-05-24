@@ -22,7 +22,6 @@ Any command can be run from the command line with the `--help` option to get hel
 
 | Command / subcommand | Brief description |
 --- | ---
-| [config info](../commands/config-info.md) | Displaying [connection parameters](../connect.md) |
 | [config profile activate](../profile/activate.md) | Activating a [profile](../profile/index.md) |
 | [config profile create](../profile/create.md) | Creating a [profile](../profile/index.md) |
 | [config profile delete](../profile/create.md) | Deleting a [profile](../profile/index.md) |
@@ -31,10 +30,10 @@ Any command can be run from the command line with the `--help` option to get hel
 | [config profile set](../profile/activate.md) | Activating a [profile](../profile/index.md) |
 | [discovery list](../commands/discovery-list.md) | List of endpoints |
 | [discovery whoami](../commands/discovery-whoami.md) | Authentication |
-| [export s3](../export-import/export-s3.md) | Exporting data to S3 storage |
-| [import file csv](../export-import/import-file.md) | Importing data from a CSV file |
-| [import file tsv](../export-import/import-file.md) | Importing data from a TSV file |
-| [import s3](../export-import/import-s3.md) | Importing data from S3 storage |
+| [export s3](../export_import/s3_export.md) | Exporting data to S3 storage |
+| [import file csv](../export_import/import-file.md) | Importing data from a CSV file |
+| [import file tsv](../export_import/import-file.md) | Importing data from a TSV file |
+| [import s3](../export_import/s3_import.md) | Importing data from S3 storage |
 | [init](../profile/create.md) | Initializing the CLI, creating a [profile](../profile/index.md) |
 | [operation cancel](../operation-cancel.md) | Aborting long-running operations |
 | [operation forget](../operation-forget.md) | Deleting long-running operations from the list |
@@ -64,9 +63,9 @@ Any command can be run from the command line with the `--help` option to get hel
 | [table ttl set](../table-ttl-set.md) | Setting TTL parameters |
 | [table ttl reset](../table-ttl-reset.md) | Resetting TTL parameters |
 | [tools copy](../tools-copy.md) | Copying tables |
-| [tools dump](../export-import/tools-dump.md) | Dumping a directory or table to the file system |
+| [tools dump](../export_import/tools_dump.md) | Dumping a directory or table to the file system |
 | [tools rename](../commands/tools/rename.md) | Renaming tables |
-| [tools restore](../export-import/tools-restore.md) | Restoring data from the file system |
+| [tools restore](../export_import/tools_restore.md) | Restoring data from the file system |
 | [topic create](../topic-create.md) | Creating a topic |
 | [topic alter](../topic-alter.md) | Updating topic parameters and consumers |
 | [topic drop](../topic-drop.md) | Deleting a topic |

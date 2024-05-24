@@ -30,7 +30,7 @@ namespace NKikimr {
             , Guid(guid)
             , State(state)
         {
-            Y_ABORT_UNLESS(!(State == TSyncVal::Final && Guid == TVDiskEternalGuid()));
+            Y_VERIFY(!(State == TSyncVal::Final && Guid == TVDiskEternalGuid()));
         }
 
         TString ToString() const {

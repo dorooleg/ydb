@@ -14,15 +14,12 @@
 #ifndef Y_ABSL_STATUS_INTERNAL_STATUSOR_INTERNAL_H_
 #define Y_ABSL_STATUS_INTERNAL_STATUSOR_INTERNAL_H_
 
-#include <cstdint>
 #include <type_traits>
 #include <utility>
 
 #include "y_absl/base/attributes.h"
-#include "y_absl/base/nullability.h"
 #include "y_absl/meta/type_traits.h"
 #include "y_absl/status/status.h"
-#include "y_absl/strings/string_view.h"
 #include "y_absl/utility/utility.h"
 
 namespace y_absl {
@@ -72,8 +69,11 @@ using IsConstructibleOrConvertibleOrAssignableFromStatusOr =
 template <typename T, typename U>
 struct IsDirectInitializationAmbiguous
     : public y_absl::conditional_t<
-          std::is_same<y_absl::remove_cvref_t<U>, U>::value, std::false_type,
-          IsDirectInitializationAmbiguous<T, y_absl::remove_cvref_t<U>>> {};
+          std::is_same<y_absl::remove_cv_t<y_absl::remove_reference_t<U>>,
+                       U>::value,
+          std::false_type,
+          IsDirectInitializationAmbiguous<
+              T, y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>> {};
 
 template <typename T, typename V>
 struct IsDirectInitializationAmbiguous<T, y_absl::StatusOr<V>>
@@ -84,11 +84,14 @@ struct IsDirectInitializationAmbiguous<T, y_absl::StatusOr<V>>
 template <typename T, typename U>
 using IsDirectInitializationValid = y_absl::disjunction<
     // Short circuits if T is basically U.
-    std::is_same<T, y_absl::remove_cvref_t<U>>,
+    std::is_same<T, y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
     y_absl::negation<y_absl::disjunction<
-        std::is_same<y_absl::StatusOr<T>, y_absl::remove_cvref_t<U>>,
-        std::is_same<y_absl::Status, y_absl::remove_cvref_t<U>>,
-        std::is_same<y_absl::in_place_t, y_absl::remove_cvref_t<U>>,
+        std::is_same<y_absl::StatusOr<T>,
+                     y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
+        std::is_same<y_absl::Status,
+                     y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
+        std::is_same<y_absl::in_place_t,
+                     y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
         IsDirectInitializationAmbiguous<T, U>>>>;
 
 // This trait detects whether `StatusOr<T>::operator=(U&&)` is ambiguous, which
@@ -104,8 +107,11 @@ using IsDirectInitializationValid = y_absl::disjunction<
 template <typename T, typename U>
 struct IsForwardingAssignmentAmbiguous
     : public y_absl::conditional_t<
-          std::is_same<y_absl::remove_cvref_t<U>, U>::value, std::false_type,
-          IsForwardingAssignmentAmbiguous<T, y_absl::remove_cvref_t<U>>> {};
+          std::is_same<y_absl::remove_cv_t<y_absl::remove_reference_t<U>>,
+                       U>::value,
+          std::false_type,
+          IsForwardingAssignmentAmbiguous<
+              T, y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>> {};
 
 template <typename T, typename U>
 struct IsForwardingAssignmentAmbiguous<T, y_absl::StatusOr<U>>
@@ -116,17 +122,20 @@ struct IsForwardingAssignmentAmbiguous<T, y_absl::StatusOr<U>>
 template <typename T, typename U>
 using IsForwardingAssignmentValid = y_absl::disjunction<
     // Short circuits if T is basically U.
-    std::is_same<T, y_absl::remove_cvref_t<U>>,
+    std::is_same<T, y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
     y_absl::negation<y_absl::disjunction<
-        std::is_same<y_absl::StatusOr<T>, y_absl::remove_cvref_t<U>>,
-        std::is_same<y_absl::Status, y_absl::remove_cvref_t<U>>,
-        std::is_same<y_absl::in_place_t, y_absl::remove_cvref_t<U>>,
+        std::is_same<y_absl::StatusOr<T>,
+                     y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
+        std::is_same<y_absl::Status,
+                     y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
+        std::is_same<y_absl::in_place_t,
+                     y_absl::remove_cv_t<y_absl::remove_reference_t<U>>>,
         IsForwardingAssignmentAmbiguous<T, U>>>>;
 
 class Helper {
  public:
   // Move type-agnostic error handling to the .cc.
-  static void HandleInvalidStatusCtorArg(y_absl::Nonnull<Status*>);
+  static void HandleInvalidStatusCtorArg(Status*);
   Y_ABSL_ATTRIBUTE_NORETURN static void Crash(const y_absl::Status& status);
 };
 
@@ -134,8 +143,7 @@ class Helper {
 // the constructor.
 // This abstraction is here mostly for the gcc performance fix.
 template <typename T, typename... Args>
-Y_ABSL_ATTRIBUTE_NONNULL(1)
-void PlacementNew(y_absl::Nonnull<void*> p, Args&&... args) {
+Y_ABSL_ATTRIBUTE_NONNULL(1) void PlacementNew(void* p, Args&&... args) {
   new (p) T(std::forward<Args>(args)...);
 }
 
@@ -380,53 +388,6 @@ struct MoveAssignBase<T, false> {
 };
 
 Y_ABSL_ATTRIBUTE_NORETURN void ThrowBadStatusOrAccess(y_absl::Status status);
-
-// Used to introduce jitter into the output of printing functions for
-// `StatusOr` (i.e. `AbslStringify` and `operator<<`).
-class StringifyRandom {
-  enum BracesType {
-    kBareParens = 0,
-    kSpaceParens,
-    kBareBrackets,
-    kSpaceBrackets,
-  };
-
-  // Returns a random `BracesType` determined once per binary load.
-  static BracesType RandomBraces() {
-    static const BracesType kRandomBraces = static_cast<BracesType>(
-        (reinterpret_cast<uintptr_t>(&kRandomBraces) >> 4) % 4);
-    return kRandomBraces;
-  }
-
- public:
-  static inline y_absl::string_view OpenBrackets() {
-    switch (RandomBraces()) {
-      case kBareParens:
-        return "(";
-      case kSpaceParens:
-        return "( ";
-      case kBareBrackets:
-        return "[";
-      case kSpaceBrackets:
-        return "[ ";
-    }
-    return "(";
-  }
-
-  static inline y_absl::string_view CloseBrackets() {
-    switch (RandomBraces()) {
-      case kBareParens:
-        return ")";
-      case kSpaceParens:
-        return " )";
-      case kBareBrackets:
-        return "]";
-      case kSpaceBrackets:
-        return " ]";
-    }
-    return ")";
-  }
-};
 
 }  // namespace internal_statusor
 Y_ABSL_NAMESPACE_END

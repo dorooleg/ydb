@@ -123,7 +123,7 @@ namespace {
                 scope.insert(x);
             }
 
-            const auto rename = [&](const TPartOfConstraintBase::TPathType& path) -> std::vector<TPartOfConstraintBase::TPathType> {
+            const auto rename = [&](const TConstraintNode::TPathType& path) -> std::vector<TConstraintNode::TPathType> {
                 if (path.empty())
                     return {};
                 auto newPath = path;
@@ -193,8 +193,7 @@ namespace {
         std::vector<std::string_view> lCheck;
         lCheck.reserve(leftKeys.size());
         for (const auto& x : leftKeys) {
-            for (const auto& name : (*labels.FindInput(x.first))->AllNames(x.second))
-                lCheck.emplace_back(ctx.AppendString(name));
+            lCheck.emplace_back(ctx.AppendString((*labels.FindInput(x.first))->FullName(x.second)));
             if (!myLeftScope.contains(x.first)) {
                 ctx.AddError(TIssue(ctx.GetPosition(joins.Pos()),
                     TStringBuilder() << "Correlation name " << x.first << " is out of scope"));
@@ -213,8 +212,7 @@ namespace {
         std::vector<std::string_view> rCheck;
         rCheck.reserve(rightKeys.size());
         for (const auto& x : rightKeys) {
-            for (const auto& name : (*labels.FindInput(x.first))->AllNames(x.second))
-                rCheck.emplace_back(ctx.AppendString(name));
+            rCheck.emplace_back(ctx.AppendString((*labels.FindInput(x.first))->FullName(x.second)));
             if (!myRightScope.contains(x.first)) {
                 ctx.AddError(TIssue(ctx.GetPosition(joins.Pos()),
                     TStringBuilder() << "Correlation name " << x.first << " is out of scope"));
@@ -279,7 +277,7 @@ namespace {
         }
 
         std::optional<std::unordered_set<std::string_view>> leftHints, rightHints;
-        bool hasJoinStrategyHint = false;
+        bool forceSortedMerge = false;
         for (auto child : linkOptions->Children()) {
             if (!EnsureTupleMinSize(*child, 1, ctx)) {
                 return IGraphTransformer::TStatus::Error;
@@ -318,19 +316,16 @@ namespace {
                     }
                 }
             }
-            else if (option.IsAtom("forceSortedMerge") || option.IsAtom("forceStreamLookup")) {
+            else if (option.IsAtom("forceSortedMerge")) {
                 if (!EnsureTupleSize(*child, 1, ctx)) {
                     return IGraphTransformer::TStatus::Error;
                 }
-                if (hasJoinStrategyHint) {
+                if (forceSortedMerge) {
                     ctx.AddError(TIssue(ctx.GetPosition(option.Pos()), TStringBuilder() <<
                         "Duplicate " << option.Content() << " link option"));
                     return IGraphTransformer::TStatus::Error;
                 }
-                hasJoinStrategyHint = true;
-            }
-            else if (option.IsAtom("join_algo")) {
-                //do nothing
+                forceSortedMerge = true;
             }
             else {
                 ctx.AddError(TIssue(ctx.GetPosition(option.Pos()), TStringBuilder() <<
@@ -342,8 +337,8 @@ namespace {
         const bool lAny = leftHints && (leftHints->contains("unique") || leftHints->contains("any"));
         const bool rAny = rightHints && (rightHints->contains("unique") || rightHints->contains("any"));
 
-        const bool lOneRow = lAny || lUnique && lUnique->ContainsCompleteSet(lCheck);
-        const bool rOneRow = rAny || rUnique && rUnique->ContainsCompleteSet(rCheck);
+        const bool lOneRow = lAny || lUnique && lUnique->HasEqualColumns(lCheck);
+        const bool rOneRow = rAny || rUnique && rUnique->HasEqualColumns(rCheck);
 
         if (unique) {
             if (singleSide) {
@@ -390,7 +385,7 @@ namespace {
 
     struct TFlattenState {
         TString Table;
-        TTypeAnnotationNode::TListType AllTypes;
+        TVector<const TTypeAnnotationNode*> AllTypes;
     };
 
     void CollectEquiJoinKeyColumnsFromLeaf(const TExprNode& columns, THashMap<TStringBuf, THashSet<TStringBuf>>& tableKeysMap) {
@@ -548,12 +543,6 @@ TString TJoinLabel::FullName(const TStringBuf& column) const {
     } else {
         return TString(column);
     }
-}
-
-TVector<TString> TJoinLabel::AllNames(const TStringBuf& column) const {
-    TVector<TString> result(Tables.size());
-    std::transform(Tables.cbegin(), Tables.cend(), result.begin(), std::bind(&FullColumnName, std::placeholders::_1, std::cref(column)));
-    return result;
 }
 
 TStringBuf TJoinLabel::ColumnName(const TStringBuf& column) const {
@@ -770,10 +759,6 @@ IGraphTransformer::TStatus ValidateEquiJoinOptions(TPositionHandle positionHandl
                 ctx.AddError(TIssue(ctx.GetPosition(child->Child(1)->Pos()), TStringBuilder() <<
                     "Duplicated preferred_sort set: " << JoinSeq(", ", sortBy)));
             }
-        } else if (optionName == "cbo_passed") {
-            // do nothing
-        } else if (optionName == "join_algo") {
-            // do nothing
         } else {
             ctx.AddError(TIssue(position, TStringBuilder() <<
                 "Unknown option name: " << optionName));
@@ -877,12 +862,32 @@ IGraphTransformer::TStatus EquiJoinAnnotation(
 
     if (options.Flatten) {
         for (auto& x : flattenFields) {
-            if (const auto commonType = CommonType(positionHandle, x.second.AllTypes, ctx)) {
-                const bool unwrap = ETypeAnnotationKind::Optional == commonType->GetKind() &&
-                    std::any_of(x.second.AllTypes.cbegin(), x.second.AllTypes.cend(), [](const TTypeAnnotationNode* type) { return ETypeAnnotationKind::Optional != type->GetKind(); });
-                resultFields.emplace_back(ctx.MakeType<TItemExprType>(x.first, unwrap ? commonType->Cast<TOptionalExprType>()->GetItemType() : commonType));
-            } else
-                return IGraphTransformer::TStatus::Error;
+            bool isOptional = true;
+            const TTypeAnnotationNode* commonType = nullptr;
+            for (auto type : x.second.AllTypes) {
+                if (type->GetKind() != ETypeAnnotationKind::Optional) {
+                    isOptional = false;
+                } else {
+                    type = type->Cast<TOptionalExprType>()->GetItemType();
+                }
+
+                if (!commonType) {
+                    commonType = type;
+                } else {
+                    auto arg1 = ctx.NewArgument(positionHandle, "a");
+                    auto arg2 = ctx.NewArgument(positionHandle, "b");
+                    if (SilentInferCommonType(arg1, *commonType, arg2, *type, ctx, commonType,
+                        TConvertFlags().Set(NConvertFlags::AllowUnsafeConvert)) == IGraphTransformer::TStatus::Error) {
+                        return IGraphTransformer::TStatus::Error;
+                    }
+                }
+            }
+
+            if (isOptional && commonType->GetKind() != ETypeAnnotationKind::Optional) {
+                commonType = ctx.MakeType<TOptionalExprType>(commonType);
+            }
+
+            resultFields.push_back(ctx.MakeType<TItemExprType>(x.first, commonType));
         }
     }
 
@@ -1338,17 +1343,7 @@ TEquiJoinLinkSettings GetEquiJoinLinkSettings(const TExprNode& linkSettings) {
         collectHints(result.RightHints, *right->Child(1));
     }
 
-    if (auto algo = GetSetting(linkSettings, "join_algo")) {
-        YQL_ENSURE(algo->Child(1)->IsAtom());
-        result.JoinAlgo = FromString<EJoinAlgoType>(algo->Child(1)->Content());
-    }
-
     result.ForceSortedMerge = HasSetting(linkSettings, "forceSortedMerge");
-    
-    if(HasSetting(linkSettings, "forceStreamLookup")) {
-        result.JoinAlgo = EJoinAlgoType::StreamLookupJoin;
-    }
-
     return result;
 }
 

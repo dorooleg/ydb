@@ -24,7 +24,7 @@
 #include "Poco/Event.h"
 #include "Poco/RefCountedObject.h"
 #include "Poco/AutoPtr.h"
-#error #include <taskLib.h>
+#include <taskLib.h>
 #error #include <taskVarLib.h>
 
 

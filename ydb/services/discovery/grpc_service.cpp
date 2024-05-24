@@ -8,7 +8,7 @@
 namespace NKikimr {
 namespace NGRpcService {
 
-static TString GetSdkBuildInfo(NYdbGrpc::IRequestContextBase* reqCtx) {
+static TString GetSdkBuildInfo(NGrpc::IRequestContextBase* reqCtx) {
     const auto& res = reqCtx->GetPeerMetaValues(NYdb::YDB_SDK_BUILD_INFO_HEADER);
     if (res.empty()) {
         return {};
@@ -20,7 +20,7 @@ void TGRpcDiscoveryService::SetDynamicNodeAuthParams(const TDynamicNodeAuthoriza
     DynamicNodeAuthorizationParams = dynamicNodeAuthorizationParams;
 }
 
-void TGRpcDiscoveryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcDiscoveryService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
      auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
      using namespace Ydb;
 #ifdef ADD_REQUEST
@@ -29,7 +29,7 @@ void TGRpcDiscoveryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
 #define ADD_REQUEST(NAME, CB) \
     MakeIntrusive<TGRpcRequest<Discovery::NAME##Request, Discovery::NAME##Response, TGRpcDiscoveryService>>   \
         (this, &Service_, CQ_,                                                                                \
-            [this](NYdbGrpc::IRequestContextBase *ctx) {                                                         \
+            [this](NGrpc::IRequestContextBase *ctx) {                                                         \
                 NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer(), GetSdkBuildInfo(ctx));        \
                 ActorSystem_->Send(GRpcRequestProxyId_,                                                       \
                     new TGrpcRequestOperationCall<Discovery::NAME##Request, Discovery::NAME##Response>        \
@@ -48,7 +48,7 @@ void TGRpcDiscoveryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
 #endif
 #define ADD_LEGACY_REQUEST(NAME, IN, OUT, ACTION)                                                                     \
     MakeIntrusive<TGRpcRequest<Ydb::Discovery::IN, Ydb::Discovery::OUT, TGRpcDiscoveryService>>(this, &Service_, CQ_, \
-        [this](NYdbGrpc::IRequestContextBase *reqCtx) {                                                                  \
+        [this](NGrpc::IRequestContextBase *reqCtx) {                                                                  \
            NGRpcService::ReportGrpcReqToMon(*ActorSystem_, reqCtx->GetPeer(), GetSdkBuildInfo(reqCtx));               \
            ACTION;                                                                                                    \
         }, &Ydb::Discovery::V1::DiscoveryService::AsyncService::Request ## NAME,                                      \

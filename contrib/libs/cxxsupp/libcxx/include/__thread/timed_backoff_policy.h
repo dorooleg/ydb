@@ -6,7 +6,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-
 #ifndef _LIBCPP___THREAD_TIMED_BACKOFF_POLICY_H
 #define _LIBCPP___THREAD_TIMED_BACKOFF_POLICY_H
 
@@ -14,8 +13,8 @@
 
 #ifndef _LIBCPP_HAS_NO_THREADS
 
-#  include <__chrono/duration.h>
-#  include <__threading_support>
+#include <__threading_support>
+#include <chrono>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header

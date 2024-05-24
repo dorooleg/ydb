@@ -17,7 +17,7 @@
 #include "Poco/Exception.h"
 #include "Poco/Timestamp.h"
 #include "Poco/Timespan.h"
-#error #include <timers.h>
+#include <timers.h>
 
 
 namespace Poco {

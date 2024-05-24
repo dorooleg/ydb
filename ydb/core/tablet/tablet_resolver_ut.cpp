@@ -2,8 +2,8 @@
 #include <ydb/core/base/tablet_resolver.h>
 #include <ydb/core/base/tabletid.h>
 #include <ydb/core/testlib/tablet_helpers.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 namespace NKikimr {
@@ -51,7 +51,7 @@ Y_UNIT_TEST_SUITE(TTabletResolver) {
         { }
 
         void Bootstrap() {
-            ProxyId = MakeStateStorageProxyID();
+            ProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(TabletId));
             Send(ProxyId, new TEvStateStorage::TEvLookup(TabletId, 0, TEvStateStorage::TProxyOptions(TEvStateStorage::TProxyOptions::SigSync)));
             Become(&TThis::StateLookup);
         }
@@ -64,7 +64,7 @@ Y_UNIT_TEST_SUITE(TTabletResolver) {
 
         void HandleLookup(TEvStateStorage::TEvInfo::TPtr& ev) {
             auto* msg = ev->Get();
-            Y_ABORT_UNLESS(msg->SignatureSz);
+            Y_VERIFY(msg->SignatureSz);
             SignatureSz = msg->SignatureSz;
             Signature.Reset(msg->Signature.Release());
 

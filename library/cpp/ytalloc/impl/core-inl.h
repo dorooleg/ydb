@@ -251,7 +251,7 @@ void AssertBlobState(T* header, E expectedState)
     auto actualState = header->State;
     if (Y_UNLIKELY(actualState != expectedState)) {
         char message[256];
-        snprintf(message, sizeof(message), "Invalid blob header state at %p: expected %" PRIx64 ", actual %" PRIx64,
+        sprintf(message, "Invalid blob header state at %p: expected %" PRIx64 ", actual %" PRIx64,
             header,
             static_cast<ui64>(expectedState),
             static_cast<ui64>(actualState));
@@ -940,14 +940,14 @@ class TTimingManager
     : public TEventLogManagerBase<TTimingEvent, TTimingManager>
 {
 public:
-    TEnumIndexedArray<ETimingEventType, TTimingEventCounters> GetTimingEventCounters()
+    TEnumIndexedVector<ETimingEventType, TTimingEventCounters> GetTimingEventCounters()
     {
         auto guard = Guard(EventLock_);
         return EventCounters_;
     }
 
 private:
-    TEnumIndexedArray<ETimingEventType, TTimingEventCounters> EventCounters_;
+    TEnumIndexedVector<ETimingEventType, TTimingEventCounters> EventCounters_;
 
     Y_POD_STATIC_THREAD(bool) DisabledForCurrentThread_;
 
@@ -1237,7 +1237,7 @@ private:
         if (result != 0) {
             auto error = errno;
             // Failure is possible for locked pages.
-            Y_ABORT_UNLESS(error == EINVAL);
+            Y_VERIFY(error == EINVAL);
         }
     }
 
@@ -1523,13 +1523,13 @@ static_assert(
     "Wrong MaxMemoryTag");
 
 template <class TCounter>
-using TUntaggedTotalCounters = TEnumIndexedArray<EBasicCounter, TCounter>;
+using TUntaggedTotalCounters = TEnumIndexedVector<EBasicCounter, TCounter>;
 
 template <class TCounter>
 struct TTaggedTotalCounterSet
     : public TSystemAllocatable
 {
-    std::array<TEnumIndexedArray<EBasicCounter, TCounter>, TaggedCounterSetSize> Counters;
+    std::array<TEnumIndexedVector<EBasicCounter, TCounter>, TaggedCounterSetSize> Counters;
 };
 
 using TLocalTaggedBasicCounterSet = TTaggedTotalCounterSet<ssize_t>;
@@ -1577,20 +1577,20 @@ struct TTotalCounters
     }
 };
 
-using TLocalSystemCounters = TEnumIndexedArray<ESystemCounter, ssize_t>;
-using TGlobalSystemCounters = TEnumIndexedArray<ESystemCounter, std::atomic<ssize_t>>;
+using TLocalSystemCounters = TEnumIndexedVector<ESystemCounter, ssize_t>;
+using TGlobalSystemCounters = TEnumIndexedVector<ESystemCounter, std::atomic<ssize_t>>;
 
-using TLocalSmallCounters = TEnumIndexedArray<ESmallArenaCounter, ssize_t>;
-using TGlobalSmallCounters = TEnumIndexedArray<ESmallArenaCounter, std::atomic<ssize_t>>;
+using TLocalSmallCounters = TEnumIndexedVector<ESmallArenaCounter, ssize_t>;
+using TGlobalSmallCounters = TEnumIndexedVector<ESmallArenaCounter, std::atomic<ssize_t>>;
 
-using TLocalLargeCounters = TEnumIndexedArray<ELargeArenaCounter, ssize_t>;
-using TGlobalLargeCounters = TEnumIndexedArray<ELargeArenaCounter, std::atomic<ssize_t>>;
+using TLocalLargeCounters = TEnumIndexedVector<ELargeArenaCounter, ssize_t>;
+using TGlobalLargeCounters = TEnumIndexedVector<ELargeArenaCounter, std::atomic<ssize_t>>;
 
-using TLocalHugeCounters = TEnumIndexedArray<EHugeCounter, ssize_t>;
-using TGlobalHugeCounters = TEnumIndexedArray<EHugeCounter, std::atomic<ssize_t>>;
+using TLocalHugeCounters = TEnumIndexedVector<EHugeCounter, ssize_t>;
+using TGlobalHugeCounters = TEnumIndexedVector<EHugeCounter, std::atomic<ssize_t>>;
 
-using TLocalUndumpableCounters = TEnumIndexedArray<EUndumpableCounter, ssize_t>;
-using TGlobalUndumpableCounters = TEnumIndexedArray<EUndumpableCounter, std::atomic<ssize_t>>;
+using TLocalUndumpableCounters = TEnumIndexedVector<EUndumpableCounter, ssize_t>;
+using TGlobalUndumpableCounters = TEnumIndexedVector<EUndumpableCounter, std::atomic<ssize_t>>;
 
 Y_FORCE_INLINE ssize_t LoadCounter(ssize_t counter)
 {
@@ -1750,7 +1750,7 @@ struct TThreadState
         std::array<bool, SmallRankCount> CachedChunkFull{};
 #endif
     };
-    TEnumIndexedArray<EAllocationKind, TSmallBlobCache> SmallBlobCache;
+    TEnumIndexedVector<EAllocationKind, TSmallBlobCache> SmallBlobCache;
 };
 
 struct TThreadStateToRegistryNode
@@ -1895,7 +1895,7 @@ public:
 
     static void SetCurrentMemoryTag(TMemoryTag tag)
     {
-        Y_ABORT_UNLESS(tag <= MaxMemoryTag);
+        Y_VERIFY(tag <= MaxMemoryTag);
         (&ThreadControlWord_)->Parts.MemoryTag = tag;
     }
 
@@ -1929,13 +1929,13 @@ private:
     void RefThreadState(TThreadState* state)
     {
         auto result = ++state->RefCounter;
-        Y_ABORT_UNLESS(result > 1);
+        Y_VERIFY(result > 1);
     }
 
     void UnrefThreadState(TThreadState* state)
     {
         auto result = --state->RefCounter;
-        Y_ABORT_UNLESS(result >= 0);
+        Y_VERIFY(result >= 0);
         if (result == 0) {
             DestroyThreadState(state);
         }
@@ -2227,7 +2227,7 @@ public:
     }
 
     // Computes memory usage for a list of tags by aggregating counters across threads.
-    void GetTaggedMemoryCounters(const TMemoryTag* tags, size_t count, TEnumIndexedArray<EBasicCounter, ssize_t>* counters)
+    void GetTaggedMemoryCounters(const TMemoryTag* tags, size_t count, TEnumIndexedVector<EBasicCounter, ssize_t>* counters)
     {
         TMemoryTagGuard guard(NullMemoryTag);
 
@@ -2260,7 +2260,7 @@ public:
     {
         TMemoryTagGuard guard(NullMemoryTag);
 
-        std::vector<TEnumIndexedArray<EBasicCounter, ssize_t>> counters;
+        std::vector<TEnumIndexedVector<EBasicCounter, ssize_t>> counters;
         counters.resize(count);
         GetTaggedMemoryCounters(tags, count, counters.data());
 
@@ -2269,9 +2269,9 @@ public:
         }
     }
 
-    TEnumIndexedArray<ETotalCounter, ssize_t> GetTotalAllocationCounters()
+    TEnumIndexedVector<ETotalCounter, ssize_t> GetTotalAllocationCounters()
     {
-        TEnumIndexedArray<ETotalCounter, ssize_t> result;
+        TEnumIndexedVector<ETotalCounter, ssize_t> result;
 
         auto accumulate = [&] (const auto& counters) {
             result[ETotalCounter::BytesAllocated] += LoadCounter(counters[EBasicCounter::BytesAllocated]);
@@ -2312,9 +2312,9 @@ public:
         return result;
     }
 
-    TEnumIndexedArray<ESmallCounter, ssize_t> GetSmallAllocationCounters()
+    TEnumIndexedVector<ESmallCounter, ssize_t> GetSmallAllocationCounters()
     {
-        TEnumIndexedArray<ESmallCounter, ssize_t> result;
+        TEnumIndexedVector<ESmallCounter, ssize_t> result;
 
         auto totalCounters = GetTotalAllocationCounters();
         result[ESmallCounter::BytesAllocated] = totalCounters[ETotalCounter::BytesAllocated];
@@ -2347,9 +2347,9 @@ public:
         return result;
     }
 
-    TEnumIndexedArray<ELargeCounter, ssize_t> GetLargeAllocationCounters()
+    TEnumIndexedVector<ELargeCounter, ssize_t> GetLargeAllocationCounters()
     {
-        TEnumIndexedArray<ELargeCounter, ssize_t> result;
+        TEnumIndexedVector<ELargeCounter, ssize_t> result;
         auto largeArenaCounters = GetLargeArenaAllocationCounters();
         for (size_t rank = 0; rank < LargeRankCount; ++rank) {
             result[ESmallCounter::BytesAllocated] += largeArenaCounters[rank][ELargeArenaCounter::BytesAllocated];
@@ -2518,7 +2518,7 @@ void* TSystemAllocator::Allocate(size_t size)
     void* mmappedPtr;
     while (true) {
         auto currentPtr = CurrentPtr_.fetch_add(rawSize);
-        Y_ABORT_UNLESS(currentPtr + rawSize <= SystemZoneEnd);
+        Y_VERIFY(currentPtr + rawSize <= SystemZoneEnd);
         mmappedPtr = MappedMemoryManager->Map(
             currentPtr,
             rawSize,
@@ -2678,7 +2678,7 @@ public:
         auto actualState = state;
         if (Y_UNLIKELY(actualState != expectedState)) {
             char message[256];
-            snprintf(message, sizeof(message), "Invalid small chunk state at %p: expected %" PRIx8 ", actual %" PRIx8,
+            sprintf(message, "Invalid small chunk state at %p: expected %" PRIx8 ", actual %" PRIx8,
                 ptr,
                 static_cast<ui8>(expectedState),
                 static_cast<ui8>(actualState));
@@ -2826,7 +2826,7 @@ private:
     }
 };
 
-TExplicitlyConstructableSingleton<TEnumIndexedArray<EAllocationKind, std::array<TExplicitlyConstructableSingleton<TSmallArenaAllocator>, SmallRankCount>>> SmallArenaAllocators;
+TExplicitlyConstructableSingleton<TEnumIndexedVector<EAllocationKind, std::array<TExplicitlyConstructableSingleton<TSmallArenaAllocator>, SmallRankCount>>> SmallArenaAllocators;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -3023,7 +3023,7 @@ private:
     std::array<TShardedFreeList<TChunkGroup>, SmallRankCount> RankToChunkGroups_;
 };
 
-TExplicitlyConstructableSingleton<TEnumIndexedArray<EAllocationKind, TExplicitlyConstructableSingleton<TGlobalSmallChunkCache>>> GlobalSmallChunkCaches;
+TExplicitlyConstructableSingleton<TEnumIndexedVector<EAllocationKind, TExplicitlyConstructableSingleton<TGlobalSmallChunkCache>>> GlobalSmallChunkCaches;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -4404,7 +4404,7 @@ Y_FORCE_INLINE TThreadState* TThreadManager::FindThreadState()
     InitializeGlobals();
 
     // InitializeGlobals must not allocate.
-    Y_ABORT_UNLESS(!ThreadState_);
+    Y_VERIFY(!ThreadState_);
     ThreadState_ = ThreadManager->AllocateThreadState();
     (&ThreadControlWord_)->Parts.ThreadStateValid = true;
 
@@ -4750,49 +4750,49 @@ void SetEnableMadvisePopulate(bool value)
     ConfigurationManager->SetEnableMadvisePopulate(value);
 }
 
-TEnumIndexedArray<ETotalCounter, ssize_t> GetTotalAllocationCounters()
+TEnumIndexedVector<ETotalCounter, ssize_t> GetTotalAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetTotalAllocationCounters();
 }
 
-TEnumIndexedArray<ESystemCounter, ssize_t> GetSystemAllocationCounters()
+TEnumIndexedVector<ESystemCounter, ssize_t> GetSystemAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetSystemAllocationCounters();
 }
 
-TEnumIndexedArray<ESystemCounter, ssize_t> GetUndumpableAllocationCounters()
+TEnumIndexedVector<ESystemCounter, ssize_t> GetUndumpableAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetUndumpableAllocationCounters();
 }
 
-TEnumIndexedArray<ESmallCounter, ssize_t> GetSmallAllocationCounters()
+TEnumIndexedVector<ESmallCounter, ssize_t> GetSmallAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetSmallAllocationCounters();
 }
 
-TEnumIndexedArray<ESmallCounter, ssize_t> GetLargeAllocationCounters()
+TEnumIndexedVector<ESmallCounter, ssize_t> GetLargeAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetLargeAllocationCounters();
 }
 
-std::array<TEnumIndexedArray<ESmallArenaCounter, ssize_t>, SmallRankCount> GetSmallArenaAllocationCounters()
+std::array<TEnumIndexedVector<ESmallArenaCounter, ssize_t>, SmallRankCount> GetSmallArenaAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetSmallArenaAllocationCounters();
 }
 
-std::array<TEnumIndexedArray<ELargeArenaCounter, ssize_t>, LargeRankCount> GetLargeArenaAllocationCounters()
+std::array<TEnumIndexedVector<ELargeArenaCounter, ssize_t>, LargeRankCount> GetLargeArenaAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetLargeArenaAllocationCounters();
 }
 
-TEnumIndexedArray<EHugeCounter, ssize_t> GetHugeAllocationCounters()
+TEnumIndexedVector<EHugeCounter, ssize_t> GetHugeAllocationCounters()
 {
     InitializeGlobals();
     return StatisticsManager->GetHugeAllocationCounters();
@@ -4816,7 +4816,7 @@ std::vector<TProfiledAllocation> GetProfiledAllocationStatistics()
     }
     tags.push_back(AllocationProfilingUnknownMemoryTag);
 
-    std::vector<TEnumIndexedArray<EBasicCounter, ssize_t>> counters;
+    std::vector<TEnumIndexedVector<EBasicCounter, ssize_t>> counters;
     counters.resize(tags.size());
     StatisticsManager->GetTaggedMemoryCounters(tags.data(), tags.size(), counters.data());
 
@@ -4838,7 +4838,7 @@ std::vector<TProfiledAllocation> GetProfiledAllocationStatistics()
     return statistics;
 }
 
-TEnumIndexedArray<ETimingEventType, TTimingEventCounters> GetTimingEventCounters()
+TEnumIndexedVector<ETimingEventType, TTimingEventCounters> GetTimingEventCounters()
 {
     InitializeGlobals();
     return TimingManager->GetTimingEventCounters();

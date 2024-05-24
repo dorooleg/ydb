@@ -1,12 +1,12 @@
 #include "run_query.h"
 
-#include <ydb/library/actors/core/executor_thread.h>
+#include <library/cpp/actors/core/executor_thread.h>
 
 namespace NKikimr::NSQS {
 
     void RunYqlQuery(
         const TString& query,
-        std::optional<NYdb::TParams> params,
+        std::optional<NKikimr::NClient::TParameters> params,
         bool readonly,
         TDuration sendAfter,
         const TString& database,
@@ -19,7 +19,6 @@ namespace NKikimr::NSQS {
         request->SetType(NKikimrKqp::QUERY_TYPE_SQL_DML);
         request->SetKeepSession(false);
         request->SetQuery(query);
-        request->SetUsePublicResponseDataFormat(true);
 
         if (database) {
             request->SetDatabase(database);
@@ -35,7 +34,7 @@ namespace NKikimr::NSQS {
         request->MutableTxControl()->set_commit_tx(true);
 
         if (params) {
-            request->MutableYdbParameters()->swap(*(NYdb::TProtoAccessor::GetProtoMapPtr(params.value())));
+            request->MutableParameters()->Swap(&params.value());
         }
 
         auto kqpActor = NKqp::MakeKqpProxyID(ctx.SelfID.NodeId());

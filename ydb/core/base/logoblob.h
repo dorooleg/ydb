@@ -23,7 +23,7 @@ namespace NKikimr {
 
         explicit TLogoBlobID(const TLogoBlobID &source, ui32 partId)
         {
-            Y_DEBUG_ABORT_UNLESS(partId < 16);
+            Y_VERIFY_DEBUG(partId < 16);
             Raw.X[0] = source.Raw.X[0];
             Raw.X[1] = source.Raw.X[1];
             Raw.X[2] = (source.Raw.X[2] & 0xFFFFFFFFFFFFFFF0ull) | partId;
@@ -36,7 +36,7 @@ namespace NKikimr {
 
         explicit TLogoBlobID(ui64 tabletId, ui32 generation, ui32 step, ui32 channel, ui32 blobSize, ui32 cookie, ui32 partId)
         {
-            Y_DEBUG_ABORT_UNLESS(partId != 0);
+            Y_VERIFY_DEBUG(partId != 0);
             Set(tabletId, generation, step, channel, blobSize, cookie, partId, 0);
         }
 
@@ -58,7 +58,7 @@ namespace NKikimr {
         }
 
         static TLogoBlobID PrevFull(const TLogoBlobID& id, ui32 size) {
-            Y_ABORT_UNLESS(!id.PartId());
+            Y_VERIFY(!id.PartId());
             ui64 tablet = id.TabletID();
             ui32 channel = id.Channel();
             ui32 generation = id.Generation();
@@ -68,7 +68,7 @@ namespace NKikimr {
             const bool overflow = ((--cookie &= MaxCookie) == MaxCookie) && (--step == Max<ui32>()) &&
                 (--generation == Max<ui32>()) && ((--channel &= MaxChannel) == MaxChannel) &&
                 (--tablet == Max<ui64>());
-            Y_ABORT_UNLESS(!overflow);
+            Y_VERIFY(!overflow);
             return TLogoBlobID(tablet, generation, step, channel, size, cookie);
         }
 
@@ -122,7 +122,7 @@ namespace NKikimr {
         }
 
         static TLogoBlobID FromBinary(TStringBuf data) {
-            Y_ABORT_UNLESS(data.size() == BinarySize);
+            Y_VERIFY(data.size() == BinarySize);
             return FromBinary(data.data());
         }
 
@@ -235,11 +235,11 @@ namespace NKikimr {
 
         void Set(ui64 tabletId, ui32 generation, ui32 step, ui32 channel, ui32 blobSize, ui32 cookie, ui32 partId,
                 ui32 crcMode) {
-            Y_DEBUG_ABORT_UNLESS(channel <= MaxChannel);
-            Y_ABORT_UNLESS(blobSize <= MaxBlobSize);
-            Y_DEBUG_ABORT_UNLESS(cookie <= MaxCookie);
-            Y_DEBUG_ABORT_UNLESS(partId <= MaxPartId);
-            Y_ABORT_UNLESS(crcMode <= MaxCrcMode);
+            Y_VERIFY_DEBUG(channel <= MaxChannel);
+            Y_VERIFY(blobSize <= MaxBlobSize);
+            Y_VERIFY_DEBUG(cookie <= MaxCookie);
+            Y_VERIFY_DEBUG(partId <= MaxPartId);
+            Y_VERIFY(crcMode <= MaxCrcMode);
 
             Raw.N.TabletID = tabletId;
             Raw.N.Generation = generation;

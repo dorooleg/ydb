@@ -88,8 +88,8 @@ public:
 
                 commands.emplace_back(std::move(command));
             }
-            Y_ABORT_UNLESS(dsApplyCtx.ShardTableStats);
-            Y_ABORT_UNLESS(dsApplyCtx.TaskTableStats);
+            Y_VERIFY(dsApplyCtx.ShardTableStats);
+            Y_VERIFY(dsApplyCtx.TaskTableStats);
 
             ui64 nUpdateRow = dsApplyCtx.ShardTableStats->NUpdateRow;
             ui64 updateRowBytes = dsApplyCtx.ShardTableStats->UpdateRowBytes;
@@ -174,11 +174,7 @@ IComputationNode* WrapKqpUpsertRows(TCallable& callable, const TComputationNodeF
     auto tableNode = callable.GetInput(0);
     auto rowsNode = callable.GetInput(1);
     auto upsertColumnsNode = callable.GetInput(2);
-    bool isUpdate = false;
-    if (callable.GetInputsCount() >= 4) {
-        auto isUpdateNode = callable.GetInput(3);
-        isUpdate = AS_VALUE(TDataLiteral, isUpdateNode)->AsValue().Get<bool>();
-    }
+
     auto tableId = NKqp::ParseTableId(tableNode);
     auto tableInfo = computeCtx.GetTable(tableId);
     MKQL_ENSURE(tableInfo, "Table not found: " << tableId.PathId.ToString());
@@ -242,16 +238,14 @@ IComputationNode* WrapKqpUpsertRows(TCallable& callable, const TComputationNodeF
     }
 
     for (const auto& [_, column] : tableInfo->Columns) {
-        if (column.NotNull && !isUpdate) {
+        if (column.NotNull) {
             auto it = inputIndex.find(column.Name);
             MKQL_ENSURE(it != inputIndex.end(),
                 "Not null column " << column.Name << " has to be specified in upsert");
 
-            if (it != inputIndex.end()) {
-                auto columnType = rowType->GetMemberType(it->second);
-                MKQL_ENSURE(columnType->GetKind() != NMiniKQL::TType::EKind::Optional,
-                    "Not null column " << column.Name << " can't be optional");
-            }
+            auto columnType = rowType->GetMemberType(it->second);
+            MKQL_ENSURE(columnType->GetKind() != NMiniKQL::TType::EKind::Optional,
+                "Not null column " << column.Name << " can't be optional");
         }
     }
 

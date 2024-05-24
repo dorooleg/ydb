@@ -1,7 +1,6 @@
 /**
  * \file        lzma/delta.h
  * \brief       Delta filter
- * \note        Never include this file directly. Use <lzma.h> instead.
  */
 
 /*
@@ -9,6 +8,8 @@
  *
  * This file has been put into the public domain.
  * You can do whatever you want with this file.
+ *
+ * See ../lzma.h for information about liblzma as a whole.
  */
 
 #ifndef LZMA_H_INTERNAL
@@ -56,15 +57,7 @@ typedef struct {
 	 *  - 24-bit RGB image data: distance = 3 bytes
 	 */
 	uint32_t dist;
-
-	/**
-	 * \brief       Minimum value for lzma_options_delta.dist.
-	 */
 #	define LZMA_DELTA_DIST_MIN 1
-
-	/**
-	 * \brief       Maximum value for lzma_options_delta.dist.
-	 */
 #	define LZMA_DELTA_DIST_MAX 256
 
 	/*
@@ -74,23 +67,11 @@ typedef struct {
 	 * when type is LZMA_DELTA_TYPE_BYTE, so it is safe to leave these
 	 * uninitialized.
 	 */
-
-	/** \private     Reserved member. */
 	uint32_t reserved_int1;
-
-	/** \private     Reserved member. */
 	uint32_t reserved_int2;
-
-	/** \private     Reserved member. */
 	uint32_t reserved_int3;
-
-	/** \private     Reserved member. */
 	uint32_t reserved_int4;
-
-	/** \private     Reserved member. */
 	void *reserved_ptr1;
-
-	/** \private     Reserved member. */
 	void *reserved_ptr2;
 
 } lzma_options_delta;

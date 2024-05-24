@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <type_traits>
 
 #include <util/system/compiler.h>
 #include <util/system/yassert.h>
@@ -234,7 +233,7 @@ protected:
 #endif
 
 public:
-    inline const TStringType& ConstRef() const Y_LIFETIME_BOUND {
+    inline const TStringType& ConstRef() const {
 #ifdef TSTRING_IS_STD_STRING
         return Storage_;
 #else
@@ -242,7 +241,7 @@ public:
 #endif
     }
 
-    inline TStringType& MutRef() Y_LIFETIME_BOUND {
+    inline TStringType& MutRef() {
 #ifdef TSTRING_IS_STD_STRING
         return Storage_;
 #else
@@ -252,13 +251,13 @@ public:
 #endif
     }
 
-    inline const_reference operator[](size_t pos) const noexcept Y_LIFETIME_BOUND {
+    inline const_reference operator[](size_t pos) const noexcept {
         Y_ASSERT(pos <= length());
 
         return this->data()[pos];
     }
 
-    inline reference operator[](size_t pos) noexcept Y_LIFETIME_BOUND {
+    inline reference operator[](size_t pos) noexcept {
         Y_ASSERT(pos <= length());
 
 #ifdef TSTRING_IS_STD_STRING
@@ -270,7 +269,7 @@ public:
 
     using TBase::back;
 
-    inline reference back() noexcept Y_LIFETIME_BOUND {
+    inline reference back() noexcept {
         Y_ASSERT(!this->empty());
 
 #ifdef TSTRING_IS_STD_STRING
@@ -286,7 +285,7 @@ public:
 
     using TBase::front;
 
-    inline reference front() noexcept Y_LIFETIME_BOUND {
+    inline reference front() noexcept {
         Y_ASSERT(!this->empty());
 
 #ifdef TSTRING_IS_STD_STRING
@@ -300,28 +299,28 @@ public:
         return ConstRef().length();
     }
 
-    inline const TCharType* data() const noexcept Y_LIFETIME_BOUND {
+    inline const TCharType* data() const noexcept {
         return ConstRef().data();
     }
 
-    inline const TCharType* c_str() const noexcept Y_LIFETIME_BOUND {
+    inline const TCharType* c_str() const noexcept {
         return ConstRef().c_str();
     }
 
     // ~~~ STL compatible method to obtain data pointer ~~~
-    iterator begin() Y_LIFETIME_BOUND {
+    iterator begin() {
         return &*MutRef().begin();
     }
 
-    iterator vend() Y_LIFETIME_BOUND {
+    iterator vend() {
         return &*MutRef().end();
     }
 
-    reverse_iterator rbegin() Y_LIFETIME_BOUND {
+    reverse_iterator rbegin() {
         return reverse_iterator(vend());
     }
 
-    reverse_iterator rend() Y_LIFETIME_BOUND {
+    reverse_iterator rend() {
         return reverse_iterator(begin());
     }
 
@@ -383,7 +382,7 @@ public:
 
     inline explicit TBasicString(::NDetail::TReserveTag rt)
 #ifndef TSTRING_IS_STD_STRING
-        : S_(Construct<>())
+        : S_(Construct())
 #endif
     {
         reserve(rt.Capacity);
@@ -488,11 +487,10 @@ public:
      *
      * @throw std::length_error
      */
-    TBasicString(TUninitialized uninitialized)
+    TBasicString(TUninitialized uninitialized) {
 #if !defined(TSTRING_IS_STD_STRING)
-        : S_(Construct<>())
+        S_ = Construct();
 #endif
-    {
         ReserveAndResize(uninitialized.Size);
     }
 
@@ -534,9 +532,6 @@ public:
     }
 
 private:
-    template <typename T>
-    using TJoinParam = std::conditional_t<std::is_same_v<T, TCharType>, TCharType, TBasicStringBuf<TCharType, TTraits>>;
-
     template <typename... R>
     static size_t SumLength(const TBasicStringBuf<TCharType, TTraits> s1, const R&... r) noexcept {
         return s1.size() + SumLength(r...);
@@ -566,15 +561,6 @@ private:
     static void CopyAll(TCharType*) noexcept {
     }
 
-    template <typename... R>
-    static inline TBasicString JoinImpl(const R&... r) {
-        TBasicString s{TUninitialized{SumLength(r...)}};
-
-        TBasicString::CopyAll((TCharType*)s.data(), r...);
-
-        return s;
-    }
-
 public:
     Y_REINITIALIZES_OBJECT inline void clear() noexcept {
 #ifdef TSTRING_IS_STD_STRING
@@ -592,7 +578,11 @@ public:
 
     template <typename... R>
     static inline TBasicString Join(const R&... r) {
-        return JoinImpl(TJoinParam<R>(r)...);
+        TBasicString s{TUninitialized{SumLength(r...)}};
+
+        TBasicString::CopyAll((TCharType*)s.data(), r...);
+
+        return s;
     }
 
     // ~~~ Assignment ~~~ : FAMILY0(TBasicString&, assign);
@@ -823,13 +813,7 @@ public:
 
     template <class T>
     friend TBasicString operator*(const TBasicString& s, T count) {
-        static_assert(std::is_integral<T>::value, "Integral type required.");
-
         TBasicString result;
-
-        if (count > 0) {
-            result.reserve(s.length() * count);
-        }
 
         for (T i = 0; i < count; ++i) {
             result += s;
@@ -840,13 +824,7 @@ public:
 
     template <class T>
     TBasicString& operator*=(T count) {
-        static_assert(std::is_integral<T>::value, "Integral type required.");
-
         TBasicString temp;
-
-        if (count > 0) {
-            temp.reserve(length() * count);
-        }
 
         for (T i = 0; i < count; ++i) {
             temp += *this;
@@ -926,11 +904,6 @@ public:
         return Join(TCharType(ch), s);
     }
 
-    friend TBasicString operator+(TExplicitType<TCharType> ch, TBasicString&& s) Y_WARN_UNUSED_RESULT {
-        s.prepend(ch);
-        return std::move(s);
-    }
-
     friend TBasicString operator+(const TBasicString& s1, const TBasicString& s2) Y_WARN_UNUSED_RESULT {
         return Join(s1, s2);
     }
@@ -966,11 +939,11 @@ public:
     }
 
     friend TBasicString operator+(std::basic_string<TCharType, TTraits> l, TBasicString r) {
-        return std::move(l) + r.ConstRef();
+        return l + r.ConstRef();
     }
 
     friend TBasicString operator+(TBasicString l, std::basic_string<TCharType, TTraits> r) {
-        return l.ConstRef() + std::move(r);
+        return l.ConstRef() + r;
     }
 
     // ~~~ Prepending ~~~ : FAMILY0(TBasicString&, prepend);
@@ -1290,22 +1263,22 @@ inline const char* LegacyStr(const char* s) noexcept {
 
 // interop
 template <class TCharType, class TTraits>
-auto& MutRef(TBasicString<TCharType, TTraits>& s Y_LIFETIME_BOUND) {
+auto& MutRef(TBasicString<TCharType, TTraits>& s) {
     return s.MutRef();
 }
 
 template <class TCharType, class TTraits>
-const auto& ConstRef(const TBasicString<TCharType, TTraits>& s Y_LIFETIME_BOUND) noexcept {
+const auto& ConstRef(const TBasicString<TCharType, TTraits>& s) noexcept {
     return s.ConstRef();
 }
 
 template <class TCharType, class TCharTraits, class TAllocator>
-auto& MutRef(std::basic_string<TCharType, TCharTraits, TAllocator>& s Y_LIFETIME_BOUND) noexcept {
+auto& MutRef(std::basic_string<TCharType, TCharTraits, TAllocator>& s) noexcept {
     return s;
 }
 
 template <class TCharType, class TCharTraits, class TAllocator>
-const auto& ConstRef(const std::basic_string<TCharType, TCharTraits, TAllocator>& s Y_LIFETIME_BOUND) noexcept {
+const auto& ConstRef(const std::basic_string<TCharType, TCharTraits, TAllocator>& s) noexcept {
     return s;
 }
 

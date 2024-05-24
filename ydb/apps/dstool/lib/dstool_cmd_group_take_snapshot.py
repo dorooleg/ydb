@@ -42,11 +42,10 @@ def do(args):
     global output_file
     output_file = args.output
 
-    with output_file:
-        threads = []
-        for p in get_endpoints():
-            thread = Thread(target=fetch_blobs_from_vdisk, args=p, daemon=True)
-            threads.append(thread)
-            thread.start()
-        for thread in threads:
-            thread.join()
+    threads = []
+    for p in get_endpoints():
+        thread = Thread(target=fetch_blobs_from_vdisk, args=p, daemon=True)
+        threads.append(thread)
+        thread.start()
+    for thread in threads:
+        thread.join()

@@ -12,25 +12,25 @@ public:
     TMockChannelStorage(ui64 capacity)
         : Capacity(capacity) {}
 
-    bool IsEmpty() override {
+    bool IsEmpty() const override {
         return Blobs.empty();
     }
 
-    bool IsFull() override {
+    bool IsFull() const override {
         return Capacity <= UsedSpace;
     }
 
-    void Put(ui64 blobId, TRope&& blob, ui64 /* cookie = 0 */) override {
+    void Put(ui64 blobId, TBuffer&& blob) override {
         if (UsedSpace + blob.size() > Capacity) {
             ythrow yexception() << "Space limit exceeded";
         }
 
         auto result = Blobs.emplace(blobId, std::move(blob));
-        Y_ABORT_UNLESS(result.second);
+        Y_VERIFY(result.second);
         UsedSpace += result.first->second.size();
     }
 
-    bool Get(ui64 blobId, TBuffer& data, ui64 /* cookie = 0 */) override {
+    bool Get(ui64 blobId, TBuffer& data) override {
         if (!Blobs.contains(blobId)) {
             ythrow yexception() << "Not found";
         }
@@ -40,15 +40,7 @@ public:
             return false;
         }
 
-        auto& blob = Blobs[blobId];
-        data.Clear();
-        data.Reserve(blob.size());
-        for (auto it = blob.Begin(); it.Valid(); ++it) {
-            data.Append(it.ContiguousData(), it.ContiguousSize());
-        }
-
-        Y_ABORT_UNLESS(data.size() == blob.size());
-
+        data = std::move(Blobs[blobId]);
         Blobs.erase(blobId);
         UsedSpace -= data.size();
 
@@ -62,7 +54,7 @@ public:
 
 private:
     const ui64 Capacity;
-    THashMap<ui64, TRope> Blobs;
+    THashMap<ui64, TBuffer> Blobs;
     ui64 UsedSpace = 0;
     ui32 GetBlankRequests = 0;
 };

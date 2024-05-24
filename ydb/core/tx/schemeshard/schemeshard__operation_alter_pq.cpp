@@ -273,7 +273,7 @@ public:
                 }
             }
         }
-        Y_ABORT_UNLESS(shardsToCreate == checkShardsToCreate);
+        Y_VERIFY(shardsToCreate == checkShardsToCreate);
 
         return txState;
     }
@@ -386,7 +386,7 @@ public:
     }
 
     void ReassignIds(TTopicInfo::TPtr pqGroup) {
-        Y_ABORT_UNLESS(pqGroup->TotalPartitionCount >= pqGroup->TotalGroupCount);
+        Y_VERIFY(pqGroup->TotalPartitionCount >= pqGroup->TotalGroupCount);
         ui32 numOld = pqGroup->TotalPartitionCount;
         ui32 numNew = pqGroup->AlterData->PartitionsToAdd.size() + numOld;
         //ui32 maxPerPart = pqGroup->AlterData->MaxPartsPerTablet;
@@ -476,7 +476,7 @@ public:
         }
 
         TTopicInfo::TPtr topic = context.SS->Topics.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(topic);
+        Y_VERIFY(topic);
 
         if (topic->AlterVersion == 0) {
             result->SetError(NKikimrScheme::StatusMultipleModifications, "PQGroup is not created yet");
@@ -490,7 +490,7 @@ public:
         NKikimrPQ::TPQTabletConfig tabletConfig, newTabletConfig;
         if (!topic->TabletConfig.empty()) {
             bool parseOk = ParseFromStringNoSizeLimit(tabletConfig, topic->TabletConfig);
-            Y_ABORT_UNLESS(parseOk, "Previously serialized pq tablet config cannot be parsed");
+            Y_VERIFY(parseOk, "Previously serialized pq tablet config cannot be parsed");
         }
         newTabletConfig = tabletConfig;
 
@@ -799,7 +799,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterPQ");
+        Y_FAIL("no AbortPropose for TAlterPQ");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -822,7 +822,7 @@ ISubOperation::TPtr CreateAlterPQ(TOperationId id, const TTxTransaction& tx) {
 }
 
 ISubOperation::TPtr CreateAlterPQ(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterPQ>(id, state);
 }
 

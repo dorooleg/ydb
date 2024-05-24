@@ -71,6 +71,8 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
         op->MvccReadWriteVersion.reset();
     }
 
+    TDataShardLocksDb locksDb(DataShard, txc);
+    TSetupSysLocks guardLocks(op, DataShard, &locksDb);
     TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
     Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
 
@@ -86,7 +88,7 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
                 // For immediate transactions we want to translate this into a propose failure
                 if (op->IsImmediate()) {
                     const auto& dataTx = tx->GetDataTx();
-                    Y_ABORT_UNLESS(!dataTx->Ready());
+                    Y_VERIFY(!dataTx->Ready());
                     op->SetAbortedFlag();
                     BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::ERROR);
                     op->Result()->SetProcessError(dataTx->Code(), dataTx->GetErrors());
@@ -94,20 +96,17 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
                 }
 
                 // For planned transactions errors are not expected
-                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
-
-    TDataShardLocksDb locksDb(DataShard, txc);
-    TSetupSysLocks guardLocks(op, DataShard, &locksDb);
 
     IEngineFlat* engine = tx->GetDataTx()->GetEngine();
     Y_VERIFY_S(engine, "missing engine for " << *op << " at " << DataShard.TabletID());
 
-    if (op->IsImmediate() && !tx->ReValidateKeys(txc.DB.GetScheme())) {
+    if (op->IsImmediate() && !tx->ReValidateKeys()) {
         // Immediate transactions may be reordered with schema changes and become invalid
         const auto& dataTx = tx->GetDataTx();
-        Y_ABORT_UNLESS(!dataTx->Ready());
+        Y_VERIFY(!dataTx->Ready());
         op->SetAbortedFlag();
         BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::ERROR);
         op->Result()->SetProcessError(dataTx->Code(), dataTx->GetErrors());
@@ -115,7 +114,7 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
     }
 
     // TODO: cancel tx in special execution unit.
-    if (tx->GetDataTx()->CheckCancelled(DataShard.TabletID()))
+    if (tx->GetDataTx()->CheckCancelled())
         engine->Cancel();
     else {
         ui64 consumed = tx->GetDataTx()->GetTxSize() + engine->GetMemoryAllocated();
@@ -269,7 +268,7 @@ void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
                 break;
             case IEngineFlat::EResult::Cancelled:
                 LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, errorMessage);
-                Y_ABORT_UNLESS(tx->GetDataTx()->CanCancel());
+                Y_VERIFY(tx->GetDataTx()->CanCancel());
                 break;
             default:
                 if (op->IsReadOnly() || op->IsImmediate()) {
@@ -313,7 +312,7 @@ void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
 
     KqpUpdateDataShardStatCounters(DataShard, counters);
     if (tx->GetDataTx()->CollectStats()) {
-        KqpFillTxStats(DataShard, counters, *result->Record.MutableTxStats());
+        KqpFillTxStats(DataShard, counters, *result);
     }
 
     if (counters.InvisibleRowSkips && op->LockTxId()) {
@@ -332,12 +331,7 @@ void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
             participants,
             tx->GetDataTx()->GetVolatileChangeGroup(),
             tx->GetDataTx()->GetVolatileCommitOrdered(),
-            /* arbiter */ false,
             txc);
-    }
-
-    if (tx->GetDataTx()->GetPerformedUserReads()) {
-        tx->SetPerformedUserReads(true);
     }
 
     AddLocksToResult(op, ctx);

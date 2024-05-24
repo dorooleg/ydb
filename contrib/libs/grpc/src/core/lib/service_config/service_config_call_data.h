@@ -14,21 +14,17 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_SRC_CORE_LIB_SERVICE_CONFIG_SERVICE_CONFIG_CALL_DATA_H
-#define GRPC_SRC_CORE_LIB_SERVICE_CONFIG_SERVICE_CONFIG_CALL_DATA_H
+#ifndef GRPC_CORE_LIB_SERVICE_CONFIG_SERVICE_CONFIG_CALL_DATA_H
+#define GRPC_CORE_LIB_SERVICE_CONFIG_SERVICE_CONFIG_CALL_DATA_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stddef.h>
-
 #include <map>
-#include <memory>
-#include <utility>
 
 #include "y_absl/strings/string_view.h"
 
+#include "src/core/lib/channel/context.h"
 #include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/unique_type_name.h"
 #include "src/core/lib/service_config/service_config.h"
 #include "src/core/lib/service_config/service_config_parser.h"
 
@@ -40,7 +36,7 @@ namespace grpc_core {
 /// easily access method and global parameters for the call.
 class ServiceConfigCallData {
  public:
-  using CallAttributes = std::map<UniqueTypeName, y_absl::string_view>;
+  using CallAttributes = std::map<const char*, y_absl::string_view>;
 
   ServiceConfigCallData() : method_configs_(nullptr) {}
 
@@ -65,12 +61,6 @@ class ServiceConfigCallData {
 
   const CallAttributes& call_attributes() const { return call_attributes_; }
 
-  // Must be called when holding the call combiner (legacy filter) or from
-  // inside the activity (promise-based filter).
-  void SetCallAttribute(UniqueTypeName name, y_absl::string_view value) {
-    call_attributes_[name] = value;
-  }
-
  private:
   RefCountedPtr<ServiceConfig> service_config_;
   const ServiceConfigParser::ParsedConfigVector* method_configs_;
@@ -79,4 +69,4 @@ class ServiceConfigCallData {
 
 }  // namespace grpc_core
 
-#endif  // GRPC_SRC_CORE_LIB_SERVICE_CONFIG_SERVICE_CONFIG_CALL_DATA_H
+#endif /* GRPC_CORE_LIB_SERVICE_CONFIG_SERVICE_CONFIG_CALL_DATA_H */

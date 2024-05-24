@@ -2,6 +2,7 @@
 
 #include "flat_sausage_misc.h"
 #include "flat_sausage_solid.h"
+#include "util_basics.h"
 
 namespace NKikimr {
 namespace NPageCollection {

@@ -1,7 +1,5 @@
 #include "dsproxy_impl.h"
 #include "dsproxy_monactor.h"
-#include <ydb/core/base/feature_flags.h>
-
 
 namespace NKikimr {
 
@@ -61,7 +59,7 @@ namespace NKikimr {
                 reqID = Register(
                     CreateBlobStorageGroupGetRequest(Info, Sessions->GroupQueues, ev->Sender, Mon,
                         ev->Get(), ev->Cookie, std::move(ev->TraceId), TNodeLayoutInfoPtr(NodeLayoutInfo),
-                        kind, TActivationContext::Now(), StoragePoolCounters));
+                        kind, TActivationContext::Now(), StoragePoolCounters, false));
                 ActiveRequests.insert(reqID);
             } else {
                 Mon->EventMultiGet->Inc();
@@ -110,28 +108,25 @@ namespace NKikimr {
         Send(MonActor, new TEvThroughputAddRequest(ev->Get()->HandleClass, bytes));
         EnableWilsonTracing(ev, Mon->PutSamplePPM);
 
-        Y_DEBUG_ABORT_UNLESS(MinREALHugeBlobInBytes);
-        const ui32 partSize = Info->Type.PartSize(ev->Get()->Id);
-
-        if (EnablePutBatching && partSize < MinREALHugeBlobInBytes && partSize <= MaxBatchedPutSize) {
+        if (EnablePutBatching && bytes < MaxBatchedPutSize) {
             NKikimrBlobStorage::EPutHandleClass handleClass = ev->Get()->HandleClass;
             TEvBlobStorage::TEvPut::ETactic tactic = ev->Get()->Tactic;
-            Y_ABORT_UNLESS((ui64)handleClass <= PutHandleClassCount);
-            Y_ABORT_UNLESS(tactic <= PutTacticCount);
+            Y_VERIFY((ui64)handleClass <= PutHandleClassCount);
+            Y_VERIFY(tactic <= PutTacticCount);
 
             TBatchedQueue<TEvBlobStorage::TEvPut::TPtr> &batchedPuts = BatchedPuts[handleClass][tactic];
             if (batchedPuts.Queue.empty()) {
                 PutBatchedBucketQueue.emplace_back(handleClass, tactic);
             }
 
-            if (batchedPuts.Queue.size() == MaxBatchedPutRequests || batchedPuts.Bytes + partSize > MaxBatchedPutSize) {
+            if (batchedPuts.Queue.size() == MaxBatchedPutRequests || batchedPuts.Bytes + bytes > MaxBatchedPutSize) {
                 *Mon->PutsSentViaPutBatching += batchedPuts.Queue.size();
                 ++*Mon->PutBatchesSent;
                 ProcessBatchedPutRequests(batchedPuts, handleClass, tactic);
             }
 
             batchedPuts.Queue.push_back(ev.Release());
-            batchedPuts.Bytes += partSize;
+            batchedPuts.Bytes += bytes;
         } else {
             TMaybe<TGroupStat::EKind> kind = PutHandleClassToGroupStatKind(ev->Get()->HandleClass);
 
@@ -265,29 +260,22 @@ namespace NKikimr {
         TMaybe<TGroupStat::EKind> kind = PutHandleClassToGroupStatKind(handleClass);
 
         if (Info) {
-            if (CurrentStateFunc() == &TThis::StateWork) {
-                TAppData *app = NKikimr::AppData(TActivationContext::AsActorContext());
-                bool enableRequestMod3x3ForMinLatency = app->FeatureFlags.GetEnable3x3RequestsForMirror3DCMinLatencyPut();
-                // TODO(alexvru): MinLatency support
-                if (batchedPuts.Queue.size() == 1) {
-                    const TActorId reqID = Register(
-                        CreateBlobStorageGroupPutRequest(Info, Sessions->GroupQueues, batchedPuts.Queue.front()->Sender,
-                            Mon, batchedPuts.Queue.front()->Get(), batchedPuts.Queue.front()->Cookie,
-                            std::move(batchedPuts.Queue.front()->TraceId), Mon->TimeStats.IsEnabled(), PerDiskStats, kind,
-                            TActivationContext::Now(), StoragePoolCounters, enableRequestMod3x3ForMinLatency));
-                    ActiveRequests.insert(reqID);
-                } else {
-                    const TActorId reqID = Register(
-                        CreateBlobStorageGroupPutRequest(Info, Sessions->GroupQueues,
-                            Mon, batchedPuts.Queue, Mon->TimeStats.IsEnabled(), PerDiskStats, kind, TActivationContext::Now(),
-                            StoragePoolCounters, handleClass, tactic, enableRequestMod3x3ForMinLatency));
-                    ActiveRequests.insert(reqID);
-                }
+            TAppData *app = NKikimr::AppData(TActivationContext::AsActorContext());
+            bool enableRequestMod3x3ForMinLatency = app->FeatureFlags.GetEnable3x3RequestsForMirror3DCMinLatencyPut();
+            // TODO(alexvru): MinLatency support
+            if (batchedPuts.Queue.size() == 1) {
+                const TActorId reqID = Register(
+                    CreateBlobStorageGroupPutRequest(Info, Sessions->GroupQueues, batchedPuts.Queue.front()->Sender,
+                        Mon, batchedPuts.Queue.front()->Get(), batchedPuts.Queue.front()->Cookie,
+                        std::move(batchedPuts.Queue.front()->TraceId), Mon->TimeStats.IsEnabled(), PerDiskStats, kind,
+                        TActivationContext::Now(), StoragePoolCounters, enableRequestMod3x3ForMinLatency));
+                ActiveRequests.insert(reqID);
             } else {
-                for (auto it = batchedPuts.Queue.begin(); it != batchedPuts.Queue.end(); ++it) {
-                    TAutoPtr<IEventHandle> ev = it->Release();
-                    Receive(ev);
-                }
+                const TActorId reqID = Register(
+                    CreateBlobStorageGroupPutRequest(Info, Sessions->GroupQueues,
+                        Mon, batchedPuts.Queue, Mon->TimeStats.IsEnabled(), PerDiskStats, kind, TActivationContext::Now(),
+                        StoragePoolCounters, handleClass, tactic, enableRequestMod3x3ForMinLatency));
+                ActiveRequests.insert(reqID);
             }
         } else {
             for (auto it = batchedPuts.Queue.begin(); it != batchedPuts.Queue.end(); ++it) {
@@ -303,7 +291,7 @@ namespace NKikimr {
         StopPutBatchingEvent = ev;
         for (auto &bucket : PutBatchedBucketQueue) {
             auto &batchedPuts = BatchedPuts[bucket.HandleClass][bucket.Tactic];
-            Y_ABORT_UNLESS(!batchedPuts.Queue.empty());
+            Y_VERIFY(!batchedPuts.Queue.empty());
             *Mon->PutsSentViaPutBatching += batchedPuts.Queue.size();
             ++*Mon->PutBatchesSent;
             ProcessBatchedPutRequests(batchedPuts, bucket.HandleClass, bucket.Tactic);

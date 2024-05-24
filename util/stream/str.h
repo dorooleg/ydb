@@ -125,13 +125,6 @@ public:
     {
     }
 
-    inline TStringStream(TString&& string)
-        : TEmbeddedString(std::move(string))
-        , TStringInput(*TEmbeddedString::Ptr())
-        , TStringOutput(*TEmbeddedString::Ptr())
-    {
-    }
-
     inline TStringStream(const TStringStream& other)
         : TEmbeddedString(other.Str())
         , TStringInput(*TEmbeddedString::Ptr())
@@ -139,27 +132,10 @@ public:
     {
     }
 
-    inline TStringStream(TStringStream&& other)
-        : TEmbeddedString(std::move(other).Str())
-        , TStringInput(*TEmbeddedString::Ptr())
-        , TStringOutput(*TEmbeddedString::Ptr())
-    {
-        other.Pos_ = 0;
-    }
-
     inline TStringStream& operator=(const TStringStream& other) {
         // All references remain alive, we need to change position only
         Str() = other.Str();
         Pos_ = other.Pos_;
-
-        return *this;
-    }
-
-    inline TStringStream& operator=(TStringStream&& other) {
-        // All references remain alive, we need to change position only
-        Str() = std::move(other).Str();
-        Pos_ = other.Pos_;
-        other.Pos_ = 0;
 
         return *this;
     }
@@ -176,22 +152,15 @@ public:
     /**
      * @returns                         String that this stream is writing into.
      */
-    inline TString& Str() & noexcept {
+    inline TString& Str() noexcept {
         return *Ptr();
     }
 
     /**
      * @returns                         String that this stream is writing into.
      */
-    inline const TString& Str() const& noexcept {
+    inline const TString& Str() const noexcept {
         return *Ptr();
-    }
-
-    /**
-     * @returns                         String that this stream is writing into.
-     */
-    inline TString&& Str() && noexcept {
-        return std::move(*Ptr());
     }
 
     /**

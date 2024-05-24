@@ -22,8 +22,6 @@ namespace NKikimr {
                     TActorId ActorId;
                     TIntrusivePtr<NBackpressure::TFlowRecord> FlowRecord;
                     std::optional<bool> ExtraBlockChecksSupport;
-                    std::shared_ptr<const TCostModel> CostModel = nullptr;
-                    volatile bool IsConnected = false;
                 };
                 TQueue PutTabletLog;
                 TQueue PutAsyncBlob;
@@ -43,11 +41,11 @@ namespace NKikimr {
 
                 template<typename T>
                 static NKikimrBlobStorage::EVDiskQueueId VDiskQueueId(const T& event) {
-                    Y_ABORT_UNLESS(event.Record.HasMsgQoS());
+                    Y_VERIFY(event.Record.HasMsgQoS());
                     auto &msgQoS = event.Record.GetMsgQoS();
-                    Y_ABORT_UNLESS(msgQoS.HasExtQueueId());
+                    Y_VERIFY(msgQoS.HasExtQueueId());
                     NKikimrBlobStorage::EVDiskQueueId queueId = msgQoS.GetExtQueueId();
-                    Y_ABORT_UNLESS(queueId != NKikimrBlobStorage::EVDiskQueueId::Unknown);
+                    Y_VERIFY(queueId != NKikimrBlobStorage::EVDiskQueueId::Unknown);
                     return queueId;
                 }
 
@@ -68,7 +66,7 @@ namespace NKikimr {
                         case NKikimrBlobStorage::EVDiskQueueId::GetFastRead:  return GetFastRead;
                         case NKikimrBlobStorage::EVDiskQueueId::GetDiscover:  return GetDiscover;
                         case NKikimrBlobStorage::EVDiskQueueId::GetLowRead:   return GetLowRead;
-                        default:                                              Y_ABORT("unexpected EVDiskQueueId");
+                        default:                                              Y_FAIL("unexpected EVDiskQueueId");
                     }
                 }
 
@@ -86,12 +84,12 @@ namespace NKikimr {
                 {}
 
                 static void ValidateEvent(TQueue& queue, const TEvBlobStorage::TEvVPut& event) {
-                    Y_ABORT_UNLESS(!event.Record.ExtraBlockChecksSize() || queue.ExtraBlockChecksSupport.value_or(true));
+                    Y_VERIFY(!event.Record.ExtraBlockChecksSize() || queue.ExtraBlockChecksSupport.value_or(true));
                 }
 
                 static void ValidateEvent(TQueue& queue, const TEvBlobStorage::TEvVMultiPut& event) {
                     for (const auto& item : event.Record.GetItems()) {
-                        Y_ABORT_UNLESS(!item.ExtraBlockChecksSize() || queue.ExtraBlockChecksSupport.value_or(true));
+                        Y_VERIFY(!item.ExtraBlockChecksSize() || queue.ExtraBlockChecksSupport.value_or(true));
                     }
                 }
 
@@ -133,7 +131,6 @@ namespace NKikimr {
             };
 
             TQueues Queues;
-            std::shared_ptr<const TCostModel> CostModel;
 
             TString ToString() const {
                 return TStringBuilder() << "{Queues# " << Queues.ToString() << "}";
@@ -142,7 +139,6 @@ namespace NKikimr {
 
         struct TFailDomain {
             TStackVec<TVDisk, TypicalDisksInFailDomain> VDisks;
-            std::shared_ptr<const TCostModel> CostModel;
 
             // Ill-formed because TVDisk is not assignable.
             TFailDomain(const TFailDomain& other) = default;
@@ -162,7 +158,6 @@ namespace NKikimr {
 
         TStackVec<TFailDomain, TypicalFailDomainsInGroup> FailDomains;
         TStackVec<TVDisk*, TypicalDisksInGroup> DisksByOrderNumber;
-        std::shared_ptr<const TCostModel> CostModel;
 
         TGroupQueues(const TBlobStorageGroupInfo::TTopology& topology)
             : FailDomains(topology.GetTotalFailDomainsNum())
@@ -246,9 +241,8 @@ namespace NKikimr {
         void Poison();
         bool GoodToGo(const TBlobStorageGroupInfo::TTopology& topology, bool waitForAllVDisks);
         void QueueConnectUpdate(ui32 orderNumber, NKikimrBlobStorage::EVDiskQueueId queueId, bool connected,
-            bool extraBlockChecksSupport, std::shared_ptr<const TCostModel> costModel, const TBlobStorageGroupInfo::TTopology& topology);
+            bool extraBlockChecksSupport, const TBlobStorageGroupInfo::TTopology& topology);
         ui32 GetNumUnconnectedDisks();
-        ui32 GetMinREALHugeBlobInBytes() const;
     };
 
     struct TEvRequestProxySessionsState : TEventLocal<TEvRequestProxySessionsState, TEvBlobStorage::EvRequestProxySessionsState>

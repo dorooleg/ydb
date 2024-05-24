@@ -14,12 +14,12 @@
 #include <ydb/library/yql/utils/url_builder.h>
 #include <ydb/library/yql/utils/yql_panic.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/http/http_proxy.h>
 #include <library/cpp/json/easy_parse/json_easy_parser.h>
 
 
@@ -122,7 +122,6 @@ public:
 
     TDqSolomonWriteActor(
         ui64 outputIndex,
-        TCollectStatsLevel statsLevel,
         const TTxId& txId,
         TDqSolomonWriteParams&& writeParams,
         NYql::NDq::IDqComputeActorAsyncOutput::ICallbacks* callbacks,
@@ -144,7 +143,6 @@ public:
         , CredentialsProvider(credentialsProvider)
     {
         SINK_LOG_D("Init");
-        EgressStats.Level = statsLevel;
     }
 
     STRICT_STFUNC(StateFunc,
@@ -153,13 +151,12 @@ public:
 
 public:
     void SendData(
-        NKikimr::NMiniKQL::TUnboxedValueBatch&& batch,
+        NKikimr::NMiniKQL::TUnboxedValueVector&& batch,
         i64,
         const TMaybe<NDqProto::TCheckpoint>& checkpoint,
         bool finished) override
     {
-        YQL_ENSURE(!batch.IsWide(), "Wide streams are not supported");
-        SINK_LOG_T("Got " << batch.RowCount() << " items to send. Checkpoint: " << checkpoint.Defined()
+        SINK_LOG_T("Got " << batch.size() << " items to send. Checkpoint: " << checkpoint.Defined()
                    << ". Send queue: " << SendingBuffer.size() << ". Inflight: " << InflightBuffer.size()
                    << ". Checkpoint in progress: " << CheckpointInProgress.has_value());
 
@@ -168,14 +165,13 @@ public:
         }
 
         ui64 metricsCount = 0;
-        batch.ForEachRow([&](const auto& value) {
+        for (const auto& item : batch) {
             if (metricsCount + WriteParams.Shard.GetScheme().GetSensors().size() > MaxMetricsPerRequest) {
                 PushMetricsToBuffer(metricsCount);
             }
 
-            metricsCount += UserMetricsEncoder.Append(value);
-            EgressStats.Rows++;
-        });
+            metricsCount += UserMetricsEncoder.Append(item);
+        }
 
         if (metricsCount != 0) {
             PushMetricsToBuffer(metricsCount);
@@ -205,10 +201,6 @@ public:
     ui64 GetOutputIndex() const override {
         return OutputIndex;
     };
-
-    const TDqAsyncStats& GetEgressStats() const override {
-        return EgressStats;
-    }
 
 private:
     struct TDqSolomonWriteActorMetrics {
@@ -370,7 +362,7 @@ private:
             if (InflightBuffer.size() >= MaxRequestsInflight) {
                 skipReason << "MaxRequestsInflight ";
             }
-            SINK_LOG_T(skipReason);
+            SINK_LOG_D(skipReason);
             return false;
         }
 
@@ -392,8 +384,6 @@ private:
 
             *Metrics.SentMetrics += metricsToSend.MetricsCount;
             InflightBuffer.emplace(Cookie++, TMetricsInflight { httpSenderId, metricsToSend.MetricsCount, bodySize });
-            EgressStats.Bytes += bodySize;
-            EgressStats.Chunks++;
             return true;
         }
 
@@ -432,7 +422,7 @@ private:
             Callbacks->OnAsyncOutputError(OutputIndex, issues, NYql::NDqProto::StatusIds::EXTERNAL_ERROR);
             return;
         }
-        Y_ABORT_UNLESS(res.size() == 2);
+        Y_VERIFY(res.size() == 2);
 
         auto ptr = InflightBuffer.find(cookie);
         if (ptr == InflightBuffer.end()) {
@@ -479,7 +469,6 @@ private:
 
 private:
     const ui64 OutputIndex;
-    TDqAsyncStats EgressStats;
     const TTxId TxId;
     const TString LogPrefix;
     const TDqSolomonWriteParams WriteParams;
@@ -504,7 +493,6 @@ private:
 std::pair<NYql::NDq::IDqComputeActorAsyncOutput*, NActors::IActor*> CreateDqSolomonWriteActor(
     NYql::NSo::NProto::TDqSolomonShard&& settings,
     ui64 outputIndex,
-    TCollectStatsLevel statsLevel,
     const TTxId& txId,
     const THashMap<TString, TString>& secureParams,
     NYql::NDq::IDqComputeActorAsyncOutput::ICallbacks* callbacks,
@@ -524,7 +512,6 @@ std::pair<NYql::NDq::IDqComputeActorAsyncOutput*, NActors::IActor*> CreateDqSolo
 
     TDqSolomonWriteActor* actor = new TDqSolomonWriteActor(
         outputIndex,
-        statsLevel,
         txId,
         std::move(params),
         callbacks,
@@ -545,7 +532,6 @@ void RegisterDQSolomonWriteActorFactory(TDqAsyncIoFactory& factory, ISecuredServ
             return CreateDqSolomonWriteActor(
                 std::move(settings),
                 args.OutputIndex,
-                args.StatsLevel,
                 args.TxId,
                 args.SecureParams,
                 args.Callback,

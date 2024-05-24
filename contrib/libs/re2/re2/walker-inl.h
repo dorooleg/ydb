@@ -15,7 +15,6 @@
 
 #include <stack>
 
-#include "absl/base/macros.h"
 #include "util/logging.h"
 #include "re2/regexp.h"
 
@@ -191,7 +190,7 @@ template<typename T> T Regexp::Walker<T>::WalkInternal(Regexp* re, T top_arg,
           s->child_args = &s->child_arg;
         else if (re->nsub_ > 1)
           s->child_args = new T[re->nsub_];
-        ABSL_FALLTHROUGH_INTENDED;
+        FALLTHROUGH_INTENDED;
       }
       default: {
         if (re->nsub_ > 0) {

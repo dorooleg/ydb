@@ -112,7 +112,7 @@ public:
                 context.SS->PersistShardTx(db, shard.Idx, operationId.GetTxId());
             }
         }
-        Y_ABORT_UNLESS(shardsToCreate == checkShardToCreate);
+        Y_VERIFY(shardsToCreate == checkShardToCreate);
 
         return txState;
     }
@@ -131,7 +131,7 @@ public:
             const TChannelsBindings& volumeChannels,
             TOperationContext& context)
     {
-        Y_ABORT_UNLESS(volume->AlterData->DefaultPartitionCount
+        Y_VERIFY(volume->AlterData->DefaultPartitionCount
                 >= volume->DefaultPartitionCount);
         ui64 count = volume->AlterData->DefaultPartitionCount + 1;
         ui64 shardsToCreate = volume->AlterData->DefaultPartitionCount
@@ -430,7 +430,7 @@ public:
         }
 
         TBlockStoreVolumeInfo::TPtr volume = context.SS->BlockStoreVolumes.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(volume);
+        Y_VERIFY(volume);
 
         const auto* alterVolumeConfig = ParseParams(volume->VolumeConfig, alter, errStr);
         if (!alterVolumeConfig) {
@@ -531,15 +531,6 @@ public:
             return result;
         }
 
-        if (alterVolumeConfig->HasFillGeneration() &&
-            alterVolumeConfig->GetFillGeneration() != volume->VolumeConfig.GetFillGeneration())
-        {
-            result->SetError(
-                NKikimrScheme::StatusPreconditionFailed,
-                "Wrong FillGeneration in VolumeConfig");
-            return result;
-        }
-
         if (!context.SS->CheckApplyIf(Transaction, errStr)) {
             result->SetError(NKikimrScheme::StatusPreconditionFailed, errStr);
             return result;
@@ -592,7 +583,7 @@ public:
         auto newVolumeSpace = volume->GetVolumeSpace();
 
         auto domainDir = context.SS->PathsById.at(path.GetPathIdForDomain());
-        Y_ABORT_UNLESS(domainDir);
+        Y_VERIFY(domainDir);
 
         auto checkedSpaceChange = domainDir->CheckVolumeSpaceChange(newVolumeSpace, oldVolumeSpace, errStr);
         if (!checkedSpaceChange) {
@@ -626,7 +617,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterBlockStoreVolume");
+        Y_FAIL("no AbortPropose for TAlterBlockStoreVolume");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -649,7 +640,7 @@ ISubOperation::TPtr CreateAlterBSV(TOperationId id, const TTxTransaction& tx) {
 }
 
 ISubOperation::TPtr CreateAlterBSV(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAlterBlockStoreVolume>(id, state);
 }
 

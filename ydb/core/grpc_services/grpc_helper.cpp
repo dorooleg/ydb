@@ -5,15 +5,15 @@ namespace NGRpcService {
 
 //using namespace NActors;
 
-NYdbGrpc::IGRpcRequestLimiterPtr TCreateLimiterCB::operator()(const char* serviceName, const char* requestName, i64 limit) const {
+NGrpc::IGRpcRequestLimiterPtr TCreateLimiterCB::operator()(const char* serviceName, const char* requestName, i64 limit) const {
     TString fullName = TString(serviceName) + "_" + requestName;
     return LimiterRegistry->RegisterRequestType(fullName, limit);
 }
 
 
-class TRequestInFlightLimiter : public NYdbGrpc::IGRpcRequestLimiter {
+class TRequestInFlightLimiter : public NGrpc::IGRpcRequestLimiter {
 private:
-    NYdbGrpc::TInFlightLimiterImpl<TControlWrapper> RequestLimiter;
+    NGrpc::TInFlightLimiterImpl<TControlWrapper> RequestLimiter;
 
 public:
     explicit TRequestInFlightLimiter(TControlWrapper limiter)
@@ -30,7 +30,7 @@ public:
 };
 
 
-NYdbGrpc::IGRpcRequestLimiterPtr TInFlightLimiterRegistry::RegisterRequestType(TString name, i64 limit) {
+NGrpc::IGRpcRequestLimiterPtr TInFlightLimiterRegistry::RegisterRequestType(TString name, i64 limit) {
     TGuard<TMutex> g(Lock);
     if (!PerTypeLimiters.count(name)) {
         TControlWrapper control(limit, 0, 1000000);

@@ -3,7 +3,6 @@
 #include "defs.h"
 
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
-#include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
 #include <ydb/core/blobstorage/base/batched_vec.h>
 #include <ydb/core/blobstorage/base/utility.h>
 
@@ -30,6 +29,6 @@ struct TEvVMultiPutItemResult : TEventLocal<TEvVMultiPutItemResult, TEvBlobStora
 IActor* CreateSkeletonVMultiPutActor(TActorId leaderId, const TBatchedVec<NKikimrProto::EReplyStatus> &statuses,
         TOutOfSpaceStatus oosStatus, TEvBlobStorage::TEvVMultiPut::TPtr &ev,
         TActorIDPtr skeletonFrontIDPtr, ::NMonitoring::TDynamicCounters::TCounterPtr multiPutResMsgsPtr,
-        ui64 incarnationGuid, TIntrusivePtr<TVDiskContext>& vCtx);
+        ui64 incarnationGuid);
 
 } // NKikimr

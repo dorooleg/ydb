@@ -14,18 +14,152 @@
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 
 #include "click_bench.h"
-#include "benchmark_utils.h"
 
 
 namespace NYdb::NConsoleClient {
 
 using namespace NYdb;
 using namespace NYdb::NTable;
-using namespace NYdb::NConsoleClient::BenchmarkUtils;
 
 namespace {
 
 static const char DefaultTablePath[] = "clickbench/hits";
+
+struct TTestInfo {
+    TDuration ColdTime;
+    TDuration Min;
+    TDuration Max;
+    double Mean = 0;
+    double Std = 0;
+    std::vector<TDuration> Timings;
+
+    explicit TTestInfo(std::vector<TDuration>&& timings)
+        : Timings(std::move(timings))
+    {
+
+        if (Timings.empty()) {
+            return;
+        }
+
+        ColdTime = Timings[0];
+
+        if (Timings.size() > 1) {
+            ui32 sum = 0;
+            for (size_t j = 1; j < Timings.size(); ++j) {
+                if (Max < Timings[j]) {
+                    Max = Timings[j];
+                }
+                if (!Min || Min > Timings[j]) {
+                    Min = Timings[j];
+                }
+                sum += Timings[j].MilliSeconds();
+            }
+            Mean = (double) sum / (double) (Timings.size() - 1);
+            if (Timings.size() > 2) {
+                double variance = 0;
+                for (size_t j = 1; j < Timings.size(); ++j) {
+                    variance += (Mean - Timings[j].MilliSeconds()) * (Mean - Timings[j].MilliSeconds());
+                }
+                variance = variance / (double) (Timings.size() - 2);
+                Std = sqrt(variance);
+            }
+        }
+    }
+};
+
+TString FullTablePath(const TString& database, const TString& table) {
+    TPathSplitUnix prefixPathSplit(database);
+    prefixPathSplit.AppendComponent(table);
+    return prefixPathSplit.Reconstruct();
+}
+
+
+static void ThrowOnError(const TStatus& status) {
+    if (!status.IsSuccess()) {
+        ythrow yexception() << "Operation failed with status " << status.GetStatus() << ": "
+                            << status.GetIssues().ToString();
+    }
+}
+
+static bool HasCharsInString(const TString& str) {
+    for (auto c : str) {
+        if (std::isalpha(c)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::pair<TString, TString> ResultToYson(NTable::TScanQueryPartIterator& it) {
+    TStringStream out;
+    TStringStream err_out;
+    NYson::TYsonWriter writer(&out, NYson::EYsonFormat::Text, ::NYson::EYsonType::Node, true);
+    writer.OnBeginList();
+
+    for (;;) {
+        auto streamPart = it.ReadNext().GetValueSync();
+        if (!streamPart.IsSuccess()) {
+            if (!streamPart.EOS()) {
+                err_out << streamPart.GetIssues().ToString() << Endl;
+            }
+            break;
+        }
+
+        if (streamPart.HasResultSet()) {
+            auto result = streamPart.ExtractResultSet();
+            auto columns = result.GetColumnsMeta();
+
+            NYdb::TResultSetParser parser(result);
+            while (parser.TryNextRow()) {
+                writer.OnListItem();
+                writer.OnBeginList();
+                for (ui32 i = 0; i < columns.size(); ++i) {
+                    writer.OnListItem();
+                    FormatValueYson(parser.GetValue(i), writer);
+                }
+                writer.OnEndList();
+                out << "\n";
+            }
+        }
+    }
+
+    writer.OnEndList();
+    return {out.Str(), err_out.Str()};
+}
+
+static std::pair<TString, TString> Execute(const TString& query, NTable::TTableClient& client) {
+    TStreamExecScanQuerySettings settings;
+    settings.CollectQueryStats(ECollectQueryStatsMode::Full);
+    auto it = client.StreamExecuteScanQuery(query, settings).GetValueSync();
+    ThrowOnError(it);
+    return ResultToYson(it);
+}
+
+static NJson::TJsonValue GetQueryLabels(ui32 queryId) {
+    NJson::TJsonValue labels(NJson::JSON_MAP);
+    labels.InsertValue("query", Sprintf("Query%02u", queryId));
+    return labels;
+}
+
+static NJson::TJsonValue GetSensorValue(TStringBuf sensor, TDuration& value, ui32 queryId) {
+    NJson::TJsonValue sensorValue(NJson::JSON_MAP);
+    sensorValue.InsertValue("sensor", sensor);
+    sensorValue.InsertValue("value", value.MilliSeconds());
+    sensorValue.InsertValue("labels", GetQueryLabels(queryId));
+    return sensorValue;
+}
+
+static NJson::TJsonValue GetSensorValue(TStringBuf sensor, double value, ui32 queryId) {
+    NJson::TJsonValue sensorValue(NJson::JSON_MAP);
+    sensorValue.InsertValue("sensor", sensor);
+    sensorValue.InsertValue("value", value);
+    sensorValue.InsertValue("labels", GetQueryLabels(queryId));
+    return sensorValue;
+}
+
+}
+
+namespace {
 
 class TExternalVariable {
 private:
@@ -63,13 +197,8 @@ public:
 
 }
 
-bool TClickBenchCommandRun::TQueryFullInfo::IsCorrectResult(const BenchmarkUtils::TQueryResultInfo& resultFull) const {
-    return resultFull.IsExpected(ExpectedResult);
-}
-
-TVector<TClickBenchCommandRun::TQueryFullInfo> TClickBenchCommandRun::GetQueries(const TString& fullTablePath) const {
+TVector<TString> TClickBenchCommandRun::GetQueries(const TString& fullTablePath) const {
     TVector<TString> queries;
-    const TMap<ui32, TString> qResults = LoadExternalResults();
     if (ExternalQueries) {
         queries = StringSplitter(ExternalQueries).Split(';').ToList<TString>();
     } else if (ExternalQueriesFile) {
@@ -82,7 +211,7 @@ TVector<TClickBenchCommandRun::TQueryFullInfo> TClickBenchCommandRun::GetQueries
         std::sort(queriesList.begin(), queriesList.end());
         for (auto&& i : queriesList) {
             const TString expectedFileName = "q" + ::ToString(queries.size()) + ".sql";
-            Y_ABORT_UNLESS(i == expectedFileName, "incorrect files naming. have to be q<number>.sql where number in [0, N - 1], where N is requests count");
+            Y_VERIFY(i == expectedFileName, "incorrect files naming. have to be q<number>.sql where number in [0, N - 1], where N is requests count");
             TFileInput fInput(ExternalQueriesDir + "/" + expectedFileName);
             queries.emplace_back(fInput.ReadAll());
         }
@@ -93,7 +222,7 @@ TVector<TClickBenchCommandRun::TQueryFullInfo> TClickBenchCommandRun::GetQueries
     TVector<TExternalVariable> vars;
     for (auto&& i : strVariables) {
         TExternalVariable v;
-        Y_ABORT_UNLESS(v.DeserializeFromString(i));
+        Y_VERIFY(v.DeserializeFromString(i));
         vars.emplace_back(v);
     }
     vars.emplace_back("table", "`" + fullTablePath + "`");
@@ -102,101 +231,64 @@ TVector<TClickBenchCommandRun::TQueryFullInfo> TClickBenchCommandRun::GetQueries
             SubstGlobal(i, "{" + v.GetId() + "}", v.GetValue());
         }
     }
-    TVector<TQueryFullInfo> result;
-    ui32 resultsUsage = 0;
-    for (ui32 i = 0; i < queries.size(); ++i) {
-        auto it = qResults.find(i);
-        if (it != qResults.end()) {
-            ++resultsUsage;
-            result.emplace_back(queries[i], it->second);
-        } else {
-            result.emplace_back(queries[i], "");
-        }
-    }
-    Y_ABORT_UNLESS(resultsUsage == qResults.size(), "there are unused files with results in directory");
-    return result;
+    return queries;
 }
 
-template <typename TClient>
 bool TClickBenchCommandRun::RunBench(TConfig& config)
 {
     TOFStream outFStream{OutFilePath};
 
     auto driver = CreateDriver(config);
-    auto client = TClient(driver);
+    auto client = NYdb::NTable::TTableClient(driver);
 
     TStringStream report;
     report << "Results for " << IterationsCount << " iterations" << Endl;
-    report << "+---------+----------+---------+---------+----------+----------+---------+---------+---------+---------+" << Endl;
-    report << "| Query # | ColdTime |   Min   |   Max   |   Mean   |  Median  |   Std   |  RttMin |  RttMax |  RttAvg |" << Endl;
-    report << "+---------+----------+---------+---------+----------+----------+---------+---------+---------+---------+" << Endl;
+    report << "+---------+----------+---------+---------+----------+---------+" << Endl;
+    report << "| Query # | ColdTime |   Min   |   Max   |   Mean   |   Std   |" << Endl;
+    report << "+---------+----------+---------+---------+----------+---------+" << Endl;
 
     NJson::TJsonValue jsonReport(NJson::JSON_ARRAY);
     const bool collectJsonSensors = !JsonReportFileName.empty();
-    const TVector<TQueryFullInfo> qtokens = GetQueries(FullTablePath(config.Database, Table));
+    const TVector<TString> qtokens = GetQueries(FullTablePath(config.Database, Table));
     bool allOkay = true;
 
     std::map<ui32, TTestInfo> QueryRuns;
     for (ui32 queryN = 0; queryN < qtokens.size(); ++queryN) {
-        const TQueryFullInfo& qInfo = qtokens[queryN];
         if (!NeedRun(queryN)) {
             continue;
         }
 
-        if (!HasCharsInString(qInfo.GetQuery())) {
+        if (!HasCharsInString(qtokens[queryN])) {
             continue;
         }
+        const TString query = PatchQuery(qtokens[queryN]);
 
-        const TString query = PatchQuery(qInfo.GetQuery());
-
-        std::vector<TDuration> clientTimings;
-        std::vector<TDuration> serverTimings;
-        clientTimings.reserve(IterationsCount);
-        serverTimings.reserve(IterationsCount);
+        std::vector<TDuration> timings;
+        timings.reserve(IterationsCount);
 
         Cout << Sprintf("Query%02u", queryN) << ":" << Endl;
         Cerr << "Query text:\n" << Endl;
         Cerr << query << Endl << Endl;
 
         ui32 successIteration = 0;
-        ui32 failsCount = 0;
-        ui32 diffsCount = 0;
-        std::optional<TString> prevResult;
         for (ui32 i = 0; i < IterationsCount * 10 && successIteration < IterationsCount; ++i) {
             auto t1 = TInstant::Now();
-            TQueryBenchmarkResult res = TQueryBenchmarkResult::Error("undefined");
-            try {
-                res = Execute(query, client);
-            } catch (...) {
-                res = TQueryBenchmarkResult::Error(CurrentExceptionMessage());
-            }
+            auto res = Execute(query, client);
             auto duration = TInstant::Now() - t1;
 
             Cout << "\titeration " << i << ":\t";
-            if (!!res) {
+            if (res.second == "") {
                 Cout << "ok\t" << duration << " seconds" << Endl;
-                clientTimings.emplace_back(duration);
-                serverTimings.emplace_back(res.GetServerTiming());
+                timings.emplace_back(duration);
                 ++successIteration;
                 if (successIteration == 1) {
                     outFStream << queryN << ": " << Endl
-                        << res.GetYSONResult() << Endl << Endl;
-                }
-                if ((!prevResult || *prevResult != res.GetYSONResult()) && !qInfo.IsCorrectResult(res.GetQueryResult())) {
-                    outFStream << queryN << ":" << Endl <<
-                        "Query text:" << Endl <<
-                        query << Endl << Endl <<
-                        "UNEXPECTED DIFF: " << Endl
-                            << "RESULT: " << Endl << res.GetYSONResult() << Endl
-                            << "EXPECTATION: " << Endl << qInfo.GetExpectedResult() << Endl;
-                    prevResult = res.GetYSONResult();
-                    ++diffsCount;
+                        << res.first << res.second << Endl << Endl;
                 }
             } else {
-                ++failsCount;
                 Cout << "failed\t" << duration << " seconds" << Endl;
                 Cerr << queryN << ": " << query << Endl
-                    << res.GetErrorInfo() << Endl;
+                     << res.first << res.second << Endl;
                 Sleep(TDuration::Seconds(1));
             }
         }
@@ -205,30 +297,25 @@ bool TClickBenchCommandRun::RunBench(TConfig& config)
             allOkay = false;
         }
 
-        auto [inserted, success] = QueryRuns.emplace(queryN, TTestInfo(std::move(clientTimings), std::move(serverTimings)));
-        Y_ABORT_UNLESS(success);
+        auto [inserted, success] = QueryRuns.emplace(queryN, TTestInfo(std::move(timings)));
+        Y_VERIFY(success);
         auto& testInfo = inserted->second;
 
-        report << Sprintf("|   %02u    | %8.3f | %7.3f | %7.3f | %8.3f | %8.3f | %7.3f | %7.3f | %7.3f | %7.3f |", queryN,
+        report << Sprintf("|   %02u    | %8.3f | %7.3f | %7.3f | %8.3f | %7.3f |", queryN,
             testInfo.ColdTime.MilliSeconds() * 0.001, testInfo.Min.MilliSeconds() * 0.001, testInfo.Max.MilliSeconds() * 0.001,
-            testInfo.Mean * 0.001, testInfo.Median * 0.001, testInfo.Std * 0.001, testInfo.RttMin.MilliSeconds() * 0.001, testInfo.RttMax.MilliSeconds() * 0.001,
-            testInfo.RttMean * 0.001) << Endl;
+            testInfo.Mean * 0.001, testInfo.Std * 0.001) << Endl;
         if (collectJsonSensors) {
             jsonReport.AppendValue(GetSensorValue("ColdTime", testInfo.ColdTime, queryN));
             jsonReport.AppendValue(GetSensorValue("Min", testInfo.Min, queryN));
             jsonReport.AppendValue(GetSensorValue("Max", testInfo.Max, queryN));
             jsonReport.AppendValue(GetSensorValue("Mean", testInfo.Mean, queryN));
-            jsonReport.AppendValue(GetSensorValue("Median", testInfo.Median, queryN));
             jsonReport.AppendValue(GetSensorValue("Std", testInfo.Std, queryN));
-            jsonReport.AppendValue(GetSensorValue("DiffsCount", diffsCount, queryN));
-            jsonReport.AppendValue(GetSensorValue("FailsCount", failsCount, queryN));
-            jsonReport.AppendValue(GetSensorValue("SuccessCount", successIteration, queryN));
         }
     }
 
     driver.Stop(true);
 
-    report << "+---------+----------+---------+---------+----------+----------+---------+---------+---------+---------+" << Endl;
+    report << "+---------+----------+---------+---------+----------+---------+" << Endl;
 
     Cout << Endl << report.Str() << Endl;
     Cout << "Results saved to " << OutFilePath << Endl;
@@ -243,9 +330,7 @@ bool TClickBenchCommandRun::RunBench(TConfig& config)
                     jStream << ",";
                 }
                 ++colId;
-                if (rowId < testInfo.ServerTimings.size()) {
-                    jStream << testInfo.ServerTimings.at(rowId).MilliSeconds();
-                }
+                jStream << testInfo.Timings.at(rowId).MilliSeconds();
             }
 
             jStream << Endl;
@@ -321,13 +406,13 @@ void TClickBenchCommandInit::Config(TConfig& config) {
 
 int TClickBenchCommandInit::Run(TConfig& config) {
     StoreType = to_lower(StoreType);
-    TString partitionBy = "--";
-    TString storageType = "--";
+    TString partitionBy = "";
+    TString storageType = "";
     TString notNull = "";
     if (StoreType == "column") {
         //partitionBy = "PARTITION BY HASH(CounterID)"; Not enough cardinality in CounterID column @sa KIKIMR-16478
-        partitionBy = "PARTITION BY HASH";
-        storageType = "STORE = COLUMN, --";
+        partitionBy = "PARTITION BY HASH(EventTime)";
+        storageType = "STORE = COLUMN,";
         notNull = "NOT NULL";
     } else if (StoreType != "row") {
         throw yexception() << "Incorrect storage type. Available options: \"row\", \"column\"." << Endl;
@@ -338,20 +423,16 @@ int TClickBenchCommandInit::Run(TConfig& config) {
     TString createSql = NResource::Find("click_bench_schema.sql");
     TTableClient client(driver);
 
-    SubstGlobal(createSql, "{path}", FullTablePath(config.Database, Table));
+    SubstGlobal(createSql, "{table}", FullTablePath(config.Database, Table));
     SubstGlobal(createSql, "{notnull}", notNull);
-    SubstGlobal(createSql, "{partition_by}", partitionBy);
+    SubstGlobal(createSql, "{partition}", partitionBy);
     SubstGlobal(createSql, "{store}", storageType);
-    SubstGlobal(createSql, "{partitioning}", "AUTO_PARTITIONING_MIN_PARTITIONS_COUNT");
-    SubstGlobal(createSql, "{primary_key}", ", PRIMARY KEY");
-    SubstGlobal(createSql, "{external}", "");
-    SubstGlobal(createSql, "{createExternal}", "");
 
     ThrowOnError(client.RetryOperationSync([createSql](TSession session) {
         return session.ExecuteSchemeQuery(createSql).GetValueSync();
     }));
 
-    Cout << "Table created. Please, follow instructions https://ydb.tech/en/docs/reference/ydb-cli/workload-click-bench#load to load benchmark data." << Endl;
+    Cout << "Table created." << Endl;
     driver.Stop(true);
     return 0;
 };
@@ -381,7 +462,7 @@ int TClickBenchCommandClean::Run(TConfig& config) {
     static const char DropDdlTmpl[] = "DROP TABLE `%s`;";
     char dropDdl[sizeof(DropDdlTmpl) + 8192*3]; // 32*256 for DbPath
     TString fullPath = FullTablePath(config.Database, Table);
-    int res = std::snprintf(dropDdl, sizeof(dropDdl), DropDdlTmpl, fullPath.c_str());
+    int res = std::sprintf(dropDdl, DropDdlTmpl, fullPath.c_str());
     if (res < 0) {
         Cerr << "Failed to generate DROP DDL query for `" << fullPath << "` table." << Endl;
         return -1;
@@ -428,9 +509,6 @@ void TClickBenchCommandRun::Config(TConfig& config) {
     config.Opts->AddLongOption("ext-queries-dir", "Directory with external queries. Naming have to be q[0-N].sql")
         .DefaultValue("")
         .StoreResult(&ExternalQueriesDir);
-    config.Opts->AddLongOption("ext-results-dir", "Directory with external results. Naming have to be q[0-N].sql")
-        .DefaultValue("")
-        .StoreResult(&ExternalResultsDir);
     TString externalVariables;
     config.Opts->AddLongOption("ext-query-variables", "v1_id=v1_value;v2_id=v2_value;...; applied for queries {v1_id} -> v1_value")
         .DefaultValue("")
@@ -485,47 +563,13 @@ void TClickBenchCommandRun::Config(TConfig& config) {
         });
 
     config.Opts->MutuallyExclusiveOpt(includeOpt, excludeOpt);
-
-    config.Opts->AddLongOption("executer", "Query executer type."
-            " Options: scan, generic\n"
-            "scan - use scan queries;\n"
-            "generic - use generic queries.")
-        .DefaultValue("scan").StoreResult(&QueryExecuterType);
 };
 
 
 int TClickBenchCommandRun::Run(TConfig& config) {
-    if (QueryExecuterType == "scan") {
-        const bool okay = RunBench<NYdb::NTable::TTableClient>(config);
-        return !okay;
-    } else if (QueryExecuterType == "generic") {
-        const bool okay = RunBench<NYdb::NQuery::TQueryClient>(config);
-        return !okay;
-    } else {
-        ythrow yexception() << "Incorrect executer type. Available options: \"scan\", \"generic\"." << Endl;
-    }
+    const bool okay = RunBench(config);
+    return !okay;
 };
-
-TMap<ui32, TString> TClickBenchCommandRun::LoadExternalResults() const {
-    TMap<ui32, TString> result;
-    if (ExternalResultsDir) {
-        TFsPath dir(ExternalResultsDir);
-        TVector<TString> filesList;
-        dir.ListNames(filesList);
-        std::sort(filesList.begin(), filesList.end());
-        for (auto&& i : filesList) {
-            Y_ABORT_UNLESS(i.StartsWith("q") && i.EndsWith(".result"));
-            TStringBuf sb(i.data(), i.size());
-            sb.Skip(1);
-            sb.Chop(7);
-            ui32 qId;
-            Y_ABORT_UNLESS(TryFromString<ui32>(sb, qId));
-            TFileInput fInput(ExternalResultsDir + "/" + i);
-            result.emplace(qId, fInput.ReadAll());
-        }
-    }
-    return result;
-}
 
 TCommandClickBench::TCommandClickBench()
     : TClientCommandTree("clickbench", {}, "ClickBench workload (ClickHouse OLAP test)")

@@ -7,8 +7,7 @@ namespace NKikimr {
     struct TEvRecoverBlob : TEventLocal<TEvRecoverBlob, TEvBlobStorage::EvRecoverBlob> {
         struct TItem {
             TLogoBlobID BlobId;
-            TStackVec<TRope, 8> Parts;
-            ui32 PartsMask = 0;
+            TDataPartSet PartSet; // available data
             NMatrix::TVectorType Needed; // needed parts
             TDiskPart CorruptedPart;
             ui64 Cookie;
@@ -16,10 +15,9 @@ namespace NKikimr {
             TItem(const TItem&) = default;
             TItem(TItem&&) = default;
 
-            TItem(TLogoBlobID blobId, TStackVec<TRope, 8>&& parts, ui32 partsMask, NMatrix::TVectorType needed, TDiskPart corruptedPart, ui64 cookie = 0)
+            TItem(TLogoBlobID blobId, TDataPartSet&& partSet, NMatrix::TVectorType needed, TDiskPart corruptedPart, ui64 cookie = 0)
                 : BlobId(blobId)
-                , Parts(std::move(parts))
-                , PartsMask(partsMask)
+                , PartSet(std::move(partSet))
                 , Needed(needed)
                 , CorruptedPart(corruptedPart)
                 , Cookie(cookie)
@@ -27,37 +25,36 @@ namespace NKikimr {
 
             TItem(TLogoBlobID blobId, NMatrix::TVectorType needed, const TBlobStorageGroupType& gtype, TDiskPart corruptedPart, ui64 cookie = 0)
                 : BlobId(blobId)
-                , Parts(gtype.TotalPartCount())
-                , PartsMask(0)
+                , PartSet{blobId.BlobSize(), 0, {gtype.TotalPartCount(), TPartFragment()}, TPartFragment(), 0u, false}
                 , Needed(needed)
                 , CorruptedPart(corruptedPart)
                 , Cookie(cookie)
             {}
 
-            void SetPartData(TLogoBlobID id, TRope&& data) {
-                Y_ABORT_UNLESS(id.FullID() == BlobId);
-                Y_ABORT_UNLESS(id.PartId());
+            void SetPartData(TLogoBlobID id, TString data) {
+                Y_VERIFY(id.FullID() == BlobId);
+                Y_VERIFY(id.PartId());
                 const ui32 partIdx = id.PartId() - 1;
-                if (PartsMask & (1 << partIdx)) {
-                    Y_ABORT_UNLESS(GetPartData(id) == data);
+                if (PartSet.PartsMask & (1 << partIdx)) {
+                    Y_VERIFY(GetPartData(id) == data);
                 } else {
-                    PartsMask |= 1 << partIdx;
-                    Parts[partIdx] = std::move(data);
+                    PartSet.PartsMask |= 1 << partIdx;
+                    PartSet.Parts[partIdx].ReferenceTo(data);
                 }
             }
 
-            const TRope& GetPartData(TLogoBlobID id) const {
-                Y_ABORT_UNLESS(id.FullID() == BlobId);
-                Y_ABORT_UNLESS(id.PartId());
+            TRope GetPartData(TLogoBlobID id) const {
+                Y_VERIFY(id.FullID() == BlobId);
+                Y_VERIFY(id.PartId());
                 const ui32 partIdx = id.PartId() - 1;
-                Y_ABORT_UNLESS(PartsMask & (1 << partIdx));
-                return Parts[partIdx];
+                Y_VERIFY(PartSet.PartsMask & (1 << partIdx));
+                return PartSet.Parts[partIdx].OwnedString;
             }
 
             NMatrix::TVectorType GetAvailableParts() const {
                 NMatrix::TVectorType res(0, Needed.GetSize());
-                for (size_t i = 0; i < Parts.size(); ++i) {
-                    if (PartsMask & (1 << i)) {
+                for (size_t i = 0; i < PartSet.Parts.size(); ++i) {
+                    if (PartSet.PartsMask & (1 << i)) {
                         res.Set(i);
                     }
                 }
@@ -78,7 +75,7 @@ namespace NKikimr {
             bool first = true;
             for (const TItem& item : Items) {
                 s << (std::exchange(first, false) ? "" : " ") << "{BlobId# " << item.BlobId.ToString() << " Needed# "
-                    << item.Needed.ToString() << " PartsMask# " << Sprintf("%02" PRIx32, item.PartsMask) << "}";
+                    << item.Needed.ToString() << " PartsMask# " << Sprintf("%02" PRIx32, item.PartSet.PartsMask) << "}";
             }
             s << "]}";
         }

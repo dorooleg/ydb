@@ -43,7 +43,7 @@ void TShardDeleter::SendDeleteRequests(TTabletId hiveTabletId,
             }
         }
 
-        Y_ABORT_UNLESS(shardIdx);
+        Y_VERIFY(shardIdx);
 
         LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                     "Free shard " << shardIdx << " hive " << hiveTabletId << " at ss " << MyTabletID);
@@ -248,7 +248,7 @@ TTableColumns ExtractInfo(const NSchemeShard::TTableInfo::TPtr &tableInfo) {
             continue;
         }
 
-        Y_ABORT_UNLESS(result.Columns.contains(keyColumn.Name));
+        Y_VERIFY(result.Columns.contains(keyColumn.Name));
         result.Keys.push_back(keyColumn.Name);
     }
 
@@ -352,14 +352,11 @@ NKikimrSchemeOp::TTableDescription CalcImplTableDesc(
         auto& columnName = column.GetName();
         if (implTableColumns.Columns.contains(columnName)) {
             auto item = result.AddColumns();
-            *item = column;
+            item->CopyFrom(column);
 
             // Indexes don't use column families
             item->ClearFamily();
             item->ClearFamilyName();
-
-            // Indexes can't have a default value
-            item->ClearDefaultValue();
 
             ui32 order = Max<ui32>();
             if (implKeyToImplColumn.contains(columnName)) {
@@ -480,7 +477,7 @@ NKikimrSchemeOp::TPartitionConfig PartitionConfigForIndexes(
 
 bool ExtractTypes(const NKikimrSchemeOp::TTableDescription& baseTableDescr, TColumnTypes& columnTypes, TString& explain) {
     const NScheme::TTypeRegistry* typeRegistry = AppData()->TypeRegistry;
-    Y_ABORT_UNLESS(typeRegistry);
+    Y_VERIFY(typeRegistry);
 
     for (auto& column: baseTableDescr.GetColumns()) {
         auto& columnName = column.GetName();
@@ -518,7 +515,7 @@ bool IsCompatibleKeyTypes(
     TString& explain)
 {
     const NScheme::TTypeRegistry* typeRegistry = AppData()->TypeRegistry;
-    Y_ABORT_UNLESS(typeRegistry);
+    Y_VERIFY(typeRegistry);
 
     for (const auto& item: baseTableColumnTypes) {
         auto& columnName = item.first;
@@ -546,15 +543,8 @@ bool IsCompatibleKeyTypes(
 
 
     for (auto& keyName: implTableColumns.Keys) {
-        Y_ABORT_UNLESS(baseTableColumnTypes.contains(keyName));
+        Y_VERIFY(baseTableColumnTypes.contains(keyName));
         auto typeInfo = baseTableColumnTypes.at(keyName);
-
-        if (typeInfo.GetTypeId() == NScheme::NTypeIds::Uuid) {
-            if (!AppData()->FeatureFlags.GetEnableUuidAsPrimaryKey()) {
-                explain += TStringBuilder() << "Uuid as primary key is forbiden by configuration: " << keyName;
-                return false;
-            }
-        }
 
         if (uniformTable) {
             switch (typeInfo.GetTypeId()) {

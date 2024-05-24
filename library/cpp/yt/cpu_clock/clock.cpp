@@ -4,8 +4,6 @@
 
 #include <library/cpp/yt/assert/assert.h>
 
-#include <library/cpp/yt/misc/tls.h>
-
 namespace NYT {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -31,7 +29,7 @@ double GetTicksToMicroseconds()
     return TicksToMicroseconds;
 }
 
-YT_PREVENT_TLS_CACHING TCalibrationState GetCalibrationState(TCpuInstant cpuInstant)
+TCalibrationState GetCalibrationState(TCpuInstant cpuInstant)
 {
     thread_local TCalibrationState State;
 

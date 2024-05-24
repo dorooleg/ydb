@@ -156,90 +156,28 @@ class YamlConfigState {
     constructor() {
         this.fetchInterval = 5000;
         this.url = 'cms/api/console/yamlconfig';
-        this.readOnlyUrl = 'cms/api/console/readonly';
-        this.resolveUrl = 'cms/api/console/resolveyamlconfig';
-        this.resolveAllUrl = 'cms/api/console/resolveallyamlconfig';
+        this.resolveUrl = 'cms/api/console/resolveyamlconfig'
+        this.resolveAllUrl = 'cms/api/console/resolveallyamlconfig'
         this.removeVolatileUrl = 'cms/api/console/removevolatileyamlconfig';
-        this.applyUrl = 'cms/api/console/configureyamlconfig';
-        this.applyVolatileUrl = 'cms/api/console/configurevolatileyamlconfig';
-        this.readOnly = true;
+        this.applyUrl = 'cms/api/console/configurevolatileyamlconfig';
         this.maxVolatileId = -1;
         this.volatileConfigs = [];
         this.codeMirrors = [];
         this.initTab();
     }
 
-    changeReadOnlyState(state) {
-        if (this.readOnly == state)
-            return;
-
-        this.readOnly = state;
-        var btn = $('#yaml-apply-button');
-
-        if (this.readOnly) {
-            btn.addClass("disabled");
-            btn.prop("onclick", null).off("click");
-            btn.attr("title", "Set config field 'allow_edit_yaml_in_ui' to 'true' to enable this button");
-        } else {
-            btn.removeClass("disabled");
-            btn.removeAttr("title");
-            var self = this;
-            btn.on('click', function(event) {
-                event.preventDefault();
-                showAck("Apply new config?", " ", "Yes", "No", self.setConfig.bind(self));
-            });
-        }
-
-        if (this.codeMirror) {
-            this.codeMirror.updateOptions({ readOnly: this.readOnly });
-        }
-    }
-
-    setConfig() {
-        var cmd = {
-            Request: {
-                config: this.codeMirror.getValue(),
-            },
-        };
-
-        $.post(this.applyUrl, JSON.stringify(cmd))
-         .done(this.onSetConfig.bind(this, true))
-         .fail(this.onSetConfig.bind(this, false));
-    }
-
-    onSetConfig(success, data) {
-        if (success) {
-            // ok, do nothing
-        } else {
-            var message = "";
-            if (data.hasOwnProperty('responseJSON')) {
-                message = data.responseJSON.issues;
-            } else {
-                message = data.responseText;
-            }
-            showToast("Error", "Can't set config\n" + message, 15000);
-        }
-    }
-
     loadYaml() {
         clearTimeout(this.loadYamlTimeout);
-        $.get(this.url).done(this.onYamlLoaded.bind(this, true)).fail(this.onYamlLoaded.bind(this, false));
-        $.get(this.readOnlyUrl).done(this.onReadOnlyLoaded.bind(this, true)).fail(this.onReadOnlyLoaded.bind(this, false));
+        $.get(this.url).done(this.onYamlLoaded.bind(this)).fail(this.onYamlLoaded.bind(this));
     }
 
-    onReadOnlyLoaded(success, data) {
-        if (success && data.hasOwnProperty('ReadOnly')) {
-            this.changeReadOnlyState(data.ReadOnly);
-        }
-    }
+    onYamlLoaded(data) {
+        if (data?.Response?.operation?.status === "SUCCESS") {
+            this.cluster = data.Response.cluster;
+            $('#yaml-cluster').text(data.Response.cluster);
 
-    onYamlLoaded(success, data) {
-        if (success) {
-            this.cluster = data.Response.identity.cluster;
-            $('#yaml-cluster').text(data.Response.identity.cluster);
-
-            this.version = data.Response.identity.version;
-            $('#yaml-version').text(data.Response.identity.version);
+            this.version = data.Response.version;
+            $('#yaml-version').text(data.Response.version);
 
             if (this.config !== data.Response.config) {
                 this.codeMirror.setValue((data.Response.config !== undefined) ? data.Response.config : "");
@@ -308,11 +246,11 @@ class YamlConfigState {
         this.loadYamlTimeout = setTimeout(this.loadYaml.bind(this), this.fetchInterval);
     }
 
-    onVolatileConfigChanged(success, data) {
-        if (success) {
+    onVolatileConfigChanged(data) {
+        if (data?.Response?.operation?.status === "SUCCESS") {
             this.loadYaml();
         } else {
-            showToast("Error", "Invalid volatile config\n" + data.responseJSON.issues, 15000);
+            showToast("Error", "Invalid volatile config\n" + data.Response.operation.issues[0].message, 15000);
         }
     }
 
@@ -326,9 +264,9 @@ class YamlConfigState {
             },
         };
 
-        $.post(this.applyVolatileUrl, JSON.stringify(cmd))
-         .done(this.onVolatileConfigChanged.bind(this, true))
-         .fail(this.onVolatileConfigChanged.bind(this, false));
+        $.post(this.applyUrl, JSON.stringify(cmd))
+         .done(this.onVolatileConfigChanged.bind(this))
+         .fail(this.onVolatileConfigChanged.bind(this));
 
         this.volatileCodeMirror.setValue("");
 
@@ -346,8 +284,8 @@ class YamlConfigState {
         };
 
         $.post(this.removeVolatileUrl, JSON.stringify(cmd))
-         .done(this.onVolatileConfigChanged.bind(this, true))
-         .fail(this.onVolatileConfigChanged.bind(this, false));
+         .done(this.onVolatileConfigChanged.bind(this))
+         .fail(this.onVolatileConfigChanged.bind(this));
     }
 
     removeVolatileConfig(id) {
@@ -360,15 +298,15 @@ class YamlConfigState {
         };
 
         $.post(this.removeVolatileUrl, JSON.stringify(cmd))
-         .done(this.onVolatileConfigChanged.bind(this, true))
-         .fail(this.onVolatileConfigChanged.bind(this, false));
+         .done(this.onVolatileConfigChanged.bind(this))
+         .fail(this.onVolatileConfigChanged.bind(this));
     }
 
-    onResolved(success, data) {
-        if (success) {
+    onResolved(data) {
+        if (data?.Response?.operation?.status === "SUCCESS") {
             this.resolvedCodeMirror.setValue(data.Response.config);
         } else {
-            showToast("Error", "Config resolution error\n" + data.responseJSON.issues, 15000);
+            showToast("Error", "Config resolution error\n" + data.Response.operation.issues[0].message, 15000);
         }
 
     }
@@ -382,8 +320,8 @@ class YamlConfigState {
         };
 
         $.post(this.resolveAllUrl, JSON.stringify(cmd))
-         .done(this.onResolved.bind(this, true))
-         .fail(this.onResolved.bind(this, false));
+         .done(this.onResolved.bind(this))
+         .fail(this.onResolved.bind(this));
     }
 
     resolveForLabels() {
@@ -404,13 +342,13 @@ class YamlConfigState {
         };
 
         $.post(this.resolveUrl, JSON.stringify(cmd))
-         .done(this.onResolved.bind(this, true))
-         .fail(this.onResolved.bind(this, false));
+         .done(this.onResolved.bind(this))
+         .fail(this.onResolved.bind(this));
     }
 
     initTab() {
         var self = this;
-        this.codeMirror = createEditor($("#main-editor-container").get(0), this.readOnly, 1068);
+        this.codeMirror = createEditor($("#main-editor-container").get(0), true, 1068);
         this.config = "";
         this.codeMirror.setValue(this.config);
 

@@ -1,6 +1,5 @@
 #pragma once
 #include "defs.h"
-#include <ydb/core/blobstorage/vdisk/query/query_readbatch.h>
 
 namespace NKikimr {
 

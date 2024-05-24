@@ -68,17 +68,17 @@ namespace NKikimr {
         }
 
         void Next() {
-            Y_DEBUG_ABORT_UNLESS(Ptr && Ptr < End() && Ptr >= Begin());
+            Y_VERIFY_DEBUG(Ptr && Ptr < End() && Ptr >= Begin());
             ++Ptr;
         }
 
         void Prev() {
-            Y_DEBUG_ABORT_UNLESS(Ptr && Ptr <= End() && Ptr >= Begin());
+            Y_VERIFY_DEBUG(Ptr && Ptr <= End() && Ptr >= Begin());
             --Ptr;
         }
 
         TKey GetCurKey() const {
-            Y_DEBUG_ABORT_UNLESS(Valid());
+            Y_VERIFY_DEBUG(Valid());
             return Ptr->Key;
         }
 
@@ -110,7 +110,7 @@ namespace NKikimr {
         }
 
         bool operator == (const TMemIterator &it) const {
-            Y_ABORT_UNLESS(Segment == it.Segment);
+            Y_VERIFY(Segment == it.Segment);
             return Ptr == it.Ptr;
         }
 

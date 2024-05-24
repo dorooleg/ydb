@@ -35,7 +35,7 @@ TAutoPtr<IGraphTransformer> CreateKqpCheckPhysicalQueryTransformer() {
             }
 
             for (const auto& effect : query.Effects()) {
-                if (!IsBuiltEffect(effect)) {
+                if (!effect.Maybe<TDqOutput>()) {
                     ctx.AddError(TIssue(ctx.GetPosition(effect.Pos()), "Failed to build query effects."));
                     return TStatus::Error;
                 }
@@ -86,12 +86,10 @@ TAutoPtr<IGraphTransformer> CreateKqpCheckPhysicalQueryTransformer() {
                     YQL_ENSURE(stageType);
                     auto stageResultType = stageType->Cast<TTupleExprType>();
                     const auto& stageConsumers = GetConsumers(stage, parentsMap);
-                    bool stageWithResult = false;
 
                     TDynBitMap usedOutputs;
                     for (auto consumer : stageConsumers) {
                         if (auto maybeOutput = TExprBase(consumer).Maybe<TDqOutput>()) {
-                            stageWithResult = true;
                             auto output = maybeOutput.Cast();
                             auto outputIndex = FromString<ui32>(output.Index().Value());
                             if (usedOutputs.Test(outputIndex)) {
@@ -102,38 +100,18 @@ TAutoPtr<IGraphTransformer> CreateKqpCheckPhysicalQueryTransformer() {
                             }
                             usedOutputs.Set(outputIndex);
                         } else {
-                            // There can be also an effect with stage that has dq sinks
-                            // Check the following structure:
-                            // TKqlQuery (tuple with 2 elems) - results and effects
-                            auto stageParentsIt = parentsMap.find(stage.Raw());
-                            YQL_ENSURE(stageParentsIt != parentsMap.end());
-                            if (stageParentsIt->second.size() != 1) {
-                                hasMultipleConsumers = true;
-                            } else {
-                                const TExprNode* effectNode = *stageParentsIt->second.begin();
-                                auto effectParentIt = parentsMap.find(effectNode);
-                                YQL_ENSURE(effectParentIt != parentsMap.end());
-                                if (effectParentIt->second.size() != 1) {
-                                    hasMultipleConsumers = true;
-                                } else {
-                                    const TExprNode* queryNode = *effectParentIt->second.begin();
-                                    YQL_ENSURE(queryNode->GetTypeAnn()->GetKind() == ETypeAnnotationKind::Tuple,
-                                        "Stage #" << PrintKqpStageOnly(stage, ctx) << " has unexpected consumer: "
-                                            << consumer->Content());
-                                }
-                            }
+                            YQL_ENSURE(false, "Stage #" << PrintKqpStageOnly(stage, ctx) << " has unexpected consumer: "
+                                << consumer->Content());
                         }
                     }
 
-                    if (stageWithResult) {
-                        for (size_t i = 0; i < stageResultType->GetSize(); ++i) {
-                            if (!usedOutputs.Test(i)) {
-                                hasBrokenStage = true;
-                                YQL_CLOG(ERROR, ProviderKqp) << "Stage #" << PrintKqpStageOnly(stage, ctx)
-                                    << ", output " << i << " (" << FormatType(stageResultType->GetItems()[i]) << ")"
-                                    << " not used";
-                                return false;
-                            }
+                    for (size_t i = 0; i < stageResultType->GetSize(); ++i) {
+                        if (!usedOutputs.Test(i)) {
+                            hasBrokenStage = true;
+                            YQL_CLOG(ERROR, ProviderKqp) << "Stage #" << PrintKqpStageOnly(stage, ctx)
+                                << ", output " << i << " (" << FormatType(stageResultType->GetItems()[i]) << ")"
+                                << " not used";
+                            return false;
                         }
                     }
                 }

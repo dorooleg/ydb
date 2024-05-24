@@ -5,7 +5,7 @@
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/protos/counters_tx_allocator.pb.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 namespace NKikimr {
 
@@ -50,6 +50,7 @@ private:
     void ReplyImposible(const TEvTxAllocator::TEvAllocate::TPtr &ev, const TActorContext &ctx);
 
     void Handle(TEvTxAllocator::TEvAllocate::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx);
 
 public:
     struct Schema : NIceDb::Schema {
@@ -95,6 +96,7 @@ public:
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTxAllocator::TEvAllocate, Handle);
+            HFunc(TEvents::TEvPoisonPill, Handle);
             IgnoreFunc(TEvTabletPipe::TEvServerConnected);
             IgnoreFunc(TEvTabletPipe::TEvServerDisconnected);
         default:
@@ -105,6 +107,16 @@ public:
                             " from Sender# " << ev->Sender.ToString() <<
                             " at StateWork");
             }
+        }
+    }
+
+    STFUNC(StateBroken) {
+        if (!HandleDefaultEvents(ev, SelfId())) {
+            ALOG_ERROR(NKikimrServices::TX_ALLOCATOR,
+                        "tablet# " << TabletID() <<
+                        " IGNORING message type# " <<  ev->GetTypeRewrite() <<
+                        " from Sender# " << ev->Sender.ToString() <<
+                        " at StateBroken");
         }
     }
 };

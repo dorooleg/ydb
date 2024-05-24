@@ -86,7 +86,7 @@ namespace NKikimr {
             , SstId(sstId)
             , Info()
         {
-            Y_DEBUG_ABORT_UNLESS(PrevPart.Empty());
+            Y_VERIFY_DEBUG(PrevPart.Empty());
         }
 
         friend bool operator ==(const TIdxDiskPlaceHolder& x, const TIdxDiskPlaceHolder& y) {

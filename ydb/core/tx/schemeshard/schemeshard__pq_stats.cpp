@@ -110,7 +110,7 @@ void TSchemeShard::Handle(TEvPersQueue::TEvPeriodicTopicStats::TPtr& ev, const T
             break;
 
         default:
-          Y_ABORT("Unknown batch status");
+          Y_FAIL("Unknown batch status");
     }
 }
 

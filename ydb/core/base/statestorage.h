@@ -3,7 +3,7 @@
 #include "events.h"
 #include <ydb/core/protos/statestorage.pb.h>
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/library/actors/interconnect/event_filter.h>
+#include <library/cpp/actors/interconnect/event_filter.h>
 #include <util/stream/str.h>
 #include <util/generic/list.h>
 #include <util/generic/map.h>
@@ -27,7 +27,6 @@ struct TEvStateStorage {
         EvUpdateGroupConfig,
         EvListStateStorage,
         EvBoardInfoUpdate,
-        EvPublishActorGone,
 
         // replies (local, from proxy)
         EvInfo = EvLookup + 512,
@@ -383,7 +382,6 @@ struct TEvStateStorage {
     struct TEvListSchemeBoardResult;
     struct TEvListStateStorage;
     struct TEvListStateStorageResult;
-    struct TEvPublishActorGone;
     struct TEvUpdateGroupConfig;
     struct TEvReplicaProbeSubscribe;
     struct TEvReplicaProbeUnsubscribe;
@@ -431,11 +429,6 @@ struct TEvStateStorage {
         }
     };
 
-    struct TBoardInfoEntry {
-        TString Payload;
-        bool Dropped = false;
-    };
-
     struct TEvBoardInfo : public TEventLocal<TEvBoardInfo, EvBoardInfo> {
         enum class EStatus {
             Unknown,
@@ -443,9 +436,13 @@ struct TEvStateStorage {
             NotAvailable,
         };
 
+        struct TInfoEntry {
+            TString Payload;
+        };
+
         const EStatus Status;
         const TString Path;
-        TMap<TActorId, TBoardInfoEntry> InfoEntries;
+        TMap<TActorId, TInfoEntry> InfoEntries;
 
         TEvBoardInfo(EStatus status, const TString &path)
             : Status(status)
@@ -461,9 +458,14 @@ struct TEvStateStorage {
 
     struct TEvBoardInfoUpdate : public TEventLocal<TEvBoardInfoUpdate, EvBoardInfoUpdate> {
 
+        struct TInfoEntryUpdate {
+            TString Payload;
+            bool Dropped = false;
+        };
+
         const TEvBoardInfo::EStatus Status;
         const TString Path;
-        TMap<TActorId, TBoardInfoEntry> Updates;
+        TMap<TActorId,TInfoEntryUpdate> Updates;
 
         TEvBoardInfoUpdate(TEvBoardInfo::EStatus status, const TString &path)
             : Status(status)
@@ -504,6 +506,7 @@ struct TStateStorageInfo : public TThrRefBase {
         ui32 ContentHash() const;
     };
 
+    ui32 StateStorageGroup;
     ui32 NToSelect;
     TVector<TRing> Rings;
 
@@ -515,11 +518,10 @@ struct TStateStorageInfo : public TThrRefBase {
     ui32 ContentHash() const;
 
     TStateStorageInfo()
-        : NToSelect(0)
+        : StateStorageGroup(Max<ui32>())
+        , NToSelect(0)
         , Hash(Max<ui64>())
     {}
-
-    TString ToString() const;
 
 private:
     mutable ui64 Hash;
@@ -535,16 +537,13 @@ enum class EBoardLookupMode {
     Subscription,
 };
 
-struct TBoardRetrySettings {
-    TDuration StartDelayMs = TDuration::MilliSeconds(2000);
-    TDuration MaxDelayMs = TDuration::MilliSeconds(5000);
-};
-
 TIntrusivePtr<TStateStorageInfo> BuildStateStorageInfo(char (&namePrefix)[TActorId::MaxServiceIDLength], const NKikimrConfig::TDomainsConfig::TStateStorage& config);
 void BuildStateStorageInfos(const NKikimrConfig::TDomainsConfig::TStateStorage& config,
     TIntrusivePtr<TStateStorageInfo> &stateStorageInfo,
     TIntrusivePtr<TStateStorageInfo> &boardInfo,
     TIntrusivePtr<TStateStorageInfo> &schemeBoardInfo);
+
+IActor* CreateStateStorageWarden(const TIntrusivePtr<TStateStorageInfo> &info, const TIntrusivePtr<TStateStorageInfo> &board, const TIntrusivePtr<TStateStorageInfo> &schemeBoard);
 
 IActor* CreateStateStorageProxy(const TIntrusivePtr<TStateStorageInfo> &info, const TIntrusivePtr<TStateStorageInfo> &board, const TIntrusivePtr<TStateStorageInfo> &schemeBoard);
 IActor* CreateStateStorageProxyStub();
@@ -554,12 +553,8 @@ IActor* CreateStateStorageTabletGuardian(ui64 tabletId, const TActorId &leader, 
 IActor* CreateStateStorageFollowerGuardian(ui64 tabletId, const TActorId &follower); // created as followerCandidate
 IActor* CreateStateStorageBoardReplica(const TIntrusivePtr<TStateStorageInfo> &, ui32);
 IActor* CreateSchemeBoardReplica(const TIntrusivePtr<TStateStorageInfo>&, ui32);
-IActor* CreateBoardLookupActor(
-    const TString &path, const TActorId &owner, EBoardLookupMode mode,
-    TBoardRetrySettings boardRetrySettings = {});
-IActor* CreateBoardPublishActor(
-    const TString &path, const TString &payload, const TActorId &owner, ui32 ttlMs, bool reg,
-    TBoardRetrySettings boardRetrySettings = {});
+IActor* CreateBoardLookupActor(const TString &path, const TActorId &owner, ui32 groupId, EBoardLookupMode mode);
+IActor* CreateBoardPublishActor(const TString &path, const TString &payload, const TActorId &owner, ui32 groupId, ui32 ttlMs, bool reg);
 
 TString MakeEndpointsBoardPath(const TString &database);
 

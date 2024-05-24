@@ -1,6 +1,6 @@
 #include "compression.h"
 
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 
 #include <util/string/builder.h>
 #include <util/string/cast.h>
@@ -19,7 +19,7 @@ bool FillCompression(NKikimrSchemeOp::TBackupTask::TCompressionOptions& out, con
     TStringBuf inBuf = in;
 
     if (inBuf.StartsWith("zstd")) {
-        Y_ABORT_UNLESS(inBuf.SkipPrefix("zstd"));
+        Y_VERIFY(inBuf.SkipPrefix("zstd"));
 
         if (inBuf) {
             if (inBuf.front() != '-') {

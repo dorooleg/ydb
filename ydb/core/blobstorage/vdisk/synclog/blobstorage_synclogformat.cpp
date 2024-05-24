@@ -13,7 +13,7 @@ namespace NKikimr {
                                              ui64 lsn,
                                              const TLogoBlobID &id,
                                              const TIngress &ingress) {
-            //Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
+            //Y_VERIFY_DEBUG(id.PartId() == 0);
             TRecordHdr *hdr = (TRecordHdr *)buf;
             TLogoBlobRec *rec = (TLogoBlobRec *)(hdr + 1);
             hdr->RecType = TRecordHdr::RecLogoBlob;
@@ -100,7 +100,7 @@ namespace NKikimr {
             for (ui32 i = 0; i < record.KeepSize(); ++i, ++lsnPos) {
                 if (lsnPos > lastLsnOfIndexRecord) {
                     TLogoBlobID id = LogoBlobIDFromLogoBlobID(record.GetKeep(i));
-                    Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
+                    Y_VERIFY_DEBUG(id.PartId() == 0);
                     ui32 size = SetLogoBlob(gtype, pos, lsnPos, id, ingressKeep);
                     pos += size;
                 }
@@ -112,7 +112,7 @@ namespace NKikimr {
             for (ui32 i = 0; i < record.DoNotKeepSize(); ++i, ++lsnPos) {
                 if (lsnPos > lastLsnOfIndexRecord) {
                     TLogoBlobID id = LogoBlobIDFromLogoBlobID(record.GetDoNotKeep(i));
-                    Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
+                    Y_VERIFY_DEBUG(id.PartId() == 0);
                     ui32 size = SetLogoBlob(gtype, pos, lsnPos, id, ingressDontKeep);
                     pos += size;
                 }
@@ -174,12 +174,12 @@ namespace NKikimr {
                                           ui64 lsn,
                                           const TLogoBlobID &id,
                                           const TIngress &ingress) {
-            Y_ABORT_UNLESS(Size == 0 && id.PartId() == 0);
+            Y_VERIFY(Size == 0 && id.PartId() == 0);
             Size = TSerializeRoutines::SetLogoBlob(gtype, Buf, lsn, id, ingress);
         }
 
         void TSequenceOfRecs::SetBlock(ui64 lsn, ui64 tabletId, ui32 gen, ui64 issuerGuid) {
-            Y_ABORT_UNLESS(Size == 0);
+            Y_VERIFY(Size == 0);
             Size = TSerializeRoutines::SetBlock(Buf, lsn, tabletId, gen, issuerGuid);
         }
 
@@ -192,7 +192,7 @@ namespace NKikimr {
                                          ui32 collStep,
                                          bool hard,
                                          const TBarrierIngress &ingress) {
-            Y_ABORT_UNLESS(Size == 0);
+            Y_VERIFY(Size == 0);
             Size = TSerializeRoutines::SetBarrier(Buf, lsn, tabletId, channel, gen, genCounter,
                                                   collGen, collStep, hard, ingress);
         }
@@ -202,7 +202,7 @@ namespace NKikimr {
                                     ui64 lastLsnOfIndexRecord,
                                     const NKikimrBlobStorage::TEvVCollectGarbage &record,
                                     const TBarrierIngress &ingress) {
-            Y_ABORT_UNLESS(Size == 0);
+            Y_VERIFY(Size == 0);
             const bool collect = record.HasCollectGeneration();
             ui32 vecItems = !!collect + record.KeepSize() + record.DoNotKeepSize();
             ui32 vecSize = vecItems * NSyncLog::MaxRecFullSize;
@@ -214,7 +214,7 @@ namespace NKikimr {
         void TSequenceOfRecs::SetGC(const TBlobStorageGroupType &gtype,
                                     ui64 lsn,
                                     const TDeque<TLogoBlobID>& phantoms) {
-            Y_ABORT_UNLESS(Size == 0);
+            Y_VERIFY(Size == 0);
             size_t size = NSyncLog::MaxRecFullSize * phantoms.size();
             HeapBuf.resize(size);
             Size = NSyncLog::TSerializeRoutines::SetGC(gtype, HeapBuf.data(), lsn, phantoms);

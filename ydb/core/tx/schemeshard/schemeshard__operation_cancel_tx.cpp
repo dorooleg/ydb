@@ -18,8 +18,8 @@ public:
         , Sender(ev->Sender)
     {
         const auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasTxId());
-        Y_ABORT_UNLESS(record.HasTargetTxId());
+        Y_VERIFY(record.HasTxId());
+        Y_VERIFY(record.HasTargetTxId());
     }
 
     const TOperationId& GetOperationId() const override {
@@ -76,15 +76,15 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TTxCancelTx");
+        Y_FAIL("no AbortPropose for TTxCancelTx");
     }
 
     bool ProgressState(TOperationContext&) override {
-        Y_ABORT("no progress state for cancel tx");
+        Y_FAIL("no progress state for cancel tx");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_ABORT("no AbortUnsafe for cancel tx");
+        Y_FAIL("no AbortUnsafe for cancel tx");
     }
 };
 

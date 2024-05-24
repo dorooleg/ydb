@@ -31,7 +31,6 @@ namespace NWriter {
         ui8 ExtraChannel = 1;   /* Channel for storing additional data */
         TVector<TGroup> Groups; /* Per-group page collection settings */
         TVector<TSlot> Slots;   /* Storage slots, referred by rooms */
-        bool StickyFlatIndex = true;
     };
 
 }

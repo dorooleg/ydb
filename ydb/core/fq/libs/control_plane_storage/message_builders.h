@@ -449,37 +449,19 @@ public:
         return *this;
     }
 
-    template <typename TConnection>
-    TCreateConnectionBuilder& CreateGeneric(
-        TConnection& conn,
-        const TString& databaseId,
-        const TString& login,
-        const TString& password,
-        const TString& serviceAccount)
-    {
-        // auto& ch = *Request.mutable_content()->mutable_setting()->mutable_clickhouse_cluster();
-        if (serviceAccount) {
-            conn.mutable_auth()->mutable_service_account()->set_id(serviceAccount);
-        } else {
-            conn.mutable_auth()->mutable_current_iam();
-        }
-
-        conn.set_database_id(databaseId);
-        conn.set_login(login);
-        conn.set_password(password);
-        return *this;
-    }
-
     TCreateConnectionBuilder& CreateClickHouse(const TString& databaseId, const TString& login, const TString& password, const TString& serviceAccount)
     {
-        auto& conn = *Request.mutable_content()->mutable_setting()->mutable_clickhouse_cluster();
-        return CreateGeneric(conn, databaseId, login, password, serviceAccount);
-    }
+        auto& ch = *Request.mutable_content()->mutable_setting()->mutable_clickhouse_cluster();
+        if (serviceAccount) {
+            ch.mutable_auth()->mutable_service_account()->set_id(serviceAccount);
+        } else {
+            ch.mutable_auth()->mutable_current_iam();
+        }
 
-    TCreateConnectionBuilder& CreatePostgreSQL(const TString& databaseId, const TString& login, const TString& password, const TString& serviceAccount)
-    {
-        auto& conn = *Request.mutable_content()->mutable_setting()->mutable_postgresql_cluster();
-        return CreateGeneric(conn, databaseId, login, password, serviceAccount);
+        ch.set_database_id(databaseId);
+        ch.set_login(login);
+        ch.set_password(password);
+        return *this;
     }
 
     TCreateConnectionBuilder& CreateObjectStorage(const TString& bucket, const TString& serviceAccount)

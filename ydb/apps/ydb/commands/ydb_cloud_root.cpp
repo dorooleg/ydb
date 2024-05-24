@@ -2,7 +2,7 @@
 #include "ydb_update.h"
 #include "ydb_version.h"
 
-#include <ydb/public/sdk/cpp/client/iam/common/iam.h>
+#include <ydb/public/sdk/cpp/client/iam/iam.h>
 #include <ydb/public/lib/ydb_cli/common/ydb_updater.h>
 
 #include <filesystem>
@@ -104,7 +104,7 @@ int NewYCloudClient(int argc, char** argv) {
     settings.YdbDir = "ydb";
 
     auto commandsRoot = MakeHolder<TYCloudClientCommandRoot>(std::filesystem::path(argv[0]).stem().string(), settings);
-    commandsRoot->Opts.SetTitle("YDB client");
+    commandsRoot->Opts.SetTitle("YDB client for Yandex.Cloud");
     TClientCommand::TConfig config(argc, argv);
     return commandsRoot->Process(config);
 }

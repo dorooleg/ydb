@@ -2,7 +2,6 @@
 #include "group_geometry_info.h"
 #include "storage_stats_calculator.h"
 
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/blobstorage/base/utility.h>
 
 namespace NKikimr::NBsController {
@@ -465,43 +464,38 @@ void TBlobStorageController::UpdateSystemViews() {
                     vslot.VDiskStatus, vslot.VDiskKind, false);
             }
         }
-        if (StorageConfig.HasBlobStorageConfig()) {
-            if (const auto& bsConfig = StorageConfig.GetBlobStorageConfig(); bsConfig.HasServiceSet()) {
-                const auto& ss = bsConfig.GetServiceSet();
-                for (const auto& group : ss.GetGroups()) {
-                    if (!SysViewChangedGroups.count(group.GetGroupID())) {
-                        continue;
-                    }
-                    auto *pb = &state.Groups[group.GetGroupID()];
-                    pb->SetGeneration(group.GetGroupGeneration());
-                    pb->SetEncryptionMode(group.GetEncryptionMode());
-                    pb->SetLifeCyclePhase(group.GetLifeCyclePhase());
-                    pb->SetSeenOperational(true);
-                    pb->SetErasureSpeciesV2(TBlobStorageGroupType::ErasureSpeciesName(group.GetErasureSpecies()));
+        for (const auto& group : AppData()->StaticBlobStorageConfig->GetGroups()) {
+            if (!SysViewChangedGroups.count(group.GetGroupID())) {
+                continue;
+            }
+            auto *pb = &state.Groups[group.GetGroupID()];
+            pb->SetGeneration(group.GetGroupGeneration());
+            pb->SetEncryptionMode(group.GetEncryptionMode());
+            pb->SetLifeCyclePhase(group.GetLifeCyclePhase());
+            pb->SetSeenOperational(true);
+            pb->SetErasureSpeciesV2(TBlobStorageGroupType::ErasureSpeciesName(group.GetErasureSpecies()));
 
-                    const NKikimrBlobStorage::TVDiskMetrics zero;
-                    std::vector<TGroupDiskInfo> disks;
-                    for (const auto& realm : group.GetRings()) {
-                        for (const auto& domain : realm.GetFailDomains()) {
-                            for (const auto& location : domain.GetVDiskLocations()) {
-                                const TVSlotId vslotId(location.GetNodeID(), location.GetPDiskID(), location.GetVDiskSlotID());
-                                TGroupDiskInfo disk{nullptr, nullptr, 0};
-                                if (const auto it = StaticVSlots.find(vslotId); it != StaticVSlots.end()) {
-                                    disk.VDiskMetrics = it->second.VDiskMetrics ? &*it->second.VDiskMetrics : &zero;
-                                }
-                                if (const auto it = PDisks.find(vslotId.ComprisingPDiskId()); it != PDisks.end()) {
-                                    disk.PDiskMetrics = &it->second->Metrics;
-                                    disk.ExpectedSlotCount = it->second->ExpectedSlotCount;
-                                }
-                                if (disk.VDiskMetrics && disk.PDiskMetrics) {
-                                    disks.push_back(std::move(disk));
-                                }
-                            }
+            const NKikimrBlobStorage::TVDiskMetrics zero;
+            std::vector<TGroupDiskInfo> disks;
+            for (const auto& realm : group.GetRings()) {
+                for (const auto& domain : realm.GetFailDomains()) {
+                    for (const auto& location : domain.GetVDiskLocations()) {
+                        const TVSlotId vslotId(location.GetNodeID(), location.GetPDiskID(), location.GetVDiskSlotID());
+                        TGroupDiskInfo disk{nullptr, nullptr, 0};
+                        if (const auto it = StaticVSlots.find(vslotId); it != StaticVSlots.end()) {
+                            disk.VDiskMetrics = it->second.VDiskMetrics ? &*it->second.VDiskMetrics : &zero;
+                        }
+                        if (const auto it = PDisks.find(vslotId.ComprisingPDiskId()); it != PDisks.end()) {
+                            disk.PDiskMetrics = &it->second->Metrics;
+                            disk.ExpectedSlotCount = it->second->ExpectedSlotCount;
+                        }
+                        if (disk.VDiskMetrics && disk.PDiskMetrics) {
+                            disks.push_back(std::move(disk));
                         }
                     }
-                    CalculateGroupUsageStats(pb, disks, (TBlobStorageGroupType::EErasureSpecies)group.GetErasureSpecies());
                 }
             }
+            CalculateGroupUsageStats(pb, disks, (TBlobStorageGroupType::EErasureSpecies)group.GetErasureSpecies());
         }
 
         SysViewChangedPDisks.clear();

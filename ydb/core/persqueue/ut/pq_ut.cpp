@@ -20,301 +20,114 @@ const static TString TOPIC_NAME = "rt3.dc1--topic";
 
 Y_UNIT_TEST_SUITE(TPQTest) {
 
-Y_UNIT_TEST(TestDirectReadHappyWay) {
+Y_UNIT_TEST(TestGroupsBalancer) {
     TTestContext tc;
-    RunTestWithReboots(tc.TabletIds, [&]() {
-        return tc.InitialEventsFilter.Prepare();
-    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
-        activeZone = false;
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone);
-        activeZone = false;
-        tc.Runtime->SetScheduledLimit(1000);
-        tc.Runtime->RegisterService(MakePQDReadCacheServiceActorId(), tc.Runtime->Register(
-                CreatePQDReadCacheService(new NMonitoring::TDynamicCounters()))
-        );
-
-        PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"user1", true}}, tc);
-        TVector<std::pair<ui64, TString>> data;
-        TString s{2_MB, 'c'};
-        data.push_back({1, s});
-        CmdWrite(0, "sourceid0", data, tc, false, {}, false, "", -1, 0, false, false, true);
-        TString sessionId = "session1";
-        TString user = "user1";
-        TPQCmdSettings sessionSettings{0, user, sessionId};
-        sessionSettings.PartitionSessionId = 1;
-        sessionSettings.KeepPipe = true;
-
-        TPQCmdReadSettings readSettings{sessionId, 0, 0, 1, 99999, 1};
-        readSettings.PartitionSessionId = 1;
-        readSettings.DirectReadId = 1;
-        readSettings.User = user;
-
-        activeZone = false;
-        Cerr << "Create session\n";
-        auto pipe = CmdCreateSession(sessionSettings, tc);
-        TCmdDirectReadSettings publishSettings{0, sessionId, 1, 1, pipe, false};
-        readSettings.Pipe = pipe;
-        CmdRead(readSettings, tc);
-        Cerr << "Run cmd publish\n";
-        CmdPublishRead(publishSettings, tc);
-        Cerr << "Run cmd forget\n";
-        CmdForgetRead(publishSettings, tc);
-    });
-}
-
-Y_UNIT_TEST(DirectReadBadSessionOrPipe) {
-    TTestContext tc;
-    RunTestWithReboots(tc.TabletIds, [&]() {
-        return tc.InitialEventsFilter.Prepare();
-    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone);
-        tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
-        activeZone = false;
-        tc.Runtime->SetScheduledLimit(1000);
-
-        PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"user1", true}}, tc);
-        TVector<std::pair<ui64, TString>> data;
-        TString s{2_MB, 'c'};
-        data.push_back({1, s});
-        CmdWrite(0, "sourceid2", data, tc, false, {}, false, "", -1, 0, false, false, true);
-        TString sessionId = "session2";
-        TString user = "user2";
-        TPQCmdSettings sessionSettings{0, user, sessionId};
-        sessionSettings.PartitionSessionId = 1;
-        sessionSettings.KeepPipe = true;
-
-        TPQCmdReadSettings readSettings(sessionId, 0, 0, 1, 99999, 1);
-        readSettings.PartitionSessionId = 1;
-        readSettings.DirectReadId = 1;
-        readSettings.User = user;
-        activeZone = false;
-
-        readSettings.ToFail = true;
-        //No pipe
-        CmdRead(readSettings, tc);
-        auto pipe = CmdCreateSession(sessionSettings, tc);
-        readSettings.Pipe = pipe;
-        readSettings.Session = "";
-        // No session
-        CmdRead(readSettings, tc);
-        readSettings.Session = "bad-session";
-        // Bad session
-        CmdRead(readSettings, tc);
-        activeZone = false;
-        readSettings.Session = sessionId;
-        CmdKillSession(0, user, sessionId,tc, pipe);
-        activeZone = false;
-        // Dead session
-        CmdRead(readSettings, tc);
-
-        activeZone = false;
-        TCmdDirectReadSettings publishSettings{0, sessionId, 1, 1, pipe, true};
-        readSettings.Pipe = pipe;
-        activeZone = false;
-        // Dead session
-        Cerr << "Publish read\n";
-        CmdPublishRead(publishSettings, tc);
-        Cerr << "Forget read\n";
-        CmdForgetRead(publishSettings, tc);
-    });
-}
-Y_UNIT_TEST(DirectReadOldPipe) {
-    TTestContext tc;
-    RunTestWithReboots(tc.TabletIds, [&]() {
-        return tc.InitialEventsFilter.Prepare();
-    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone);
-        tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
-        activeZone = false;
-        tc.Runtime->SetScheduledLimit(1000);
-
-        PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"user1", true}}, tc);
-        TString sessionId = "session2";
-        TString user = "user2";
-        TPQCmdSettings sessionSettings{0, user, sessionId};
-        sessionSettings.PartitionSessionId = 1;
-        sessionSettings.KeepPipe = true;
-
-        TPQCmdReadSettings readSettings(sessionId, 0, 0, 1, 99999, 1);
-        readSettings.PartitionSessionId = 1;
-        readSettings.DirectReadId = 1;
-        readSettings.ToFail = true;
-        activeZone = false;
-
-        auto pipe = CmdCreateSession(sessionSettings, tc);
-
-        auto event = MakeHolder<TEvTabletPipe::TEvServerDisconnected>(0, pipe, TActorId{});
-        tc.Runtime->SendToPipe(tc.TabletId, tc.Edge, event.Release(), 0, GetPipeConfigWithRetries());
-        readSettings.Pipe = pipe;
-
-        CmdRead(readSettings, tc);
-    });
-}
-
-
-
-Y_UNIT_TEST(TestPartitionTotalQuota) {
-    TTestContext tc;
-    RunTestWithReboots(tc.TabletIds, [&]() {
-        return tc.InitialEventsFilter.Prepare();
-    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone);
-        activeZone = false;
-        tc.Runtime->SetScheduledLimit(1000);
-
-        tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetPartitionReadQuotaIsTwiceWriteQuota(true);
-        tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetMaxParallelConsumersPerPartition(1); //total partition quota is equal to quota per consumer. Very low.
-
-        PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"important_user", true}}, tc);
-        TVector<std::pair<ui64, TString>> data;
-        TString s{2_MB, 'c'};
-        data.push_back({1, s});
-        CmdWrite(0, "sourceid0", data, tc, false, {}, false, "", -1, 0, false, false, true);
-
-        //check throttling on total partition quota
-        auto startTime = tc.Runtime->GetTimeProvider()->Now();
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user1");
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user2");
-        auto diff = (tc.Runtime->GetTimeProvider()->Now() - startTime).Seconds();
-        UNIT_ASSERT_C(diff >= 9, TStringBuilder() << "Expected >= 9, actual: " << diff); //read quota is twice write quota. So, it's 200kb per seconds and 200kb burst. (2mb - 200kb) / 200kb = 9 seconds needed to get quota
-    });
-}
-
-Y_UNIT_TEST(TestAccountReadQuota) {
-    TTestContext tc;
-    TAtomic stop = 0;
-    TAtomicCounter quoterRequests = 0;
-    i64 prevQuoterReqCount = 0;
-    Y_UNUSED(prevQuoterReqCount);
     TFinalizer finalizer(tc);
     tc.Prepare();
-    tc.Runtime->SetObserverFunc(
-        [&](TAutoPtr<IEventHandle>& ev) {
-            if (auto* msg = ev->CastAsLocal<TEvQuota::TEvRequest>()) {
-                Cerr << "Captured kesus quota request event from " << ev->Sender.ToString() << Endl;
-                if (!AtomicGet(stop)) {
-                    quoterRequests.Inc();
-                    tc.Runtime->Send(new IEventHandle(
-                        ev->Sender, TActorId{},
-                        new TEvQuota::TEvClearance(TEvQuota::TEvClearance::EResult::Success), 0, ev->Cookie)
-                    );
-                }
-                return TTestActorRuntimeBase::EEventAction::DROP;
-            }
-            return TTestActorRuntimeBase::EEventAction::PROCESS;
-        }
-    );
-    tc.Runtime->SetScheduledLimit(1000);
 
-    tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetPartitionReadQuotaIsTwiceWriteQuota(true);
-    tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetEnableQuoting(true);
-    tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetEnableReadQuoting(true);
+    tc.Runtime->SetScheduledLimit(50);
+    tc.Runtime->SetDispatchTimeout(TDuration::Seconds(1));
+    tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
+    TFakeSchemeShardState::TPtr state{new TFakeSchemeShardState()};
+    ui64 ssId = 325;
+    BootFakeSchemeShard(*tc.Runtime, ssId, state);
 
-    PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"important_user", true}}, tc);
-    TVector<std::pair<ui64, TString>> data;
-    TString s{100_KB, 'c'};
-    data.push_back({1, s});
+    PQBalancerPrepare(TOPIC_NAME, {{0,{1, 1}}, {11,{1, 1}}, {1,{1, 2}}, {2,{1, 2}}}, ssId, tc);
 
-    auto runTest = [&]() {
-        Cerr << "CmdWrite\n";
-        CmdWrite(0, "sourceid0", data, tc, false, {}, false, "", -1, 0, false, false, true);
-        data[0].first++;
-        Cerr << "CmdRead\n";
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user");
-    };
-    Cerr << "Run 1\n";
-    runTest();
-    Sleep(TDuration::Seconds(1));
-    Cerr << "Currently have " << quoterRequests.Val() << " quoter requests\n";
-    Cerr << "Run 2\n";
-    runTest();
-    Sleep(TDuration::Seconds(1));
-    Cerr << "Currently have " << quoterRequests.Val() << " quoter requests\n";
-    AtomicSet(stop, 1);
-    Sleep(TDuration::Seconds(1));
+    TActorId pipe = RegisterReadSession("session1", tc);
+    Y_UNUSED(pipe);
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions - return error
+
+    TActorId pipe2 = RegisterReadSession("session2", tc, {1});
+
+    WaitPartition("session2", tc, 0, "", "", TActorId());
+    WaitPartition("session2", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions to balance
+
+    TActorId pipe4 = RegisterReadSession("session8", tc, {1});
+    Y_UNUSED(pipe4);
+
+    WaitPartition("session8", tc, 0, "session2", "topic1", pipe2);
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions to balance
+
+    tc.Runtime->Send(new IEventHandle(pipe2, tc.Edge, new TEvents::TEvPoisonPill()), 0, true); //will cause dying of pipe and first session
+
+    WaitPartition("session8", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions to balance
+
+    RegisterReadSession("session3", tc);
+    WaitPartition("session3", tc, 0, "", "", TActorId());
+    WaitPartition("session3", tc, 0, "", "", TActorId());
+    WaitPartition("session3", tc, 0, "session8", "topic1", pipe4);
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions to balance
+
+
 }
 
-Y_UNIT_TEST(TestPartitionPerConsumerQuota) {
+Y_UNIT_TEST(TestGroupsBalancer2) {
     TTestContext tc;
-    RunTestWithReboots(tc.TabletIds, [&]() {
-        return tc.InitialEventsFilter.Prepare();
-    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone);
-        activeZone = false;
-        tc.Runtime->SetScheduledLimit(1000);
+    TFinalizer finalizer(tc);
+    tc.Prepare();
 
-        tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetPartitionReadQuotaIsTwiceWriteQuota(true);
-        tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetMaxParallelConsumersPerPartition(1000); //total partition quota is 1 consumer quota * 1000. Very high.
+    tc.Runtime->SetScheduledLimit(50);
+    tc.Runtime->SetDispatchTimeout(TDuration::Seconds(1));
+    tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
+    TFakeSchemeShardState::TPtr state{new TFakeSchemeShardState()};
+    ui64 ssId = 325;
+    BootFakeSchemeShard(*tc.Runtime, ssId, state);
 
+    PQBalancerPrepare(TOPIC_NAME, {{0, {1, 1}}, {1, {1, 2}}, {2, {1, 3}}, {3, {1, 4}}}, ssId, tc);
 
-        PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"important_user", true}}, tc);
-        TVector<std::pair<ui64, TString>> data;
-        TString s{2_MB, 'c'};
-        data.push_back({1, s});
-        CmdWrite(0, "sourceid0", data, tc, false, {}, false, "", -1, 0, false, false, true);
+    TActorId pipe = RegisterReadSession("session1", tc, {1,2});
+    Y_UNUSED(pipe);
 
-        //check throttling on per consumer quota
-        auto startTimeReadWithSameConsumer = tc.Runtime->GetTimeProvider()->Now();
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user1");
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user1");
-        auto diffReadWithSameConsumers = (tc.Runtime->GetTimeProvider()->Now() - startTimeReadWithSameConsumer).Seconds();
-        UNIT_ASSERT(diffReadWithSameConsumers >= 9); //read quota is twice write quota. So, it's 200kb per seconds and 200kb burst. (2mb - 200kb) / 200kb = 9 seconds needed to get quota
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions - return error
+    TActorId pipe2 = RegisterReadSession("session2", tc, {3,4});
+    Y_UNUSED(pipe2);
 
-        //check not throttling on total partition quota
-        auto startTimeReadWithDifferentConsumers = tc.Runtime->GetTimeProvider()->Now();
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user2");
-        CmdRead(0, 0, Max<i32>(), Max<i32>(), 1, false, tc, {0}, 0, 0, "user3");
-
-        auto diffReadWithDifferentConsumers = (tc.Runtime->GetTimeProvider()->Now() - startTimeReadWithDifferentConsumers).Seconds();
-        UNIT_ASSERT(diffReadWithDifferentConsumers <= 1); //different consumers. No throttling
-    });
+    WaitPartition("session2", tc, 0, "", "", TActorId());
+    WaitPartition("session2", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions - return error
 }
 
-Y_UNIT_TEST(TestPartitionWriteQuota) {
+Y_UNIT_TEST(TestGroupsBalancer3) {
     TTestContext tc;
-    RunTestWithReboots(tc.TabletIds, [&]() {
-        return tc.InitialEventsFilter.Prepare();
-    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone);
-        activeZone = false;
+    TFinalizer finalizer(tc);
+    tc.Prepare();
 
-        tc.Runtime->SetScheduledLimit(1000);
-        tc.Runtime->GetAppData(0).PQConfig.MutableQuotingConfig()->SetEnableQuoting(true);
-        PQTabletPrepare({.partitions = 1, .writeSpeed = 100_KB}, {{"important_user", true}}, tc);
+    tc.Runtime->SetScheduledLimit(50);
+    tc.Runtime->SetDispatchTimeout(TDuration::Seconds(1));
+    tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
+    TFakeSchemeShardState::TPtr state{new TFakeSchemeShardState()};
+    ui64 ssId = 325;
+    BootFakeSchemeShard(*tc.Runtime, ssId, state);
 
-        tc.Runtime->SetObserverFunc(
-            [&](TAutoPtr<IEventHandle>& ev) {
-                if (auto* msg = ev->CastAsLocal<TEvQuota::TEvRequest>()) {
-                    Cerr << "Captured kesus quota request event from " << ev->Sender.ToString() << Endl;
-                    tc.Runtime->Send(new IEventHandle(
-                        ev->Sender, TActorId{},
-                        new TEvQuota::TEvClearance(TEvQuota::TEvClearance::EResult::Success), 0, ev->Cookie)
-                    );
-                    return TTestActorRuntimeBase::EEventAction::DROP;
-                }
-                return TTestActorRuntimeBase::EEventAction::PROCESS;
-        });
+    PQBalancerPrepare(TOPIC_NAME, {{0, {1, 1}}, {1, {1, 2}} }, ssId, tc);
 
-        TVector<std::pair<ui64, TString>> data;
-        TString s{2_MB, 'c'};
-        data.push_back({1, s});
-        auto startTime = tc.Runtime->GetTimeProvider()->Now();
-        CmdWrite(0, "sourceid0", data, tc);
-        data[0].first++;
-        CmdWrite(0, "sourceid1", data, tc);
-        data[0].first++;
-        CmdWrite(0, "sourceid2", data, tc);
-        //check throttling on total partition quota
-        auto diff = (tc.Runtime->GetTimeProvider()->Now() - startTime).Seconds();
-        UNIT_ASSERT_C(diff >= 3, TStringBuilder() << "Actual: " << diff);
-    });
+    TActorId pipe = RegisterReadSession("session", tc, {2});
+
+    WaitPartition("session", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions - return error
+
+    tc.Runtime->Send(new IEventHandle(pipe, tc.Edge, new TEvents::TEvPoisonPill()), 0, true); //will cause dying of pipe and first session
+
+    TActorId pipe2 = RegisterReadSession("session1", tc);
+    Y_UNUSED(pipe2);
+
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("session1", tc, 0, "", "", TActorId());
+    WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions - return error
+
+    pipe = RegisterReadSession("session2", tc, {2});
+    WaitReadSessionKill(tc); //session 1 will die
 }
+
 
 Y_UNIT_TEST(TestUserInfoCompatibility) {
     TTestContext tc;
@@ -359,6 +172,7 @@ Y_UNIT_TEST(TestUserInfoCompatibility) {
         CmdGetOffset(1, client, 1, tc);
         CmdGetOffset(2, client, 1, tc);
         CmdGetOffset(3, client, 1, tc);
+
     });
 }
 
@@ -409,10 +223,10 @@ Y_UNIT_TEST(TestReadRuleVersions) {
             THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
             auto read = request->Record.AddCmdReadRange();
             auto range = read->MutableRange();
-            NPQ::TKeyPrefix ikeyFrom(NPQ::TKeyPrefix::TypeInfo, TPartitionId(0), NPQ::TKeyPrefix::MarkUser);
+            NPQ::TKeyPrefix ikeyFrom(NPQ::TKeyPrefix::TypeInfo, 0, NPQ::TKeyPrefix::MarkUser);
             range->SetFrom(ikeyFrom.Data(), ikeyFrom.Size());
             range->SetIncludeFrom(true);
-            NPQ::TKeyPrefix ikeyTo(NPQ::TKeyPrefix::TypeInfo, TPartitionId(1), NPQ::TKeyPrefix::MarkUser);
+            NPQ::TKeyPrefix ikeyTo(NPQ::TKeyPrefix::TypeInfo, 1, NPQ::TKeyPrefix::MarkUser);
             range->SetTo(ikeyTo.Data(), ikeyTo.Size());
             range->SetIncludeTo(true);
 
@@ -434,10 +248,10 @@ Y_UNIT_TEST(TestReadRuleVersions) {
             THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
             auto read = request->Record.AddCmdReadRange();
             auto range = read->MutableRange();
-            NPQ::TKeyPrefix ikeyFrom(NPQ::TKeyPrefix::TypeInfo, TPartitionId(0), NPQ::TKeyPrefix::MarkUser);
+            NPQ::TKeyPrefix ikeyFrom(NPQ::TKeyPrefix::TypeInfo, 0, NPQ::TKeyPrefix::MarkUser);
             range->SetFrom(ikeyFrom.Data(), ikeyFrom.Size());
             range->SetIncludeFrom(true);
-            NPQ::TKeyPrefix ikeyTo(NPQ::TKeyPrefix::TypeInfo, TPartitionId(1), NPQ::TKeyPrefix::MarkUser);
+            NPQ::TKeyPrefix ikeyTo(NPQ::TKeyPrefix::TypeInfo, 1, NPQ::TKeyPrefix::MarkUser);
             range->SetTo(ikeyTo.Data(), ikeyTo.Size());
             range->SetIncludeTo(true);
 
@@ -456,6 +270,55 @@ Y_UNIT_TEST(TestReadRuleVersions) {
         tc.Runtime->GrabEdgeEvent<NMon::TEvRemoteHttpInfoRes>(handle);
         TString rs = handle->Get<NMon::TEvRemoteHttpInfoRes>()->Html;
         Cerr << rs << "\n";
+    });
+}
+
+Y_UNIT_TEST(TestCreateBalancer) {
+    TTestContext tc;
+    RunTestWithReboots(tc.TabletIds, [&]() {
+        return tc.InitialEventsFilter.Prepare();
+    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
+        TFinalizer finalizer(tc);
+        tc.Prepare(dispatchName, setup, activeZone);
+        activeZone = false;
+        tc.Runtime->SetScheduledLimit(50);
+        tc.Runtime->SetDispatchTimeout(TDuration::MilliSeconds(100));
+
+        TFakeSchemeShardState::TPtr state{new TFakeSchemeShardState()};
+        ui64 ssId = 325;
+        BootFakeSchemeShard(*tc.Runtime, ssId, state);
+
+        PQBalancerPrepare(TOPIC_NAME, {{1,{1,2}}}, ssId, tc);
+
+        TActorId pipe1 = RegisterReadSession("session0", tc, {1});
+
+        PQBalancerPrepare(TOPIC_NAME, {{1,{1,2}}, {2,{1,3}}}, ssId, tc);
+
+        tc.Runtime->Send(new IEventHandle(pipe1, tc.Edge, new TEvents::TEvPoisonPill()), 0, true); //will cause dying of pipe and first session
+
+
+//        PQBalancerPrepare(TOPIC_NAME, {{2,1}}, tc); //TODO: not supported yet
+//        PQBalancerPrepare(TOPIC_NAME, {{1,1}}, tc); // TODO: not supported yet
+        PQBalancerPrepare(TOPIC_NAME, {{1,{1, 2}}, {2,{1, 3}}, {3,{1, 4}}}, ssId, tc);
+        activeZone = false;
+
+        TActorId pipe = RegisterReadSession("session1", tc);
+        WaitPartition("session1", tc, 0, "", "", TActorId());
+        WaitPartition("session1", tc, 0, "", "", TActorId());
+        WaitPartition("session1", tc, 0, "", "", TActorId());
+        WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions - return error
+        TActorId pipe2 = RegisterReadSession("session2", tc);
+        Y_UNUSED(pipe2);
+        WaitPartition("session2", tc, 1, "session1", "topic1", pipe);
+        WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions to balance
+        tc.Runtime->Send(new IEventHandle(pipe, tc.Edge, new TEvents::TEvPoisonPill()), 0, true); //will cause dying of pipe and first session
+
+        TDispatchOptions options;
+        options.FinalEvents.push_back(TDispatchOptions::TFinalEventCondition(TEvTabletPipe::EvServerDisconnected));
+        tc.Runtime->DispatchEvents(options);
+        WaitPartition("session2", tc, 0, "", "", TActorId());
+        WaitPartition("session2", tc, 0, "", "", TActorId());
+        WaitPartition("", tc, 0, "", "", TActorId(), false);//no partitions to balance
     });
 }
 
@@ -683,7 +546,7 @@ Y_UNIT_TEST(TestWaitInOwners) {
             result = nullptr;
         }
 
-        Y_ABORT_UNLESS(!result); //no answer yet
+        Y_VERIFY(!result); //no answer yet
 
         CmdSetOwner(0, tc);
         CmdSetOwner(0, tc, "owner2"); //just to be dropped by next command
@@ -720,7 +583,7 @@ Y_UNIT_TEST(TestWaitInOwners) {
             result = nullptr;
         }
 
-        Y_ABORT_UNLESS(!result); //no answer yet, waiting of dying of old ownership session
+        Y_VERIFY(!result); //no answer yet, waiting of dying of old ownership session
 
         tc.Runtime->Send(new IEventHandle(newPipe, tc.Edge, new TEvents::TEvPoisonPill()), 0, true); //will cause dying of pipe and old session
 
@@ -889,7 +752,7 @@ Y_UNIT_TEST(TestPartitionedBlobFails) {
             parts.push_back(s.substr(pos, size - diff));
             pos += size - diff;
         }
-        Y_ABORT_UNLESS(parts.size() > 5);
+        Y_VERIFY(parts.size() > 5);
 
         CmdWrite(0, "sourceid4", data, tc);
         {
@@ -904,7 +767,7 @@ Y_UNIT_TEST(TestPartitionedBlobFails) {
             UNIT_ASSERT(result);
 
             UNIT_ASSERT(result->Record.HasStatus());
-            UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::INITIALIZING);
+            UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::BAD_REQUEST);
         }
 
         PQGetPartInfo(0, 1, tc);
@@ -930,8 +793,8 @@ Y_UNIT_TEST(TestPartitionedBlobFails) {
                 UNIT_ASSERT(result);
 
                 UNIT_ASSERT(result->Record.HasStatus());
-                if (j == toWrite) {
-                    UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::INITIALIZING);
+                if ( j == toWrite) {
+                    UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::BAD_REQUEST);
                 } else {
                     UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::OK);
 
@@ -1003,7 +866,7 @@ Y_UNIT_TEST(TestPartitionedBlobFails) {
 
             UNIT_ASSERT(result);
             UNIT_ASSERT(result->Record.HasStatus());
-            UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::INITIALIZING);
+            UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::BAD_REQUEST);
 
             //check very big msg
             cookie = CmdSetOwner(0, tc).first;
@@ -1193,7 +1056,7 @@ void TestWritePQImpl(bool fast) {
         tc.Runtime->SetScheduledLimit(100);
 
         // Important client, lifetimeseconds=0 - never delete
-        PQTabletPrepare({.partitions = 2, .writeSpeed = 200000000}, {{"user", true}}, tc);
+        PQTabletPrepare({.partitions = 2, .speed = 200000000}, {{"user", true}}, tc);
 
         TVector<std::pair<ui64, TString>> data, data1, data2;
         activeZone = PlainOrSoSlow(true, false) && fast;
@@ -1273,14 +1136,6 @@ void TestWritePQImpl(bool fast) {
 
         //read from gap
         CmdRead(0, 500, Max<i32>(), Max<i32>(), 6, false, tc, {1000,1001,2000,2001,3000,3002});
-
-        // Write long sourceId
-        // The write should not be executed because the SourceId exceeds the maximum allowed size
-        CmdWrite(0, TString(10_KB, '_'), data1, tc, true, {}, false, "", -1, 10000);
-
-        // Write long sourceId
-        // The write must be completed successfully because the SourceId has the maximum allowed size
-        CmdWrite(0, TString(2_KB, '_'), data1, tc, false, {}, false, "", -1, 10000);
     });
 }
 
@@ -1463,6 +1318,42 @@ Y_UNIT_TEST(TestLowWatermark) {
         PQGetPartInfo(9, 13, tc);
     });
 }
+
+
+
+Y_UNIT_TEST(TestWriteToFullPartition) {
+    TTestContext tc;
+    RunTestWithReboots(tc.TabletIds, [&]() {
+        return tc.InitialEventsFilter.Prepare();
+    }, [&](const TString& dispatchName, std::function<void(TTestActorRuntime&)> setup, bool& activeZone) {
+        TFinalizer finalizer(tc);
+        activeZone = false;
+        tc.Prepare(dispatchName, setup, activeZone);
+
+        tc.Runtime->SetScheduledLimit(100);
+
+        PQTabletPrepare({.maxCountInPartition=11}, {}, tc);
+
+        TVector<std::pair<ui64, TString>> data;
+        activeZone = PlainOrSoSlow(true, false);
+
+        TString s{32, 'c'};
+        ui32 pp = 8 + 4 + 2 + 9;
+        for (ui32 i = 0; i < 10; ++i) {
+            data.push_back({i + 1, s.substr(pp)});
+        }
+        CmdWrite(0, "sourceid0", data, tc, false, {}, true); //now 1 blob
+        PQTabletPrepare({.maxCountInPartition=10}, {}, tc);
+        PQGetPartInfo(0, 10, tc);
+        data.resize(1);
+        CmdWrite(0, "sourceid1", data, tc, true);
+        PQTabletPrepare({.maxCountInPartition=12}, {}, tc);
+        CmdWrite(0, "sourceid1", data, tc);
+        PQTabletPrepare({.maxCountInPartition=12, .maxSizeInPartition=100}, {}, tc);
+        CmdWrite(0, "sourceid1", data, tc, true);
+    });
+}
+
 
 Y_UNIT_TEST(TestTimeRetention) {
     TTestContext tc;
@@ -1771,7 +1662,7 @@ Y_UNIT_TEST(TestReadSessions) {
         activeZone = true;
 
         TVector<std::pair<ui64, TString>> data;
-        CmdCreateSession(TPQCmdSettings{0, "user1", "session1"}, tc);
+        CmdCreateSession(0, "user1", "session1", tc);
         CmdSetOffset(0, "user1", 0, false, tc, "session1"); //all ok - session is set
         CmdSetOffset(0, "user1", 0, true, tc, "other_session"); //fails - session1 is active
 
@@ -1779,10 +1670,10 @@ Y_UNIT_TEST(TestReadSessions) {
 
         CmdSetOffset(0, "user1", 0, false, tc, "session1");
 
-        CmdCreateSession(TPQCmdSettings{0, "user1", "session2", 0, 1, 1}, tc);
-        CmdCreateSession(TPQCmdSettings{0, "user1", "session3", 0, 1, 1, true}, tc); //error on creation
-        CmdCreateSession(TPQCmdSettings{0, "user1", "session3", 0, 0, 2, true}, tc); //error on creation
-        CmdCreateSession(TPQCmdSettings{0, "user1", "session3", 0, 0, 0, true}, tc); //error on creation
+        CmdCreateSession(0, "user1", "session2", tc, 0, 1, 1);
+        CmdCreateSession(0, "user1", "session3", tc, 0, 1, 1, true); //error on creation
+        CmdCreateSession(0, "user1", "session3", tc, 0, 0, 2, true); //error on creation
+        CmdCreateSession(0, "user1", "session3", tc, 0, 0, 0, true); //error on creation
         CmdSetOffset(0, "user1", 0, true, tc, "session1");
         CmdSetOffset(0, "user1", 0, true, tc, "session3");
         CmdSetOffset(0, "user1", 0, false, tc, "session2");
@@ -1881,7 +1772,7 @@ Y_UNIT_TEST(TestChangeConfig) {
         PQTabletPrepare({.maxCountInPartition=5, .maxSizeInPartition=1_MB,
                 .deleteTime=TDuration::Days(1).Seconds(), .partitions=10}, {{"bbb", true}, {"ccc", true}}, tc);
         data.pop_back(); //to be sure that after write partition will no be full
-        CmdWrite(0, "sourceid1", data, tc);
+        CmdWrite(0, "sourceid1", data, tc, true); //partition is full
         CmdWrite(1, "sourceid2", data, tc);
         CmdWrite(9, "sourceid3", data, tc); //now 1 blob
     });
@@ -2026,12 +1917,12 @@ Y_UNIT_TEST(TestPQCacheSizeManagement) {
 
 Y_UNIT_TEST(TestOffsetEstimation) {
     std::deque<NPQ::TDataKey> container = {
-        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, TPartitionId(0), 1, 0, 0, 0), 0, TInstant::Seconds(1), 10},
-        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, TPartitionId(0), 2, 0, 0, 0), 0, TInstant::Seconds(1), 10},
-        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, TPartitionId(0), 3, 0, 0, 0), 0, TInstant::Seconds(2), 10},
-        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, TPartitionId(0), 4, 0, 0, 0), 0, TInstant::Seconds(2), 10},
-        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, TPartitionId(0), 5, 0, 0, 0), 0, TInstant::Seconds(3), 10},
-        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, TPartitionId(0), 6, 0, 0, 0), 0, TInstant::Seconds(3), 10},
+        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, 0, 1, 0, 0, 0), 0, TInstant::Seconds(1), 10},
+        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, 0, 2, 0, 0, 0), 0, TInstant::Seconds(1), 10},
+        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, 0, 3, 0, 0, 0), 0, TInstant::Seconds(2), 10},
+        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, 0, 4, 0, 0, 0), 0, TInstant::Seconds(2), 10},
+        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, 0, 5, 0, 0, 0), 0, TInstant::Seconds(3), 10},
+        {NPQ::TKey(NPQ::TKeyPrefix::EType::TypeNone, 0, 6, 0, 0, 0), 0, TInstant::Seconds(3), 10},
     };
     UNIT_ASSERT_EQUAL(NPQ::GetOffsetEstimate({}, TInstant::MilliSeconds(0), 9999), 9999);
     UNIT_ASSERT_EQUAL(NPQ::GetOffsetEstimate(container, TInstant::MilliSeconds(0), 9999), 1);
@@ -2158,128 +2049,9 @@ Y_UNIT_TEST(TestWriteTimeLag) {
     CmdGetOffset(0, "aaa", 0, tc, -1, 0);
 }
 
-Y_UNIT_TEST(TestManyConsumers) {
-    TTestContext tc;
-    TFinalizer finalizer(tc);
-    tc.Prepare();
-
-    tc.Runtime->SetScheduledLimit(150);
-    tc.Runtime->SetDispatchTimeout(TDuration::Seconds(1));
-    tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
-
-    TVector<std::pair<TString, bool>> consumers;
-    for (ui32 i = 0; i < 2000; ++i) {
-        consumers.push_back(std::make_pair<TString, bool>(TStringBuilder() << "consumer_" << i, false));
-    }
-
-    PQTabletPrepare({}, consumers, tc);
-
-    TFakeSchemeShardState::TPtr state{new TFakeSchemeShardState()};
-    ui64 ssId = 325;
-    BootFakeSchemeShard(*tc.Runtime, ssId, state);
-
-    for (ui32 i = 0; i < 100; ++i) {
-        PQBalancerPrepare(TOPIC_NAME, {{0,{tc.TabletId, 1}}}, ssId, tc, false, false);
-    }
-
-    for (ui32 i = 0; i < 100; ++i) {
-        tc.Runtime->SendToPipe(tc.TabletId, tc.Edge, new TEvPersQueue::TEvStatus(), 0, GetPipeConfigWithRetries());
-
-        TAutoPtr<IEventHandle> handle;
-        TEvPersQueue::TEvStatusResponse *result;
-        result = tc.Runtime->GrabEdgeEvent<TEvPersQueue::TEvStatusResponse>(handle);
-        Y_UNUSED(result);
-    }
-    PQBalancerPrepare(TOPIC_NAME, {{0,{tc.TabletId, 1}}}, ssId, tc, false, true);
-
-}
-
-Y_UNIT_TEST(TestStatusWithMultipleConsumers) {
-    TTestContext tc;
-    TFinalizer finalizer(tc);
-    tc.Prepare();
-
-    tc.Runtime->SetScheduledLimit(150);
-    tc.Runtime->SetDispatchTimeout(TDuration::Seconds(1));
-    tc.Runtime->SetLogPriority(NKikimrServices::PERSQUEUE, NLog::PRI_DEBUG);
-
-    TVector<std::pair<TString, bool>> consumers {
-        std::pair("consumer-0", false),
-        std::pair("consumer-1", false)};
-
-    PQTabletPrepare({}, consumers, tc);
-
-    TVector<std::pair<ui64, TString>> data{{1,"foobar"}};
-    CmdWrite(0, "sourceid0", data, tc);
-
-    CmdSetOffset(0, "consumer-0", 1, false, tc);
-
-    TFakeSchemeShardState::TPtr state {new TFakeSchemeShardState()};
-    ui64 ssId = 325;
-    BootFakeSchemeShard(*tc.Runtime, ssId, state);
-
-    for (ui32 i = 0; i < 100; ++i) {
-        PQBalancerPrepare(TOPIC_NAME, {{0,{tc.TabletId, 1}}}, ssId, tc, false, false);
-    }
-
-    {
-        THolder<TEvPersQueue::TEvStatus> statusEvent = MakeHolder<TEvPersQueue::TEvStatus>();
-        statusEvent->Record.AddConsumers("consumer-0");
-        statusEvent->Record.AddConsumers("consumer-1");
-        tc.Runtime->SendToPipe(tc.TabletId, tc.Edge, statusEvent.Release(), 0, GetPipeConfigWithRetries());
-        TAutoPtr<IEventHandle> handle;
-        TEvPersQueue::TEvStatusResponse *result;
-        result = tc.Runtime->GrabEdgeEvent<TEvPersQueue::TEvStatusResponse>(handle);
-        UNIT_ASSERT_EQUAL(result->Record.GetPartResult()[0].GetConsumerResult().size(),  2);
-        UNIT_ASSERT_EQUAL(result->Record.GetPartResult()[0].GetConsumerResult()[0].GetErrorCode(), NPersQueue::NErrorCode::OK);
-        UNIT_ASSERT_EQUAL(result->Record.GetPartResult()[0].GetConsumerResult()[1].GetErrorCode(), NPersQueue::NErrorCode::OK);
-    }
-
-    {
-        THolder<TEvPersQueue::TEvStatus> statusEvent = MakeHolder<TEvPersQueue::TEvStatus>();
-        statusEvent->Record.AddConsumers("nonex-consumer-2");
-        statusEvent->Record.AddConsumers("nonex-consumer-3");
-        tc.Runtime->SendToPipe(tc.TabletId, tc.Edge, statusEvent.Release(), 0, GetPipeConfigWithRetries());
-        TAutoPtr<IEventHandle> handle;
-        TEvPersQueue::TEvStatusResponse *result;
-        result = tc.Runtime->GrabEdgeEvent<TEvPersQueue::TEvStatusResponse>(handle);
-        UNIT_ASSERT_EQUAL(result->Record.GetPartResult()[0].GetConsumerResult().size(),  2);
-        UNIT_ASSERT_EQUAL(result->Record.GetPartResult()[0].GetConsumerResult()[0].GetErrorCode(), NPersQueue::NErrorCode::SCHEMA_ERROR);
-        UNIT_ASSERT_EQUAL(result->Record.GetPartResult()[0].GetConsumerResult()[1].GetErrorCode(), NPersQueue::NErrorCode::SCHEMA_ERROR);
-    }
-
-    {
-        THolder<TEvPersQueue::TEvStatus> statusEvent = MakeHolder<TEvPersQueue::TEvStatus>();
-        statusEvent->Record.AddConsumers("consumer-0");
-        statusEvent->Record.AddConsumers("nonex-consumer");
-        tc.Runtime->SendToPipe(tc.TabletId, tc.Edge, statusEvent.Release(), 0, GetPipeConfigWithRetries());
-        TAutoPtr<IEventHandle> handle;
-        TEvPersQueue::TEvStatusResponse *result;
-        result = tc.Runtime->GrabEdgeEvent<TEvPersQueue::TEvStatusResponse>(handle);
-
-        auto consumer0Result = std::find_if(
-            result->Record.GetPartResult()[0].GetConsumerResult().begin(),
-            result->Record.GetPartResult()[0].GetConsumerResult().end(),
-            [](const auto& consumerResult) { return consumerResult.GetConsumer() == "consumer-0"; });
-
-        UNIT_ASSERT_EQUAL(consumer0Result->GetErrorCode(), NPersQueue::NErrorCode::OK);
-        UNIT_ASSERT_EQUAL(consumer0Result->GetCommitedOffset(), 1);
-
-        auto nonexConsumerResult =  std::find_if(
-            result->Record.GetPartResult()[0].GetConsumerResult().begin(),
-            result->Record.GetPartResult()[0].GetConsumerResult().end(),
-            [](const auto& consumerResult) { return consumerResult.GetConsumer() == "nonex-consumer"; });
-
-        UNIT_ASSERT_EQUAL(nonexConsumerResult->GetErrorCode(), NPersQueue::NErrorCode::SCHEMA_ERROR);
-    }
-
-    PQBalancerPrepare(TOPIC_NAME, {{0,{tc.TabletId, 1}}}, ssId, tc, false, true);
-
-}
-
 
 void CheckEventSequence(TTestContext& tc, std::function<void()> scenario, std::deque<ui32> expectedEvents) {
-    tc.Runtime->SetObserverFunc([&expectedEvents](TAutoPtr<IEventHandle>& ev) {
+    tc.Runtime->SetObserverFunc([&expectedEvents](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
         if (!expectedEvents.empty() && ev->Type == expectedEvents.front()) {
             expectedEvents.pop_front();
         }
@@ -2322,8 +2094,6 @@ Y_UNIT_TEST(TestTabletRestoreEventsOrder) {
         TEvTablet::TEvTabletActive::EventType,
     });
 }
-
-
 
 } // Y_UNIT_TEST_SUITE(TPQTest)
 } // namespace NKikimr::NPQ

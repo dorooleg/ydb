@@ -2,7 +2,7 @@
 #include "defs.h"
 
 #include <ydb/core/protos/msgbus.pb.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NKikimr::NSQS {
 

@@ -1,13 +1,11 @@
 #include "datashard_txs.h"
 #include "datashard_failpoints.h"
 
-#include <ydb/core/tablet_flat/flat_exec_seat.h>
-
 namespace NKikimr {
 namespace NDataShard {
 
-TDataShard::TTxProgressTransaction::TTxProgressTransaction(TDataShard *self, TOperation::TPtr op, NWilson::TTraceId &&traceId)
-    : TBase(self, std::move(traceId))
+TDataShard::TTxProgressTransaction::TTxProgressTransaction(TDataShard *self, TOperation::TPtr op)
+    : TBase(self)
     , ActiveOp(std::move(op))
 {}
 
@@ -20,10 +18,12 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
             Self->IncCounter(COUNTER_TX_PROGRESS_SHARD_INACTIVE);
             LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD,
                 "Progress tx at non-ready tablet " << Self->TabletID() << " state " << Self->State);
-            Y_ABORT_UNLESS(!ActiveOp, "Unexpected ActiveOp at inactive shard %" PRIu64, Self->TabletID());
+            Y_VERIFY(!ActiveOp, "Unexpected ActiveOp at inactive shard %" PRIu64, Self->TabletID());
             Self->PlanQueue.Reset(ctx);
             return true;
         }
+
+        NIceDb::TNiceDb db(txc.DB);
 
         if (!ActiveOp) {
             const bool expireSnapshotsAllowed = (
@@ -44,7 +44,6 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
             Self->Pipeline.ActivateWaitingTxOps(ctx);
 
             ActiveOp = Self->Pipeline.GetNextActiveOp(false);
-
             if (!ActiveOp) {
                 Self->IncCounter(COUNTER_TX_PROGRESS_IDLE);
                 LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD,
@@ -57,19 +56,9 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
                        << ActiveOp->GetKind() << " " << *ActiveOp << " (unit "
                        << ActiveOp->GetCurrentUnit() << ") at " << Self->TabletID());
             ActiveOp->IncrementInProgress();
-
-            if (ActiveOp->OperationSpan) {
-                if (!TxSpan) {
-                    // If Progress Tx for this operation is being executed the first time,
-                    // it won't have a span, because we choose what operation to run in the transaction itself.
-                    // We create transaction span and transaction execution spans here instead.
-                    SetupTxSpan(ActiveOp->GetTraceId());
-                    txc.StartExecutionSpan();
-                }
-            }
         }
 
-        Y_ABORT_UNLESS(ActiveOp && ActiveOp->IsInProgress());
+        Y_VERIFY(ActiveOp && ActiveOp->IsInProgress());
         auto status = Self->Pipeline.RunExecutionPlan(ActiveOp, CompleteList, txc, ctx);
 
         if (Self->Pipeline.CanRunAnotherOp())
@@ -116,7 +105,7 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
         // Commit all side effects
         return true;
     } catch (...) {
-        Y_ABORT("there must be no leaked exceptions");
+        Y_FAIL("there must be no leaked exceptions");
     }
 }
 
@@ -125,7 +114,7 @@ void TDataShard::TTxProgressTransaction::Complete(const TActorContext &ctx) {
                 "TTxProgressTransaction::Complete at " << Self->TabletID());
 
     if (ActiveOp) {
-        Y_ABORT_UNLESS(!ActiveOp->GetExecutionPlan().empty());
+        Y_VERIFY(!ActiveOp->GetExecutionPlan().empty());
         if (!CompleteList.empty()) {
             auto commitTime = AppData()->TimeProvider->Now() - CommitStart;
             ActiveOp->SetCommitTime(CompleteList.front(), commitTime);

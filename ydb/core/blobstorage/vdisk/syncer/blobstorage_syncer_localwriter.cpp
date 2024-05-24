@@ -96,7 +96,7 @@ namespace NKikimr {
 
         // record handlers
         auto blobHandler = [&] (const NSyncLog::TLogoBlobRec *rec) {
-            Y_DEBUG_ABORT_UNLESS(TIngress::MustKnowAboutLogoBlob(vctx->Top.get(), vctx->ShortSelfVDisk, rec->LogoBlobID()),
+            Y_VERIFY_DEBUG(TIngress::MustKnowAboutLogoBlob(vctx->Top.get(), vctx->ShortSelfVDisk, rec->LogoBlobID()),
                     "logoBlobID# %s ShortSelfVDisk# %s top# %s", rec->LogoBlobID().ToString().data(),
                     vctx->ShortSelfVDisk.ToString().data(), vctx->Top->ToString().data());
 
@@ -135,7 +135,7 @@ namespace NKikimr {
             Extracted.Barriers =
                 std::make_shared<TFreshAppendixBarriers>(std::move(barriers), vctx->FreshIndex, true);
         }
-        Y_ABORT_UNLESS(Extracted.IsReady());
+        Y_VERIFY(Extracted.IsReady());
     }
 
 

@@ -112,27 +112,25 @@ def case_0():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524288,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 4294967295,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524288,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 4294967295,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -148,28 +146,25 @@ def case_11():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 1024,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 512,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 2}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 1024,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 512,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 2}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -182,30 +177,26 @@ def case_1():
         creation_options.ColumnStorage1,
         creation_options.ColumnCacheNone
     )
-
     has_external = False
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 4294967295,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 4294967295,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 4294967295,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 4294967295,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -221,30 +212,27 @@ def case_12():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524288,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 4294967295,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {
-                        'Main': 2,
-                        'Outer': 2,
-                        'Blobs': 2
-                    }
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524288,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 4294967295,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {
+                    'Main': 2,
+                    'Outer': 2,
+                    'Blobs': 2
                 }
-            )
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -255,30 +243,26 @@ def case_2():
     storage_config = creation_options.declare_column_family(family_id=0)
     storage_config.appoint_syslog('hdd')
     storage_config.appoint_log('hdd')
-
     has_external = False
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 4294967295,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 4294967295,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 4294967295,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 4294967295,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -289,30 +273,26 @@ def case_3():
     storage_config = creation_options.declare_column_family(family_id=0)
     storage_config.appoint_syslog('NotExist', True)
     storage_config.appoint_log('NotExist', True)
-
     has_external = False
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 4294967295,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 4294967295,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 4294967295,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 4294967295,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -328,28 +308,25 @@ def case_4():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524288,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 12288,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524288,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 12288,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -365,28 +342,25 @@ def case_5():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524288,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 12288,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 2,
-                        'Outer': 2,
-                        'Blobs': 3}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524288,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 12288,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 2,
+                    'Outer': 2,
+                    'Blobs': 3}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -402,28 +376,25 @@ def case_6():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524288,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 12288,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 2,
-                        'Outer': 2,
-                        'Blobs': 2}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524288,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 12288,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 2,
+                    'Outer': 2,
+                    'Blobs': 2}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -439,28 +410,25 @@ def case_7():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524200,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 12200,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 2,
-                        'Outer': 2,
-                        'Blobs': 2}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524200,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 12200,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 2,
+                    'Outer': 2,
+                    'Blobs': 2}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -475,28 +443,25 @@ def case_8():
     storage_config.appoint_external('hdd2', threshold=0)
 
     has_external = False
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 4294967295,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 4294967295,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 2,
-                        'Outer': 2,
-                        'Blobs': 2}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 4294967295,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 4294967295,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 2,
+                    'Outer': 2,
+                    'Blobs': 2}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -512,28 +477,25 @@ def case_9():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = True
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 524288,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 12288,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 524288,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 12288,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 
@@ -549,28 +511,25 @@ def case_10():
     creation_options.partition_config.with_partitioning_policy(0)  # for now external blobs and autosplit not compatible
 
     has_external = False
-
-    def scheme(table_name):
-        return has_item(
-            has_properties(
-                TableName='__user__{}'.format(table_name),
-                ColumnFamilies={
-                    0: {'Large': 2*1024*1024+1,
-                        'Cache': 0,
-                        'InMemory': False,
-                        'Codec': 0,
-                        'Small': 12288,
-                        'RoomID': 0,
-                        'Columns': [1, 2]}
-                },
-                Rooms={
-                    0: {'Main': 1,
-                        'Outer': 1,
-                        'Blobs': 1}
-                }
-            )
+    scheme = lambda table_name: has_item(
+        has_properties(
+            TableName='__user__{}'.format(table_name),
+            ColumnFamilies={
+                0: {'Large': 2*1024*1024+1,
+                    'Cache': 0,
+                    'InMemory': False,
+                    'Codec': 0,
+                    'Small': 12288,
+                    'RoomID': 0,
+                    'Columns': [1, 2]}
+            },
+            Rooms={
+                0: {'Main': 1,
+                    'Outer': 1,
+                    'Blobs': 1}
+            }
         )
-
+    )
     return (creation_options, has_external, scheme)
 
 

@@ -20,13 +20,9 @@
 
 #include "src/core/lib/security/credentials/tls/tls_utils.h"
 
-#include <stddef.h>
-
 #include "y_absl/strings/ascii.h"
 #include "y_absl/strings/match.h"
 #include "y_absl/strings/str_cat.h"
-
-#include <grpc/support/log.h>
 
 namespace grpc_core {
 
@@ -85,7 +81,7 @@ bool VerifySubjectAlternativeName(y_absl::string_view subject_alternative_name,
     return false;
   }
   if (!y_absl::EndsWith(normalized_matcher, suffix)) return false;
-  size_t suffix_start_index = normalized_matcher.length() - suffix.length();
+  int suffix_start_index = normalized_matcher.length() - suffix.length();
   // Asterisk matching across domain labels is not permitted.
   return suffix_start_index <= 0 /* should not happen */ ||
          normalized_matcher.find_last_of('.', suffix_start_index - 1) ==

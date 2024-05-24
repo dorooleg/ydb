@@ -226,8 +226,9 @@ class TFlowSourceBaseComputationNode: public TStatefulComputationNode<IFlowInter
 {
     using TBase = TStatefulComputationNode<IFlowInterface>;
 protected:
-    TFlowSourceBaseComputationNode(TComputationMutables& mutables, EValueRepresentation stateKind)
+    TFlowSourceBaseComputationNode(TComputationMutables& mutables, EValueRepresentation kind, EValueRepresentation stateKind)
         : TBase(mutables, stateKind)
+        , RepresentationKind(kind)
     {}
 
     TString DebugString() const override {
@@ -247,6 +248,8 @@ protected:
             node->SetOwner(this);
         }
     }
+  
+    const EValueRepresentation RepresentationKind;
 private:
     bool IsTemporaryValue() const final {
         return true;
@@ -273,25 +276,24 @@ private:
     mutable std::unordered_set<const IComputationNode*> Sources; // TODO: remove const and mutable.
 };
 
+
 template <typename TDerived>
 class TFlowSourceComputationNode: public TFlowSourceBaseComputationNode<TDerived, IComputationNode>
 {
     using TBase = TFlowSourceBaseComputationNode<TDerived, IComputationNode>;
 protected:
     TFlowSourceComputationNode(TComputationMutables& mutables, EValueRepresentation kind, EValueRepresentation stateKind)
-        : TBase(mutables, stateKind), RepresentationKind(kind)
+        : TBase(mutables, kind, stateKind)
     {}
 
 private:
     EValueRepresentation GetRepresentation() const final {
-        return RepresentationKind;
+        return this->RepresentationKind;
     }
 
     NUdf::TUnboxedValue GetValue(TComputationContext& compCtx) const final {
         return static_cast<const TDerived*>(this)->DoCalculate(this->ValueRef(compCtx), compCtx);
     }
-private:
-    const EValueRepresentation RepresentationKind;
 };
 
 template <typename TDerived>
@@ -300,8 +302,9 @@ class TWideFlowSourceComputationNode: public TFlowSourceBaseComputationNode<TDer
     using TBase = TFlowSourceBaseComputationNode<TDerived, IComputationWideFlowNode>;
 protected:
     TWideFlowSourceComputationNode(TComputationMutables& mutables, EValueRepresentation stateKind)
-        : TBase(mutables, stateKind)
+        : TBase(mutables, EValueRepresentation::Any, stateKind)
     {}
+
 private:
     EValueRepresentation GetRepresentation() const final {
         THROW yexception() << "Failed to get representation kind.";
@@ -470,7 +473,7 @@ template <typename TDerived, bool SerializableState = false>
 class TStatefulFlowComputationNode: public TBaseFlowBaseComputationNode<TDerived>
 {
 protected:
-    TStatefulFlowComputationNode(TComputationMutables& mutables, const IComputationNode* source, EValueRepresentation kind, EValueRepresentation stateKind = EValueRepresentation::Any)
+    TStatefulFlowComputationNode(TComputationMutables& mutables, const IComputationNode* source, EValueRepresentation kind, EValueRepresentation stateKind)
         : TBaseFlowBaseComputationNode<TDerived>(source, kind), StateIndex(mutables.CurValueIndex++), StateKind(stateKind)
     {
         if constexpr (SerializableState) {
@@ -543,10 +546,11 @@ private:
 
 class TWideFlowProxyComputationNode: public TRefCountedComputationNode<IComputationWideFlowProxyNode>
 {
-public:
-    TWideFlowProxyComputationNode() = default;
 protected:
+    TWideFlowProxyComputationNode() = default;
+
     TString DebugString() const final;
+
 private:
     void InitNode(TComputationContext&) const override {}
 
@@ -1158,11 +1162,8 @@ IComputationExternalNode* LocateExternalNode(const TNodeLocator& nodeLocator, TC
 
 using TPasstroughtMap = std::vector<std::optional<size_t>>;
 
-template<class TContainerOne, class TContainerTwo>
-TPasstroughtMap GetPasstroughtMap(const TContainerOne& from, const TContainerTwo& to);
-
-template<class TContainerOne, class TContainerTwo>
-TPasstroughtMap GetPasstroughtMapOneToOne(const TContainerOne& from, const TContainerTwo& to);
+TPasstroughtMap GetPasstroughtMap(const TComputationExternalNodePtrVector& args, const TComputationNodePtrVector& roots);
+TPasstroughtMap GetPasstroughtMap(const TComputationNodePtrVector& roots, const TComputationExternalNodePtrVector& args);
 
 std::optional<size_t> IsPasstrought(const IComputationNode* root, const TComputationExternalNodePtrVector& args);
 

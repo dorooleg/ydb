@@ -1,34 +1,34 @@
 #pragma once
 
+#include <ydb/library/folder_service/proto/folder_service.pb.h>
 #include <ydb/core/base/events.h>
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 
 namespace NKikimr::NFolderService {
 
 struct TEvFolderService {
     enum EEv {
         // requests
-        EvGetCloudByFolderRequest = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE_ADAPTER),
+        EvGetFolderRequest = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE_ADAPTER),
 
         // replies
-        EvGetCloudByFolderResponse = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE_ADAPTER) + 512,
+        EvGetFolderResponse = EventSpaceBegin(TKikimrEvents::ES_FOLDER_SERVICE_ADAPTER) + 512,
 
         EvEnd
     };
 
     static_assert(EvEnd < EventSpaceEnd(TKikimrEvents::ES_FOLDER_SERVICE_ADAPTER), "expect EvEnd < EventSpaceEnd(TKikimrEvents::ES_FOLDER_SERVICE_ADAPTER)");
 
-    struct TEvGetCloudByFolderRequest : TEventLocal<TEvGetCloudByFolderRequest, EvGetCloudByFolderRequest> {
-        TString FolderId;
+    struct TEvGetFolderRequest : TEventLocal<TEvGetFolderRequest, EvGetFolderRequest> {
+        NKikimrProto::NFolderService::GetFolderRequest Request;
         TString Token;
         TString RequestId;
     };
 
-    struct TEvGetCloudByFolderResponse : TEventLocal<TEvGetCloudByFolderResponse, EvGetCloudByFolderResponse> {
-        TString FolderId;
-        TString CloudId;
-        NYdbGrpc::TGrpcStatus Status;
+    struct TEvGetFolderResponse : TEventLocal<TEvGetFolderResponse, EvGetFolderResponse> {
+        NKikimrProto::NFolderService::GetFolderResponse Response;
+        NGrpc::TGrpcStatus Status;
     };
 };
 } // namespace NKikimr::NFolderService
