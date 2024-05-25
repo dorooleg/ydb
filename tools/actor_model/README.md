@@ -35,7 +35,7 @@ docker build -t actor_model:latest .
 3. Далее запускаем контейнер (не меняйте пути, там будет директория для билда). При запуске в контейнере запускается cmake и ninja, поэтому собираться будет долго. Лучше сначала запустить контейнер, а потом редактировать код, если упадет ninja, то контейнер не запустится.  
 ``` (bash)
 Для macOS и linux:
-sudo docker run -v $(pwd):/home/ydbwork/ydb --rm -it actor_model
+sudo docker run -v $(pwd):/home/ydbwork/ydb --platform linux/amd64 --rm -it actor_model
 
 # Для windows PowerShell:
 docker run -v ${PWD}:/home/ydbwork/ydb --rm -it actor_model
