@@ -2,6 +2,8 @@
 #include "events.h"
 #include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/actors/core/hfunc.h>
+#include <vector>
+#include <cmath>
 
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
@@ -38,7 +40,41 @@ TReadActor
             ...
 */
 
-// TODO: напишите реализацию TReadActor
+
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+    const NActors::TActorId Receipment;
+    int64_t value;
+    int countWorkActors;
+
+    public:
+    TReadActor(NActors::TActorId receipment): Receipment(receipment){}
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        cFunc(TEvents::TEvDone::EventType, HandleDone)
+    });
+
+    void HandleWakeup() {
+        if(cin >> value){
+            Register(TMaximumPrimeDevisorActor(value, SelfId(), Receipment).Release());
+            countWorkActors++;
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        }
+    }
+
+    void HandleDone() {
+        countWorkActors--;
+        if (countWorkActors){}
+        else{
+            Send(Receipment, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        }
+    }
+};
 
 /*
 Требования к TMaximumPrimeDevisorActor:
@@ -68,7 +104,57 @@ TMaximumPrimeDevisorActor
             PassAway()
 */
 
-// TODO: напишите реализацию TMaximumPrimeDevisorActor
+int64_t findLargestPrimeDivisor(int64_t num) {
+    int largestPrimeDivisor = 0;
+    int limit = static_cast<int>(ceil(sqrt(num)));
+
+    for (int i = limit; i >= 2; --i) {
+        if (num % i == 0) {
+            bool isPrime = true;
+            for (int j = 2; j <= sqrt(i); ++j) {
+                if (i % j == 0) {
+                    isPrime = false;
+                    break;
+                }
+            }
+            if (isPrime) {
+                largestPrimeDivisor = i;
+                break;
+            }
+        }
+    }
+    return largestPrimeDivisor;
+}
+
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TReadActor> {
+    const NActors::TActorId ReadActor;
+    const NActors::TActorId WriteActor;
+    int64_t value;
+    int64_t result;
+
+
+public:
+    TMaximumPrimeDevisorActor(int64_t Value, NActors::TActorId readActor, NActors::TActorId writeActor)
+            : value(Value),
+              ReadActor(readActor),
+              WriteActor(writeActor) {}
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    });
+
+    void HandleWakeup() {
+        result = findLargestPrimeDivisor(value)
+        Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(result));
+        Send(ReadActor, std::make_unique<TEvents::TEvDone>());
+    }
+
+};
 
 /*
 Требования к TWriteActor:
@@ -87,7 +173,33 @@ TWriteActor
         PassAway()
 */
 
-// TODO: напишите реализацию TWriteActor
+class TWriteActor : public NActors::TActor<TWriteActor> {
+    int64_t sum;
+public:
+    using TActorRegistrator = NActors::TActor<TWriteActor>;
+
+    TWriteActor() : TActorRegistrator(&TWriteActor::Handler) {}
+
+    void Bootstrap() {
+        Become(&TWriteActor::StateFunc);
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(TEvents::TEvWriteValueRequest, HandleValueRequest)
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
+    });
+
+    void HandleValueRequest(TEvents::TEvWriteValueRequest::TPtr& val) {
+        sum += val->Get()->value;
+    }
+
+    void HandlePoisonPill() {
+        std::cout << sum << std::endl;
+        ShouldContinue->ShouldStop();
+        PassAway();
+    }
+
+};
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
@@ -119,6 +231,18 @@ public:
 
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
+}
+
+THolder<NActors::IActor> CreateSelfTReadActor(NActors::TActorId writeActor) {
+    return MakeHolder<TReadActor>(writeActor);
+}
+
+THolder<NActors::IActor> CreateSelfTMaximumPrimeDevisorActor(int64_t value, NActors::TActorId readActor, NActors::TActorId writeActor) {
+    return MakeHolder<TMaximumPrimeDevisorActor>(value, readActor, writeActor);
+}
+
+THolder<NActors::IActor> CreateSelfTWriteActor() {
+    return MakeHolder<TWriteActor>();
 }
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
