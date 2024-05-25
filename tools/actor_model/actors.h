@@ -6,3 +6,9 @@
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency);
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue();
+
+THolder<NActors::IActor> CreateTReadActor(const NActors::TActorId writer);
+
+THolder<NActors::IActor> CreateTMaximumPrimeDevisorActor(const NActors::TActorIdentity reader, const NActors::TActorId writer, int64_t value);
+
+THolder<NActors::IActor> CreateTWriteActor();
