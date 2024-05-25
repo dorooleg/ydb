@@ -22,15 +22,16 @@ int main(int argc, const char* argv[])
     actorSystem.Start();
 
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+    auto shouldContinue = GetProgramShouldContinue();
 
-    // Зарегистрируйте Write и Read акторы здесь
+    NActors::TActorId writeActorId = actorSystem.Register(CreateWriteActor(shouldContinue).Release());
+    actorSystem.Register(CreateReadActor(shouldContinue, writeActorId).Release());
 
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
+
     actorSystem.Stop();
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    return shouldContinue->GetReturnCode();
 }
