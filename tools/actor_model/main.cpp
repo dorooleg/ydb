@@ -3,7 +3,7 @@
 #include <library/cpp/actors/core/scheduler_basic.h>
 #include <util/generic/xrange.h>
 
-THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 pools) {
+THolder<NActors::TActorSystemSetup> SetupSystem(ui32 threads, ui32 pools) {
     auto setup = MakeHolder<NActors::TActorSystemSetup>();
     setup->ExecutorsCount = pools;
     setup->Executors.Reset(new TAutoPtr<NActors::IExecutorPool>[pools]);
@@ -17,20 +17,20 @@ THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 poo
 int main(int argc, const char* argv[])
 {
     Y_UNUSED(argc, argv);
-    auto actorySystemSetup = BuildActorSystemSetup(20, 1);
-    NActors::TActorSystem actorSystem(actorySystemSetup);
+    auto systemSetup = SetupSystem(20, 1);
+    NActors::TActorSystem actorSystem(systemSetup);
     actorSystem.Start();
 
-    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+    auto sumHandlerId = actorSystem.Register(CreateSumHandler().Release());
+    auto primeHandlerId = actorSystem.Register(CreatePrimeHandler(&actorSystem, sumHandlerId).Release());
+    actorSystem.Register(CreateInputHandler(&actorSystem, primeHandlerId).Release());
 
-    // Зарегистрируйте Write и Read акторы здесь
-
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
+    auto shouldContinue = GetProgramStatus();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
     actorSystem.Stop();
+    Sleep(TDuration::Seconds(1));
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    return shouldContinue->GetReturnCode();
 }
