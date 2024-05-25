@@ -22,6 +22,7 @@ int main(int argc, const char* argv[]) {
     NActors::TActorSystem actorSystem(actorSystemSetup);
     actorSystem.Start();
 
+    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
     // Create and run a WriteActor
     auto writeActor = CreateWriteActor();
     NActors::TActorId writeActorId = actorSystem.Register(writeActor.Release());
