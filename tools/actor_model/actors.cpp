@@ -122,11 +122,11 @@ public:
             }
         }
 
-        if (value >= 2) {
+        if (value >= 1) {
             largest_divisor = value;
         }
 
-        if (copy == 1) {
+        if (copy == 0) {
             largest_divisor = 1;
         }
 
