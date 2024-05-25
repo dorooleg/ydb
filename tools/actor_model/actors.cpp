@@ -247,6 +247,6 @@ THolder <NActors::IActor> CreateSelfPingActor(const TDuration &latency) {
     return MakeHolder<TSelfPingActor>(latency);
 }
 
-std::shared_ptr <TProgramShouldContinue> GetProgramShouldContinue() {
-    return ShouldContinue;
+std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
+    return ProgramContinue;
 }
