@@ -4,6 +4,8 @@
 #include <util/generic/xrange.h>
 
 THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 pools) {
+    Y_VERIFY(threads > 0 && threads < 100);
+    Y_VERIFY(pools > 0 && pools < 10);
     auto setup = MakeHolder<NActors::TActorSystemSetup>();
     setup->ExecutorsCount = pools;
     setup->Executors.Reset(new TAutoPtr<NActors::IExecutorPool>[pools]);
@@ -30,7 +32,17 @@ int main(int argc, const char* argv[])
     // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
     //     Sleep(TDuration::MilliSeconds(200));
     // }
+
+
+    auto writeActor = actorSystem.Register(CreateTWriteActor().Release());
+    actorSystem.Register(CreateTReadActor(writeActor).Release());
+
+    auto shouldContinue = GetProgramShouldContinue();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
+
     actorSystem.Stop();
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    return shouldContinue->GetReturnCode();
 }
