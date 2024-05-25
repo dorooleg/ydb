@@ -28,7 +28,7 @@ public:
     void HandleWakeup() {
         int64_t value;
         if (std::cin >> value) {
-            auto actor = CreateTMaximumPrimeDivisorActor(value, SelfId(), WriteActor);
+            auto actor = CreateMaxPrimeDivisorActor(value, SelfId(), WriteActor);
             Register(actor.Release());
             ActiveWorkers++;
         } else {
