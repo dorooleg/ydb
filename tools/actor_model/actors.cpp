@@ -43,12 +43,17 @@ public:
     void HandleWakeup() {
         int64_t value;
 
-        while (Strm >> value) {
+        if (Strm >> value) {
             Register(CreateMaximumPrimeDevisorActor(value, SelfId(), Recipient).Release());
             Counter++;
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        } else {
+            InputEnded = true;
+            if (Counter == 0) {
+                Send(Recipient, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+                PassAway();
+            }
         }
-        InputEnded = true;
     }
 
     void HandleDone() {
