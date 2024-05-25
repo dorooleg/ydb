@@ -7,12 +7,12 @@
 struct TEvents {
     
     enum EEvents {
-        EvWriteValueRequest,
+        EvWriteValueRequest = NActors::TEvents::ES_PRIVATE,
         EvProcessingFinished
     };
 
 
-    struct TEvWriteValueRequest : public NActors::TEventLocal<TEvWriteValueRequest, EventType::EvWriteValueRequest> {
+    struct TEvWriteValueRequest : public NActors::TEventLocal<TEvWriteValueRequest, EvWriteValueRequest> {
 
         int64_t Value;
 
@@ -20,5 +20,5 @@ struct TEvents {
                 : Value(value) {}
     };
 
-    struct TEvProcessingFinished : public NActors::TEventLocal<TEvProcessingFinished, EventType::EvProcessingFinished> {};
+    struct TEvProcessingFinished : public NActors::TEventLocal<TEvProcessingFinished, EvProcessingFinished> {};
 };
