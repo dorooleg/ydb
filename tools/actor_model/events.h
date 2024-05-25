@@ -1,6 +1,24 @@
+#pragma once
+
 #include <library/cpp/actors/core/event_local.h>
 #include <library/cpp/actors/core/events.h>
 
+
 struct TEvents {
-    // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
+    
+    enum EEvents {
+        EvWriteValueRequest,
+        EvProcessingFinished
+    };
+
+
+    struct TEvWriteValueRequest : public NActors::TEventLocal<TEvWriteValueRequest, EventType::EvWriteValueRequest> {
+
+        int64_t Value;
+
+        explicit TEvWriteValueRequest(int64_t value)
+                : Value(value) {}
+    };
+
+    struct TEvProcessingFinished : public NActors::TEventLocal<TEvProcessingFinished, EventType::EvProcessingFinished> {};
 };
