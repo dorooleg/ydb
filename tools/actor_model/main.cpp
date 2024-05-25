@@ -22,7 +22,9 @@ int main(int argc, const char* argv[])
     actorSystem.Start();
 
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
-
+    NActors::TActorId writeActorRegisteredId = actorSystem.Register(CreateWriteActor().Release());
+    actorSystem.Register(CreateReadActor(std::cin, writeActorRegisteredId).Release());
+    
     auto shouldContinue = GetProgramShouldContinue();
         while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
             Sleep(TDuration::MilliSeconds(200));
