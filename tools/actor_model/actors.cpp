@@ -265,7 +265,7 @@ THolder<NActors::IActor> CreateWriteActor() {
 }
 
 //--------------------------------------------------------------------------------
-/*
+
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
     TInstant LastTime;
@@ -297,7 +297,7 @@ public:
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
 }
-*/
+
 //-------------------------------------------------------------------------
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
