@@ -55,51 +55,49 @@ public:
 };
 
 class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
-private:
-    int64_t Value;
+    int64_t NumberToFactorize;
+
     const NActors::TActorIdentity InputActor;
     const NActors::TActorId OutputActor;
-    int64_t LargestPrimeDivisor;
-    int64_t CurrentDivisor;
 
-public:
-    TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity inputActor, const NActors::TActorId outputActor)
-        : Value(value), InputActor(inputActor), OutputActor(outputActor),
-          LargestPrimeDivisor(0), CurrentDivisor(2) {}
-
-    void Bootstrap() {
-        Become(&TMaximumPrimeDevisorActor::StateHandler);
-        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
-    }
+    int64_t CurrentPrimeCandidate = 2;
 
     STRICT_STFUNC(StateHandler, {
-        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeUp);
+        hFunc(NActors::TEvents::TEvWakeup, HandleWakeup);
     });
 
-    void HandleWakeUp() {
-        auto startTime = std::chrono::high_resolution_clock::now();
-        while (CurrentDivisor * CurrentDivisor <= Value) {
-            if (Value % CurrentDivisor == 0) {
-                LargestPrimeDivisor = CurrentDivisor;
-                Value /= CurrentDivisor;
-            } else {
-                ++CurrentDivisor;
-            }
+    void HandleWakeup(NActors::TEvents::TEvWakeup::TPtr) {
+        TInstant start = TInstant::Now();
+        int64_t maxPrime = 1;
 
-            if (std::chrono::high_resolution_clock::now() - startTime > std::chrono::milliseconds(10)) {
-                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        while (CurrentPrimeCandidate <= NumberToFactorize) {
+            if (NumberToFactorize % CurrentPrimeCandidate == 0) {
+                maxPrime = CurrentPrimeCandidate;
+                do {
+                    NumberToFactorize /= CurrentPrimeCandidate;
+                } while (NumberToFactorize % CurrentPrimeCandidate == 0);
+            }
+            CurrentPrimeCandidate++;
+            if (TInstant::Now() - start > TDuration::MilliSeconds(10)) {
+                Send(SelfId(), new NActors::TEvents::TEvWakeup());
                 return;
             }
         }
 
-        if (Value > 1) {
-            LargestPrimeDivisor = Value;
-        }
-
-        Send(OutputActor, std::make_unique<TEvents::TEvWriteValueRequest>(LargestPrimeDivisor));
+        auto result = MakeHolder<TEvents::TEvWriteValueRequest>(maxPrime);
+        Send(OutputActor, std::make_unique<TEvents::TEvWriteValueRequest>(maxPrime));
         Send(InputActor, std::make_unique<TEvents::TEvProcessingFinished>());
         PassAway();
     }
+
+    public:
+        TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorIdentity inputActor, const NActors::TActorId outputActor)
+            : NumberToFactorize(value), InputActor(inputActor), OutputActor(outputActor) {}
+
+        void Bootstrap() {
+            Become(&TMaximumPrimeDevisorActor::StateHandler);
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        }
 };
 
 class TWriteActor : public NActors::TActor<TWriteActor> {
