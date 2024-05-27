@@ -12,7 +12,7 @@ struct TEvents {
 
         TEvWriteValueRequest(int64_t value)
             : Value(value) {}
-    };
+    }; 
 
     struct TEvDone : public NActors::TEventLocal<TEvDone, EvDone> {};
 };

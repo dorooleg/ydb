@@ -6,6 +6,8 @@
 #include <chrono>
 #include <iostream>
 
+using namespace NActors;
+
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
 int64_t GetMaxPrimeDivisor(int64_t n) {
@@ -29,12 +31,12 @@ int64_t GetMaxPrimeDivisor(int64_t n) {
 
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     std::istream& Stream;
-    const TActorId WriteActor;
+    NActors::TActorId WriteActor;
     int64_t ActiveTasks = 0;
 
 public:
-    TReadActor(std::istream& strm, const TActorId& writeActor)
-        : Stream(strm), WriteActor(writeActor) {}
+    TReadActor(std::istream& strm, NActors::TActorId writeActor)
+        : Stream(strm), WriteActor(std::move(writeActor)) {}
 
     void Bootstrap() {
         Become(&TReadActor::StateFunc);
@@ -43,7 +45,7 @@ public:
 
     STRICT_STFUNC(StateFunc,
         hFunc(NActors::TEvents::TEvWakeup, HandleWakeup);
-        hFunc(TEvents::TEvDone, HandleDone);
+        hFunc(::TEvents::TEvDone, HandleDone);
     )
 
     void HandleWakeup(NActors::TEvents::TEvWakeup::TPtr) {
@@ -58,7 +60,7 @@ public:
         }
     }
 
-    void HandleDone(TEvents::TEvDone::TPtr) {
+    void HandleDone(::TEvents::TEvDone::TPtr) {
         ActiveTasks--;
         if (ActiveTasks == 0 && Stream.eof()) {
             Send(WriteActor, new NActors::TEvents::TEvPoisonPill());
@@ -69,12 +71,12 @@ public:
 
 class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
     int64_t Value;
-    const TActorId ReadActor;
-    const TActorId WriteActor;
+    const NActors::TActorId ReadActor;
+    const NActors::TActorId WriteActor;
     std::chrono::steady_clock::time_point StartTime;
 
 public:
-    TMaximumPrimeDevisorActor(int64_t value, const TActorId& readActor, const TActorId& writeActor)
+    TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorId& readActor, const NActors::TActorId& writeActor)
         : Value(value), ReadActor(readActor), WriteActor(writeActor) {}
 
     void Bootstrap() {
@@ -96,8 +98,8 @@ public:
             Send(SelfId(), new NActors::TEvents::TEvWakeup());
         } else {
             int64_t maxPrimeDivisor = GetMaxPrimeDivisor(Value);
-            Send(WriteActor, new TEvents::TEvWriteValueRequest(maxPrimeDivisor));
-            Send(ReadActor, new TEvents::TEvDone());
+            Send(WriteActor, new ::TEvents::TEvWriteValueRequest(maxPrimeDivisor));
+            Send(ReadActor, new ::TEvents::TEvDone());
             PassAway();
         }
     }
@@ -112,11 +114,11 @@ public:
     }
 
     STRICT_STFUNC(StateFunc,
-        hFunc(TEvents::TEvWriteValueRequest, HandleWriteValueRequest);
+        hFunc(::TEvents::TEvWriteValueRequest, HandleWriteValueRequest);
         cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
     )
 
-    void HandleWriteValueRequest(TEvents::TEvWriteValueRequest::TPtr ev) {
+    void HandleWriteValueRequest(::TEvents::TEvWriteValueRequest::TPtr ev) {
         Sum += ev->Get()->Value;
     }
 
@@ -127,11 +129,11 @@ public:
     }
 };
 
-THolder<NActors::IActor> CreateReadActor(std::istream& strm, const TActorId& writeActor) {
+THolder<NActors::IActor> CreateReadActor(std::istream& strm, const NActors::TActorId& writeActor) {
     return MakeHolder<TReadActor>(strm, writeActor);
 }
 
-THolder<NActors::IActor> CreateMaximumPrimeDevisorActor(int64_t value, const TActorId& readActor, const TActorId& writeActor) {
+THolder<NActors::IActor> CreateMaximumPrimeDevisorActor(int64_t value, const NActors::TActorId& readActor, const NActors::TActorId& writeActor) {
     return MakeHolder<TMaximumPrimeDevisorActor>(value, readActor, writeActor);
 }
 
