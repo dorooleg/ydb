@@ -1,9 +1,0 @@
-RECURSE(
-    blobsan
-    cfg
-    query_replay
-    simple_queue
-    tsserver
-    tstool
-    ydbd_slice
-)

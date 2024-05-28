@@ -14,10 +14,6 @@ declare -A top_dirs=(
     [.github/]=1,
     [library/]=1,
     [tools/]=1,
-    [scripts/]=1,
-    [yt/]=1,
-    [vendor/]=1,
-    [devtools/]=1,
 )
 
 cd $GIT_URL
