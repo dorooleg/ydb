@@ -2,16 +2,15 @@
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents {
-    static const ui32 EvMaxPrimeDivisor = NActors::TEvents::ES_PRIVATE + 1;
-    static const ui32 EvProcessNumber = NActors::TEvents::ES_PRIVATE + 2;
-
-    struct TEvPrimeDivisorFound : public NActors::TEventLocal<TEvPrimeDivisorFound, EvMaxPrimeDivisor> {
-        int Value;
-        explicit TEvPrimeDivisorFound(int value) : Value(value) {}
+    enum EEv {
+        EvDiscoveryResponse = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
+        EvDone
     };
 
-    struct TEvProcessNumber : public NActors::TEventLocal<TEvProcessNumber, EvProcessNumber> {
-        int Number;
-        explicit TEvProcessNumber(int number) : Number(number) {}
+    struct TEvDone : NActors::TEventLocal<TEvDone, EvDone> {};
+    
+    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvDiscoveryResponse> {
+    	int64_t Value;
+    	explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
     };
 };

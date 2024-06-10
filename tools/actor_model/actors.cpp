@@ -4,105 +4,174 @@
 #include <library/cpp/actors/core/hfunc.h>
 #include <sstream>
 #include <iostream>
+#include <fstream>
+#include <chrono>
 
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
-int FindLargestPrimeDivisor(int number) {
-    if (number == 1) {
-        return 1;
-    }
-    int largest = 1;
-    for (int div = 2; div * div <= number; ++div) {
-        while (number % div == 0) {
-            largest = div;
-            number /= div;
-        }
-    }
-    return number > 1 ? number : largest;
-}
-
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
-    NActors::TActorSystem* ActorSystem;
-    NActors::TActorId MaxPrimeActor;
+    const NActors::TActorId WriteActor;    
+    int ActorCount;
+    bool InputFirst;
+    bool Finish = false;
 public:
-    TReadActor(NActors::TActorSystem* actorSystem, NActors::TActorId maxPrimeActor)
-        : ActorSystem(actorSystem), MaxPrimeActor(maxPrimeActor) {}
+    TReadActor(const NActors::TActorId writeActor)
+        : Finish(false), WriteActor(writeActor), ActorCount(0), InputFirst(true)
+    {}
 
     void Bootstrap() {
         Become(&TReadActor::StateFunc);
-        std::string input;
-        std::getline(std::cin, input);
-        std::istringstream iss(input);
-        int number;
-        while (iss >> number) {
-            ActorSystem->Send(MaxPrimeActor, new TEvents::TEvProcessNumber(number));
-        }
-        ActorSystem->Send(MaxPrimeActor, new NActors::TEvents::TEvPoisonPill);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
     STRICT_STFUNC(StateFunc, {
-        hFunc(TEvents::TEvProcessNumber, HandleNumber);
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeUp);
+        cFunc(TEvents::TEvDone::EventType, HandleDone);
     });
 
-    void HandleNumber(const TEvents::TEvProcessNumber::TPtr& ev) {
+    void HandleWakeUp() {
+        int64_t value;
+        if (std::cin >> value) {
+            InputFirst = false;    
+            Register(CreateMaximumPrimeDivisorActor(value, SelfId(), WriteActor).Release());
+            ActorCount++;
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        } else {
+            if (InputFirst) {
+                Register(CreateMaximumPrimeDivisorActor(0, SelfId(), WriteActor).Release());
+                ActorCount++;
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            }
+            Finish = true;
+        }
+    }
+    
+    void HandleDone() {
+        ActorCount--;
+        if (Finish && ActorCount == 0) {
+            Send(WriteActor, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        }
     }
 };
 
 class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
-    NActors::TActorSystem* ActorSystem;
-    NActors::TActorId WriteActor;
+    int64_t Value;
+    const NActors::TActorIdentity ReadActor;
+    const NActors::TActorId WriteActor;
+    int64_t Prime;    
+    int64_t CurrentStateFirst;
+    int64_t CurrentStateSecond;
+    bool Flag;
+        
 public:
-    TMaximumPrimeDivisorActor(NActors::TActorSystem* actorSystem, NActors::TActorId writeActor)
-        : ActorSystem(actorSystem), WriteActor(writeActor) {}
+    TMaximumPrimeDivisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor)
+        : Value(value), ReadActor(readActor), WriteActor(writeActor), CurrentStateFirst(1), Prime(0), Flag(true), CurrentStateSecond(2)
+    {}
 
     void Bootstrap() {
         Become(&TMaximumPrimeDivisorActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
     STRICT_STFUNC(StateFunc, {
-        hFunc(TEvents::TEvProcessNumber, HandleNumber);
-        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoison);
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeUp);
     });
 
-    void HandleNumber(const TEvents::TEvProcessNumber::TPtr& ev) {
-        int largestPrime = FindLargestPrimeDivisor(ev->Get()->Number);
-        ActorSystem->Send(WriteActor, new TEvents::TEvPrimeDivisorFound(largestPrime));
-    }
+    void HandleWakeUp() {
+        auto startTime = std::chrono::steady_clock::now();
+        auto endTime = std::chrono::steady_clock::now();
+        auto elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
 
-    void HandlePoison() {
-        ActorSystem->Send(WriteActor, new NActors::TEvents::TEvPoisonPill);
+        for (int64_t i = CurrentStateFirst; i <= Value; i++) {
+            for (int64_t j = CurrentStateSecond; j * j <= i; j++) {
+                if (i % j == 0) {
+                    Flag = false;
+                    break;
+                }
+                endTime = std::chrono::steady_clock::now();
+                elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+                if (elapsedTime > 10) {
+                    CurrentStateFirst = i;
+                    CurrentStateSecond = j;
+                    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                    return;
+                }
+            }
+            if (Flag && Value % i == 0) {
+                Prime = i;
+            } else {
+                Flag = true;
+            }
+        }
+        Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(Prime));
+        Send(ReadActor, std::make_unique<TEvents::TEvDone>());
         PassAway();
     }
+    
 };
 
-class TWriteActor : public NActors::TActorBootstrapped<TWriteActor> {
-    int Sum = 0;
+class TWriteActor : public NActors::TActor<TWriteActor> {
+    int Sum;
 public:
+    using TBase = NActors::TActor<TWriteActor>;
+    
+    TWriteActor() : TBase(&TWriteActor::Handler), Sum(0) {}
+        
+    STRICT_STFUNC(Handler, {
+        hFunc(TEvents::TEvWriteValueRequest, Handle);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandleDone);
+    });
+    
+    void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
+        auto& event = *ev->Get();
+        Sum = Sum + event.Value;
+    }
+   
+    void HandleDone() {
+       std::cout << Sum << std::endl;
+       ShouldContinue->ShouldStop();
+       PassAway();
+    }        
+};
+
+class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
+    TDuration Latency;
+    TInstant LastTime;
+
+public:
+    TSelfPingActor(const TDuration& latency)
+        : Latency(latency)
+    {}
+
     void Bootstrap() {
-        Become(&TWriteActor::StateFunc);
+        LastTime = TInstant::Now();
+        Become(&TSelfPingActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
     STRICT_STFUNC(StateFunc, {
-        hFunc(TEvents::TEvPrimeDivisorFound, HandlePrime);
-        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoison);
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
     });
 
-    void HandlePrime(const TEvents::TEvPrimeDivisorFound::TPtr& ev) {
-        Sum += ev->Get()->Value;
-    }
-
-    void HandlePoison() {
-        std::cout << Sum << std::endl;
-        PassAway();
+    void HandleWakeup() {
+        auto now = TInstant::Now();
+        TDuration delta = now - LastTime;
+        Y_VERIFY(delta <= Latency, "Latency too big");
+        LastTime = now;
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 };
 
-THolder<NActors::IActor> CreateReadActor(NActors::TActorSystem* actorSystem, NActors::TActorId maxPrimeActor) {
-    return MakeHolder<TReadActor>(actorSystem, maxPrimeActor);
+THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
+    return MakeHolder<TSelfPingActor>(latency);
 }
 
-THolder<NActors::IActor> CreateMaximumPrimeDivisorActor(NActors::TActorSystem* actorSystem, NActors::TActorId writeActor) {
-    return MakeHolder<TMaximumPrimeDivisorActor>(actorSystem, writeActor);
+THolder<NActors::IActor> CreateReadActor(const NActors::TActorId writeActor) {
+    return MakeHolder<TReadActor>(writeActor);
+}
+
+THolder<NActors::IActor> CreateMaximumPrimeDivisorActor(int64_t value, const NActors::TActorIdentity readActor, const NActors::TActorId writeActor) {
+    return MakeHolder<TMaximumPrimeDivisorActor>(value, readActor, writeActor);
 }
 
 THolder<NActors::IActor> CreateWriteActor() {

@@ -21,17 +21,16 @@ int main(int argc, const char* argv[])
     NActors::TActorSystem actorSystem(actorSystemSetup);
     actorSystem.Start();
 
+    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release()); 
     auto writeActorId = actorSystem.Register(CreateWriteActor().Release());
-    auto maxPrimeActorId = actorSystem.Register(CreateMaximumPrimeDivisorActor(&actorSystem, writeActorId).Release());
-    actorSystem.Register(CreateReadActor(&actorSystem, maxPrimeActorId).Release());
+    actorSystem.Register(CreateReadActor(writeActorId).Release());
 
     auto shouldContinue = GetProgramShouldContinue();
     while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
         Sleep(TDuration::MilliSeconds(200));
     }
+    
     actorSystem.Stop();
-    // Добавим небольшую задержку перед очисткой системы
-    Sleep(TDuration::Seconds(1));
     actorSystem.Cleanup();
     return shouldContinue->GetReturnCode();
 }
