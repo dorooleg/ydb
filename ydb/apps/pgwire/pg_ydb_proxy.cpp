@@ -3,7 +3,7 @@
 #include "log_impl.h"
 #include <ydb/core/pgproxy/pg_proxy_events.h>
 #include <ydb/public/api/grpc/ydb_auth_v1.grpc.pb.h>
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 #define INCLUDE_YDB_INTERNAL_H
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/grpc_connections/grpc_connections.h>
 
@@ -93,6 +93,7 @@ public:
         TActorId actorId = Register(actor);
         PgToYdbConnection[ev->Sender] = actorId;
         BLOG_D("Created ydb connection " << actorId);
+        Send(ev->Sender, new NPG::TEvPGEvents::TEvFinishHandshake(), 0, ev->Cookie);
     }
 
     void Handle(NPG::TEvPGEvents::TEvConnectionClosed::TPtr& ev) {

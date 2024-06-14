@@ -1,6 +1,7 @@
 #include "mkql_switch.h"
-#include "mkql_llvm_base.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_stats_registry.h>
 #include <ydb/library/yql/utils/cast.h>
@@ -33,7 +34,6 @@ using TSwitchHandlersList = std::vector<TSwitchHandler, TMKQLAllocator<TSwitchHa
 class TState : public TComputationValue<TState> {
     typedef TComputationValue<TState> TBase;
 public:
-    using TLLVMBase = TLLVMFieldsStructure<TComputationValue<TState>>;
     TState(TMemoryUsageInfo* memInfo, ui32 size)
         : TBase(memInfo), ChildReadIndex(size)
     {}
@@ -43,9 +43,9 @@ public:
 };
 
 #ifndef MKQL_DISABLE_CODEGEN
-class TLLVMFieldsStructureForState: public TState::TLLVMBase {
+class TLLVMFieldsStructureForState: public TLLVMFieldsStructure<TComputationValue<TState>> {
 private:
-    using TBase = TState::TLLVMBase;
+    using TBase = TLLVMFieldsStructure<TComputationValue<TState>>;
     llvm::IntegerType* IndexType;
     llvm::IntegerType* StatusType;
     const ui32 FieldsCount = 0;
@@ -92,13 +92,12 @@ class TSwitchFlowWrapper : public TStatefulFlowCodegeneratorNode<TSwitchFlowWrap
 private:
     class TFlowState : public TState {
     public:
-        using TLLVMBase = TLLVMFieldsStructureForState;
         TFlowState(TMemoryUsageInfo* memInfo, TAlignedPagePool& pool, ui32 size)
             : TState(memInfo, size), Buffer(pool)
         {}
 
         void Add(NUdf::TUnboxedValuePod item) {
-            Buffer.Add(item);
+            Buffer.Add(std::move(item));
         }
 
         void PushStat(IStatsRegistry* stats) const {
@@ -126,14 +125,15 @@ private:
             Position = 0U;
         }
 
-        NUdf::TUnboxedValuePod Handler(ui32 index, const TSwitchHandler& handler, TComputationContext& ctx) {
+        NUdf::TUnboxedValuePod Handler(ui32, const TSwitchHandler& handler, TComputationContext& ctx) {
             while (true) {
-                auto current = Get(Position++);
+                auto current = Get(Position);
                 if (current.IsSpecial()) {
-                    ResetPosition();
+                    if (current.IsYield())
+                        ResetPosition();
                     return current;
                 }
-
+                ++Position;
                 ui32 streamIndex = 0U;
                 if constexpr (IsInputVariant) {
                     streamIndex = current.GetVariantIndex();
@@ -161,14 +161,34 @@ public:
         , Flow(flow)
         , MemLimit(memLimit)
         , Handlers(std::move(handlers))
-    {}
+    {
+        size_t handlersSize = Handlers.size();
+        for (ui32 handlerIndex = 0; handlerIndex < handlersSize; ++handlerIndex) {
+            Handlers[handlerIndex].Item->SetGetter([stateIndex = mutables.CurValueIndex - 1, handlerIndex, this](TComputationContext & context) {
+                NUdf::TUnboxedValue& state = context.MutableValues[stateIndex];
+                if (!state.HasValue()) {
+                    MakeState(context, state);
+                }
+
+                auto ptr = static_cast<TFlowState*>(state.AsBoxed().Get());
+                return ptr->Handler(handlerIndex, Handlers[handlerIndex], context);
+            });
+
+#ifndef MKQL_DISABLE_CODEGEN
+            EnsureDynamicCast<ICodegeneratorExternalNode*>(Handlers[handlerIndex].Item)->SetValueGetterBuilder([handlerIndex, this](const TCodegenContext& ctx) {
+                return GenerateHandler(handlerIndex, ctx.Codegen);
+            });
+#endif
+        }
+    }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
         if (!state.HasValue()) {
             MakeState(ctx, state);
         }
 
-        while (const auto ptr = static_cast<TFlowState*>(state.AsBoxed().Get())) {
+        auto ptr = static_cast<TFlowState*>(state.AsBoxed().Get());
+        while (true) {
             if (ptr->ChildReadIndex == Handlers.size()) {
                 switch (ptr->InputStatus) {
                     case NUdf::EFetchStatus::Ok: break;
@@ -225,9 +245,9 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
 private:
-    class TLLVMFieldsStructureForFlowState: public TFlowState::TLLVMBase {
+    class TLLVMFieldsStructureForFlowState: public TLLVMFieldsStructureForState {
     private:
-        using TBase = typename TFlowState::TLLVMBase;
+        using TBase = TLLVMFieldsStructureForState;
         llvm::PointerType* StructPtrType;
         llvm::IntegerType* IndexType;
     protected:
@@ -240,11 +260,11 @@ private:
             return result;
         }
 
-        llvm::Constant* GetPosition() {
+        llvm::Constant* GetPosition() const {
             return ConstantInt::get(Type::getInt32Ty(Context), TBase::GetFieldsCount() + 0);
         }
 
-        llvm::Constant* GetBuffer() {
+        llvm::Constant* GetBuffer() const {
             return ConstantInt::get(Type::getInt32Ty(Context), TBase::GetFieldsCount() + 1);
         }
 
@@ -254,9 +274,10 @@ private:
             , IndexType(Type::getInt32Ty(context)) {
         }
     };
-    Function* GenerateHandler(ui32 i, const NYql::NCodegen::ICodegen::TPtr& codegen) const {
-        auto& module = codegen->GetModule();
-        auto& context = codegen->GetContext();
+
+    Function* GenerateHandler(ui32 i, NYql::NCodegen::ICodegen& codegen) const {
+        auto& module = codegen.GetModule();
+        auto& context = codegen.GetContext();
 
         TStringStream out;
         out << this->DebugString() << "::Handler_" << i << "_(" << static_cast<const void*>(this) << ").";
@@ -274,10 +295,6 @@ private:
         ctx.Ctx = &*ctx.Func->arg_begin();
         ctx.Ctx->addAttr(Attribute::NonNull);
 
-        const auto ptrValueType = PointerType::getUnqual(valueType);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        const auto contextType = GetCompContextType(context);
-        const auto statusType = Type::getInt32Ty(context);
         const auto indexType = Type::getInt32Ty(context);
         TLLVMFieldsStructureForFlowState fieldsStruct(context);
         const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
@@ -285,7 +302,7 @@ private:
 
         auto block = main;
 
-        const auto placeholder = NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget() ?
+        const auto placeholder = NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget() ?
             new AllocaInst(valueType, 0U, "placeholder", block) : nullptr;
 
         const auto statePtr = GetElementPtrInst::CreateInBounds(valueType, ctx.GetMutables(), {ConstantInt::get(indexType, static_cast<const IComputationNode*>(this)->GetIndex())}, "state_ptr", block);
@@ -295,6 +312,7 @@ private:
         const auto posPtr = GetElementPtrInst::CreateInBounds(stateType, stateArg, { fieldsStruct.This(), fieldsStruct.GetPosition() }, "pos_ptr", block);
 
         const auto loop = BasicBlock::Create(context, "loop", ctx.Func);
+        const auto back = BasicBlock::Create(context, "back", ctx.Func);
         const auto done = BasicBlock::Create(context, "done", ctx.Func);
         const auto good = BasicBlock::Create(context, "good", ctx.Func);
 
@@ -307,7 +325,7 @@ private:
         const auto getFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TFlowState::Get));
 
         Value* input;
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
             const auto getType = FunctionType::get(valueType, {stateArg->getType(), pos->getType()}, false);
             const auto getPtr = CastInst::Create(Instruction::IntToPtr, getFunc, PointerType::getUnqual(getType), "get", block);
             input = CallInst::Create(getType, getPtr, {stateArg, pos}, "input", block);
@@ -318,16 +336,21 @@ private:
             input = new LoadInst(valueType, placeholder, "input", block);
         }
 
-        const auto plus = BinaryOperator::CreateAdd(pos, ConstantInt::get(pos->getType(), 1), "plus", block);
-        new StoreInst(plus, posPtr, block);
+        const auto special = SwitchInst::Create(input, good, 2U, block);
+        special->addCase(GetYield(context), back);
+        special->addCase(GetFinish(context), done);
 
-        BranchInst::Create(done, good, IsSpecial(input, block), block);
+        block = back;
+        new StoreInst(ConstantInt::get(pos->getType(), 0), posPtr, block);
+        BranchInst::Create(done, block);
 
         block = done;
-        new StoreInst(ConstantInt::get(pos->getType(), 0), posPtr, block);
         ReturnInst::Create(context, input, block);
 
         block = good;
+
+        const auto plus = BinaryOperator::CreateAdd(pos, ConstantInt::get(pos->getType(), 1), "plus", block);
+        new StoreInst(plus, posPtr, block);
 
         const auto unpack = IsInputVariant ? GetVariantParts(input, ctx, block) : std::make_pair(ConstantInt::get(indexType, 0), input);
 
@@ -335,8 +358,6 @@ private:
         const auto choise = SwitchInst::Create(unpack.first, loop, handler.InputIndices.size(), block);
 
         for (ui32 idx = 0U; idx < handler.InputIndices.size(); ++idx) {
-            const auto index = ConstantInt::get(indexType, idx);
-
             const auto var = BasicBlock::Create(context, (TString("var_") += ToString(idx)).c_str(), ctx.Func);
 
             choise->addCase(ConstantInt::get(indexType, handler.InputIndices[idx]), var);
@@ -354,16 +375,9 @@ private:
     }
 public:
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        for (ui32 i = 0U; i < Handlers.size(); ++i) {
-            EnsureDynamicCast<ICodegeneratorExternalNode*>(Handlers[i].Item)->SetValueGetter(GenerateHandler(i, ctx.Codegen));
-        }
-
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto ptrValueType = PointerType::getUnqual(valueType);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto indexType = Type::getInt32Ty(context);
         TLLVMFieldsStructureForFlowState fieldsStruct(context);
@@ -511,6 +525,9 @@ public:
 
             block = next;
 
+            const auto posPtr = GetElementPtrInst::CreateInBounds(stateType, stateArg, { fieldsStruct.This(), fieldsStruct.GetPosition() }, "pos_ptr", block);
+            new StoreInst(ConstantInt::get(indexType, 0), posPtr, block);
+
             const auto plus = BinaryOperator::CreateAdd(index, ConstantInt::get(index->getType(), 1), "plus", block);
             new StoreInst(plus, indexPtr, block);
             const auto flush = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, plus, ConstantInt::get(plus->getType(), Handlers.size()), "flush", block);
@@ -533,12 +550,6 @@ public:
 private:
     void MakeState(TComputationContext& ctx, NUdf::TUnboxedValue& state) const {
         state = ctx.HolderFactory.Create<TFlowState>(ctx.HolderFactory.GetPagePool(), Handlers.size());
-        if (const auto ptr = static_cast<TFlowState*>(state.AsBoxed().Get())) {
-            for (ui32 i = 0U; i <  Handlers.size(); ++i) {
-                const auto& handler = Handlers[i];
-                handler.Item->SetGetter(std::bind(&TFlowState::Handler, ptr, i, std::cref(handler), std::placeholders::_1));
-            }
-        }
     }
 
     void RegisterDependencies() const final {
@@ -617,8 +628,6 @@ private:
 
     class TValueBase : public TState {
     public:
-        using TLLVMBase = TLLVMFieldsStructureForState;
-
         void Add(NUdf::TUnboxedValue&& item) {
             Buffer.Add(std::move(item));
         }
@@ -694,7 +703,7 @@ private:
 
                     const auto initUsage = this->MemLimit ? this->Ctx.HolderFactory.GetMemoryUsed() : 0ULL;
 
-                    do  {
+                    do {
                         NUdf::TUnboxedValue current;
                         this->InputStatus = this->Stream.Fetch(current);
                         if (NUdf::EFetchStatus::Ok != this->InputStatus) {
@@ -758,16 +767,16 @@ public:
 private:
     void RegisterDependencies() const final {
         this->DependsOn(Stream);
-        for (const auto& x : Handlers) {
-            this->Own(x.Item);
-            this->DependsOn(x.NewItem);
+        for (const auto& handler : Handlers) {
+            this->Own(handler.Item);
+            this->DependsOn(handler.NewItem);
         }
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    class TLLVMFieldsStructureForValueBase: public TValueBase::TLLVMBase {
+    class TLLVMFieldsStructureForValueBase: public TLLVMFieldsStructureForState {
     private:
-        using TBase = typename TValueBase::TLLVMBase;
+        using TBase = TLLVMFieldsStructureForState;
     protected:
         using TBase::Context;
     public:
@@ -781,19 +790,19 @@ private:
         }
     };
 
-    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
         SwitchFunc = GenerateSwitch(codegen);
-        codegen->ExportSymbol(SwitchFunc);
+        codegen.ExportSymbol(SwitchFunc);
     }
 
-    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
         if (SwitchFunc)
-            Switch = reinterpret_cast<TSwitchPtr>(codegen->GetPointerToFunction(SwitchFunc));
+            Switch = reinterpret_cast<TSwitchPtr>(codegen.GetPointerToFunction(SwitchFunc));
     }
 
-    Function* GenerateSwitch(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
-        auto& module = codegen->GetModule();
-        auto& context = codegen->GetContext();
+    Function* GenerateSwitch(NYql::NCodegen::ICodegen& codegen) const {
+        auto& module = codegen.GetModule();
+        auto& context = codegen.GetContext();
 
         const auto& name = this->MakeName("Fetch");
         if (const auto f = module.getFunction(name.c_str()))
@@ -801,8 +810,7 @@ private:
 
         const auto valueType = Type::getInt128Ty(context);
         const auto ptrValueType = PointerType::getUnqual(valueType);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(ptrValueType) : static_cast<Type*>(valueType);
+        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(ptrValueType) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto indexType = Type::getInt32Ty(context);
@@ -871,7 +879,7 @@ private:
 
             const auto used = GetMemoryUsed(MemLimit, ctx, block);
 
-            const auto stream = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            const auto stream = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
                 new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
             BranchInst::Create(loop, block);
@@ -923,9 +931,6 @@ private:
             BranchInst::Create(good, more, has, block);
 
             block = good;
-
-            const auto factory = ctx.GetFactory();
-            const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::CreateVariantHolder));
 
             const auto choise = SwitchInst::Create(index, stub, Handlers.size(), block);
 
@@ -997,7 +1002,7 @@ IComputationNode* WrapSwitch(TCallable& callable, const TComputationNodeFactoryC
             handler.ResultVariantOffset = AS_VALUE(TDataLiteral, offsetNode)->AsValue().Get<ui32>();
         }
 
-        handlers.emplace_back(handler);
+        handlers.emplace_back(std::move(handler));
     }
 
     const bool trackRss = EGraphPerProcess::Single == ctx.GraphPerProcess;

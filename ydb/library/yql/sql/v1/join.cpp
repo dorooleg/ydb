@@ -1,4 +1,4 @@
-#include "node.h"
+#include "source.h"
 #include "context.h"
 
 #include <ydb/library/yql/utils/yql_panic.h>
@@ -332,7 +332,7 @@ protected:
                 }
             }
 
-            Y_VERIFY_DEBUG(leftSource);
+            Y_DEBUG_ABORT_UNLESS(leftSource);
             if (sameColumnNamePtr) {
                 SameKeyMap[*sameColumnNamePtr].insert(*leftSource);
                 SameKeyMap[*sameColumnNamePtr].insert(*rightSource);
@@ -499,8 +499,10 @@ public:
             }
 
             TNodePtr linkOptions = Y();
-            if (descr.LinkSettings.ForceSortedMerge) {
+            if (TJoinLinkSettings::EStrategy::SortedMerge == descr.LinkSettings.Strategy) {
                 linkOptions = L(linkOptions, Q(Y(Q("forceSortedMerge"))));
+            } else if (TJoinLinkSettings::EStrategy::StreamLookup == descr.LinkSettings.Strategy) {
+                linkOptions = L(linkOptions, Q(Y(Q("forceStreamLookup"))));
             }
             if (leftAny) {
                 linkOptions = L(linkOptions, Q(Y(Q("left"), Q("any"))));

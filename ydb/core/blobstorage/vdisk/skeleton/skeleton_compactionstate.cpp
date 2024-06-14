@@ -20,7 +20,7 @@ namespace NKikimr {
         ui64 requestId = ++RequestIdCounter;
         const auto mode = cReq.Mode;
         auto insRes = Requests.insert({requestId, std::move(cReq)});
-        Y_VERIFY(insRes.second);
+        Y_ABORT_UNLESS(insRes.second);
         auto &req = insRes.first->second;
 
         if (req.CompactLogoBlobs) {
@@ -35,7 +35,7 @@ namespace NKikimr {
     }
 
     void TVDiskCompactionState::Setup(const TActorContext &ctx, std::optional<ui64> lsn, TCompactionReq cReq) {
-        Y_VERIFY(!cReq.AllDone());
+        Y_ABORT_UNLESS(!cReq.AllDone());
         if (lsn) {
             Triggered = true;
             LsnToCommit = *lsn;
@@ -54,20 +54,21 @@ namespace NKikimr {
     void TVDiskCompactionState::Compacted(
             const TActorContext &ctx,
             i64 reqId,
-            EHullDbType dbType) {
+            EHullDbType dbType,
+            const TIntrusivePtr<TVDiskContext>& vCtx) {
         auto it = Requests.find(reqId);
-        Y_VERIFY(it != Requests.end());
+        Y_ABORT_UNLESS(it != Requests.end());
         auto &req = it->second;
 
         switch (dbType) {
             case EHullDbType::LogoBlobs:  req.CompactLogoBlobs = false; break;
             case EHullDbType::Blocks:     req.CompactBlocks = false; break;
             case EHullDbType::Barriers:   req.CompactBarriers = false; break;
-            default: Y_FAIL("Unexpected case: %d", int(dbType));
+            default: Y_ABORT("Unexpected case: %d", int(dbType));
         }
 
         if (req.AllDone()) {
-            SendVDiskResponse(ctx, req.ClientId, req.Reply.release(), req.ClientCookie);
+            SendVDiskResponse(ctx, req.ClientId, req.Reply.release(), req.ClientCookie, vCtx);
             // delete req from Request, we handled it
             Requests.erase(it);
         }
@@ -104,7 +105,7 @@ namespace NKikimr {
             case TDbMon::DbMainPageLogoBlobs:   traverse(extractLogoBlobs); break;
             case TDbMon::DbMainPageBlocks:      traverse(extractBlocks); break;
             case TDbMon::DbMainPageBarriers:    traverse(extractBarriers); break;
-            default: Y_FAIL("Unxepected case");
+            default: Y_ABORT("Unxepected case");
         }
 
         // convert subId to database name
@@ -113,7 +114,7 @@ namespace NKikimr {
                 case TDbMon::DbMainPageLogoBlobs:   return "LogoBlobs";
                 case TDbMon::DbMainPageBlocks:      return "Blocks";
                 case TDbMon::DbMainPageBarriers:    return "Barriers";
-                default: Y_FAIL("Unxepected case");
+                default: Y_ABORT("Unxepected case");
             }
         };
 

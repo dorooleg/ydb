@@ -1,4 +1,4 @@
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include "hive_impl.h"
 #include "hive_log.h"
 #include "node_info.h"
@@ -38,6 +38,14 @@ protected:
         PassAway();
     }
 
+    TString GetDescription() const override {
+        return TStringBuilder() << "Drain(" << NodeId << ")";
+    }
+
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
+    }
+
     void ReplyAndDie(NKikimrProto::EReplyStatus status) {
         BLOG_I("Drain " << SelfId() << " finished with " << Movements << " movements made");
         TNodeInfo* nodeInfo = Hive->FindNode(NodeId);
@@ -70,7 +78,7 @@ protected:
                                 << " from node " << tablet->Node->Id << " " << tablet->Node->ResourceValues
                                 << " to node " << result.BestNode->Id << " " << result.BestNode->ResourceValues);
                     Hive->TabletCounters->Cumulative()[NHive::COUNTER_DRAIN_EXECUTED].Increment(1);
-                    Hive->TabletCounters->Cumulative()[NHive::COUNTER_TABLETS_MOVED].Increment(1);
+                    Hive->RecordTabletMove(THive::TTabletMoveInfo(TInstant::Now(), *tablet, tablet->Node->Id, result.BestNode->Id));
                     Hive->Execute(Hive->CreateRestartTablet(tabletId, result.BestNode->Id));
                 } else {
                     Hive->TabletCounters->Cumulative()[NHive::COUNTER_DRAIN_FAILED].Increment(1);
@@ -132,7 +140,7 @@ protected:
         pipeConfig.RetryPolicy = {.RetryLimitCount = 13};
         DomainHivePipeClient = Register(NTabletPipe::CreateClient(SelfId(), DomainHiveId, pipeConfig));
         THolder<TEvHive::TEvDrainNode> event = MakeHolder<TEvHive::TEvDrainNode>(NodeId);
-        event->Record.SetKeepDown(Settings.KeepDown);
+        event->Record.SetDownPolicy(Settings.DownPolicy);
         event->Record.SetPersist(Settings.Persist);
         event->Record.SetDrainInFlight(Settings.DrainInFlight);
         NTabletPipe::SendData(SelfId(), DomainHivePipeClient, event.Release());
@@ -158,10 +166,13 @@ public:
         TNodeInfo* nodeInfo = Hive->FindNode(NodeId);
         if (nodeInfo != nullptr) {
             {
-                const auto& tablets = nodeInfo->Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING];
-                Tablets.reserve(tablets.size());
-                for (TTabletInfo* tabletInfo : tablets) {
-                    Tablets.push_back(tabletInfo->GetFullTabletId());
+                Tablets.reserve(nodeInfo->GetTabletsRunning());
+                for (const auto& [object, tablets] : nodeInfo->TabletsOfObject) {
+                    for (TTabletInfo* tabletInfo : tablets) {
+                        if (tabletInfo->GetVolatileState() == TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING) {
+                            Tablets.push_back(tabletInfo->GetFullTabletId());
+                        }
+                    }
                 }
             }
             NextKick = Tablets.begin();
@@ -207,6 +218,8 @@ void THive::StartHiveDrain(TNodeId nodeId, TDrainSettings settings) {
         auto* balancer = new THiveDrain(this, nodeId, std::move(settings));
         SubActors.emplace_back(balancer);
         RegisterWithSameMailbox(balancer);
+    } else {
+        BLOG_W("It's not possible to start drain on node " << nodeId << ", the node is already busy");
     }
 }
 

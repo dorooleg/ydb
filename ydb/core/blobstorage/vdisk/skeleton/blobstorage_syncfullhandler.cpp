@@ -58,7 +58,7 @@ namespace NKikimr {
                 !SelfVDiskId.SameDisk(TargetVDisk)) {
                 auto result = std::make_unique<TEvBlobStorage::TEvVSyncFullResult>(NKikimrProto::ERROR, SelfVDiskId,
                     Record.GetCookie(), Now, IFaceMonGroup->SyncFullResMsgsPtr(), nullptr, Ev->GetChannel());
-                SendVDiskResponse(ctx, recipient, result.release(), cookie);
+                SendVDiskResponse(ctx, recipient, result.release(), cookie, HullCtx->VCtx);
                 Die(ctx);
                 return;
             }
@@ -73,12 +73,12 @@ namespace NKikimr {
                 auto result = std::make_unique<TEvBlobStorage::TEvVSyncFullResult>(NKikimrProto::NODATA, SelfVDiskId,
                     TSyncState(Db->GetVDiskIncarnationGuid(), DbBirthLsn), Record.GetCookie(), Now,
                     IFaceMonGroup->SyncFullResMsgsPtr(), nullptr, Ev->GetChannel());
-                SendVDiskResponse(ctx, recipient, result.release(), cookie);
+                SendVDiskResponse(ctx, recipient, result.release(), cookie, HullCtx->VCtx);
                 Die(ctx);
                 return;
             }
 
-            Y_VERIFY_DEBUG(SourceVDisk != SelfVDiskId);
+            Y_DEBUG_ABORT_UNLESS(SourceVDisk != SelfVDiskId);
 
             Run(ctx, clientSyncState);
         }
@@ -128,7 +128,7 @@ namespace NKikimr {
                 stage,
                 std::move(result));
             auto aid = ctx.Register(actor);
-            ActiveActors.Insert(aid);
+            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             Become(&TThis::StateFunc);
         }
 

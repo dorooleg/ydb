@@ -54,7 +54,7 @@ namespace NKikimr {
                 case AnubisOsirisPut:       return "AnubisOsirisPut";
                 case RecoveredHugeBlob:     return "RecoveredHugeBlob";
                 case DetectedPhantomBlob:   return "DetectedPhantomBlob";
-                case Count:                 Y_FAIL();
+                case Count:                 Y_ABORT();
             }
         }
 
@@ -151,7 +151,7 @@ namespace NKikimr {
                 return stat.NotAllow();
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MIN_SENTINEL_DO_NOT_USE_:
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MAX_SENTINEL_DO_NOT_USE_:
-                Y_FAIL();
+                Y_ABORT();
         }
     }
 
@@ -189,7 +189,7 @@ namespace NKikimr {
                 return stat.NotAllow();
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MIN_SENTINEL_DO_NOT_USE_:
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MAX_SENTINEL_DO_NOT_USE_:
-                Y_FAIL();
+                Y_ABORT();
         }
     }
 
@@ -241,7 +241,7 @@ namespace NKikimr {
                 return stat.NotAllow();
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MIN_SENTINEL_DO_NOT_USE_:
             case NKikimrBlobStorage::TPDiskSpaceColor_E_TPDiskSpaceColor_E_INT_MAX_SENTINEL_DO_NOT_USE_:
-                Y_FAIL();
+                Y_ABORT();
         }
     }
 
@@ -268,8 +268,7 @@ namespace NKikimr {
     ESpaceColor TOutOfSpaceLogic::GetSpaceColor() const {
         auto& oos = VCtx->GetOutOfSpaceState();
         const ESpaceColor global = oos.GetGlobalColor();
-        const ESpaceColor log = oos.GetLocalLogColor();
-        return Max(log, global >= TSpaceColor::ORANGE ? global : oos.GetLocalColor());
+        return global >= TSpaceColor::ORANGE ? global : oos.GetLocalColor();
     }
 
 } // NKikimr

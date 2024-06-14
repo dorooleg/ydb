@@ -5,9 +5,11 @@ package NKqpProto;
 option java_package = "ru.yandex.kikimr.proto";
 
 import "google/protobuf/any.proto";
+import "ydb/core/protos/flat_scheme_op.proto";
 import "ydb/library/mkql_proto/protos/minikql.proto";
 import "ydb/library/yql/dq/proto/dq_tasks.proto";
 import "ydb/public/api/protos/ydb_value.proto";
+import "ydb/core/protos/index_builder.proto";
 
 message TKqpPhyExternalBinding {
 }
@@ -42,10 +44,15 @@ message TKqpPhyParamBinding {
     }
 }
 
+message TResultSetMeta {
+    repeated Ydb.Column columns = 1;
+};
+
 message TKqpPhyResultBinding {
     oneof Type {
         TKqpPhyTxResultBinding TxResultBinding = 1;
     }
+    TResultSetMeta ResultSetMeta = 2;
 }
 
 message TKqpPhyColumnId {
@@ -57,6 +64,14 @@ message TKqpPhyColumn {
     TKqpPhyColumnId Id = 1;
     uint32 TypeId = 2;
     string PgTypeName = 3;
+    oneof DefaultKind {
+        string DefaultFromSequence = 4;
+        Ydb.TypedValue DefaultFromLiteral = 5;
+    }
+    bool NotNull = 6;
+    // flag that indicates that column is currently under the build
+    // operation.
+    optional bool IsBuildInProgress = 7;
 }
 
 enum EKqpPhyTableKind {
@@ -64,6 +79,7 @@ enum EKqpPhyTableKind {
     TABLE_KIND_DS = 1;
     TABLE_KIND_OLAP = 2;
     TABLE_KIND_SYS_VIEW = 3;
+    TABLE_KIND_EXTERNAL = 4;
 }
 
 message TKqpPhyTableId {
@@ -179,6 +195,8 @@ message TKqpPhyOpReadOlapRanges {
 
     // Type of read result: unboxed values or Arrow blocks of data
     EReadType ReadType = 13;
+
+    repeated string GroupByColumnNames = 14;
 }
 
 message TKqpPhyOpReadRanges {
@@ -241,12 +259,27 @@ message TKqpPhyCnMerge {
     repeated TKqpPhySortColumn SortColumns = 1;
 }
 
+enum EStreamLookupStrategy {
+    UNSPECIFIED = 0;
+    LOOKUP = 1;
+    JOIN = 2;
+};
+
 message TKqpPhyCnStreamLookup {
     TKqpPhyTableId Table = 1;
     repeated string KeyColumns = 2;
     repeated string Columns = 3;
     bytes LookupKeysType = 4;
     bytes ResultType = 5;
+    EStreamLookupStrategy LookupStrategy = 6;
+}
+
+message TKqpPhyCnSequencer {
+    TKqpPhyTableId Table = 1;
+    repeated string Columns = 2;
+    repeated string AutoIncrementColumns = 3;
+    bytes InputType = 4;
+    bytes OutputType = 5;
 }
 
 message TKqpPhyConnection {
@@ -265,6 +298,7 @@ message TKqpPhyConnection {
         TKqpPhyCnValue Value = 10;
         TKqpPhyCnMerge Merge = 11;
         TKqpPhyCnStreamLookup StreamLookup = 12;
+        TKqpPhyCnSequencer Sequencer = 14;
     };
 }
 
@@ -291,6 +325,9 @@ message TKqpExternalSource {
     // Partitioning
     string TaskParamKey = 3;
     repeated string PartitionedTaskParams = 4;
+
+    string SourceName = 5;
+    string AuthInfo = 6;
 }
 
 message TKqpSource {
@@ -300,7 +337,29 @@ message TKqpSource {
         TKqpReadRangesSource ReadRangesSource = 3;
         TKqpExternalSource ExternalSource = 4;
     }
-};
+}
+
+message TKqpExternalSink {
+    string Type = 1;
+    google.protobuf.Any Settings = 2;
+
+    string SinkName = 3;
+    string AuthInfo = 4;
+}
+
+message TKqpInternalSink {
+    string Type = 1;
+    google.protobuf.Any Settings = 2;
+}
+
+message TKqpSink {
+    uint32 OutputIndex = 1;
+
+    oneof Type {
+        TKqpExternalSink ExternalSink = 2;
+        TKqpInternalSink InternalSink = 3;
+    }
+}
 
 message TKqpPhyStage {
     NYql.NDqProto.TProgram Program = 1;
@@ -313,6 +372,8 @@ message TKqpPhyStage {
     string StageGuid = 8;
     repeated TKqpSource Sources = 9;
     bool IsSinglePartition = 10;
+    repeated TKqpSink Sinks = 11;
+    map<string, string> SecureParams = 12;
 }
 
 message TKqpPhyResult {
@@ -320,7 +381,71 @@ message TKqpPhyResult {
     NKikimrMiniKQL.TType ItemType = 2;
     bool IsStream = 3;
     repeated string ColumnHints = 4;
-    uint32 QueryResultIndex = 5;
+    optional uint32 QueryResultIndex = 5;
+}
+
+message TKqpPhyMetadataOperation {
+    message TColumnValue {
+        string Column = 1;
+        Ydb.Value Value = 2;
+    }
+    repeated TColumnValue ColumnValues = 1;
+
+    optional bool SuccessOnNotExist = 2;
+    optional bool SuccessOnAlreadyExists = 3;
+}
+
+message TKqpSchemeOperation {
+    enum EFlags {
+        FLAG_UNSPECIFIED = 0;
+        FLAG_PG_MODE = 1; // set if pg compatible mode
+        FLAG_IF_NOT_EXISTS = 2; // set if IF_NOT_EXISTS modificator present
+    };
+
+    // If the object is modified, this field is not empty
+    // and in that case modification will be through
+    // NMetadata::IClassBehaviour way
+    string ObjectType = 100;
+
+    oneof Operation {
+        NKikimrSchemeOp.TModifyScheme CreateTable = 1;
+        NKikimrSchemeOp.TModifyScheme DropTable = 2;
+        NKikimrSchemeOp.TModifyScheme AlterTable = 3;
+        NKikimrIndexBuilder.TIndexBuildSettings BuildOperation = 4;
+        NKikimrSchemeOp.TModifyScheme CreateUser = 5;
+        NKikimrSchemeOp.TModifyScheme AlterUser = 6;
+        NKikimrSchemeOp.TModifyScheme DropUser = 7;
+        NKikimrSchemeOp.TModifyScheme CreateGroup = 8;
+        NKikimrSchemeOp.TModifyScheme AddGroupMembership = 9;
+        NKikimrSchemeOp.TModifyScheme RemoveGroupMembership = 10;
+        NKikimrSchemeOp.TModifyScheme DropGroup = 11;
+        NKikimrSchemeOp.TModifyScheme RenameGroup = 12;
+        NKikimrSchemeOp.TModifyScheme CreateExternalDataSource = 13;
+        NKikimrSchemeOp.TModifyScheme AlterExternalDataSource = 14;
+        NKikimrSchemeOp.TModifyScheme DropExternalDataSource = 15;
+        NKikimrSchemeOp.TModifyScheme CreateExternalTable = 16;
+        NKikimrSchemeOp.TModifyScheme AlterExternalTable = 17;
+        NKikimrSchemeOp.TModifyScheme DropExternalTable = 18;
+        NKikimrSchemeOp.TModifyScheme ModifyPermissions = 19;
+        NKikimrSchemeOp.TModifyScheme CreateView = 20;
+        NKikimrSchemeOp.TModifyScheme AlterView = 21;
+        NKikimrSchemeOp.TModifyScheme DropView = 22;
+        TKqpPhyMetadataOperation CreateObject = 23;
+        TKqpPhyMetadataOperation UpsertObject = 24;
+        TKqpPhyMetadataOperation AlterObject = 25;
+        TKqpPhyMetadataOperation DropObject = 26;
+        NKikimrSchemeOp.TModifyScheme CreateColumnTable = 27;
+        NKikimrSchemeOp.TModifyScheme AlterColumnTable = 28;
+        NKikimrSchemeOp.TModifyScheme CreateTableStore = 29;
+        NKikimrSchemeOp.TModifyScheme DropTableStore = 30;
+        NKikimrSchemeOp.TModifyScheme AlterTableStore = 31;
+        NKikimrSchemeOp.TModifyScheme CreateSequence = 32;
+        NKikimrSchemeOp.TModifyScheme DropSequence = 33;
+        NKikimrSchemeOp.TModifyScheme CreateReplication = 34;
+        NKikimrSchemeOp.TModifyScheme AlterReplication = 35;
+        NKikimrSchemeOp.TModifyScheme DropReplication = 36;
+        NKikimrSchemeOp.TModifyScheme AlterSequence = 37;
+    }
 }
 
 message TKqpPhyTx {
@@ -330,6 +455,7 @@ message TKqpPhyTx {
         TYPE_DATA = 2;
         TYPE_SCAN = 3;
         TYPE_GENERIC = 4;
+        TYPE_SCHEME = 5;
     };
 
     EType Type = 1;
@@ -339,6 +465,8 @@ message TKqpPhyTx {
     string Plan = 5;
     bool HasEffects = 6; // at least one stage has flag TKqpPhyStage::IsEffectStage set
     repeated TKqpPhyTable Tables = 7;
+    TKqpSchemeOperation SchemeOperation = 8;
+    repeated string SecretNames = 9;
 }
 
 message TKqpTableInfo {
@@ -384,4 +512,8 @@ message TKqpPhyQuery {
     repeated TKqpTableOp TableOps = 7;
     repeated TKqpTableInfo TableInfos = 8;
     bool HasUncommittedChangesRead = 9;
+
+    string QueryDiagnostics = 10;
+
+    repeated TKqpTableInfo ViewInfos = 11;
 }

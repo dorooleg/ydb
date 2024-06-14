@@ -1,0 +1,32 @@
+RECURSE(
+    api
+    audit
+    autoconfig
+    blobstorage
+    canonical
+    clickbench
+    cms
+    dynumber
+    encryption
+    hive
+    kqp
+    kv_workload
+    large_serializable
+    limits
+    open_source
+    postgresql
+    query_cache
+    rename
+    restarts
+    scheme_shard
+    scheme_tests
+    script_execution
+    sdk/cpp/sdk_credprovider
+    serializable
+    serverless
+    sqs
+    suite_tests
+    tenants
+    ttl
+    ydb_cli
+)

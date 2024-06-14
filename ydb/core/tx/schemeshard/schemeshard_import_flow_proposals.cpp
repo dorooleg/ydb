@@ -14,7 +14,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> CreateTablePropose(
     ui32 itemIdx,
     TString& error
 ) {
-    Y_VERIFY(itemIdx < importInfo->Items.size());
+    Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
     const auto& item = importInfo->Items.at(itemIdx);
 
     auto propose = MakeHolder<TEvSchemeShard::TEvModifySchemeTransaction>(ui64(txId), ss->TabletID());
@@ -25,7 +25,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> CreateTablePropose(
     }
 
     auto& modifyScheme = *record.AddTransaction();
-    modifyScheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateTable);
+    modifyScheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateIndexedTable);
     modifyScheme.SetInternal(true);
 
     const TPath domainPath = TPath::Init(importInfo->DomainPathId, ss);
@@ -37,13 +37,54 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> CreateTablePropose(
 
     modifyScheme.SetWorkingDir(wdAndPath.first);
 
-    auto& tableDesc = *modifyScheme.MutableCreateTable();
+    auto* indexedTable = modifyScheme.MutableCreateIndexedTable();
+    auto& tableDesc = *(indexedTable->MutableTableDescription());
     tableDesc.SetName(wdAndPath.second);
 
-    Y_VERIFY(ss->TableProfilesLoaded);
+    Y_ABORT_UNLESS(ss->TableProfilesLoaded);
     Ydb::StatusIds::StatusCode status;
-    if (!FillTableDescription(modifyScheme, item.Scheme, ss->TableProfiles, status, error)) {
+    if (!FillTableDescription(modifyScheme, item.Scheme, ss->TableProfiles, status, error, true)) {
         return nullptr;
+    }
+
+    for(const auto& column: item.Scheme.columns()) {
+        switch (column.default_value_case()) {
+            case Ydb::Table::ColumnMeta::kFromSequence: {
+                const auto& fromSequence = column.from_sequence();
+
+                auto seqDesc = indexedTable->MutableSequenceDescription()->Add();
+                seqDesc->SetName(fromSequence.name());
+                if (fromSequence.has_min_value()) {
+                    seqDesc->SetMinValue(fromSequence.min_value());
+                }
+                if (fromSequence.has_max_value()) {
+                    seqDesc->SetMaxValue(fromSequence.max_value());
+                }
+                if (fromSequence.has_start_value()) {
+                    seqDesc->SetStartValue(fromSequence.start_value());
+                }
+                if (fromSequence.has_cache()) {
+                    seqDesc->SetCache(fromSequence.cache());
+                }
+                if (fromSequence.has_increment()) {
+                    seqDesc->SetIncrement(fromSequence.increment());
+                }
+                if (fromSequence.has_cycle()) {
+                    seqDesc->SetCycle(fromSequence.cycle());
+                }
+                if (fromSequence.has_set_val()) {
+                    auto* setVal = seqDesc->MutableSetVal();
+                    setVal->SetNextUsed(fromSequence.set_val().next_used());
+                    setVal->SetNextValue(fromSequence.set_val().next_value());
+                }
+
+                break;
+            }
+            case Ydb::Table::ColumnMeta::kFromLiteral: {
+                break;
+            }
+            default: break;
+        }
     }
 
     return propose;
@@ -63,8 +104,8 @@ static NKikimrSchemeOp::TTableDescription GetTableDescription(TSchemeShard* ss, 
     auto desc = DescribePath(ss, TlsActivationContext->AsActorContext(), pathId);
     auto record = desc->GetRecord();
 
-    Y_VERIFY(record.HasPathDescription());
-    Y_VERIFY(record.GetPathDescription().HasTable());
+    Y_ABORT_UNLESS(record.HasPathDescription());
+    Y_ABORT_UNLESS(record.GetPathDescription().HasTable());
 
     return record.GetPathDescription().GetTable();
 }
@@ -78,14 +119,14 @@ static NKikimrSchemeOp::TTableDescription RebuildTableDescription(
 
     THashMap<TString, ui32> columnNameToIdx;
     for (ui32 i = 0; i < src.ColumnsSize(); ++i) {
-        Y_VERIFY(columnNameToIdx.emplace(src.GetColumns(i).GetName(), i).second);
+        Y_ABORT_UNLESS(columnNameToIdx.emplace(src.GetColumns(i).GetName(), i).second);
     }
 
     for (const auto& column : scheme.columns()) {
         auto it = columnNameToIdx.find(column.name());
-        Y_VERIFY(it != columnNameToIdx.end());
+        Y_ABORT_UNLESS(it != columnNameToIdx.end());
 
-        Y_VERIFY(it->second < src.ColumnsSize());
+        Y_ABORT_UNLESS(it->second < src.ColumnsSize());
         tableDesc.MutableColumns()->Add()->CopyFrom(src.GetColumns(it->second));
     }
 
@@ -98,7 +139,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> RestorePropose(
     TImportInfo::TPtr importInfo,
     ui32 itemIdx
 ) {
-    Y_VERIFY(itemIdx < importInfo->Items.size());
+    Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
     const auto& item = importInfo->Items.at(itemIdx);
 
     auto propose = MakeHolder<TEvSchemeShard::TEvModifySchemeTransaction>(ui64(txId), ss->TabletID());
@@ -108,7 +149,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> RestorePropose(
     modifyScheme.SetInternal(true);
 
     const TPath dstPath = TPath::Init(item.DstPathId, ss);
-    Y_VERIFY(dstPath.IsResolved());
+    Y_ABORT_UNLESS(dstPath.IsResolved());
 
     modifyScheme.SetWorkingDir(dstPath.Parent().PathString());
 
@@ -126,6 +167,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> RestorePropose(
             restoreSettings.SetAccessKey(importInfo->Settings.access_key());
             restoreSettings.SetSecretKey(importInfo->Settings.secret_key());
             restoreSettings.SetObjectKeyPattern(importInfo->Settings.items(itemIdx).source_prefix());
+            restoreSettings.SetUseVirtualAddressing(!importInfo->Settings.disable_virtual_addressing());
 
             switch (importInfo->Settings.scheme()) {
             case Ydb::Import::ImportFromS3Settings::HTTP:
@@ -135,7 +177,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> RestorePropose(
                 restoreSettings.SetScheme(NKikimrSchemeOp::TS3Settings::HTTPS);
                 break;
             default:
-                Y_FAIL("Unknown scheme");
+                Y_ABORT("Unknown scheme");
             }
 
             if (const auto region = importInfo->Settings.region()) {
@@ -168,7 +210,7 @@ THolder<TEvIndexBuilder::TEvCreateRequest> BuildIndexPropose(
     ui32 itemIdx,
     const TString& uid
 ) {
-    Y_VERIFY(itemIdx < importInfo->Items.size());
+    Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
     const auto& item = importInfo->Items.at(itemIdx);
 
     NKikimrIndexBuilder::TIndexBuildSettings settings;
@@ -176,7 +218,7 @@ THolder<TEvIndexBuilder::TEvCreateRequest> BuildIndexPropose(
     const TPath dstPath = TPath::Init(item.DstPathId, ss);
     settings.set_source_path(dstPath.PathString());
 
-    Y_VERIFY(item.NextIndexIdx < item.Scheme.indexes_size());
+    Y_ABORT_UNLESS(item.NextIndexIdx < item.Scheme.indexes_size());
     settings.mutable_index()->CopyFrom(item.Scheme.indexes(item.NextIndexIdx));
 
     if (settings.mutable_index()->type_case() == Ydb::Table::TableIndex::TypeCase::TYPE_NOT_SET) {

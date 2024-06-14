@@ -46,8 +46,8 @@ namespace {
         return a.GetStep() < b.Step || (a.GetStep() == b.Step && a.GetTxId() < b.TxId);
     }
 
-    bool IsLessEqual(const TOperation& a, const TRowVersion& b) {
-        return a.GetStep() < b.Step || (a.GetStep() == b.Step && a.GetTxId() <= b.TxId);
+    bool IsEqual(const TOperation& a, const TRowVersion& b) {
+        return a.GetStep() == b.Step && a.GetTxId() == b.TxId;
     }
 }
 
@@ -74,7 +74,7 @@ void TDependencyTracker::ClearTmpWrite() noexcept {
 void TDependencyTracker::AddPlannedReads(const TOperation::TPtr& op, const TKeys& reads) noexcept {
     for (const auto& read : reads) {
         auto it = Tables.find(read.TableId);
-        Y_VERIFY(it != Tables.end());
+        Y_ABORT_UNLESS(it != Tables.end());
         auto ownedRange = MakeOwnedRange(read.Key);
         it->second.PlannedReads.AddRange(std::move(ownedRange), op);
     }
@@ -83,7 +83,7 @@ void TDependencyTracker::AddPlannedReads(const TOperation::TPtr& op, const TKeys
 void TDependencyTracker::AddPlannedWrites(const TOperation::TPtr& op, const TKeys& writes) noexcept {
     for (const auto& write : writes) {
         auto it = Tables.find(write.TableId);
-        Y_VERIFY(it != Tables.end());
+        Y_ABORT_UNLESS(it != Tables.end());
         auto ownedRange = MakeOwnedRange(write.Key);
         it->second.PlannedWrites.AddRange(std::move(ownedRange), op);
     }
@@ -92,7 +92,7 @@ void TDependencyTracker::AddPlannedWrites(const TOperation::TPtr& op, const TKey
 void TDependencyTracker::AddImmediateReads(const TOperation::TPtr& op, const TKeys& reads) noexcept {
     for (const auto& read : reads) {
         auto it = Tables.find(read.TableId);
-        Y_VERIFY(it != Tables.end());
+        Y_ABORT_UNLESS(it != Tables.end());
         auto ownedRange = MakeOwnedRange(read.Key);
         it->second.ImmediateReads.AddRange(std::move(ownedRange), op);
     }
@@ -101,7 +101,7 @@ void TDependencyTracker::AddImmediateReads(const TOperation::TPtr& op, const TKe
 void TDependencyTracker::AddImmediateWrites(const TOperation::TPtr& op, const TKeys& writes) noexcept {
     for (const auto& write : writes) {
         auto it = Tables.find(write.TableId);
-        Y_VERIFY(it != Tables.end());
+        Y_ABORT_UNLESS(it != Tables.end());
         auto ownedRange = MakeOwnedRange(write.Key);
         it->second.ImmediateWrites.AddRange(std::move(ownedRange), op);
     }
@@ -140,6 +140,9 @@ void TDependencyTracker::FlushImmediateWrites() noexcept {
 }
 
 const TDependencyTracker::TDependencyTrackingLogic& TDependencyTracker::GetTrackingLogic() const noexcept {
+    if (Self->IsFollower())
+        return FollowerLogic;
+
     if (Self->IsMvccEnabled())
         return MvccLogic;
 
@@ -206,7 +209,7 @@ void TDependencyTracker::TDefaultDependencyTrackingLogic::AddOperation(const TOp
                     }
                 }
             } else if (TSysTables::IsLocksTable(k.TableId)) {
-                Y_VERIFY(k.Range.Point, "Unexpected non-point read from the locks table");
+                Y_ABORT_UNLESS(k.Range.Point, "Unexpected non-point read from the locks table");
                 const ui64 lockTxId = Parent.Self->SysLocksTable().ExtractLockTxId(k.Range.From);
 
                 // Add hard dependency on all operations that worked with the same lock
@@ -594,6 +597,7 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
     // look into extracted keys for these transactions.
     bool haveKeys = !op->IsKqpScanTransaction();
 
+    bool isLocking = op->LockTxId();
     bool isGlobalReader = op->IsGlobalReader();
     bool isGlobalWriter = op->IsGlobalWriter();
 
@@ -639,7 +643,8 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
                 if (!tooManyKeys && ++keysCount > MAX_REORDER_TX_KEYS) {
                     tooManyKeys = true;
                 }
-                if (vk.IsWrite) {
+                // Note: locking write behaves like a read (waits for all earlier writes)
+                if (vk.IsWrite && !isLocking) {
                     haveWrites = true;
                     if (!tooManyKeys && !isGlobalWriter) {
                         Parent.TmpWrite.emplace_back(tableId, k.Range);
@@ -651,7 +656,7 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
                     }
                 }
             } else if (TSysTables::IsLocksTable(k.TableId)) {
-                Y_VERIFY(k.Range.Point, "Unexpected non-point read from the locks table");
+                Y_ABORT_UNLESS(k.Range.Point, "Unexpected non-point read from the locks table");
                 const ui64 lockTxId = Parent.Self->SysLocksTable().ExtractLockTxId(k.Range.From);
 
                 // Add hard dependency on all operations that worked with the same lock
@@ -670,11 +675,13 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
 
                     if (lock) {
                         lock->SetLastOpId(op->GetTxId());
-                        if (locksCache.Locks.contains(lockTxId) && lock->IsPersistent()) {
+                        if (locksCache.Locks.contains(lockTxId) && lock->IsPersistent() && !lock->IsFrozen()) {
                             // This lock was cached before, and since we know
                             // it's persistent, we know it was also frozen
                             // during that lock caching. Restore the frozen
                             // flag for this lock.
+                            // Note: this code path is only for older shards
+                            // which didn't persist the frozen flag.
                             lock->SetFrozen();
                         }
                     }
@@ -774,28 +781,31 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
         }
     }
 
+    // Locking writes are uncommitted, not externally visible and behave like reads
+    if (isLocking) {
+        Y_ABORT_UNLESS(!haveWrites);
+        if (isGlobalWriter) {
+            isGlobalWriter = false;
+            isGlobalReader = true;
+        }
+    }
+
     TRowVersion snapshot = TRowVersion::Max();
-    bool snapshotRepeatable = false;
     if (op->IsMvccSnapshotRead()) {
         snapshot = op->GetMvccSnapshot();
-        snapshotRepeatable = op->IsMvccSnapshotRepeatable();
-    } else if (op->IsImmediate() && (op->IsReadTable() || op->IsDataTx() && !haveWrites && !isGlobalWriter && !commitWriteLock)) {
+    } else if (op->IsImmediate() && (op->IsReadTable() || (op->IsDataTx() || op->IsWriteTx()) && !haveWrites && !isGlobalWriter && !commitWriteLock)) {
         snapshot = readVersion;
         op->SetMvccSnapshot(snapshot, /* repeatable */ false);
     }
 
-    if (snapshotRepeatable) {
-        // Repeatable snapshot writes are uncommitted, not externally visible, and don't conflict with anything
-        isGlobalWriter = false;
-        haveWrites = false;
-    }
-
     auto onImmediateConflict = [&](TOperation& conflict) {
-        Y_VERIFY(!conflict.IsImmediate());
+        Y_ABORT_UNLESS(!conflict.IsImmediate());
         if (snapshot.IsMax()) {
             conflict.AddImmediateConflict(op);
-        } else if (snapshotRepeatable ? IsLessEqual(conflict, snapshot) : IsLess(conflict, snapshot)) {
+        } else if (IsLess(conflict, snapshot)) {
             op->AddDependency(&conflict);
+        } else if (IsEqual(conflict, snapshot)) {
+            op->AddRepeatableReadConflict(&conflict);
         }
     };
 
@@ -1072,6 +1082,14 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::RemoveOperation(const TOp
             }
         }
     }
+}
+
+void TDependencyTracker::TFollowerDependencyTrackingLogic::AddOperation(const TOperation::TPtr&) const noexcept {
+    // all follower operations are readonly and don't conflict
+}
+
+void TDependencyTracker::TFollowerDependencyTrackingLogic::RemoveOperation(const TOperation::TPtr&) const noexcept {
+    // all follower operations are readonly and don't conflict
 }
 
 } // namespace NDataShard

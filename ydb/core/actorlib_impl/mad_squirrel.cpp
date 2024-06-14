@@ -1,6 +1,6 @@
 #include "mad_squirrel.h"
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NActors {
 
@@ -11,7 +11,7 @@ class TMadSquirrel : public TActor<TMadSquirrel> {
 
 public:
     static constexpr auto ActorActivityType() {
-        return ACTORLIB_COMMON;
+        return IActor::EActivityType::ACTORLIB_COMMON;
     }
 
     TMadSquirrel()

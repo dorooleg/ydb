@@ -3,6 +3,7 @@
 #include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 #include <ydb/library/yql/core/yql_graph_transformer.h>
 #include <ydb/library/yql/core/yql_opt_window.h>
+#include <ydb/library/yql/core/yql_type_annotation.h>
 
 #include <util/generic/hash_set.h>
 #include <util/generic/strbuf.h>
@@ -19,15 +20,21 @@ bool IsPredicateFlatMap(const TExprNode& node);
 bool IsFilterFlatMap(const NNodes::TCoLambda& lambda);
 bool IsListReorder(const TExprNode& node);
 bool IsRenameFlatMap(const NNodes::TCoFlatMapBase& node, TExprNode::TPtr& structNode);
+bool IsRenameFlatMapWithMapping(const NNodes::TCoFlatMapBase& node, TExprNode::TPtr& structNode, THashMap<TString, TString>& renameMap);
+bool IsRenameOrApplyFlatMapWithMapping(const NNodes::TCoFlatMapBase& node, TExprNode::TPtr& structNode, THashMap<TString, TString>& renameMap, TSet<TString>& apply);
 bool IsPassthroughFlatMap(const NNodes::TCoFlatMapBase& flatmap, TMaybe<THashSet<TStringBuf>>* passthroughFields, bool analyzeJustMember = false);
 bool IsPassthroughLambda(const NNodes::TCoLambda& lambda, TMaybe<THashSet<TStringBuf>>* passthroughFields, bool analyzeJustMember = false);
 bool IsTablePropsDependent(const TExprNode& node);
 
+bool HasOnlyOneJoinType(const TExprNode& joinTree, TStringBuf joinType);
+
 TExprNode::TPtr KeepColumnOrder(const TExprNode::TPtr& node, const TExprNode& src, TExprContext& ctx, const TTypeAnnotationContext& typeCtx);
+TExprNode::TPtr KeepColumnOrder(const TColumnOrder& order, const TExprNode::TPtr& node, TExprContext& ctx);
 
 // returns true if usedFields contains subset of fields
 template<class TFieldsSet>
-bool HaveFieldsSubset(const TExprNode::TPtr& start, const TExprNode& arg, TFieldsSet& usedFields, const TParentsMap& parentsMap, bool allowDependsOn = true);
+bool HaveFieldsSubset(const TExprNode::TPtr& start, const TExprNode& arg, TFieldsSet& usedFields, const TParentsMap& parentsMap,
+                    bool allowDependsOn = true);
 
 template<class TFieldsSet>
 TExprNode::TPtr FilterByFields(TPositionHandle position, const TExprNode::TPtr& input, const TFieldsSet& subsetFields,
@@ -36,6 +43,7 @@ TExprNode::TPtr FilterByFields(TPositionHandle position, const TExprNode::TPtr& 
 TExprNode::TPtr AddMembersUsedInside(const TExprNode::TPtr& start, const TExprNode& arg, TExprNode::TPtr&& members, const TParentsMap& parentsMap, TExprContext& ctx);
 
 bool IsDepended(const TExprNode& from, const TExprNode& to);
+bool MarkDepended(const TExprNode& from, const TExprNode& to, TNodeMap<bool>& deps);
 bool IsEmpty(const TExprNode& node, const TTypeAnnotationContext& typeCtx);
 bool IsEmptyContainer(const TExprNode& node);
 
@@ -89,9 +97,11 @@ TExprNode::TPtr MakeBool(TPositionHandle position, bool value, TExprContext& ctx
 TExprNode::TPtr MakeOptionalBool(TPositionHandle position, bool value, TExprContext& ctx);
 template <bool Bool>
 TExprNode::TPtr MakeBool(TPositionHandle position, TExprContext& ctx);
+TExprNode::TPtr MakePgBool(TPositionHandle position, bool value, TExprContext& ctx);
 TExprNode::TPtr MakeIdentityLambda(TPositionHandle position, TExprContext& ctx);
 
-constexpr std::initializer_list<std::string_view> SkippableCallables = {"Unordered", "AssumeSorted", "AssumeUnique", "AssumeDistinct", "AssumeChopped", "AssumeColumnOrder", "AssumeAllMembersNullableAtOnce"};
+constexpr std::initializer_list<std::string_view> SkippableCallables = {"Unordered", "AssumeSorted", "AssumeUnique", "AssumeDistinct",
+    "AssumeChopped", "AssumeColumnOrder", "AssumeAllMembersNullableAtOnce"};
 
 const TExprNode& SkipCallables(const TExprNode& node, const std::initializer_list<std::string_view>& skipCallables);
 
@@ -128,13 +138,28 @@ bool IsIdentityLambda(const TExprNode& lambda);
 TExprNode::TPtr MakeExpandMap(TPositionHandle pos, const TVector<TString>& columns, const TExprNode::TPtr& input, TExprContext& ctx);
 TExprNode::TPtr MakeNarrowMap(TPositionHandle pos, const TVector<TString>& columns, const TExprNode::TPtr& input, TExprContext& ctx);
 
-TExprNode::TPtr FindNonYieldTransparentNode(const TExprNode::TPtr& root, const TTypeAnnotationContext& typeCtx);
+TExprNode::TPtr FindNonYieldTransparentNode(const TExprNode::TPtr& root, const TTypeAnnotationContext& typeCtx, TNodeSet flowSources = TNodeSet());
 bool IsYieldTransparent(const TExprNode::TPtr& root, const TTypeAnnotationContext& typeCtx);
 
 bool IsStrict(const TExprNode::TPtr& node);
+TMaybe<bool> IsStrictNoRecurse(const TExprNode& node);
+
 bool HasDependsOn(const TExprNode::TPtr& node, const TExprNode::TPtr& arg);
 
-TExprNode::TPtr KeepSortedConstraint(TExprNode::TPtr node, const TSortedConstraintNode* sorted, TExprContext& ctx);
+TExprNode::TPtr KeepSortedConstraint(TExprNode::TPtr node, const TSortedConstraintNode* sorted, const TTypeAnnotationNode* rowType, TExprContext& ctx);
+TExprNode::TPtr MakeSortByConstraint(TExprNode::TPtr node, const TSortedConstraintNode* sorted, const TTypeAnnotationNode* rowType, TExprContext& ctx);
 TExprNode::TPtr KeepConstraints(TExprNode::TPtr node, const TExprNode& src, TExprContext& ctx);
+
+void OptimizeSubsetFieldsForNodeWithMultiUsage(const TExprNode::TPtr& node, const TParentsMap& parentsMap,
+    TNodeOnNodeOwnedMap& toOptimize, TExprContext& ctx,
+    std::function<TExprNode::TPtr(const TExprNode::TPtr&, const TExprNode::TPtr&, const TParentsMap&, TExprContext&)> handler);
+
+template<bool Ordered = false>
+std::optional<TPartOfConstraintBase::TPathType> GetPathToKey(const TExprNode& body, const TExprNode& arg);
+template<bool Ordered = false>
+std::optional<std::pair<TPartOfConstraintBase::TPathType, ui32>> GetPathToKey(const TExprNode& body, const TExprNode::TChildrenType& args);
+
+template<bool Ordered = false>
+TPartOfConstraintBase::TSetType GetPathsToKeys(const TExprNode& body, const TExprNode& arg);
 
 }

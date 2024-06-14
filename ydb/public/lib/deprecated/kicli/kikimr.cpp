@@ -1,6 +1,7 @@
 #include "kicli.h"
 
 #include <ydb/public/lib/deprecated/client/msgbus_client.h>
+#include <ydb/core/protos/console_config.pb.h>
 #include <util/string/builder.h>
 
 namespace NKikimr {
@@ -241,8 +242,6 @@ public:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusPersQueue>(&NGRpcProxy::TGRpcClient::PersQueueRequest, promise, request);
         case NMsgBusProxy::MTYPE_CLIENT_SCHEME_INITROOT:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusSchemeInitRoot>(&NGRpcProxy::TGRpcClient::SchemeInitRoot, promise, request);
-        case NMsgBusProxy::MTYPE_CLIENT_BSADM:
-            return ExecuteGRpcRequest<NMsgBusProxy::TBusBSAdm>(&NGRpcProxy::TGRpcClient::BSAdm, promise, request);
         case NMsgBusProxy::MTYPE_CLIENT_BLOB_STORAGE_CONFIG_REQUEST:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusBlobStorageConfigRequest>(&NGRpcProxy::TGRpcClient::BlobStorageConfig, promise, request);
         case NMsgBusProxy::MTYPE_CLIENT_HIVE_CREATE_TABLET:
@@ -259,10 +258,6 @@ public:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusTabletKillRequest>(&NGRpcProxy::TGRpcClient::TabletKillRequest, promise, request);
         case NMsgBusProxy::MTYPE_CLIENT_TABLET_STATE_REQUEST:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusTabletStateRequest>(&NGRpcProxy::TGRpcClient::TabletStateRequest, promise, request);
-        case NMsgBusProxy::MTYPE_CLIENT_LOAD_REQUEST:
-            return ExecuteGRpcRequest<NMsgBusProxy::TBusBsTestLoadRequest>(&NGRpcProxy::TGRpcClient::BlobStorageLoadRequest, promise, request);
-        case NMsgBusProxy::MTYPE_CLIENT_GET_REQUEST:
-            return ExecuteGRpcRequest<NMsgBusProxy::TBusBsGetRequest>(&NGRpcProxy::TGRpcClient::BlobStorageGetRequest, promise, request);
         case NMsgBusProxy::MTYPE_CLIENT_DB_SCHEMA:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusDbSchema, NMsgBusProxy::TBusDbResponse>(&NGRpcProxy::TGRpcClient::DbSchema, promise, request);
         case NMsgBusProxy::MTYPE_CLIENT_DB_OPERATION:
@@ -292,7 +287,7 @@ public:
         case NMsgBusProxy::MTYPE_CLIENT_LOGIN_REQUEST:
             return ExecuteGRpcRequest<NMsgBusProxy::TBusLoginRequest, NMsgBusProxy::TBusResponse>(&NGRpcProxy::TGRpcClient::LoginRequest, promise, request);
         default:
-            Y_FAIL("%s", (TStringBuilder() << "unexpected message type# " << type).data());
+            Y_ABORT("%s", (TStringBuilder() << "unexpected message type# " << type).data());
         }
     }
 

@@ -84,8 +84,13 @@ private:
 
             // Calc metrics
             const TDuration processingDuration = TActivationContext::Now() - lockTimestamp;
-            COLLECT_HISTOGRAM_COUNTER(QueueCounters_, ClientMessageProcessing_Duration, processingDuration.MilliSeconds());
-            COLLECT_HISTOGRAM_COUNTER(QueueCounters_, client_processing_duration_milliseconds, processingDuration.MilliSeconds());
+            this->Send(
+                QueueLeader_,
+                new TSqsEvents::TEvLocalCounterChanged(
+                    TSqsEvents::TEvLocalCounterChanged::ECounterType::ClientMessageProcessingDuration,
+                    processingDuration.MilliSeconds()
+                )
+            );
         } catch (...) {
             RLOG_SQS_WARN("Failed to process receipt handle " << entry.GetReceiptHandle() << ": " << CurrentExceptionMessage());
             MakeError(resp, NErrors::RECEIPT_HANDLE_IS_INVALID);
@@ -95,7 +100,6 @@ private:
     void ProcessAnswer(TDeleteMessageResponse* resp, const TSqsEvents::TEvDeleteMessageBatchResponse::TMessageResult& answer) {
         switch (answer.Status) {
             case TSqsEvents::TEvDeleteMessageBatchResponse::EDeleteMessageStatus::OK: {
-                INC_COUNTER_COUPLE(QueueCounters_, DeleteMessage_Count, deleted_count_per_second);
                 break;
             }
             case TSqsEvents::TEvDeleteMessageBatchResponse::EDeleteMessageStatus::NotFound: {
@@ -129,7 +133,7 @@ private:
         }
 
         if (RequestsToLeader_) {
-            Y_VERIFY(RequestsToLeader_ <= Shards_);
+            Y_ABORT_UNLESS(RequestsToLeader_ <= Shards_);
             for (auto& shardInfo : ShardInfo_) {
                 if (shardInfo.Request_) {
                     Send(QueueLeader_, shardInfo.Request_.Release());
@@ -153,17 +157,17 @@ private:
 
     void HandleDeleteMessageBatchResponse(TSqsEvents::TEvDeleteMessageBatchResponse::TPtr& ev) {
         if (IsBatch_) {
-            Y_VERIFY(ev->Get()->Shard < Shards_);
+            Y_ABORT_UNLESS(ev->Get()->Shard < Shards_);
             const auto& shardInfo = ShardInfo_[ev->Get()->Shard];
-            Y_VERIFY(ev->Get()->Statuses.size() == shardInfo.RequestToReplyIndexMapping_.size());
+            Y_ABORT_UNLESS(ev->Get()->Statuses.size() == shardInfo.RequestToReplyIndexMapping_.size());
             for (size_t i = 0, size = ev->Get()->Statuses.size(); i < size; ++i) {
                 const size_t entryIndex = shardInfo.RequestToReplyIndexMapping_[i];
-                Y_VERIFY(entryIndex < Response_.GetDeleteMessageBatch().EntriesSize());
+                Y_ABORT_UNLESS(entryIndex < Response_.GetDeleteMessageBatch().EntriesSize());
                 ProcessAnswer(Response_.MutableDeleteMessageBatch()->MutableEntries(entryIndex), ev->Get()->Statuses[i]);
             }
         } else {
-            Y_VERIFY(RequestsToLeader_ == 1);
-            Y_VERIFY(ev->Get()->Statuses.size() == 1);
+            Y_ABORT_UNLESS(RequestsToLeader_ == 1);
+            Y_ABORT_UNLESS(ev->Get()->Statuses.size() == 1);
             ProcessAnswer(Response_.MutableDeleteMessage(), ev->Get()->Statuses[0]);
         }
 

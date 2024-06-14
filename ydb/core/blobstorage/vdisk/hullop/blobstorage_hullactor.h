@@ -2,7 +2,6 @@
 
 #include "defs.h"
 #include <ydb/core/blobstorage/vdisk/hulldb/hull_ds_all.h>
-#include <ydb/core/blobstorage/vdisk/handoff/handoff_delegate.h>
 
 namespace NKikimr {
 
@@ -20,7 +19,6 @@ namespace NKikimr {
     public:
         TIntrusivePtr<TLsnMngr> LsnMngr;
         TPDiskCtxPtr PDiskCtx;
-        TIntrusivePtr<THandoffDelegate> HandoffDelegate;
         const TActorId SkeletonId;
         const bool RunHandoff;
         const TIntrusivePtr<TLevelIndex<TKey, TMemRec>> LevelIndex;
@@ -32,18 +30,16 @@ namespace NKikimr {
     public:
         TLevelIndexRunTimeCtx(TIntrusivePtr<TLsnMngr> lsnMngr,
                 TPDiskCtxPtr pdiskCtx,
-                TIntrusivePtr<THandoffDelegate> handoffDelegate,
                 const TActorId skeletonId,
                 bool runHandoff,
                 TIntrusivePtr<TLevelIndex<TKey, TMemRec>> levelIndex)
             : LsnMngr(std::move(lsnMngr))
             , PDiskCtx(std::move(pdiskCtx))
-            , HandoffDelegate(std::move(handoffDelegate))
             , SkeletonId(skeletonId)
             , RunHandoff(runHandoff)
             , LevelIndex(std::move(levelIndex))
         {
-            Y_VERIFY(LsnMngr && PDiskCtx && LevelIndex);
+            Y_ABORT_UNLESS(LsnMngr && PDiskCtx && LevelIndex);
         }
 
         void CutRecoveryLog(const TActorContext &ctx, std::unique_ptr<NPDisk::TEvCutLog> msg) {
@@ -64,7 +60,7 @@ namespace NKikimr {
         }
 
         TActorId GetLogNotifierActorId() const {
-            Y_VERIFY(LogNotifierActorId);
+            Y_ABORT_UNLESS(LogNotifierActorId);
             return LogNotifierActorId;
         }
     };
@@ -84,19 +80,21 @@ namespace NKikimr {
     void CompactFreshSegment(
             TIntrusivePtr<THullDs> &hullDs,
             std::shared_ptr<TLevelIndexRunTimeCtx<TKey, TMemRec>> &rtCtx,
-            const TActorContext &ctx);
+            const TActorContext &ctx,
+            bool allowGarbageCollection);
 
     template <class TKey, class TMemRec>
     bool CompactFreshSegmentIfRequired(
             TIntrusivePtr<THullDs> &hullDs,
             std::shared_ptr<TLevelIndexRunTimeCtx<TKey, TMemRec>> &rtCtx,
             const TActorContext &ctx,
-            bool force = false)
+            bool force,
+            bool allowGarbageCollection)
     {
         ui64 yardFreeUpToLsn = rtCtx->GetFreeUpToLsn();
         bool compact = hullDs->HullCtx->FreshCompaction && rtCtx->LevelIndex->NeedsFreshCompaction(yardFreeUpToLsn, force);
         if (compact) {
-            CompactFreshSegment<TKey, TMemRec>(hullDs, rtCtx, ctx);
+            CompactFreshSegment<TKey, TMemRec>(hullDs, rtCtx, ctx, allowGarbageCollection);
         }
         return compact;
     }

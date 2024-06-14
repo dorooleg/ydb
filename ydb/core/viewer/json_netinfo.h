@@ -1,11 +1,11 @@
 #pragma once
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/mon.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/mon.h>
+#include <ydb/library/actors/core/interconnect.h>
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/subdomain.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/base/hive.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -60,16 +60,15 @@ public:
         SendRequest(GetNameserviceActorId(), new TEvInterconnect::TEvListNodes());
 
         TIntrusivePtr<TDomainsInfo> domains = AppData()->DomainsInfo;
-        TIntrusivePtr<TDomainsInfo::TDomain> domain = domains->Domains.begin()->second;
-        auto group = domains->GetDefaultStateStorageGroup(domain->DomainUid);
-        ui64 consoleId = MakeConsoleID(group);
+        auto *domain = domains->GetDomain();
+        ui64 consoleId = MakeConsoleID();
 
         if (consoleId != 0) {
             RequestConsoleListTenants();
         }
 
-        ui64 hiveId = domains->GetHive(domain->DefaultHiveUid);
-        if (hiveId != 0) {
+        ui64 hiveId = domains->GetHive();
+        if (hiveId != TDomainsInfo::BadTabletId) {
             RequestHiveDomainStats(hiveId);
         }
 

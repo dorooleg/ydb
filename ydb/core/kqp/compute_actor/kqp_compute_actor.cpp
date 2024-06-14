@@ -4,11 +4,17 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/kqp/runtime/kqp_compute.h>
-#include <ydb/core/kqp/runtime/kqp_read_table.h>
 #include <ydb/core/kqp/runtime/kqp_read_actor.h>
+#include <ydb/core/kqp/runtime/kqp_write_actor.h>
+#include <ydb/core/kqp/runtime/kqp_read_table.h>
+#include <ydb/core/kqp/runtime/kqp_sequencer_factory.h>
 #include <ydb/core/kqp/runtime/kqp_stream_lookup_factory.h>
+#include <ydb/library/yql/providers/generic/actors/yql_generic_provider_factories.h>
 #include <ydb/library/yql/providers/s3/actors/yql_s3_sink_factory.h>
 #include <ydb/library/yql/providers/s3/actors/yql_s3_source_factory.h>
+#include <ydb/core/formats/arrow/protos/ssa.pb.h>
+#include <ydb/library/yql/dq/proto/dq_tasks.pb.h>
+
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -17,10 +23,13 @@ using TCallableActorBuilderFunc = std::function<
     IComputationNode*(
         TCallable& callable, const TComputationNodeFactoryContext& ctx, TKqpScanComputeContext& computeCtx)>;
 
-TComputationNodeFactory GetKqpActorComputeFactory(TKqpScanComputeContext* computeCtx) {
+TComputationNodeFactory GetKqpActorComputeFactory(TKqpScanComputeContext* computeCtx, const std::optional<NKqp::TKqpFederatedQuerySetup>& federatedQuerySetup) {
     MKQL_ENSURE_S(computeCtx);
 
-    auto computeFactory = GetKqpBaseComputeFactory(computeCtx);
+    auto computeFactory = NKqp::MakeKqpFederatedQueryComputeFactory(
+        GetKqpBaseComputeFactory(computeCtx),
+        federatedQuerySetup
+    );
 
     return [computeFactory, computeCtx]
         (TCallable& callable, const TComputationNodeFactoryContext& ctx) -> IComputationNode* {
@@ -47,6 +56,10 @@ TComputationNodeFactory GetKqpActorComputeFactory(TKqpScanComputeContext* comput
                 return WrapKqpEnsure(callable, ctx);
             }
 
+            if (name == "KqpIndexLookupJoin"sv) {
+                return WrapKqpIndexLookupJoin(callable, ctx);
+            }
+
             return nullptr;
         };
 }
@@ -54,12 +67,25 @@ TComputationNodeFactory GetKqpActorComputeFactory(TKqpScanComputeContext* comput
 
 namespace NKqp {
 
-NYql::NDq::IDqAsyncIoFactory::TPtr CreateKqpAsyncIoFactory(TIntrusivePtr<TKqpCounters> counters, const NYql::IHTTPGateway::TPtr& httpGateway) {
+NYql::NDq::IDqAsyncIoFactory::TPtr CreateKqpAsyncIoFactory(
+    TIntrusivePtr<TKqpCounters> counters,
+    std::optional<TKqpFederatedQuerySetup> federatedQuerySetup) {
     auto factory = MakeIntrusive<NYql::NDq::TDqAsyncIoFactory>();
     RegisterStreamLookupActorFactory(*factory, counters);
     RegisterKqpReadActor(*factory, counters);
-    RegisterS3ReadActorFactory(*factory, nullptr, httpGateway);
-    RegisterS3WriteActorFactory(*factory, nullptr, httpGateway);
+    RegisterKqpWriteActor(*factory, counters);
+    RegisterSequencerActorFactory(*factory, counters);
+
+    if (federatedQuerySetup) {
+        auto s3HttpRetryPolicy = NYql::GetHTTPDefaultRetryPolicy(NYql::THttpRetryPolicyOptions{.RetriedCurlCodes = NYql::FqRetriedCurlCodes()});
+        RegisterS3ReadActorFactory(*factory, federatedQuerySetup->CredentialsFactory, federatedQuerySetup->HttpGateway, s3HttpRetryPolicy);
+        RegisterS3WriteActorFactory(*factory,  federatedQuerySetup->CredentialsFactory, federatedQuerySetup->HttpGateway, s3HttpRetryPolicy);
+
+        if (federatedQuerySetup->ConnectorClient) {
+            RegisterGenericProviderFactories(*factory, federatedQuerySetup->CredentialsFactory, federatedQuerySetup->ConnectorClient);
+        }
+    }
+
     return factory;
 }
 
@@ -74,7 +100,7 @@ void TShardsScanningPolicy::FillRequestScanFeatures(const NKikimrTxDataShard::TK
     bool hasGroupByWithFields = false;
     bool hasGroupByWithNoFields = false;
     if (meta.HasOlapProgram()) {
-        Y_VERIFY(program.ParseFromString(meta.GetOlapProgram().GetProgram()));
+        Y_ABORT_UNLESS(program.ParseFromString(meta.GetOlapProgram().GetProgram()));
         for (auto&& command : program.GetCommand()) {
             if (!command.HasGroupBy()) {
                 continue;
@@ -106,11 +132,11 @@ using namespace NYql::NDq;
 using namespace NYql::NDqProto;
 
 IActor* CreateKqpScanComputeActor(const TActorId& executerId, ui64 txId,
-    TDqTask&& task, IDqAsyncIoFactory::TPtr asyncIoFactory,
-    const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
-    const NYql::NDq::TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits, NWilson::TTraceId traceId) {
-    return new NScanPrivate::TKqpScanComputeActor(executerId, txId, std::move(task), std::move(asyncIoFactory),
-        functionRegistry, settings, memoryLimits, std::move(traceId));
+    TDqTask* task, IDqAsyncIoFactory::TPtr asyncIoFactory,
+    const NYql::NDq::TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits, NWilson::TTraceId traceId,
+    TIntrusivePtr<NActors::TProtoArenaHolder> arena) {
+    return new NScanPrivate::TKqpScanComputeActor(executerId, txId, task, std::move(asyncIoFactory),
+        settings, memoryLimits, std::move(traceId), std::move(arena));
 }
 
 IActor* CreateKqpScanFetcher(const NKikimrKqp::TKqpSnapshot& snapshot, std::vector<NActors::TActorId>&& computeActors,

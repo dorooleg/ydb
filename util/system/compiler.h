@@ -297,6 +297,9 @@ _YandexAbort();
     #if __has_feature(address_sanitizer)
         #define _asan_enabled_
     #endif
+    #if __has_feature(leak_sanitizer)
+        #define _lsan_enabled_
+    #endif
 
 #else
 
@@ -309,10 +312,13 @@ _YandexAbort();
     #if defined(address_sanitizer_enabled) || defined(__SANITIZE_ADDRESS__)
         #define _asan_enabled_
     #endif
+    #if defined(leak_sanitizer_enabled) || defined(__SANITIZE_LEAK__)
+        #define _lsan_enabled_
+    #endif
 
 #endif
 
-#if defined(_asan_enabled_) || defined(_msan_enabled_) || defined(_tsan_enabled_) || defined(_ubsan_enabled_)
+#if defined(_asan_enabled_) || defined(_msan_enabled_) || defined(_tsan_enabled_) || defined(_ubsan_enabled_) || defined(_lsan_enabled_)
     #define _san_enabled_
 #endif
 
@@ -607,33 +613,15 @@ _YandexAbort();
     #define Y_HAVE_INT128 1
 #endif
 
-/**
- * XRAY macro must be passed to compiler if XRay is enabled.
- *
- * Define everything XRay-specific as a macro so that it doesn't cause errors
- * for compilers that doesn't support XRay.
- */
-#if defined(XRAY) && defined(__cplusplus)
-    #include <xray/xray_interface.h>
-    #define Y_XRAY_ALWAYS_INSTRUMENT [[clang::xray_always_instrument]]
-    #define Y_XRAY_NEVER_INSTRUMENT [[clang::xray_never_instrument]]
-    #define Y_XRAY_CUSTOM_EVENT(__string, __length) \
-        do {                                        \
-            __xray_customevent(__string, __length); \
-        } while (0)
-#else
-    #define Y_XRAY_ALWAYS_INSTRUMENT
-    #define Y_XRAY_NEVER_INSTRUMENT
-    #define Y_XRAY_CUSTOM_EVENT(__string, __length) \
-        do {                                        \
-        } while (0)
-#endif
-
-#if defined(__clang__) && Y_CUDA_AT_LEAST(11, 0)
+#if defined(__clang__) && (!defined(__CUDACC__) || Y_CUDA_AT_LEAST(11, 0))
     #define Y_REINITIALIZES_OBJECT [[clang::reinitializes]]
 #else
     #define Y_REINITIALIZES_OBJECT
 #endif
+
+// Use at the end of macros declaration. It allows macros usage only with semicolon at the end.
+// It prevents from warnings for extra semicolons when building with flag `-Wextra-semi`.
+#define Y_SEMICOLON_GUARD static_assert(true, "")
 
 #ifdef __cplusplus
 
@@ -653,9 +641,78 @@ Y_FORCE_INLINE void DoNotOptimizeAway(T&& datum) {
     #endif
 }
 
+/**
+ * The usage for `const T&` is prohibited.
+ * The compiler assume that a constant reference, even though escaped via asm volatile, is unchanged.
+ * The const-ref interface is deleted to discourage new uses of it, as subtle compiler optimizations (invariant hoisting, etc.) can occur.
+ * For more details see https://github.com/google/benchmark/pull/1493.
+ */
+template <typename T>
+Y_FORCE_INLINE void DoNotOptimizeAway(const T&) = delete;
+
     /**
      * Use this macro to prevent unused variables elimination.
      */
     #define Y_DO_NOT_OPTIMIZE_AWAY(X) ::DoNotOptimizeAway(X)
 
+#endif
+
+/**
+ * @def Y_LIFETIME_BOUND
+ *
+ * The attribute on a function parameter can be used to tell the compiler
+ * that function return value may refer that parameter.
+ * The compiler may produce compile-time warning if it is able to detect that
+ * an object or reference refers to another object with a shorter lifetime.
+ */
+#if defined(__clang__) && defined(__cplusplus) && defined(__has_cpp_attribute)
+    #if defined(__CUDACC__) && !Y_CUDA_AT_LEAST(11, 0)
+        #define Y_LIFETIME_BOUND
+    #elif __has_cpp_attribute(clang::lifetimebound)
+        #define Y_LIFETIME_BOUND [[clang::lifetimebound]]
+    #else
+        #define Y_LIFETIME_BOUND
+    #endif
+#else
+    #define Y_LIFETIME_BOUND
+#endif
+
+/**
+ * @def Y_HAVE_ATTRIBUTE
+ *
+ * A function-like feature checking macro that is a wrapper around
+ * `__has_attribute`, which is defined by GCC 5+ and Clang and evaluates to a
+ * nonzero constant integer if the attribute is supported or 0 if not.
+ *
+ * It evaluates to zero if `__has_attribute` is not defined by the compiler.
+ *
+ * @see
+ *     GCC: https://gcc.gnu.org/gcc-5/changes.html
+ *     Clang: https://clang.llvm.org/docs/LanguageExtensions.html
+ */
+#ifdef __has_attribute
+    #define Y_HAVE_ATTRIBUTE(x) __has_attribute(x)
+#else
+    #define Y_HAVE_ATTRIBUTE(x) 0
+#endif
+
+/**
+ * @def Y_RETURNS_NONNULL
+ *
+ * The returns_nonnull attribute specifies that the function return value should
+ * be a non-null pointer. It lets the compiler optimize callers based on
+ * the knowledge that the return value will never be null.
+ *
+ * @see
+ *    GCC: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-returns_005fnonnull-function-attribute
+ *    Clang: https://clang.llvm.org/docs/AttributeReference.html#returns-nonnull
+ *
+ * @code
+ * Y_RETURNS_NONNULL extern void* mymalloc(size_t len);
+ * @endcode
+ */
+#if Y_HAVE_ATTRIBUTE(returns_nonnull)
+    #define Y_RETURNS_NONNULL __attribute__((returns_nonnull))
+#else
+    #define Y_RETURNS_NONNULL
 #endif

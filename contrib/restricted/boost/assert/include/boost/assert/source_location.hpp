@@ -7,9 +7,7 @@
 // Distributed under the Boost Software License, Version 1.0.
 // http://www.boost.org/LICENSE_1_0.txt
 
-#include <boost/current_function.hpp>
 #include <boost/config.hpp>
-#include <boost/config/workaround.hpp>
 #include <boost/cstdint.hpp>
 #include <iosfwd>
 #include <string>
@@ -17,7 +15,7 @@
 #include <cstring>
 
 #if defined(__cpp_lib_source_location) && __cpp_lib_source_location >= 201907L
-# error #include <source_location>
+# include <source_location>
 #endif
 
 namespace boost
@@ -75,7 +73,11 @@ public:
 # pragma warning( disable: 4996 )
 #endif
 
+#if ( defined(_MSC_VER) && _MSC_VER < 1900 ) || ( defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR) )
 # define BOOST_ASSERT_SNPRINTF(buffer, format, arg) std::sprintf(buffer, format, arg)
+#else
+# define BOOST_ASSERT_SNPRINTF(buffer, format, arg) std::snprintf(buffer, sizeof(buffer)/sizeof(buffer[0]), format, arg)
+#endif
 
     std::string to_string() const
     {
@@ -142,6 +144,10 @@ template<class E, class T> std::basic_ostream<E, T> & operator<<( std::basic_ost
 
 # define BOOST_CURRENT_LOCATION ::boost::source_location()
 
+#elif defined(BOOST_MSVC) && BOOST_MSVC >= 1935
+
+# define BOOST_CURRENT_LOCATION ::boost::source_location(__builtin_FILE(), __builtin_LINE(), __builtin_FUNCSIG(), __builtin_COLUMN())
+
 #elif defined(BOOST_MSVC) && BOOST_MSVC >= 1926
 
 // std::source_location::current() is available in -std:c++20, but fails with consteval errors before 19.31, and doesn't produce
@@ -157,7 +163,10 @@ template<class E, class T> std::basic_ostream<E, T> & operator<<( std::basic_ost
 
 # define BOOST_CURRENT_LOCATION ::boost::source_location(__FILE__, BOOST_CURRENT_LOCATION_IMPL_1(__LINE__), "")
 
-#elif defined(__cpp_lib_source_location) && __cpp_lib_source_location >= 201907L
+#elif defined(__cpp_lib_source_location) && __cpp_lib_source_location >= 201907L && !defined(__NVCC__)
+
+// Under nvcc, __builtin_source_location is not constexpr
+// https://github.com/boostorg/assert/issues/32
 
 # define BOOST_CURRENT_LOCATION ::boost::source_location(::std::source_location::current())
 

@@ -2,12 +2,13 @@
 #include "tabletid.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/protos/services.pb.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/services/services.pb.h>
+#include <ydb/library/actors/core/interconnect.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/log.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/random_provider/random_provider.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/generic/xrange.h>
 
@@ -25,8 +26,8 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
     const TString Path;
     const TActorId Owner;
     const EBoardLookupMode Mode;
-    const ui32 StateStorageGroupId;
     const bool Subscriber;
+    TBoardRetrySettings BoardRetrySettings;
 
     static constexpr int MAX_REPLICAS_COUNT_EXP = 32; // Replicas.size() <= 2**MAX_REPLICAS_COUNT_EXP
 
@@ -59,27 +60,33 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         bool IsScheduled = false;
         ui32 ReconnectNumber = 0;
         NMonotonic::TMonotonic LastReconnectAt = TMonotonic::Zero();
-        TDuration CurrentDelay = TDuration::MilliSeconds(100);
+        TDuration CurrentDelay = TDuration::Zero();
     };
 
     TVector<TReplica> Replicas;
 
-    TMap<TActorId, TEvStateStorage::TEvBoardInfo::TInfoEntry> Info;
+    TMap<TActorId, TEvStateStorage::TBoardInfoEntry> Info;
     THashMap<TActorId, THashSet<ui32>> InfoReplicas;
 
     ui32 WaitForReplicasToSuccess;
 
+    const TDuration& GetCurrentDelay(TReplica& replica) {
+        if (replica.CurrentDelay == TDuration::Zero()) {
+            replica.CurrentDelay = BoardRetrySettings.StartDelayMs;
+        }
+        return replica.CurrentDelay;
+    }
+
     TDuration GetReconnectDelayForReplica(TReplica& replica) {
-        auto ret = replica.CurrentDelay;
         auto newDelay = replica.CurrentDelay;
         newDelay *= 2;
-        if (newDelay > TDuration::Seconds(5)) {
-            newDelay = TDuration::Seconds(5);
+        if (newDelay > BoardRetrySettings.MaxDelayMs) {
+            newDelay = BoardRetrySettings.MaxDelayMs;
         }
-        newDelay *= AppData()->RandomProvider->Uniform(100, 115);
+        newDelay *= AppData()->RandomProvider->Uniform(50, 200);
         newDelay /= 100;
         replica.CurrentDelay = newDelay;
-        return ret;
+        return replica.CurrentDelay;
     }
 
     struct {
@@ -103,7 +110,8 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
 
     void NotAvailable() {
         if (CurrentStateFunc() != &TThis::StateSubscribe) {
-            Send(Owner, new TEvStateStorage::TEvBoardInfo(TEvStateStorage::TEvBoardInfo::EStatus::NotAvailable, Path));
+            Send(Owner, new TEvStateStorage::TEvBoardInfo(
+                TEvStateStorage::TEvBoardInfo::EStatus::NotAvailable, Path));
         } else {
             Send(Owner,
                 new TEvStateStorage::TEvBoardInfoUpdate(
@@ -149,7 +157,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         auto *msg = ev->Get();
 
         if (msg->Replicas.empty()) {
-            BLOG_ERROR("lookup on unconfigured statestorage board service " << StateStorageGroupId);
+            BLOG_ERROR("lookup on unconfigured statestorage board service");
             return NotAvailable();
         }
 
@@ -179,7 +187,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
             WaitForReplicasToSuccess = (Replicas.size() / 2 + 1);
             break;
         default:
-            Y_FAIL("unsupported mode");
+            Y_ABORT("unsupported mode");
         }
 
         Become(&TThis::StateLookup);
@@ -213,7 +221,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         }
 
         if (CurrentStateFunc() == &TThis::StateSubscribe) {
-            std::optional<TEvStateStorage::TEvBoardInfoUpdate::TInfoEntryUpdate> update;
+            std::optional<TEvStateStorage::TBoardInfoEntry> update;
             if (info.GetDropped()) {
                 if (!replicas.empty()) {
                     return;
@@ -266,7 +274,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         if (replica.State == EReplicaState::Unknown) {
             Stats.Replied++;
         } else {
-            Y_VERIFY(Stats.NotAvailable);
+            Y_ABORT_UNLESS(Stats.NotAvailable);
             Stats.NotAvailable--;
         }
 
@@ -274,12 +282,12 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
             replica.State = EReplicaState::NoInfo;
             ++Stats.NoInfo;
         } else {
-            Y_VERIFY_DEBUG(record.GetInfo().size());
+            Y_DEBUG_ABORT_UNLESS(record.GetInfo().size());
             replica.State = EReplicaState::Ready;
             ++Stats.HasInfo;
 
             bool isStateSubscribe = (CurrentStateFunc() == &TThis::StateSubscribe);
-            TMap<TActorId, TEvStateStorage::TEvBoardInfoUpdate::TInfoEntryUpdate> updates;
+            TMap<TActorId, TEvStateStorage::TBoardInfoEntry> updates;
 
             for (const auto &x : record.GetInfo()) {
                 const TActorId oid = ActorIdFromProto(x.GetOwner());
@@ -317,10 +325,10 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
                 }
                 if (replica.State != EReplicaState::NotAvailable) {
                     if (replica.State == EReplicaState::Ready) {
-                        Y_VERIFY(Stats.HasInfo);
+                        Y_ABORT_UNLESS(Stats.HasInfo);
                         Stats.HasInfo--;
                     } else if (replica.State == EReplicaState::NoInfo) {
-                        Y_VERIFY(Stats.NoInfo);
+                        Y_ABORT_UNLESS(Stats.NoInfo);
                         Stats.NoInfo--;
                     }
                     if (replica.State != EReplicaState::Reconnect) {
@@ -355,10 +363,10 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         }
 
         if (replica.State == EReplicaState::Ready) {
-            Y_VERIFY(Stats.HasInfo);
+            Y_ABORT_UNLESS(Stats.HasInfo);
             --Stats.HasInfo;
         } else if (replica.State == EReplicaState::NoInfo) {
-            Y_VERIFY(Stats.NoInfo);
+            Y_ABORT_UNLESS(Stats.NoInfo);
             --Stats.NoInfo;
         }
 
@@ -402,7 +410,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         CheckCompletion();
     }
 
-    void ReconnectReplica(ui32 replicaIdx) {
+    void ReconnectReplica(ui32 replicaIdx, bool fromReconnect = false) {
         auto& replica = Replicas[replicaIdx];
 
         if (!Subscriber) {
@@ -413,10 +421,18 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
         }
 
         auto now = TlsActivationContext->Monotonic();
-        if (now - replica.LastReconnectAt < replica.CurrentDelay) {
+        if (now - replica.LastReconnectAt < GetCurrentDelay(replica)) {
             auto at = replica.LastReconnectAt + GetReconnectDelayForReplica(replica);
             replica.IsScheduled = true;
             Schedule(at - now, new TEvPrivate::TEvReconnectReplicas(replicaIdx));
+            return;
+        }
+        if (!fromReconnect) {
+            auto delay = TDuration::Seconds(1);
+            delay *= AppData()->RandomProvider->Uniform(10, 200);
+            delay /= 100;
+            replica.IsScheduled = true;
+            Schedule(delay, new TEvPrivate::TEvReconnectReplicas(replicaIdx));
             return;
         }
 
@@ -433,7 +449,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
     void Handle(TEvPrivate::TEvReconnectReplicas::TPtr& ev) {
         const auto& idx = ev->Get()->ReplicaIdx;
         Replicas[idx].IsScheduled = false;
-        ReconnectReplica(idx);
+        ReconnectReplica(idx, true);
     }
 
     std::pair<ui64, ui64> DecodeCookie(ui64 cookie) {
@@ -446,7 +462,7 @@ class TBoardLookupActor : public TActorBootstrapped<TBoardLookupActor> {
 
     void ClearInfosByReplica(ui32 replicaIdx) {
         bool isStateSubscribe = (CurrentStateFunc() == &TThis::StateSubscribe);
-        TMap<TActorId, TEvStateStorage::TEvBoardInfoUpdate::TInfoEntryUpdate> updates;
+        TMap<TActorId, TEvStateStorage::TBoardInfoEntry> updates;
 
         const auto& replica = Replicas[replicaIdx];
         for (auto infoId : replica.Infos) {
@@ -477,16 +493,19 @@ public:
         return NKikimrServices::TActivity::BOARD_LOOKUP_ACTOR;
     }
 
-    TBoardLookupActor(const TString &path, TActorId owner, EBoardLookupMode mode, ui32 groupId)
+    TBoardLookupActor(
+        const TString &path, TActorId owner, EBoardLookupMode mode,
+        TBoardRetrySettings boardRetrySettings)
         : Path(path)
         , Owner(owner)
         , Mode(mode)
-        , StateStorageGroupId(groupId)
         , Subscriber(Mode == EBoardLookupMode::Subscription)
+        , BoardRetrySettings(std::move(boardRetrySettings))
+        , WaitForReplicasToSuccess(0)
     {}
 
     void Bootstrap() {
-        const TActorId proxyId = MakeStateStorageProxyID(StateStorageGroupId);
+        const TActorId proxyId = MakeStateStorageProxyID();
         Send(proxyId, new TEvStateStorage::TEvResolveBoard(Path), IEventHandle::FlagTrackDelivery);
         Become(&TThis::StateResolve);
     }
@@ -524,8 +543,10 @@ public:
     }
 };
 
-IActor* CreateBoardLookupActor(const TString &path, const TActorId &owner, ui32 groupId, EBoardLookupMode mode) {
-    return new TBoardLookupActor(path, owner, mode, groupId);
+IActor* CreateBoardLookupActor(
+        const TString &path, const TActorId &owner, EBoardLookupMode mode,
+        TBoardRetrySettings boardRetrySettings) {
+    return new TBoardLookupActor(path, owner, mode, std::move(boardRetrySettings));
 }
 
 }

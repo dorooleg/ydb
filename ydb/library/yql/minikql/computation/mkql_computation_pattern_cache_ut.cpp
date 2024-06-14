@@ -435,9 +435,9 @@ Y_UNIT_TEST_SUITE(ComputationGraphDataRace) {
     template<class T>
     void ParallelProgTest(T f, bool useLLVM, ui64 testResult, size_t vecSize = 10'000) {
         TTimer t("total: ");
-        const ui32 cacheSize = 10;
+        const ui32 cacheSizeInBytes = 104857600; // 100 MiB
         const ui32 inFlight = 7;
-        TComputationPatternLRUCache cache(cacheSize);
+        TComputationPatternLRUCache cache({cacheSizeInBytes, cacheSizeInBytes});
 
         auto functionRegistry = CreateFunctionRegistry(CreateBuiltinRegistry())->Clone();
         auto entry = std::make_shared<TPatternCacheEntry>();
@@ -572,7 +572,7 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
     Y_UNIT_TEST(Smoke) {
         const ui32 cacheSize = 10'000'000;
         const ui32 cacheItems = 10;
-        TComputationPatternLRUCache cache(cacheSize);
+        TComputationPatternLRUCache cache({cacheSize, cacheSize});
 
         auto functionRegistry = CreateFunctionRegistry(CreateBuiltinRegistry())->Clone();
 
@@ -599,6 +599,16 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
                 auto guard = entry->Env.BindAllocator();
                 entry->Pattern = MakeComputationPattern(explorer, progReturn, {}, opts);
             }
+
+            // XXX: There is no way to accurately define how the entry's
+            // allocator obtains the memory pages: using the free ones from the
+            // global page pool or the ones directly requested by <mmap>. At the
+            // same time, it is the total allocated bytes (not just the number
+            // of the borrowed pages) that is a good estimate of the memory
+            // consumed by the pattern cache entry for real life workload.
+            // Hence, to avoid undesired cache flushes, release the free pages
+            // of the allocator of the particular entry.
+            alloc.ReleaseFreePages();
             cache.EmplacePattern(TString((char)('a' + i)), entry);
         }
 
@@ -616,7 +626,7 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
 
             auto graph = entry->Pattern->Clone(opts.ToComputationOptions(*randomProvider, *timeProvider, &graphAlloc.Ref()));
             auto value = graph->GetValue();
-            UNIT_ASSERT_EQUAL(value.AsStringRef(), NYql::NUdf::TStringRef("qwerty"));
+            UNIT_ASSERT_EQUAL(NYql::NUdf::TStringRef("qwerty"), value.AsStringRef());
         }
     }
 
@@ -807,7 +817,7 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
 
         {
             auto data = genData();
-            auto predicate = [](ui64 a) {
+            static auto predicate = [](ui64 a) {
                 return a % 128 == 0;
             };
             Y_DO_NOT_OPTIMIZE_AWAY(predicate);

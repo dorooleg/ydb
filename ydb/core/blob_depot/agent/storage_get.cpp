@@ -70,7 +70,7 @@ namespace NKikimr::NBlobDepot {
                     (QueryId, GetQueryId()), (QueryIdx, queryIdx), (Result, result));
 
                 auto& r = Response->Responses[queryIdx];
-                Y_VERIFY(r.Status == NKikimrProto::UNKNOWN);
+                Y_ABORT_UNLESS(r.Status == NKikimrProto::UNKNOWN);
                 if (result.Error()) {
                     r.Status = NKikimrProto::ERROR;
                     --AnswersRemain;
@@ -81,7 +81,7 @@ namespace NKikimr::NBlobDepot {
                     r.Status = NKikimrProto::OK;
                     --AnswersRemain;
                 } else {
-                    Y_VERIFY(Request.MustRestoreFirst <= value->ReliablyWritten);
+                    Y_ABORT_UNLESS(Request.MustRestoreFirst <= value->ReliablyWritten);
                     TReadArg arg{
                         *value,
                         Request.GetHandleClass,
@@ -102,17 +102,28 @@ namespace NKikimr::NBlobDepot {
                 return true;
             }
 
-            void OnRead(ui64 tag, NKikimrProto::EReplyStatus status, TString buffer) override {
+            void OnRead(ui64 tag, TReadOutcome&& outcome) override {
                 STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA35, "OnRead", (AgentId, Agent.LogId), (QueryId, GetQueryId()),
-                    (Tag, tag), (Status, status), (Buffer.size, status == NKikimrProto::OK ? buffer.size() : 0),
-                    (ErrorReason, status != NKikimrProto::OK ? buffer : ""));
+                    (Tag, tag), (Outcome, outcome));
 
                 auto& resp = Response->Responses[tag];
-                Y_VERIFY(resp.Status == NKikimrProto::UNKNOWN);
-                resp.Status = status;
-                if (status == NKikimrProto::OK) {
-                    resp.Buffer = std::move(buffer);
-                }
+                Y_ABORT_UNLESS(resp.Status == NKikimrProto::UNKNOWN);
+                std::visit(TOverloaded{
+                    [&](TReadOutcome::TOk& ok) {
+                        resp.Status = NKikimrProto::OK;
+                        resp.Buffer = std::move(ok.Data);
+                    },
+                    [&](TReadOutcome::TNodata& /*nodata*/) {
+                        resp.Status = NKikimrProto::NODATA;
+                    },
+                    [&](TReadOutcome::TError& error) {
+                        resp.Status = error.Status;
+                        if (Response->ErrorReason) {
+                            Response->ErrorReason += ", ";
+                        }
+                        Response->ErrorReason += error.ErrorReason;
+                    }
+                }, outcome.Value);
                 --AnswersRemain;
                 CheckAndFinish();
             }
@@ -172,7 +183,7 @@ namespace NKikimr::NBlobDepot {
                         CheckAndFinish();
                     }
                 } else {
-                    Y_FAIL();
+                    Y_ABORT();
                 }
             }
 

@@ -19,6 +19,7 @@ struct TWriteMsg {
     ui64 Cookie;
     TMaybe<ui64> Offset;
     TEvPQ::TEvWrite::TMsg Msg;
+    std::optional<ui64> InitialSeqNo;
 };
 
 struct TOwnershipMsg {
@@ -68,14 +69,12 @@ struct TMessage {
         TSplitMessageGroupMsg
     > Body;
 
-    TDuration QuotedTime;   // baseline for request and duration for response
     TDuration QueueTime;    // baseline for request and duration for response
     TInstant WriteTimeBaseline;
 
     template <typename T>
-    explicit TMessage(T&& body, TDuration quotedTime, TDuration queueTime, TInstant writeTimeBaseline = TInstant::Zero())
+    explicit TMessage(T&& body, TDuration queueTime, TInstant writeTimeBaseline = TInstant::Zero())
         : Body(std::forward<T>(body))
-        , QuotedTime(quotedTime)
         , QueueTime(queueTime)
         , WriteTimeBaseline(writeTimeBaseline)
     {
@@ -94,7 +93,7 @@ struct TMessage {
         case 4:
             return std::get<4>(Body).Cookie;
         default:
-            Y_FAIL("unreachable");
+            Y_ABORT("unreachable");
         }
     }
 
@@ -103,11 +102,11 @@ struct TMessage {
             return Body.index() == i; \
         } \
         const auto& Get##name() const { \
-            Y_VERIFY(Is##name()); \
+            Y_ABORT_UNLESS(Is##name()); \
             return std::get<i>(Body); \
         } \
         auto& Get##name() { \
-            Y_VERIFY(Is##name()); \
+            Y_ABORT_UNLESS(Is##name()); \
             return std::get<i>(Body); \
         }
 
@@ -118,13 +117,17 @@ struct TMessage {
     DEFINE_CHECKER_GETTER(SplitMessageGroup, 4)
 
     #undef DEFINE_CHECKER_GETTER
+
+    size_t GetWriteSize() const {
+        if (IsWrite()) {
+            auto& w = GetWrite();
+            return w.Msg.SourceId.size() + w.Msg.Data.size();
+        } else {
+            return 0;
+        }
+    }
 };
 
-struct TDataKey {
-    TKey Key;
-    ui32 Size;
-    TInstant Timestamp;
-    ui64 CumulativeSize;
-};
 
-} // namespace NKikimr
+} // namespace NKikimr::NPQ
+

@@ -1,28 +1,19 @@
 #include "service_actor.h"
 
 #include <ydb/core/base/counters.h>
-#include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
-#include <ydb/core/grpc_services/local_rpc/local_rpc.h>
-#include <ydb/core/keyvalue/keyvalue_events.h>
 #include <ydb/core/kqp/common/kqp.h>
-#include <ydb/core/protos/ydb_result_set_old.pb.h>
-#include <ydb/core/tx/datashard/datashard.h>
-#include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/core/ydb_convert/ydb_convert.h>
+#include <ydb/core/protos/kqp_stats.pb.h>
 
 #include <ydb/library/workload/workload_factory.h>
 #include <ydb/library/workload/stock_workload.h>
 #include <ydb/library/workload/kv_workload.h>
 
-#include <ydb/public/lib/operation_id/operation_id.h>
-#include <ydb/public/sdk/cpp/client/ydb_params/params.h>
 #include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/histogram/hdr/histogram.h>
+#include <library/cpp/time_provider/time_provider.h>
 
 #include <util/generic/queue.h>
 #include <util/random/fast.h>
@@ -56,7 +47,7 @@ public:
     ui64 Errors = 0;
 };
 
-void SendQueryRequest(const TActorContext& ctx, NYdbWorkload::TQueryInfo& q, const TString& session, const TString& workingDir) {
+void SendQueryRequest(const TActorContext& ctx, NYdbWorkload::TQueryInfo& q, const NKikimrKqp::EQueryType queryType, const TString& session, const TString& workingDir) {
     TString query_text = TString(q.Query);
     auto request = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
 
@@ -65,7 +56,7 @@ void SendQueryRequest(const TActorContext& ctx, NYdbWorkload::TQueryInfo& q, con
     request->Record.MutableRequest()->SetDatabase(workingDir);
 
     request->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
-    request->Record.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_DML);
+    request->Record.MutableRequest()->SetType(queryType);
     request->Record.MutableRequest()->SetQuery(query_text);
 
     request->Record.MutableRequest()->MutableQueryCachePolicy()->set_keep_in_cache(true);
@@ -99,6 +90,7 @@ public:
             TString working_dir,
             std::shared_ptr<NYdbWorkload::IWorkloadQueryGenerator> workload_query_gen,
             ui64 workload_type,
+            NKikimrKqp::EQueryType queryType,
             ui64 parentTag,
             ui64 workerTag,
             TInstant endTimestamp,
@@ -111,6 +103,7 @@ public:
         , ParentTag(parentTag)
         , WorkerTag(workerTag)
         , EndTimestamp(endTimestamp)
+        , QueryType(queryType)
         , LatencyHist(60000, 2)
         , Transactions(transactions)
         , TransactionsBytesWritten(transactionsBytesWritten)
@@ -179,7 +172,7 @@ private:
             Queries = WorkloadQueryGen->GetWorkload(WorkloadType);
         }
 
-        Y_VERIFY(!Queries.empty());
+        Y_ABORT_UNLESS(!Queries.empty());
         auto q = std::move(Queries.front());
         Queries.pop_front();
 
@@ -190,7 +183,7 @@ private:
 
         LOG_DEBUG_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Worker Tag# " << ParentTag << "." << WorkerTag << " using session: " << WorkerSession);
 
-        SendQueryRequest(ctx, q, WorkerSession, WorkingDir);
+        SendQueryRequest(ctx, q, QueryType, WorkerSession, WorkingDir);
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -224,6 +217,7 @@ private:
     TInstant EndTimestamp;
     NYdbWorkload::TQueryInfoList Queries;
     TString WorkerSession = "wrong sessionId";
+    NKikimrKqp::EQueryType QueryType;
 
     // monitoring
     NHdr::THistogram LatencyHist;
@@ -252,35 +246,39 @@ public:
         DeleteTableOnFinish = cmd.GetDeleteTableOnFinish();
         WorkingDir = cmd.GetWorkingDir();
         WorkloadType = cmd.GetWorkloadType();
+        Y_ABORT_UNLESS(cmd.GetQueryType() == "generic" || cmd.GetQueryType() == "data");
+        QueryType = cmd.GetQueryType() == "generic"
+            ? NKikimrKqp::QUERY_TYPE_SQL_GENERIC_QUERY
+            : NKikimrKqp::QUERY_TYPE_SQL_DML;
         DurationSeconds = cmd.GetDurationSeconds();
         NumOfSessions = cmd.GetNumOfSessions();
         IncreaseSessions = cmd.GetIncreaseSessions();
         Total = std::make_unique<MonitoringData>();
 
-        NYdbWorkload::TWorkloadFactory factory;
         if (cmd.Workload_case() == NKikimr::TEvLoadTestRequest_TKqpLoad::WorkloadCase::kStock) {
-            WorkloadClass = NYdbWorkload::EWorkload::STOCK;
-            NYdbWorkload::TStockWorkloadParams params;
-            params.PartitionsByLoad = cmd.GetStock().GetPartitionsByLoad();
-            params.OrderCount = cmd.GetStock().GetOrderCount();
-            params.ProductCount = cmd.GetStock().GetProductCount();
-            params.Quantity = cmd.GetStock().GetQuantity();
-            params.Limit = cmd.GetStock().GetLimit();
-            params.DbPath = WorkingDir;
-            params.MinPartitions = UniformPartitionsCount;
-            WorkloadQueryGen = factory.GetWorkloadQueryGenerator(NYdbWorkload::EWorkload::STOCK, &params);
+            WorkloadClass = "stock";
+            auto params = std::make_shared<NYdbWorkload::TStockWorkloadParams>();
+            params->PartitionsByLoad = cmd.GetStock().GetPartitionsByLoad();
+            params->OrderCount = cmd.GetStock().GetOrderCount();
+            params->ProductCount = cmd.GetStock().GetProductCount();
+            params->Quantity = cmd.GetStock().GetQuantity();
+            params->Limit = cmd.GetStock().GetLimit();
+            params->DbPath = WorkingDir;
+            params->MinPartitions = UniformPartitionsCount;
+            WorkloadQueryGen = std::make_shared<NYdbWorkload::TStockWorkloadGenerator>(params.get());
+            WorkloadQueryGenParams = params;
         } else if (cmd.Workload_case() == NKikimr::TEvLoadTestRequest_TKqpLoad::WorkloadCase::kKv) {
-            WorkloadClass = NYdbWorkload::EWorkload::KV;
-            NYdbWorkload::TKvWorkloadParams params;
-            params.InitRowCount = cmd.GetKv().GetInitRowCount();
-            params.PartitionsByLoad = cmd.GetKv().GetPartitionsByLoad();
-            params.MaxFirstKey = cmd.GetKv().GetMaxFirstKey();
-            params.StringLen = cmd.GetKv().GetStringLen();
-            params.ColumnsCnt = cmd.GetKv().GetColumnsCnt();
-            params.RowsCnt = cmd.GetKv().GetRowsCnt();
-            params.MinPartitions = UniformPartitionsCount;
-            params.DbPath = WorkingDir;
-            WorkloadQueryGen = factory.GetWorkloadQueryGenerator(NYdbWorkload::EWorkload::KV, &params);
+            WorkloadClass = "kv";
+            auto params = std::make_shared<NYdbWorkload::TKvWorkloadParams>();
+            params->InitRowCount = cmd.GetKv().GetInitRowCount();
+            params->PartitionsByLoad = cmd.GetKv().GetPartitionsByLoad();
+            params->MaxFirstKey = cmd.GetKv().GetMaxFirstKey();
+            params->StringLen = cmd.GetKv().GetStringLen();
+            params->ColumnsCnt = cmd.GetKv().GetColumnsCnt();
+            params->RowsCnt = cmd.GetKv().GetRowsCnt();
+            params->MinPartitions = UniformPartitionsCount;
+            WorkloadQueryGen = std::make_shared<NYdbWorkload::TKvWorkloadGenerator>(params.get());
+            WorkloadQueryGenParams = params;
         } else {
             return;
         }
@@ -304,8 +302,8 @@ public:
 
         Become(&TKqpLoadActor::StateStart);
 
-        if (WorkloadClass == NYdbWorkload::EWorkload::STOCK) {
-            NYdbWorkload::TStockWorkloadParams* params = static_cast<NYdbWorkload::TStockWorkloadParams*>(WorkloadQueryGen->GetParams());
+        if (WorkloadClass == "stock") {
+            NYdbWorkload::TStockWorkloadParams* params = static_cast<NYdbWorkload::TStockWorkloadParams*>(WorkloadQueryGenParams.get());
             LOG_INFO_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " Starting load actor with workload STOCK, Params: {"
                 << "PartitionsByLoad: " << params->PartitionsByLoad << " "
                 << "OrderCount: " << params->OrderCount << " "
@@ -314,8 +312,8 @@ public:
                 << "Limit: " << params->Limit << " "
                 << "DbPath: " << params->DbPath << " "
                 << "MinPartitions: " << params->MinPartitions);
-        } else if (WorkloadClass == NYdbWorkload::EWorkload::KV) {
-            NYdbWorkload::TKvWorkloadParams* params = static_cast<NYdbWorkload::TKvWorkloadParams*>(WorkloadQueryGen->GetParams());
+        } else if (WorkloadClass == "kv") {
+            NYdbWorkload::TKvWorkloadParams* params = static_cast<NYdbWorkload::TKvWorkloadParams*>(WorkloadQueryGenParams.get());
             LOG_INFO_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " Starting load actor with workload KV, Params: {"
                 << "InitRowCount: " << params->InitRowCount << " "
                 << "PartitionsByLoad: " << params->PartitionsByLoad << " "
@@ -533,14 +531,14 @@ private:
     // table initialization
 
     void InsertInitData(const TActorContext& ctx) {
-        Y_VERIFY(!InitData.empty());
+        Y_ABORT_UNLESS(!InitData.empty());
         auto q = std::move(InitData.front());
         InitData.pop_front();
 
         LOG_DEBUG_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag
             << " Creating request for init query, need to exec: " << InitData.size() + 1 << " session: " << TableSession);
 
-        SendQueryRequest(ctx, q, TableSession, WorkingDir);
+        SendQueryRequest(ctx, q, QueryType, TableSession, WorkingDir);
     }
 
     void HandleDataQueryResponse(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -637,6 +635,7 @@ private:
             WorkingDir,
             WorkloadQueryGen,
             WorkloadType,
+            QueryType,
             Tag,
             Workers.size(),
             TestStartTime + TDuration::Seconds(DurationSeconds),
@@ -668,13 +667,15 @@ private:
     size_t NumOfSessions = 0;
     bool IncreaseSessions = false;
     size_t ResultsReceived = 0;
-    NYdbWorkload::EWorkload WorkloadClass;
+    TString WorkloadClass;
+    NKikimrKqp::EQueryType QueryType;
 
     NYdbWorkload::TQueryInfoList InitData;
 
     const TActorId Parent;
     ui64 Tag;
     ui32 DurationSeconds;
+    std::shared_ptr<NYdbWorkload::TWorkloadParams> WorkloadQueryGenParams;
     std::shared_ptr<NYdbWorkload::IWorkloadQueryGenerator> WorkloadQueryGen;
 
     // Monitoring

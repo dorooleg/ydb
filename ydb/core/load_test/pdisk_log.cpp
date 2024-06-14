@@ -3,9 +3,12 @@
 #include <ydb/core/base/counters.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
+#include <ydb/core/control/immediate_control_board_impl.h>
 #include <library/cpp/monlib/service/pages/templates.h>
+#include <library/cpp/time_provider/time_provider.h>
 #include <util/random/fast.h>
 #include <util/generic/queue.h>
+
 
 namespace NKikimr {
 class TPDiskLogWriterLoadTestActor;
@@ -179,8 +182,8 @@ public:
     }
 
     std::unique_ptr<NPDisk::TEvHarakiri> GetHarakiri() {
-        Y_VERIFY(IsDying);
-        Y_VERIFY(LogReadPosition == NPDisk::TLogPosition::Invalid());
+        Y_ABORT_UNLESS(IsDying);
+        Y_ABORT_UNLESS(LogReadPosition == NPDisk::TLogPosition::Invalid());
         return std::make_unique<NPDisk::TEvHarakiri>(PDiskParams->Owner, OwnerRound);
     }
 
@@ -203,7 +206,7 @@ public:
                 VAR_OUT(StartingPoint) <<
                 VAR_OUT(NextStartingPoint));
         const ui64 realStartingPoint = it->second.Lsn;
-        Y_VERIFY(realStartingPoint == StartingPoint || realStartingPoint == NextStartingPoint);
+        Y_ABORT_UNLESS(realStartingPoint == StartingPoint || realStartingPoint == NextStartingPoint);
         // Set StartingPoint to real point to start check from it
         StartingPoint = realStartingPoint;
     }
@@ -222,7 +225,7 @@ public:
     }
 
     void CheckLogRecords(const NPDisk::TEvReadLogResult* msg) {
-        Y_VERIFY(msg->Status == NKikimrProto::OK);
+        Y_ABORT_UNLESS(msg->Status == NKikimrProto::OK);
         for (const auto& res : msg->Results) {
             if (res.Lsn < StartingPoint) {
                 continue;
@@ -399,7 +402,7 @@ public:
                 worker->PDiskParams = std::move(msg->PDiskParams);
                 worker->OwnerRound = Max(worker->OwnerRound, worker->PDiskParams->OwnerRound);
                 auto logRead = worker->GetLogRead();
-                Y_VERIFY(logRead);
+                Y_ABORT_UNLESS(logRead);
                 LOG_INFO_S(ctx, NKikimrServices::BS_LOAD_TEST, "Tag# " << Tag << " owner# "
                         << (ui32)worker->PDiskParams->Owner << " going to send first TEvLogRead# " << logRead->ToString());
                 SendRequest(ctx, std::move(logRead));
@@ -410,7 +413,7 @@ public:
 
     void Handle(NPDisk::TEvReadLogResult::TPtr& ev, const TActorContext& ctx) {
         auto msg = ev->Get();
-        Y_VERIFY(msg->Status == NKikimrProto::OK);
+        Y_ABORT_UNLESS(msg->Status == NKikimrProto::OK);
 
         for (auto& worker : Workers) {
             if (worker->PDiskParams && worker->PDiskParams->Owner == msg->Owner) {
@@ -422,7 +425,7 @@ public:
                     --OwnerInitInProgress;
                 } else {
                     auto logRead = worker->GetLogRead();
-                    Y_VERIFY(logRead);
+                    Y_ABORT_UNLESS(logRead);
                     SendRequest(ctx, std::move(logRead));
                 }
                 break;
@@ -527,7 +530,7 @@ public:
 
     void HandleEnd(NPDisk::TEvReadLogResult::TPtr& ev, const TActorContext& ctx) {
         auto msg = ev->Get();
-        Y_VERIFY(msg->Status == NKikimrProto::OK);
+        Y_ABORT_UNLESS(msg->Status == NKikimrProto::OK);
 
         for (auto& worker : Workers) {
             if (worker->PDiskParams->Owner == msg->Owner) {
@@ -554,7 +557,7 @@ public:
             return;
         }
 
-        Y_VERIFY(HarakiriInFlight);
+        Y_ABORT_UNLESS(HarakiriInFlight);
 
         if (!--HarakiriInFlight) {
             for (auto& worker : Workers) {
@@ -617,7 +620,7 @@ public:
         auto now = TAppData::TimeProvider->Now();
         for (const auto& res : msg->Results) {
             auto it = InFlightLogWrites.find(reinterpret_cast<ui64>(res.Cookie));
-            Y_VERIFY(it != InFlightLogWrites.end());
+            Y_ABORT_UNLESS(it != InFlightLogWrites.end());
             const auto& stats = it->second;
             LogResponseTimes.Increment((now - stats.SentTime).MicroSeconds());
             auto& worker = Workers[stats.WorkerIdx];

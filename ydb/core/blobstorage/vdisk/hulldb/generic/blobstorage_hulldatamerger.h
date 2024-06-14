@@ -37,7 +37,7 @@ namespace NKikimr {
         }
 
         TBlobType::EType GetType() const {
-            Y_VERIFY_DEBUG(HugeBlobMerger.Empty() || DiskBlobMerger.Empty());
+            Y_DEBUG_ABORT_UNLESS(HugeBlobMerger.Empty() || DiskBlobMerger.Empty());
             if (!HugeBlobMerger.Empty()) {
                 return HugeBlobMerger.GetBlobType();
             } else {
@@ -46,24 +46,28 @@ namespace NKikimr {
             }
         }
 
-        ui32 GetInplacedSize() const {
-            Y_VERIFY_DEBUG(HugeBlobMerger.Empty() || DiskBlobMerger.Empty());
-            return HugeBlobMerger.Empty() ? DiskBlobMerger.GetDiskBlob().GetSize() : 0;
+        ui32 GetInplacedSize(bool addHeader) const {
+            Y_DEBUG_ABORT_UNLESS(HugeBlobMerger.Empty() || DiskBlobMerger.Empty());
+            return HugeBlobMerger.Empty() ? DiskBlobMerger.GetDiskBlob().GetBlobSize(addHeader) : 0;
         }
 
         void AddHugeBlob(const TDiskPart *begin, const TDiskPart *end, const NMatrix::TVectorType &parts,
                 ui64 circaLsn) {
-            Y_VERIFY_DEBUG(DiskBlobMerger.Empty());
+            Y_DEBUG_ABORT_UNLESS(DiskBlobMerger.Empty());
             HugeBlobMerger.Add(begin, end, parts, circaLsn);
         }
 
+        void AddDeletedHugeBlob(const TDiskPart& part) {
+            HugeBlobMerger.AddDeletedPart(part);
+        }
+
         void AddBlob(const TDiskBlob &addBlob) {
-            Y_VERIFY_DEBUG(HugeBlobMerger.Empty());
+            Y_DEBUG_ABORT_UNLESS(HugeBlobMerger.Empty());
             DiskBlobMerger.Add(addBlob);
         }
 
         void AddPart(const TDiskBlob& source, const TDiskBlob::TPartIterator& iter) {
-            Y_VERIFY_DEBUG(HugeBlobMerger.Empty());
+            Y_DEBUG_ABORT_UNLESS(HugeBlobMerger.Empty());
             DiskBlobMerger.AddPart(source, iter);
         }
 
@@ -76,9 +80,9 @@ namespace NKikimr {
             return !DiskBlobMerger.Empty();
         }
 
-        ui32 GetDiskBlobRawSize() const {
-            Y_VERIFY_DEBUG(!DiskBlobMerger.Empty());
-            return DiskBlobMerger.GetDiskBlob().GetSize();
+        ui32 GetDiskBlobRawSize(bool addHeader) const {
+            Y_DEBUG_ABORT_UNLESS(!DiskBlobMerger.Empty());
+            return DiskBlobMerger.GetDiskBlob().GetBlobSize(addHeader);
         }
 
         const TDiskBlobMerger &GetDiskBlobMerger() const {

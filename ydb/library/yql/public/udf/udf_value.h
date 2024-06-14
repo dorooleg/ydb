@@ -182,17 +182,35 @@ private:
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 30)
-class IBoxedValue : public IBoxedValue6 {};
+class IBoxedValue : public IBoxedValue6 {
+protected:
+    IBoxedValue();
+};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 19)
-class IBoxedValue : public IBoxedValue5 {};
+class IBoxedValue : public IBoxedValue5 {
+protected:
+    IBoxedValue();
+};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 12)
-class IBoxedValue : public IBoxedValue4 {};
+class IBoxedValue : public IBoxedValue4 {
+protected:
+    IBoxedValue();
+};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 11)
-class IBoxedValue : public IBoxedValue3 {};
+class IBoxedValue : public IBoxedValue3 {
+protected:
+    IBoxedValue();
+};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 3)
-class IBoxedValue : public IBoxedValue2 {};
+class IBoxedValue : public IBoxedValue2 {
+protected:
+    IBoxedValue();
+};
 #else
-class IBoxedValue : public IBoxedValue1 {};
+class IBoxedValue : public IBoxedValue1 {
+protected:
+    IBoxedValue();
+};
 #endif
 
 UDF_ASSERT_TYPE_SIZE(IBoxedValue, 16);
@@ -464,7 +482,7 @@ struct TBoxedValueAccessor
 #undef MAP_HANDLER
         }
 
-        Y_FAIL("unknown method");
+        Y_ABORT("unknown method");
     }
 
     template<EMethod Method> static uintptr_t GetMethodPtr();
@@ -656,10 +674,37 @@ UDF_ASSERT_TYPE_SIZE(TBoxedValue, 32);
 ///////////////////////////////////////////////////////////////////////////////
 // TUnboxedValuePod
 ///////////////////////////////////////////////////////////////////////////////
+
+struct TRawEmbeddedValue {
+    char Buffer[0xE];
+    ui8 Size;
+    ui8 Meta;
+};
+
+struct TRawBoxedValue {
+    IBoxedValue* Value;
+    ui8 Reserved[7];
+    ui8 Meta;
+};
+
+struct TRawStringValue {
+    static constexpr ui32 OffsetLimit = 1 << 24;
+
+    TStringValue::TData* Value;
+    ui32 Size;
+    union {
+        struct {
+            ui8 Skip[3];
+            ui8 Meta;
+        };
+        ui32 Offset;
+    };
+};
+
 class TUnboxedValuePod
 {
 friend class TUnboxedValue;
-protected:
+public:
     enum class EMarkers : ui8 {
         Empty = 0,
         Embedded,
@@ -667,7 +712,6 @@ protected:
         Boxed,
     };
 
-public:
     inline TUnboxedValuePod() noexcept = default;
     inline ~TUnboxedValuePod() noexcept = default;
 
@@ -806,29 +850,11 @@ protected:
     union TRaw {
         ui64 Halfs[2] = {0, 0};
 
-        struct {
-            char Buffer[0xE];
-            ui8 Size;
-            ui8 Meta;
-        } Embedded;
-
-        struct {
-            IBoxedValue* Value;
-            ui8 Reserved[7];
-            ui8 Meta;
-        } Boxed;
-
-        struct {
-            TStringValue::TData* Value;
-            ui32 Size;
-            union {
-                ui32 Offset;
-                struct {
-                    ui8 Skip[3];
-                    ui8 Meta;
-                };
-            };
-        } String;
+        TRawEmbeddedValue Embedded;
+        
+        TRawBoxedValue Boxed;
+        
+        TRawStringValue String;
 
         struct {
             union {
@@ -867,9 +893,10 @@ public:
     inline void DeleteUnreferenced() const noexcept;
     inline i32 LockRef() const noexcept;
     inline void UnlockRef(i32 prev) const noexcept;
+    inline i32 RefCount() const noexcept;
 
     static constexpr ui32 InternalBufferSize = sizeof(TRaw::Embedded.Buffer);
-    static constexpr ui32 OffsetLimit = 1U << 24U;
+    static constexpr ui32 OffsetLimit = TRawStringValue::OffsetLimit;
 };
 
 UDF_ASSERT_TYPE_SIZE(TUnboxedValuePod, 16);
@@ -933,7 +960,7 @@ public:
     }
 
     inline static void Validate(const TUnboxedValuePod& value) {
-        Y_VERIFY_DEBUG(value.GetResourceTag() == TStringRef(ResourceTag, std::strlen(ResourceTag)));
+        Y_DEBUG_ABORT_UNLESS(value.GetResourceTag() == TStringRef(ResourceTag, std::strlen(ResourceTag)));
     }
 
 private:
@@ -971,17 +998,17 @@ namespace NUdf {
 //////////////////////////////////////////////////////////////////////////////
 inline bool TBoxedValueBase::HasFastListLength() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline ui64 TBoxedValueBase::GetListLength() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline ui64 TBoxedValueBase::GetEstimatedListLength() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline const TOpaqueListRepresentation* TBoxedValueBase::GetListRepresentation() const {
@@ -1012,7 +1039,7 @@ inline IBoxedValuePtr TBoxedValueBase::ToIndexDictImpl(const IValueBuilder& buil
 
 inline ui64 TBoxedValueBase::GetDictLength() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TBoxedValue::TBoxedValue()
@@ -1038,22 +1065,22 @@ inline void TBoxedValueLink::Unlink() {
 
 inline TUnboxedValue TBoxedValueBase::GetDictIterator() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::GetListIterator() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::GetKeysIterator() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::GetPayloadsIterator() const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline bool TBoxedValueBase::Skip()
@@ -1064,18 +1091,18 @@ inline bool TBoxedValueBase::Skip()
 
 inline bool TBoxedValueBase::Next(TUnboxedValue&)
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline bool TBoxedValueBase::NextPair(TUnboxedValue&, TUnboxedValue&)
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::GetElement(ui32 index) const
 {
     Y_UNUSED(index);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline const TUnboxedValue* TBoxedValueBase::GetElements() const
@@ -1085,115 +1112,115 @@ inline const TUnboxedValue* TBoxedValueBase::GetElements() const
 
 inline void TBoxedValueBase::Apply(IApplyContext&) const
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TStringRef TBoxedValueBase::GetResourceTag() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void* TBoxedValueBase::GetResource()
 {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline bool TBoxedValueBase::HasListItems() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline bool TBoxedValueBase::HasDictItems() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline ui32 TBoxedValueBase::GetVariantIndex() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline bool TBoxedValueBase::Contains(const TUnboxedValuePod& key) const
 {
     Y_UNUSED(key);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::Lookup(const TUnboxedValuePod& key) const
 {
     Y_UNUSED(key);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::Run(const IValueBuilder* valueBuilder, const TUnboxedValuePod* args) const
 {
     Y_UNUSED(valueBuilder);
     Y_UNUSED(args);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::GetVariantItem() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline EFetchStatus TBoxedValueBase::Fetch(TUnboxedValue& result) {
     Y_UNUSED(result);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 3)
 inline ui32 TBoxedValueBase::GetTraverseCount() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
     return 0;
 }
 
 inline TUnboxedValue TBoxedValueBase::GetTraverseItem(ui32 index) const {
     Y_UNUSED(index);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline TUnboxedValue TBoxedValueBase::Save() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void TBoxedValueBase::Load(const TStringRef& state) {
     Y_UNUSED(state);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 11)
 inline void TBoxedValueBase::Push(const TUnboxedValuePod& value) {
     Y_UNUSED(value);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 12)
 inline bool TBoxedValueBase::IsSortedDict() const {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 19)
 inline void TBoxedValueBase::Unused1() {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void TBoxedValueBase::Unused2() {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void TBoxedValueBase::Unused3() {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void TBoxedValueBase::Unused4() {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void TBoxedValueBase::Unused5() {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 
 inline void TBoxedValueBase::Unused6() {
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 #endif
 
@@ -1201,7 +1228,7 @@ inline void TBoxedValueBase::Unused6() {
 inline EFetchStatus TBoxedValueBase::WideFetch(TUnboxedValue *result, ui32 width) {
     Y_UNUSED(result);
     Y_UNUSED(width);
-    Y_FAIL("Not implemented");
+    Y_ABORT("Not implemented");
 }
 #endif
 

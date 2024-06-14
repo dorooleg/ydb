@@ -5,7 +5,7 @@
 #include "flat_util_binary.h"
 #include "util_deref.h"
 
-#include <library/cpp/actors/util/shared_data.h>
+#include <ydb/library/actors/util/shared_data.h>
 
 #include <util/generic/ymath.h>
 #include <util/system/sanitizers.h>
@@ -28,20 +28,20 @@ namespace NBloom {
     public:
         TEstimator(float error)
         {
-            Y_VERIFY(error > 0. && error < 1.,
+            Y_ABORT_UNLESS(error > 0. && error < 1.,
                 "Invalid error estimation, should be in (0, 1)");
 
             double log2err = Log2(error);
 
             Amp = -1.44 * log2err;
-            Y_VERIFY(Amp < 256., "Too high rows amplification factor");
+            Y_ABORT_UNLESS(Amp < 256., "Too high rows amplification factor");
 
             HashCount = Min(ui64(Max<ui16>()), ui64(ceil(-log2err)));
         }
 
         ui64 Bits(ui64 rows) const noexcept
         {
-            Y_VERIFY(!(rows >> 54),
+            Y_ABORT_UNLESS(!(rows >> 54),
                 "Too many rows, probably an invalid value passed");
 
             return ((Max(ui64(ceil(Amp * rows)), ui64(1)) + 63) >> 6) << 6;
@@ -64,7 +64,7 @@ namespace NBloom {
             TEstimator estimator(error);
             Hashes = estimator.Hashes();
             Items = estimator.Bits(rows);
-            Y_VERIFY(Hashes && Items);
+            Y_ABORT_UNLESS(Hashes && Items);
 
             Reset();
         }
@@ -81,11 +81,8 @@ namespace NBloom {
 
             NUtil::NBin::TPut out(Raw.mutable_begin());
 
-            if (auto *hdr = out.Skip<NPage::TLabel>()) {
-                hdr->Type = NPage::EPage::Bloom;
-                hdr->Format = 0;
-                hdr->Size = size;
-            }
+            WriteUnaligned<NPage::TLabel>(out.Skip<NPage::TLabel>(),
+                NPage::TLabel::Encode(NPage::EPage::Bloom, 0, size));
 
             if (auto *post = out.Skip<THeader>()) {
                 Zero(*post);
@@ -97,8 +94,8 @@ namespace NBloom {
 
             Array = { TDeref<ui64>::At(*out, 0), size_t(Items >> 6) };
 
-            Y_VERIFY(size_t(*out) % sizeof(ui64) == 0, "Invalid aligment");
-            Y_VERIFY(TDeref<char>::At(Array.end(), 0) == Raw.mutable_end());
+            Y_ABORT_UNLESS(size_t(*out) % sizeof(ui64) == 0, "Invalid aligment");
+            Y_ABORT_UNLESS(TDeref<char>::At(Array.end(), 0) == Raw.mutable_end());
 
             std::fill(Array.begin(), Array.end(), 0);
         }

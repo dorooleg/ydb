@@ -4,9 +4,9 @@
 
 #include <ydb/core/protos/resource_broker.pb.h>
 
-#include <library/cpp/actors/core/defs.h>
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/event.h>
+#include <ydb/library/actors/core/defs.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/event.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 #include <array>
@@ -129,7 +129,7 @@ struct TEvResourceBroker {
             , Priority(priority)
             , Resubmit(resubmit)
         {
-            Y_VERIFY(taskId);
+            Y_ABORT_UNLESS(taskId);
         }
     };
 
@@ -141,7 +141,7 @@ struct TEvResourceBroker {
             : TaskId(taskId)
             , Cookie(cookie)
         {
-            Y_VERIFY(taskId);
+            Y_ABORT_UNLESS(taskId);
         }
     };
 
@@ -153,7 +153,7 @@ struct TEvResourceBroker {
             : TaskId(taskId)
             , ReplyOnSuccess(replyOnSuccess)
         {
-            Y_VERIFY(taskId);
+            Y_ABORT_UNLESS(taskId);
         }
     };
 
@@ -170,7 +170,7 @@ struct TEvResourceBroker {
             : TaskId(taskId)
             , Cancel(cancel)
         {
-            Y_VERIFY(taskId);
+            Y_ABORT_UNLESS(taskId);
         }
     };
 

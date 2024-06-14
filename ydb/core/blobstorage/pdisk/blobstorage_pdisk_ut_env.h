@@ -25,6 +25,7 @@ public:
         EDiskMode DiskMode = EDiskMode::DM_NONE;
         ui32 ChunkSize = 128 * (1 << 20);
         bool SmallDisk = false;
+        bool SuppressCompatibilityCheck = false;
     };
 
 private:
@@ -35,7 +36,7 @@ private:
 
 public:
     TActorId Sender;
-    NPDisk::TMainKey MainKey = { NPDisk::YdbDefaultPDiskSequence };
+    NPDisk::TMainKey MainKey{ .Keys = { NPDisk::YdbDefaultPDiskSequence }, .IsInitialized = true };
     TTestContext TestCtx;
     TSettings Settings;
 
@@ -57,6 +58,7 @@ public:
         pDiskConfig->SectorMap = TestCtx.SectorMap;
         pDiskConfig->EnableSectorEncryption = !pDiskConfig->SectorMap;
         pDiskConfig->FeatureFlags.SetEnableSmallDiskOptimization(Settings.SmallDisk);
+        pDiskConfig->FeatureFlags.SetSuppressCompatibilityCheck(Settings.SuppressCompatibilityCheck);
         return pDiskConfig;
     }
 
@@ -150,13 +152,17 @@ public:
     }
 
     template<typename TRes>
-    THolder<TRes> TestResponse(IEventBase* ev, NKikimrProto::EReplyStatus status) {
+    THolder<TRes> TestResponse(IEventBase* ev, std::optional<NKikimrProto::EReplyStatus> status = std::nullopt) {
         if (ev) {
             Send(ev);
         }
         THolder<TRes> evRes = Recv<TRes>();
-        UNIT_ASSERT_C(evRes->Status == status, evRes->ToString());
-        UNIT_ASSERT(status == NKikimrProto::OK || !evRes->ErrorReason.empty());
+
+        if (status.has_value()) {
+            UNIT_ASSERT_C(evRes->Status == status.value(), evRes->ToString());
+        }
+
+        UNIT_ASSERT(evRes->Status == NKikimrProto::OK || !evRes->ErrorReason.empty());
 
         // Test that all ToString methods don't VERIFY
         Cnull << evRes->ToString();
@@ -250,7 +256,7 @@ struct TVDiskMock {
         commited.clear();
     }
 
-    ui64 ReadLog(std::function<void(const NPDisk::TLogRecord&)> logResCallback = {}) {
+    ui64 ReadLog(bool quietStopOnError = false, std::function<void(const NPDisk::TLogRecord&)> logResCallback = {}) {
         ui64 logRecordsRead = 0;
 
         NPDisk::TLogPosition position{0, 0};
@@ -258,8 +264,13 @@ struct TVDiskMock {
         do {
             UNIT_ASSERT(PDiskParams);
             auto logReadRes = TestCtx->TestResponse<NPDisk::TEvReadLogResult>(
-                new NPDisk::TEvReadLog(PDiskParams->Owner, PDiskParams->OwnerRound, position),
-                NKikimrProto::OK);
+                new NPDisk::TEvReadLog(PDiskParams->Owner, PDiskParams->OwnerRound, position));
+
+            if (logReadRes->Status != NKikimrProto::OK && quietStopOnError) {
+                return logRecordsRead;
+            }
+
+            UNIT_ASSERT_EQUAL(NKikimrProto::OK, logReadRes->Status);
             UNIT_ASSERT(position == logReadRes->Position);
             for (const NPDisk::TLogRecord& rec : logReadRes->Results) {
                 ++logRecordsRead;

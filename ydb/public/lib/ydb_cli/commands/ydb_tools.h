@@ -43,6 +43,7 @@ private:
     bool SavePartialResult = false;
     TString ConsistencyLevel;
     bool PreservePoolKinds = false;
+    bool Ordered = false;
 };
 
 class TCommandRestore : public TToolsCommand, public TCommandWithPath {
@@ -104,6 +105,18 @@ private:
 
     TVector<TItem> Items;
     TString DatabaseName;
+};
+
+class TCommandPgConvert : public TToolsCommand {
+public:
+    TCommandPgConvert();
+    virtual void Config(TConfig& config) override;
+    virtual void Parse(TConfig& config) override;
+    virtual int Run(TConfig& config) override;
+
+private:
+    TString Path;
+    bool IgnoreUnsupported = false;
 };
 
 }

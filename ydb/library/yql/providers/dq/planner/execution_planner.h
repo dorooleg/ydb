@@ -53,7 +53,7 @@ namespace NYql::NDqs {
             return _MaxDataSizePerJob;
         }
         ui64 StagesCount();
-        ui32 PlanExecution(bool canFallback = false);
+        bool PlanExecution(bool canFallback = false);
         TVector<NDqProto::TDqTask> GetTasks(const TVector<NActors::TActorId>& workers) override;
         TVector<NDqProto::TDqTask>& GetTasks() override;
 
@@ -66,11 +66,12 @@ namespace NYql::NDqs {
 
     private:
         bool BuildReadStage(const NNodes::TDqPhyStage& stage, bool dqSource, bool canFallback);
+        void ConfigureInputTransformStreamLookup(const NNodes::TDqCnStreamLookup& streamLookup, const NNodes::TDqPhyStage& stage , ui32 inputIndex);
         void BuildConnections(const NNodes::TDqPhyStage& stage);
-        THashMap<NDq::TStageId, std::tuple<TString,ui64,ui64>> BuildAllPrograms();
-        void FillChannelDesc(NDqProto::TChannel& channelDesc, const NDq::TChannel& channel);
+        void BuildAllPrograms();
+        void FillChannelDesc(NDqProto::TChannel& channelDesc, const NDq::TChannel& channel, bool enableSpilling);
         void FillInputDesc(NDqProto::TTaskInput& inputDesc, const TTaskInput& input);
-        void FillOutputDesc(NDqProto::TTaskOutput& outputDesc, const TTaskOutput& output);
+        void FillOutputDesc(NDqProto::TTaskOutput& outputDesc, const TTaskOutput& output, bool enableSpilling);
 
         void GatherPhyMapping(THashMap<std::tuple<TString, TString>, TString>& clusters, THashMap<std::tuple<TString, TString, TString>, TString>& tables);
         void BuildCheckpointingAndWatermarksMode(bool enableCheckpoints, bool enableWatermarks);
@@ -93,6 +94,7 @@ namespace NYql::NDqs {
         TVector<NDqProto::TDqTask> Tasks;
 
         THashMap<ui64, ui32> PublicIds;
+        THashMap<NDq::TStageId, std::tuple<TString,ui64,ui64>> StagePrograms;
     };
 
     // Execution planner for TRuntimeNode
@@ -102,7 +104,6 @@ namespace NYql::NDqs {
             const TString& program,
             NActors::TActorId executerID,
             NActors::TActorId resultID,
-            const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
             const TTypeAnnotationNode* typeAnn);
 
         TVector<NDqProto::TDqTask>& GetTasks() override;
@@ -117,7 +118,6 @@ namespace NYql::NDqs {
 
         TMaybe<NActors::TActorId> SourceID = {};
         TVector<NDqProto::TDqTask> Tasks;
-        const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry;
         const TTypeAnnotationNode* TypeAnn;
     };
 

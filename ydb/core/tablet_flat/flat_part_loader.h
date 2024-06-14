@@ -4,7 +4,6 @@
 #include "flat_sausagecache.h"
 #include "shared_cache_events.h"
 #include "util_fmt_abort.h"
-#include "util_basics.h"
 #include <ydb/core/tablet_flat/protos/flat_table_part.pb.h>
 #include <ydb/core/util/pb.h>
 #include <util/generic/hash.h>
@@ -69,13 +68,9 @@ namespace NTable {
                     if (!fetch->Pages) {
                         Y_Fail("TLoader is trying to fetch 0 pages");
                     }
-                    if (++FetchAttempts > 1) {
-                        Y_Fail("TLoader needs multiple fetches in " << Stage << " stage");
-                    }
                     return { fetch };
                 }
 
-                FetchAttempts = 0;
                 Stage = EStage(ui8(Stage) + 1);
             }
 
@@ -87,7 +82,7 @@ namespace NTable {
         constexpr static bool NeedIn(EPage page) noexcept
         {
             return
-                page == EPage::Scheme || page == EPage::Index
+                page == EPage::Scheme
                 || page == EPage::Frames || page == EPage::Globs
                 || page == EPage::Schem2 || page == EPage::Bloom
                 || page == EPage::GarbageStats
@@ -96,16 +91,16 @@ namespace NTable {
 
         TPartView Result() noexcept
         {
-            Y_VERIFY(Stage == EStage::Result);
-            Y_VERIFY(PartView, "Result may only be grabbed once");
-            Y_VERIFY(PartView.Slices, "Missing slices in Result stage");
+            Y_ABORT_UNLESS(Stage == EStage::Result);
+            Y_ABORT_UNLESS(PartView, "Result may only be grabbed once");
+            Y_ABORT_UNLESS(PartView.Slices, "Missing slices in Result stage");
             return std::move(PartView);
         }
 
         static TEpoch GrabEpoch(const TPartComponents &pc)
         {
-            Y_VERIFY(pc.PageCollectionComponents, "PartComponents should have at least one pageCollectionComponent");
-            Y_VERIFY(pc.PageCollectionComponents[0].Packet, "PartComponents should have a parsed meta pageCollectionComponent");
+            Y_ABORT_UNLESS(pc.PageCollectionComponents, "PartComponents should have at least one pageCollectionComponent");
+            Y_ABORT_UNLESS(pc.PageCollectionComponents[0].Packet, "PartComponents should have a parsed meta pageCollectionComponent");
 
             const auto &meta = pc.PageCollectionComponents[0].Packet->Meta;
 
@@ -115,13 +110,13 @@ namespace NTable {
                 {
                     TProtoBox<NProto::TRoot> root(meta.GetPageInplaceData(page));
 
-                    Y_VERIFY(root.HasEpoch());
+                    Y_ABORT_UNLESS(root.HasEpoch());
 
                     return TEpoch(root.GetEpoch());
                 }
             }
 
-            Y_FAIL("Cannot locate part metadata in page collections of PartComponents");
+            Y_ABORT("Cannot locate part metadata in page collections of PartComponents");
         }
 
         static TLogoBlobID BlobsLabelFor(const TLogoBlobID &base) noexcept
@@ -141,7 +136,8 @@ namespace NTable {
     private:
         bool HasBasics() const noexcept
         {
-            return SchemeId != Max<TPageId>() && IndexId != Max<TPageId>();
+            return SchemeId != Max<TPageId>() && 
+                (FlatGroupIndexes || BTreeGroupIndexes);
         }
 
         const TSharedData* GetPage(TPageId page) noexcept
@@ -149,12 +145,17 @@ namespace NTable {
             return page == Max<TPageId>() ? nullptr : Packs[0]->Lookup(page);
         }
 
+        size_t GetPageSize(TPageId page) noexcept
+        {
+            return Packs[0]->PageCollection->Page(page).Size;
+        }
+
         void ParseMeta(TArrayRef<const char> plain) noexcept
         {
             TMemoryInput stream(plain.data(), plain.size());
             bool parsed = Root.ParseFromArcadiaStream(&stream);
-            Y_VERIFY(parsed && stream.Skip(1) == 0, "Cannot parse TPart meta");
-            Y_VERIFY(Root.HasEpoch(), "TPart meta has no epoch info");
+            Y_ABORT_UNLESS(parsed && stream.Skip(1) == 0, "Cannot parse TPart meta");
+            Y_ABORT_UNLESS(Root.HasEpoch(), "TPart meta has no epoch info");
         }
 
         void StageParseMeta() noexcept;
@@ -169,18 +170,18 @@ namespace NTable {
         const TVector<TString> Deltas;
         const TEpoch Epoch;
         EStage Stage = EStage::Meta;
-        ui8 FetchAttempts = 0;
         bool Rooted = false; /* Has full topology metablob */
         TPageId SchemeId = Max<TPageId>();
-        TPageId IndexId = Max<TPageId>();
         TPageId GlobsId = Max<TPageId>();
         TPageId LargeId = Max<TPageId>();
         TPageId SmallId = Max<TPageId>();
         TPageId ByKeyId = Max<TPageId>();
         TPageId GarbageStatsId = Max<TPageId>();
         TPageId TxIdStatsId = Max<TPageId>();
-        TVector<TPageId> GroupIndexesIds;
-        TVector<TPageId> HistoricIndexesIds;
+        TVector<TPageId> FlatGroupIndexes;
+        TVector<TPageId> FlatHistoricIndexes;
+        TVector<NPage::TBtreeIndexMeta> BTreeGroupIndexes;
+        TVector<NPage::TBtreeIndexMeta> BTreeHistoricIndexes;
         TRowVersion MinRowVersion;
         TRowVersion MaxRowVersion;
         NProto::TRoot Root;

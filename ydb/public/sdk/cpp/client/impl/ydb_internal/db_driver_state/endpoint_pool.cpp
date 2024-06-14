@@ -2,6 +2,10 @@
 #include "endpoint_pool.h"
 
 namespace NYdb {
+
+using std::string;
+using std::vector;
+
 TEndpointPool::TEndpointPool(TListEndpointsResultProvider&& provider, const IInternalClient* client)
     : Provider_(provider)
     , LastUpdateTime_(TInstant::Zero().MicroSeconds())
@@ -21,7 +25,7 @@ TEndpointPool::~TEndpointPool() {
             future.Wait();
         }
     } catch (...) {
-        Y_FAIL("Unexpected exception from endpoint pool dtor");
+        Y_ABORT("Unexpected exception from endpoint pool dtor");
     }
 }
 
@@ -38,18 +42,18 @@ std::pair<NThreading::TFuture<TEndpointUpdateResult>, bool> TEndpointPool::Updat
     }
     auto handler = [this](const TAsyncListEndpointsResult& future) {
         TListEndpointsResult result = future.GetValue();
-        std::vector<TStringType> removed;
+        vector<string> removed;
         if (result.DiscoveryStatus.Status == EStatus::SUCCESS) {
-            std::vector<TEndpointRecord> records;
+            vector<TEndpointRecord> records;
             // Is used to convert float to integer load factor
             // same integer values will be selected randomly.
             const float multiplicator = 10.0;
-            const auto& preferedLocation = GetPreferedLocation(result.Result.self_location());
+            const auto& preferredLocation = GetPreferredLocation(result.Result.self_location());
             for (const auto& endpoint : result.Result.endpoints()) {
                 i32 loadFactor = (i32)(multiplicator * Min(LoadMax, Max(LoadMin, endpoint.load_factor())));
                 ui64 nodeId = endpoint.node_id();
                 if (BalancingSettings_.Policy != EBalancingPolicy::UseAllNodes) {
-                    if (endpoint.location() != preferedLocation) {
+                    if (endpoint.location() != preferredLocation) {
                         // Location missmatch, shift this endpoint
                         loadFactor += GetLocalityShift();
                     }
@@ -122,8 +126,8 @@ std::pair<NThreading::TFuture<TEndpointUpdateResult>, bool> TEndpointPool::Updat
     return {future, true};
 }
 
-TEndpointRecord TEndpointPool::GetEndpoint(const TEndpointKey& preferredEndpoint) const {
-    return Elector_.GetEndpoint(preferredEndpoint);
+TEndpointRecord TEndpointPool::GetEndpoint(const TEndpointKey& preferredEndpoint, bool onlyPreferred) const {
+    return Elector_.GetEndpoint(preferredEndpoint, onlyPreferred);
 }
 
 TDuration TEndpointPool::TimeSinceLastUpdate() const {
@@ -131,7 +135,7 @@ TDuration TEndpointPool::TimeSinceLastUpdate() const {
     return TDuration::MicroSeconds(now - LastUpdateTime_.load());
 }
 
-void TEndpointPool::BanEndpoint(const TStringType& endpoint) {
+void TEndpointPool::BanEndpoint(const string& endpoint) {
     Elector_.PessimizeEndpoint(endpoint);
 }
 
@@ -170,7 +174,7 @@ constexpr i32 TEndpointPool::GetLocalityShift() {
     return LoadMax * Multiplicator;
 }
 
-TStringType TEndpointPool::GetPreferedLocation(const TStringType& selfLocation) {
+string TEndpointPool::GetPreferredLocation(const string& selfLocation) {
     switch (BalancingSettings_.Policy) {
         case EBalancingPolicy::UseAllNodes:
             return {};

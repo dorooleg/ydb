@@ -14,12 +14,13 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_ADDRESS_FILTERING_H
-#define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_ADDRESS_FILTERING_H
+#ifndef GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_ADDRESS_FILTERING_H
+#define GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_ADDRESS_FILTERING_H
 
 #include <grpc/support/port_platform.h>
 
 #include <map>
+#include <memory>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
 #include <vector>
@@ -100,4 +101,4 @@ y_absl::StatusOr<HierarchicalAddressMap> MakeHierarchicalAddressMap(
 
 }  // namespace grpc_core
 
-#endif  // GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_ADDRESS_FILTERING_H
+#endif  // GRPC_SRC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_ADDRESS_FILTERING_H

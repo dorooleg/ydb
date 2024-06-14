@@ -32,7 +32,7 @@ public:
     }
 
     EExecutionStatus Execute(TOperation::TPtr op, TTransactionContext& txc, const TActorContext& ctx) override {
-        Y_VERIFY(op->IsDistributedEraseTx());
+        Y_ABORT_UNLESS(op->IsDistributedEraseTx());
 
         TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
         Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
@@ -45,7 +45,8 @@ public:
         auto [readVersion, writeVersion] = DataShard.GetReadWriteVersions(op.Get());
 
         if (eraseTx->HasDependents()) {
-            TDataShardUserDb userDb(DataShard, txc.DB, readVersion);
+            NMiniKQL::TEngineHostCounters engineHostCounters;
+            TDataShardUserDb userDb(DataShard, txc.DB, op->GetGlobalTxId(), readVersion, writeVersion, engineHostCounters, TAppData::TimeProvider->Now());
             TDataShardChangeGroupProvider groupProvider(DataShard, txc.DB, /* distributed tx group */ 0);
             THolder<IDataShardChangeCollector> changeCollector{CreateChangeCollector(DataShard, userDb, groupProvider, txc.DB, request.GetTableId())};
 
@@ -82,19 +83,20 @@ public:
         } else if (eraseTx->HasDependencies()) {
             THashMap<ui64, TDynBitMap> presentRows;
             for (const auto& dependency : eraseTx->GetDependencies()) {
-                Y_VERIFY(!presentRows.contains(dependency.GetShardId()));
+                Y_ABORT_UNLESS(!presentRows.contains(dependency.GetShardId()));
                 presentRows.emplace(dependency.GetShardId(), DeserializeBitMap<TDynBitMap>(dependency.GetPresentRows()));
             }
 
             for (const auto& [_, readSets] : op->InReadSets()) {
                 for (const auto& rs : readSets) {
                     NKikimrTxDataShard::TDistributedEraseRS body;
-                    Y_VERIFY(body.ParseFromArray(rs.Body.data(), rs.Body.size()));
+                    Y_ABORT_UNLESS(body.ParseFromArray(rs.Body.data(), rs.Body.size()));
+                    Y_ABORT_UNLESS(presentRows.contains(rs.Origin));
 
-                    Y_VERIFY(presentRows.contains(rs.Origin));
-                    const bool ok = Execute(txc, request, presentRows.at(rs.Origin),
-                        DeserializeBitMap<TDynBitMap>(body.GetConfirmedRows()), writeVersion, op->GetGlobalTxId());
-                    Y_VERIFY(ok);
+                    auto confirmedRows = DeserializeBitMap<TDynBitMap>(body.GetConfirmedRows());
+                    if (!Execute(txc, request, presentRows.at(rs.Origin), confirmedRows, writeVersion, op->GetGlobalTxId())) {
+                        return EExecutionStatus::Restart;
+                    }
                 }
             }
 
@@ -126,7 +128,7 @@ public:
         const ui64 tableId = request.GetTableId();
         const TTableId fullTableId(DataShard.GetPathOwnerId(), tableId);
 
-        Y_VERIFY(DataShard.GetUserTables().contains(tableId));
+        Y_ABORT_UNLESS(DataShard.GetUserTables().contains(tableId));
         const TUserTable& tableInfo = *DataShard.GetUserTables().at(tableId);
 
         const bool breakWriteConflicts = DataShard.SysLocksTable().HasWriteLocks(fullTableId);
@@ -146,8 +148,8 @@ public:
 
             const auto& serializedKey = request.GetKeyColumns(row++);
             TSerializedCellVec keyCells;
-            Y_VERIFY(TSerializedCellVec::TryParse(serializedKey, keyCells));
-            Y_VERIFY(keyCells.GetCells().size() == tableInfo.KeyColumnTypes.size());
+            Y_ABORT_UNLESS(TSerializedCellVec::TryParse(serializedKey, keyCells));
+            Y_ABORT_UNLESS(keyCells.GetCells().size() == tableInfo.KeyColumnTypes.size());
 
             TVector<TRawTypeValue> key;
             for (size_t ki : xrange(tableInfo.KeyColumnTypes.size())) {
@@ -191,7 +193,7 @@ public:
                 DataShard.GetConflictsCache().GetTableCache(tableInfo.LocalTid).AddUncommittedWrite(keyCells.GetCells(), globalTxId, txc.DB);
                 if (!commitAdded && userDb) {
                     // Make sure we see our own changes on further iterations
-                    userDb->AddCommitTxId(globalTxId, writeVersion);
+                    userDb->AddCommitTxId(fullTableId, globalTxId, writeVersion);
                     commitAdded = true;
                 }
             } else {
@@ -213,6 +215,7 @@ public:
                 /* participants */ { },
                 groupProvider ? groupProvider->GetCurrentChangeGroup() : std::nullopt,
                 volatileOrdered,
+                /* arbiter */ false,
                 txc);
             // Note: transaction is already committed, no additional waiting needed
         }

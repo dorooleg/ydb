@@ -9,17 +9,24 @@
                 "PlanNodeType": "ResultSet",
                 "Plans": [
                     {
-                        "Node Type": "Aggregate-Limit-Aggregate",
+                        "Node Type": "Aggregate-Limit",
                         "Operators": [
                             {
+                                "Inputs": [
+                                    {
+                                        "InternalOperatorId": 1
+                                    }
+                                ],
                                 "Name": "Aggregate"
                             },
                             {
+                                "Inputs": [
+                                    {
+                                        "ExternalPlanNodeId": 4
+                                    }
+                                ],
                                 "Limit": "1",
                                 "Name": "Limit"
-                            },
-                            {
-                                "Name": "Aggregate"
                             }
                         ],
                         "PlanNodeId": 5,
@@ -30,12 +37,14 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "Node Type": "Aggregate-Aggregate",
+                                        "Node Type": "Aggregate",
                                         "Operators": [
                                             {
-                                                "Name": "Aggregate"
-                                            },
-                                            {
+                                                "Inputs": [
+                                                    {
+                                                        "ExternalPlanNodeId": 2
+                                                    }
+                                                ],
                                                 "Name": "Aggregate"
                                             }
                                         ],
@@ -56,9 +65,15 @@
                                                             {
                                                                 "Aggregation": "state",
                                                                 "GroupBy": "",
+                                                                "Inputs": [
+                                                                    {
+                                                                        "InternalOperatorId": 1
+                                                                    }
+                                                                ],
                                                                 "Name": "Aggregate"
                                                             },
                                                             {
+                                                                "Inputs": [],
                                                                 "Name": "TableFullScan",
                                                                 "ReadColumns": [
                                                                     "four",

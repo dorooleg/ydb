@@ -8,6 +8,7 @@
 #include <ydb/core/base/storage_pools.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_factory.h>
+#include <ydb/core/mind/hive/domain_info.h>
 #include <ydb/core/protos/tablet_database.pb.h>
 #include <ydb/core/tx/tx.h>
 
@@ -26,7 +27,7 @@ namespace NKikimr {
     void RebootTablet(TTestActorRuntime& runtime, ui64 tabletId, const TActorId& sender, ui32 nodeIndex = 0, bool sysTablet = false);
     void GracefulRestartTablet(TTestActorRuntime& runtime, ui64 tabletId, const TActorId& sender, ui32 nodeIndex = 0);
     void SetupTabletServices(TTestActorRuntime& runtime, TAppPrepare* app = nullptr, bool mockDisk = false,
-                             NFake::TStorage storage = {}, NFake::TCaches caches = {});
+                             NFake::TStorage storage = {}, NFake::TCaches caches = {}, bool forceFollowers = false);
 
     const TString DEFAULT_STORAGE_POOL = "Storage Pool with id: 1";
 
@@ -37,8 +38,14 @@ namespace NKikimr {
     }
 
     const TChannelsBindings DEFAULT_BINDED_CHANNELS = {GetDefaultChannelBind(), GetDefaultChannelBind(), GetDefaultChannelBind()};
-    void SetupBoxAndStoragePool(TTestActorRuntime &runtime, const TActorId& sender, ui32 domainId = 0, ui32 nGroups = 1);
-    void SetupChannelProfiles(TAppPrepare &app, ui32 domainId = 0, ui32 nchannels = 3);
+    void SetupBoxAndStoragePool(TTestActorRuntime &runtime, const TActorId& sender, ui32 nGroups = 1);
+    inline void SetupBoxAndStoragePool(TTestActorRuntime &runtime, const TActorId& sender, ui32, ui32 nGroups) {
+        SetupBoxAndStoragePool(runtime, sender, nGroups);
+    }
+    void SetupChannelProfiles(TAppPrepare &app, ui32 nchannels = 3);
+    inline void SetupChannelProfiles(TAppPrepare &app, ui32, ui32 nchannels) {
+        SetupChannelProfiles(app, nchannels);
+    }
     TDomainsInfo::TDomain::TStoragePoolKinds DefaultPoolKinds(ui32 count = 1);
 
     i64 SetSplitMergePartCountLimit(TTestActorRuntime* runtime, i64 val);
@@ -89,7 +96,9 @@ namespace NKikimr {
     struct TEvFakeHive {
         enum EEv {
             EvSubscribeToTabletDeletion = TEvHive::EvEnd + 1,
-            EvNotifyTabletDeleted
+            EvNotifyTabletDeleted,
+            EvRequestDomainInfo,
+            EvRequestDomainInfoReply
         };
 
         struct TEvSubscribeToTabletDeletion : public TEventLocal<TEvSubscribeToTabletDeletion, EvSubscribeToTabletDeletion> {
@@ -107,6 +116,23 @@ namespace NKikimr {
                 : TabletId(tabletId)
             {}
         };
+
+        struct TEvRequestDomainInfo : public TEventLocal<TEvRequestDomainInfo, EvRequestDomainInfo> {
+            TSubDomainKey DomainKey;
+
+            explicit TEvRequestDomainInfo(TSubDomainKey domainKey)
+                : DomainKey(domainKey)
+            {}
+        };
+        
+        struct TEvRequestDomainInfoReply: public TEventLocal<TEvRequestDomainInfoReply, EvRequestDomainInfoReply> {
+            NHive::TDomainInfo DomainInfo;
+
+            explicit TEvRequestDomainInfoReply(const NHive::TDomainInfo& domainInfo)
+                : DomainInfo(domainInfo)
+            {}
+        };
+
     };
 
     struct TFakeHiveTabletInfo {
@@ -134,7 +160,7 @@ namespace NKikimr {
         TMap<ui64, ui64> TabletIdToHive;
         ui64 NextTabletId;
         ui64 NextHiveNextTabletId;
-
+        TMap<TSubDomainKey, NHive::TDomainInfo> Domains;
         static constexpr ui64 TABLETS_PER_CHILD_HIVE = 1000000; // amount of tablet ids we reserve for child hive
 
         typedef TIntrusivePtr<TFakeHiveState> TPtr;

@@ -1,68 +1,133 @@
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 
+#include <ydb/core/kqp/counters/kqp_counters.h>
+#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
+
+#include <util/random/random.h>
+
 namespace NKikimr {
 namespace NKqp {
 
 using namespace NYdb;
 using namespace NYdb::NTable;
 
-static const ui32 LargeTableShards = 8;
-static const ui32 LargeTableKeysPerShard = 1000000;
-
-static void CreateLargeTable(TKikimrRunner& kikimr, ui32 rowsPerShard, ui32 keyTextSize,
-    ui32 dataTextSize, ui32 batchSizeRows = 100, ui32 fillShardsCount = LargeTableShards)
-{
-    kikimr.GetTestClient().CreateTable("/Root", R"(
-        Name: "LargeTable"
-        Columns { Name: "Key", Type: "Uint64" }
-        Columns { Name: "KeyText", Type: "String" }
-        Columns { Name: "Data", Type: "Int64" }
-        Columns { Name: "DataText", Type: "String" }
-        KeyColumnNames: ["Key", "KeyText"],
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 1000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 2000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 3000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 4000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 5000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 6000000 } } } }
-        SplitBoundary { KeyPrefix { Tuple { Optional { Uint64: 7000000 } } } }
-    )");
-
-    auto client = kikimr.GetTableClient();
-
-    for (ui32 shardIdx = 0; shardIdx < fillShardsCount; ++shardIdx) {
-        ui32 rowIndex = 0;
-        while (rowIndex < rowsPerShard) {
-
-            auto rowsBuilder = TValueBuilder();
-            rowsBuilder.BeginList();
-            for (ui32 i = 0; i < batchSizeRows; ++i) {
-                rowsBuilder.AddListItem()
-                    .BeginStruct()
-                    .AddMember("Key")
-                        .OptionalUint64(shardIdx * LargeTableKeysPerShard + rowIndex)
-                    .AddMember("KeyText")
-                        .OptionalString(TString(keyTextSize, '0' + (i + shardIdx) % 10))
-                    .AddMember("Data")
-                        .OptionalInt64(rowIndex)
-                    .AddMember("DataText")
-                        .OptionalString(TString(dataTextSize, '0' + (i + shardIdx + 1) % 10))
-                    .EndStruct();
-
-                ++rowIndex;
-                if (rowIndex == rowsPerShard) {
-                    break;
-                }
-            }
-            rowsBuilder.EndList();
-
-            auto result = client.BulkUpsert("/Root/LargeTable", rowsBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-        }
+namespace {
+    bool IsRetryable(const EStatus& status) {
+        return status == EStatus::OVERLOADED;
     }
 }
 
 Y_UNIT_TEST_SUITE(KqpLimits) {
+    Y_UNIT_TEST(QSReplySizeEnsureMemoryLimits) {
+        TKikimrRunner kikimr;
+        CreateLargeTable(kikimr, 1'000, 100, 1'000, 1'000);
+
+        auto db = kikimr.GetQueryClient();
+
+        TControlWrapper mkqlInitialMemoryLimit;
+        TControlWrapper mkqlMaxMemoryLimit;
+
+        mkqlInitialMemoryLimit = kikimr.GetTestServer().GetRuntime()->GetAppData().Icb->RegisterSharedControl(
+            mkqlInitialMemoryLimit, "KqpSession.MkqlInitialMemoryLimit");
+        mkqlMaxMemoryLimit = kikimr.GetTestServer().GetRuntime()->GetAppData().Icb->RegisterSharedControl(
+            mkqlMaxMemoryLimit, "KqpSession.MkqlMaxMemoryLimit");
+
+        mkqlInitialMemoryLimit = 1_KB;
+        mkqlMaxMemoryLimit = 1_KB;
+
+        auto result = db.ExecuteQuery(R"(
+            UPSERT INTO KeyValue2
+            SELECT
+                KeyText AS Key,
+                DataText AS Value
+            FROM `/Root/LargeTable`;
+        )", NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+        result.GetIssues().PrintTo(Cerr);
+        UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
+        UNIT_ASSERT(!to_lower(result.GetIssues().ToString()).Contains("query result"));
+    }
+
+    Y_UNIT_TEST(KqpMkqlMemoryLimitException) {
+        TKikimrRunner kikimr;
+        CreateLargeTable(kikimr, 10, 10, 1'000'000, 1);
+
+        kikimr.GetTestServer().GetRuntime()->SetLogPriority(NKikimrServices::KQP_SLOW_LOG, NActors::NLog::PRI_ERROR);
+
+        TControlWrapper mkqlInitialMemoryLimit;
+        TControlWrapper mkqlMaxMemoryLimit;
+
+        mkqlInitialMemoryLimit = kikimr.GetTestServer().GetRuntime()->GetAppData().Icb->RegisterSharedControl(
+            mkqlInitialMemoryLimit, "KqpSession.MkqlInitialMemoryLimit");
+        mkqlMaxMemoryLimit = kikimr.GetTestServer().GetRuntime()->GetAppData().Icb->RegisterSharedControl(
+            mkqlMaxMemoryLimit, "KqpSession.MkqlMaxMemoryLimit");
+
+        mkqlInitialMemoryLimit = 1_KB;
+        mkqlMaxMemoryLimit = 1_KB;
+
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+
+        auto result = session.ExecuteDataQuery(Q1_(R"(
+            SELECT * FROM `/Root/LargeTable`;
+        )"), TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+        result.GetIssues().PrintTo(Cerr);
+        UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
+    }
+
+    Y_UNIT_TEST(LargeParametersAndMkqlFailure) {
+        auto app = NKikimrConfig::TAppConfig();
+        app.MutableTableServiceConfig()->MutableResourceManager()->SetMkqlLightProgramMemoryLimit(1'000'000'000);
+
+        TKikimrRunner kikimr(app);
+        CreateLargeTable(kikimr, 0, 0, 0);
+
+        kikimr.GetTestServer().GetRuntime()->SetLogPriority(NKikimrServices::KQP_SLOW_LOG, NActors::NLog::PRI_ERROR);
+
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+
+        TControlWrapper mkqlInitialMemoryLimit;
+        TControlWrapper mkqlMaxMemoryLimit;
+
+        mkqlInitialMemoryLimit = kikimr.GetTestServer().GetRuntime()->GetAppData().Icb->RegisterSharedControl(
+            mkqlInitialMemoryLimit, "KqpSession.MkqlInitialMemoryLimit");
+        mkqlMaxMemoryLimit = kikimr.GetTestServer().GetRuntime()->GetAppData().Icb->RegisterSharedControl(
+            mkqlMaxMemoryLimit, "KqpSession.MkqlMaxMemoryLimit");
+
+
+        mkqlInitialMemoryLimit = 1_KB;
+        mkqlMaxMemoryLimit = 1_KB;
+
+        auto paramsBuilder = db.GetParamsBuilder();
+        auto& rowsParam = paramsBuilder.AddParam("$rows");
+
+        rowsParam.BeginList();
+        for (ui32 i = 0; i < 100; ++i) {
+            rowsParam.AddListItem()
+                .BeginStruct()
+                .AddMember("Key")
+                    .OptionalUint64(i)
+                .AddMember("KeyText")
+                    .OptionalString(TString(5000, '0' + i % 10))
+                .AddMember("Data")
+                    .OptionalInt64(i)
+                .AddMember("DataText")
+                    .OptionalString(TString(16, '0' + (i + 1) % 10))
+                .EndStruct();
+        }
+        rowsParam.EndList();
+        rowsParam.Build();
+
+        auto result = session.ExecuteDataQuery(Q1_(R"(
+            DECLARE $rows AS List<Struct<Key: Uint64?, KeyText: String?, Data: Int64?, DataText: String?>>;
+
+            UPSERT INTO `/Root/LargeTable`
+            SELECT * FROM AS_TABLE($rows);
+        )"), TTxControl::BeginTx().CommitTx(), paramsBuilder.Build()).ExtractValueSync();
+        result.GetIssues().PrintTo(Cerr);
+        UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::BAD_REQUEST);
+    }
+
     Y_UNIT_TEST(DatashardProgramSize) {
         auto app = NKikimrConfig::TAppConfig();
         app.MutableTableServiceConfig()->MutableResourceManager()->SetMkqlLightProgramMemoryLimit(1'000'000'000);
@@ -144,6 +209,135 @@ Y_UNIT_TEST_SUITE(KqpLimits) {
         result.GetIssues().PrintTo(Cerr);
         UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
         UNIT_ASSERT(HasIssue(result.GetIssues(), NYql::TIssuesIds::KIKIMR_RESULT_UNAVAILABLE));
+    }
+
+    Y_UNIT_TEST(OutOfSpaceBulkUpsertFail) {
+        TKikimrRunner kikimr(NFake::TStorage{
+            .UseDisk = false,
+            .SectorSize = 4096,
+            .ChunkSize = 32_MB,
+            .DiskSize = 8_GB
+        });
+
+        kikimr.GetTestClient().CreateTable("/Root", R"(
+            Name: "LargeTable"
+            Columns { Name: "Key", Type: "Uint64" }
+            Columns { Name: "DataText", Type: "String" }
+            KeyColumnNames: ["Key"],
+        )");
+
+        auto client = kikimr.GetTableClient();
+
+        const ui32 batchCount = 400;
+        const ui32 dataTextSize = 1_MB;
+        const ui32 rowsPerBatch = 30;
+
+        auto session = client.CreateSession().GetValueSync().GetSession();
+
+        bool failedToInsert = false;
+        ui32 batchIdx = 0;
+        ui32 cnt = 0;
+
+        while (batchIdx < batchCount) {
+            auto rowsBuilder = TValueBuilder();
+            rowsBuilder.BeginList();
+            for (ui32 i = 0; i < rowsPerBatch; ++i) {
+                TString dataText(dataTextSize, 'a' + RandomNumber<ui32>() % ('z' - 'a' + 1));
+                rowsBuilder.AddListItem()
+                    .BeginStruct()
+                    .AddMember("Key")
+                        .OptionalUint64(cnt++)
+                    .AddMember("DataText")
+                        .OptionalString(dataText)
+                    .EndStruct();
+            }
+            rowsBuilder.EndList();
+
+            auto result = client.BulkUpsert("/Root/LargeTable", rowsBuilder.Build()).ExtractValueSync();
+            if (IsRetryable(result.GetStatus())) {
+                continue;
+            }
+            if (result.GetStatus() != EStatus::SUCCESS) {
+                result.GetIssues().PrintTo(Cerr);
+                UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::UNAVAILABLE, result.GetIssues().ToString());
+                failedToInsert = true;
+                break;
+            }
+            ++batchIdx;
+        }
+        if (!failedToInsert) {
+            UNIT_FAIL("Successfully inserted " << rowsPerBatch << " x " << batchCount << " lines, each of size " << dataTextSize << "bytes");
+        }
+    }
+
+    Y_UNIT_TEST(OutOfSpaceYQLUpsertFail) {
+        TKikimrRunner kikimr(NFake::TStorage{
+            .UseDisk = false,
+            .SectorSize = 4096,
+            .ChunkSize = 32_MB,
+            .DiskSize = 8_GB
+        });
+
+        kikimr.GetTestClient().CreateTable("/Root", R"(
+            Name: "LargeTable"
+            Columns { Name: "Key", Type: "Uint64" }
+            Columns { Name: "DataText", Type: "String" }
+            KeyColumnNames: ["Key"],
+        )");
+
+        auto client = kikimr.GetTableClient();
+
+        const ui32 batchCount = 400;
+        const ui32 dataTextSize = 1_MB;
+        const ui32 rowsPerBatch = 30;
+
+        auto session = client.CreateSession().GetValueSync().GetSession();
+
+        bool getOutOfSpace = false;
+        ui32 batchIdx = 0;
+        ui32 cnt = 0;
+
+        while (batchIdx < batchCount) {
+            auto paramsBuilder = client.GetParamsBuilder();
+            auto& rowsParam = paramsBuilder.AddParam("$rows");
+
+            rowsParam.BeginList();
+            for (ui32 i = 0; i < rowsPerBatch; ++i) {
+                TString dataText(dataTextSize, 'a' + RandomNumber<ui32>() % ('z' - 'a' + 1));
+                rowsParam.AddListItem()
+                    .BeginStruct()
+                    .AddMember("Key")
+                        .OptionalUint64(cnt++)
+                    .AddMember("DataText")
+                        .OptionalString(dataText)
+                    .EndStruct();
+            }
+            rowsParam.EndList();
+            rowsParam.Build();
+
+            auto result = session.ExecuteDataQuery(Q1_(R"(
+                DECLARE $rows AS List<Struct<Key: Uint64?, DataText: String?>>;
+
+                UPSERT INTO `/Root/LargeTable`
+                SELECT * FROM AS_TABLE($rows);
+            )"), TTxControl::BeginTx().CommitTx(), paramsBuilder.Build()).ExtractValueSync();
+            if (IsRetryable(result.GetStatus())) {
+                continue;
+            }
+            if (result.GetStatus() != EStatus::SUCCESS) {
+                result.GetIssues().PrintTo(Cerr);
+                UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::UNAVAILABLE, result.GetIssues().ToString());
+                if (result.GetIssues().ToString().Contains("OUT_OF_SPACE")) {
+                    getOutOfSpace = true;
+                } else if (result.GetIssues().ToString().Contains("WRONG_SHARD_STATE")) {
+                    // shards are allowed to split
+                    continue;
+                }
+                break;
+            }
+            ++batchIdx;
+        }
+        UNIT_ASSERT_C(getOutOfSpace, "Successfully inserted " << rowsPerBatch << " x " << batchCount << " lines, each of size " << dataTextSize << "bytes");
     }
 
     Y_UNIT_TEST(TooBigQuery) {
@@ -415,59 +609,107 @@ Y_UNIT_TEST_SUITE(KqpLimits) {
         }
     }
 
-    Y_UNIT_TEST(CancelAfterWithWrite) {
-        return;
+    Y_UNIT_TEST(CancelAfterRwTx) {
         TKikimrRunner kikimr;
+        NKqp::TKqpCounters counters(kikimr.GetTestServer().GetRuntime()->GetAppData().Counters);
 
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
+        {
+            auto db = kikimr.GetTableClient();
+            auto session = db.CreateSession().GetValueSync().GetSession();
 
-        int maxTimeoutMs = 500;
+            int maxTimeoutMs = 500;
 
-        auto createKey = [](int id) -> ui64 {
-            return (1u << 29) + id;
-        };
+            auto createKey = [](int id) -> ui64 {
+                return (1u << 29) + id;
+            };
 
-        auto createExpectedRow = [](ui64 key) -> TString {
-            return Sprintf(R"([[100500];[%luu];["newrecords"]])", key);
-        };
+            auto createExpectedRow = [](ui64 key) -> TString {
+                return Sprintf(R"([[100500];[%luu];["newrecords"]])", key);
+            };
 
-        TString expected;
+            TString expected;
 
-        for (int i = 1; i <= maxTimeoutMs; i++) {
-            auto params = db.GetParamsBuilder()
-                .AddParam("$id")
-                    .Uint64(createKey(i))
-                    .Build()
-                .Build();
-            auto result = session.ExecuteDataQuery(R"(
-                DECLARE $id AS Uint64;
-                SELECT * FROM `/Root/EightShard` WHERE Text = "newrecords" ORDER BY Key;
-                UPSERT INTO `/Root/EightShard` (Key, Data, Text) VALUES ($id, 100500, "newrecords");
-            )",
-            TTxControl::BeginTx(
-                TTxSettings::SerializableRW()).CommitTx(),
-                params,
-                TExecDataQuerySettings().CancelAfter(TDuration::MilliSeconds(i))
-            ).GetValueSync();
+            for (int i = 1; i <= maxTimeoutMs; i++) {
+                auto params = db.GetParamsBuilder()
+                    .AddParam("$id")
+                        .Uint64(createKey(i))
+                        .Build()
+                    .Build();
+                auto result = session.ExecuteDataQuery(R"(
+                    DECLARE $id AS Uint64;
+                    SELECT * FROM `/Root/EightShard` WHERE Text = "newrecords" ORDER BY Key;
+                    UPSERT INTO `/Root/EightShard` (Key, Data, Text) VALUES ($id, 100500, "newrecords");
+                )",
+                TTxControl::BeginTx(
+                    TTxSettings::SerializableRW()).CommitTx(),
+                    params,
+                    TExecDataQuerySettings().CancelAfter(TDuration::MilliSeconds(i))
+                ).GetValueSync();
 
-            if (result.IsSuccess()) {
-                auto yson = FormatResultSetYson(result.GetResultSet(0));
-                CompareYson(TString("[") + expected + "]", yson);
-                expected += createExpectedRow(createKey(i));
-                if (i != maxTimeoutMs)
-                    expected += ";";
-            } else {
-                switch (result.GetStatus()) {
-                    case EStatus::CANCELLED:
-                        break;
-                    default: {
-                        auto msg = TStringBuilder() << "unexpected status: " << result.GetStatus();
-                        UNIT_ASSERT_C(false, msg.data());
+                if (result.IsSuccess()) {
+                    auto yson = FormatResultSetYson(result.GetResultSet(0));
+                    CompareYson(TString("[") + expected + "]", yson);
+                    expected += createExpectedRow(createKey(i));
+                    if (i != maxTimeoutMs)
+                        expected += ";";
+                } else {
+                    switch (result.GetStatus()) {
+                        case EStatus::CANCELLED:
+                            break;
+                        default: {
+                            auto msg = TStringBuilder()
+                                << "unexpected status: " << result.GetStatus()
+                                << " issues: " << result.GetIssues().ToString();
+                            UNIT_ASSERT_C(false, msg.data());
+                        }
                     }
                 }
             }
         }
+
+        WaitForZeroSessions(counters);
+    }
+
+    Y_UNIT_TEST(CancelAfterRoTx) {
+        TKikimrRunner kikimr;
+        NKqp::TKqpCounters counters(kikimr.GetTestServer().GetRuntime()->GetAppData().Counters);
+
+        {
+            auto db = kikimr.GetTableClient();
+            auto session = db.CreateSession().GetValueSync().GetSession();
+
+            int maxTimeoutMs = 500;
+            bool wasCanceled = false;
+
+            for (int i = 1; i <= maxTimeoutMs; i++) {
+                auto result = session.ExecuteDataQuery(R"(
+                    DECLARE $id AS Uint64;
+                    SELECT * FROM `/Root/EightShard` WHERE Text = "Value1" ORDER BY Key;
+                )",
+                TTxControl::BeginTx(
+                    TTxSettings::SerializableRW()).CommitTx(),
+                    TExecDataQuerySettings().CancelAfter(TDuration::MilliSeconds(i))
+                ).GetValueSync();
+
+                if (result.IsSuccess()) {
+                    CompareYson(EXPECTED_EIGHTSHARD_VALUE1, FormatResultSetYson(result.GetResultSet(0)));
+                } else {
+                    switch (result.GetStatus()) {
+                        case EStatus::CANCELLED:
+                            wasCanceled = true;
+                            break;
+                        default: {
+                            auto msg = TStringBuilder()
+                                << "unexpected status: " << result.GetStatus()
+                                << " issues: " << result.GetIssues().ToString();
+                            UNIT_ASSERT_C(false, msg.data());
+                        }
+                    }
+                }
+            }
+            UNIT_ASSERT(wasCanceled);
+        }
+        WaitForZeroSessions(counters);
     }
 
     Y_UNIT_TEST(QueryExecTimeout) {
@@ -484,12 +726,12 @@ Y_UNIT_TEST_SUITE(KqpLimits) {
             TPrepareDataQuerySettings()
                 .OperationTimeout(TDuration::Seconds(300));
         auto prepareResult = session.PrepareDataQuery(Q_(R"(
-            SELECT ToDict(
+            SELECT DictLength(ToDict(
                 ListMap(
                     ListFromRange(0ul, 10000000ul),
                     ($x) -> { RETURN AsTuple($x, $x + 1); }
                 )
-            );
+            ));
         )"), prepareSettings).GetValueSync();
         UNIT_ASSERT_VALUES_EQUAL_C(prepareResult.GetStatus(), EStatus::SUCCESS, prepareResult.GetIssues().ToString());
         auto dataQuery = prepareResult.GetQuery();
@@ -502,7 +744,340 @@ Y_UNIT_TEST_SUITE(KqpLimits) {
         UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::TIMEOUT);
     }
 
+    Y_UNIT_TEST(ReplySizeExceeded) {
+        auto kikimr = DefaultKikimrRunner();
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+        TKqpCounters counters(kikimr.GetTestServer().GetRuntime()->GetAppData().Counters);
 
+        const auto status = session.ExecuteSchemeQuery(R"(
+            CREATE TABLE `/Root/TableTest` (
+                Key Uint64,
+                Value String,
+                PRIMARY KEY (Key)
+            )
+        )").GetValueSync();
+        UNIT_ASSERT(status.IsSuccess());
+
+        auto replaceQuery = Q1_(R"(
+            DECLARE $rows AS
+                List<Struct<
+                    Key: Uint64,
+                    Value: String
+                >>;
+
+            REPLACE INTO `/Root/TableTest`
+            SELECT * FROM AS_TABLE($rows);
+        )");
+
+        const ui32 BATCH_NUM = 4;
+        const ui32 BATCH_ROWS = 100;
+        const ui32 BLOB_SIZE = 100 * 1024; // 100 Kb
+
+        for (ui64 i = 0; i < BATCH_NUM ; ++i) {
+            auto paramsBuilder = session.GetParamsBuilder();
+            auto& rowsParam = paramsBuilder.AddParam("$rows");
+            rowsParam.BeginList();
+
+            for (ui64 j = 0; j < BATCH_ROWS; ++j) {
+                auto key = i * BATCH_ROWS + j;
+                auto val = TString(BLOB_SIZE, '0' + key % 10);
+                rowsParam.AddListItem()
+                    .BeginStruct()
+                        .AddMember("Key")
+                            .Uint64(key)
+                        .AddMember("Value")
+                            .String(val)
+                    .EndStruct();
+            }
+            rowsParam.EndList();
+            rowsParam.Build();
+
+            auto result = session.ExecuteDataQuery(replaceQuery, TTxControl::BeginTx().CommitTx(),
+                paramsBuilder.Build()).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+        }
+
+        {
+            auto result = session.ExecuteDataQuery(Q_(R"(
+                SELECT * FROM `/Root/TableTest`;
+            )"), TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+            UNIT_ASSERT_VALUES_EQUAL(counters.GetTxReplySizeExceededError()->Val(), 0);
+        }
+
+        auto paramsBuilder = session.GetParamsBuilder();
+        auto& rowsParam = paramsBuilder.AddParam("$rows");
+        rowsParam.BeginList();
+
+        for (ui64 j = 0; j < BATCH_ROWS; ++j) {
+            auto key = BATCH_NUM * BATCH_ROWS + j;
+            auto val = TString(BLOB_SIZE, '0' + key % 10);
+            rowsParam.AddListItem()
+                .BeginStruct()
+                    .AddMember("Key")
+                        .Uint64(key)
+                    .AddMember("Value")
+                        .String(val)
+                .EndStruct();
+        }
+        rowsParam.EndList();
+        rowsParam.Build();
+
+        auto result = session.ExecuteDataQuery(replaceQuery, TTxControl::BeginTx().CommitTx(),
+            paramsBuilder.Build()).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+
+        {
+            auto result = session.ExecuteDataQuery(Q_(R"(
+                SELECT * FROM `/Root/TableTest`;
+            )"), TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
+            UNIT_ASSERT_VALUES_EQUAL(counters.GetTxReplySizeExceededError()->Val(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(counters.GetDataShardTxReplySizeExceededError()->Val(), 0);
+        }
+    }
+
+    Y_UNIT_TEST(DataShardReplySizeExceeded) {
+        auto app = NKikimrConfig::TAppConfig();
+        app.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(false);
+
+        TKikimrRunner kikimr(app);
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+        TKqpCounters counters(kikimr.GetTestServer().GetRuntime()->GetAppData().Counters);
+
+        const auto status = session.ExecuteSchemeQuery(R"(
+            CREATE TABLE `/Root/TableTest` (
+                Key Uint64,
+                Value String,
+                PRIMARY KEY (Key)
+            )
+        )").GetValueSync();
+        UNIT_ASSERT(status.IsSuccess());
+
+        auto replaceQuery = Q1_(R"(
+            DECLARE $rows AS
+                List<Struct<
+                    Key: Uint64,
+                    Value: String
+                >>;
+
+            REPLACE INTO `/Root/TableTest`
+            SELECT * FROM AS_TABLE($rows);
+        )");
+
+        const ui32 BATCH_NUM = 4;
+        const ui32 BATCH_ROWS = 100;
+        const ui32 BLOB_SIZE = 100 * 1024; // 100 Kb
+
+        for (ui64 i = 0; i < BATCH_NUM ; ++i) {
+            auto paramsBuilder = session.GetParamsBuilder();
+            auto& rowsParam = paramsBuilder.AddParam("$rows");
+            rowsParam.BeginList();
+
+            for (ui64 j = 0; j < BATCH_ROWS; ++j) {
+                auto key = i * BATCH_ROWS + j;
+                auto val = TString(BLOB_SIZE, '0' + key % 10);
+                rowsParam.AddListItem()
+                    .BeginStruct()
+                        .AddMember("Key")
+                            .Uint64(key)
+                        .AddMember("Value")
+                            .String(val)
+                    .EndStruct();
+            }
+            rowsParam.EndList();
+            rowsParam.Build();
+
+            auto result = session.ExecuteDataQuery(replaceQuery, TTxControl::BeginTx().CommitTx(),
+                paramsBuilder.Build()).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+        }
+
+        {
+            auto result = session.ExecuteDataQuery(Q_(R"(
+                SELECT * FROM `/Root/TableTest`;
+            )"), TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+            UNIT_ASSERT_VALUES_EQUAL(counters.GetDataShardTxReplySizeExceededError()->Val(), 0);
+        }
+
+        auto paramsBuilder = session.GetParamsBuilder();
+        auto& rowsParam = paramsBuilder.AddParam("$rows");
+        rowsParam.BeginList();
+
+        for (ui64 j = 0; j < BATCH_ROWS; ++j) {
+            auto key = BATCH_NUM * BATCH_ROWS + j;
+            auto val = TString(BLOB_SIZE, '0' + key % 10);
+            rowsParam.AddListItem()
+                .BeginStruct()
+                    .AddMember("Key")
+                        .Uint64(key)
+                    .AddMember("Value")
+                        .String(val)
+                .EndStruct();
+        }
+        rowsParam.EndList();
+        rowsParam.Build();
+
+        auto result = session.ExecuteDataQuery(replaceQuery, TTxControl::BeginTx().CommitTx(),
+            paramsBuilder.Build()).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+
+        {
+            auto result = session.ExecuteDataQuery(Q_(R"(
+                SELECT * FROM `/Root/TableTest`;
+            )"), TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::UNDETERMINED);
+            UNIT_ASSERT_C(result.GetIssues().ToString().Contains("REPLY_SIZE_EXCEEDED"), result.GetIssues().ToString());
+            UNIT_ASSERT_VALUES_EQUAL(counters.GetTxReplySizeExceededError()->Val(), 0);
+            UNIT_ASSERT_VALUES_EQUAL(counters.GetDataShardTxReplySizeExceededError()->Val(), 1);
+        }
+    }
+
+    Y_UNIT_TEST(ManyPartitions) {
+        SetRandomSeed(42);
+
+        auto settings = TKikimrSettings()
+            .SetWithSampleTables(false);
+        TKikimrRunner kikimr(settings);
+        CreateManyShardsTable(kikimr, 1000, 100, 1000);
+
+        NYdb::NQuery::TExecuteQuerySettings querySettings;
+        querySettings.StatsMode(NYdb::NQuery::EStatsMode::Full);
+
+        auto db = kikimr.GetQueryClient();
+        auto result = db.ExecuteQuery(R"(
+            SELECT COUNT(*) FROM `/Root/ManyShardsTable`;
+        )", NYdb::NQuery::TTxControl::BeginTx().CommitTx(),
+        querySettings).ExtractValueSync();
+
+        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+        UNIT_ASSERT(result.GetStats());
+        UNIT_ASSERT(result.GetStats()->GetPlan());
+
+        NJson::TJsonValue plan;
+        NJson::ReadJsonTree(*result.GetStats()->GetPlan(), &plan, true);
+        Cout << plan;
+
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "TableFullScan");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Tables"][0].GetStringSafe(), "ManyShardsTable");
+        UNIT_ASSERT(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Stats"]["Tasks"].GetIntegerSafe() < 100);
+        UNIT_ASSERT(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Stats"]["Tasks"].GetIntegerSafe() > 1);
+    }
+
+    Y_UNIT_TEST(ManyPartitionsSorting) {
+        SetRandomSeed(42);
+
+        auto settings = TKikimrSettings()
+            .SetWithSampleTables(false);
+        TKikimrRunner kikimr(settings);
+        CreateManyShardsTable(kikimr, 1100, 100, 1000);
+
+        NYdb::NQuery::TExecuteQuerySettings querySettings;
+        querySettings.StatsMode(NYdb::NQuery::EStatsMode::Full);
+
+        auto db = kikimr.GetQueryClient();
+        auto result = db.ExecuteQuery(R"(
+            SELECT Key, Data FROM `/Root/ManyShardsTable` ORDER BY Key;
+        )", NYdb::NQuery::TTxControl::BeginTx().CommitTx(),
+        querySettings).ExtractValueSync();
+
+        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+        UNIT_ASSERT(result.GetStats());
+        UNIT_ASSERT(result.GetStats()->GetPlan());
+
+        NJson::TJsonValue plan;
+        NJson::ReadJsonTree(*result.GetStats()->GetPlan(), &plan, true);
+
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Node Type"].GetStringSafe(), "Query");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Node Type"].GetStringSafe(), "ResultSet");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "Collect");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "Merge");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["SortColumns"].GetArraySafe()[0], "Key (Asc)");
+
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "TableFullScan");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Tables"][0].GetStringSafe(), "ManyShardsTable");
+        UNIT_ASSERT(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Stats"]["Tasks"].GetIntegerSafe() < 100);
+        UNIT_ASSERT(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Stats"]["Tasks"].GetIntegerSafe() > 1);
+
+        const auto resultSet = result.GetResultSet(0);
+        UNIT_ASSERT_VALUES_EQUAL(resultSet.RowsCount(), 1100);
+        ui32 last = 0;
+        NYdb::TResultSetParser parser(resultSet);
+        while (parser.TryNextRow()) {
+            const ui32 current = *parser.ColumnParser(0).GetOptionalUint32();
+            UNIT_ASSERT(current >= last);
+            last = current;
+        }
+    }
+
+    Y_UNIT_TEST(ManyPartitionsSortingLimit) {
+        SetRandomSeed(42);
+
+        auto settings = TKikimrSettings()
+            .SetWithSampleTables(false);
+        TKikimrRunner kikimr(settings);
+        CreateManyShardsTable(kikimr, 5000, 100, 1000);
+
+        NYdb::NQuery::TExecuteQuerySettings querySettings;
+        querySettings.StatsMode(NYdb::NQuery::EStatsMode::Full);
+
+        auto db = kikimr.GetQueryClient();
+        auto result = db.ExecuteQuery(R"(
+            SELECT Key, Data FROM `/Root/ManyShardsTable` ORDER BY Key LIMIT 1100;
+        )", NYdb::NQuery::TTxControl::BeginTx().CommitTx(),
+        querySettings).ExtractValueSync();
+
+        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+        UNIT_ASSERT(result.GetStats());
+        UNIT_ASSERT(result.GetStats()->GetPlan());
+
+        NJson::TJsonValue plan;
+        NJson::ReadJsonTree(*result.GetStats()->GetPlan(), &plan, true);
+        Cout << plan;
+
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Node Type"].GetStringSafe(), "Query");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Node Type"].GetStringSafe(), "ResultSet");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "Limit");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "Merge");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["SortColumns"].GetArraySafe()[0], "Key (Asc)");
+
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Node Type"].GetStringSafe(), "TableFullScan");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Tables"][0].GetStringSafe(), "ManyShardsTable");
+        UNIT_ASSERT_VALUES_EQUAL(plan["Plan"]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][0]["Stats"]["Tasks"].GetIntegerSafe(), 1);
+
+        const auto resultSet = result.GetResultSet(0);
+        UNIT_ASSERT_VALUES_EQUAL(resultSet.RowsCount(), 1100);
+        ui32 last = 0;
+        NYdb::TResultSetParser parser(resultSet);
+        while (parser.TryNextRow()) {
+            const ui32 current = *parser.ColumnParser(0).GetOptionalUint32();
+            UNIT_ASSERT(current >= last);
+            const ui32 limit = (std::numeric_limits<ui32>::max() / 5000) * 1100 + 1;
+            UNIT_ASSERT(current < limit);
+            last = current;
+        }
+    }
+
+    Y_UNIT_TEST(QSReplySize) {
+        TKikimrRunner kikimr;
+        CreateLargeTable(kikimr, 10'000, 100, 1'000, 1'000);
+
+        auto db = kikimr.GetQueryClient();
+
+        auto result = db.ExecuteQuery(R"(
+            UPSERT INTO KeyValue2
+            SELECT
+                KeyText AS Key,
+                DataText AS Value
+            FROM `/Root/LargeTable`;
+        )", NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+        result.GetIssues().PrintTo(Cerr);
+        UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
+        UNIT_ASSERT(!to_lower(result.GetIssues().ToString()).Contains("query result"));
+    }
 }
 
 } // namespace NKqp

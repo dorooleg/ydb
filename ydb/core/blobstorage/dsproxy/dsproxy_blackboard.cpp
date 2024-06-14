@@ -6,19 +6,17 @@ namespace NKikimr {
 // TBlobState
 //
 
-void TBlobState::TState::AddResponseData(ui32 fullSize, ui32 shift, TString &data) {
+void TBlobState::TState::AddResponseData(ui32 fullSize, ui32 shift, TRope&& data) {
+    const ui32 size = data.size();
     // Add the data to the Data buffer
-    Y_VERIFY(data.size());
-    Y_VERIFY(shift + data.size() <= fullSize);
-    Data.Write(shift, data.data(), data.size());
-    // Mark the interval as present in the Data buffer
-    Here.Add(shift, shift + data.size());
+    Y_ABORT_UNLESS(size);
+    Y_ABORT_UNLESS(shift < fullSize && size <= fullSize - shift);
+    Data.Write(shift, std::move(data));
 }
 
-void TBlobState::TState::AddPartToPut(TRope &data) {
-    Y_VERIFY(data.size());
-    Data.SetMonolith(data);
-    Here.Assign(0, data.size());
+void TBlobState::TState::AddPartToPut(TRope&& partData) {
+    Y_ABORT_UNLESS(partData);
+    Data.SetMonolith(std::move(partData));
 }
 
 
@@ -27,200 +25,150 @@ void TBlobState::Init(const TLogoBlobID &id, const TBlobStorageGroupInfo &info) 
     Parts.resize(info.Type.TotalPartCount());
     ui32 blobSubgroupSize = info.Type.BlobSubgroupSize();
     Disks.resize(blobSubgroupSize);
-    TBlobStorageGroupInfo::TServiceIds vdisksSvc;
-    TBlobStorageGroupInfo::TVDiskIds vdisksId;
-    const ui32 hash = Id.Hash();
-    info.PickSubgroup(hash, &vdisksId, &vdisksSvc);
+    TBlobStorageGroupInfo::TOrderNums nums;
+    info.GetTopology().PickSubgroup(Id.Hash(), nums);
+    Y_DEBUG_ABORT_UNLESS(nums.size() == blobSubgroupSize);
     for (ui32 i = 0; i < blobSubgroupSize; ++i) {
-        Disks[i].OrderNumber = info.GetOrderNumber(vdisksId[i]);
+        Disks[i].OrderNumber = nums[i];
         Disks[i].DiskParts.resize(info.Type.TotalPartCount());
     }
     IsChanged = true;
 }
 
 void TBlobState::AddNeeded(ui64 begin, ui64 size) {
-    Y_VERIFY(bool(Id));
+    Y_ABORT_UNLESS(bool(Id));
     Whole.Needed.Add(begin, begin + size);
-    Whole.NotHere.Add(begin, begin + size);
     IsChanged = true;
 }
 
-void TBlobState::AddPartToPut(ui32 partIdx, TRope &partData) {
-    Y_VERIFY(bool(Id));
-    Y_VERIFY(partIdx < Parts.size());
-    Parts[partIdx].AddPartToPut(partData);
-    IsChanged = true;
-}
-
-void TBlobState::MarkBlobReadyToPut(ui8 blobIdx) {
-    Y_VERIFY(WholeSituation == ESituation::Unknown || WholeSituation == ESituation::Present);
-    WholeSituation = ESituation::Present;
-    BlobIdx = blobIdx;
+void TBlobState::AddPartToPut(ui32 partIdx, TRope&& partData) {
+    Y_ABORT_UNLESS(bool(Id));
+    Y_ABORT_UNLESS(partIdx < Parts.size());
+    Parts[partIdx].AddPartToPut(std::move(partData));
     IsChanged = true;
 }
 
 bool TBlobState::Restore(const TBlobStorageGroupInfo &info) {
-    TIntervalVec<i32> fullBlobInterval(0, Id.BlobSize());
-    if (fullBlobInterval.IsSubsetOf(Whole.Here)) {
+    const TIntervalVec<i32> fullBlobInterval(0, Id.BlobSize());
+    const TIntervalSet<i32> here = Whole.Here();
+    Y_DEBUG_ABORT_UNLESS((here - fullBlobInterval).IsEmpty()); // ensure no excessive data outsize blob's boundaries
+    if (fullBlobInterval.IsSubsetOf(here)) { // we already have 'whole' part, no need for restoration
         return true;
     }
 
-    const ui32 parts = info.Type.TotalPartCount();
+    TStackVec<TRope, TypicalPartsInBlob> parts(info.Type.TotalPartCount());
     ui32 partsPresent = 0;
-    for (ui32 i = 0; i < parts; ++i) {
+    for (ui32 i = 0; i < parts.size(); ++i) {
         if (const ui32 partSize = info.Type.PartSize(TLogoBlobID(Id, i + 1))) {
-            if (TIntervalVec<i32>(0, partSize).IsSubsetOf(Parts[i].Here)) {
-                ++partsPresent;
+            const TIntervalVec<i32> fullPartInterval(0, partSize);
+            const TIntervalSet<i32> partHere = Parts[i].Here();
+            Y_DEBUG_ABORT_UNLESS((partHere - fullPartInterval).IsEmpty()); // ensure no excessive part data outside boundaries
+            if (fullPartInterval.IsSubsetOf(partHere)) {
+                parts[i] = Parts[i].Data.Read(0, partSize);
+                if (++partsPresent >= info.Type.MinimalRestorablePartCount()) {
+                    TRope whole;
+                    ErasureRestore((TErasureType::ECrcMode)Id.CrcMode(), info.Type, Id.BlobSize(), &whole, parts, 0, 0, false);
+                    Y_ABORT_UNLESS(whole.size() == Id.BlobSize());
+                    Whole.Data.SetMonolith(std::move(whole));
+                    Y_DEBUG_ABORT_UNLESS(Whole.Here() == fullBlobInterval);
+                    return true;
+                }
             }
         }
     }
-    if (partsPresent < info.Type.MinimalRestorablePartCount()) {
-        return false;
-    }
 
-    TDataPartSet partSet;
-    partSet.Parts.resize(parts);
-    for (ui32 i = 0; i < parts; ++i) {
-        if (const ui32 partSize = info.Type.PartSize(TLogoBlobID(Id, i + 1))) {
-            if (TIntervalVec<i32>(0, partSize).IsSubsetOf(Parts[i].Here)) {
-                partSet.PartsMask |= (1 << i);
-                TRope data(MakeIntrusive<TRopeSharedDataBackend>(TSharedData::Uninitialized(partSize)));
-                Parts[i].Data.Read(0, data.UnsafeGetContiguousSpanMut().data(), partSize);
-                partSet.Parts[i].ReferenceTo(data);
-            }
-        }
-    }
-    partSet.FullDataSize = Id.BlobSize();
-
-    TRope whole;
-    info.Type.RestoreData((TErasureType::ECrcMode)Id.CrcMode(), partSet, whole, false, true, false);
-    Whole.Data.Write(0, whole.GetContiguousSpan().data(), Id.BlobSize());
-    Whole.Here.Add(fullBlobInterval);
-    Whole.NotHere.Subtract(fullBlobInterval);
-    return true;
+    return false;
 }
 
 void TBlobState::AddResponseData(const TBlobStorageGroupInfo &info, const TLogoBlobID &id, ui32 orderNumber,
-        ui32 shift, TString &data, bool keep, bool doNotKeep) {
+        ui32 shift, TRope&& data) {
     // Add actual data to Parts
-    Y_VERIFY(id.PartId() != 0);
-    ui32 partIdx = id.PartId() - 1;
-    Y_VERIFY(partIdx < Parts.size());
+    Y_ABORT_UNLESS(id.PartId() != 0);
+    const ui32 partIdx = id.PartId() - 1;
+    Y_ABORT_UNLESS(partIdx < Parts.size());
     const ui32 partSize = info.Type.PartSize(id);
+    const ui32 dataSize = data.size();
     if (partSize) {
-        Parts[partIdx].AddResponseData(partSize, shift, data);
+        Parts[partIdx].AddResponseData(partSize, shift, std::move(data));
     }
     IsChanged = true;
+
+    const ui32 diskIdx = info.GetIdxInSubgroup(info.GetVDiskId(orderNumber), id.Hash());
+    Y_ABORT_UNLESS(diskIdx != info.Type.BlobSubgroupSize());
+    TDisk& disk = Disks[diskIdx];
+    Y_ABORT_UNLESS(disk.OrderNumber == orderNumber);
+
     // Mark part as present for the disk
-    bool isFound = false;
-    for (ui32 diskIdx = 0; diskIdx < Disks.size(); ++diskIdx) {
-        TDisk &disk = Disks[diskIdx];
-        if (disk.OrderNumber == orderNumber) {
-            isFound = true;
-            Y_VERIFY(partIdx < disk.DiskParts.size());
-            TDiskPart &diskPart = disk.DiskParts[partIdx];
-            //Cerr << Endl << "present diskIdx# " << diskIdx << " partIdx# " << partIdx << Endl << Endl;
-            diskPart.Situation = ESituation::Present;
-            if (partSize) {
-                TIntervalVec<i32> responseInterval(shift, shift + data.size());
-                diskPart.Requested.Subtract(responseInterval);
-            }
-            break;
-        }
+    Y_ABORT_UNLESS(partIdx < disk.DiskParts.size());
+    TDiskPart &diskPart = disk.DiskParts[partIdx];
+    diskPart.Situation = ESituation::Present;
+    if (partSize) {
+        TIntervalVec<i32> responseInterval(shift, shift + dataSize);
+        diskPart.Requested.Subtract(responseInterval);
     }
-    Y_VERIFY(isFound);
-    Keep |= keep;
-    DoNotKeep |= doNotKeep;
 }
 
 void TBlobState::AddNoDataResponse(const TBlobStorageGroupInfo &info, const TLogoBlobID &id, ui32 orderNumber) {
-    Y_UNUSED(info);
-    Y_VERIFY(id.PartId() != 0);
-    ui32 partIdx = id.PartId() - 1;
+    Y_ABORT_UNLESS(id.PartId() != 0);
+    const ui32 partIdx = id.PartId() - 1;
     IsChanged = true;
-    // Mark part as absent for the disk
-    bool isFound = false;
-    for (ui32 diskIdx = 0; diskIdx < Disks.size(); ++diskIdx) {
-        TDisk &disk = Disks[diskIdx];
-        if (disk.OrderNumber == orderNumber) {
-            isFound = true;
-            Y_VERIFY(partIdx < disk.DiskParts.size());
-            TDiskPart &diskPart = disk.DiskParts[partIdx];
-            //Cerr << Endl << "absent diskIdx# " << diskIdx << " partIdx# " << partIdx << Endl << Endl;
-            diskPart.Situation = ESituation::Absent;
-            diskPart.Requested.Clear();
-            break;
-        }
-    }
-    Y_VERIFY(isFound);
+
+    const ui32 diskIdx = info.GetIdxInSubgroup(info.GetVDiskId(orderNumber), id.Hash());
+    Y_ABORT_UNLESS(diskIdx != info.Type.BlobSubgroupSize());
+    TDisk& disk = Disks[diskIdx];
+    Y_ABORT_UNLESS(disk.OrderNumber == orderNumber);
+
+    Y_ABORT_UNLESS(partIdx < disk.DiskParts.size());
+    TDiskPart &diskPart = disk.DiskParts[partIdx];
+    diskPart.Situation = ESituation::Absent;
+    diskPart.Requested.Clear();
 }
 
 void TBlobState::AddPutOkResponse(const TBlobStorageGroupInfo &info, const TLogoBlobID &id, ui32 orderNumber) {
-    Y_UNUSED(info);
-    Y_VERIFY(id.PartId() != 0);
-    ui32 partIdx = id.PartId() - 1;
+    Y_ABORT_UNLESS(id.PartId() != 0);
+    const ui32 partIdx = id.PartId() - 1;
     IsChanged = true;
-    // Mark part as put ok for the disk
-    bool isFound = false;
-    for (ui32 diskIdx = 0; diskIdx < Disks.size(); ++diskIdx) {
-        TDisk &disk = Disks[diskIdx];
-        if (disk.OrderNumber == orderNumber) {
-            isFound = true;
-            Y_VERIFY(partIdx < disk.DiskParts.size());
-            TDiskPart &diskPart = disk.DiskParts[partIdx];
-            //Cerr << Endl << "put ok diskIdx# " << diskIdx << " partIdx# " << partIdx << Endl << Endl;
-            diskPart.Situation = ESituation::Present;
-            break;
-        }
-    }
-    Y_VERIFY(isFound);
+
+    const ui32 diskIdx = info.GetIdxInSubgroup(info.GetVDiskId(orderNumber), id.Hash());
+    Y_ABORT_UNLESS(diskIdx != info.Type.BlobSubgroupSize());
+    TDisk& disk = Disks[diskIdx];
+    Y_ABORT_UNLESS(disk.OrderNumber == orderNumber);
+
+    Y_ABORT_UNLESS(partIdx < disk.DiskParts.size());
+    TDiskPart& diskPart = disk.DiskParts[partIdx];
+    diskPart.Situation = ESituation::Present;
 }
 
 void TBlobState::AddErrorResponse(const TBlobStorageGroupInfo &info, const TLogoBlobID &id, ui32 orderNumber) {
-    Y_UNUSED(info);
-    Y_VERIFY(id.PartId() != 0);
+    Y_ABORT_UNLESS(id.PartId() != 0);
     ui32 partIdx = id.PartId() - 1;
     IsChanged = true;
-    // Mark part as error for the disk
-    bool isFound = false;
-    for (ui32 diskIdx = 0; diskIdx < Disks.size(); ++diskIdx) {
-        TDisk &disk = Disks[diskIdx];
-        if (disk.OrderNumber == orderNumber) {
-            isFound = true;
-            Y_VERIFY(partIdx < disk.DiskParts.size());
-            TDiskPart &diskPart = disk.DiskParts[partIdx];
-            //Cerr << Endl << "error diskIdx# " << diskIdx << " partIdx# " << partIdx << Endl << Endl;
-            diskPart.Situation = ESituation::Error;
-            diskPart.Requested.Clear();
-            break;
-        }
-    }
-    Y_VERIFY(isFound);
+
+    const ui32 diskIdx = info.GetIdxInSubgroup(info.GetVDiskId(orderNumber), id.Hash());
+    Y_ABORT_UNLESS(diskIdx != info.Type.BlobSubgroupSize());
+    TDisk& disk = Disks[diskIdx];
+    Y_ABORT_UNLESS(disk.OrderNumber == orderNumber);
+
+    Y_ABORT_UNLESS(partIdx < disk.DiskParts.size());
+    TDiskPart &diskPart = disk.DiskParts[partIdx];
+    diskPart.Situation = ESituation::Error;
+    diskPart.Requested.Clear();
 }
 
-void TBlobState::AddNotYetResponse(const TBlobStorageGroupInfo &info, const TLogoBlobID &id, ui32 orderNumber,
-        bool keep, bool doNotKeep) {
-    Y_UNUSED(info);
-    Y_VERIFY(id.PartId() != 0);
-    ui32 partIdx = id.PartId() - 1;
+void TBlobState::AddNotYetResponse(const TBlobStorageGroupInfo &info, const TLogoBlobID &id, ui32 orderNumber) {
+    Y_ABORT_UNLESS(id.PartId() != 0);
+    const ui32 partIdx = id.PartId() - 1;
     IsChanged = true;
-    // Mark part as error for the disk
-    bool isFound = false;
-    for (ui32 diskIdx = 0; diskIdx < Disks.size(); ++diskIdx) {
-        TDisk &disk = Disks[diskIdx];
-        if (disk.OrderNumber == orderNumber) {
-            isFound = true;
-            Y_VERIFY(partIdx < disk.DiskParts.size());
-            TDiskPart &diskPart = disk.DiskParts[partIdx];
-            //Cerr << Endl << "error diskIdx# " << diskIdx << " partIdx# " << partIdx << Endl << Endl;
-            diskPart.Situation = ESituation::Lost;
-            diskPart.Requested.Clear();
-            break;
-        }
-    }
-    Y_VERIFY(isFound);
-    Keep |= keep;
-    DoNotKeep |= doNotKeep;
+
+    const ui32 diskIdx = info.GetIdxInSubgroup(info.GetVDiskId(orderNumber), id.Hash());
+    Y_ABORT_UNLESS(diskIdx != info.Type.BlobSubgroupSize());
+    TDisk& disk = Disks[diskIdx];
+    Y_ABORT_UNLESS(disk.OrderNumber == orderNumber);
+
+    Y_ABORT_UNLESS(partIdx < disk.DiskParts.size());
+    TDiskPart &diskPart = disk.DiskParts[partIdx];
+    diskPart.Situation = ESituation::Lost;
+    diskPart.Requested.Clear();
 }
 
 ui64 TBlobState::GetPredictedDelayNs(const TBlobStorageGroupInfo &info, TGroupQueues &groupQueues,
@@ -247,26 +195,33 @@ void TBlobState::GetWorstPredictedDelaysNs(const TBlobStorageGroupInfo &info, TG
     }
 }
 
+bool TBlobState::HasWrittenQuorum(const TBlobStorageGroupInfo& info, const TBlobStorageGroupInfo::TGroupVDisks& expired) const {
+    TSubgroupPartLayout layout;
+    for (ui32 diskIdx = 0, numDisks = Disks.size(); diskIdx < numDisks; ++diskIdx) {
+        const TDisk& disk = Disks[diskIdx];
+        for (ui32 partIdx = 0, numParts = disk.DiskParts.size(); partIdx < numParts; ++partIdx) {
+            const TDiskPart& part = disk.DiskParts[partIdx];
+            if (part.Situation == ESituation::Present && !expired[disk.OrderNumber]) {
+                layout.AddItem(diskIdx, partIdx, info.Type);
+            }
+        }
+    }
+    return info.GetQuorumChecker().GetBlobState(layout, {&info.GetTopology()}) == TBlobStorageGroupInfo::EBS_FULL;
+}
+
 TString TBlobState::ToString() const {
     TStringStream str;
-    str << "{Id# " << Id.ToString();
-    str << Endl;
-    str << " Whole# " << Whole.ToString();
-    str << Endl;
-    str << " WholeSituation# " << SituationToString(WholeSituation);
-    str << Endl;
+    str << "{Id# " << Id.ToString() << Endl;
+    str << " IsChanged# " << IsChanged << Endl;
+    str << " Whole# " << Whole.ToString() << Endl;
+    str << " WholeSituation# " << SituationToString(WholeSituation) << Endl;
     for (ui32 i = 0; i < Parts.size(); ++i) {
-    str << Endl;
-        str << " Parts[" << i << "]# " << Parts[i].ToString();
-    str << Endl;
+        str << Endl << " Parts[" << i << "]# " << Parts[i].ToString() << Endl;
     }
     for (ui32 i = 0; i < Disks.size(); ++i) {
-    str << Endl;
-        str << " Disks[" << i << "]# " << Disks[i].ToString();
-    str << Endl;
+        str << Endl << " Disks[" << i << "]# " << Disks[i].ToString() << Endl;
     }
-    str << " BlobIdx# " << (ui32)BlobIdx;
-    str << Endl;
+    str << " BlobIdx# " << BlobIdx << Endl;
     str << "}";
     return str.Str();
 }
@@ -286,7 +241,7 @@ TString TBlobState::SituationToString(ESituation situation) {
         case ESituation::Sent:
             return "ESituation::Sent";
     }
-    Y_VERIFY(false, "Unexpected situation# %" PRIu64, ui64(situation));
+    Y_ABORT_UNLESS(false, "Unexpected situation# %" PRIu64, ui64(situation));
     return "";
 }
 
@@ -313,7 +268,7 @@ TString TBlobState::TDiskPart::ToString() const {
 TString TBlobState::TState::ToString() const {
     TStringStream str;
     str << "{Data# " << Data.Print();
-    str << " Here# " << Here.ToString();
+    str << " Here# " << Here().ToString();
     str << "}";
     return str.Str();
 }
@@ -321,9 +276,9 @@ TString TBlobState::TState::ToString() const {
 TString TBlobState::TWholeState::ToString() const {
     TStringStream str;
     str << "{Data# " << Data.Print();
-    str << " Here# " << Here.ToString();
+    str << " Here# " << Here().ToString();
     str << " Needed# " << Needed.ToString();
-    str << " NotHere# " << NotHere.ToString();
+    str << " NotHere# " << NotHere().ToString();
     str << "}";
     return str.Str();
 }
@@ -332,30 +287,19 @@ TString TBlobState::TWholeState::ToString() const {
 // TGroupDiskRequests
 //
 
-TGroupDiskRequests::TGroupDiskRequests(ui32 disks) {
-    DiskRequestsForOrderNumber.resize(disks);
-}
-
-void TGroupDiskRequests::AddGet(const ui32 diskOrderNumber, const TLogoBlobID &id, const TIntervalSet<i32> &intervalSet) {
-    Y_VERIFY(diskOrderNumber < DiskRequestsForOrderNumber.size());
-    auto &requestsToSend = DiskRequestsForOrderNumber[diskOrderNumber].GetsToSend;
-    for (auto pair: intervalSet) {
-        requestsToSend.emplace_back(id, pair.first, pair.second - pair.first);
+void TGroupDiskRequests::AddGet(ui32 diskOrderNumber, const TLogoBlobID &id, const TIntervalSet<i32> &intervalSet) {
+    for (const auto& pair : intervalSet) {
+        GetsPending.emplace_back(diskOrderNumber, id, pair.first, pair.second - pair.first);
     }
 }
 
-void TGroupDiskRequests::AddGet(const ui32 diskOrderNumber, const TLogoBlobID &id, const ui32 shift,
-        const ui32 size) {
-    Y_VERIFY(diskOrderNumber < DiskRequestsForOrderNumber.size());
-    DiskRequestsForOrderNumber[diskOrderNumber].GetsToSend.emplace_back(id, shift, size);
+void TGroupDiskRequests::AddGet(ui32 diskOrderNumber, const TLogoBlobID &id, ui32 shift, ui32 size) {
+    GetsPending.emplace_back(diskOrderNumber, id, shift, size);
 }
 
-void TGroupDiskRequests::AddPut(const ui32 diskOrderNumber, const TLogoBlobID &id, TRope buffer,
-        TDiskPutRequest::EPutReason putReason, bool isHandoff, std::vector<std::pair<ui64, ui32>> *extraBlockChecks,
-        NWilson::TSpan *span, ui8 blobIdx) {
-    Y_VERIFY(diskOrderNumber < DiskRequestsForOrderNumber.size());
-    DiskRequestsForOrderNumber[diskOrderNumber].PutsToSend.emplace_back(id, buffer, putReason, isHandoff,
-        extraBlockChecks, span, blobIdx);
+void TGroupDiskRequests::AddPut(ui32 diskOrderNumber, const TLogoBlobID &id, TRope buffer,
+        TDiskPutRequest::EPutReason putReason, bool isHandoff, size_t blobIdx) {
+    PutsPending.emplace_back(diskOrderNumber, id, buffer, putReason, isHandoff, blobIdx);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -363,9 +307,9 @@ void TGroupDiskRequests::AddPut(const ui32 diskOrderNumber, const TLogoBlobID &i
 //
 
 void TBlackboard::AddNeeded(const TLogoBlobID &id, ui32 inShift, ui32 inSize) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() == 0);
-    Y_VERIFY(id.BlobSize() != 0);
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() == 0);
+    Y_ABORT_UNLESS(id.BlobSize() != 0);
     ui64 fullSize = id.BlobSize();
     ui64 shift = Min(ui64(inShift), fullSize);
     ui64 maxSize = fullSize - shift;
@@ -377,143 +321,115 @@ void TBlackboard::AddNeeded(const TLogoBlobID &id, ui32 inShift, ui32 inSize) {
         TStringStream str;
         str << "It is impossible to read 0 bytes! Do not send such requests.";
         str << " Id# " << id.ToString() << " inShift# " << inShift << " inSize# " << inSize;
-        Y_VERIFY(false, "%s", str.Str().c_str());
+        Y_ABORT_UNLESS(false, "%s", str.Str().c_str());
     }
 }
 
-void TBlackboard::AddPartToPut(const TLogoBlobID &id, ui32 partIdx, TRope &partData) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() == 0);
-    Y_VERIFY(id.BlobSize() != 0);
-    (*this)[id].AddPartToPut(partIdx, partData);
-}
-
-void TBlackboard::MarkBlobReadyToPut(const TLogoBlobID &id, ui8 blobIdx) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() == 0);
-    Y_VERIFY(id.BlobSize() != 0);
-    (*this)[id].MarkBlobReadyToPut(blobIdx);
-}
-
-void TBlackboard::MoveBlobStateToDone(const TLogoBlobID &id) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() == 0);
-    Y_VERIFY(id.BlobSize() != 0);
-    auto it = BlobStates.find(id);
-    if (it == BlobStates.end()) {
-        auto doneIt = DoneBlobStates.find(id);
-        const char *errorMsg = doneIt == DoneBlobStates.end() ?
-                "This blobId is not in BlobStates or in DoneBlobStates" :
-                "This blobId is already in DoneBlobStates";
-        Y_VERIFY_S(false, errorMsg << " BlobId# " << id << " Blackboard# " << ToString());
-    } else {
-        if (!it->second.IsDone) {
-            DoneCount++;
-            it->second.IsDone = true;
-        }
-        auto node = BlobStates.extract(it);
-        DoneBlobStates.insert(std::move(node));
-    }
+void TBlackboard::AddPartToPut(const TLogoBlobID &id, ui32 partIdx, TRope&& partData) {
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() == 0);
+    Y_ABORT_UNLESS(id.BlobSize() != 0);
+    Y_ABORT_UNLESS(partData.size() == Info->Type.PartSize(TLogoBlobID(id, partIdx + 1)),
+        "partData# %zu partSize# %" PRIu64, partData.size(), Info->Type.PartSize(TLogoBlobID(id, partIdx + 1)));
+    (*this)[id].AddPartToPut(partIdx, std::move(partData));
 }
 
 void TBlackboard::AddPutOkResponse(const TLogoBlobID &id, ui32 orderNumber) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() != 0);
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() != 0);
     TBlobState &state = GetState(id);
     state.AddPutOkResponse(*Info, id, orderNumber);
 }
 
-void TBlackboard::AddResponseData(const TLogoBlobID &id, ui32 orderNumber, ui32 shift, TString &data, bool keep, bool doNotKeep) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() != 0);
+void TBlackboard::AddResponseData(const TLogoBlobID &id, ui32 orderNumber, ui32 shift, TRope&& data) {
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() != 0);
     TBlobState &state = GetState(id);
-    state.AddResponseData(*Info, id, orderNumber, shift, data, keep, doNotKeep);
+    state.AddResponseData(*Info, id, orderNumber, shift, std::move(data));
 }
 
 void TBlackboard::AddNoDataResponse(const TLogoBlobID &id, ui32 orderNumber) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() != 0);
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() != 0);
     TBlobState &state = GetState(id);
     state.AddNoDataResponse(*Info, id, orderNumber);
 }
 
-void TBlackboard::AddNotYetResponse(const TLogoBlobID &id, ui32 orderNumber, bool keep, bool doNotKeep) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() != 0);
+void TBlackboard::AddNotYetResponse(const TLogoBlobID &id, ui32 orderNumber) {
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() != 0);
     TBlobState &state = GetState(id);
-    state.AddNotYetResponse(*Info, id, orderNumber, keep, doNotKeep);
+    state.AddNotYetResponse(*Info, id, orderNumber);
 }
 
 void TBlackboard::AddErrorResponse(const TLogoBlobID &id, ui32 orderNumber) {
-    Y_VERIFY(bool(id));
-    Y_VERIFY(id.PartId() != 0);
+    Y_ABORT_UNLESS(bool(id));
+    Y_ABORT_UNLESS(id.PartId() != 0);
     TBlobState &state = GetState(id);
     state.AddErrorResponse(*Info, id, orderNumber);
 }
 
-EStrategyOutcome TBlackboard::RunStrategy(TLogContext &logCtx, const IStrategy& s, TBatchedVec<TBlobStates::value_type*> *finished) {
-    IStrategy& temp = const_cast<IStrategy&>(s); // better UX
-    Y_VERIFY(BlobStates.size());
-    TString errorReason;
-    for (auto it = BlobStates.begin(); it != BlobStates.end(); ++it) {
+EStrategyOutcome TBlackboard::RunStrategies(TLogContext &logCtx, const TStackVec<IStrategy*, 1>& s,
+        TBatchedVec<TFinishedBlob> *finished, const TBlobStorageGroupInfo::TGroupVDisks *expired) {
+    for (auto it = BlobStates.begin(); it != BlobStates.end(); ) {
         auto& blob = it->second;
-        if (!blob.IsChanged) {
+        if (!std::exchange(blob.IsChanged, false)) {
+            ++it;
             continue;
         }
-        blob.IsChanged = false;
+
         // recalculate blob outcome if it is not yet determined
-        switch (auto res = temp.Process(logCtx, blob, *Info, *this, GroupDiskRequests)) {
-            case EStrategyOutcome::IN_PROGRESS:
-                if (blob.IsDone) {
-                    DoneCount--;
-                    blob.IsDone = false;
-                }
-                break;
+        NKikimrProto::EReplyStatus status = NKikimrProto::OK;
+        TString errorReason;
+        for (IStrategy *strategy : s) {
+            switch (auto res = strategy->Process(logCtx, blob, *Info, *this, GroupDiskRequests)) {
+                case EStrategyOutcome::IN_PROGRESS:
+                    status = NKikimrProto::UNKNOWN;
+                    break;
 
-            case EStrategyOutcome::ERROR:
-                if (IsAllRequestsTogether) {
-                    return res;
-                } else {
-                    blob.Status = NKikimrProto::ERROR;
-                    if (finished) {
-                        finished->push_back(&*it);
+                case EStrategyOutcome::ERROR:
+                    if (!finished) {
+                        return res;
                     }
-                    if (errorReason) {
-                        errorReason += " && ";
-                        errorReason += res.ErrorReason;
-                    } else {
-                        errorReason = res.ErrorReason;
-                    }
-                }
-                if (!blob.IsDone) {
-                    DoneCount++;
-                    blob.IsDone = true;
-                }
-                break;
+                    status = NKikimrProto::ERROR;
+                    errorReason = std::move(res.ErrorReason);
+                    break;
 
-            case EStrategyOutcome::DONE:
-                if (!IsAllRequestsTogether) {
-                    blob.Status = NKikimrProto::OK;
-                    if (finished) {
-                        finished->push_back(&*it);
-                    }
-                }
-                if (!blob.IsDone) {
-                    DoneCount++;
-                    blob.IsDone = true;
-                }
+                case EStrategyOutcome::DONE:
+                    break;
+            }
+            if (status != NKikimrProto::OK) {
                 break;
+            }
+        }
+        if (status == NKikimrProto::OK && expired && !blob.HasWrittenQuorum(*Info, *expired)) {
+            status = NKikimrProto::UNKNOWN;
+        }
+        if (status != NKikimrProto::UNKNOWN) {
+            if (finished) { // we are operating on independent blobs
+                finished->push_back(TFinishedBlob{
+                    blob.BlobIdx,
+                    status,
+                    std::move(errorReason),
+                });
+            }
+            const auto [doneIt, inserted, node] = DoneBlobStates.insert(BlobStates.extract(it++));
+            Y_ABORT_UNLESS(inserted);
+        } else {
+            ++it;
         }
     }
 
-    const bool isDone = (DoneCount == (BlobStates.size() + DoneBlobStates.size()));
-    EStrategyOutcome outcome(isDone ? EStrategyOutcome::DONE : EStrategyOutcome::IN_PROGRESS);
-    outcome.ErrorReason = std::move(errorReason);
-    return outcome;
+    return BlobStates.empty() ? EStrategyOutcome::DONE : EStrategyOutcome::IN_PROGRESS;
+}
+
+EStrategyOutcome TBlackboard::RunStrategy(TLogContext &logCtx, const IStrategy& s,
+        TBatchedVec<TFinishedBlob> *finished, const TBlobStorageGroupInfo::TGroupVDisks *expired) {
+    return RunStrategies(logCtx, {const_cast<IStrategy*>(&s)}, finished, expired);
 }
 
 TBlobState& TBlackboard::GetState(const TLogoBlobID &id) {
-    Y_VERIFY(bool(id));
+    Y_ABORT_UNLESS(bool(id));
     TLogoBlobID fullId = id.FullID();
     auto it = BlobStates.find(fullId);
     if (it == BlobStates.end()) {
@@ -522,12 +438,11 @@ TBlobState& TBlackboard::GetState(const TLogoBlobID &id) {
                 << " blobId# " << fullId
                 << " BlackBoard# " << ToString());
     }
-    TBlobState &state = it->second;
-    return state;
+    return it->second;
 }
 
 ssize_t TBlackboard::AddPartMap(const TLogoBlobID &id, ui32 diskOrderNumber, ui32 requestIndex) {
-    Y_VERIFY(id);
+    Y_ABORT_UNLESS(id);
     TBlobState &state = GetState(id);
     ssize_t ret = state.PartMap.size();
     state.PartMap.emplace_back(TEvBlobStorage::TEvGetResult::TPartMapItem{
@@ -541,12 +456,12 @@ ssize_t TBlackboard::AddPartMap(const TLogoBlobID &id, ui32 diskOrderNumber, ui3
 }
 
 void TBlackboard::ReportPartMapStatus(const TLogoBlobID &id, ssize_t partMapIndex, ui32 responseIndex, NKikimrProto::EReplyStatus status) {
-    Y_VERIFY(id);
-    Y_VERIFY(partMapIndex >= 0);
+    Y_ABORT_UNLESS(id);
+    Y_ABORT_UNLESS(partMapIndex >= 0);
     TBlobState &state = GetState(id);
-    Y_VERIFY(static_cast<size_t>(partMapIndex) < state.PartMap.size());
+    Y_ABORT_UNLESS(static_cast<size_t>(partMapIndex) < state.PartMap.size());
     TEvBlobStorage::TEvGetResult::TPartMapItem &item = state.PartMap[partMapIndex];
-    Y_VERIFY(item.ResponseIndex == responseIndex || item.ResponseIndex == Max<ui32>());
+    Y_ABORT_UNLESS(item.ResponseIndex == responseIndex || item.ResponseIndex == Max<ui32>());
     item.ResponseIndex = responseIndex;
     item.Status.emplace_back(id.PartId(), status);
 }
@@ -570,19 +485,12 @@ void TBlackboard::GetWorstPredictedDelaysNs(const TBlobStorageGroupInfo &info, T
     }
 }
 
-void TBlackboard::RegisterBlobForPut(const TLogoBlobID& id, std::vector<std::pair<ui64, ui32>> *extraBlockChecks,
-        NWilson::TSpan *span) {
-    TBlobState& state = (*this)[id];
-    if (!state.ExtraBlockChecks) {
-        state.ExtraBlockChecks = extraBlockChecks;
-    } else {
-        Y_VERIFY(state.ExtraBlockChecks == extraBlockChecks);
-    }
-    if (!state.Span) {
-        state.Span = span;
-    } else {
-        Y_VERIFY(state.Span == span);
-    }
+void TBlackboard::RegisterBlobForPut(const TLogoBlobID& id, size_t blobIdx) {
+    const auto [it, inserted] = BlobStates.try_emplace(id);
+    Y_ABORT_UNLESS(inserted);
+    TBlobState& state = it->second;
+    state.Init(id, *Info);
+    state.BlobIdx = blobIdx;
 }
 
 TBlobState& TBlackboard::operator [](const TLogoBlobID& id) {
@@ -624,5 +532,21 @@ TString TBlackboard::ToString() const {
     return str.Str();
 }
 
+void TBlackboard::InvalidatePartStates(ui32 orderNumber) {
+    const TVDiskID vdiskId = Info->GetVDiskId(orderNumber);
+    for (auto& [id, state] : BlobStates) {
+        if (const ui32 diskIdx = Info->GetIdxInSubgroup(vdiskId, id.Hash()); diskIdx != Info->Type.BlobSubgroupSize()) {
+            for (TBlobState::TDiskPart& part : state.Disks[diskIdx].DiskParts) {
+                if (part.Situation == TBlobState::ESituation::Present) {
+                    part.Situation = TBlobState::ESituation::Unknown;
+                    if (state.WholeSituation == TBlobState::ESituation::Present) {
+                        state.WholeSituation = TBlobState::ESituation::Unknown;
+                    }
+                    state.IsChanged = true;
+                }
+            }
+        }
+    }
+}
 
 }//NKikimr

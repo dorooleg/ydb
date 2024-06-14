@@ -25,7 +25,10 @@ private:
         ctx.AddError(YqlIssue(ctx.GetPosition(where.Pos()), TIssuesIds::DQ_OPTIMIZE_ERROR, err));
     }
 
-    bool ValidateDqStage(const TExprNode& node) {
+    bool ValidateDqStage(const TExprNode& node, TNodeSet* visitedStages) {
+        if (visitedStages) {
+            visitedStages->insert(&node);
+        }
         if (!Visited_.insert(&node).second) {
             return true;
         }
@@ -36,16 +39,20 @@ private:
             ReportError(Ctx_, *bad, TStringBuilder() << "Cannot execute " << bad->Content() << " over stream/flow inside DQ stage");
         }
 
+
+        bool hasMapJoin = false;
         VisitExpr(TDqStageBase(&node).Program().Body().Ptr(),
             [](const TExprNode::TPtr& n) {
                 return !TDqConnection::Match(n.Get()) && !TDqPhyPrecompute::Match(n.Get()) && !TDqReadWrapBase::Match(n.Get());
             },
-            [&hasErrors, &ctx = Ctx_, &dataSize = DataSize_, &typeCtx = TypeCtx_, &state = State_](const TExprNode::TPtr& n) {
+            [&readPerProvider_ = ReadsPerProvider_, &hasErrors, &hasMapJoin, &ctx = Ctx_, &typeCtx = TypeCtx_](const TExprNode::TPtr& n) {
+                if (TDqPhyMapJoin::Match(n.Get())) {
+                    hasMapJoin = true;
+                }
                 if (TCoScriptUdf::Match(n.Get()) && NKikimr::NMiniKQL::IsSystemPython(NKikimr::NMiniKQL::ScriptTypeFromStr(n->Head().Content()))) {
                     ReportError(ctx, *n, TStringBuilder() << "Cannot execute system python udf " << n->Content() << " in DQ");
                     hasErrors = true;
                 }
-                
                 if (!typeCtx.ForceDq && TDqReadWrapBase::Match(n.Get())) {
                     auto readNode = n->Child(0);
                     auto dataSourceName = readNode->Child(1)->Child(0)->Content();
@@ -54,26 +61,40 @@ private:
                         YQL_ENSURE(datasource);
                         auto dqIntegration = (*datasource)->GetDqIntegration();
                         YQL_ENSURE(dqIntegration);
-                        if (dqIntegration) {
-                            TMaybe<ui64> size;
-                            hasErrors |= !(size = dqIntegration->EstimateReadSize(state->Settings->DataSizePerJob.Get().GetOrElse(TDqSettings::TDefault::DataSizePerJob), state->Settings->MaxTasksPerStage.Get().GetOrElse(TDqSettings::TDefault::MaxTasksPerStage), *readNode, ctx));
-                            if (size) {
-                                dataSize += *size;
-                            }
-                        }
+                        readPerProvider_[dqIntegration].push_back(readNode);
                     }
                 }
                 return !hasErrors;
             }
         );
 
-        for (auto n: TDqStageBase(&node).Inputs()) {
-            hasErrors |= !ValidateDqNode(n.Ref());
+        HasMapJoin_ |= hasMapJoin;
+        if (hasMapJoin && CheckSelfMapJoin_) {
+            TNodeSet unitedVisitedStages;
+            bool nonUniqStages = false;
+            for (auto n: TDqStageBase(&node).Inputs()) {
+                TNodeSet inputVisitedStages;
+                hasErrors |= !ValidateDqNode(n.Ref(), &inputVisitedStages);
+                const size_t expectedSize = unitedVisitedStages.size() + inputVisitedStages.size();
+                unitedVisitedStages.insert(inputVisitedStages.begin(), inputVisitedStages.end());
+                nonUniqStages |= (expectedSize != unitedVisitedStages.size()); // Found duplicates - some stage was visited twice from different inputs
+            }
+            if (nonUniqStages) {
+                ReportError(Ctx_, node, TStringBuilder() << "Cannot execute self join using mapjoin strategy in DQ");
+                hasErrors = true;
+            }
+            if (visitedStages) {
+                visitedStages->insert(unitedVisitedStages.begin(), unitedVisitedStages.end());
+            }
+        } else {
+            for (auto n: TDqStageBase(&node).Inputs()) {
+                hasErrors |= !ValidateDqNode(n.Ref(), visitedStages);
+            }
         }
 
         if (auto outs = TDqStageBase(&node).Outputs()) {
             for (auto n: outs.Cast()) {
-                hasErrors |= !ValidateDqNode(n.Ref());
+                hasErrors |= !ValidateDqNode(n.Ref(), nullptr);
             }
         }
 
@@ -81,14 +102,14 @@ private:
 
     }
 
-    bool ValidateDqNode(const TExprNode& node) {
+    bool ValidateDqNode(const TExprNode& node, TNodeSet* visitedStages) {
         if (node.GetState() == TExprNode::EState::ExecutionComplete) {
             return true;
         }
 
         if (TDqStageBase::Match(&node)) {
             // visited will be updated inside ValidateDqStage
-            return ValidateDqStage(node);
+            return ValidateDqStage(node, visitedStages);
         }
 
         if (!Visited_.insert(&node).second) {
@@ -101,29 +122,35 @@ private:
         }
 
         if (TDqConnection::Match(&node)) {
-            return ValidateDqStage(TDqConnection(&node).Output().Stage().Ref());
+            return ValidateDqStage(TDqConnection(&node).Output().Stage().Ref(), TDqCnValue::Match(&node) ? nullptr : visitedStages);
         }
         if (TDqPhyPrecompute::Match(&node)) {
-            return ValidateDqNode(TDqPhyPrecompute(&node).Connection().Ref());
+            return ValidateDqNode(TDqPhyPrecompute(&node).Connection().Ref(), nullptr);
         }
 
         if (TDqSource::Match(&node) || TDqTransform::Match(&node) || TDqSink::Match(&node)) {
             return true;
         }
-        
+
         ReportError(Ctx_, node, TStringBuilder() << "Failed to execute callable with name: " << node.Content() << " in DQ");
         return false;
     }
 
 public:
-    TDqExecutionValidator(const TTypeAnnotationContext& typeCtx, TExprContext& ctx, const TDqState::TPtr state) : TypeCtx_(typeCtx), Ctx_(ctx), State_(state) {}
-    
+    TDqExecutionValidator(const TTypeAnnotationContext& typeCtx, TExprContext& ctx, const TDqState::TPtr state)
+        : TypeCtx_(typeCtx)
+        , Ctx_(ctx)
+        , State_(state)
+        , CheckSelfMapJoin_(!TypeCtx_.ForceDq
+            && !State_->Settings->SplitStageOnDqReplicate.Get().GetOrElse(TDqSettings::TDefault::SplitStageOnDqReplicate)
+            && !State_->Settings->IsSpillingEnabled())
+    {}
+
     bool ValidateDqExecution(const TExprNode& node) {
         YQL_LOG_CTX_SCOPE(__FUNCTION__);
 
         TNodeSet dqNodes;
-        
-        bool hasJoin = false;
+
         if (TDqCnResult::Match(&node)) {
             dqNodes.insert(TDqCnResult(&node).Output().Stage().Raw());
         } else if (TDqQuery::Match(&node)) {
@@ -145,22 +172,31 @@ public:
             });
         }
 
-        VisitExpr(node, [&hasJoin](const TExprNode& n) {
-            if (TMaybeNode<TDqPhyMapJoin>(&n)) {
-                hasJoin = true;
-            }
-            return true;
-        });
-
         bool hasError = false;
-        
+
         for (const auto n: dqNodes) {
-            hasError |= !ValidateDqNode(*n);
+            hasError |= !ValidateDqNode(*n, nullptr);
+            if (hasError) {
+                break;
+            }
         }
 
-        if (!hasError && hasJoin && DataSize_ > State_->Settings->MaxDataSizePerQuery.Get().GetOrElse(10_GB)) {
-            ReportError(Ctx_, node, TStringBuilder() << "too big join input: " << DataSize_);
-            return false;
+        if (!hasError && HasMapJoin_ && !TypeCtx_.ForceDq) {
+            size_t dataSize = 0;
+            for (auto& [integration, nodes]: ReadsPerProvider_) {
+                TMaybe<ui64> size;
+                hasError |= !(size = integration->EstimateReadSize(State_->Settings->DataSizePerJob.Get().GetOrElse(TDqSettings::TDefault::DataSizePerJob),
+                    State_->Settings->MaxTasksPerStage.Get().GetOrElse(TDqSettings::TDefault::MaxTasksPerStage), nodes, Ctx_));
+                if (hasError) {
+                    break;
+                }
+                dataSize += *size;
+            }
+
+            if (dataSize > State_->Settings->MaxDataSizePerQuery.Get().GetOrElse(10_GB)) {
+                ReportError(Ctx_, node, TStringBuilder() << "too big join input: " << dataSize);
+                return false;
+            }
         }
         return !hasError;
     }
@@ -168,10 +204,12 @@ private:
 
     const TTypeAnnotationContext& TypeCtx_;
     TExprContext& Ctx_;
-    TNodeSet Visited_;
-    size_t DataSize_ = 0;
     const TDqState::TPtr State_;
-    
+    const bool CheckSelfMapJoin_;
+
+    TNodeSet Visited_;
+    THashMap<IDqIntegration*, TVector<const TExprNode*>> ReadsPerProvider_;
+    bool HasMapJoin_ = false;
 };
 }
 

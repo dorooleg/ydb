@@ -12,26 +12,30 @@ namespace NYdb {
     namespace NConsoleClient {
 
         struct TTopicWorkloadWriterParams {
-            size_t Seconds;
-            NYdb::TDriver* Driver;
+            size_t TotalSec;
+            size_t WarmupSec;
+            const NYdb::TDriver& Driver;
             std::shared_ptr<TLog> Log;
             std::shared_ptr<TTopicWorkloadStatsCollector> StatsCollector;
             std::shared_ptr<std::atomic<bool>> ErrorFlag;
             std::shared_ptr<std::atomic_uint> StartedCount;
-
+            const std::vector<TString>& GeneratedMessages;
+            TString TopicName;
             size_t ByteRate;
+            size_t MessageSize;
             ui32 ProducerThreadCount;
             ui32 WriterIdx;
             TString ProducerId;
             ui32 PartitionId;
-
-            size_t MessageSize;
+            bool Direct;
             ui32 Codec = 0;
+            bool UseTransactions = false;
         };
 
         class TTopicWorkloadWriterWorker {
         public:
-            static void WriterLoop(TTopicWorkloadWriterParams&& params);
+            static void WriterLoop(TTopicWorkloadWriterParams& params);
+            static std::vector<TString> GenerateMessages(size_t messageSize);
         private:
             TTopicWorkloadWriterWorker(TTopicWorkloadWriterParams&& params);
             ~TTopicWorkloadWriterWorker();
@@ -41,8 +45,6 @@ namespace NYdb {
             void Process();
 
             void CreateWorker();
-
-            void CreateTopicWorker();
 
             bool ProcessAckEvent(const NYdb::NTopic::TWriteSessionEvent::TAcksEvent& event);
 
@@ -54,7 +56,6 @@ namespace NYdb {
             bool WaitForInitSeqNo();
 
             TString GetGeneratedMessage() const;
-            void GenerateMessages();
 
             TInstant GetCreateTimestamp() const;
 
@@ -65,19 +66,13 @@ namespace NYdb {
             std::shared_ptr<NYdb::NTopic::IWriteSession> WriteSession;
             TInstant StartTimestamp;
 
-            std::vector<TString> GeneratedMessages;
-
-
             TMaybe<NTopic::TContinuationToken> ContinuationToken;
 
             std::shared_ptr<std::atomic<bool>> Closed;
             std::shared_ptr<TTopicWorkloadStatsCollector> StatsCollector;
 
-            struct TInflightMessage {
-                size_t MessageSize;
-                TInstant MessageTime;
-            };
-            THashMap<ui64, TInflightMessage> InflightMessages;
+            // SeqNo - CreateTime
+            THashMap<ui64, TInstant> InflightMessages;
         };
     }
 }

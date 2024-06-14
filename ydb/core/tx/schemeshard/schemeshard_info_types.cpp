@@ -1,30 +1,201 @@
 #include "schemeshard_info_types.h"
-#include "schemeshard_tables_storage.h"
 #include "schemeshard_path.h"
 #include "schemeshard_utils.h"
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/compile_time_flags.h>
 #include <ydb/core/base/tx_processing.h>
+#include <ydb/core/base/channel_profiles.h>
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 #include <ydb/core/engine/mkql_proto.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
 #include <ydb/core/tablet/tablet_counters_aggregator.h>
 #include <ydb/core/tablet/tablet_counters_protobuf.h>
 #include <ydb/core/util/pb.h>
+#include <ydb/core/protos/config.pb.h>
 
 #include <ydb/library/yql/minikql/mkql_type_ops.h>
 
 #include <util/generic/algorithm.h>
 
+namespace {
+
+using TDiskSpaceQuotas = NKikimr::NSchemeShard::TSubDomainInfo::TDiskSpaceQuotas;
+using TQuotasPair = TDiskSpaceQuotas::TQuotasPair;
+using TStoragePoolUsage = NKikimr::NSchemeShard::TSubDomainInfo::TDiskSpaceUsage::TStoragePoolUsage;
+
+enum class EDiskUsageStatus {
+    AboveHardQuota,
+    InBetween,
+    BelowSoftQuota,
+};
+
+EDiskUsageStatus CheckStoragePoolsQuotas(const THashMap<TString, TStoragePoolUsage>& storagePoolsUsage,
+                                         const THashMap<TString, TQuotasPair>& storagePoolsQuotas
+) {
+    bool softQuotaExceeded = false;
+    for (const auto& [poolKind, usage] : storagePoolsUsage) {
+        if (const auto* quota = storagePoolsQuotas.FindPtr(poolKind)) {
+            const auto totalSize = usage.DataSize + usage.IndexSize;
+            if (quota->HardQuota && totalSize > quota->HardQuota) {
+                return EDiskUsageStatus::AboveHardQuota;
+            }
+            if (quota->SoftQuota && totalSize >= quota->SoftQuota) {
+                softQuotaExceeded = true;
+            }
+        }
+    }
+    return softQuotaExceeded
+            ? EDiskUsageStatus::InBetween
+            : EDiskUsageStatus::BelowSoftQuota;
+}
+
+}
+
 namespace NKikimr {
 namespace NSchemeShard {
+
+void TSubDomainInfo::ApplyAuditSettings(const TSubDomainInfo::TMaybeAuditSettings& diff) {
+    if (diff.Defined()) {
+        const auto& input = diff.GetRef();
+        if (AuditSettings.Defined()) {
+            NKikimrSubDomains::TAuditSettings next = AuditSettings.GetRef();
+            if (input.HasEnableDmlAudit()) {
+                next.SetEnableDmlAudit(input.GetEnableDmlAudit());
+            }
+            if (input.ExpectedSubjectsSize() > 0) {
+                next.ClearExpectedSubjects();
+                // instead of CopyFrom, manually copy all but empty elements
+                for (const auto& i : input.GetExpectedSubjects()) {
+                    if (!i.empty()) {
+                        next.AddExpectedSubjects(i);
+                    }
+                }
+            }
+            AuditSettings = next;
+        } else {
+            AuditSettings = input;
+        }
+    }
+}
+
+TDiskSpaceQuotas TSubDomainInfo::GetDiskSpaceQuotas() const {
+    if (!DatabaseQuotas) {
+        return {};
+    }
+
+    ui64 hardQuota = DatabaseQuotas->data_size_hard_quota();
+    ui64 softQuota = DatabaseQuotas->data_size_soft_quota();
+
+    if (!softQuota) {
+        softQuota = hardQuota;
+    } else if (!hardQuota) {
+        hardQuota = softQuota;
+    }
+
+    THashMap<TString, TQuotasPair> storagePoolsQuotas;
+    for (const auto& storageQuota : DatabaseQuotas->storage_quotas()) {
+        ui64 unitHardQuota = storageQuota.data_size_hard_quota();
+        ui64 unitSoftQuota = storageQuota.data_size_soft_quota();
+
+        if (!unitSoftQuota) {
+            unitSoftQuota = unitHardQuota;
+        } else if (!unitHardQuota) {
+            unitHardQuota = unitSoftQuota;
+        }
+
+        storagePoolsQuotas.emplace(storageQuota.unit_kind(), TQuotasPair{
+                .HardQuota = unitHardQuota,
+                .SoftQuota = unitSoftQuota
+            }
+        );
+    }
+
+    return TDiskSpaceQuotas{hardQuota, softQuota, std::move(storagePoolsQuotas)};
+}
+
+bool TSubDomainInfo::CheckDiskSpaceQuotas(IQuotaCounters* counters) {
+    const auto changeSubdomainState = [&](EDiskUsageStatus diskUsage) {
+        if (diskUsage == EDiskUsageStatus::AboveHardQuota && !DiskQuotaExceeded) {
+            counters->ChangeDiskSpaceQuotaExceeded(+1);
+            DiskQuotaExceeded = true;
+            ++DomainStateVersion;
+            return true;
+        }
+        if (diskUsage == EDiskUsageStatus::BelowSoftQuota && DiskQuotaExceeded) {
+            counters->ChangeDiskSpaceQuotaExceeded(-1);
+            DiskQuotaExceeded = false;
+            ++DomainStateVersion;
+            return true;
+        }
+        return false;
+    };
+
+    auto quotas = GetDiskSpaceQuotas();
+    if (!quotas) {
+        return changeSubdomainState(EDiskUsageStatus::BelowSoftQuota);
+    }
+
+    ui64 totalUsage = TotalDiskSpaceUsage();
+    const auto storagePoolsUsageStatus = CheckStoragePoolsQuotas(DiskSpaceUsage.StoragePoolsUsage, quotas.StoragePoolsQuotas);
+
+    // Quota being equal to zero is treated as if there is no limit set on disk space usage.
+    const bool overallHardQuotaIsExceeded = quotas.HardQuota && totalUsage > quotas.HardQuota;
+    const bool someStoragePoolHardQuotaIsExceeded = !quotas.StoragePoolsQuotas.empty()
+                                                        && storagePoolsUsageStatus == EDiskUsageStatus::AboveHardQuota;
+    if (overallHardQuotaIsExceeded || someStoragePoolHardQuotaIsExceeded) {
+        return changeSubdomainState(EDiskUsageStatus::AboveHardQuota);
+    }
+
+    const bool totalUsageIsBelowOverallSoftQuota = !quotas.SoftQuota || totalUsage < quotas.SoftQuota;
+    const bool allStoragePoolsUsageIsBelowSoftQuota = quotas.StoragePoolsQuotas.empty()
+                                                          || storagePoolsUsageStatus == EDiskUsageStatus::BelowSoftQuota;
+    if (totalUsageIsBelowOverallSoftQuota && allStoragePoolsUsageIsBelowSoftQuota) {
+        return changeSubdomainState(EDiskUsageStatus::BelowSoftQuota);
+    }
+
+    return false;
+}
+
+void TSubDomainInfo::AggrDiskSpaceUsage(IQuotaCounters* counters, const TPartitionStats& newAggr, const TPartitionStats& oldAggr) {
+    DiskSpaceUsage.Tables.DataSize += (newAggr.DataSize - oldAggr.DataSize);
+    counters->ChangeDiskSpaceTablesDataBytes(newAggr.DataSize - oldAggr.DataSize);
+
+    DiskSpaceUsage.Tables.IndexSize += (newAggr.IndexSize - oldAggr.IndexSize);
+    counters->ChangeDiskSpaceTablesIndexBytes(newAggr.IndexSize - oldAggr.IndexSize);
+
+    i64 oldTotalBytes = DiskSpaceUsage.Tables.TotalSize;
+    DiskSpaceUsage.Tables.TotalSize = DiskSpaceUsage.Tables.DataSize + DiskSpaceUsage.Tables.IndexSize;
+    i64 newTotalBytes = DiskSpaceUsage.Tables.TotalSize;
+    counters->ChangeDiskSpaceTablesTotalBytes(newTotalBytes - oldTotalBytes);
+
+    for (const auto& [poolKind, newStoragePoolStats] : newAggr.StoragePoolsStats) {
+        const auto* oldStats = oldAggr.StoragePoolsStats.FindPtr(poolKind);
+        auto& storagePoolUsage = DiskSpaceUsage.StoragePoolsUsage[poolKind];
+        storagePoolUsage.DataSize += newStoragePoolStats.DataSize - (oldStats ? oldStats->DataSize : 0u);
+        storagePoolUsage.IndexSize += newStoragePoolStats.IndexSize - (oldStats ? oldStats->IndexSize : 0u);
+    }
+    for (const auto& [poolKind, oldStoragePoolStats] : oldAggr.StoragePoolsStats) {
+        if (const auto* newStats = newAggr.StoragePoolsStats.FindPtr(poolKind); !newStats) {
+            auto& storagePoolUsage = DiskSpaceUsage.StoragePoolsUsage[poolKind];
+            storagePoolUsage.DataSize -= oldStoragePoolStats.DataSize;
+            storagePoolUsage.IndexSize -= oldStoragePoolStats.IndexSize;
+        }
+    }
+}
+
+void TSubDomainInfo::AggrDiskSpaceUsage(const TTopicStats& newAggr, const TTopicStats& oldAggr) {
+    auto& topics = DiskSpaceUsage.Topics;
+    topics.DataSize += (newAggr.DataSize - oldAggr.DataSize);
+    topics.UsedReserveSize += (newAggr.UsedReserveSize - oldAggr.UsedReserveSize);
+}
 
 TTableInfo::TAlterDataPtr TTableInfo::CreateAlterData(
     TPtr source,
     NKikimrSchemeOp::TTableDescription& op,
     const NScheme::TTypeRegistry& typeRegistry,
     const TSchemeLimits& limits, const TSubDomainInfo& subDomain,
+    bool pgTypesEnabled,
     TString& errStr, const THashSet<TString>& localSequences)
 {
     TAlterDataPtr alterData = new TTableInfo::TAlterTableInfo();
@@ -43,7 +214,7 @@ TTableInfo::TAlterDataPtr TTableInfo::CreateAlterData(
 
     if (source) {
         for (const auto& col : source->Columns) {
-            Y_VERIFY(col.first == col.second.Id);
+            Y_ABORT_UNLESS(col.first == col.second.Id);
             // There could be columns with same name. Only one of them can be active.
             if (col.second.IsDropped())
                 continue;
@@ -98,20 +269,47 @@ TTableInfo::TAlterDataPtr TTableInfo::CreateAlterData(
                 return nullptr;
             }
 
-            if (!columnFamily) {
+            if (!columnFamily && !col.HasDefaultFromSequence()) {
                 errStr = Sprintf("Nothing to alter for column '%s'", colName.data());
                 return nullptr;
             }
 
-            if (col.DefaultValue_case() != NKikimrSchemeOp::TColumnDescription::DEFAULTVALUE_NOT_SET) {
-                errStr = Sprintf("Cannot alter default for column '%s'", colName.c_str());
-                return nullptr;
+            if (col.HasDefaultFromSequence()) {
+                if (!localSequences.contains(col.GetDefaultFromSequence())) {
+                    errStr = Sprintf("Column '%s' cannot use an unknown sequence '%s'", colName.c_str(), col.GetDefaultFromSequence().c_str());
+                    return nullptr;
+                }
+            } else {
+                if (col.DefaultValue_case() != NKikimrSchemeOp::TColumnDescription::DEFAULTVALUE_NOT_SET) {
+                    errStr = Sprintf("Cannot set default from literal for column '%s'", colName.c_str());
+                    return nullptr;
+                }
             }
 
             ui32 colId = colName2Id[colName];
+            const TTableInfo::TColumn& sourceColumn = source->Columns[colId];
+
+            if (col.HasDefaultFromSequence()) {
+                if (sourceColumn.PType.GetTypeId() != NScheme::NTypeIds::Int64) {
+                    errStr = Sprintf(
+                        "Sequence value type '%s' must be equal to the column type '%s'", "Int64",
+                        NScheme::TypeName(sourceColumn.PType, sourceColumn.PTypeMod).c_str());
+                    return nullptr;
+                }
+            }
+
             TTableInfo::TColumn& column = alterData->Columns[colId];
-            column = source->Columns[colId];
-            column.Family = columnFamily->GetId();
+            column = sourceColumn;
+            if (columnFamily) {
+                column.Family = columnFamily->GetId();
+            }
+            if (col.HasDefaultFromSequence()) {
+                column.DefaultKind = ETableColumnDefaultKind::FromSequence;
+                column.DefaultValue = col.GetDefaultFromSequence();
+            } else if (col.HasDefaultFromLiteral()) {
+                column.DefaultKind = ETableColumnDefaultKind::FromLiteral;
+                column.DefaultValue = col.GetDefaultFromLiteral().SerializeAsString();
+            }
         } else {
             if (colName2Id.contains(colName)) {
                 errStr = Sprintf("Column '%s' specified more than once", colName.data());
@@ -138,6 +336,10 @@ TTableInfo::TAlterDataPtr TTableInfo::CreateAlterData(
                     errStr = Sprintf("Type '%s' specified for column '%s' is not supported by storage", col.GetType().data(), colName.data());
                     return nullptr;
                 }
+                if (!pgTypesEnabled) {
+                    errStr = Sprintf("Type '%s' specified for column '%s', but support for pg types is disabled (EnableTablePgTypes feature flag is off)", col.GetType().data(), colName.data());
+                    return nullptr;
+                }
                 typeInfo = NScheme::TTypeInfo(NScheme::NTypeIds::Pg, typeDesc);
                 typeMod = NPg::TypeModFromPgTypeName(typeName);
             }
@@ -157,14 +359,17 @@ TTableInfo::TAlterDataPtr TTableInfo::CreateAlterData(
 
             colName2Id[colName] = colId;
             TTableInfo::TColumn& column = alterData->Columns[colId];
-            column = TTableInfo::TColumn(colName, colId, typeInfo, typeMod);
+            column = TTableInfo::TColumn(colName, colId, typeInfo, typeMod, col.GetNotNull());
             column.Family = columnFamily ? columnFamily->GetId() : 0;
-            column.NotNull = col.GetNotNull();
+            column.IsBuildInProgress = col.GetIsBuildInProgress();
             if (source)
                 column.CreateVersion = alterData->AlterVersion;
             if (col.HasDefaultFromSequence()) {
                 column.DefaultKind = ETableColumnDefaultKind::FromSequence;
                 column.DefaultValue = col.GetDefaultFromSequence();
+            } else if (col.HasDefaultFromLiteral()) {
+                column.DefaultKind = ETableColumnDefaultKind::FromLiteral;
+                column.DefaultValue = col.GetDefaultFromLiteral().SerializeAsString();
             }
         }
     }
@@ -231,14 +436,18 @@ TTableInfo::TAlterDataPtr TTableInfo::CreateAlterData(
     if (op.HasReplicationConfig()) {
         const auto& cfg = op.GetReplicationConfig();
 
-        if (source) {
-            errStr = "Cannot alter replication config";
-            return nullptr;
-        }
-
         switch (cfg.GetMode()) {
         case NKikimrSchemeOp::TTableReplicationConfig::REPLICATION_MODE_NONE:
+            if (cfg.HasConsistency() && cfg.GetConsistency() != NKikimrSchemeOp::TTableReplicationConfig::CONSISTENCY_UNKNOWN) {
+                errStr = "Cannot set replication consistency";
+                return nullptr;
+            }
+            break;
         case NKikimrSchemeOp::TTableReplicationConfig::REPLICATION_MODE_READ_ONLY:
+            if (source) {
+                errStr = "Cannot set replication mode";
+                return nullptr;
+            }
             break;
         default:
             errStr = "Unknown replication mode";
@@ -317,7 +526,7 @@ void TTableInfo::ResetDescriptionCache() {
 }
 
 TVector<ui32> TTableInfo::FillDescriptionCache(TPathElement::TPtr pathInfo) {
-    Y_VERIFY(pathInfo && pathInfo->IsTable());
+    Y_ABORT_UNLESS(pathInfo && pathInfo->IsTable());
 
     TVector<ui32> keyColumnIds;
     for (auto& col : Columns) {
@@ -347,6 +556,7 @@ TVector<ui32> TTableInfo::FillDescriptionCache(TPathElement::TPtr pathInfo) {
             if (columnType.TypeInfo) {
                 *colDescr->MutableTypeInfo() = *columnType.TypeInfo;
             }
+            colDescr->SetNotNull(column.NotNull);
             colDescr->SetFamily(column.Family);
         }
         for (auto ci : keyColumnIds) {
@@ -364,7 +574,7 @@ inline THashMap<ui32, size_t> DeduplicateRepeatedById(
     const TGetId& getId,
     const TPreferred& preferred)
 {
-    Y_VERIFY(items, "Unexpected nullptr items");
+    Y_ABORT_UNLESS(items, "Unexpected nullptr items");
 
     int size = items->size();
     THashMap<ui32, size_t> posById;
@@ -402,43 +612,6 @@ inline THashMap<ui32, size_t> DeduplicateRepeatedById(
     return posById;
 }
 
-}
-
-bool TOlapStoreInfo::ILayoutPolicy::Layout(const TColumnTablesLayout& currentLayout, const ui32 shardsCount, std::vector<ui64>& result) const {
-    if (!DoLayout(currentLayout, shardsCount, result)) {
-        return false;
-    }
-    Y_VERIFY(result.size() == shardsCount);
-    return true;
-}
-
-bool TOlapStoreInfo::TIdentityGroupsLayout::DoLayout(const TColumnTablesLayout& currentLayout, const ui32 shardsCount, std::vector<ui64>& result) const {
-    for (auto&& i : currentLayout.GetGroups()) {
-        if (i.GetTableIds().Size() == 0 && i.GetShardIds().Size() >= shardsCount) {
-            result = i.GetShardIds().GetIdsVector(shardsCount);
-            return true;
-        }
-        if (i.GetShardIds().Size() != shardsCount) {
-            continue;
-        }
-        result = i.GetShardIds().GetIdsVector();
-        return true;
-    }
-    return false;
-}
-
-bool TOlapStoreInfo::TMinimalTablesCountLayout::DoLayout(const TColumnTablesLayout& currentLayout, const ui32 shardsCount, std::vector<ui64>& result) const {
-    std::vector<ui64> resultLocal;
-    for (auto&& i : currentLayout.GetGroups()) {
-        for (auto&& s : i.GetShardIds()) {
-            resultLocal.emplace_back(s);
-            if (resultLocal.size() == shardsCount) {
-                std::swap(result, resultLocal);
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 NKikimrSchemeOp::TPartitionConfig TPartitionConfigMerger::DefaultConfig(const TAppData* appData) {
@@ -1021,7 +1194,7 @@ bool TPartitionConfigMerger::VerifyAlterParams(
     }
 
     if (wasStorageConfig) {
-        Y_VERIFY(isStorageConfig); // by inherit logic
+        Y_ABORT_UNLESS(isStorageConfig); // by inherit logic
 
         auto& srcStorage = *wasStorageConfig;
         auto& cfgStorage = *isStorageConfig;
@@ -1086,7 +1259,7 @@ bool TPartitionConfigMerger::VerifyAlterParams(
         const auto* srcFamily = srcFamilies.Value(family.GetId(), nullptr);
 
         if (srcFamily && srcFamily->HasStorageConfig()) {
-            Y_VERIFY(family.HasStorageConfig()); // by inherit logic
+            Y_ABORT_UNLESS(family.HasStorageConfig()); // by inherit logic
 
             const auto& srcStorage = srcFamily->GetStorageConfig();
             const auto& dstStorage = family.GetStorageConfig();
@@ -1158,12 +1331,6 @@ bool TPartitionConfigMerger::VerifyCompactionPolicy(const NKikimrSchemeOp::TComp
         case NKikimrSchemeOp::CompactionStrategyGenerational:
             break;
         case NKikimrSchemeOp::CompactionStrategySharded:
-            if (!KIKIMR_ALLOW_SHARDED_COMPACTION) {
-                err = TStringBuilder()
-                        << "Unsupported compaction strategy.";
-                return false;
-            }
-            break;
         default:
             err = TStringBuilder()
                     << "Unsupported compaction strategy.";
@@ -1189,7 +1356,7 @@ bool TPartitionConfigMerger::VerifyCommandOnFrozenTable(const NKikimrSchemeOp::T
 }
 
 void TTableInfo::FinishAlter() {
-    Y_VERIFY(AlterData, "No alter data at Alter complete");
+    Y_ABORT_UNLESS(AlterData, "No alter data at Alter complete");
     AlterVersion = AlterData->AlterVersion;
     NextColumnId = AlterData->NextColumnId;
     for (const auto& col : AlterData->Columns) {
@@ -1198,6 +1365,8 @@ void TTableInfo::FinishAlter() {
             //oldCol->CreateVersion = col.second.CreateVersion;
             oldCol->DeleteVersion = col.second.DeleteVersion;
             oldCol->Family = col.second.Family;
+            oldCol->DefaultKind = col.second.DefaultKind;
+            oldCol->DefaultValue = col.second.DefaultValue;
         } else {
             Columns[col.first] = col.second;
             if (col.second.KeyOrder != (ui32)-1) {
@@ -1291,20 +1460,20 @@ void TTableInfo::FinishAlter() {
 
 #if 1 // legacy
 TString TTableInfo::SerializeAlterExtraData() const {
-    Y_VERIFY(AlterData);
+    Y_ABORT_UNLESS(AlterData);
     NKikimrSchemeOp::TAlterExtraData alterExtraData;
     alterExtraData.MutablePartitionConfig()->CopyFrom(AlterData->PartitionConfigDiff());
     TString str;
     bool serializeRes = alterExtraData.SerializeToString(&str);
-    Y_VERIFY(serializeRes);
+    Y_ABORT_UNLESS(serializeRes);
     return str;
 }
 
 void TTableInfo::DeserializeAlterExtraData(const TString& str) {
-    Y_VERIFY(AlterData);
+    Y_ABORT_UNLESS(AlterData);
     NKikimrSchemeOp::TAlterExtraData alterExtraData;
     bool deserializeRes = ParseFromStringNoSizeLimit(alterExtraData, str);
-    Y_VERIFY(deserializeRes);
+    Y_ABORT_UNLESS(deserializeRes);
     AlterData->PartitionConfigDiff().Swap(alterExtraData.MutablePartitionConfig());
 }
 #endif
@@ -1321,6 +1490,12 @@ void TTableInfo::SetPartitioning(TVector<TTableShardInfo>&& newPartitioning) {
         newAggregatedStats.RowCount += newStats.RowCount;
         newAggregatedStats.DataSize += newStats.DataSize;
         newAggregatedStats.IndexSize += newStats.IndexSize;
+        for (const auto& [poolKind, newStoragePoolStats] : newStats.StoragePoolsStats) {
+            auto& aggregatedStoragePoolStats = newAggregatedStats.StoragePoolsStats[poolKind];
+            aggregatedStoragePoolStats.DataSize += newStoragePoolStats.DataSize;
+            aggregatedStoragePoolStats.IndexSize += newStoragePoolStats.IndexSize;
+        }
+        newAggregatedStats.InFlightTxCount += newStats.InFlightTxCount;
         cpuTotal += newStats.GetCurrentRawCpuUsage();
         newAggregatedStats.Memory += newStats.Memory;
         newAggregatedStats.Network += newStats.Network;
@@ -1350,7 +1525,7 @@ void TTableInfo::SetPartitioning(TVector<TTableShardInfo>&& newPartitioning) {
     }
 
     if (Partitions.empty()) {
-        Y_VERIFY(SplitOpsInFlight.empty());
+        Y_ABORT_UNLESS(SplitOpsInFlight.empty());
     }
 
     Stats.PartitionStats.swap(newPartitionStats);
@@ -1400,6 +1575,30 @@ void TAggregatedStats::UpdateShardStats(TShardIdx datashardIdx, const TPartition
     Aggregated.RowCount += (newStats.RowCount - oldStats.RowCount);
     Aggregated.DataSize += (newStats.DataSize - oldStats.DataSize);
     Aggregated.IndexSize += (newStats.IndexSize - oldStats.IndexSize);
+    for (const auto& [poolKind, newStoragePoolStats] : newStats.StoragePoolsStats) {
+        auto* aggregatedStoragePoolStats = Aggregated.StoragePoolsStats.FindPtr(poolKind);
+        if (aggregatedStoragePoolStats) {
+            const auto* oldStoragePoolStats = oldStats.StoragePoolsStats.FindPtr(poolKind);
+
+            // Missing old stats for a particular storage pool are interpreted as if this data
+            // has just been written to the datashard and we need to increment the aggregate by the entire new stats' sizes.
+            aggregatedStoragePoolStats->DataSize += newStoragePoolStats.DataSize - (oldStoragePoolStats ? oldStoragePoolStats->DataSize : 0u);
+            aggregatedStoragePoolStats->IndexSize += newStoragePoolStats.IndexSize - (oldStoragePoolStats ? oldStoragePoolStats->IndexSize : 0u);
+        } else {
+            Aggregated.StoragePoolsStats.emplace(poolKind, newStoragePoolStats);
+        }
+    }
+    for (const auto& [poolKind, oldStoragePoolStats] : oldStats.StoragePoolsStats) {
+        if (const auto* newStoragePoolStats = newStats.StoragePoolsStats.FindPtr(poolKind); !newStoragePoolStats) {
+            auto* aggregatedStoragePoolStats = Aggregated.StoragePoolsStats.FindPtr(poolKind);
+            Y_ABORT_UNLESS(aggregatedStoragePoolStats, "Old stats are present, but they haven't been aggregated.");
+
+            // Missing new stats for a particular storage pool are interpreted as if this data
+            // has been removed from the datashard and we need to subtract the old stats' sizes from the aggregate.
+            aggregatedStoragePoolStats->DataSize -= oldStoragePoolStats.DataSize;
+            aggregatedStoragePoolStats->IndexSize -= oldStoragePoolStats.IndexSize;
+        }
+    }
     Aggregated.LastAccessTime = Max(Aggregated.LastAccessTime, newStats.LastAccessTime);
     Aggregated.LastUpdateTime = Max(Aggregated.LastUpdateTime, newStats.LastUpdateTime);
     Aggregated.ImmediateTxCompleted += (newStats.ImmediateTxCompleted - oldStats.ImmediateTxCompleted);
@@ -1442,9 +1641,38 @@ void TAggregatedStats::UpdateShardStats(TShardIdx datashardIdx, const TPartition
     }
 }
 
+void TAggregatedStats::UpdateTableStats(const TPathId& pathId, const TPartitionStats& newStats) {
+    if (!TableStats.contains(pathId)) {
+        TableStats[pathId] = newStats;
+        return;
+    }
+
+    TPartitionStats& oldStats = TableStats[pathId];
+
+    if (newStats.SeqNo <= oldStats.SeqNo) {
+        // Ignore outdated message
+        return;
+    }
+
+    if (newStats.SeqNo.Generation > oldStats.SeqNo.Generation) {
+        // Reset incremental counter baselines if tablet has restarted
+        oldStats.ImmediateTxCompleted = 0;
+        oldStats.PlannedTxCompleted = 0;
+        oldStats.TxRejectedByOverload = 0;
+        oldStats.TxRejectedBySpace = 0;
+        oldStats.RowUpdates = 0;
+        oldStats.RowDeletes = 0;
+        oldStats.RowReads = 0;
+        oldStats.RangeReads = 0;
+        oldStats.RangeReadRows = 0;
+    }
+    TableStats[pathId].RowCount += (newStats.RowCount - oldStats.RowCount);
+    TableStats[pathId].DataSize += (newStats.DataSize - oldStats.DataSize);
+}
+
 void TTableInfo::RegisterSplitMergeOp(TOperationId opId, const TTxState& txState) {
-    Y_VERIFY(txState.TxType == TTxState::TxSplitTablePartition || txState.TxType == TTxState::TxMergeTablePartition);
-    Y_VERIFY(txState.SplitDescription);
+    Y_ABORT_UNLESS(txState.TxType == TTxState::TxSplitTablePartition || txState.TxType == TTxState::TxMergeTablePartition);
+    Y_ABORT_UNLESS(txState.SplitDescription);
 
     if (SplitOpsInFlight.empty()) {
         Y_VERIFY_S(Partitions.size() == ExpectedPartitionCount,
@@ -1460,7 +1688,7 @@ void TTableInfo::RegisterSplitMergeOp(TOperationId opId, const TTxState& txState
         ExpectedPartitionCount -= srcCount;
     }
 
-    Y_VERIFY(!SplitOpsInFlight.contains(opId));
+    Y_ABORT_UNLESS(!SplitOpsInFlight.contains(opId));
     SplitOpsInFlight.emplace(opId);
     ShardsInSplitMergeByOpId.emplace(opId, TVector<TShardIdx>());
 
@@ -1473,8 +1701,8 @@ void TTableInfo::RegisterSplitMergeOp(TOperationId opId, const TTxState& txState
 bool TTableInfo::IsShardInSplitMergeOp(TShardIdx idx) const {
     if (ShardsInSplitMergeByShards.contains(idx)) {
         TOperationId opId = ShardsInSplitMergeByShards.at(idx);
-        Y_VERIFY(ShardsInSplitMergeByOpId.contains(opId));
-        Y_VERIFY(SplitOpsInFlight.contains(opId));
+        Y_ABORT_UNLESS(ShardsInSplitMergeByOpId.contains(opId));
+        Y_ABORT_UNLESS(SplitOpsInFlight.contains(opId));
     }
 
     return ShardsInSplitMergeByShards.contains(idx);
@@ -1482,7 +1710,7 @@ bool TTableInfo::IsShardInSplitMergeOp(TShardIdx idx) const {
 
 
 void TTableInfo::AbortSplitMergeOp(TOperationId opId) {
-    Y_VERIFY(SplitOpsInFlight.contains(opId));
+    Y_ABORT_UNLESS(SplitOpsInFlight.contains(opId));
     for (const auto& shardIdx: ShardsInSplitMergeByOpId.at(opId)) {
         ShardsInSplitMergeByShards.erase(shardIdx);
     }
@@ -1745,7 +1973,7 @@ bool TExportInfo::AllItemsAreDropped() const {
 }
 
 void TExportInfo::AddNotifySubscriber(const TActorId &actorId) {
-    Y_VERIFY(!IsFinished());
+    Y_ABORT_UNLESS(!IsFinished());
     Subscribers.insert(actorId);
 }
 
@@ -1783,7 +2011,7 @@ bool TImportInfo::IsFinished() const {
 }
 
 void TImportInfo::AddNotifySubscriber(const TActorId &actorId) {
-    Y_VERIFY(!IsFinished());
+    Y_ABORT_UNLESS(!IsFinished());
     Subscribers.insert(actorId);
 }
 
@@ -1792,11 +2020,11 @@ TIndexBuildInfo::TShardStatus::TShardStatus(TSerializedTableRange range, TString
     , LastKeyAck(std::move(lastKeyAck))
 {}
 
-NKikimrSchemeOp::TIndexBuildConfig TIndexBuildInfo::SerializeToProto(TSchemeShard* ss) const {
-    NKikimrSchemeOp::TIndexBuildConfig result;
-    result.SetTable(TPath::Init(TablePathId, ss).PathString());
+void TIndexBuildInfo::SerializeToProto(TSchemeShard* ss, NKikimrSchemeOp::TIndexBuildConfig* result) const {
+    Y_ABORT_UNLESS(IsBuildIndex());
+    result->SetTable(TPath::Init(TablePathId, ss).PathString());
 
-    auto& index = *result.MutableIndex();
+    auto& index = *result->MutableIndex();
     index.SetName(IndexName);
     index.SetType(IndexType);
 
@@ -1807,8 +2035,14 @@ NKikimrSchemeOp::TIndexBuildConfig TIndexBuildInfo::SerializeToProto(TSchemeShar
     for (const auto& x : DataColumns) {
         *index.AddDataColumnNames() = x;
     }
+}
 
-    return result;
+void TIndexBuildInfo::SerializeToProto(TSchemeShard* ss, NKikimrIndexBuilder::TColumnBuildSettings* result) const {
+    Y_ABORT_UNLESS(IsBuildColumn());
+    result->SetTable(TPath::Init(TablePathId, ss).PathString());
+    for(const auto& column : BuildColumns) {
+        column.SerializeToProto(result->add_column());
+    }
 }
 
 TColumnFamiliesMerger::TColumnFamiliesMerger(NKikimrSchemeOp::TPartitionConfig &container)
@@ -2001,8 +2235,8 @@ TBillingStats &TBillingStats::operator =(const TBillingStats &other) {
 }
 
 TBillingStats TBillingStats::operator -(const TBillingStats &other) const {
-    Y_VERIFY(Rows >= other.Rows);
-    Y_VERIFY(Bytes >= other.Bytes);
+    Y_ABORT_UNLESS(Rows >= other.Rows);
+    Y_ABORT_UNLESS(Bytes >= other.Bytes);
 
     return TBillingStats(Rows - other.Rows, Bytes - other.Bytes);
 }
@@ -2014,8 +2248,8 @@ TBillingStats &TBillingStats::operator -=(const TBillingStats &other) {
         return *this;
     }
 
-    Y_VERIFY(Rows >= other.Rows);
-    Y_VERIFY(Bytes >= other.Bytes);
+    Y_ABORT_UNLESS(Rows >= other.Rows);
+    Y_ABORT_UNLESS(Bytes >= other.Bytes);
 
     Rows -= other.Rows;
     Bytes -= other.Bytes;
@@ -2070,196 +2304,6 @@ NKikimr::NSchemeShard::TBillingStats::operator bool() const {
     return Rows || Bytes;
 }
 
-TOlapStoreInfo::TOlapStoreInfo(
-        ui64 alterVersion,
-        NKikimrSchemeOp::TColumnStoreSharding&& sharding,
-        TMaybe<NKikimrSchemeOp::TAlterColumnStore>&& alterBody)
-    : AlterVersion(alterVersion)
-    , Sharding(std::move(sharding))
-    , AlterBody(std::move(alterBody))
-{
-    for (const auto& shardIdx : Sharding.GetColumnShards()) {
-        ColumnShards.push_back(TShardIdx(
-            TOwnerId(shardIdx.GetOwnerId()),
-            TLocalShardIdx(shardIdx.GetLocalId())));
-    }
-}
-
-TOlapStoreInfo::TPtr TOlapStoreInfo::BuildStoreWithAlter(const TOlapStoreInfo& initialStore, const NKikimrSchemeOp::TAlterColumnStore& alterBody) {
-    TOlapStoreInfo::TPtr alterData = new TOlapStoreInfo(initialStore);
-    alterData->AlterVersion++;
-    alterData->AlterBody.ConstructInPlace(alterBody);
-    return alterData;
-}
-
-void TOlapStoreInfo::SerializeDescription(NKikimrSchemeOp::TColumnStoreDescription& descriptionProto) const {
-    descriptionProto.SetName(Name);
-    descriptionProto.SetColumnShardCount(ColumnShards.size());
-    descriptionProto.SetNextSchemaPresetId(NextSchemaPresetId);
-    descriptionProto.SetNextTtlSettingsPresetId(NextTtlSettingsPresetId);
-
-    for (const auto& [name, preset] : SchemaPresets) {
-        Y_UNUSED(name);
-        auto presetProto = descriptionProto.AddSchemaPresets();
-        preset.Serialize(*presetProto);
-    }
-}
-
-void TOlapStoreInfo::ParseFromLocalDB(const NKikimrSchemeOp::TColumnStoreDescription& descriptionProto) {
-    StorageConfig = descriptionProto.GetStorageConfig();
-    NextTtlSettingsPresetId = descriptionProto.GetNextTtlSettingsPresetId();
-    NextSchemaPresetId = descriptionProto.GetNextSchemaPresetId();
-    Name = descriptionProto.GetName();
-    
-    size_t schemaPresetIndex = 0;
-    for (const auto& presetProto : descriptionProto.GetSchemaPresets()) {
-        Y_VERIFY(!SchemaPresets.contains(presetProto.GetId()));
-        auto& preset = SchemaPresets[presetProto.GetId()];
-        preset.ParseFromLocalDB(presetProto);
-        preset.SetProtoIndex(schemaPresetIndex++);
-        SchemaPresetByName[preset.GetName()] = preset.GetId();
-    }
-    SerializeDescription(Description);
-}
-
-bool TOlapStoreInfo::UpdatePreset(const TString& presetName, const TOlapSchemaUpdate& schemaUpdate, IErrorCollector& errors) {
-    const ui32 presetId = SchemaPresetByName.at(presetName);
-    auto& currentPreset = SchemaPresets.at(presetId);
-    if (!currentPreset.Update(schemaUpdate, errors)) {
-        return false;
-    }
-        
-    NKikimrSchemeOp::TColumnTableSchemaPreset schemaUpdateProto;
-    currentPreset.Serialize(schemaUpdateProto);
-
-    auto mutablePresetProto = Description.MutableSchemaPresets(currentPreset.GetProtoIndex());
-    *mutablePresetProto = schemaUpdateProto;
-    return true;
-}
-
-bool TOlapStoreInfo::ParseFromRequest(const NKikimrSchemeOp::TColumnStoreDescription& descriptionProto, IErrorCollector& errors) {
-    AlterVersion = 1;
-    if (descriptionProto.GetRESERVED_MetaShardCount() != 0) {
-        errors.AddError("trying to create OLAP store with meta shards (not supported yet)");
-        return false;
-    }
-
-    if (!descriptionProto.HasColumnShardCount()) {
-        errors.AddError("trying to create OLAP store without shards number specified");
-        return false;
-    }
-
-    if (descriptionProto.GetColumnShardCount() == 0) {
-        errors.AddError("trying to create OLAP store without zero shards");
-        return false;
-    }
-
-    for (auto& presetProto : descriptionProto.GetRESERVED_TtlSettingsPresets()) {
-        Y_UNUSED(presetProto);
-        errors.AddError("TTL presets are not supported");
-        return false;
-    }
-
-    Name = descriptionProto.GetName();
-    StorageConfig = descriptionProto.GetStorageConfig();
-    // Make it easier by having data channel count always specified internally
-    if (!StorageConfig.HasDataChannelCount()) {
-        StorageConfig.SetDataChannelCount(1);
-    }
-
-    size_t protoIndex = 0;
-    for (const auto& presetProto : descriptionProto.GetSchemaPresets()) {
-        TOlapStoreSchemaPreset preset;
-        if (!preset.ParseFromRequest(presetProto, errors)) {
-            return false;
-        }
-        if (SchemaPresets.contains(NextSchemaPresetId) || SchemaPresetByName.contains(preset.GetName())) {
-            errors.AddError(TStringBuilder() << "Duplicate schema preset " << NextSchemaPresetId << " with name '" << preset.GetName() << "'");
-            return false;
-        }
-        preset.SetId(NextSchemaPresetId++);
-        preset.SetProtoIndex(protoIndex++);
-
-        TOlapSchemaUpdate schemaDiff;
-        if (!schemaDiff.Parse(presetProto.GetSchema(), errors, true)) {
-            return false;
-        }
-
-        if (!preset.Update(schemaDiff, errors)) {
-            return false;
-        }
-
-        SchemaPresetByName[preset.GetName()] = preset.GetId();
-        SchemaPresets[preset.GetId()] = std::move(preset);
-    }
-
-    if (!SchemaPresetByName.contains("default") || SchemaPresets.size() > 1) {
-        errors.AddError("A single schema preset named 'default' is required");
-        return false;
-    }
-
-    ColumnShards.resize(descriptionProto.GetColumnShardCount());
-    SerializeDescription(Description);
-    return true;
-}
-
-TOlapStoreInfo::ILayoutPolicy::TPtr TOlapStoreInfo::GetTablesLayoutPolicy() const {
-    ILayoutPolicy::TPtr result;
-    if (AppData()->ColumnShardConfig.GetTablesStorageLayoutPolicy().HasMinimalTables()) {
-        result = std::make_shared<TMinimalTablesCountLayout>();
-    } else if (AppData()->ColumnShardConfig.GetTablesStorageLayoutPolicy().HasIdentityGroups()) {
-        result = std::make_shared<TIdentityGroupsLayout>();
-    } else {
-        result = std::make_shared<TMinimalTablesCountLayout>();
-    }
-    return result;
-}
-
-TColumnTableInfo::TColumnTableInfo(
-        ui64 alterVersion,
-        NKikimrSchemeOp::TColumnTableDescription&& description,
-        NKikimrSchemeOp::TColumnTableSharding&& sharding,
-        TMaybe<NKikimrSchemeOp::TColumnStoreSharding>&& standaloneSharding,
-        TMaybe<NKikimrSchemeOp::TAlterColumnTable>&& alterBody)
-    : AlterVersion(alterVersion)
-    , Description(std::move(description))
-    , Sharding(std::move(sharding))
-    , StandaloneSharding(std::move(standaloneSharding))
-    , AlterBody(std::move(alterBody))
-{
-    if (Description.HasColumnStorePathId()) {
-        OlapStorePathId = TPathId(
-            TOwnerId(Description.GetColumnStorePathId().GetOwnerId()),
-            TLocalPathId(Description.GetColumnStorePathId().GetLocalId()));
-    }
-
-    if (Description.HasSchema()) {
-        TOlapSchema schema;
-        schema.Parse(Description.GetSchema());
-    }
-
-    ColumnShards.reserve(Sharding.GetColumnShards().size());
-    for (ui64 columnShard : Sharding.GetColumnShards()) {
-        ColumnShards.push_back(columnShard);
-    }
-
-    if (StandaloneSharding) {
-        OwnedColumnShards.reserve(StandaloneSharding->GetColumnShards().size());
-        for (const auto& shardIdx : StandaloneSharding->GetColumnShards()) {
-            OwnedColumnShards.push_back(TShardIdx(
-                TOwnerId(shardIdx.GetOwnerId()),
-                TLocalShardIdx(shardIdx.GetLocalId())));
-        }
-    }
-}
-
-TColumnTableInfo::TPtr TColumnTableInfo::BuildTableWithAlter(const TColumnTableInfo& initialTable, const NKikimrSchemeOp::TAlterColumnTable& alterBody) {
-    TColumnTableInfo::TPtr alterData = new TColumnTableInfo(initialTable);
-    alterData->AlterBody.ConstructInPlace(alterBody);
-    ++alterData->AlterVersion;
-    return alterData;
-}
-
 TSequenceInfo::TSequenceInfo(
         ui64 alterVersion,
         NKikimrSchemeOp::TSequenceDescription&& description,
@@ -2312,4 +2356,3 @@ bool TSequenceInfo::ValidateCreate(const NKikimrSchemeOp::TSequenceDescription& 
 
 } // namespace NSchemeShard
 } // namespace NKikimr
-

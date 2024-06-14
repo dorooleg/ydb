@@ -3,12 +3,15 @@
 #include "rpc_operation_request_base.h"
 
 #include <ydb/core/grpc_services/base/base.h>
+#include <ydb/core/kqp/common/events/script_executions.h>
+#include <ydb/core/kqp/common/kqp.h>
+#include <ydb/core/kqp/common/simple/services.h>
 #include <ydb/core/tx/schemeshard/schemeshard_build_index.h>
 #include <ydb/core/tx/schemeshard/schemeshard_export.h>
 #include <ydb/core/tx/schemeshard/schemeshard_import.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -31,6 +34,8 @@ class TForgetOperationRPC: public TRpcOperationRequestActor<TForgetOperationRPC,
             return "[ForgetImport]";
         case TOperationId::BUILD_INDEX:
             return "[ForgetIndexBuild]";
+        case TOperationId::SCRIPT_EXECUTION:
+            return "[ForgetScriptExecution]";
         default:
             return "[Untagged]";
         }
@@ -45,8 +50,15 @@ class TForgetOperationRPC: public TRpcOperationRequestActor<TForgetOperationRPC,
         case TOperationId::BUILD_INDEX:
             return new TEvIndexBuilder::TEvForgetRequest(TxId, DatabaseName, RawOperationId);
         default:
-            Y_FAIL("unreachable");
+            Y_ABORT("unreachable");
         }
+    }
+
+    bool NeedAllocateTxId() const {
+        const Ydb::TOperationId::EKind kind = OperationId.GetKind();
+        return kind == TOperationId::EXPORT
+            || kind == TOperationId::IMPORT
+            || kind == TOperationId::BUILD_INDEX;
     }
 
     void Handle(TEvExport::TEvForgetExportResponse::TPtr& ev) {
@@ -76,6 +88,18 @@ class TForgetOperationRPC: public TRpcOperationRequestActor<TForgetOperationRPC,
         Reply(record.GetStatus(), record.GetIssues());
     }
 
+    void Handle(NKqp::TEvForgetScriptExecutionOperationResponse::TPtr& ev) {
+        google::protobuf::RepeatedPtrField<Ydb::Issue::IssueMessage> issuesProto;
+        NYql::IssuesToMessage(ev->Get()->Issues, &issuesProto);
+        LOG_D("Handle NKqp::TEvForgetScriptExecutionOperationResponse response"
+            << ": status# " << ev->Get()->Status);
+        Reply(ev->Get()->Status, issuesProto);
+    }
+
+    void SendForgetScriptExecutionOperation() {
+        Send(NKqp::MakeKqpProxyID(SelfId().NodeId()), new NKqp::TEvForgetScriptExecutionOperation(DatabaseName, OperationId, Request->GetDeadline()));
+    }
+
 public:
     using TRpcOperationRequestActor::TRpcOperationRequestActor;
 
@@ -94,11 +118,15 @@ public:
                 }
                 break;
 
+            case TOperationId::SCRIPT_EXECUTION:
+                SendForgetScriptExecutionOperation();
+                break;
             default:
                 return Reply(StatusIds::UNSUPPORTED, TIssuesIds::DEFAULT_ERROR, "Unknown operation kind");
             }
-
-            AllocateTxId();
+            if (NeedAllocateTxId()) {
+                AllocateTxId();
+            }
         } catch (const yexception&) {
             return Reply(StatusIds::BAD_REQUEST, TIssuesIds::DEFAULT_ERROR, "Invalid operation id");
         }
@@ -111,6 +139,7 @@ public:
             hFunc(TEvExport::TEvForgetExportResponse, Handle);
             hFunc(TEvImport::TEvForgetImportResponse, Handle);
             hFunc(TEvIndexBuilder::TEvForgetResponse, Handle);
+            hFunc(NKqp::TEvForgetScriptExecutionOperationResponse, Handle);
         default:
             return StateBase(ev);
         }

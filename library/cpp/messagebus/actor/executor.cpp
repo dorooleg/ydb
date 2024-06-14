@@ -178,7 +178,7 @@ void TExecutor::Init() {
 
     AtomicSet(ExitWorkers, 0);
 
-    Y_VERIFY(Config.WorkerCount > 0);
+    Y_ABORT_UNLESS(Config.WorkerCount > 0);
 
     for (size_t i = 0; i < Config.WorkerCount; i++) {
         WorkerThreads.push_back(new TExecutorWorker(this));
@@ -215,7 +215,7 @@ void TExecutor::EnqueueWork(TArrayRef<IWorkItem* const> wis) {
         return;
 
     if (Y_UNLIKELY(AtomicGet(ExitWorkers) != 0)) {
-        Y_VERIFY(WorkItems.Empty(), "executor %s: cannot add tasks after queue shutdown", Config.Name);
+        Y_ABORT_UNLESS(WorkItems.Empty(), "executor %s: cannot add tasks after queue shutdown", Config.Name);
     }
 
     TWhatThreadDoesPushPop pp("executor: EnqueueWork");
@@ -242,7 +242,7 @@ using namespace NTSAN;
 ui32 TExecutor::GetMaxQueueSizeAndClear() const {
     ui32 max = 0;
     for (unsigned i = 0; i < WorkerThreads.size(); ++i) {
-        TExecutorWorkerThreadLocalData* wtls = RelaxedLoad(&WorkerThreads[i]->ThreadLocalData);
+        TExecutorWorkerThreadLocalData* wtls = AtomicGet(WorkerThreads[i]->ThreadLocalData);
         max = Max<ui32>(max, RelaxedLoad(&wtls->MaxQueueSize));
         RelaxedStore<ui32>(&wtls->MaxQueueSize, 0);
     }
@@ -319,7 +319,7 @@ void TExecutor::ProcessWorkQueueHere() {
 }
 
 void TExecutor::RunWorker() {
-    Y_VERIFY(!ThreadCurrentExecutor, "state check");
+    Y_ABORT_UNLESS(!ThreadCurrentExecutor, "state check");
     ThreadCurrentExecutor = this;
 
     SetCurrentThreadName("wrkr");

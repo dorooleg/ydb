@@ -2,15 +2,16 @@
 #include "info_collector.h"
 
 #include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/base/domain.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/mind/tenant_pool.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/core/log.h>
 
 #define LOG_T(stream) LOG_TRACE_S (*TlsActivationContext, NKikimrServices::CMS, "[InfoCollector] " << stream)
 #define LOG_D(stream) LOG_DEBUG_S (*TlsActivationContext, NKikimrServices::CMS, "[InfoCollector] " << stream)
@@ -238,11 +239,8 @@ void TInfoCollector::Handle(TEvConfigsDispatcher::TEvGetConfigResponse::TPtr& ev
 }
 
 void TInfoCollector::RequestStateStorageConfig() {
-    const auto& domains = AppData()->DomainsInfo->Domains;
-    Y_VERIFY(domains.size() <= 1);
-
-    for (const auto& domain : domains) {
-        const auto ssProxyId = MakeStateStorageProxyID(domain.second->DefaultStateStorageGroup);
+    if (AppData()->DomainsInfo->Domain) {
+        const auto ssProxyId = MakeStateStorageProxyID();
         Send(ssProxyId, new TEvStateStorage::TEvListStateStorage());
     }
 }
@@ -264,11 +262,8 @@ void TInfoCollector::Handle(TEvStateStorage::TEvListStateStorageResult::TPtr& ev
 void TInfoCollector::RequestBaseConfig() {
     using namespace NTabletPipe;
 
-    const auto& domains = AppData()->DomainsInfo->Domains;
-    Y_VERIFY(domains.size() <= 1);
-
-    for (const auto& domain : domains) {
-        const auto bscId = MakeBSControllerID(domain.second->DefaultStateStorageGroup);
+    if (AppData()->DomainsInfo->Domain) {
+        const auto bscId = MakeBSControllerID();
         BscPipe = Register(CreateClient(SelfId(), bscId, TClientConfig(TClientRetryPolicy::WithRetries())));
 
         auto ev = MakeHolder<TEvBlobStorage::TEvControllerConfigRequest>();
@@ -337,11 +332,8 @@ void TInfoCollector::SendNodeRequests(ui32 nodeId) {
     SendNodeEvent(nodeId, whiteBoardId, new TEvWhiteboard::TEvPDiskStateRequest(), TEvWhiteboard::EvPDiskStateResponse);
     SendNodeEvent(nodeId, whiteBoardId, new TEvWhiteboard::TEvVDiskStateRequest(), TEvWhiteboard::EvVDiskStateResponse);
 
-    const auto& domains = AppData()->DomainsInfo->Domains;
-    Y_VERIFY(domains.size() <= 1);
-
-    for (const auto& domain : domains) {
-        const TActorId tenantPoolId = MakeTenantPoolID(nodeId, domain.second->DomainUid);
+    if (AppData()->DomainsInfo->Domain) {
+        const TActorId tenantPoolId = MakeTenantPoolID(nodeId);
         SendNodeEvent(nodeId, tenantPoolId, new TEvTenantPool::TEvGetStatus(true), TEvTenantPool::EvTenantPoolStatus);
     }
 }

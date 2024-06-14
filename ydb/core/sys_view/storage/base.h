@@ -8,9 +8,9 @@
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr::NSysView {
 
@@ -64,7 +64,7 @@ namespace NKikimr::NSysView {
         template<typename TTo, typename TFrom>
         TCell Convert(const TFrom& value) {
             const TTo tmp(value);
-            Y_VERIFY_DEBUG(TFrom(tmp) == value);
+            Y_DEBUG_ABORT_UNLESS(TFrom(tmp) == value);
             return TCell::Make<TTo>(tmp);
         }
 
@@ -84,12 +84,12 @@ namespace NKikimr::NSysView {
                 case NScheme::NTypeIds::Float:     return Convert<float>(value);
                 case NScheme::NTypeIds::Interval:  return Convert<i64>(value);
                 case NScheme::NTypeIds::Timestamp: return Convert<ui64>(value);
-                default: Y_FAIL();
+                default: Y_ABORT();
             }
         }
 
         TCell MakeCellFrom(const TString& value, NScheme::TTypeId type) {
-            Y_VERIFY(type == NScheme::NTypeIds::String || type == NScheme::NTypeIds::String4k ||
+            Y_ABORT_UNLESS(type == NScheme::NTypeIds::String || type == NScheme::NTypeIds::String4k ||
                 type == NScheme::NTypeIds::String2m || type == NScheme::NTypeIds::Utf8);
             return TCell(value.data(), value.size());
         }
@@ -144,7 +144,7 @@ namespace NKikimr::NSysView {
                 case E::TYPE_GROUP:
                 case E::TYPE_MESSAGE:
                 case E::TYPE_ENUM:
-                    Y_FAIL();
+                    Y_ABORT();
             }
         }
 
@@ -165,7 +165,7 @@ namespace NKikimr::NSysView {
                             if (std::next(it) == path.end()) { // terminal entry
                                 cells.push_back(ExtractCell(m, fdesc, column.Type.GetTypeId()));
                             } else { // submessage
-                                Y_VERIFY(fdesc->type() == NProtoBuf::FieldDescriptor::TYPE_MESSAGE);
+                                Y_ABORT_UNLESS(fdesc->type() == NProtoBuf::FieldDescriptor::TYPE_MESSAGE);
                                 m = &m->GetReflection()->GetMessage(*m, fdesc);
                             }
                         }

@@ -11,7 +11,6 @@
 #include <ydb/library/yql/minikql/mkql_node.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 
-#include <ydb/core/engine/mkql_proto.h>
 #include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 
 #include <library/cpp/json/yson/json2yson.h>
@@ -117,7 +116,7 @@ const NYql::TTypeAnnotationNode* MakeVoidType(NYql::TExprContext& ctx)
 
 NKikimr::NMiniKQL::TType* MakeVoidType(NKikimr::NMiniKQL::TTypeEnvironment& env)
 {
-    return env.GetTypeOfVoid();
+    return env.GetTypeOfVoidLazy();
 }
 
 const NYql::TTypeAnnotationNode* MakeNullType(NYql::TExprContext& ctx)
@@ -127,7 +126,7 @@ const NYql::TTypeAnnotationNode* MakeNullType(NYql::TExprContext& ctx)
 
 NKikimr::NMiniKQL::TType* MakeNullType(NKikimr::NMiniKQL::TTypeEnvironment& env)
 {
-    return env.GetTypeOfNull();
+    return env.GetTypeOfNullLazy();
 }
 
 const NYql::TTypeAnnotationNode* MakeEmptyListType(NYql::TExprContext& ctx)
@@ -137,7 +136,7 @@ const NYql::TTypeAnnotationNode* MakeEmptyListType(NYql::TExprContext& ctx)
 
 NKikimr::NMiniKQL::TType* MakeEmptyListType(NKikimr::NMiniKQL::TTypeEnvironment& env)
 {
-    return env.GetTypeOfEmptyList();
+    return env.GetTypeOfEmptyListLazy();
 }
 
 const NYql::TTypeAnnotationNode* MakeEmptyDictType(NYql::TExprContext& ctx)
@@ -147,7 +146,7 @@ const NYql::TTypeAnnotationNode* MakeEmptyDictType(NYql::TExprContext& ctx)
 
 NKikimr::NMiniKQL::TType* MakeEmptyDictType(NKikimr::NMiniKQL::TTypeEnvironment& env)
 {
-    return env.GetTypeOfEmptyDict();
+    return env.GetTypeOfEmptyDictLazy();
 }
 
 const NYql::TTypeAnnotationNode* MakeVariantType(const NYql::TTypeAnnotationNode* underlyingType, NYql::TExprContext& ctx)
@@ -405,6 +404,7 @@ void FormatResultSet(NJson::TJsonValue& root, const NYdb::TResultSet& resultSet,
     THolderFactory holderFactory(alloc.Ref(), memInfo);
 
     NJson::TJsonValue& columns = root["columns"];
+    columns.SetType(NJson::JSON_ARRAY);
     const auto& columnsMeta = resultSet.GetColumnsMeta();
 
     TVector<TTypePair> columnTypes;

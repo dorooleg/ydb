@@ -68,6 +68,7 @@ class TBlobStorageGroupPatchRequest : public TBlobStorageGroupRequestActor<TBlob
     TStackVec<bool, TypicalDisksInSubring> ReceivedResponseFlags;
     TStackVec<bool, TypicalDisksInSubring> EmptyResponseFlags;
     TStackVec<bool, TypicalDisksInSubring> ErrorResponseFlags;
+    TStackVec<bool, TypicalDisksInSubring> ForceStopFlags;
     TBlobStorageGroupInfo::TVDiskIds VDisks;
 
     bool UseVPatch = false;
@@ -103,12 +104,12 @@ public:
     TBlobStorageGroupPatchRequest(const TIntrusivePtr<TBlobStorageGroupInfo> &info,
             const TIntrusivePtr<TGroupQueues> &state, const TActorId &source,
             const TIntrusivePtr<TBlobStorageGroupProxyMon> &mon, TEvBlobStorage::TEvPatch *ev,
-            ui64 cookie, NWilson::TTraceId traceId, TInstant now,
+            ui64 cookie, NWilson::TSpan&& span, TInstant now,
             TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters,
             bool useVPatch = false)
-        : TBlobStorageGroupRequestActor(info, state, mon, source, cookie, std::move(traceId),
+        : TBlobStorageGroupRequestActor(info, state, mon, source, cookie,
                 NKikimrServices::BS_PROXY_PATCH, false, {}, now, storagePoolCounters,
-                ev->RestartCounter, "DSProxy.Patch", std::move(ev->ExecutionRelay))
+                ev->RestartCounter, std::move(span), std::move(ev->ExecutionRelay))
         , OriginalGroupId(ev->OriginalGroupId)
         , OriginalId(ev->OriginalId)
         , PatchedId(ev->PatchedId)
@@ -119,8 +120,7 @@ public:
         , Deadline(ev->Deadline)
         , Orbit(std::move(ev->Orbit))
         , UseVPatch(useVPatch)
-    {
-    }
+    {}
 
     void ReplyAndDie(NKikimrProto::EReplyStatus status) {
         PATCH_LOG(PRI_DEBUG, BS_PROXY_PATCH, BPPA02, "ReplyAndDie",
@@ -187,7 +187,7 @@ public:
             return;
         }
 
-        Buffer = result->Responses[0].Buffer;
+        Buffer = result->Responses[0].Buffer.ConvertToString();
         ApplyDiffs();
 
         std::unique_ptr<TEvBlobStorage::TEvPut> put = std::make_unique<TEvBlobStorage::TEvPut>(PatchedId, Buffer, Deadline,
@@ -251,7 +251,7 @@ public:
 
         ui64 expectedCookie = ((ui64)OriginalId.Hash() << 32) | PatchedId.Hash();
         bool incorrectCookie = ev->Cookie != expectedCookie;
-        Y_VERIFY(record.HasStatus());
+        Y_ABORT_UNLESS(record.HasStatus());
         bool fail = incorrectCookie
             || record.GetStatus() != NKikimrProto::OK;
         if (fail) {
@@ -281,10 +281,10 @@ public:
 
         NKikimrBlobStorage::TEvVPatchFoundParts &record = ev->Get()->Record;
 
-        Y_VERIFY(record.HasCookie());
+        Y_ABORT_UNLESS(record.HasCookie());
         ui8 subgroupIdx = record.GetCookie();
 
-        Y_VERIFY(record.HasStatus());
+        Y_ABORT_UNLESS(record.HasStatus());
         NKikimrProto::EReplyStatus status = record.GetStatus();
 
         TString errorReason;
@@ -293,7 +293,7 @@ public:
         }
 
         bool wasReceived = std::exchange(ReceivedResponseFlags[subgroupIdx], true);
-        Y_VERIFY(!wasReceived);
+        Y_ABORT_UNLESS(!wasReceived);
 
         if (status == NKikimrProto::ERROR) {
             ErrorResponses++;
@@ -332,18 +332,22 @@ public:
     }
 
     void Handle(TEvBlobStorage::TEvVPatchResult::TPtr &ev) {
-        ReceivedResults++;
         NKikimrBlobStorage::TEvVPatchResult &record = ev->Get()->Record;
+
+        Y_ABORT_UNLESS(record.HasCookie());
+        ui8 subgroupIdx = record.GetCookie();
+        if (ForceStopFlags[subgroupIdx]) {
+            return; // ignore force stop response
+        }
+        ReceivedResults++;
+
         PullOutStatusFlagsAndFressSpace(record);
-        Y_VERIFY(record.HasStatus());
+        Y_ABORT_UNLESS(record.HasStatus());
         NKikimrProto::EReplyStatus status = record.GetStatus();
         TString errorReason;
         if (record.HasErrorReason()) {
             errorReason = record.GetErrorReason();
         }
-
-        Y_VERIFY(record.HasCookie());
-        ui8 subgroupIdx = record.GetCookie();
 
         PATCH_LOG(PRI_DEBUG, BS_PROXY_PATCH, BPPA23, "Received VPatchResult",
                 (Status, status),
@@ -352,7 +356,7 @@ public:
                 (ErrorReason, errorReason));
 
         bool wasReceived = std::exchange(ReceivedResponseFlags[subgroupIdx], true);
-        Y_VERIFY(!wasReceived);
+        Y_ABORT_UNLESS(!wasReceived);
 
         if (status != NKikimrProto::OK) {
             PATCH_LOG(PRI_DEBUG, BS_PROXY_PATCH, BPPA24, "Start Fallback strategy from handling VPatchResult",
@@ -413,15 +417,16 @@ public:
     void SendStopDiffs() {
             PATCH_LOG(PRI_DEBUG, BS_PROXY_PATCH, BPPA18, "Send stop diffs");
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPatchDiff>> events;
-        for (ui32 vdiskIdx = 0; vdiskIdx < VDisks.size(); ++vdiskIdx) {
-            if (!ErrorResponseFlags[vdiskIdx] && !EmptyResponseFlags[vdiskIdx] && ReceivedResponseFlags[vdiskIdx]) {
+        for (ui32 subgroupIdx = 0; subgroupIdx < VDisks.size(); ++subgroupIdx) {
+            if (!ErrorResponseFlags[subgroupIdx] && !EmptyResponseFlags[subgroupIdx] && ReceivedResponseFlags[subgroupIdx]) {
                 std::unique_ptr<TEvBlobStorage::TEvVPatchDiff> ev = std::make_unique<TEvBlobStorage::TEvVPatchDiff>(
-                        OriginalId, PatchedId, VDisks[vdiskIdx], 0, Deadline, vdiskIdx);
+                        OriginalId, PatchedId, VDisks[subgroupIdx], 0, Deadline, subgroupIdx);
                 ev->SetForceEnd();
+                ForceStopFlags[subgroupIdx] = true;
                 events.emplace_back(std::move(ev));
                 PATCH_LOG(PRI_DEBUG, BS_PROXY_PATCH, BPPA19, "Send stop message",
-                        (VDiskIdxInSubgroup, vdiskIdx),
-                        (VDiskId, VDisks[vdiskIdx]));
+                        (VDiskIdxInSubgroup, subgroupIdx),
+                        (VDiskId, VDisks[subgroupIdx]));
             }
         }
         SendToQueues(events, false);
@@ -460,11 +465,11 @@ public:
             // ui32 patchedPartId = partPlacement.PartId;
             Y_VERIFY_S(idxInSubgroup < VDisks.size(), "vdisidxInSubgroupkIdx# " << idxInSubgroup << "/" << VDisks.size());
 
-            Y_VERIFY(Info->GetIdxInSubgroup(VDisks[idxInSubgroup], OriginalId.Hash()) == idxInSubgroup);
+            Y_ABORT_UNLESS(Info->GetIdxInSubgroup(VDisks[idxInSubgroup], OriginalId.Hash()) == idxInSubgroup);
             ui32 patchedIdxInSubgroup = Info->GetIdxInSubgroup(VDisks[idxInSubgroup], PatchedId.Hash());
             if (patchedIdxInSubgroup != idxInSubgroup) {
                 // now only mirror3dc has this case (has 9 vdisks instead of 4 or 8)
-                Y_VERIFY(Info->Type.GetErasure() == TErasureType::ErasureMirror3dc);
+                Y_ABORT_UNLESS(Info->Type.GetErasure() == TErasureType::ErasureMirror3dc);
                 // patchedPartId = 1 + patchedIdxInSubgroup / 3;;
             }
 
@@ -495,6 +500,7 @@ public:
             PATCH_LOG(PRI_DEBUG, BS_PROXY_PATCH, BPPA20, "Send TEvVPatchDiff",
                     (VDiskIdxInSubgroup, idxInSubgroup),
                     (PatchedVDiskIdxInSubgroup, patchedIdxInSubgroup),
+                    (PartId, (ui64)partPlacement.PartId),
                     (DiffsForPart, diffsForPart.size()),
                     (ParityPlacements, parityPlacements.size()),
                     (WaitedXorDiffs, waitedXorDiffs));
@@ -586,6 +592,7 @@ public:
         ReceivedResponseFlags.assign(VDisks.size(), false);
         ErrorResponseFlags.assign(VDisks.size(), false);
         EmptyResponseFlags.assign(VDisks.size(), false);
+        ForceStopFlags.assign(VDisks.size(), false);
 
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPatchStart>> events;
 
@@ -607,17 +614,17 @@ public:
             TStackVec<ui32, TypicalHandoffCount> *choosenHandoffForParts, ui8 depth = 0)
     {
         auto &choosen = *choosenHandoffForParts;
-        Y_VERIFY_DEBUG(choosen.size() == handoffParts.size());
+        Y_DEBUG_ABORT_UNLESS(choosen.size() == handoffParts.size());
         if (depth >= handoffParts.size()) {
             return true;
         }
         ui32 partIdx = handoffParts[depth];
         for (ui32 idx = 0; idx < handoffForParts[partIdx].size(); ++idx) {
-            Y_VERIFY_DEBUG(depth < choosen.size());
+            Y_DEBUG_ABORT_UNLESS(depth < choosen.size());
             choosen[depth] = handoffForParts[partIdx][idx];
             bool isCorrect = true;
             for (ui32 prevDepth = 0; prevDepth < depth; ++prevDepth) {
-                Y_VERIFY_DEBUG(prevDepth < choosen.size());
+                Y_DEBUG_ABORT_UNLESS(prevDepth < choosen.size());
                 isCorrect &= (choosen[depth] != choosen[prevDepth]);
             }
             bool hasAnswer = false;
@@ -827,7 +834,7 @@ public:
             hFunc(TEvBlobStorage::TEvPutResult, Handle);
             IgnoreFunc(TEvBlobStorage::TEvVPatchResult);
         default:
-            Y_FAIL("Received unknown event");
+            Y_ABORT("Received unknown event");
         };
     }
 
@@ -839,7 +846,7 @@ public:
             hFunc(TEvBlobStorage::TEvVMovedPatchResult, Handle);
             IgnoreFunc(TEvBlobStorage::TEvVPatchResult);
         default:
-            Y_FAIL("Received unknown event");
+            Y_ABORT("Received unknown event");
         };
     }
 
@@ -851,7 +858,7 @@ public:
             hFunc(TEvBlobStorage::TEvVPatchFoundParts, Handle);
             hFunc(TEvBlobStorage::TEvVPatchResult, Handle);
         default:
-            Y_FAIL("Received unknown event");
+            Y_ABORT("Received unknown event");
         };
     }
 };
@@ -862,7 +869,12 @@ IActor* CreateBlobStorageGroupPatchRequest(const TIntrusivePtr<TBlobStorageGroup
         ui64 cookie, NWilson::TTraceId traceId, TInstant now,
         TIntrusivePtr<TStoragePoolCounters> &storagePoolCounters,
         bool useVPatch) {
-    return new TBlobStorageGroupPatchRequest(info, state, source, mon, ev, cookie, std::move(traceId), now,
+    NWilson::TSpan span(TWilson::BlobStorage, std::move(traceId), "DSProxy.Patch");
+    if (span) {
+        span.Attribute("event", ev->ToString());
+    }
+
+    return new TBlobStorageGroupPatchRequest(info, state, source, mon, ev, cookie, std::move(span), now,
         storagePoolCounters, useVPatch);
 }
 

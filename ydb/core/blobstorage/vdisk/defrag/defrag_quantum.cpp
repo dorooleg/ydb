@@ -9,7 +9,7 @@
 #include <ydb/core/blobstorage/vdisk/hulldb/hull_ds_all_snap.h>
 #include <ydb/core/blobstorage/vdisk/skeleton/blobstorage_takedbsnap.h>
 #include <ydb/core/util/stlog.h>
-#include <library/cpp/actors/core/actor_coroutine.h>
+#include <ydb/library/actors/core/actor_coroutine.h>
 
 using namespace NKikimrServices;
 
@@ -41,7 +41,7 @@ namespace NKikimr {
                     throw TExPoison();
             }
 
-            Y_FAIL("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
+            Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
         }
 
         void Run() override {
@@ -56,7 +56,7 @@ namespace NKikimr {
             TEvDefragQuantumResult::TStat stat{.Eof = true};
 
             if (ChunksToDefrag) {
-                Y_VERIFY(*ChunksToDefrag);
+                Y_ABORT_UNLESS(*ChunksToDefrag);
             } else {
                 TDefragQuantumFindChunks findChunks(GetSnapshot(), DCtx->HugeBlobCtx);
                 const ui64 endTime = GetCycleCountFast() + DurationToCycles(NDefrag::MaxSnapshotHoldDuration);
@@ -95,7 +95,7 @@ namespace NKikimr {
                 Compact();
 
                 auto hugeStat = GetHugeStat();
-                Y_VERIFY(hugeStat.LockedChunks.size() < 100);
+                Y_ABORT_UNLESS(hugeStat.LockedChunks.size() < 100);
             }
 
             Send(ParentActorId, new TEvDefragQuantumResult(std::move(stat)));

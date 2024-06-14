@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "program.h"
+#include "custom_registry.h"
 #include "arrow_helpers.h"
 
 #ifndef WIN32
@@ -19,7 +20,7 @@ enum class AggFunctionId {
     AGG_MAX = 4,
     AGG_SUM = 5,
 };
-struct GroupByOptions : public arrow::compute::ScalarAggregateOptions {
+struct GroupByOptions: public arrow::compute::ScalarAggregateOptions {
     struct Assign {
         AggFunctionId function = AggFunctionId::AGG_UNSPECIFIED;
         std::string result_column;
@@ -32,6 +33,7 @@ struct GroupByOptions : public arrow::compute::ScalarAggregateOptions {
 };
 }
 #endif
+#include "common/container.h"
 
 #include <util/system/yassert.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/api.h>
@@ -40,9 +42,123 @@ struct GroupByOptions : public arrow::compute::ScalarAggregateOptions {
 #include <contrib/libs/apache/arrow/cpp/src/arrow/array/builder_primitive.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/datum.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/result.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/library/yql/core/arrow_kernels/request/request.h>
 
 namespace NKikimr::NSsa {
+
+template <class TAssignObject>
+class TInternalFunction : public IStepFunction<TAssignObject> {
+    using TBase = IStepFunction<TAssignObject>;
+public:
+    using TBase::TBase;
+    arrow::Result<arrow::Datum> Call(const TAssignObject& assign,  const TDatumBatch& batch) const override {
+        auto arguments = TBase::BuildArgs(batch, assign.GetArguments());
+        if (!arguments) {
+            return arrow::Status::Invalid("Error parsing args.");
+        }
+        auto funcNames = GetRegistryFunctionNames(assign.GetOperation());
+
+        arrow::Result<arrow::Datum> result = arrow::Status::UnknownError<std::string>("unknown function");
+        for (const auto& funcName : funcNames) {
+            if (TBase::Ctx && TBase::Ctx->func_registry()->GetFunction(funcName).ok()) {
+                result = arrow::compute::CallFunction(funcName, *arguments, assign.GetOptions(), TBase::Ctx);
+            } else {
+                result = arrow::compute::CallFunction(funcName, *arguments, assign.GetOptions());
+            }
+            if (result.ok() && funcName == "count"sv) {
+                result = result->scalar()->CastTo(std::make_shared<arrow::UInt64Type>());
+            }
+            if (result.ok()) {
+                return PrepareResult(std::move(*result), assign);
+            }
+        }
+        return result;
+    }
+private:
+    virtual std::vector<std::string> GetRegistryFunctionNames(const typename TAssignObject::TOperationType& opId) const = 0;
+    virtual arrow::Result<arrow::Datum> PrepareResult(arrow::Datum&& datum, const TAssignObject& assign) const {
+        Y_UNUSED(assign);
+        return std::move(datum);
+    }
+};
+
+class TConstFunction : public IStepFunction<TAssign>  {
+    using TBase = IStepFunction<TAssign>;
+public:
+    using TBase::TBase;
+    arrow::Result<arrow::Datum> Call(const TAssign& assign,  const TDatumBatch& batch) const override {
+        Y_UNUSED(batch);
+        return assign.GetConstant();
+    }
+};
+
+class TAggregateFunction : public TInternalFunction<TAggregateAssign> {
+    using TBase = TInternalFunction<TAggregateAssign>;
+private:
+    using TBase::TBase;
+    std::vector<std::string> GetRegistryFunctionNames(const EAggregate& opId) const override {
+        return { GetFunctionName(opId), GetHouseFunctionName(opId)};
+    }
+    arrow::Result<arrow::Datum> PrepareResult(arrow::Datum&& datum, const TAggregateAssign& assign) const override {
+        if (!datum.is_scalar()) {
+            return arrow::Status::Invalid("Aggregate result is not a scalar.");
+        }
+
+        if (datum.scalar()->type->id() == arrow::Type::STRUCT) {
+            auto op = assign.GetOperation();
+            if (op == EAggregate::Min) {
+                const auto& minMax = datum.scalar_as<arrow::StructScalar>();
+                return minMax.value[0];
+            } else if (op == EAggregate::Max) {
+                const auto& minMax = datum.scalar_as<arrow::StructScalar>();
+                return minMax.value[1];
+            } else {
+                return arrow::Status::Invalid("Unexpected struct result for aggregate function.");
+            }
+        }
+        if (!datum.type()) {
+            return arrow::Status::Invalid("Aggregate result has no type.");
+        }
+        return std::move(datum);
+    }
+};
+
+class TSimpleFunction : public TInternalFunction<TAssign> {
+    using TBase = TInternalFunction<TAssign>;
+private:
+    using TBase::TBase;
+    virtual std::vector<std::string> GetRegistryFunctionNames(const EOperation& opId) const override {
+        return { GetFunctionName(opId) };
+    }
+};
+
+template <class TAssignObject>
+class TKernelFunction : public IStepFunction<TAssignObject> {
+    using TBase = IStepFunction<TAssignObject>;
+    const TFunctionPtr Function;
+
+public:
+    TKernelFunction(const TFunctionPtr kernelsFunction, arrow::compute::ExecContext* ctx)
+        : TBase(ctx)
+        , Function(kernelsFunction)
+    {
+        AFL_VERIFY(Function);
+    }
+
+    arrow::Result<arrow::Datum> Call(const TAssignObject& assign, const TDatumBatch& batch) const override {
+        auto arguments = TBase::BuildArgs(batch, assign.GetArguments());
+        if (!arguments) {
+            return arrow::Status::Invalid("Error parsing args.");
+        }
+        try {
+            return Function->Execute(*arguments, assign.GetOptions(), TBase::Ctx);
+        } catch (const std::exception& ex) {
+            return arrow::Status::ExecutionError(ex.what());
+        }
+    }
+};
 
 const char * GetFunctionName(EOperation op) {
     switch (op) {
@@ -338,64 +454,6 @@ CH::AggFunctionId GetHouseFunction(EAggregate op) {
     return CH::AggFunctionId::AGG_UNSPECIFIED;
 }
 
-
-template <bool houseFunction, typename TOpId, typename TOptions>
-arrow::Result<arrow::Datum> CallFunctionById(
-    TOpId funcId, const std::vector<std::string>& args,
-    const TOptions* funcOpts,
-    const TProgramStep::TDatumBatch& batch,
-    arrow::compute::ExecContext* ctx)
-{
-    std::vector<arrow::Datum> arguments;
-    arguments.reserve(args.size());
-
-    for (auto& colName : args) {
-        auto column = batch.GetColumnByName(colName);
-        if (!column.ok()) {
-            return column.status();
-        }
-        arguments.push_back(*column);
-    }
-    std::string funcName;
-    if constexpr (houseFunction) {
-        funcName = GetHouseFunctionName(funcId);
-    } else {
-        funcName = GetFunctionName(funcId);
-    }
-
-    if (ctx && ctx->func_registry()->GetFunction(funcName).ok()) {
-        return arrow::compute::CallFunction(funcName, arguments, funcOpts, ctx);
-    }
-    return arrow::compute::CallFunction(funcName, arguments, funcOpts);
-}
-
-arrow::Result<arrow::Datum> CallFunctionByAssign(
-    const TAssign& assign,
-    const TProgramStep::TDatumBatch& batch,
-    arrow::compute::ExecContext* ctx)
-{
-    return CallFunctionById<false>(assign.GetOperation(), assign.GetArguments(), assign.GetFunctionOptions(),
-                                   batch, ctx);
-}
-
-arrow::Result<arrow::Datum> CallFunctionByAssign(
-    const TAggregateAssign& assign,
-    const TProgramStep::TDatumBatch& batch,
-    arrow::compute::ExecContext* ctx)
-{
-    return CallFunctionById<false>(assign.GetOperation(), assign.GetArguments(), &assign.GetAggregateOptions(),
-                                   batch, ctx);
-}
-
-arrow::Result<arrow::Datum> CallHouseFunctionByAssign(
-    const TAggregateAssign& assign,
-    TProgramStep::TDatumBatch& batch,
-    arrow::compute::ExecContext* ctx)
-{
-    return CallFunctionById<true>(assign.GetOperation(), assign.GetArguments(), &assign.GetAggregateOptions(),
-                                  batch, ctx);
-}
-
 CH::GroupByOptions::Assign GetGroupByAssign(const TAggregateAssign& assign) {
     CH::GroupByOptions::Assign descr;
     descr.function = GetHouseFunction(assign.GetOperation());
@@ -403,18 +461,76 @@ CH::GroupByOptions::Assign GetGroupByAssign(const TAggregateAssign& assign) {
     descr.arguments.reserve(assign.GetArguments().size());
 
     for (auto& colName : assign.GetArguments()) {
-        descr.arguments.push_back(colName);
+        descr.arguments.push_back(colName.GetColumnName());
     }
     return descr;
 }
 
+class TFilterVisitor : public arrow::ArrayVisitor {
+    std::vector<bool> FiltersMerged;
+    ui32 CursorIdx = 0;
+    bool Started = false;
+public:
+    void BuildColumnFilter(NArrow::TColumnFilter& result) {
+        result = NArrow::TColumnFilter(std::move(FiltersMerged));
+    }
+
+    arrow::Status Visit(const arrow::BooleanArray& array) override {
+        return VisitImpl(array);
+    }
+
+    arrow::Status Visit(const arrow::Int8Array& array) override {
+        return VisitImpl(array);
+    }
+
+    arrow::Status Visit(const arrow::UInt8Array& array) override {
+        return VisitImpl(array);
+    }
+
+    TFilterVisitor(const ui32 rowsCount) {
+        FiltersMerged.resize(rowsCount, true);
+    }
+
+    class TModificationGuard: public TNonCopyable {
+    private:
+        TFilterVisitor& Owner;
+    public:
+        TModificationGuard(TFilterVisitor& owner)
+            : Owner(owner)
+        {
+            Owner.CursorIdx = 0;
+            AFL_VERIFY(!Owner.Started);
+            Owner.Started = true;
+        }
+
+        ~TModificationGuard() {
+            AFL_VERIFY(Owner.CursorIdx == Owner.FiltersMerged.size());
+            Owner.Started = false;
+        }
+    };
+
+    TModificationGuard StartVisit() {
+        return TModificationGuard(*this);
+    }
+
+private:
+    template <class TArray>
+    arrow::Status VisitImpl(const TArray& array) {
+        AFL_VERIFY(Started);
+        for (ui32 i = 0; i < FiltersMerged.size(); ++i) {
+            const bool columnValue = (bool)array.Value(i);
+            const ui32 currentIdx = CursorIdx++;
+            FiltersMerged[currentIdx] = FiltersMerged[currentIdx] && columnValue;
+        }
+        AFL_VERIFY(CursorIdx <= FiltersMerged.size());
+        return arrow::Status::OK();
+    }
+};
+
 }
 
 
-arrow::Status TProgramStep::TDatumBatch::AddColumn(
-    const std::string& name,
-    arrow::Datum&& column)
-{
+arrow::Status TDatumBatch::AddColumn(const std::string& name, arrow::Datum&& column) {
     if (Schema->GetFieldIndex(name) != -1) {
         return arrow::Status::Invalid("Trying to add duplicate column '" + name + "'");
     }
@@ -432,7 +548,7 @@ arrow::Status TProgramStep::TDatumBatch::AddColumn(
     return arrow::Status::OK();
 }
 
-arrow::Result<arrow::Datum> TProgramStep::TDatumBatch::GetColumnByName(const std::string& name) const {
+arrow::Result<arrow::Datum> TDatumBatch::GetColumnByName(const std::string& name) const {
     auto i = Schema->GetFieldIndex(name);
     if (i < 0) {
         return arrow::Status::Invalid("Not found column '" + name + "' or duplicate");
@@ -440,25 +556,48 @@ arrow::Result<arrow::Datum> TProgramStep::TDatumBatch::GetColumnByName(const std
     return Datums[i];
 }
 
-std::shared_ptr<arrow::RecordBatch> TProgramStep::TDatumBatch::ToRecordBatch() const {
+std::shared_ptr<arrow::Table> TDatumBatch::ToTable() const {
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> columns;
+    columns.reserve(Datums.size());
+    for (auto col : Datums) {
+        if (col.is_scalar()) {
+            columns.push_back(std::make_shared<arrow::ChunkedArray>(NArrow::TStatusValidator::GetValid(arrow::MakeArrayFromScalar(*col.scalar(), Rows))));
+        } else if (col.is_array()) {
+            if (col.length() == -1) {
+                return {};
+            }
+            columns.push_back(std::make_shared<arrow::ChunkedArray>(col.make_array()));
+        } else if (col.is_arraylike()) {
+            if (col.length() == -1) {
+                return {};
+            }
+            columns.push_back(col.chunked_array());
+        } else {
+            AFL_VERIFY(false);
+        }
+    }
+    return arrow::Table::Make(Schema, columns, Rows);
+}
+
+std::shared_ptr<arrow::RecordBatch> TDatumBatch::ToRecordBatch() const {
     std::vector<std::shared_ptr<arrow::Array>> columns;
     columns.reserve(Datums.size());
     for (auto col : Datums) {
         if (col.is_scalar()) {
-            columns.push_back(*arrow::MakeArrayFromScalar(*col.scalar(), Rows));
-        }
-        else if (col.is_array()){
+            columns.push_back(NArrow::TStatusValidator::GetValid(arrow::MakeArrayFromScalar(*col.scalar(), Rows)));
+        } else if (col.is_array()) {
             if (col.length() == -1) {
                 return {};
             }
             columns.push_back(col.make_array());
+        } else {
+            AFL_VERIFY(false);
         }
     }
     return arrow::RecordBatch::Make(Schema, Rows, columns);
 }
 
-std::shared_ptr<TProgramStep::TDatumBatch>
-TProgramStep::TDatumBatch::FromRecordBatch(std::shared_ptr<arrow::RecordBatch>& batch) {
+std::shared_ptr<TDatumBatch> TDatumBatch::FromRecordBatch(const std::shared_ptr<arrow::RecordBatch>& batch) {
     std::vector<arrow::Datum> datums;
     datums.reserve(batch->num_columns());
     for (int64_t i = 0; i < batch->num_columns(); ++i) {
@@ -472,11 +611,70 @@ TProgramStep::TDatumBatch::FromRecordBatch(std::shared_ptr<arrow::RecordBatch>& 
         });
 }
 
+std::shared_ptr<TDatumBatch> TDatumBatch::FromTable(const std::shared_ptr<arrow::Table>& batch) {
+    std::vector<arrow::Datum> datums;
+    datums.reserve(batch->num_columns());
+    for (int64_t i = 0; i < batch->num_columns(); ++i) {
+        datums.push_back(arrow::Datum(batch->column(i)));
+    }
+    return std::make_shared<TProgramStep::TDatumBatch>(
+        TProgramStep::TDatumBatch{
+            .Schema = std::make_shared<arrow::Schema>(*batch->schema()),
+            .Datums = std::move(datums),
+            .Rows = batch->num_rows()
+        });
+}
 
-arrow::Status TProgramStep::ApplyAssignes(
-    TProgramStep::TDatumBatch& batch,
-    arrow::compute::ExecContext* ctx) const
-{
+TAssign TAssign::MakeTimestamp(const TColumnInfo& column, ui64 value) {
+    return TAssign(column, std::make_shared<arrow::TimestampScalar>(value, arrow::timestamp(arrow::TimeUnit::MICRO)));
+}
+
+IStepFunction<TAssign>::TPtr TAssign::GetFunction(arrow::compute::ExecContext* ctx) const {
+    if (KernelFunction) {
+        return std::make_shared<TKernelFunction<TAssign>>(KernelFunction, ctx);
+    }
+    if (IsConstant()) {
+        return std::make_shared<TConstFunction>(ctx);
+    }
+    return std::make_shared<TSimpleFunction>(ctx);
+}
+
+TString TAssign::DebugString() const {
+    TStringBuilder sb;
+    sb << "{";
+    if (Operation != EOperation::Unspecified) {
+        sb << "op=" << Operation << ";";
+    }
+    if (YqlOperationId) {
+        sb << "yql_op=" << (NYql::TKernelRequestBuilder::EBinaryOp)*YqlOperationId << ";";
+    }
+    if (Arguments.size()) {
+        sb << "arguments=[";
+        for (auto&& i : Arguments) {
+            sb << i.DebugString() << ";";
+        }
+        sb << "];";
+    }
+    if (Constant) {
+        sb << "const=" << Constant->ToString() << ";";
+    }
+    if (KernelFunction) {
+        sb << "kernel=" << KernelFunction->name() << ";";
+    }
+    sb << "column=" << Column.DebugString() << ";";
+    sb << "}";
+    return sb;
+}
+
+IStepFunction<TAggregateAssign>::TPtr TAggregateAssign::GetFunction(arrow::compute::ExecContext* ctx) const {
+    if (KernelFunction) {
+        return std::make_shared<TKernelFunction<TAggregateAssign>>(KernelFunction, ctx);
+    }
+    return std::make_shared<TAggregateFunction>(ctx);
+}
+
+
+arrow::Status TProgramStep::ApplyAssignes(TDatumBatch& batch, arrow::compute::ExecContext* ctx) const {
     if (Assignes.empty()) {
         return arrow::Status::OK();
     }
@@ -486,29 +684,20 @@ arrow::Status TProgramStep::ApplyAssignes(
             return arrow::Status::Invalid("Assign to existing column '" + assign.GetName() + "'.");
         }
 
-        arrow::Datum column;
-        if (assign.IsConstant()) {
-            column = assign.GetConstant();
-        } else {
-            auto funcResult = CallFunctionByAssign(assign, batch, ctx);
-            if (!funcResult.ok()) {
-                return funcResult.status();
-            }
-            column = *funcResult;
+        auto funcResult = assign.GetFunction(ctx)->Call(assign, batch);
+        if (!funcResult.ok()) {
+            return funcResult.status();
         }
+        arrow::Datum column = *funcResult;
         auto status = batch.AddColumn(assign.GetName(), std::move(column));
         if (!status.ok()) {
             return status;
         }
     }
-    //return batch->Validate();
     return arrow::Status::OK();
 }
 
-arrow::Status TProgramStep::ApplyAggregates(
-    TDatumBatch& batch,
-    arrow::compute::ExecContext* ctx) const
-{
+arrow::Status TProgramStep::ApplyAggregates(TDatumBatch& batch, arrow::compute::ExecContext* ctx) const {
     if (GroupBy.empty()) {
         return arrow::Status::OK();
     }
@@ -522,40 +711,13 @@ arrow::Status TProgramStep::ApplyAggregates(
 
     if (GroupByKeys.empty()) {
         for (auto& assign : GroupBy) {
-            auto funcResult = CallFunctionByAssign(assign, batch, ctx);
+            auto funcResult = assign.GetFunction(ctx)->Call(assign, batch);
             if (!funcResult.ok()) {
-                auto houseResult = CallHouseFunctionByAssign(assign, batch, ctx);
-                if (!houseResult.ok()) {
-                    return funcResult.status();
-                }
-                funcResult = houseResult;
+                return funcResult.status();
             }
-
             res.Datums.push_back(*funcResult);
-            auto& column = res.Datums.back();
-            if (!column.is_scalar()) {
-                return arrow::Status::Invalid("Aggregate result is not a scalar.");
-            }
-
-            if (column.scalar()->type->id() == arrow::Type::STRUCT) {
-                auto op = assign.GetOperation();
-                if (op == EAggregate::Min) {
-                    const auto& minMax = column.scalar_as<arrow::StructScalar>();
-                    column = minMax.value[0];
-                } else if (op == EAggregate::Max) {
-                    const auto& minMax = column.scalar_as<arrow::StructScalar>();
-                    column = minMax.value[1];
-                } else {
-                    return arrow::Status::Invalid("Unexpected struct result for aggregate function.");
-                }
-            }
-
-            if (!column.type()) {
-                return arrow::Status::Invalid("Aggregate result has no type.");
-            }
-            fields.emplace_back(std::make_shared<arrow::Field>(assign.GetName(), column.type()));
+            fields.emplace_back(std::make_shared<arrow::Field>(assign.GetName(), res.Datums.back().type()));
         }
-
         res.Rows = 1;
     } else {
         CH::GroupByOptions funcOpts;
@@ -569,11 +731,11 @@ arrow::Status TProgramStep::ApplyAggregates(
 
         for (auto& key : GroupByKeys) {
             funcOpts.assigns.emplace_back(CH::GroupByOptions::Assign{
-                .result_column = key
+                .result_column = key.GetColumnName()
             });
 
             if (!funcOpts.has_nullable_key) {
-                auto res = batch.GetColumnByName(key);
+                auto res = batch.GetColumnByName(key.GetColumnName());
                 if (!res.ok()) {
                     return arrow::Status::Invalid("No such key for GROUP BY.");
                 }
@@ -609,26 +771,27 @@ arrow::Status TProgramStep::ApplyAggregates(
 }
 
 arrow::Status TProgramStep::MakeCombinedFilter(TDatumBatch& batch, NArrow::TColumnFilter& result) const {
-    std::vector<bool> filtersMerged;
+    TFilterVisitor filterVisitor(batch.Rows);
     for (auto& colName : Filters) {
-        auto column = batch.GetColumnByName(colName);
+        auto column = batch.GetColumnByName(colName.GetColumnName());
         if (!column.ok()) {
             return column.status();
         }
-        if (!column->is_array() || column->type() != arrow::boolean()) {
-            return arrow::Status::Invalid("Column '" + colName + "' is not a boolean array.");
-        }
-
-        auto boolColumn = std::static_pointer_cast<arrow::BooleanArray>(column->make_array());
-        if (filtersMerged.empty()) {
-            filtersMerged.resize(boolColumn->length(), true);
-        }
-        Y_VERIFY(filtersMerged.size() == (size_t)boolColumn->length());
-        for (ui32 i = 0; i < filtersMerged.size(); ++i) {
-            filtersMerged[i] = filtersMerged[i] && boolColumn->Value(i);
+        if (column->is_array()) {
+            auto g = filterVisitor.StartVisit();
+            auto columnArray = column->make_array();
+            NArrow::TStatusValidator::Validate(columnArray->Accept(&filterVisitor));
+        } else if (column->is_arraylike()) {
+            auto columnArray = column->chunked_array();
+            auto g = filterVisitor.StartVisit();
+            for (auto&& i : columnArray->chunks()) {
+                NArrow::TStatusValidator::Validate(i->Accept(&filterVisitor));
+            }
+        } else {
+            AFL_VERIFY(false)("column", colName.GetColumnName());
         }
     }
-    result = NArrow::TColumnFilter(std::move(filtersMerged));
+    filterVisitor.BuildColumnFilter(result);
     return arrow::Status::OK();
 }
 
@@ -637,50 +800,34 @@ arrow::Status TProgramStep::ApplyFilters(TDatumBatch& batch) const {
         return arrow::Status::OK();
     }
 
-    NArrow::TColumnFilter bits;
-    auto status = MakeCombinedFilter(batch, bits);
-    if (!status.ok()) {
-        return status;
+    NArrow::TColumnFilter bits = NArrow::TColumnFilter::BuildAllowFilter();
+    NArrow::TStatusValidator::Validate(MakeCombinedFilter(batch, bits));
+    if (bits.IsTotalAllowFilter()) {
+        return arrow::Status::OK();
     }
-    if (!bits.IsTotalAllowFilter()) {
-        std::unordered_set<std::string_view> neededColumns;
-        bool allColumns = Projection.empty() && GroupBy.empty();
-        if (!allColumns) {
-            for (auto& aggregate : GroupBy) {
-                for (auto& arg : aggregate.GetArguments()) {
-                    neededColumns.insert(arg);
-                }
-            }
-            for (auto& key : GroupByKeys) {
-                neededColumns.insert(key);
-            }
-            for (auto& str : Projection) {
-                neededColumns.insert(str);
+    std::unordered_set<std::string_view> neededColumns;
+    const bool allColumns = Projection.empty() && GroupBy.empty();
+    if (!allColumns) {
+        for (auto& aggregate : GroupBy) {
+            for (auto& arg : aggregate.GetArguments()) {
+                neededColumns.insert(arg.GetColumnName());
             }
         }
-
-        auto filter = bits.BuildArrowFilter(batch.Rows);
-        for (int64_t i = 0; i < batch.Schema->num_fields(); ++i) {
-            bool needed = (allColumns || neededColumns.contains(batch.Schema->field(i)->name()));
-            if (batch.Datums[i].is_array() && needed) {
-                auto res = arrow::compute::Filter(batch.Datums[i].make_array(), filter);
-                if (!res.ok()) {
-                    return res.status();
-                }
-                if ((*res).kind() != batch.Datums[i].kind()) {
-                    return arrow::Status::Invalid("Unexpected filter result.");
-                }
-
-                batch.Datums[i] = *res;
-            }
+        for (auto& key : GroupByKeys) {
+            neededColumns.insert(key.GetColumnName());
         }
-
-        int newRows = 0;
-        for (int64_t i = 0; i < filter->length(); ++i) {
-            newRows += filter->Value(i);
+        for (auto& str : Projection) {
+            neededColumns.insert(str.GetColumnName());
         }
-        batch.Rows = newRows;
     }
+    std::vector<arrow::Datum*> filterDatums;
+    for (int64_t i = 0; i < batch.Schema->num_fields(); ++i) {
+        if (batch.Datums[i].is_arraylike() && (allColumns || neededColumns.contains(batch.Schema->field(i)->name()))) {
+            filterDatums.emplace_back(&batch.Datums[i]);
+        }
+    }
+    bits.Apply(batch.Rows, filterDatums);
+    batch.Rows = bits.GetFilteredCount().value_or(batch.Rows);
     return arrow::Status::OK();
 }
 
@@ -691,9 +838,9 @@ arrow::Status TProgramStep::ApplyProjection(TDatumBatch& batch) const {
     std::vector<std::shared_ptr<arrow::Field>> newFields;
     std::vector<arrow::Datum> newDatums;
     for (size_t i = 0; i < Projection.size(); ++i) {
-        int schemaFieldIndex = batch.Schema->GetFieldIndex(Projection[i]);
+        int schemaFieldIndex = batch.Schema->GetFieldIndex(Projection[i].GetColumnName());
         if (schemaFieldIndex == -1) {
-            return arrow::Status::Invalid("Could not find column " + Projection[i] + " in record batch schema.");
+            return arrow::Status::Invalid("Could not find column " + Projection[i].GetColumnName() + " in record batch schema.");
         }
         newFields.push_back(batch.Schema->field(schemaFieldIndex));
         newDatums.push_back(batch.Datums[schemaFieldIndex]);
@@ -710,9 +857,9 @@ arrow::Status TProgramStep::ApplyProjection(std::shared_ptr<arrow::RecordBatch>&
 
     std::vector<std::shared_ptr<arrow::Field>> fields;
     for (auto& column : Projection) {
-        fields.push_back(batch->schema()->GetFieldByName(column));
+        fields.push_back(batch->schema()->GetFieldByName(column.GetColumnName()));
         if (!fields.back()) {
-            return arrow::Status::Invalid("Wrong projection column '" + column + "'.");
+            return arrow::Status::Invalid("Wrong projection column '" + column.GetColumnName() + "'.");
         }
     }
     batch = NArrow::ExtractColumns(batch, std::make_shared<arrow::Schema>(std::move(fields)));
@@ -722,28 +869,29 @@ arrow::Status TProgramStep::ApplyProjection(std::shared_ptr<arrow::RecordBatch>&
 arrow::Status TProgramStep::Apply(std::shared_ptr<arrow::RecordBatch>& batch, arrow::compute::ExecContext* ctx) const {
     auto rb = TDatumBatch::FromRecordBatch(batch);
 
-    auto status = ApplyAssignes(*rb, ctx);
-    //Y_VERIFY_S(status.ok(), status.message());
-    if (!status.ok()) {
-        return status;
+    {
+        auto status = ApplyAssignes(*rb, ctx);
+        if (!status.ok()) {
+            return status;
+        }
     }
-
-    status = ApplyFilters(*rb);
-    //Y_VERIFY_S(status.ok(), status.message());
-    if (!status.ok()) {
-        return status;
+    {
+        auto status = ApplyFilters(*rb);
+        if (!status.ok()) {
+            return status;
+        }
     }
-
-    status = ApplyAggregates(*rb, ctx);
-    //Y_VERIFY_S(status.ok(), status.message());
-    if (!status.ok()) {
-        return status;
+    {
+        auto status = ApplyAggregates(*rb, ctx);
+        if (!status.ok()) {
+            return status;
+        }
     }
-
-    status = ApplyProjection(*rb);
-    //Y_VERIFY_S(status.ok(), status.message());
-    if (!status.ok()) {
-        return status;
+    {
+        auto status = ApplyProjection(*rb);
+        if (!status.ok()) {
+            return status;
+        }
     }
 
     batch = (*rb).ToRecordBatch();
@@ -753,55 +901,73 @@ arrow::Status TProgramStep::Apply(std::shared_ptr<arrow::RecordBatch>& batch, ar
     return arrow::Status::OK();
 }
 
-std::set<std::string> TProgramStep::GetColumnsInUsage() const {
+std::set<std::string> TProgramStep::GetColumnsInUsage(const bool originalOnly/* = false*/) const {
     std::set<std::string> result;
     for (auto&& i : Filters) {
-        result.emplace(i);
+        if (!originalOnly || !i.IsGenerated()) {
+            result.emplace(i.GetColumnName());
+        }
     }
     for (auto&& i : Assignes) {
         for (auto&& f : i.GetArguments()) {
-            result.emplace(f);
+            if (!originalOnly || !f.IsGenerated()) {
+                result.emplace(f.GetColumnName());
+            }
         }
     }
     return result;
 }
 
-NArrow::TColumnFilter TProgram::MakeEarlyFilter(const std::shared_ptr<arrow::RecordBatch>& srcBatch,
-                                            arrow::compute::ExecContext* ctx) const
-{
-    NArrow::TColumnFilter result;
-    try {
-        if (Steps.empty()) {
-            return result;
-        }
-        auto& step = Steps[0];
-        if (step->Filters.empty()) {
-            return result;
-        }
+arrow::Result<std::shared_ptr<NArrow::TColumnFilter>> TProgramStep::BuildFilter(const std::shared_ptr<NArrow::TGeneralContainer>& t) const {
+    return BuildFilter(t->BuildTable(GetColumnsInUsage(true)));
+}
 
-        auto batch = srcBatch;
-        auto rb = TProgramStep::TDatumBatch::FromRecordBatch(batch);
-
-        if (!step->ApplyAssignes(*rb, ctx).ok()) {
-            return result;
-        }
-        NArrow::TColumnFilter filter;
-        if (!step->MakeCombinedFilter(*rb, filter).ok()) {
-            return result;
-        }
-        return filter;
-    } catch (const std::exception& ex) {
-        return result;
+arrow::Result<std::shared_ptr<NArrow::TColumnFilter>> TProgramStep::BuildFilter(const std::shared_ptr<arrow::Table>& t) const {
+    if (Filters.empty()) {
+        return nullptr;
     }
-    return result;
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches = NArrow::SliceToRecordBatches(t);
+    NArrow::TColumnFilter fullLocal = NArrow::TColumnFilter::BuildAllowFilter();
+    for (auto&& rb : batches) {
+        auto datumBatch = TDatumBatch::FromRecordBatch(rb);
+        {
+            auto statusAssign = ApplyAssignes(*datumBatch, NArrow::GetCustomExecContext());
+            if (!statusAssign.ok()) {
+                return statusAssign;
+            }
+        }
+        NArrow::TColumnFilter local = NArrow::TColumnFilter::BuildAllowFilter();
+        NArrow::TStatusValidator::Validate(MakeCombinedFilter(*datumBatch, local));
+        AFL_VERIFY(local.Size() == datumBatch->Rows)("local", local.Size())("datum", datumBatch->Rows);
+        fullLocal.Append(local);
+    }
+    AFL_VERIFY(fullLocal.Size() == t->num_rows())("filter", fullLocal.Size())("t", t->num_rows());
+    return std::make_shared<NArrow::TColumnFilter>(std::move(fullLocal));
+}
+
+const std::set<ui32>& TProgramStep::GetFilterOriginalColumnIds() const {
+    AFL_VERIFY(IsFilterOnly());
+    return FilterOriginalColumnIds;
 }
 
 std::set<std::string> TProgram::GetEarlyFilterColumns() const {
     std::set<std::string> result;
-    if (Steps.empty()) {
-        return result;
+    for (ui32 i = 0; i < Steps.size(); ++i) {
+        if (!Steps[i]->IsFilterOnly()) {
+            break;
+        }
+        auto stepFields = Steps[i]->GetColumnsInUsage();
+        result.insert(stepFields.begin(), stepFields.end());
     }
-    return Steps[0]->GetColumnsInUsage();
+    return result;
+}
+
+std::set<std::string> TProgram::GetProcessingColumns() const {
+    std::set<std::string> result;
+    for (auto&& i : SourceColumns) {
+        result.emplace(i.second.GetColumnName());
+    }
+    return result;
 }
 
 }

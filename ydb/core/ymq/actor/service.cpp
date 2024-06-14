@@ -18,7 +18,7 @@
 
 #include <ydb/public/lib/value/value.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/credentials/credentials.h>
-#include <ydb/core/base/quoter.h>
+#include <ydb/core/quoter/public/quoter.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/ymq/base/counters.h>
 #include <ydb/core/ymq/base/probes.h>
@@ -28,8 +28,8 @@
 #include <ydb/core/base/counters.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <library/cpp/logger/global/global.h>
 
 #include <util/generic/algorithm.h>
@@ -101,17 +101,16 @@ struct TSqsService::TQueueInfo : public TAtomicRefCount<TQueueInfo> {
     bool LeaderMustBeOnCurrentNode() const {
         return LeaderNodeId_ && LeaderNodeId_.value() == SelfId().NodeId();
     }
+    bool NeedStartLocalLeader() const {
+        return !LocalLeader_ && (LocalLeaderRefCount_ > 0 || LeaderMustBeOnCurrentNode());
+    }
+
+    bool NeedStopLocalLeader() const {
+        return LocalLeader_ && LocalLeaderRefCount_ == 0 && !LeaderMustBeOnCurrentNode();
+    }
 
     void SetLeaderNodeId(ui32 nodeId) {
-        if (LeaderNodeId_ && LeaderNodeId_ == nodeId) {
-            return;
-        }
         LeaderNodeId_ = nodeId;
-        if (LeaderMustBeOnCurrentNode()) {
-            StartLocalLeader(LEADER_CREATE_REASON_LOCAL_TABLET);
-        } else {
-            StopLocalLeaderIfNeeded(LEADER_DESTROY_REASON_TABLET_ON_ANOTHER_NODE);
-        }
     }
 
     void LocalLeaderWayMoved() const {
@@ -121,53 +120,49 @@ struct TSqsService::TQueueInfo : public TAtomicRefCount<TQueueInfo> {
     }
 
     void StartLocalLeader(const TString& reason) {
-        if (!LocalLeader_) {
-            Counters_ = Counters_->GetCountersForLeaderNode();
-            LWPROBE(CreateLeader, UserName_, QueueName_, reason);
-            LocalLeader_ = TActivationContext::Register(new TQueueLeader(
-                UserName_, QueueName_, FolderId_, RootUrl_, Counters_, UserCounters_,
-                SchemeCache_, QuoterResourcesForUser_, UseLeaderCPUOptimization
-            ));
-            LOG_SQS_INFO("Start local leader [" << UserName_ << "/" << QueueName_ << "] actor " << LocalLeader_);
+        Y_ABORT_UNLESS(!LocalLeader_);
+        Counters_ = Counters_->GetCountersForLeaderNode();
+        LWPROBE(CreateLeader, UserName_, QueueName_, reason);
+        LocalLeader_ = TActivationContext::Register(new TQueueLeader(
+            UserName_, QueueName_, FolderId_, RootUrl_, Counters_, UserCounters_,
+            SchemeCache_, QuoterResourcesForUser_, UseLeaderCPUOptimization
+        ));
+        LOG_SQS_INFO("Start local leader [" << UserName_ << "/" << QueueName_ << "] actor " << LocalLeader_);
 
-            if (FolderId_) {
-                Y_VERIFY(FolderCounters_);
-                FolderCounters_->InitCounters();
-                INC_COUNTER(FolderCounters_, total_count);
-            }
+        if (FolderId_) {
+            Y_ABORT_UNLESS(FolderCounters_);
+            FolderCounters_->InitCounters();
+            INC_COUNTER(FolderCounters_, total_count);
         }
-    }
 
-    void StopLocalLeaderIfNeeded(const TString& reason) {
-        if (!LeaderMustBeOnCurrentNode() && LocalLeaderRefCount_ == 0) {
-            StopLocalLeader(reason);
+        for (auto ev : GetConfigurationRequests_) {
+            TActivationContext::Send(ev->Forward(LocalLeader_));
         }
+        GetConfigurationRequests_.clear();
     }
 
     void StopLocalLeader(const TString& reason) {
-        if (LocalLeader_) {
-            Counters_ = Counters_->GetCountersForNotLeaderNode();
-            LWPROBE(DestroyLeader, UserName_, QueueName_, reason);
-            LOG_SQS_INFO("Stop local leader [" << UserName_ << "/" << QueueName_ << "] actor " << LocalLeader_);
-            TActivationContext::Send(new IEventHandle(LocalLeader_, SelfId(), new TEvPoisonPill()));
-            LocalLeader_ = TActorId();
-            if (FolderId_) {
-                Y_VERIFY(FolderCounters_);
-                DEC_COUNTER(FolderCounters_, total_count);
-            }
+        Y_ABORT_UNLESS(LocalLeader_);
+        Counters_ = Counters_->GetCountersForNotLeaderNode();
+        LWPROBE(DestroyLeader, UserName_, QueueName_, reason);
+        LOG_SQS_INFO("Stop local leader [" << UserName_ << "/" << QueueName_ << "] actor " << LocalLeader_);
+        TActivationContext::Send(new IEventHandle(LocalLeader_, SelfId(), new TEvPoisonPill()));
+        LocalLeader_ = TActorId();
+        if (FolderId_) {
+            Y_ABORT_UNLESS(FolderCounters_);
+            DEC_COUNTER(FolderCounters_, total_count);
         }
     }
 
-    void IncLocalLeaderRef(const TString& reason) {
-        StartLocalLeader(reason);
+    void IncLocalLeaderRef() {
         ++LocalLeaderRefCount_;
     }
 
-    void DecLocalLeaderRef(const TString& reason) {
-        Y_VERIFY(LocalLeaderRefCount_ > 0);
+    void DecLocalLeaderRef() {
+        Y_ABORT_UNLESS(LocalLeaderRefCount_ > 0);
         --LocalLeaderRefCount_;
-        StopLocalLeaderIfNeeded(reason);
     }
+
 
     TActorIdentity SelfId() const {
         return TActorIdentity(TActivationContext::AsActorContext().SelfID);
@@ -197,8 +192,111 @@ struct TSqsService::TQueueInfo : public TAtomicRefCount<TQueueInfo> {
 
     // State machine
     THashSet<TSqsEvents::TEvGetLeaderNodeForQueueRequest::TPtr> GetLeaderNodeRequests_;
+    TVector<TSqsEvents::TEvGetConfiguration::TPtr> GetConfigurationRequests_;
     TInstant NodeUnknownSince_ = TInstant::Now();
+
 };
+
+class TSqsService::TLocalLeaderManager {
+public:
+    TLocalLeaderManager(TIntrusivePtr<TMonitoringCounters> counters)
+        : MaxInflight(Cfg().GetStartLocalLeaderInflightMax())
+        , Counters(counters)
+    {
+    }
+    void QueueRemoved(TQueueInfoPtr queue);
+    void SetLeaderNodeId(TQueueInfoPtr queue, ui32 nodeId, TInstant now);
+    void IncLocalLeaderRef(TQueueInfoPtr queue, const TString& reason, TInstant now);
+    void DecLocalLeaderRef(TQueueInfoPtr queue, const TString& reason);
+    void LocalLeaderStarted(TInstant now);
+private:
+    struct TAwaitingQueueInfo {
+        TAwaitingQueueInfo(TQueueInfoPtr queue, TInstant since, const TString& reason)
+            : Queue(queue)
+            , Since(since)
+            , Reason(reason)
+        {}
+        TQueueInfoPtr Queue;
+        TInstant Since;
+        const TString& Reason;
+    };
+private:
+    void TryStartLocalLeader(TQueueInfoPtr queue, const TString& reason, TInstant waitSince, TInstant now);
+    void ProcessAwaiting(TInstant now);
+
+private:
+    const ui64 MaxInflight;
+    ui64 Inflight = 0;
+    TDeque<TAwaitingQueueInfo> Awaiting;
+    THashSet<TQueueInfoPtr> AlreadyAwaiting;
+    TIntrusivePtr<TMonitoringCounters> Counters;
+};
+
+
+void TSqsService::TLocalLeaderManager::QueueRemoved(TQueueInfoPtr queue) {
+    queue->LeaderNodeId_.reset();
+    if (queue->NeedStopLocalLeader()) {
+        queue->StopLocalLeader(LEADER_DESTROY_REASON_REMOVE_INFO);
+    }
+}
+
+void TSqsService::TLocalLeaderManager::SetLeaderNodeId(TQueueInfoPtr queue, ui32 nodeId, TInstant now) {
+    queue->SetLeaderNodeId(nodeId);
+    if (queue->NeedStartLocalLeader()) {
+        TryStartLocalLeader(queue, LEADER_CREATE_REASON_LOCAL_TABLET, now, now);
+    } else if (queue->NeedStopLocalLeader()) {
+        queue->StopLocalLeader(LEADER_DESTROY_REASON_TABLET_ON_ANOTHER_NODE);
+    }
+}
+
+void TSqsService::TLocalLeaderManager::IncLocalLeaderRef(TQueueInfoPtr queue, const TString& reason, TInstant now) {
+    queue->IncLocalLeaderRef();
+    TryStartLocalLeader(queue, reason, now, now);
+}
+
+void TSqsService::TLocalLeaderManager::TryStartLocalLeader(TQueueInfoPtr queue, const TString& reason, TInstant waitSince, TInstant now) {
+    if (queue->NeedStartLocalLeader()) {
+        if (MaxInflight != 0 && Inflight >= MaxInflight) {
+            if (!AlreadyAwaiting.count(queue)) {
+                LOG_SQS_DEBUG("Queue [" << queue->UserName_ << "/" << queue->QueueName_ << "] is waiting for the leader to start, inflight=" << Inflight);
+                Awaiting.emplace_back(queue, waitSince, reason);
+                AlreadyAwaiting.insert(queue);
+            }
+        } else {
+            ++Inflight;
+            queue->StartLocalLeader(reason);
+            Counters->LocalLeaderStartAwaitMs->Collect((now - waitSince).MilliSeconds());
+        }
+    }
+    *Counters->LocalLeaderStartInflight = Inflight;
+    *Counters->LocalLeaderStartQueue = Awaiting.size();
+}
+
+void TSqsService::TLocalLeaderManager::DecLocalLeaderRef(TQueueInfoPtr queue, const TString& reason) {
+    queue->DecLocalLeaderRef();
+    if (queue->NeedStopLocalLeader()) {
+        queue->StopLocalLeader(reason);
+    }
+}
+
+void TSqsService::TLocalLeaderManager::LocalLeaderStarted(TInstant now) {
+    Y_ABORT_UNLESS(Inflight > 0);
+    --Inflight;
+
+    ProcessAwaiting(now);
+
+    *Counters->LocalLeaderStartInflight = Inflight;
+    *Counters->LocalLeaderStartQueue = Awaiting.size();
+}
+
+void TSqsService::TLocalLeaderManager::ProcessAwaiting(TInstant now) {
+    while (!Awaiting.empty() && (MaxInflight == 0 || Inflight < MaxInflight)) {
+        auto info = Awaiting.front();
+        Awaiting.pop_front();
+        AlreadyAwaiting.erase(info.Queue);
+        TryStartLocalLeader(info.Queue, info.Reason, info.Since, now);
+    }
+}
 
 struct TSqsService::TUserInfo : public TAtomicRefCount<TUserInfo> {
     TUserInfo(TString userName, TIntrusivePtr<TUserCounters> userCounters)
@@ -210,7 +308,7 @@ struct TSqsService::TUserInfo : public TAtomicRefCount<TUserInfo> {
     void InitQuoterResources() {
         const auto& cfg = Cfg().GetQuotingConfig();
         if (cfg.GetEnableQuoting()) {
-            Y_VERIFY(cfg.HasLocalRateLimiterConfig() != cfg.HasKesusQuoterConfig()); // exactly one must be set
+            Y_ABORT_UNLESS(cfg.HasLocalRateLimiterConfig() != cfg.HasKesusQuoterConfig()); // exactly one must be set
             if (cfg.HasLocalRateLimiterConfig()) { // the only one that is fully supported
                 const auto& rates = cfg.GetLocalRateLimiterConfig().GetRates();
                 // allocate resources
@@ -257,7 +355,7 @@ struct TSqsService::TUserInfo : public TAtomicRefCount<TUserInfo> {
     TLocalRateLimiterResource DeleteObjectsQuoterResource_;
     TLocalRateLimiterResource OtherActionsQuoterResource_;
     i64 EarlyRequestQueuesListBudget_ = EARLY_REQUEST_QUEUES_LIST_MAX_BUDGET; // Defence from continuously requesting queues list.
-    bool UseLeaderCPUOptimization = false;
+    bool UseLeaderCPUOptimization = true;
 
     // State machine
     THashMultiMap<TString, TSqsEvents::TEvGetLeaderNodeForQueueRequest::TPtr> GetLeaderNodeRequests_; // queue name -> request
@@ -302,6 +400,8 @@ void TSqsService::Bootstrap() {
     InitSchemeCache();
     NodeTrackerActor_ = Register(new TNodeTrackerActor(SchemeCache_));
 
+    LocalLeaderManager = MakeHolder<TLocalLeaderManager>(MonitoringCounters_);
+
     Register(new TCleanupQueueDataActor(MonitoringCounters_));
     Register(new TMonitoringActor(MonitoringCounters_));
 
@@ -326,7 +426,7 @@ void TSqsService::Bootstrap() {
         }
 
         auto factory = AppData()->SqsAuthFactory;
-        Y_VERIFY(factory);
+        Y_ABORT_UNLESS(factory);
 
         MakeAndRegisterYcEventsProcessor();
     }
@@ -345,11 +445,14 @@ STATEFN(TSqsService::StateFunc) {
         hFunc(TEvWakeup, HandleWakeup);
         hFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, HandleDescribeSchemeResult);
         hFunc(TSqsEvents::TEvExecuted, HandleExecuted);
+        hFunc(TSqsEvents::TEvReloadStateRequest, HandleReloadStateRequest);
         hFunc(TSqsEvents::TEvNodeTrackerSubscriptionStatus, HandleNodeTrackingSubscriptionStatus);
         hFunc(TSqsEvents::TEvGetConfiguration, HandleGetConfiguration);
         hFunc(TSqsEvents::TEvSqsRequest, HandleSqsRequest);
         hFunc(TSqsEvents::TEvInsertQueueCounters, HandleInsertQueueCounters);
         hFunc(TSqsEvents::TEvUserSettingsChanged, HandleUserSettingsChanged);
+        hFunc(TSqsEvents::TEvLeaderStarted, HandleLeaderStarted);
+
         hFunc(TSqsEvents::TEvQueuesList, HandleQueuesList);
     default:
         LOG_SQS_ERROR("Unknown type of event came to SQS service actor: " << ev->Type << " (" << ev->GetTypeName() << "), sender: " << ev->Sender);
@@ -434,7 +537,7 @@ void TSqsService::HandleGetLeaderNodeForQueueRequest(TSqsEvents::TEvGetLeaderNod
             RLOG_SQS_REQ_DEBUG(reqId, "Queue [" << userName << "/" << queueName << "] was not found in sqs service list. Requesting queues list");
             user->GetLeaderNodeRequests_.emplace(queueName, std::move(ev));
         } else {
-            Send(ev->Sender, new TSqsEvents::TEvGetLeaderNodeForQueueResponse(reqId, userName, queueName, TSqsEvents::TEvGetLeaderNodeForQueueResponse::EStatus::NoQueue));
+            AnswerThrottled(ev);
         }
         return;
     }
@@ -482,7 +585,7 @@ void TSqsService::HandleGetConfiguration(TSqsEvents::TEvGetConfiguration::TPtr& 
             RLOG_SQS_REQ_DEBUG(reqId, "Queue [" << userName << "/" << queueName << "] was not found in sqs service list. Requesting queues list");
             user->GetConfigurationRequests_.emplace(queueName, std::move(ev));
         } else {
-            AnswerNotExists(ev, user);
+            AnswerThrottled(ev);
         }
         return;
     }
@@ -570,6 +673,32 @@ void TSqsService::AnswerFailed(TSqsEvents::TEvCountQueues::TPtr& ev, const TUser
     Send(ev->Sender, new TSqsEvents::TEvCountQueuesResponse(true));
 }
 
+void TSqsService::AnswerThrottled(TSqsEvents::TEvGetLeaderNodeForQueueRequest::TPtr& ev) {
+    const TString& reqId = ev->Get()->RequestId;
+    const TString& userName = ev->Get()->UserName;
+    const TString& queueName = ev->Get()->QueueName;
+    RLOG_SQS_REQ_DEBUG(reqId, "Throttled because of too many requests for nonexistent queue [" << queueName << "] for user [" << userName << "] while getting leader node");
+    Send(ev->Sender, new TSqsEvents::TEvGetLeaderNodeForQueueResponse(reqId, userName, queueName, TSqsEvents::TEvGetLeaderNodeForQueueResponse::EStatus::Throttled));
+}
+
+void TSqsService::AnswerThrottled(TSqsEvents::TEvGetConfiguration::TPtr& ev) {
+    RLOG_SQS_REQ_DEBUG(ev->Get()->RequestId, "Throttled because of too many requests for nonexistent queue [" << ev->Get()->QueueName << "] for user [" << ev->Get()->UserName << "] while getting configuration");
+    auto answer = MakeHolder<TSqsEvents::TEvConfiguration>();
+    answer->Throttled = true;
+    answer->SchemeCache = SchemeCache_;
+    Send(ev->Sender, answer.Release());
+}
+
+void TSqsService::AnswerThrottled(TSqsEvents::TEvGetQueueId::TPtr& ev) {
+    RLOG_SQS_REQ_DEBUG(ev->Get()->RequestId, "Throttled because of too many requests for nonexistent queue [" << ev->Get()->CustomQueueName << "] for user [" << ev->Get()->UserName << "] while getting queue id");
+    Send(ev->Sender, new TSqsEvents::TEvQueueId(false, true));
+}
+
+void TSqsService::AnswerThrottled(TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev) {
+    RLOG_SQS_REQ_DEBUG(ev->Get()->RequestId, "Throttled because of too many requests for nonexistent queue [" << ev->Get()->QueueName << "] for user [" << ev->Get()->UserName << "] while getting folder id and custom name");
+    Send(ev->Sender, new TSqsEvents::TEvQueueFolderIdAndCustomName(false, true));
+}
+
 void TSqsService::Answer(TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev, const TQueueInfoPtr& queueInfo) {
     Send(ev->Sender, new TSqsEvents::TEvQueueFolderIdAndCustomName(queueInfo->FolderId_, queueInfo->CustomName_));
 }
@@ -594,7 +723,11 @@ void TSqsService::ProcessConfigurationRequestForQueue(TSqsEvents::TEvGetConfigur
     if (ev->Get()->Flags & TSqsEvents::TEvGetConfiguration::EFlags::NeedQueueLeader) {
         IncLocalLeaderRef(ev->Sender, queueInfo, LEADER_CREATE_REASON_USER_REQUEST);
         RLOG_SQS_REQ_DEBUG(ev->Get()->RequestId, "Forward configuration request to queue [" << queueInfo->UserName_ << "/" << queueInfo->QueueName_ << "] leader");
-        TActivationContext::Send(ev->Forward(queueInfo->LocalLeader_));
+        if (queueInfo->LocalLeader_) {
+            TActivationContext::Send(ev->Forward(queueInfo->LocalLeader_));
+        } else {
+            queueInfo->GetConfigurationRequests_.emplace_back(std::move(ev));
+        }
     } else {
         RLOG_SQS_REQ_DEBUG(ev->Get()->RequestId, "Answer configuration for queue [" << queueInfo->UserName_ << "/" << queueInfo->QueueName_ << "] without leader");
         AnswerLeaderlessConfiguration(ev, userInfo, queueInfo);
@@ -665,9 +798,8 @@ void TSqsService::HandleGetQueueId(TSqsEvents::TEvGetQueueId::TPtr& ev) {
                                 << ev->Get()->FolderId << "] was not found in sqs service list for user ["
                                 << userName << "]. Requesting queues list");
             user->GetQueueIdRequests_.emplace(std::make_pair(ev->Get()->CustomQueueName, ev->Get()->FolderId), std::move(ev));
-        } else {
-            AnswerNotExists(ev, user);
-        }
+        } else
+            AnswerThrottled(ev);
         return;
     }
 
@@ -683,7 +815,8 @@ void TSqsService::HandleGetQueueId(TSqsEvents::TEvGetQueueId::TPtr& ev) {
     );
 }
 
-void TSqsService::HandleGetQueueFolderIdAndCustomName(TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev) {
+void TSqsService::HandleGetQueueFolderIdAndCustomName(
+    TSqsEvents::TEvGetQueueFolderIdAndCustomName::TPtr& ev) {
     TUserInfoPtr user = GetUserOrWait(ev);
     if (!user) {
         return;
@@ -699,7 +832,7 @@ void TSqsService::HandleGetQueueFolderIdAndCustomName(TSqsEvents::TEvGetQueueFol
             RLOG_SQS_REQ_DEBUG(reqId, "Queue [" << userName << "/" << queueName << "] was not found in sqs service list. Requesting queues list");
             user->GetQueueFolderIdAndCustomNameRequests_.emplace(queueName, std::move(ev));
         } else {
-            AnswerNotExists(ev, user);
+            AnswerThrottled(ev);
         }
         return;
     }
@@ -748,6 +881,19 @@ TSqsService::TUserInfoPtr TSqsService::GetUserOrWait(TAutoPtr<TEvent>& ev) {
     return userIt->second;
 }
 
+void TSqsService::HandleReloadStateRequest(TSqsEvents::TEvReloadStateRequest::TPtr& ev) {
+    const auto userIt = Users_.find(ev->Get()->Record.GetTarget().GetUserName());
+    if (userIt != Users_.end()) {
+        auto queueIt = userIt->second->Queues_.find(ev->Get()->Record.GetTarget().GetQueueName());
+        if (queueIt != userIt->second->Queues_.end()) {
+            if (queueIt->second->LocalLeader_) {
+                Send(ev->Forward(queueIt->second->LocalLeader_));
+                return;
+            }
+        }
+    }
+}
+
 void TSqsService::HandleNodeTrackingSubscriptionStatus(TSqsEvents::TEvNodeTrackerSubscriptionStatus::TPtr& ev) {
     ui64 subscriptionId = ev->Get()->SubscriptionId;
     auto it = QueuePerNodeTrackingSubscription.find(subscriptionId);
@@ -760,7 +906,7 @@ void TSqsService::HandleNodeTrackingSubscriptionStatus(TSqsEvents::TEvNodeTracke
     auto& queue = *queuePtr;
     auto nodeId = ev->Get()->NodeId;
     bool disconnected = ev->Get()->Disconnected;
-    queue.SetLeaderNodeId(nodeId);
+    LocalLeaderManager->SetLeaderNodeId(queuePtr, nodeId, TActivationContext::Now());
     if (disconnected) {
         queue.LocalLeaderWayMoved();
     }
@@ -774,6 +920,10 @@ void TSqsService::HandleNodeTrackingSubscriptionStatus(TSqsEvents::TEvNodeTracke
     }
     queue.GetLeaderNodeRequests_.clear();
     QueuesWithGetNodeWaitingRequests.erase(queuePtr);
+}
+
+void TSqsService::HandleLeaderStarted(TSqsEvents::TEvLeaderStarted::TPtr&) {
+    LocalLeaderManager->LocalLeaderStarted(TActivationContext::Now());
 }
 
 void TSqsService::HandleQueuesList(TSqsEvents::TEvQueuesList::TPtr& ev) {
@@ -919,28 +1069,28 @@ void TSqsService::HandleUserSettingsChanged(TSqsEvents::TEvUserSettingsChanged::
     const auto& newSettings = ev->Get()->Settings;
     if (IsIn(*diff, USER_SETTING_DISABLE_COUNTERS)) {
         const auto value = newSettings->find(USER_SETTING_DISABLE_COUNTERS);
-        Y_VERIFY(value != newSettings->end());
+        Y_ABORT_UNLESS(value != newSettings->end());
         const bool disableCounters = FromStringWithDefault(value->second, false);
         user->Counters_->DisableCounters(disableCounters);
     }
 
     if (IsIn(*diff, USER_SETTING_SHOW_DETAILED_COUNTERS_DEADLINE_MS)) {
         const auto value = newSettings->find(USER_SETTING_SHOW_DETAILED_COUNTERS_DEADLINE_MS);
-        Y_VERIFY(value != newSettings->end());
+        Y_ABORT_UNLESS(value != newSettings->end());
         const ui64 deadline = FromStringWithDefault(value->second, 0ULL);
         user->Counters_->ShowDetailedCounters(TInstant::MilliSeconds(deadline));
     }
 
     if (IsIn(*diff, USER_SETTING_EXPORT_TRANSACTION_COUNTERS)) {
         const auto value = newSettings->find(USER_SETTING_EXPORT_TRANSACTION_COUNTERS);
-        Y_VERIFY(value != newSettings->end());
+        Y_ABORT_UNLESS(value != newSettings->end());
         const bool needExport = FromStringWithDefault(value->second, false);
         user->Counters_->ExportTransactionCounters(needExport);
     }
 
     if (IsIn(*diff, USE_CPU_LEADER_OPTIMIZATION)) {
         const auto value = newSettings->find(USE_CPU_LEADER_OPTIMIZATION);
-        Y_VERIFY(value != newSettings->end());
+        Y_ABORT_UNLESS(value != newSettings->end());
         const bool use = FromStringWithDefault(value->second, false);
         user->UseLeaderCPUOptimization = use;
         for (auto queue : user->Queues_) {
@@ -1122,7 +1272,7 @@ std::map<TString, TSqsService::TQueueInfoPtr>::iterator TSqsService::AddQueue(co
 }
 
 void TSqsService::CreateNodeTrackingSubscription(TQueueInfoPtr queueInfo) {
-    Y_VERIFY(!queueInfo->NodeTrackingSubscriptionId);
+    Y_ABORT_UNLESS(!queueInfo->NodeTrackingSubscriptionId);
     queueInfo->NodeTrackingSubscriptionId = ++MaxNodeTrackingSubscriptionId;
     LOG_SQS_DEBUG("Create node tracking subscription queue_id_number=" << queueInfo->Version_
         << " tables_format=" << queueInfo->TablesFormat_ << " subscription_id=" << queueInfo->NodeTrackingSubscriptionId
@@ -1149,13 +1299,12 @@ void TSqsService::CancleNodeTrackingSubscription(TQueueInfoPtr queueInfo) {
     LOG_SQS_DEBUG("Cancle node tracking subscription queue_id_number=" << queueInfo->Version_
         << " tables_format=" << queueInfo->TablesFormat_ << " subscription_id=" << queueInfo->NodeTrackingSubscriptionId
     );
-    Y_VERIFY(queueInfo->NodeTrackingSubscriptionId);
+    Y_ABORT_UNLESS(queueInfo->NodeTrackingSubscriptionId);
     auto id = queueInfo->NodeTrackingSubscriptionId;
     queueInfo->NodeTrackingSubscriptionId = 0;
 
     QueuePerNodeTrackingSubscription.erase(id);
-    queueInfo->LeaderNodeId_.reset();
-    queueInfo->StopLocalLeaderIfNeeded(LEADER_DESTROY_REASON_REMOVE_INFO);
+    LocalLeaderManager->QueueRemoved(queueInfo);
 
     Send(
         NodeTrackerActor_,
@@ -1176,6 +1325,13 @@ void TSqsService::AnswerNoQueueToRequests(const TUserInfoPtr& user) {
     AnswerNoQueueToRequests(user, user->GetConfigurationRequests_);
     AnswerNoQueueToRequests(user, user->GetQueueIdRequests_);
     AnswerNoQueueToRequests(user, user->GetQueueFolderIdAndCustomNameRequests_);
+}
+
+void TSqsService::AnswerThrottledToRequests(const TUserInfoPtr& user) {
+    AnswerThrottledToRequests(user->GetLeaderNodeRequests_);
+    AnswerThrottledToRequests(user->GetConfigurationRequests_);
+    AnswerThrottledToRequests(user->GetQueueIdRequests_);
+    AnswerThrottledToRequests(user->GetQueueFolderIdAndCustomNameRequests_);
 }
 
 void TSqsService::AnswerErrorToRequests() {
@@ -1221,7 +1377,7 @@ void TSqsService::ProcessConnectTimeoutToLeader() {
 }
 
 void TSqsService::HandleWakeup(TEvWakeup::TPtr& ev) {
-    Y_VERIFY(ev->Get()->Tag != 0);
+    Y_ABORT_UNLESS(ev->Get()->Tag != 0);
     switch (ev->Get()->Tag) {
     case LIST_USERS_WAKEUP_TAG:
         ScheduledRequestingUsersList_ = false;
@@ -1285,7 +1441,7 @@ void TSqsService::IncLocalLeaderRef(const TActorId& referer, const TQueueInfoPtr
     const auto [iter, inserted] = LocalLeaderRefs_.emplace(referer, queueInfo);
     if (inserted) {
         LOG_SQS_TRACE("Inc local leader ref for actor " << referer);
-        queueInfo->IncLocalLeaderRef(reason);
+        LocalLeaderManager->IncLocalLeaderRef(queueInfo, reason, TActivationContext::Now());
     } else {
         LWPROBE(IncLeaderRefAlreadyHasRef, queueInfo->UserName_, queueInfo->QueueName_, referer.ToString());
         LOG_SQS_WARN("Inc local leader ref for actor " << referer << ". Ignore because this actor already presents in referers set");
@@ -1298,7 +1454,7 @@ void TSqsService::DecLocalLeaderRef(const TActorId& referer, const TString& reas
     LOG_SQS_TRACE("Dec local leader ref for actor " << referer << ". Found: " << (iter != LocalLeaderRefs_.end()));
     if (iter != LocalLeaderRefs_.end()) {
         auto queueInfo = iter->second;
-        queueInfo->DecLocalLeaderRef(reason);
+        LocalLeaderManager->DecLocalLeaderRef(queueInfo, reason);
         LocalLeaderRefs_.erase(iter);
     } else {
         LWPROBE(DecLeaderRefNotInRefSet, referer.ToString());
@@ -1378,6 +1534,15 @@ void TSqsService::AnswerNoQueueToRequests(const TUserInfoPtr& user, TMultimap& m
 }
 
 template <class TMultimap>
+void TSqsService::AnswerThrottledToRequests(TMultimap& map) {
+    for (auto& queueToRequest : map) {
+        auto& req = queueToRequest.second;
+        AnswerThrottled(req);
+    }
+    map.clear();
+}
+
+template <class TMultimap>
 void TSqsService::AnswerErrorToRequests(const TUserInfoPtr& user, TMultimap& map) {
     for (auto& queueToRequest : map) {
         auto& req = queueToRequest.second;
@@ -1398,7 +1563,7 @@ void TSqsService::MakeAndRegisterYcEventsProcessor() {
     auto root = YcSearchEventsConfig.TenantMode ? TString() : Cfg().GetRoot();
 
     auto factory = AppData()->SqsEventsWriterFactory;
-    Y_VERIFY(factory);
+    Y_ABORT_UNLESS(factory);
     Register(new TSearchEventsProcessor(
             root, YcSearchEventsConfig.ReindexInterval, YcSearchEventsConfig.RescanInterval,
             YcSearchEventsConfig.Database,

@@ -71,7 +71,7 @@ public:
     {
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = FastConnectRetryPolicy();
-        auto tid = MakeBSControllerID(Domain->DefaultStateStorageGroup);
+        auto tid = MakeBSControllerID();
         auto pipe = NTabletPipe::CreateClient(ctx.SelfID, tid, pipeConfig);
         BSControllerPipe = ctx.ExecutorThread.RegisterActor(pipe);
     }
@@ -98,7 +98,7 @@ public:
         else if (Action == ALLOCATE)
             AllocatePool(ctx);
         else {
-            Y_VERIFY(Action == DEALLOCATE);
+            Y_ABORT_UNLESS(Action == DEALLOCATE);
             DeletePool(ctx);
         }
     }
@@ -207,7 +207,7 @@ public:
         if (Action == ALLOCATE)
             Become(&TThis::StateAllocate);
         else {
-            Y_VERIFY(Action == DEALLOCATE);
+            Y_ABORT_UNLESS(Action == DEALLOCATE);
             Become(&TThis::StateDelete);
         }
         DoWork(ctx);
@@ -323,7 +323,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -336,7 +336,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -349,7 +349,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -362,7 +362,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -440,7 +440,7 @@ public:
         if (IssuesMap.empty()) {
             auto &opts = NKikimrClient::TResponse::descriptor()->FindFieldByNumber(5)->options().
                 GetExtension(NKikimrClient::EnumValueHint);
-            Y_VERIFY(opts.HintsSize());
+            Y_ABORT_UNLESS(opts.HintsSize());
             for (auto &rec : opts.GetHints())
                 IssuesMap[rec.GetValue()] = TStringBuilder() << rec.GetName() << ": " << rec.GetMan();
         }
@@ -451,11 +451,18 @@ public:
         subdomain.SetName(Subdomain.second);
         if (Tenant->IsExternalSubdomain) {
             subdomain.SetExternalSchemeShard(true);
+            subdomain.SetGraphShard(true);
             if (Tenant->IsExternalHive) {
                 subdomain.SetExternalHive(true);
             }
             if (Tenant->IsExternalSysViewProcessor) {
                 subdomain.SetExternalSysViewProcessor(true);
+            }
+            if (Tenant->IsExternalStatisticsAggregator) {
+                subdomain.SetExternalStatisticsAggregator(true);
+            }
+            if (Tenant->IsExternalBackupController) {
+                subdomain.SetExternalBackupController(true);
             }
         }
 
@@ -478,6 +485,12 @@ public:
             }
             if (Tenant->IsExternalSysViewProcessor) {
                 subdomain.SetExternalSysViewProcessor(true);
+            }
+            if (Tenant->IsExternalStatisticsAggregator) {
+                subdomain.SetExternalStatisticsAggregator(true);
+            }
+            if (Tenant->IsExternalBackupController) {
+                subdomain.SetExternalBackupController(true);
             }
         }
         if (tablets) {
@@ -658,7 +671,7 @@ public:
         else if (Action == GET_KEY)
             ReplyAndDie(new TTenantsManager::TEvPrivate::TEvSubdomainKey(Tenant, SchemeshardId, PathId), ctx);
         else {
-            Y_VERIFY(Action == REMOVE);
+            Y_ABORT_UNLESS(Action == REMOVE);
             ReplyAndDie(new TTenantsManager::TEvPrivate::TEvSubdomainRemoved(Tenant), ctx);
         }
     }
@@ -683,7 +696,7 @@ public:
 
     void OpenPipe(const TActorContext &ctx)
     {
-        Y_VERIFY(TabletId);
+        Y_ABORT_UNLESS(TabletId);
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = FastConnectRetryPolicy();
         auto pipe = NTabletPipe::CreateClient(ctx.SelfID, TabletId, pipeConfig);
@@ -705,7 +718,7 @@ public:
 
     void RequestSubdomainKey(const TActorContext &ctx)
     {
-        Y_VERIFY(TabletId);
+        Y_ABORT_UNLESS(TabletId);
         if (!Pipe)
             OpenPipe(ctx);
 
@@ -726,7 +739,7 @@ public:
             Become(&TThis::GetSubdomainKey);
             ReadSubdomainKey(ctx);
         } else {
-            Y_VERIFY(Action == REMOVE);
+            Y_ABORT_UNLESS(Action == REMOVE);
             Become(&TThis::StateSubdomain);
             ReadSubdomainKey(ctx);
         }
@@ -878,7 +891,7 @@ public:
             HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, HandleSubdomain);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -891,7 +904,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -1045,7 +1058,7 @@ void TTenantsManager::TTenantsConfig::Parse(const NKikimrConsole::TTenantsConfig
 {
     TString error;
     bool res = Parse(config, error);
-    Y_VERIFY(res);
+    Y_ABORT_UNLESS(res);
 }
 
 bool TTenantsManager::TTenantsConfig::Parse(const NKikimrConsole::TTenantsConfig &config, TString &error)
@@ -1188,6 +1201,8 @@ TTenantsManager::TTenant::TTenant(const TString &path,
     , IsExternalSubdomain(false)
     , IsExternalHive(false)
     , IsExternalSysViewProcessor(false)
+    , IsExternalStatisticsAggregator(false)
+    , IsExternalBackupController(false)
     , AreResourcesShared(false)
 {
 }
@@ -1395,10 +1410,10 @@ TTenantsManager::TTenant::TPtr TTenantsManager::GetTenant(const TDomainId &domai
 
 void TTenantsManager::AddTenant(TTenant::TPtr tenant)
 {
-    Y_VERIFY(!Tenants.contains(tenant->Path));
+    Y_ABORT_UNLESS(!Tenants.contains(tenant->Path));
     Tenants[tenant->Path] = tenant;
     if (tenant->DomainId) {
-        Y_VERIFY(!TenantIdToName.contains(tenant->DomainId));
+        Y_ABORT_UNLESS(!TenantIdToName.contains(tenant->DomainId));
         TenantIdToName[tenant->DomainId] = tenant->Path;
     }
     SlotStats.AllocateSlots(tenant->Slots);
@@ -1421,7 +1436,7 @@ void TTenantsManager::RemoveTenant(TTenant::TPtr tenant)
 
     if (tenant->SharedDomainId) {
         auto sharedTenant = GetTenant(tenant->SharedDomainId);
-        Y_VERIFY(sharedTenant);
+        Y_ABORT_UNLESS(sharedTenant);
         sharedTenant->HostedTenants.erase(tenant);
     }
 
@@ -1734,7 +1749,7 @@ void TTenantsManager::OpenTenantSlotBrokerPipe(const TActorContext &ctx)
 {
     NTabletPipe::TClientConfig pipeConfig;
     pipeConfig.RetryPolicy = FastConnectRetryPolicy();
-    auto aid = MakeTenantSlotBrokerID(Domain->DefaultStateStorageGroup);
+    auto aid = MakeTenantSlotBrokerID();
     auto pipe = NTabletPipe::CreateClient(ctx.SelfID, aid, pipeConfig);
     TenantSlotBrokerPipe = ctx.ExecutorThread.RegisterActor(pipe);
 }
@@ -1817,7 +1832,7 @@ void TTenantsManager::RequestTenantResources(TTenant::TPtr tenant, const TActorC
 
 void TTenantsManager::RequestTenantSlotsState(TTenant::TPtr tenant, const TActorContext &ctx)
 {
-    Y_VERIFY(tenant->IsRunning() || tenant->IsConfiguring());
+    Y_ABORT_UNLESS(tenant->IsRunning() || tenant->IsConfiguring());
     if (!TenantSlotBrokerPipe)
         OpenTenantSlotBrokerPipe(ctx);
 
@@ -1899,7 +1914,7 @@ void TTenantsManager::FillTenantStatus(TTenant::TPtr tenant, Ydb::Cms::GetDataba
 
     if (tenant->SharedDomainId) {
         auto sharedTenant = GetTenant(tenant->SharedDomainId);
-        Y_VERIFY(sharedTenant);
+        Y_ABORT_UNLESS(sharedTenant);
         status.mutable_serverless_resources()->set_shared_database_path(sharedTenant->Path);
     }
 
@@ -1959,7 +1974,7 @@ void TTenantsManager::FillTenantAllocatedSlots(TTenant::TPtr tenant, Ydb::Cms::G
 void TTenantsManager::CheckSubDomainKey(TTenant::TPtr tenant,
                                         const TActorContext &ctx)
 {
-    Y_VERIFY(tenant->IsRunning() || tenant->IsConfiguring());
+    Y_ABORT_UNLESS(tenant->IsRunning() || tenant->IsConfiguring());
     if (tenant->HasSubDomainKey() || tenant->Worker)
         return;
 
@@ -1969,7 +1984,7 @@ void TTenantsManager::CheckSubDomainKey(TTenant::TPtr tenant,
 
 void TTenantsManager::ConfigureTenantSubDomain(TTenant::TPtr tenant, const TActorContext &ctx)
 {
-    Y_VERIFY(tenant->IsRunning() || tenant->IsConfiguring());
+    Y_ABORT_UNLESS(tenant->IsRunning() || tenant->IsConfiguring());
     if (tenant->SubdomainVersion != tenant->ConfirmedSubdomain
         && !tenant->Worker) {
 
@@ -1980,15 +1995,15 @@ void TTenantsManager::ConfigureTenantSubDomain(TTenant::TPtr tenant, const TActo
 
 void TTenantsManager::CreateTenantSubDomain(TTenant::TPtr tenant, const TActorContext &ctx)
 {
-    Y_VERIFY(tenant->State == TTenant::CREATING_SUBDOMAIN);
-    Y_VERIFY(!tenant->Worker);
+    Y_ABORT_UNLESS(tenant->State == TTenant::CREATING_SUBDOMAIN);
+    Y_ABORT_UNLESS(!tenant->Worker);
     auto *actor = new TSubDomainManip(SelfId(), tenant, TSubDomainManip::CREATE, GetTenant(tenant->SharedDomainId));
     tenant->Worker = ctx.RegisterWithSameMailbox(actor);
 }
 
 void TTenantsManager::DeleteTenantSubDomain(TTenant::TPtr tenant, const TActorContext &ctx)
 {
-    Y_VERIFY(tenant->State == TTenant::REMOVING_SUBDOMAIN);
+    Y_ABORT_UNLESS(tenant->State == TTenant::REMOVING_SUBDOMAIN);
     if (!tenant->Worker) {
         auto *actor = new TSubDomainManip(SelfId(), tenant, TSubDomainManip::REMOVE);
         tenant->Worker = ctx.RegisterWithSameMailbox(actor);
@@ -2021,7 +2036,7 @@ void TTenantsManager::ProcessTenantActions(TTenant::TPtr tenant, const TActorCon
     } else if (tenant->State == TTenant::REMOVING_POOLS) {
         DeleteTenantPools(tenant, ctx);
     } else {
-        Y_FAIL("unexpected tenant state %u", (ui32)tenant->State);
+        Y_ABORT("unexpected tenant state %u", (ui32)tenant->State);
     }
 }
 
@@ -2069,7 +2084,7 @@ TTenantsManager::TTenant::TPtr TTenantsManager::FillOperationStatus(const TStrin
                 issue->set_severity(NYql::TSeverityIds::S_ERROR);
                 issue->set_message(tenant->Issue);
             } else {
-                Y_VERIFY(tenant->IsCreating() || tenant->IsConfiguring());
+                Y_ABORT_UNLESS(tenant->IsCreating() || tenant->IsConfiguring());
                 operation.set_ready(false);
             }
         } else if (RemovedTenants.contains(path)
@@ -2130,7 +2145,7 @@ void TTenantsManager::SendTenantNotifications(TTenant::TPtr tenant,
         else if (action == TTenant::REMOVE)
             Counters.Inc(code, COUNTER_REMOVE_RESPONSES);
         else
-            Y_FAIL("unexpected action value (%" PRIu32 ")", static_cast<ui32>(action));
+            Y_ABORT("unexpected action value (%" PRIu32 ")", static_cast<ui32>(action));
     }
     tenant->Subscribers.clear();
 }
@@ -2265,6 +2280,7 @@ void TTenantsManager::DbAddTenant(TTenant::TPtr tenant,
                 << " isExternalSubDomain=" << tenant->IsExternalSubdomain
                 << " isExternalHive=" << tenant->IsExternalHive
                 << " isExternalSysViewProcessor=" << tenant->IsExternalSysViewProcessor
+                << " isExternalStatisticsAggregator=" << tenant->IsExternalStatisticsAggregator
                 << " areResourcesShared=" << tenant->AreResourcesShared
                 << " sharedDomainId=" << tenant->SharedDomainId);
 
@@ -2286,6 +2302,7 @@ void TTenantsManager::DbAddTenant(TTenant::TPtr tenant,
                 NIceDb::TUpdate<Schema::Tenants::IsExternalSubDomain>(tenant->IsExternalSubdomain),
                 NIceDb::TUpdate<Schema::Tenants::IsExternalHive>(tenant->IsExternalHive),
                 NIceDb::TUpdate<Schema::Tenants::IsExternalSysViewProcessor>(tenant->IsExternalSysViewProcessor),
+                NIceDb::TUpdate<Schema::Tenants::IsExternalStatisticsAggregator>(tenant->IsExternalStatisticsAggregator),
                 NIceDb::TUpdate<Schema::Tenants::AreResourcesShared>(tenant->AreResourcesShared),
                 NIceDb::TUpdate<Schema::Tenants::CreateIdempotencyKey>(tenant->CreateIdempotencyKey));
 
@@ -2297,14 +2314,14 @@ void TTenantsManager::DbAddTenant(TTenant::TPtr tenant,
 
     if (tenant->SchemaOperationQuotas) {
         TString serialized;
-        Y_VERIFY(tenant->SchemaOperationQuotas->SerializeToString(&serialized));
+        Y_ABORT_UNLESS(tenant->SchemaOperationQuotas->SerializeToString(&serialized));
         db.Table<Schema::Tenants>().Key(tenant->Path)
             .Update(NIceDb::TUpdate<Schema::Tenants::SchemaOperationQuotas>(serialized));
     }
 
     if (tenant->DatabaseQuotas) {
         TString serialized;
-        Y_VERIFY(tenant->DatabaseQuotas->SerializeToString(&serialized));
+        Y_ABORT_UNLESS(tenant->DatabaseQuotas->SerializeToString(&serialized));
         db.Table<Schema::Tenants>().Key(tenant->Path)
             .Update(NIceDb::TUpdate<Schema::Tenants::DatabaseQuotas>(serialized));
     }
@@ -2390,6 +2407,7 @@ bool TTenantsManager::DbLoadState(TTransactionContext &txc, const TActorContext 
         bool isExternalSubDomain = tenantRowset.GetValueOrDefault<Schema::Tenants::IsExternalSubDomain>(false);
         bool isExternalHive = tenantRowset.GetValueOrDefault<Schema::Tenants::IsExternalHive>(false);
         bool isExternalSysViewProcessor = tenantRowset.GetValueOrDefault<Schema::Tenants::IsExternalSysViewProcessor>(false);
+        bool isExternalStatisticsAggregator = tenantRowset.GetValueOrDefault<Schema::Tenants::IsExternalStatisticsAggregator>(false);
         const bool areResourcesShared = tenantRowset.GetValueOrDefault<Schema::Tenants::AreResourcesShared>(false);
 
         TTenant::TPtr tenant = new TTenant(path, state, userToken);
@@ -2409,16 +2427,17 @@ bool TTenantsManager::DbLoadState(TTransactionContext &txc, const TActorContext 
         tenant->IsExternalSubdomain = isExternalSubDomain;
         tenant->IsExternalHive = isExternalHive;
         tenant->IsExternalSysViewProcessor = isExternalSysViewProcessor;
+        tenant->IsExternalStatisticsAggregator = isExternalStatisticsAggregator;
         tenant->AreResourcesShared = areResourcesShared;
 
         if (tenantRowset.HaveValue<Schema::Tenants::SchemaOperationQuotas>()) {
             auto& deserialized = tenant->SchemaOperationQuotas.ConstructInPlace();
-            Y_VERIFY(ParseFromStringNoSizeLimit(deserialized, tenantRowset.GetValue<Schema::Tenants::SchemaOperationQuotas>()));
+            Y_ABORT_UNLESS(ParseFromStringNoSizeLimit(deserialized, tenantRowset.GetValue<Schema::Tenants::SchemaOperationQuotas>()));
         }
 
         if (tenantRowset.HaveValue<Schema::Tenants::DatabaseQuotas>()) {
             auto& deserialized = tenant->DatabaseQuotas.ConstructInPlace();
-            Y_VERIFY(ParseFromStringNoSizeLimit(deserialized, tenantRowset.GetValue<Schema::Tenants::DatabaseQuotas>()));
+            Y_ABORT_UNLESS(ParseFromStringNoSizeLimit(deserialized, tenantRowset.GetValue<Schema::Tenants::DatabaseQuotas>()));
         }
 
         if (tenantRowset.HaveValue<Schema::Tenants::CreateIdempotencyKey>()) {
@@ -2443,7 +2462,7 @@ bool TTenantsManager::DbLoadState(TTransactionContext &txc, const TActorContext 
         }
 
         auto sharedTenant = GetTenant(tenant->SharedDomainId);
-        Y_VERIFY(sharedTenant);
+        Y_ABORT_UNLESS(sharedTenant);
         sharedTenant->HostedTenants.emplace(tenant);
     }
 
@@ -2482,7 +2501,7 @@ bool TTenantsManager::DbLoadState(TTransactionContext &txc, const TActorContext 
         pool->State = state;
 
         auto tenant = GetTenant(path);
-        Y_VERIFY_DEBUG(tenant, "loaded pool for unknown tenant %s", path.data());
+        Y_DEBUG_ABORT_UNLESS(tenant, "loaded pool for unknown tenant %s", path.data());
         if (tenant) {
             tenant->StoragePools[kind] = pool;
 
@@ -2507,7 +2526,7 @@ bool TTenantsManager::DbLoadState(TTransactionContext &txc, const TActorContext 
         ui64 count = slotRowset.GetValue<Schema::TenantUnits::Count>();
 
         auto tenant = GetTenant(path);
-        Y_VERIFY_DEBUG(tenant, "loaded units <%s, %s>(%" PRIu64 ") for unknown tenant %s",
+        Y_DEBUG_ABORT_UNLESS(tenant, "loaded units <%s, %s>(%" PRIu64 ") for unknown tenant %s",
                        kind.data(), zone.data(), count, path.data());
         if (tenant) {
             tenant->ComputationalUnits[std::make_pair(kind, zone)] = count;
@@ -2534,7 +2553,7 @@ bool TTenantsManager::DbLoadState(TTransactionContext &txc, const TActorContext 
         TString kind = registeredRowset.GetValue<Schema::RegisteredUnits::Kind>();
 
         auto tenant = GetTenant(path);
-        Y_VERIFY_DEBUG(tenant, "loaded registered unit %s:%" PRIu32 " for unknown tenant %s",
+        Y_DEBUG_ABORT_UNLESS(tenant, "loaded registered unit %s:%" PRIu32 " for unknown tenant %s",
                        host.data(), port, path.data());
         if (tenant) {
             TAllocatedComputationalUnit unit{host, port, kind};
@@ -2882,7 +2901,7 @@ void TTenantsManager::DbUpdateSchemaOperationQuotas(TTenant::TPtr tenant,
                 << " quotas = " << quotas.DebugString());
 
     TString serialized;
-    Y_VERIFY(quotas.SerializeToString(&serialized));
+    Y_ABORT_UNLESS(quotas.SerializeToString(&serialized));
 
     NIceDb::TNiceDb db(txc.DB);
     db.Table<Schema::Tenants>().Key(tenant->Path)
@@ -2899,7 +2918,7 @@ void TTenantsManager::DbUpdateDatabaseQuotas(TTenant::TPtr tenant,
                 << " quotas = " << quotas.DebugString());
 
     TString serialized;
-    Y_VERIFY(quotas.SerializeToString(&serialized));
+    Y_ABORT_UNLESS(quotas.SerializeToString(&serialized));
 
     NIceDb::TNiceDb db(txc.DB);
     db.Table<Schema::Tenants>().Key(tenant->Path)
@@ -3083,7 +3102,7 @@ void TTenantsManager::Handle(TEvConsole::TEvNotifyOperationCompletionRequest::TP
         ctx.Send(ev->Sender, resp.Release(), 0, ev->Cookie);
     } else {
         if (!operation.ready()) {
-            Y_VERIFY(tenant);
+            Y_ABORT_UNLESS(tenant);
             LOG_DEBUG_S(ctx, NKikimrServices::CMS_TENANTS,
                         "Add subscription to " << tenant->Path << " for " << ev->Sender);
             tenant->Subscribers.push_back(ev->Sender);
@@ -3114,7 +3133,7 @@ void TTenantsManager::Handle(TEvPrivate::TEvPoolAllocated::TPtr &ev, const TActo
 {
     auto tenant = ev->Get()->Tenant;
     auto pool = ev->Get()->Pool;
-    Y_VERIFY(pool->State != TStoragePool::ALLOCATED);
+    Y_ABORT_UNLESS(pool->State != TStoragePool::ALLOCATED);
 
     pool->GroupFitErrors = 0;
 
@@ -3179,7 +3198,7 @@ void TTenantsManager::Handle(TEvPrivate::TEvPoolDeleted::TPtr &ev, const TActorC
 {
     auto tenant = ev->Get()->Tenant;
     auto pool = ev->Get()->Pool;
-    Y_VERIFY(pool->Worker == ev->Sender);
+    Y_ABORT_UNLESS(pool->Worker == ev->Sender);
 
     TxProcessor->ProcessTx(CreateTxUpdatePoolState(tenant, pool, ev->Sender,
                                                    TStoragePool::DELETED),
@@ -3216,7 +3235,7 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainFailed::TPtr &ev, const TAc
     tenant->Issue = issue;
 
     if (tenant->IsRemoving()) {
-        Y_VERIFY(tenant->State == TTenant::REMOVING_SUBDOMAIN);
+        Y_ABORT_UNLESS(tenant->State == TTenant::REMOVING_SUBDOMAIN);
 
         LOG_ERROR_S(ctx, NKikimrServices::CMS_TENANTS,
                     "Cannot remove subdomain for tenant " << tenant->Path
@@ -3228,8 +3247,8 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainFailed::TPtr &ev, const TAc
         return;
     }
 
-    Y_VERIFY(tenant == GetTenant(tenant->Path));
-    Y_VERIFY(tenant->State == TTenant::CREATING_SUBDOMAIN
+    Y_ABORT_UNLESS(tenant == GetTenant(tenant->Path));
+    Y_ABORT_UNLESS(tenant->State == TTenant::CREATING_SUBDOMAIN
              || tenant->State == TTenant::CONFIGURING_SUBDOMAIN
              || tenant->State == TTenant::RUNNING);
 
@@ -3259,7 +3278,7 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainFailed::TPtr &ev, const TAc
 void TTenantsManager::Handle(TEvPrivate::TEvSubdomainCreated::TPtr &ev, const TActorContext &ctx)
 {
     auto tenant = ev->Get()->Tenant;
-    Y_VERIFY(tenant == GetTenant(tenant->Path));
+    Y_ABORT_UNLESS(tenant == GetTenant(tenant->Path));
 
     if (tenant->Worker != ev->Sender) {
         LOG_DEBUG_S(ctx, NKikimrServices::CMS_TENANTS,
@@ -3268,7 +3287,7 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainCreated::TPtr &ev, const TA
         return;
     }
 
-    Y_VERIFY(tenant->State == TTenant::CREATING_SUBDOMAIN);
+    Y_ABORT_UNLESS(tenant->State == TTenant::CREATING_SUBDOMAIN);
     TxProcessor->ProcessTx(CreateTxUpdateSubDomainKey(tenant->Path,
                                                       ev->Get()->SchemeShardId,
                                                       ev->Get()->PathId,
@@ -3279,7 +3298,7 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainCreated::TPtr &ev, const TA
 void TTenantsManager::Handle(TEvPrivate::TEvSubdomainKey::TPtr &ev, const TActorContext &ctx)
 {
     auto tenant = ev->Get()->Tenant;
-    Y_VERIFY(tenant == GetTenant(tenant->Path));
+    Y_ABORT_UNLESS(tenant == GetTenant(tenant->Path));
 
     if (tenant->Worker != ev->Sender) {
         LOG_DEBUG_S(ctx, NKikimrServices::CMS_TENANTS,
@@ -3314,8 +3333,8 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainReady::TPtr &ev, const TAct
         return;
     }
 
-    Y_VERIFY(tenant == GetTenant(tenant->Path));
-    Y_VERIFY(tenant->State == TTenant::CONFIGURING_SUBDOMAIN
+    Y_ABORT_UNLESS(tenant == GetTenant(tenant->Path));
+    Y_ABORT_UNLESS(tenant->State == TTenant::CONFIGURING_SUBDOMAIN
              || tenant->State == TTenant::RUNNING);
 
     TxProcessor->ProcessTx(CreateTxUpdateConfirmedSubdomain(tenant->Path,
@@ -3327,9 +3346,9 @@ void TTenantsManager::Handle(TEvPrivate::TEvSubdomainReady::TPtr &ev, const TAct
 void TTenantsManager::Handle(TEvPrivate::TEvSubdomainRemoved::TPtr &ev, const TActorContext &ctx)
 {
     auto tenant = ev->Get()->Tenant;
-    Y_VERIFY(tenant == GetTenant(tenant->Path));
-    Y_VERIFY(tenant->State == TTenant::REMOVING_SUBDOMAIN);
-    Y_VERIFY(tenant->Worker == ev->Sender);
+    Y_ABORT_UNLESS(tenant == GetTenant(tenant->Path));
+    Y_ABORT_UNLESS(tenant->State == TTenant::REMOVING_SUBDOMAIN);
+    Y_ABORT_UNLESS(tenant->Worker == ev->Sender);
 
     TxProcessor->ProcessTx(CreateTxRemoveComputationalUnits(tenant), ctx);
 }

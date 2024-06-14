@@ -1,7 +1,7 @@
 #include "tasks_runner_local.h"
 #include "file_cache.h"
 
-#include <ydb/library/yql/providers/dq/counters/counters.h>
+#include <ydb/library/yql/providers/dq/counters/task_counters.h>
 #include <ydb/library/yql/dq/runtime/dq_input_channel.h>
 #include <ydb/library/yql/dq/runtime/dq_output_channel.h>
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
@@ -15,7 +15,6 @@
 
 #include <library/cpp/yson/node/node.h>
 #include <library/cpp/yson/node/node_io.h>
-#include <library/cpp/svnversion/svnversion.h>
 
 #include <util/system/env.h>
 #include <util/stream/file.h>
@@ -27,27 +26,16 @@ namespace NYql::NTaskRunnerProxy {
 using namespace NKikimr;
 using namespace NDq;
 
-#define ADD_COUNTER(name) \
-    if (stats->name) { \
-        QueryStat.AddCounter(QueryStat.GetCounterName("TaskRunner", labels, #name), stats->name); \
-    }
-
-#define ADD_TIME_COUNTER(name) \
-    if (stats->name) { \
-        QueryStat.AddTimeCounter(QueryStat.GetCounterName("TaskRunner", labels, #name), stats->name); \
-    }
-
 class TLocalInputChannel: public IInputChannel {
 public:
-    TLocalInputChannel(const IDqInputChannel::TPtr& channel, ui64 taskId, ui64 channelId, TCounters* queryStat)
+    TLocalInputChannel(const IDqInputChannel::TPtr& channel, ui64 taskId, ui32 stageId, TTaskCounters* queryStat)
         : TaskId(taskId)
-        , ChannelId(channelId)
+        , StageId(stageId)
         , Channel(channel)
         , QueryStat(*queryStat)
-        , Stats(channelId)
-    { }
+    {}
 
-    void Push(NDqProto::TData&& data) override {
+    void Push(TDqSerializedBatch&& data) override {
         Channel->Push(std::move(data));
     }
 
@@ -63,28 +51,26 @@ public:
 private:
     void UpdateInputChannelStats()
     {
-        QueryStat.AddInputChannelStats(*Channel->GetStats(), Stats, TaskId, ChannelId);
+        QueryStat.AddInputChannelStats(Channel->GetPushStats(), Channel->GetPopStats(), TaskId, StageId);
     }
 
     ui64 TaskId;
-    ui64 ChannelId;
+    ui32 StageId;
     IDqInputChannel::TPtr Channel;
-    TCounters& QueryStat;
-    TDqInputChannelStats Stats;
+    TTaskCounters& QueryStat;
 };
 
 class TLocalOutputChannel : public IOutputChannel {
 public:
-    TLocalOutputChannel(const IDqOutputChannel::TPtr channel, ui64 taskId, ui64 channelId, TCounters* queryStat)
+    TLocalOutputChannel(const IDqOutputChannel::TPtr channel, ui64 taskId, ui32 stageId, TTaskCounters* queryStat)
         : TaskId(taskId)
-        , ChannelId(channelId)
+        , StageId(stageId)
         , Channel(channel)
         , QueryStat(*queryStat)
-        , Stats(channelId)
-    { }
+    {}
 
     [[nodiscard]]
-    NDqProto::TPopResponse Pop(NDqProto::TData& data) override {
+    NDqProto::TPopResponse Pop(TDqSerializedBatch& data) override {
         NDqProto::TPopResponse response;
         response.SetResult(Channel->Pop(data));
         if (Channel->IsFinished()) {
@@ -101,14 +87,13 @@ public:
 private:
     void UpdateOutputChannelStats()
     {
-        QueryStat.AddOutputChannelStats(*Channel->GetStats(), Stats, TaskId, ChannelId);
+        QueryStat.AddOutputChannelStats(Channel->GetPushStats(), Channel->GetPopStats(), TaskId, StageId);
     }
 
     ui64 TaskId;
-    ui64 ChannelId;
+    ui32 StageId;
     IDqOutputChannel::TPtr Channel;
-    TCounters& QueryStat;
-    TDqOutputChannelStats Stats;
+    TTaskCounters& QueryStat;
 };
 
 class TLocalTaskRunner: public ITaskRunner {
@@ -129,9 +114,10 @@ public:
         return Task.GetId();
     }
 
-    NYql::NDqProto::TPrepareResponse Prepare() override {
+    NYql::NDqProto::TPrepareResponse Prepare(const NDq::TDqTaskRunnerMemoryLimits& limits) override {
         NYql::NDqProto::TPrepareResponse ret;
-        Runner->Prepare(Task, DefaultMemoryLimits());
+        TDqTaskRunnerExecutionContextDefault ctx;
+        Runner->Prepare(Task, limits, ctx);
         return ret;
     }
 
@@ -148,15 +134,15 @@ public:
     }
 
     IInputChannel::TPtr GetInputChannel(ui64 channelId) override {
-        return new TLocalInputChannel(Runner->GetInputChannel(channelId), Task.GetId(), channelId, &QueryStat);
+        return new TLocalInputChannel(Runner->GetInputChannel(channelId), Task.GetId(), Task.GetStageId(), &QueryStat);
     }
 
     IOutputChannel::TPtr GetOutputChannel(ui64 channelId) override {
-        return new TLocalOutputChannel(Runner->GetOutputChannel(channelId), Task.GetId(), channelId, &QueryStat);
+        return new TLocalOutputChannel(Runner->GetOutputChannel(channelId), Task.GetId(), Task.GetStageId(), &QueryStat);
     }
 
-    IDqAsyncInputBuffer::TPtr GetSource(ui64 index) override {
-        return Runner->GetSource(index);
+    IDqAsyncInputBuffer* GetSource(ui64 index) override {
+        return Runner->GetSource(index).Get();
     }
 
     IDqAsyncOutputBuffer::TPtr GetSink(ui64 index) override {
@@ -165,6 +151,10 @@ public:
 
     const THashMap<TString,TString>& GetTaskParams() const override {
         return Runner->GetTaskParams();
+    }
+
+    const TVector<TString>& GetReadRanges() const override {
+        return Runner->GetReadRanges();
     }
 
     const THashMap<TString,TString>& GetSecureParams() const override {
@@ -193,23 +183,23 @@ public:
 
 private:
     void UpdateStats() {
-        QueryStat.AddTaskRunnerStats(*Runner->GetStats(), Stats, Task.GetId());
+        QueryStat.AddTaskRunnerStats(*Runner->GetStats(), Task.GetId(), Task.GetStageId());
     }
 
     NDq::TDqTaskSettings Task;
     TIntrusivePtr<IDqTaskRunner> Runner;
-    TCounters QueryStat;
-    TDqTaskRunnerStats Stats;
+    TTaskCounters QueryStat;
 };
 
 /*______________________________________________________________________________________________*/
 
-class TAbstractFactory: public IProxyFactory {
+class TLocalFactory: public IProxyFactory {
 public:
-    TAbstractFactory(const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
+    TLocalFactory(const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
         NKikimr::NMiniKQL::TComputationNodeFactory compFactory,
         TTaskTransformFactory taskTransformFactory,
-        std::shared_ptr<NKikimr::NMiniKQL::TComputationPatternLRUCache> patternCache)
+        std::shared_ptr<NKikimr::NMiniKQL::TComputationPatternLRUCache> patternCache,
+        bool terminateOnError)
         : DeterministicMode(!!GetEnv("YQL_DETERMINISTIC_MODE"))
         , RandomProvider(
             DeterministicMode
@@ -221,6 +211,7 @@ public:
                 : CreateDefaultTimeProvider())
         , FunctionRegistry(functionRegistry)
         , TaskTransformFactory(std::move(taskTransformFactory))
+        , TerminateOnError(terminateOnError)
     {
         ExecutionContext.FuncRegistry = FunctionRegistry;
         ExecutionContext.ComputationFactory = compFactory;
@@ -229,46 +220,34 @@ public:
         ExecutionContext.PatternCache = patternCache;
     }
 
-protected:
-    bool DeterministicMode;
-    TIntrusivePtr<IRandomProvider> RandomProvider;
-    TIntrusivePtr<ITimeProvider> TimeProvider;
-    const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry;
-    TTaskTransformFactory TaskTransformFactory;
-
-    NDq::TDqTaskRunnerContext ExecutionContext;
-};
-
-/*______________________________________________________________________________________________*/
-
-class TLocalFactory: public TAbstractFactory {
-public:
-    TLocalFactory(const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
-        NKikimr::NMiniKQL::TComputationNodeFactory compFactory,
-        TTaskTransformFactory taskTransformFactory,
-        std::shared_ptr<NKikimr::NMiniKQL::TComputationPatternLRUCache> patternCache,
-        bool terminateOnError)
-        : TAbstractFactory(functionRegistry, compFactory, taskTransformFactory, patternCache)
-        , TerminateOnError(terminateOnError)
-    { }
-
-    ITaskRunner::TPtr GetOld(const TDqTaskSettings& task, const TString& traceId) override {
-        return new TLocalTaskRunner(task, Get(task, traceId));
+    ITaskRunner::TPtr GetOld(NKikimr::NMiniKQL::TScopedAlloc& alloc, const TDqTaskSettings& task, const TString& traceId) override {
+        return new TLocalTaskRunner(task, Get(alloc, task, NDqProto::DQ_STATS_MODE_BASIC, traceId));
     }
 
-    TIntrusivePtr<NDq::IDqTaskRunner> Get(const TDqTaskSettings& task, const TString& traceId) override {
+    TIntrusivePtr<NDq::IDqTaskRunner> Get(NKikimr::NMiniKQL::TScopedAlloc& alloc, const TDqTaskSettings& task, NDqProto::EDqStatsMode statsMode, const TString& traceId) override {
         Y_UNUSED(traceId);
         NDq::TDqTaskRunnerSettings settings;
         settings.TerminateOnError = TerminateOnError;
-        settings.CollectBasicStats = true;
-        settings.CollectProfileStats = true;
+        settings.StatsMode = statsMode;
 
         Yql::DqsProto::TTaskMeta taskMeta;
         task.GetMeta().UnpackTo(&taskMeta);
 
         for (const auto& s : taskMeta.GetSettings()) {
-            if ("OptLLVM" == s.GetName())
+            if ("OptLLVM" == s.GetName()) {
                 settings.OptLLVM = s.GetValue();
+            }
+            if ("TaskRunnerStats" == s.GetName()) {
+                if ("Disable" == s.GetValue()) {
+                    settings.StatsMode = NDqProto::DQ_STATS_MODE_NONE;
+                } else if ("Basic" == s.GetValue()) {
+                    settings.StatsMode = NDqProto::DQ_STATS_MODE_BASIC;
+                } else if ("Full" == s.GetValue()) {
+                    settings.StatsMode = NDqProto::DQ_STATS_MODE_FULL;
+                } else if ("Profile" == s.GetValue()) {
+                    settings.StatsMode = NDqProto::DQ_STATS_MODE_PROFILE;
+                }
+            }
         }
         for (const auto& x : taskMeta.GetSecureParams()) {
             settings.SecureParams[x.first] = x.second;
@@ -277,12 +256,22 @@ public:
         for (const auto& x : taskMeta.GetTaskParams()) {
             settings.TaskParams[x.first] = x.second;
         }
+
+        for (const auto& readRange : taskMeta.GetReadRanges()) {
+            settings.ReadRanges.push_back(readRange);
+        }
         auto ctx = ExecutionContext;
         ctx.FuncProvider = TaskTransformFactory(settings.TaskParams, ctx.FuncRegistry);
-        return MakeDqTaskRunner(ctx, settings, { });
+        return MakeDqTaskRunner(alloc, ctx, settings, { });
     }
 
 private:
+    bool DeterministicMode;
+    TIntrusivePtr<IRandomProvider> RandomProvider;
+    TIntrusivePtr<ITimeProvider> TimeProvider;
+    const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry;
+    TTaskTransformFactory TaskTransformFactory;
+    NDq::TDqTaskRunnerContext ExecutionContext;
     const bool TerminateOnError;
 };
 

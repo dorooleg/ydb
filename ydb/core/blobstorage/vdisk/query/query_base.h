@@ -5,6 +5,7 @@
 #include "query_spacetracker.h"
 #include <ydb/core/blobstorage/vdisk/hulldb/hull_ds_all_snap.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_response.h>
+#include <ydb/library/wilson_ids/wilson.h>
 
 namespace NKikimr {
 
@@ -24,6 +25,8 @@ namespace NKikimr {
         TQueryResultSizeTracker ResultSize;
         const TActorId ReplSchedulerId;
 
+        NWilson::TSpan Span;
+
         TLevelIndexQueryBase(
                 std::shared_ptr<TQueryCtx> &queryCtx,
                 const TActorId &parentId,
@@ -31,7 +34,8 @@ namespace NKikimr {
                 TBarriersSnapshot &&barrierSnapshot,
                 TEvBlobStorage::TEvVGet::TPtr &ev,
                 std::unique_ptr<TEvBlobStorage::TEvVGetResult> result,
-                TActorId replSchedulerId)
+                TActorId replSchedulerId,
+                const char* name)
             : QueryCtx(queryCtx)
             , ParentId(parentId)
             , LogoBlobsSnapshot(std::move(logoBlobsSnapshot))
@@ -41,13 +45,17 @@ namespace NKikimr {
             , ShowInternals(Record.GetShowInternals())
             , Result(std::move(result))
             , ReplSchedulerId(replSchedulerId)
+            , Span(TWilson::VDiskTopLevel, std::move(BatcherCtx->OrigEv->TraceId), name)
         {
-            Y_VERIFY_DEBUG(Result);
+            if (Span) {
+                Span.Attribute("event", TEvBlobStorage::TEvVGet::ToString(BatcherCtx->OrigEv->Get()->Record));
+            }
+            Y_DEBUG_ABORT_UNLESS(Result);
         }
 
         ui8 PDiskPriority() const {
             ui8 priority = 0;
-            Y_VERIFY(Record.HasHandleClass());
+            Y_ABORT_UNLESS(Record.HasHandleClass());
             switch (Record.GetHandleClass()) {
                 case NKikimrBlobStorage::EGetHandleClass::AsyncRead:
                     priority = NPriRead::HullOnlineOther;
@@ -60,7 +68,7 @@ namespace NKikimr {
                     priority = NPriRead::HullLow;
                     break;
                 default:
-                    Y_FAIL("Unexpected case");
+                    Y_ABORT("Unexpected case");
             }
             return priority;
         }
@@ -87,21 +95,25 @@ namespace NKikimr {
                         Result->AddResult(NKikimrProto::ERROR, id, &cookie);
                     }
                 }
-                LOG_CRIT(ctx, NKikimrServices::BS_VDISK_GET,
-                        VDISKP(QueryCtx->HullCtx->VCtx->VDiskLogPrefix,
+                auto msg = VDISKP(QueryCtx->HullCtx->VCtx->VDiskLogPrefix,
                             "TEvVGetResult: Result message is too large; size# %" PRIu64 " orig# %s;"
                             " VDISK CAN NOT REPLY ON TEvVGet REQUEST",
-                            ResultSize.GetSize(), BatcherCtx->OrigEv->Get()->ToString().data()));
+                            ResultSize.GetSize(), BatcherCtx->OrigEv->Get()->ToString().data());
+                LOG_CRIT(ctx, NKikimrServices::BS_VDISK_GET, msg);
+
+                Span.EndError(std::move(msg));
             } else {
                 ui64 total = 0;
                 for (const auto& result : Result->Record.GetResult()) {
-                    total += result.GetBuffer().size();
+                    total += Result->GetBlobSize(result);
                     hasNotYet = hasNotYet || result.GetStatus() == NKikimrProto::NOT_YET;
                 }
                 QueryCtx->MonGroup.GetTotalBytes() += total;
                 LOG_DEBUG(ctx, NKikimrServices::BS_VDISK_GET,
                         VDISKP(QueryCtx->HullCtx->VCtx->VDiskLogPrefix,
                             "TEvVGetResult: %s", Result->ToString().data()));
+
+                Span.EndOk();
             }
 
             if (hasNotYet && ReplSchedulerId) {
@@ -109,7 +121,7 @@ namespace NKikimr {
                 ctx.Send(ReplSchedulerId, new TEvBlobStorage::TEvEnrichNotYet(BatcherCtx->OrigEv, std::move(Result)));
             } else {
                 // send reply event to sender
-                SendVDiskResponse(ctx, BatcherCtx->OrigEv->Sender, Result.release(), BatcherCtx->OrigEv->Cookie);
+                SendVDiskResponse(ctx, BatcherCtx->OrigEv->Sender, Result.release(), BatcherCtx->OrigEv->Cookie, QueryCtx->HullCtx->VCtx);
             }
 
             ctx.Send(ParentId, new TEvents::TEvActorDied);

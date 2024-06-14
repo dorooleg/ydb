@@ -1,5 +1,5 @@
 #include "quota_requester.h"
-#include <ydb/core/base/quoter.h>
+#include <ydb/core/quoter/public/quoter.h>
 
 #include <cmath>
 
@@ -50,7 +50,7 @@ void TBaseQuotaRequester::Handle(TEvQuota::TEvClearance::TPtr& ev) {
         ++Stats.OkResponses;
         break;
     default:
-        Y_FAIL("Error result");
+        Y_ABORT("Error result");
     }
 }
 

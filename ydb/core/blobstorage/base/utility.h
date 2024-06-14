@@ -1,7 +1,7 @@
 #pragma once
 
 #include "defs.h"
-#include <library/cpp/actors/helpers/activeactors.h>
+#include <ydb/core/util/activeactors.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/blobstorage.h>
 
@@ -88,7 +88,7 @@ namespace NKikimr {
         }
 
         void DecrementUndertakerCounter(const TActorContext &ctx) {
-            Y_VERIFY_DEBUG(UndertakerCounter > 0);
+            Y_DEBUG_ABORT_UNLESS(UndertakerCounter > 0);
             --UndertakerCounter;
             UndertakerCheckToDie(ctx);
         }

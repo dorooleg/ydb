@@ -1,6 +1,8 @@
 #include "impl.h"
 
 #include <library/cpp/json/json_writer.h>
+#include <google/protobuf/util/json_util.h>
+
 
 namespace NKikimr {
 namespace NBsController {
@@ -833,11 +835,11 @@ void TBlobStorageController::ProcessPostQuery(const NActorsProto::TRemoteHttpInf
                         p.PrintToString(response, &data);
                     } else if (Accept == "application/x-protobuf") {
                         const bool success = response.SerializeToString(&data);
-                        Y_VERIFY(success);
+                        Y_ABORT_UNLESS(success);
                     } else if (Accept == "application/json") {
                         google::protobuf::util::MessageToJsonString(response, &data);
                     } else {
-                        Y_FAIL();
+                        Y_ABORT();
                     }
                     s << data;
 

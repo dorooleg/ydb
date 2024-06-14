@@ -1,12 +1,12 @@
 
 #pragma once
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 #include <ydb/library/yql/minikql/mkql_alloc.h>
 #include <ydb/library/yql/minikql/aligned_page_pool.h>
 
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/log.h>
 
 #include <util/generic/size_literals.h>
 #include <util/system/types.h>
@@ -37,7 +37,7 @@ namespace NYql::NDq {
             , CanAllocateExtraMemory(canAllocateExtraMemory)
             , ActorSystem(actorSystem) {
 
-            Y_VERIFY(MemoryLimits.MemoryQuotaManager->AllocateQuota(MkqlMemoryLimit));
+            Y_ABORT_UNLESS(MemoryLimits.MemoryQuotaManager->AllocateQuota(MkqlMemoryLimit));
             if (MkqlMemoryQuota) {
                 MkqlMemoryQuota->Add(MkqlMemoryLimit);
             }

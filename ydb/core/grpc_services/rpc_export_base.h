@@ -2,6 +2,7 @@
 
 #include <ydb/core/protos/export.pb.h>
 #include <ydb/public/api/protos/ydb_operation.pb.h>
+#include <ydb/public/api/protos/ydb_export.pb.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
 #include <util/string/cast.h>
@@ -23,7 +24,7 @@ struct TExportConv {
             NOperationId::AddOptionalValue(operationId, "kind", "s3");
             break;
         default:
-            Y_VERIFY_DEBUG(false, "Unknown export kind");
+            Y_DEBUG_ABORT("Unknown export kind");
             break;
         }
 
@@ -53,7 +54,7 @@ struct TExportConv {
             Fill<ExportToS3Metadata, ExportToS3Result>(operation, exprt, exprt.GetExportToS3Settings());
             break;
         default:
-            Y_VERIFY_DEBUG(false, "Unknown export kind");
+            Y_DEBUG_ABORT("Unknown export kind");
             break;
         }
 

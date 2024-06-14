@@ -21,15 +21,13 @@ namespace NPQ {
             return NKikimrServices::TActivity::PERSQUEUE_CACHE_ACTOR;
         }
 
-        TPQCacheProxy(const TActorId& tablet, TString topicName, ui64 tabletId, ui32 size)
+        TPQCacheProxy(const TActorId& tablet, ui64 tabletId)
         : Tablet(tablet)
-        , TopicName(topicName)
         , TabletId(tabletId)
         , Cookie(0)
-        , Cache(tabletId, size)
+        , Cache(tabletId)
         , CountersUpdateTime(TAppData::TimeProvider->Now())
         {
-            Y_VERIFY(topicName.size(), "CacheProxy with empty topic name");
         }
 
         void Bootstrap(const TActorContext& ctx)
@@ -43,14 +41,14 @@ namespace NPQ {
         {
             ui64 cookie = Cookie++;
             auto savedRequest = KvRequests.insert({cookie, std::move(kvRequest)});
-            Y_VERIFY(savedRequest.second);
+            Y_ABORT_UNLESS(savedRequest.second);
             return cookie;
         }
 
         void SaveInProgress(const TKvRequest& kvRequest)
         {
             for (const TRequestedBlob& reqBlob : kvRequest.Blobs) {
-                TBlobId blob(kvRequest.Partition, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
+                TBlobId blob(kvRequest.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
                 ReadsInProgress.insert(blob);
             }
         }
@@ -58,7 +56,7 @@ namespace NPQ {
         bool CheckInProgress(const TActorContext& ctx, TKvRequest& kvRequest)
         {
             for (const TRequestedBlob& reqBlob : kvRequest.Blobs) {
-                TBlobId blob(kvRequest.Partition, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
+                TBlobId blob(kvRequest.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
                 auto it = ReadsInProgress.find(blob);
                 if (it != ReadsInProgress.end()) {
                     LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Read request is blocked. Partition "
@@ -75,7 +73,7 @@ namespace NPQ {
         {
             TVector<TKvRequest> unblocked;
             for (const TRequestedBlob& reqBlob : blocker.Blobs) {
-                TBlobId blob(blocker.Partition, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
+                TBlobId blob(blocker.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
                 ReadsInProgress.erase(blob);
 
                 auto it = BlockedReads.find(blob);
@@ -92,20 +90,22 @@ namespace NPQ {
 
         void Handle(TEvPQ::TEvChangeCacheConfig::TPtr& ev, const TActorContext& ctx)
         {
-            Y_UNUSED(ev);
+            if (ev->Get()->TopicName) {
+                TopicName = ev->Get()->TopicName;
+            }
             Cache.Touch(ctx);
         }
 
         void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx)
         {
-            Y_VERIFY(ev->Sender == Tablet);
+            Y_ABORT_UNLESS(ev->Sender == Tablet);
             Die(ctx);
         }
 
         void Handle(TEvPQ::TEvBlobRequest::TPtr& ev, const TActorContext& ctx)
         {
-            ui32 partition = ev->Get()->Partition;
-            Cache.SetUserOffset(ctx, ev->Get()->User, partition, ev->Get()->ReadOffset);
+            const TPartitionId& partition = ev->Get()->Partition;
+            Cache.SetUserOffset(ctx, ev->Get()->User, partition.InternalPartitionId, ev->Get()->ReadOffset);
 
             TKvRequest kvReq(TKvRequest::TypeRead, ev->Sender, ev->Get()->Cookie, partition);
             kvReq.Blobs = std::move(ev->Get()->Blobs);
@@ -147,9 +147,9 @@ namespace NPQ {
         void Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx)
         {
             auto resp = ev->Get()->Record;
-            Y_VERIFY(resp.HasCookie());
+            Y_ABORT_UNLESS(resp.HasCookie());
             auto it = KvRequests.find(resp.GetCookie());
-            Y_VERIFY(it != KvRequests.end());
+            Y_ABORT_UNLESS(it != KvRequests.end());
 
             TErrorInfo error;
             if (it->second.Type == TKvRequest::TypeRead) {
@@ -179,7 +179,7 @@ namespace NPQ {
                 error = TErrorInfo(NPersQueue::NErrorCode::ERROR, Sprintf("Got bad response: %s", resp.DebugString().c_str()));
             } else {
 
-                Y_VERIFY(resp.ReadResultSize() && resp.ReadResultSize() + cachedCount == outBlobs.size(),
+                Y_ABORT_UNLESS(resp.ReadResultSize() && resp.ReadResultSize() + cachedCount == outBlobs.size(),
                     "Unexpected KV read result size %" PRIu64 " for cached %" PRIu32 "/%" PRIu64 " blobs, proto %s",
                     resp.ReadResultSize(), cachedCount, outBlobs.size(), ev->Get()->ToString().data());
 
@@ -189,20 +189,20 @@ namespace NPQ {
                     auto r = resp.MutableReadResult(i);
                     LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Got results. result " << i << " from KV. Status " << r->GetStatus());
                     if (r->GetStatus() == NKikimrProto::OVERRUN) { //this blob and next are not readed at all. Return as answer only previous blobs
-                        Y_VERIFY(i > 0, "OVERRUN in first read request");
+                        Y_ABORT_UNLESS(i > 0, "OVERRUN in first read request");
                         break;
                     } else if (r->GetStatus() == NKikimrProto::OK) {
-                        Y_VERIFY(r->HasValue() && r->GetValue().size());
+                        Y_ABORT_UNLESS(r->HasValue() && r->GetValue().size());
 
                         // skip cached blobs, find position for the next value
                         while (pos < outBlobs.size() && outBlobs[pos].Value) {
                             ++pos;
                         }
 
-                        Y_VERIFY(pos < outBlobs.size(), "Got resulting blob with no place for it");
+                        Y_ABORT_UNLESS(pos < outBlobs.size(), "Got resulting blob with no place for it");
                         kvBlobs[pos] = true;
 
-                        Y_VERIFY(outBlobs[pos].Value.empty());
+                        Y_ABORT_UNLESS(outBlobs[pos].Value.empty());
                         outBlobs[pos].Value = r->GetValue();
                     } else {
                         LOG_ERROR_S(ctx, NKikimrServices::PERSQUEUE, "Got Error response " << r->GetStatus()
@@ -234,13 +234,13 @@ namespace NPQ {
         {
             auto resp = ev->Get()->Record;
             if (resp.GetStatus() == NMsgBusProxy::MSTATUS_OK) {
-                Y_VERIFY(resp.WriteResultSize() == (kvReq.Blobs.size() + kvReq.MetadataWritesCount),
+                Y_ABORT_UNLESS(resp.WriteResultSize() == (kvReq.Blobs.size() + kvReq.MetadataWritesCount),
                     "Mismatch write result size: %" PRIu64 " vs expected blobs %" PRIu64 " and metadata %" PRIu32,
                     resp.WriteResultSize(), kvReq.Blobs.size(), kvReq.MetadataWritesCount);
 
                 for (ui32 i = 0; i < resp.WriteResultSize(); ++i) {
                     auto status = resp.GetWriteResult(i).GetStatus();
-                    Y_VERIFY(status == NKikimrProto::OK, "Not OK from KV blob: %s", ev->Get()->ToString().data());
+                    Y_ABORT_UNLESS(status == NKikimrProto::OK, "Not OK from KV blob: %s", ev->Get()->ToString().data());
                 }
 
                 Cache.SaveHeadBlobs(ctx, kvReq);
@@ -263,7 +263,7 @@ namespace NPQ {
 
             auto srcRequest = ev->Get()->Record;
 
-            TKvRequest kvReq(TKvRequest::TypeWrite, ev->Sender, Max<ui64>(), Max<ui32>());
+            TKvRequest kvReq(TKvRequest::TypeWrite, ev->Sender, Max<ui64>(), TPartitionId(Max<ui32>()));
             kvReq.Blobs.reserve(srcRequest.CmdWriteSize());
 
             for (ui32 i = 0; i < srcRequest.CmdWriteSize(); ++i) {
@@ -271,9 +271,9 @@ namespace NPQ {
                 if (cmd.HasKeyToCache()) {
                     TString strKey = cmd.GetKeyToCache();
                     TKey key = TKey(strKey);
-                    Y_VERIFY(!key.IsHead());
+                    Y_ABORT_UNLESS(!key.IsHead());
 
-                    Y_VERIFY(strKey.size() == TKey::KeySize(), "Unexpected key size: %" PRIu64, strKey.size());
+                    Y_ABORT_UNLESS(strKey.size() == TKey::KeySize(), "Unexpected key size: %" PRIu64, strKey.size());
                     TString value = cmd.GetValue();
                     kvReq.Partition = key.GetPartition();
                     TRequestedBlob blob(key.GetOffset(), key.GetPartNo(), key.GetCount(), key.GetInternalPartsCount(), value.size(), value, key);
@@ -297,7 +297,7 @@ namespace NPQ {
         void Handle(TEvPqCache::TEvCacheL2Response::TPtr& ev, const TActorContext& ctx)
         {
             THolder<TCacheL2Response> resp(ev->Get()->Data.Release());
-            Y_VERIFY(resp->TabletId == TabletId);
+            Y_ABORT_UNLESS(resp->TabletId == TabletId);
 
             for (TCacheBlobL2& blob : resp->Removed)
                 Cache.RemoveEvictedBlob(ctx, TBlobId(blob.Partition, blob.Offset, blob.PartNo, 0, 0), blob.Value);
@@ -333,7 +333,7 @@ namespace NPQ {
                                 if (!data)
                                     continue;
                                 TABLER() {
-                                    TABLED() {out << int(c.first.Partition);}
+                                    TABLED() {out << c.first.Partition;}
                                     TABLED() {out << c.first.Offset;}
                                     TABLED() {out << c.first.Count;}
                                     TABLED() {out << data->GetValue().size();}
@@ -345,7 +345,7 @@ namespace NPQ {
                     }
                 }
             }
-            ctx.Send(ev->Sender, new TEvPQ::TEvMonResponse(Max<ui32>(), TVector<TString>(), out.Str()));
+            ctx.Send(ev->Sender, new TEvPQ::TEvMonResponse(TVector<TString>(), out.Str()));
         }
 
         void UpdateCounters(const TActorContext& ctx)

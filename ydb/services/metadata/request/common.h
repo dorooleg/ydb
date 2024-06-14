@@ -1,12 +1,13 @@
 #pragma once
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/actorid.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/actor_virtual.h>
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/actorid.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/actor_virtual.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/library/accessor/accessor.h>
 #include <ydb/public/api/protos/ydb_table.pb.h>
+#include <ydb/public/api/protos/ydb_scheme.pb.h>
 #include <ydb/core/base/events.h>
 
 namespace NKikimr::NMetadata::NRequest {
@@ -15,6 +16,10 @@ enum EEvents {
     EvCreateTableRequest = EventSpaceBegin(TKikimrEvents::ES_INTERNAL_REQUEST),
     EvCreateTableInternalResponse,
     EvCreateTableResponse,
+
+    EvAlterTableRequest,
+    EvAlterTableInternalResponse,
+    EvAlterTableResponse,
 
     EvDropTableRequest,
     EvDropTableInternalResponse,
@@ -35,10 +40,19 @@ enum EEvents {
     EvModifyPermissionsRequest,
     EvModifyPermissionsInternalResponse,
     EvModifyPermissionsResponse,
-    
+
     EvRequestFinished,
     EvRequestFailed,
     EvRequestStart,
+
+    EvCreatePathRequest,
+    EvCreatePathInternalResponse,
+    EvCreatePathResponse,
+
+    EvDeleteSessionRequest,
+    EvDeleteSessionInternalResponse,
+    EvDeleteSessionResponse,
+
     EvEnd
 };
 
@@ -62,11 +76,15 @@ public:
     using TPtr = std::shared_ptr<IExternalController>;
     virtual ~IExternalController() = default;
     virtual void OnRequestResult(typename TDialogPolicy::TResponse&& result) = 0;
-    virtual void OnRequestFailed(const TString& errorMessage) = 0;
+    virtual void OnRequestFailed(Ydb::StatusIds::StatusCode status, const TString& errorMessage) = 0;
 };
 
+using TDialogCreatePath = TDialogPolicyImpl<Ydb::Scheme::MakeDirectoryRequest, Ydb::Scheme::MakeDirectoryResponse,
+    EEvents::EvCreatePathRequest, EEvents::EvCreatePathInternalResponse, EEvents::EvCreatePathResponse>;
 using TDialogCreateTable = TDialogPolicyImpl<Ydb::Table::CreateTableRequest, Ydb::Table::CreateTableResponse,
     EEvents::EvCreateTableRequest, EEvents::EvCreateTableInternalResponse, EEvents::EvCreateTableResponse>;
+using TDialogAlterTable = TDialogPolicyImpl<Ydb::Table::AlterTableRequest, Ydb::Table::AlterTableResponse,
+    EEvents::EvAlterTableRequest, EEvents::EvAlterTableInternalResponse, EEvents::EvAlterTableResponse>;
 using TDialogDropTable = TDialogPolicyImpl<Ydb::Table::DropTableRequest, Ydb::Table::DropTableResponse,
     EEvents::EvDropTableRequest, EEvents::EvDropTableInternalResponse, EEvents::EvDropTableResponse>;
 using TDialogModifyPermissions = TDialogPolicyImpl<Ydb::Scheme::ModifyPermissionsRequest, Ydb::Scheme::ModifyPermissionsResponse,
@@ -75,6 +93,8 @@ using TDialogSelect = TDialogPolicyImpl<Ydb::Table::ExecuteDataQueryRequest, Ydb
     EEvents::EvSelectRequest, EEvents::EvSelectInternalResponse, EEvents::EvSelectResponse>;
 using TDialogCreateSession = TDialogPolicyImpl<Ydb::Table::CreateSessionRequest, Ydb::Table::CreateSessionResponse,
     EEvents::EvCreateSessionRequest, EEvents::EvCreateSessionInternalResponse, EEvents::EvCreateSessionResponse>;
+using TDialogDeleteSession = TDialogPolicyImpl<Ydb::Table::DeleteSessionRequest, Ydb::Table::DeleteSessionResponse,
+    EEvents::EvDeleteSessionRequest, EEvents::EvDeleteSessionInternalResponse, EEvents::EvDeleteSessionResponse>;
 
 template <ui32 evResult = EEvents::EvGeneralYQLResponse>
 using TCustomDialogYQLRequest = TDialogPolicyImpl<Ydb::Table::ExecuteDataQueryRequest, Ydb::Table::ExecuteDataQueryResponse,
@@ -91,6 +111,15 @@ class TOperatorChecker {
 public:
     static bool IsSuccess(const TResponse& r) {
         return r.operation().status() == Ydb::StatusIds::SUCCESS;
+    }
+};
+
+template <>
+class TOperatorChecker<Ydb::Scheme::MakeDirectoryResponse> {
+public:
+    static bool IsSuccess(const Ydb::Scheme::MakeDirectoryResponse& r) {
+        return r.operation().status() == Ydb::StatusIds::SUCCESS ||
+            r.operation().status() == Ydb::StatusIds::ALREADY_EXISTS;
     }
 };
 
@@ -129,11 +158,13 @@ public:
 
 class TEvRequestFailed: public NActors::TEventLocal<TEvRequestFailed, EEvents::EvRequestFailed> {
 private:
+    YDB_READONLY_DEF(Ydb::StatusIds::StatusCode, Status);
     YDB_READONLY_DEF(TString, ErrorMessage)
 public:
-    TEvRequestFailed(const TString& errorMessage)
-        : ErrorMessage(errorMessage) {
-
+    TEvRequestFailed(Ydb::StatusIds::StatusCode status, const TString& errorMessage)
+        : Status(status)
+        , ErrorMessage(errorMessage)
+    {
     }
 };
 

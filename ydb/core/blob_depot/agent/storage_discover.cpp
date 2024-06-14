@@ -58,6 +58,7 @@ namespace NKikimr::NBlobDepot {
             }
 
             void IssueResolve() {
+                STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA49, "IssueResolve", (AgentId, Agent.LogId), (QueryId, GetQueryId()));
                 Agent.Issue(Resolve, this, nullptr);
             }
 
@@ -65,15 +66,19 @@ namespace NKikimr::NBlobDepot {
                 if (std::holds_alternative<TTabletDisconnected>(response)) {
                     return EndWithError(NKikimrProto::ERROR, "BlobDepot tablet disconnected");
                 } else if (auto *p = std::get_if<TEvBlobStorage::TEvGetResult*>(&response)) {
+                    STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA50, "TEvGetResult", (AgentId, Agent.LogId),
+                        (QueryId, GetQueryId()), (Response, *p));
                     TQuery::HandleGetResult(context, **p);
                 } else if (auto *p = std::get_if<TEvBlobDepot::TEvResolveResult*>(&response)) {
+                    STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA51, "TEvResolveResult", (AgentId, Agent.LogId),
+                        (QueryId, GetQueryId()), (Response, (*p)->Record));
                     if (context) {
                         TQuery::HandleResolveResult(std::move(context), **p);
                     } else {
                         HandleResolveResult(id, std::move(context), **p);
                     }
                 } else {
-                    Y_FAIL();
+                    Y_ABORT();
                 }
             }
 
@@ -138,7 +143,7 @@ namespace NKikimr::NBlobDepot {
                         return CheckIfDone();
                     }
                 } else {
-                    Y_FAIL(); // do not expect to return single key in few messages
+                    Y_ABORT(); // do not expect to return single key in few messages
                 }
 
                 if (status == NKikimrProto::OVERRUN) { // there will be extra message with data
@@ -146,31 +151,28 @@ namespace NKikimr::NBlobDepot {
                 }
             }
 
-            void OnRead(ui64 /*tag*/, NKikimrProto::EReplyStatus status, TString dataOrErrorReason) override {
+            void OnRead(ui64 /*tag*/, TReadOutcome&& outcome) override {
                 STLOG(PRI_DEBUG, BLOB_DEPOT_AGENT, BDA20, "OnRead", (AgentId, Agent.LogId),
-                    (QueryId, GetQueryId()), (Status, status));
+                    (QueryId, GetQueryId()), (Outcome, outcome));
 
-                switch (status) {
-                    case NKikimrProto::OK:
-                        Buffer = std::move(dataOrErrorReason);
+                std::visit(TOverloaded{
+                    [&](TReadOutcome::TOk& ok) {
+                        Buffer = ok.Data.ConvertToString();
                         DoneWithData = true;
                         CheckIfDone();
-                        break;
-
-                    case NKikimrProto::NODATA: {
+                    },
+                    [&](TReadOutcome::TNodata& /*nodata*/) {
                         // we are reading blob from the original group and it may be partially written -- it is totally
                         // okay to have some; we need to advance to the next readable blob
                         auto *range = Resolve.MutableItems(0)->MutableKeyRange();
                         range->SetEndingKey(Id.AsBinaryString());
                         range->ClearIncludeEnding();
                         IssueResolve();
-                        break;
+                    },
+                    [&](TReadOutcome::TError& error) {
+                        EndWithError(error.Status, error.ErrorReason);
                     }
-
-                    default:
-                        EndWithError(status, std::move(dataOrErrorReason));
-                        break;
-                }
+                }, outcome.Value);
             }
 
             void CheckIfDone() {

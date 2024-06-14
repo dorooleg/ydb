@@ -6,7 +6,6 @@ items:
   href: auth.md
 - name: Модель данных и схема
   include: { path: datamodel/toc_p.yaml, mode: link }
-- { name: Типы данных,                            href: datatypes.md, hidden: true } # Deprecated
 - { name: Транзакции,                             href: transactions.md }
 - { name: Вторичные индексы,                      href: secondary_indexes.md }
 - { name: Change Data Capture (CDC),              href: cdc.md, when: feature_changefeed }
@@ -14,10 +13,14 @@ items:
 - { name: Скан запросы,                           href: scan_query.md }
 - { name: Ограничения базы данных,                href: limits-ydb.md }
 - { name: Многоверсионное управление конкурентным доступом (MVCC), href: mvcc.md }
+- name: Федеративные запросы
+  include: { path: federated_query/toc_p.yaml, mode: link }
 - name: Кластер YDB
   items:
   - name: Обзор
     href: cluster/index.md
+  - name: Топология
+    href: topology.md
   - name: Общая схема YDB
     href: cluster/common_scheme_ydb.md
   - name: Дисковая подсистема кластера

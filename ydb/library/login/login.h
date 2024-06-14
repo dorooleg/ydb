@@ -23,12 +23,15 @@ public:
     static constexpr size_t HASH_SIZE = 32;
 
     static constexpr const char* GROUPS_CLAIM_NAME = "https://ydb.tech/groups";
+    static constexpr const char* EXTERNAL_AUTH_CLAIM_NAME = "external_authentication";
     static constexpr auto MAX_TOKEN_EXPIRE_TIME = std::chrono::hours(12);
 
     struct TBasicRequest {};
 
     struct TBasicResponse {
         TString Error;
+        TString Warning;
+        TString Notice;
     };
 
     struct TLoginUserRequest : TBasicRequest {
@@ -40,6 +43,7 @@ public:
         TString User;
         TString Password;
         TOptions Options;
+        TString ExternalAuth;
     };
 
     struct TLoginUserResponse : TBasicResponse {
@@ -56,6 +60,7 @@ public:
         TString User;
         std::optional<std::vector<TString>> Groups;
         std::chrono::system_clock::time_point ExpiresAt;
+        TString ExternalAuth;
     };
 
     struct TCreateUserRequest : TBasicRequest {
@@ -70,6 +75,7 @@ public:
 
     struct TRemoveUserRequest : TBasicRequest {
         TString User;
+        bool MissingOk;
     };
 
     struct TRemoveUserResponse : TBasicResponse {
@@ -95,8 +101,23 @@ public:
         TString Member;
     };
 
+    struct TRenameGroupRequest : TBasicRequest {
+        struct TOptions {
+            bool CheckName = true;
+        };
+
+        TString Group;
+        TString NewName;
+        TOptions Options;
+    };
+
+    struct TRenameGroupResponse : TBasicResponse {
+        std::vector<TString> TouchedGroups;
+    };
+
     struct TRemoveGroupRequest : TBasicRequest {
         TString Group;
+        bool MissingOk;
     };
 
     struct TRemoveGroupResponse : TBasicResponse {
@@ -143,10 +164,12 @@ public:
     TBasicResponse CreateUser(const TCreateUserRequest& request);
     TBasicResponse ModifyUser(const TModifyUserRequest& request);
     TRemoveUserResponse RemoveUser(const TRemoveUserRequest& request);
+    bool CheckUserExists(const TString& name);
 
     TBasicResponse CreateGroup(const TCreateGroupRequest& request);
     TBasicResponse AddGroupMembership(const TAddGroupMembershipRequest& request);
     TBasicResponse RemoveGroupMembership(const TRemoveGroupMembershipRequest& request);
+    TRenameGroupResponse RenameGroup(const TRenameGroupRequest& request);
     TRemoveGroupResponse RemoveGroup(const TRemoveGroupRequest& request);
 
     TLoginProvider();
@@ -158,6 +181,7 @@ public:
 
 private:
     std::deque<TKeyRecord>::iterator FindKeyIterator(ui64 keyId);
+    bool CheckSubjectExists(const TString& name, const ESidType::SidType& type);
     static bool CheckAllowedName(const TString& name);
 
     struct TImpl;

@@ -11,25 +11,32 @@ namespace NYdb {
                 ui64 WriteTime;
                 ui64 InflightMessages;
             };
-            typedef THolder<WriterEvent> WriterEventRef;
-
             struct ReaderEvent {
                 ui64 MessageSize;
                 ui64 FullTime;
             };
-            typedef THolder<ReaderEvent> ReaderEventRef;
-
             struct LagEvent {
                 ui64 LagMessages;
                 ui64 LagTime;
             };
-            typedef THolder<LagEvent> LagEventRef;
+            struct SelectEvent {
+                ui64 Time;
+            };
+            struct UpsertEvent {
+                ui64 Time;
+            };
+            struct CommitTxEvent {
+                ui64 Time;
+            };
 
             TTopicWorkloadStats();
 
-            void AddWriterEvent(const WriterEvent& event);
-            void AddReaderEvent(const ReaderEvent& event);
-            void AddLagEvent(const LagEvent& event);
+            void AddEvent(const WriterEvent& event);
+            void AddEvent(const ReaderEvent& event);
+            void AddEvent(const LagEvent& event);
+            void AddEvent(const SelectEvent& event);
+            void AddEvent(const UpsertEvent& event);
+            void AddEvent(const CommitTxEvent& event);
 
             ui64 WriteBytes;
             ui64 WriteMessages;
@@ -40,6 +47,9 @@ namespace NYdb {
             ui64 ReadBytes;
             ui64 ReadMessages;
             NHdr::THistogram FullTimeHist;
+            NHdr::THistogram SelectTimeHist;
+            NHdr::THistogram UpsertTimeHist;
+            NHdr::THistogram CommitTxTimeHist;
 
         private:
             constexpr static ui64 HighestTrackableTime = 100000;

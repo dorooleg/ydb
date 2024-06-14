@@ -13,10 +13,10 @@ virtual void Scenario(const TActorContext &ctx) {
     // check compaction result
     auto check = [] (TEvBlobStorage::TEvVDefragResult::TPtr &ev) {
         const auto &rec = ev->Get()->Record;
-        Y_VERIFY(rec.GetEof());
-        Y_VERIFY(rec.GetFoundChunksToDefrag() == 0);
-        Y_VERIFY(rec.GetRewrittenRecs() == 0);
-        Y_VERIFY(rec.GetRewrittenBytes() == 0);
+        Y_ABORT_UNLESS(rec.GetEof());
+        Y_ABORT_UNLESS(rec.GetFoundChunksToDefrag() == 0);
+        Y_ABORT_UNLESS(rec.GetRewrittenRecs() == 0);
+        Y_ABORT_UNLESS(rec.GetRewrittenBytes() == 0);
     };
 
     TAutoPtr<IActor> defragCmd(CreateDefrag(SyncRunner->NotifyID(), Conf, true, check));
@@ -54,7 +54,7 @@ virtual void Scenario(const TActorContext &ctx) {
 
     // prepare gc command -- it deletes all data from one tablet
     TGCSettings settings;
-    settings.TabletID = 0;
+    settings.TabletID = DefaultTestTabletId;
     settings.RecGen = 1;
     settings.RecGenCounter = 1;
     settings.Channel = 0;
@@ -98,7 +98,7 @@ virtual void Scenario(const TActorContext &ctx) {
     LOG_NOTICE(ctx, NActorsServices::TEST, "  Defrag completed");
 
     // check actually freed chunks
-    UNIT_ASSERT_VALUES_EQUAL(freedChunks, 3);
+    UNIT_ASSERT_VALUES_EQUAL(freedChunks, 4);
 }
 SYNC_TEST_END(TDefrag50PercentGarbage, TSyncTestBase)
 

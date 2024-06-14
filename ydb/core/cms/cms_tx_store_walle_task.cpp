@@ -7,14 +7,14 @@ namespace NKikimr::NCms {
 
 class TCms::TTxStoreWalleTask : public TTransactionBase<TCms> {
 public:
-    TTxStoreWalleTask(TCms *self, const TWalleTaskInfo &task, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp)
+    TTxStoreWalleTask(TCms *self, const TTaskInfo &task, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp)
         : TBase(self)
         , Task(task)
         , Request(std::move(req))
         , Response(std::move(resp))
     {
-        Y_VERIFY(Request);
-        Y_VERIFY(Response);
+        Y_ABORT_UNLESS(Request);
+        Y_ABORT_UNLESS(Response);
     }
 
     TTxType GetTxType() const override { return TXTYPE_STORE_WALLE_TASK; }
@@ -55,12 +55,12 @@ public:
     }
 
 private:
-    TWalleTaskInfo Task;
+    TTaskInfo Task;
     THolder<IEventBase> Request;
     TAutoPtr<IEventHandle> Response;
 };
 
-ITransaction *TCms::CreateTxStoreWalleTask(const TWalleTaskInfo &task, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp) {
+ITransaction *TCms::CreateTxStoreWalleTask(const TTaskInfo &task, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp) {
     return new TTxStoreWalleTask(this, task, std::move(req), std::move(resp));
 }
 

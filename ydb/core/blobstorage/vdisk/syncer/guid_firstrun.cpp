@@ -5,6 +5,7 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_syncneighbors.h>
 #include <ydb/core/blobstorage/vdisk/common/sublog.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
+#include <library/cpp/random_provider/random_provider.h>
 
 using namespace NKikimrServices;
 using namespace NKikimr::NSync;
@@ -111,11 +112,11 @@ namespace NKikimr {
             , Step(step)
             , Guid(guid)
         {
-            Y_VERIFY(IsAction(Step));
+            Y_ABORT_UNLESS(IsAction(Step));
         }
 
         void GenerateGuid() {
-            Y_VERIFY(Step == EFirstRunStep::ACTION_GenerateGuid);
+            Y_ABORT_UNLESS(Step == EFirstRunStep::ACTION_GenerateGuid);
             Guid = TAppData::RandomProvider->GenRand64();
             Step = EFirstRunStep::ACTION_WriteInProgressToQuorum;
         }
@@ -137,13 +138,13 @@ namespace NKikimr {
         }
 
         void RunWriteSelectedLocally() {
-            Y_VERIFY(Step == EFirstRunStep::ACTION_WriteSelectedLocally, "Step# %s",
+            Y_ABORT_UNLESS(Step == EFirstRunStep::ACTION_WriteSelectedLocally, "Step# %s",
                      EFirstRunStepToStr(Step));
             Step = EFirstRunStep::STATE__WaitSelectedWrittenLocally;
         }
 
         void SetResultForWriteSelectedLocally() {
-            Y_VERIFY(Step == EFirstRunStep::STATE__WaitSelectedWrittenLocally, "Step# %s",
+            Y_ABORT_UNLESS(Step == EFirstRunStep::STATE__WaitSelectedWrittenLocally, "Step# %s",
                      EFirstRunStepToStr(Step));
             Step = EFirstRunStep::ACTION_WriteFinalToQuorum;
         }
@@ -164,13 +165,13 @@ namespace NKikimr {
         }
 
         void RunWriteFinalLocally() {
-            Y_VERIFY(Step == EFirstRunStep::ACTION_WriteFinalLocally, "Step# %s",
+            Y_ABORT_UNLESS(Step == EFirstRunStep::ACTION_WriteFinalLocally, "Step# %s",
                      EFirstRunStepToStr(Step));
             Step = EFirstRunStep::STATE__WaitFinalWrittenLocally;
         }
 
         void SetResultForWriteFinalLocally() {
-            Y_VERIFY(Step == EFirstRunStep::STATE__WaitFinalWrittenLocally, "Step# %s",
+            Y_ABORT_UNLESS(Step == EFirstRunStep::STATE__WaitFinalWrittenLocally, "Step# %s",
                      EFirstRunStepToStr(Step));
             Step = EFirstRunStep::STATE__Terminated;
         }
@@ -212,7 +213,7 @@ namespace NKikimr {
                                EFirstRunStep curStep,
                                EFirstRunStep nextStep,
                                ESyncState syncState) {
-            Y_VERIFY(Step == curStep, "Step# %s curStep# %s",
+            Y_ABORT_UNLESS(Step == curStep, "Step# %s curStep# %s",
                      EFirstRunStepToStr(Step), EFirstRunStepToStr(curStep));
             CleareNeighborsAndQuorumTracker();
             for (auto &x : Neighbors) {
@@ -225,9 +226,9 @@ namespace NKikimr {
                        TAliveProxyNotifier abandomProxy,
                        EFirstRunStep curStep,
                        EFirstRunStep nextStep) {
-            Y_VERIFY(Step == curStep, "Step# %s curStep# %s",
+            Y_ABORT_UNLESS(Step == curStep, "Step# %s curStep# %s",
                      EFirstRunStepToStr(Step), EFirstRunStepToStr(curStep));
-            Y_VERIFY(Neighbors[vdisk].VDiskIdShort == vdisk);
+            Y_ABORT_UNLESS(Neighbors[vdisk].VDiskIdShort == vdisk);
 
             // update
             Neighbors[vdisk].Get().Setup();
@@ -298,7 +299,7 @@ namespace NKikimr {
                 case EFirstRunStep::ACTION_WriteFinalLocally:
                     WriteFinalLocally(ctx);
                     break;
-                default: Y_FAIL("Unexpected step: %s", EFirstRunStepToStr(startStep));
+                default: Y_ABORT("Unexpected step: %s", EFirstRunStepToStr(startStep));
             }
         }
 
@@ -352,7 +353,7 @@ namespace NKikimr {
             });
 
             auto abandomProxy = [&ctx] (TVDiskState& x) {
-                Y_VERIFY(!x.GotResponse);
+                Y_ABORT_UNLESS(!x.GotResponse);
                 // cancel proxy
                 ctx.Send(x.ProxyId, new NActors::TEvents::TEvPoisonPill());
             };
@@ -435,7 +436,7 @@ namespace NKikimr {
             });
 
             auto abandomProxy = [&ctx] (TVDiskState& x) {
-                Y_VERIFY(!x.GotResponse);
+                Y_ABORT_UNLESS(!x.GotResponse);
                 // cancel proxy
                 ctx.Send(x.ProxyId, new NActors::TEvents::TEvPoisonPill());
             };
@@ -463,7 +464,7 @@ namespace NKikimr {
 
             FirstRunState.RunWriteFinalLocally();
             auto guid = FirstRunState.GetGuid();
-            Y_VERIFY(guid);
+            Y_ABORT_UNLESS(guid);
             ui64 dbBirthLsn = 0;
             auto msg = TEvSyncerCommit::LocalFinal(guid, dbBirthLsn);
             ctx.Send(CommitterId, msg.release());
@@ -491,7 +492,7 @@ namespace NKikimr {
         ////////////////////////////////////////////////////////////////////////
         void Finish(const TActorContext &ctx) {
             auto guid = FirstRunState.GetGuid();
-            Y_VERIFY(guid);
+            Y_ABORT_UNLESS(guid);
             ctx.Send(NotifyId, new TEvSyncerGuidFirstRunDone(guid));
             LOG_DEBUG(ctx, BS_SYNCER,
                       VDISKP(VCtx->VDiskLogPrefix, "TVDiskGuidFirstRunActor: FINISH"));
@@ -509,7 +510,7 @@ namespace NKikimr {
                     break;
                 case WaitForProxies: {
                     auto abandomProxy = [&ctx] (TVDiskState& x) {
-                        Y_VERIFY(!x.GotResponse);
+                        Y_ABORT_UNLESS(!x.GotResponse);
                         // cancel proxy
                         ctx.Send(x.ProxyId, new NActors::TEvents::TEvPoisonPill());
                     };
@@ -518,7 +519,7 @@ namespace NKikimr {
                 }
                 case WaitForCommitter:
                     break;
-                default: Y_FAIL("Unexpected case");
+                default: Y_ABORT("Unexpected case");
             }
         }
 
@@ -536,7 +537,7 @@ namespace NKikimr {
             GInfo = ev->Get()->NewInfo;
             // reconfigure alive proxies
             auto reconfigureProxy = [&ctx, &ev] (TVDiskState& x) {
-                Y_VERIFY(!x.GotResponse);
+                Y_ABORT_UNLESS(!x.GotResponse);
                 // cancel proxy
                 ctx.Send(x.ProxyId, ev->Get()->Clone());
             };

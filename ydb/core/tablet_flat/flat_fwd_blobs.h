@@ -3,7 +3,6 @@
 #include "flat_fwd_iface.h"
 #include "flat_fwd_page.h"
 #include "flat_fwd_misc.h"
-#include "flat_page_blobs.h"
 #include "flat_part_screen.h"
 #include "flat_part_slice.h"
 
@@ -25,7 +24,7 @@ namespace NFwd {
         {
             Tags.resize(Frames->Stats().Tags.size(), 0);
 
-            Y_VERIFY(Edge.size() == Tags.size(), "Invalid edges vector");
+            Y_ABORT_UNLESS(Edge.size() == Tags.size(), "Invalid edges vector");
         }
 
         ~TBlobs()
@@ -33,9 +32,9 @@ namespace NFwd {
             for (auto &it: Pages) it.Release();
         }
 
-        TResult Handle(IPageLoadingQueue *head, ui32 ref, ui64 lower) noexcept override
+        TResult Get(IPageLoadingQueue *head, ui32 ref, EPage, ui64 lower) noexcept override
         {
-            Y_VERIFY(ref >= Lower, "Cannot handle backward blob reads");
+            Y_ABORT_UNLESS(ref >= Lower, "Cannot handle backward blob reads");
 
             auto again = (std::exchange(Tags.at(FrameTo(ref)), 1) == 0);
 
@@ -55,21 +54,19 @@ namespace NFwd {
             Preload(head, upper);
         }
 
-        void Apply(TArrayRef<NPageCollection::TLoadedPage> loaded) noexcept override
+        void Fill(NPageCollection::TLoadedPage& page, EPage) noexcept override
         {
-            for (auto &one: loaded) {
-                if (!Pages || one.PageId < Pages.front().PageId) {
-                    Y_FAIL("Blobs fwd cache got page below queue");
-                } else if (one.PageId > Pages.back().PageId) {
-                    Y_FAIL("Blobs fwd cache got page above queue");
-                } else if (one.Data.size() > OnFetch) {
-                    Y_FAIL("Blobs fwd cache ahead counters is out of sync");
-                }
-
-                Stat.Saved += one.Data.size();
-                OnFetch -= one.Data.size();
-                OnHold += Lookup(one.PageId).Settle(one);
+            if (!Pages || page.PageId < Pages.front().PageId) {
+                Y_ABORT("Blobs fwd cache got page below queue");
+            } else if (page.PageId > Pages.back().PageId) {
+                Y_ABORT("Blobs fwd cache got page above queue");
+            } else if (page.Data.size() > OnFetch) {
+                Y_ABORT("Blobs fwd cache ahead counters is out of sync");
             }
+
+            Stat.Saved += page.Data.size();
+            OnFetch -= page.Data.size();
+            OnHold += Lookup(page.PageId).Settle(page);
 
             Shrink(false /* do not drop loading pages */);
         }
@@ -101,7 +98,7 @@ namespace NFwd {
             } else {
                 auto it = std::lower_bound(Pages.begin(), end, ref);
 
-                Y_VERIFY(it != end && it->PageId == ref);
+                Y_ABORT_UNLESS(it != end && it->PageId == ref);
 
                 return *it;
             }
@@ -115,7 +112,7 @@ namespace NFwd {
                 return FrameTo(ref, Frames->Relation(ref));
             } else {
                 const auto &page = Lookup(ref);
-                Y_VERIFY(page.Size < Max<ui32>(), "Unexpected huge page");
+                Y_ABORT_UNLESS(page.Size < Max<ui32>(), "Unexpected huge page");
 
                 i16 refer = ref - page.Refer; /* back to relative refer */
 
@@ -138,7 +135,7 @@ namespace NFwd {
             while (Grow != Max<TPageId>() && (Grow < Upper || until())) {
                 const auto next = Propagate(Grow);
 
-                Y_VERIFY(Grow < next, "Unexpected frame upper boundary");
+                Y_ABORT_UNLESS(Grow < next, "Unexpected frame upper boundary");
 
                 Grow = (next < Max<TPageId>() ? Grow : next);
 
@@ -149,9 +146,9 @@ namespace NFwd {
                     if (!Tags.at(page.Tag) || page.Size >= Edge.at(page.Tag) || !Filter.Has(rel.Row)) {
                         /* Page doesn't fits to load criteria   */
                     } else if (page.Fetch == EFetch::None) {
-                        auto size = head->AddToQueue(Grow, ui16(EPage::Opaque));
+                        auto size = head->AddToQueue(Grow, EPage::Opaque);
 
-                        Y_VERIFY(size == page.Size, "Inconsistent page sizez");
+                        Y_ABORT_UNLESS(size == page.Size, "Inconsistent page sizes");
 
                         page.Fetch = EFetch::Wait;
                         Stat.Fetch += page.Size;
@@ -168,7 +165,7 @@ namespace NFwd {
             if (Pages && base <= Pages.back().PageId) {
                 return Lookup(base).Refer;
             } else if (Pages && base != Lower && base - Pages.back().PageId != 1) {
-                Y_FAIL("Cannot do so long jumps around of frames");
+                Y_ABORT("Cannot do so long jumps around of frames");
             } else {
                 const auto end = Frames->Relation(base).AbsRef(base);
 
@@ -193,7 +190,7 @@ namespace NFwd {
                 if (page.PageId >= until) {
                     break;
                 } else if (page.Size == 0) {
-                    Y_FAIL("Dropping page that hasn't been propagated");
+                    Y_ABORT("Dropping page that hasn't been propagated");
                 } else if (auto size = page.Release().size()) {
                     OnHold -= size;
 

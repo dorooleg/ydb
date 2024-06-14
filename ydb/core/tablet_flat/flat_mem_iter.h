@@ -15,15 +15,15 @@
 namespace NKikimr {
 namespace NTable {
 
-    class TMemIt {
+    class TMemIter {
     public:
         using TCells = TArrayRef<const TCell>;
 
-        TMemIt(const TMemTable* memTable,
+        TMemIter(const TMemTable* memTable,
                 TIntrusiveConstPtr<TKeyCellDefaults> keyDefaults,
                 const TRemap* remap,
                 IPages *env,
-                NMem::TTreeIterator iterator)
+                NMem::TTreeIterator&& iterator)
             : MemTable(memTable)
             , KeyCellDefaults(std::move(keyDefaults))
             , Remap(remap)
@@ -32,11 +32,11 @@ namespace NTable {
         {
             Key.reserve(KeyCellDefaults->Size());
 
-            Y_VERIFY(Key.capacity() > 0, "No key cells in part scheme");
-            Y_VERIFY(Remap, "Remap cannot be NULL");
+            Y_ABORT_UNLESS(Key.capacity() > 0, "No key cells in part scheme");
+            Y_ABORT_UNLESS(Remap, "Remap cannot be NULL");
         }
 
-        static TAutoPtr<TMemIt> Make(
+        static TAutoPtr<TMemIter> Make(
                 const TMemTable& memTable,
                 const NMem::TTreeSnapshot& snapshot,
                 TCells key,
@@ -46,7 +46,7 @@ namespace NTable {
                 IPages *env,
                 EDirection direction = EDirection::Forward) noexcept
         {
-            auto *iter = new TMemIt(&memTable, std::move(keyDefaults), remap, env, snapshot.Iterator());
+            auto *iter = new TMemIter(&memTable, std::move(keyDefaults), remap, env, snapshot.Iterator());
 
             switch (direction) {
                 case EDirection::Forward:
@@ -126,7 +126,7 @@ namespace NTable {
 
         TDbTupleRef GetKey() const
         {
-            Y_VERIFY_DEBUG(IsValid());
+            Y_DEBUG_ABORT_UNLESS(IsValid());
 
             const ui32 len = MemTable->Scheme->Keys->Size();
             const auto *key = RowIt.GetKey();
@@ -144,7 +144,7 @@ namespace NTable {
         bool IsDelta() const noexcept
         {
             auto* update = GetCurrentVersion();
-            Y_VERIFY(update);
+            Y_ABORT_UNLESS(update);
 
             return update->RowVersion.Step == Max<ui64>();
         }
@@ -152,19 +152,19 @@ namespace NTable {
         ui64 GetDeltaTxId() const noexcept
         {
             auto* update = GetCurrentVersion();
-            Y_VERIFY(update);
-            Y_VERIFY(update->RowVersion.Step == Max<ui64>());
+            Y_ABORT_UNLESS(update);
+            Y_ABORT_UNLESS(update->RowVersion.Step == Max<ui64>());
 
             return update->RowVersion.TxId;
         }
 
         void ApplyDelta(TRowState& row) const noexcept
         {
-            Y_VERIFY(row.Size() == Remap->Size(), "row state doesn't match the remap index");
+            Y_ABORT_UNLESS(row.Size() == Remap->Size(), "row state doesn't match the remap index");
 
             auto* update = GetCurrentVersion();
-            Y_VERIFY(update);
-            Y_VERIFY(update->RowVersion.Step == Max<ui64>());
+            Y_ABORT_UNLESS(update);
+            Y_ABORT_UNLESS(update->RowVersion.Step == Max<ui64>());
 
             if (row.Touch(update->Rop)) {
                 for (auto& up : **update) {
@@ -176,8 +176,8 @@ namespace NTable {
         bool SkipDelta() noexcept
         {
             auto* update = GetCurrentVersion();
-            Y_VERIFY(update);
-            Y_VERIFY(update->RowVersion.Step == Max<ui64>());
+            Y_ABORT_UNLESS(update);
+            Y_ABORT_UNLESS(update->RowVersion.Step == Max<ui64>());
 
             CurrentVersion = update->Next;
             return bool(CurrentVersion);
@@ -187,10 +187,10 @@ namespace NTable {
                    NTable::ITransactionMapSimplePtr committedTransactions,
                    NTable::ITransactionObserverSimplePtr transactionObserver) const noexcept
         {
-            Y_VERIFY(row.Size() == Remap->Size(), "row state doesn't match the remap index");
+            Y_ABORT_UNLESS(row.Size() == Remap->Size(), "row state doesn't match the remap index");
 
             auto* update = GetCurrentVersion();
-            Y_VERIFY(update);
+            Y_ABORT_UNLESS(update);
 
             for (;;) {
                 const bool isDelta = update->RowVersion.Step == Max<ui64>();
@@ -227,8 +227,8 @@ namespace NTable {
         TRowVersion GetRowVersion() const noexcept
         {
             auto* update = GetCurrentVersion();
-            Y_VERIFY(update);
-            Y_VERIFY(update->RowVersion.Step != Max<ui64>(), "GetRowVersion cannot be called on deltas");
+            Y_ABORT_UNLESS(update);
+            Y_ABORT_UNLESS(update->RowVersion.Step != Max<ui64>(), "GetRowVersion cannot be called on deltas");
             return update->RowVersion;
         }
 
@@ -242,10 +242,10 @@ namespace NTable {
                               NTable::ITransactionMapSimplePtr committedTransactions,
                               NTable::ITransactionObserverSimplePtr transactionObserver) noexcept
         {
-            Y_VERIFY_DEBUG(IsValid(), "Attempt to access an invalid row");
+            Y_DEBUG_ABORT_UNLESS(IsValid(), "Attempt to access an invalid row");
 
             auto* chain = GetCurrentVersion();
-            Y_VERIFY_DEBUG(chain, "Unexpected empty chain");
+            Y_DEBUG_ABORT_UNLESS(chain, "Unexpected empty chain");
 
             // Skip uncommitted deltas
             while (chain->RowVersion.Step == Max<ui64>() && !committedTransactions.Find(chain->RowVersion.TxId)) {
@@ -265,7 +265,7 @@ namespace NTable {
                 transactionObserver.OnSkipCommitted(chain->RowVersion);
             } else {
                 auto* commitVersion = committedTransactions.Find(chain->RowVersion.TxId);
-                Y_VERIFY(commitVersion);
+                Y_ABORT_UNLESS(commitVersion);
                 if (*commitVersion <= rowVersion) {
                     return true;
                 }
@@ -310,10 +310,10 @@ namespace NTable {
                 NTable::ITransactionMapSimplePtr committedTransactions,
                 NTable::ITransactionObserverSimplePtr transactionObserver) noexcept
         {
-            Y_VERIFY_DEBUG(IsValid(), "Attempt to access an invalid row");
+            Y_DEBUG_ABORT_UNLESS(IsValid(), "Attempt to access an invalid row");
 
             auto* chain = GetCurrentVersion();
-            Y_VERIFY_DEBUG(chain, "Unexpected empty chain");
+            Y_DEBUG_ABORT_UNLESS(chain, "Unexpected empty chain");
 
             // Skip uncommitted deltas
             while (chain->RowVersion.Step == Max<ui64>()) {
@@ -339,7 +339,7 @@ namespace NTable {
 
         void Next()
         {
-            Y_VERIFY_DEBUG(IsValid(), "Calling Next on an exhausted iterator");
+            Y_DEBUG_ABORT_UNLESS(IsValid(), "Calling Next on an exhausted iterator");
 
             Key.clear();
             CurrentVersion = nullptr;
@@ -349,7 +349,7 @@ namespace NTable {
 
         void Prev()
         {
-            Y_VERIFY_DEBUG(IsValid(), "Calling Prev on an exhausted iterator");
+            Y_DEBUG_ABORT_UNLESS(IsValid(), "Calling Prev on an exhausted iterator");
 
             Key.clear();
             CurrentVersion = nullptr;
@@ -368,14 +368,14 @@ namespace NTable {
             } else if (op == ELargeObj::Inline) {
                 row.Set(pos, op, up.Value);
             } else if (op != ELargeObj::Extern) {
-                Y_FAIL("Got an unknown ELargeObj reference type");
+                Y_ABORT("Got an unknown ELargeObj reference type");
             } else {
                 const auto ref = up.Value.AsValue<ui64>();
 
                 if (auto blob = Env->Locate(MemTable, ref, up.Tag)) {
                     const auto got = NPage::TLabelWrapper().Read(**blob);
 
-                    Y_VERIFY(got == NPage::ECodec::Plain && got.Version == 0);
+                    Y_ABORT_UNLESS(got == NPage::ECodec::Plain && got.Version == 0);
 
                     row.Set(pos, { ECellOp(op), ELargeObj::Inline }, TCell(*got));
                 } else {
@@ -388,11 +388,11 @@ namespace NTable {
 
         const NMem::TUpdate* GetCurrentVersion() const noexcept
         {
-            Y_VERIFY_DEBUG(IsValid(), "Attempt to access an invalid row");
+            Y_DEBUG_ABORT_UNLESS(IsValid(), "Attempt to access an invalid row");
 
             if (!CurrentVersion) {
                 CurrentVersion = RowIt.GetValue();
-                Y_VERIFY_DEBUG(CurrentVersion, "Unexpected empty chain");
+                Y_DEBUG_ABORT_UNLESS(CurrentVersion, "Unexpected empty chain");
             }
 
             return CurrentVersion;

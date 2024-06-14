@@ -9,22 +9,29 @@ const TSet<TStepOrder> TTransQueue::EMPTY_PLAN;
 
 void TTransQueue::AddTxInFly(TOperation::TPtr op) {
     const ui64 txId = op->GetTxId();
-    const ui64 maxStep = op->GetMaxStep();
     Y_VERIFY_S(!TxsInFly.contains(txId), "Adding duplicate txId " << txId);
     TxsInFly[txId] = op;
     if (Y_LIKELY(!op->GetStep())) {
         ++PlanWaitingTxCount;
-    }
-    if (maxStep != Max<ui64>()) {
-        DeadlineQueue.emplace(std::make_pair(maxStep, txId));
+        const ui64 maxStep = op->GetMaxStep();
+        if (maxStep != Max<ui64>()) {
+            DeadlineQueue.emplace(std::make_pair(maxStep, txId));
+        }
     }
     Self->SetCounter(COUNTER_TX_IN_FLY, TxsInFly.size());
 }
 
-void TTransQueue::RemoveTxInFly(ui64 txId) {
+void TTransQueue::RemoveTxInFly(ui64 txId, std::vector<std::unique_ptr<IEventHandle>> *cleanupReplies) {
     auto it = TxsInFly.find(txId);
     if (it != TxsInFly.end()) {
+        if (cleanupReplies) {
+            Self->GetCleanupReplies(it->second, *cleanupReplies);
+        }
         if (!it->second->GetStep()) {
+            const ui64 maxStep = it->second->GetMaxStep();
+            if (maxStep != Max<ui64>()) {
+                DeadlineQueue.erase(std::make_pair(maxStep, txId));
+            }
             --PlanWaitingTxCount;
         }
         TxsInFly.erase(it);
@@ -38,12 +45,12 @@ bool TTransQueue::Load(NIceDb::TNiceDb& db) {
     using Schema = TDataShard::Schema;
 
     // Load must be idempotent
-    Y_VERIFY(TxsInFly.empty());
-    Y_VERIFY(SchemaOps.empty());
-    Y_VERIFY(PlannedTxs.empty());
-    Y_VERIFY(DeadlineQueue.empty());
-    Y_VERIFY(ProposeDelayers.empty());
-    Y_VERIFY(PlanWaitingTxCount == 0);
+    Y_ABORT_UNLESS(TxsInFly.empty());
+    Y_ABORT_UNLESS(SchemaOps.empty());
+    Y_ABORT_UNLESS(PlannedTxs.empty());
+    Y_ABORT_UNLESS(DeadlineQueue.empty());
+    Y_ABORT_UNLESS(ProposeDelayers.empty());
+    Y_ABORT_UNLESS(PlanWaitingTxCount == 0);
 
     TInstant now = AppData()->TimeProvider->Now();
 
@@ -75,7 +82,9 @@ bool TTransQueue::Load(NIceDb::TNiceDb& db) {
             flags |= TTxFlags::Stored;
 
             TBasicOpInfo info(txId, kind, flags, maxStep, TInstant::FromValue(received), Self->NextTieBreakerIndex++);
-            auto op = MakeIntrusive<TActiveTransaction>(info);
+
+            TOperation::TPtr op = NEvWrite::TConvertor::MakeOperation(kind, info, Self->TabletID());
+
             if (rowset.HaveValue<Schema::TxMain::Source>()) {
                 op->SetTarget(rowset.GetValue<Schema::TxMain::Source>());
             }
@@ -191,9 +200,9 @@ void TTransQueue::ProposeSchemaTx(NIceDb::TNiceDb& db, const TSchemaOperation& o
 
     // Auto-ack previous schema operation
     if (!SchemaOps.empty()) {
-        Y_VERIFY(SchemaOps.begin()->first != op.TxId, "Duplicate Tx %" PRIu64 " wasn't properly handled", op.TxId);
-        Y_VERIFY(SchemaOps.size() == 1, "Cannot have multiple un-Ack-ed previous schema operations");
-        Y_VERIFY(SchemaOps.begin()->second.Done,
+        Y_ABORT_UNLESS(SchemaOps.begin()->first != op.TxId, "Duplicate Tx %" PRIu64 " wasn't properly handled", op.TxId);
+        Y_ABORT_UNLESS(SchemaOps.size() == 1, "Cannot have multiple un-Ack-ed previous schema operations");
+        Y_ABORT_UNLESS(SchemaOps.begin()->second.Done,
             "Previous Tx %" PRIu64 " must be in state when it only waits for Ack", SchemaOps.begin()->first);
         RemoveSchemaOperation(db, SchemaOps.begin()->second.TxId);
     }
@@ -214,7 +223,7 @@ void TTransQueue::ProposeSchemaTx(NIceDb::TNiceDb& db, const TSchemaOperation& o
         NIceDb::TUpdate<Schema::SchemaOperations::Rows>(op.RowsProcessed));
 
     TSchemaOperation * savedOp = &saved.first->second;
-    Y_VERIFY(savedOp->TabletId);
+    Y_ABORT_UNLESS(savedOp->TabletId);
     Self->Pipeline.SetSchemaOp(savedOp);
 
     db.NoMoreReadsForTx();
@@ -253,7 +262,7 @@ void TTransQueue::UpdateTxFlags(NIceDb::TNiceDb& db, ui64 txId, ui64 flags) {
     using Schema = TDataShard::Schema;
 
     auto it = TxsInFly.find(txId);
-    Y_VERIFY(it != TxsInFly.end());
+    Y_ABORT_UNLESS(it != TxsInFly.end());
 
     if (it->second->HasVolatilePrepareFlag()) {
         // We keep volatile transactions in memory and don't store anything
@@ -271,9 +280,9 @@ void TTransQueue::UpdateTxBody(NIceDb::TNiceDb& db, ui64 txId, const TStringBuf&
     using Schema = TDataShard::Schema;
 
     auto it = TxsInFly.find(txId);
-    Y_VERIFY(it != TxsInFly.end());
+    Y_ABORT_UNLESS(it != TxsInFly.end());
 
-    Y_VERIFY(!it->second->HasVolatilePrepareFlag(), "Unexpected UpdateTxBody for a volatile transaction");
+    Y_ABORT_UNLESS(!it->second->HasVolatilePrepareFlag(), "Unexpected UpdateTxBody for a volatile transaction");
 
     db.Table<Schema::TxDetails>().Key(txId, Self->TabletID())
         .Update<Schema::TxDetails::Body>(TString(txBody));
@@ -343,9 +352,9 @@ bool TTransQueue::LoadTxDetails(NIceDb::TNiceDb &db,
     using Schema = TDataShard::Schema;
 
     auto it = TxsInFly.find(txId);
-    Y_VERIFY(it != TxsInFly.end());
+    Y_ABORT_UNLESS(it != TxsInFly.end());
 
-    Y_VERIFY(!it->second->HasVolatilePrepareFlag(), "Unexpected LoadTxDetails for a volatile transaction");
+    Y_ABORT_UNLESS(!it->second->HasVolatilePrepareFlag(), "Unexpected LoadTxDetails for a volatile transaction");
 
     auto detailsRow = db.Table<Schema::TxDetails>().Key(txId, Self->TabletID()).Select();
     auto artifactsRow = db.Table<Schema::TxArtifacts>().Key(txId).Select();
@@ -402,7 +411,7 @@ bool TTransQueue::ClearTxDetails(NIceDb::TNiceDb& db, ui64 txId) {
     if (!txdRowset.IsReady())
         return false;
     while (!txdRowset.EndOfSet()) {
-        Y_VERIFY(txId == txdRowset.GetValue<Schema::TxDetails::TxId>());
+        Y_ABORT_UNLESS(txId == txdRowset.GetValue<Schema::TxDetails::TxId>());
         ui64 origin = txdRowset.GetValue<Schema::TxDetails::Origin>();
         db.Table<Schema::TxDetails>().Key(txId, origin).Delete();
         if (!txdRowset.Next())
@@ -414,7 +423,7 @@ bool TTransQueue::ClearTxDetails(NIceDb::TNiceDb& db, ui64 txId) {
     return true;
 }
 
-bool TTransQueue::CancelPropose(NIceDb::TNiceDb& db, ui64 txId) {
+bool TTransQueue::CancelPropose(NIceDb::TNiceDb& db, ui64 txId, std::vector<std::unique_ptr<IEventHandle>>& replies) {
     using Schema = TDataShard::Schema;
 
     auto it = TxsInFly.find(txId);
@@ -433,7 +442,7 @@ bool TTransQueue::CancelPropose(NIceDb::TNiceDb& db, ui64 txId) {
     }
 
     DeadlineQueue.erase(std::make_pair(maxStep, txId));
-    RemoveTxInFly(txId);
+    RemoveTxInFly(txId, &replies);
     Self->IncCounter(COUNTER_PREPARE_CANCELLED);
     return true;
 }
@@ -442,7 +451,9 @@ bool TTransQueue::CancelPropose(NIceDb::TNiceDb& db, ui64 txId) {
 // The argument outdatedStep specifies the maximum step for which we received
 // all planned transactions.
 // NOTE: DeadlineQueue no longer contains planned transactions.
-ECleanupStatus TTransQueue::CleanupOutdated(NIceDb::TNiceDb& db, ui64 outdatedStep, ui32 batchSize, TVector<ui64>& outdatedTxs) {
+ECleanupStatus TTransQueue::CleanupOutdated(NIceDb::TNiceDb& db, ui64 outdatedStep, ui32 batchSize,
+        TVector<ui64>& outdatedTxs)
+{
     using Schema = TDataShard::Schema;
 
     outdatedTxs.reserve(batchSize);
@@ -481,19 +492,35 @@ ECleanupStatus TTransQueue::CleanupOutdated(NIceDb::TNiceDb& db, ui64 outdatedSt
     for (const auto& pr : erasedDeadlines) {
         DeadlineQueue.erase(pr);
     }
-    for (ui64 txId : outdatedTxs) {
-        RemoveTxInFly(txId);
-    }
+
+    // We don't call RemoveTxInFly to give caller a chance to work with them
+    // Caller is expected to call RemoveTxInFly on all outdated txs
 
     Self->IncCounter(COUNTER_TX_PROGRESS_OUTDATED, outdatedTxs.size());
     return ECleanupStatus::Success;
+}
+
+bool TTransQueue::CleanupVolatile(ui64 txId) {
+    auto it = TxsInFly.find(txId);
+    if (it != TxsInFly.end() && it->second->HasVolatilePrepareFlag() && !it->second->GetStep()) {
+        LOG_TRACE_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD,
+                "Cleaning up volatile tx " << txId << " ahead of time");
+
+        // We don't call RemoveTxInFly to give caller a chance to work with the operation
+        // Caller must call RemoveTxInFly on the transaction
+
+        Self->IncCounter(COUNTER_TX_PROGRESS_OUTDATED, 1);
+        return true;
+    }
+
+    return false;
 }
 
 void TTransQueue::PlanTx(TOperation::TPtr op,
                          ui64 step,
                          NIceDb::TNiceDb &db)
 {
-    Y_VERIFY_DEBUG(TxsInFly.contains(op->GetTxId()) && TxsInFly.at(op->GetTxId()) == op);
+    Y_DEBUG_ABORT_UNLESS(TxsInFly.contains(op->GetTxId()) && TxsInFly.at(op->GetTxId()) == op);
 
     if (Y_LIKELY(!op->GetStep())) {
         op->SetStep(step);

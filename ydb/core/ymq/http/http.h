@@ -9,7 +9,7 @@
 #include <ydb/library/http_proxy/authorization/signature.h>
 #include <ydb/core/ymq/base/counters.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actorsystem.h>
 #include <library/cpp/http/server/http.h>
 
 #include <util/generic/buffer.h>
@@ -133,6 +133,8 @@ private:
 
     bool IsPrivateRequest_ = false; // Has "/private" path prefix
     TInstant StartTime_ = TInstant::Now();
+
+    TString UserSid_;
 };
 
 class TAsyncHttpServer

@@ -39,7 +39,7 @@ namespace NProtobufJson {
         void PrintSingleField(const NProtoBuf::Message& proto,
                               const NProtoBuf::FieldDescriptor& field,
                               IJsonOutput& json,
-                              TStringBuf key = {});
+                              TStringBuf key = {}, bool inProtoMap = false);
 
         void PrintKeyValue(const NProtoBuf::Message& proto,
                            IJsonOutput& json);
@@ -59,6 +59,9 @@ namespace NProtobufJson {
 
         template <class T>
         bool NeedStringifyNumber(T value) const;
+
+        bool TryPrintAny(const NProtoBuf::Message& proto, IJsonOutput& json);
+        void PrintFields(const NProtoBuf::Message& proto, IJsonOutput& json);
 
     protected:
         const TProto2JsonConfig& Config;

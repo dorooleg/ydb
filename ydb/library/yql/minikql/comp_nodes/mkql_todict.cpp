@@ -1,10 +1,10 @@
 #include "mkql_todict.h"
-#include "mkql_llvm_base.h"
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_list_adapter.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
+#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/computation/presort.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
@@ -32,8 +32,8 @@ class THashedMultiMapAccumulator {
     const TKeyTypes& KeyTypes;
     bool IsTuple;
     std::shared_ptr<TValuePacker> Packer;
-    NUdf::IHash::TPtr Hash;
-    NUdf::IEquate::TPtr Equate;
+    const NUdf::IHash* Hash;
+    const NUdf::IEquate* Equate;
 
     TMapType Map;
 
@@ -41,9 +41,9 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedMultiMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
-        : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Map(0, TValueHasher(KeyTypes, isTuple, hash),
-        TValueEqual(KeyTypes, isTuple, equate)), Hash(hash), Equate(equate)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
+        : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Hash(hash), Equate(equate)
+        , Map(0, TValueHasher(KeyTypes, isTuple, hash), TValueEqual(KeyTypes, isTuple, equate))
     {
         Y_UNUSED(compare);
         if (encoded) {
@@ -85,8 +85,8 @@ class THashedMapAccumulator {
     const TKeyTypes& KeyTypes;
     const bool IsTuple;
     std::shared_ptr<TValuePacker> Packer;
-    NUdf::IHash::TPtr Hash;
-    NUdf::IEquate::TPtr Equate;
+    const NUdf::IHash* Hash;
+    const NUdf::IEquate* Equate;
 
     TMapType Map;
 
@@ -94,9 +94,9 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
-        : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Map(0, TValueHasher(KeyTypes, isTuple, hash),
-        TValueEqual(KeyTypes, isTuple, equate)), Hash(hash), Equate(equate)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
+        : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Hash(hash), Equate(equate)
+        , Map(0, TValueHasher(KeyTypes, isTuple, hash), TValueEqual(KeyTypes, isTuple, equate))
     {
         Y_UNUSED(compare);
         if (encoded) {
@@ -139,7 +139,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedSingleFixedMultiMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyTypes(keyTypes), Map(0, TMyHash<T>(), TMyEquals<T>()) {
         Y_UNUSED(keyType);
         Y_UNUSED(payloadType);
@@ -187,7 +187,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedSingleFixedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Map(0, TMyHash<T>(), TMyEquals<T>())
     {
         Y_UNUSED(keyType);
@@ -227,14 +227,14 @@ class THashedSetAccumulator {
     bool IsTuple;
     std::shared_ptr<TValuePacker> Packer;
     TSetType Set;
-    NUdf::IHash::TPtr Hash;
-    NUdf::IEquate::TPtr Equate;
+    const NUdf::IHash* Hash;
+    const NUdf::IEquate* Equate;
 
 public:
     static constexpr bool IsSorted = false;
 
     THashedSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Set(0, TValueHasher(KeyTypes, isTuple, hash),
         TValueEqual(KeyTypes, isTuple, equate)), Hash(hash), Equate(equate)
     {
@@ -277,7 +277,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedSingleFixedSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Set(0, TMyHash<T>(), TMyEquals<T>())
     {
         Y_UNUSED(keyType);
@@ -320,7 +320,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedSingleFixedCompactSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Set(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
     {
         Y_UNUSED(keyType);
@@ -363,7 +363,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedCompactSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Set(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR, TSmallValueHash(), TSmallValueEqual())
         , KeyType(keyType), KeyPacker(std::make_shared<TValuePacker>(true, keyType))
     {
@@ -404,7 +404,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
         , KeyType(keyType), PayloadType(payloadType)
         , KeyPacker(std::make_shared<TValuePacker>(true, keyType))
@@ -444,7 +444,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
         , KeyType(keyType), PayloadType(payloadType)
         , KeyPacker(std::make_shared<TValuePacker>(true, keyType))
@@ -488,7 +488,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedSingleFixedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
         , PayloadType(payloadType), PayloadPacker(std::make_shared<TValuePacker>(false, payloadType))
     {
@@ -534,7 +534,7 @@ public:
     static constexpr bool IsSorted = false;
 
     THashedSingleFixedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
         , PayloadType(payloadType), PayloadPacker(std::make_shared<TValuePacker>(false, payloadType))
     {
@@ -570,8 +570,8 @@ class TSortedSetAccumulator {
     TType* KeyType;
     const TKeyTypes& KeyTypes;
     bool IsTuple;
-    NUdf::ICompare::TPtr Compare;
-    NUdf::IEquate::TPtr Equate;
+    const NUdf::ICompare* Compare;
+    const NUdf::IEquate* Equate;
 
     std::optional<TGenericPresortEncoder> Packer;
     TUnboxedValueVector Items;
@@ -580,7 +580,7 @@ public:
     static constexpr bool IsSorted = true;
 
     TSortedSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Compare(compare), Equate(equate)
     {
         Y_UNUSED(hash);
@@ -622,8 +622,8 @@ class TSortedMapAccumulator<false> {
     TType* KeyType;
     const TKeyTypes& KeyTypes;
     bool IsTuple;
-    NUdf::ICompare::TPtr Compare;
-    NUdf::IEquate::TPtr Equate;
+    const NUdf::ICompare* Compare;
+    const NUdf::IEquate* Equate;
     std::optional<TGenericPresortEncoder> Packer;
 
     TKeyPayloadPairVector Items;
@@ -632,8 +632,13 @@ public:
     static constexpr bool IsSorted = true;
 
     TSortedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
-        : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Compare(compare), Equate(equate)
+    const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
+        : Ctx(ctx)
+        , KeyType(keyType)
+        , KeyTypes(keyTypes)
+        , IsTuple(isTuple)
+        , Compare(compare)
+        , Equate(equate)
     {
         Y_UNUSED(hash);
         if (encoded) {
@@ -670,8 +675,8 @@ class TSortedMapAccumulator<true> {
     TType* KeyType;
     const TKeyTypes& KeyTypes;
     bool IsTuple;
-    NUdf::ICompare::TPtr Compare;
-    NUdf::IEquate::TPtr Equate;
+    const NUdf::ICompare* Compare;
+    const NUdf::IEquate* Equate;
     std::optional<TGenericPresortEncoder> Packer;
     TKeyPayloadPairVector Items;
 
@@ -679,7 +684,7 @@ public:
     static constexpr bool IsSorted = true;
 
     TSortedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
-        NUdf::ICompare::TPtr compare, NUdf::IEquate::TPtr equate, NUdf::IHash::TPtr hash, TComputationContext& ctx, ui64 itemsCountHint)
+        const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Compare(compare), Equate(equate)
     {
         Y_UNUSED(hash);
@@ -794,15 +799,16 @@ public:
         , ItemsCountHint(itemsCountHint)
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
+
+        Compare = UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
+        Hash = UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
         if constexpr (IsStream) {
             return ctx.HolderFactory.Create<TStreamValue>(List->GetValue(ctx), Item, Key,
-                TSetAccumulator(KeyType, KeyTypes, IsTuple, Encoded,
-                    UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-                    UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-                    UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
+                TSetAccumulator(KeyType, KeyTypes, IsTuple, Encoded, Compare.Get(), Equate.Get(), Hash.Get(),
                     ctx, ItemsCountHint), ctx);
         }
 
@@ -812,13 +818,10 @@ public:
             if (const auto size = list.GetListLength())
                 itemsCountHint = size;
             else
-                return ctx.HolderFactory.GetEmptyContainer();
+                return ctx.HolderFactory.GetEmptyContainerLazy();
         }
 
-        TSetAccumulator accumulator(KeyType, KeyTypes, IsTuple, Encoded,
-            UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-            UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-            UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
+        TSetAccumulator accumulator(KeyType, KeyTypes, IsTuple, Encoded, Compare.Get(), Equate.Get(), Hash.Get(),
             ctx, itemsCountHint);
 
         TThresher<false>::DoForEachItem(list,
@@ -847,6 +850,10 @@ private:
     bool IsTuple;
     bool Encoded;
     bool UseIHash;
+
+    NUdf::ICompare::TPtr Compare;
+    NUdf::IEquate::TPtr Equate;
+    NUdf::IHash::TPtr Hash;
 };
 
 #ifndef MKQL_DISABLE_CODEGEN
@@ -882,7 +889,6 @@ public:
     class TState : public TComputationValue<TState> {
         using TBase = TComputationValue<TState>;
     public:
-        using TLLVMBase = TLLVMFieldsStructure<TBase>;
         TState(TMemoryUsageInfo* memInfo, TSetAccumulator&& setAccum)
             : TBase(memInfo), SetAccum(std::move(setAccum)) {}
 
@@ -908,6 +914,10 @@ public:
         , ItemsCountHint(itemsCountHint)
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
+
+        Compare = UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
+        Hash = UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -933,15 +943,14 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItemArg, "Item must be codegenerator node.");
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
-        TLLVMFieldsStructureStateWithAccum<typename TState::TLLVMBase> fieldsStruct(context);
+        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
         const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
 
         const auto statePtrType = PointerType::getUnqual(stateType);
@@ -1005,7 +1014,7 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
             const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
@@ -1031,10 +1040,7 @@ public:
 private:
     void MakeState(TComputationContext& ctx, NUdf::TUnboxedValue& state) const {
         state = ctx.HolderFactory.Create<TState>(TSetAccumulator(KeyType, KeyTypes, IsTuple, Encoded,
-            UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-            UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-            UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
-            ctx, ItemsCountHint));
+            Compare.Get(), Equate.Get(), Hash.Get(), ctx, ItemsCountHint));
     }
 
     void RegisterDependencies() const final {
@@ -1053,6 +1059,10 @@ private:
     bool IsTuple;
     bool Encoded;
     bool UseIHash;
+
+    NUdf::ICompare::TPtr Compare;
+    NUdf::IEquate::TPtr Equate;
+    NUdf::IHash::TPtr Hash;
 };
 
 template <typename TSetAccumulator>
@@ -1062,7 +1072,6 @@ public:
     class TState : public TComputationValue<TState> {
         using TBase = TComputationValue<TState>;
     public:
-        using TLLVMBase = TLLVMFieldsStructure<TBase>;
         TState(TMemoryUsageInfo* memInfo, TSetAccumulator&& setAccum)
             : TBase(memInfo), SetAccum(std::move(setAccum)) {}
 
@@ -1086,10 +1095,14 @@ public:
         , Items(std::move(items))
         , Key(key)
         , ItemsCountHint(itemsCountHint)
-        , PasstroughKey(GetPasstroughtMap({Key}, Items).front())
+        , PasstroughKey(GetPasstroughtMap(TComputationNodePtrVector{Key}, Items).front())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
+
+        Compare = UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
+        Hash = UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -1122,12 +1135,11 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
-        TLLVMFieldsStructureStateWithAccum<typename TState::TLLVMBase> fieldsStruct(context);
+        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
         const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
 
         const auto statePtrType = PointerType::getUnqual(stateType);
@@ -1197,7 +1209,7 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
             const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
@@ -1223,10 +1235,7 @@ public:
 private:
     void MakeState(TComputationContext& ctx, NUdf::TUnboxedValue& state) const {
         state = ctx.HolderFactory.Create<TState>(TSetAccumulator(KeyType, KeyTypes, IsTuple, Encoded,
-            UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-            UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-            UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
-            ctx, ItemsCountHint));
+            Compare.Get(), Equate.Get(), Hash.Get(), ctx, ItemsCountHint));
     }
 
     void RegisterDependencies() const final {
@@ -1249,6 +1258,10 @@ private:
     const std::optional<size_t> PasstroughKey;
 
     const ui32 WideFieldsIndex;
+
+    NUdf::ICompare::TPtr Compare;
+    NUdf::IEquate::TPtr Equate;
+    NUdf::IHash::TPtr Hash;
 };
 
 template <typename TMapAccumulator, bool IsStream>
@@ -1314,15 +1327,16 @@ public:
         , ItemsCountHint(itemsCountHint)
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
+
+        Compare = UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
+        Hash = UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
         if constexpr (IsStream) {
             return ctx.HolderFactory.Create<TStreamValue>(List->GetValue(ctx), Item, Key, Payload,
-                TMapAccumulator(KeyType, PayloadType, KeyTypes, IsTuple, Encoded,
-                    UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-                    UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-                    UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
+                TMapAccumulator(KeyType, PayloadType, KeyTypes, IsTuple, Encoded, Compare.Get(), Equate.Get(), Hash.Get(),
                     ctx, ItemsCountHint), ctx);
         }
 
@@ -1333,14 +1347,11 @@ public:
             if (const auto size = list.GetListLength())
                 itemsCountHint = size;
             else
-                return ctx.HolderFactory.GetEmptyContainer();
+                return ctx.HolderFactory.GetEmptyContainerLazy();
         }
 
         TMapAccumulator accumulator(KeyType, PayloadType, KeyTypes, IsTuple, Encoded,
-            UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-            UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-            UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
-            ctx, itemsCountHint);
+            Compare.Get(), Equate.Get(), Hash.Get(), ctx, itemsCountHint);
 
         TThresher<false>::DoForEachItem(list,
             [this, &accumulator, &ctx] (NUdf::TUnboxedValue&& item) {
@@ -1371,6 +1382,10 @@ private:
     bool IsTuple;
     bool Encoded;
     bool UseIHash;
+
+    NUdf::ICompare::TPtr Compare;
+    NUdf::IEquate::TPtr Equate;
+    NUdf::IHash::TPtr Hash;
 };
 
 template <typename TMapAccumulator>
@@ -1380,7 +1395,6 @@ public:
     class TState : public TComputationValue<TState> {
         using TBase = TComputationValue<TState>;
     public:
-        using TLLVMBase = TLLVMFieldsStructure<TBase>;
         TState(TMemoryUsageInfo* memInfo, TMapAccumulator&& mapAccum)
             : TBase(memInfo), MapAccum(std::move(mapAccum)) {}
 
@@ -1409,6 +1423,10 @@ public:
         , ItemsCountHint(itemsCountHint)
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
+
+        Compare = UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
+        Hash = UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -1434,14 +1452,13 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItemArg, "Item must be codegenerator node.");
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        TLLVMFieldsStructureStateWithAccum<typename TState::TLLVMBase> fieldsStruct(context);
+        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
         const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
 
         const auto statePtrType = PointerType::getUnqual(stateType);
@@ -1507,7 +1524,7 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
             const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
@@ -1533,10 +1550,7 @@ public:
 private:
     void MakeState(TComputationContext& ctx, NUdf::TUnboxedValue& state) const {
         state = ctx.HolderFactory.Create<TState>(TMapAccumulator(KeyType, PayloadType, KeyTypes, IsTuple, Encoded,
-            UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-            UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-            UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
-            ctx, ItemsCountHint));
+            Compare.Get(), Equate.Get(), Hash.Get(), ctx, ItemsCountHint));
     }
 
     void RegisterDependencies() const final {
@@ -1558,6 +1572,10 @@ private:
     bool IsTuple;
     bool Encoded;
     bool UseIHash;
+
+    NUdf::ICompare::TPtr Compare;
+    NUdf::IEquate::TPtr Equate;
+    NUdf::IHash::TPtr Hash;
 };
 
 template <typename TMapAccumulator>
@@ -1567,7 +1585,6 @@ public:
     class TState : public TComputationValue<TState> {
         using TBase = TComputationValue<TState>;
     public:
-        using TLLVMBase = TLLVMFieldsStructure<TBase>;
         TState(TMemoryUsageInfo* memInfo, TMapAccumulator&& mapAccum)
             : TBase(memInfo), MapAccum(std::move(mapAccum)) {}
 
@@ -1594,11 +1611,15 @@ public:
         , Key(key)
         , Payload(payload)
         , ItemsCountHint(itemsCountHint)
-        , PasstroughKey(GetPasstroughtMap({Key, Payload}, Items).front())
-        , PasstroughPayload(GetPasstroughtMap({Key, Payload}, Items).back())
+        , PasstroughKey(GetPasstroughtMap(TComputationNodePtrVector{Key}, Items).front())
+        , PasstroughPayload(GetPasstroughtMap(TComputationNodePtrVector{Payload}, Items).front())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
+
+        Compare = UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
+        Hash = UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -1631,12 +1652,11 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
-        TLLVMFieldsStructureStateWithAccum<typename TState::TLLVMBase> fieldsStruct(context);
+        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
         const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
 
         const auto statePtrType = PointerType::getUnqual(stateType);
@@ -1708,7 +1728,7 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
             const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
@@ -1734,10 +1754,7 @@ public:
 private:
     void MakeState(TComputationContext& ctx, NUdf::TUnboxedValue& state) const {
         state = ctx.HolderFactory.Create<TState>(TMapAccumulator(KeyType, PayloadType, KeyTypes, IsTuple, Encoded,
-            UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr,
-            UseIHash ? MakeEquateImpl(KeyType) : nullptr,
-            UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr,
-            ctx, ItemsCountHint));
+            Compare.Get(), Equate.Get(), Hash.Get(), ctx, ItemsCountHint));
     }
 
     void RegisterDependencies() const final {
@@ -1747,6 +1764,7 @@ private:
             this->DependsOn(flow, Payload);
         }
     }
+
 
     TType* const KeyType;
     TType* PayloadType;
@@ -1765,6 +1783,10 @@ private:
 
     mutable std::vector<NUdf::TUnboxedValue*> Fields;
     const ui32 WideFieldsIndex;
+
+    NUdf::ICompare::TPtr Compare;
+    NUdf::IEquate::TPtr Equate;
+    NUdf::IHash::TPtr Hash;
 };
 
 template <typename TAccumulator>

@@ -3,9 +3,11 @@
 #include "skeleton_mon_dbmainpage.h"
 #include "skeleton_mon_util.h"
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/core/blobstorage/base/blobstorage_events.h>
+
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/mon.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
 namespace NKikimr {
@@ -103,11 +105,6 @@ namespace NKikimr {
                 Counter++;
             }
 
-            if (bool(Db->Handoff->GetMonActorID())) {
-                ctx.Send(Db->Handoff->GetMonActorID(), new NMon::TEvHttpInfo(Ev->Get()->Request, TDbMon::HandoffMonId));
-                Counter++;
-            }
-
             if (bool(TActorId(Db->DskSpaceTrackerID))) {
                 ctx.Send(Db->DskSpaceTrackerID, new NMon::TEvHttpInfo(Ev->Get()->Request, TDbMon::DskSpaceTrackerId));
                 Counter++;
@@ -177,9 +174,9 @@ namespace NKikimr {
         }
 
         void Handle(NMon::TEvHttpInfoRes::TPtr &ev, const TActorContext &ctx) {
-            Y_VERIFY_DEBUG(Counter > 0);
+            Y_DEBUG_ABORT_UNLESS(Counter > 0);
             NMon::TEvHttpInfoRes *ptr = dynamic_cast<NMon::TEvHttpInfoRes*>(ev->Get());
-            Y_VERIFY_DEBUG(ptr);
+            Y_DEBUG_ABORT_UNLESS(ptr);
 
             static const std::unordered_map<int, TString TThis::*> names{
                 {TDbMon::SkeletonStateId,          &TThis::SkeletonState},
@@ -198,7 +195,7 @@ namespace NKikimr {
             };
 
             const auto it = names.find(ptr->SubRequestId);
-            Y_VERIFY(it != names.end());
+            Y_ABORT_UNLESS(it != names.end());
             this->*it->second = ptr->Answer;
             --Counter;
             if (Counter == 0) {
@@ -463,7 +460,8 @@ namespace NKikimr {
             this->Become(&TSkeletonFrontMonLogoBlobsQueryActor::StateFunc);
         }
 
-        void OutputOneQueryResultToHtml(IOutputStream &str, const NKikimrBlobStorage::TQueryResult &q) {
+        void OutputOneQueryResultToHtml(IOutputStream &str, const NKikimrBlobStorage::TQueryResult &q,
+                TEvBlobStorage::TEvVGetResult& ev) {
             HTML(str) {
                 DIV_CLASS("well well-small") {
                     const TLogoBlobID id = LogoBlobIDFromLogoBlobID(q.GetBlobID());
@@ -475,7 +473,7 @@ namespace NKikimr {
                     }
                     if (!IndexOnly) {
                         str << "FullDataSize: " << q.GetFullDataSize() << "<br>";
-                        str << "Data: " << q.GetBuffer() << "<br>";
+                        str << "Data: " << EscapeC(ev.GetBlobData(q).ConvertToString()) << "<br>";
                     }
                 }
             }
@@ -515,7 +513,7 @@ namespace NKikimr {
                     DIV_CLASS("row") {
                         for (ui32 i = 0; i < size; i++) {
                             const NKikimrBlobStorage::TQueryResult &q = rec.GetResult(i);
-                            OutputOneQueryResultToHtml(str, q);
+                            OutputOneQueryResultToHtml(str, q, *ev->Get());
                         }
                     }
                 }
@@ -877,7 +875,7 @@ namespace NKikimr {
                     case NKikimrBlobStorage::StatDb:
                         return CreateStatDbMessageOK(dbStatType, pretty);
                     default:
-                        Y_FAIL("Unexpected case");
+                        Y_ABORT("Unexpected case");
                 };
             }
         }
@@ -912,7 +910,7 @@ namespace NKikimr {
                 case NKikimrBlobStorage::StatHugeAction:
                     return CreateStatHugeMessage();
                 default:
-                    Y_FAIL("Unexpected case");
+                    Y_ABORT("Unexpected case");
             }
         }
 
@@ -982,6 +980,49 @@ namespace NKikimr {
         {}
     };
 
+    class TRestartVDiskActor : public TActorBootstrapped<TRestartVDiskActor> {
+        const ui32 PDiskId;
+        const TVDiskID VDiskId;
+        const TActorId WardenId;
+        const TActorId NotifyId;
+        const TActorId Sender;
+
+        friend class TActorBootstrapped<TRestartVDiskActor>;
+
+        void Bootstrap(const TActorContext &ctx) {
+            ctx.Send(WardenId, new TEvBlobStorage::TEvAskRestartVDisk(PDiskId, VDiskId));
+            ctx.Send(NotifyId, new TEvents::TEvActorDied);
+            ctx.Send(Sender, new NMon::TEvHttpInfoRes(MakeReply()));
+            Die(ctx);
+        }
+
+        TString MakeReply() const {
+            TStringStream str;
+            HTML(str) {
+                str << "VDisk restart request has been sent <br>\n"
+                    << "<a class=\"btn btn-default\" href=\"?\">Go back to the main VDisk page</a>";
+            }
+            return str.Str();
+        }
+
+    public:
+        TRestartVDiskActor(
+            const ui32 pDiskId,
+            const TVDiskID &vDiskId,
+            const TActorId &wardenId,
+            const TActorId &notifyId,
+            const TActorId &sender
+        )
+            : TActorBootstrapped<TRestartVDiskActor>()
+            , PDiskId(pDiskId)
+            , VDiskId(vDiskId)
+            , WardenId(wardenId)
+            , NotifyId(notifyId)
+            , Sender(sender)
+        {
+        }
+    };
+
     ////////////////////////////////////////////////////////////////////////////
     // TSkeletonFrontMonMainPageActor
     ////////////////////////////////////////////////////////////////////////////
@@ -1035,8 +1076,8 @@ namespace NKikimr {
 
         void Handle(NMon::TEvHttpInfoRes::TPtr &ev, const TActorContext &ctx) {
             NMon::TEvHttpInfoRes *ptr = dynamic_cast<NMon::TEvHttpInfoRes*>(ev->Get());
-            Y_VERIFY_DEBUG(ptr);
-            Y_VERIFY_DEBUG(ptr->SubRequestId == 0);
+            Y_DEBUG_ABORT_UNLESS(ptr);
+            Y_DEBUG_ABORT_UNLESS(ptr->SubRequestId == 0);
             SkeletonAnswer = ptr->Answer;
             Finish(ctx);
         }
@@ -1063,6 +1104,10 @@ namespace NKikimr {
         {}
     };
 
+    bool IsVDiskRestartAllowed(NKikimrWhiteboard::EVDiskState state) {
+        return state == NKikimrWhiteboard::EVDiskState::PDiskError;
+    }
+
     ////////////////////////////////////////////////////////////////////////////
     // SKELETON FRONT MON REQUEST HANDLER
     ////////////////////////////////////////////////////////////////////////////
@@ -1073,7 +1118,8 @@ namespace NKikimr {
                                                  TIntrusivePtr<TVDiskConfig> cfg,
                                                  const std::shared_ptr<TBlobStorageGroupInfo::TTopology> &top,
                                                  NMon::TEvHttpInfo::TPtr &ev,
-                                                 const TString &frontHtml) {
+                                                 const TString &frontHtml,
+                                                 const NMonGroup::TVDiskStateGroup& vDiskMonGroup) {
         const TCgiParameters& cgi = ev->Get()->Request.GetParams();
 
         const TString &type = cgi.Get("type");
@@ -1103,6 +1149,17 @@ namespace NKikimr {
                     ev, NKikimrBlobStorage::StatHugeAction, dbname);
         } else if (type == "dbmainpage") {
             return CreateMonDbMainPageActor(selfVDiskId, notifyId, skeletonFrontID, skeletonID, ev);
+        } else if (type == "restart") {
+            if (IsVDiskRestartAllowed(vDiskMonGroup.VDiskState())) {
+                return new TRestartVDiskActor(
+                    cfg->BaseInfo.PDiskId, selfVDiskId, MakeBlobStorageNodeWardenID(skeletonFrontID.NodeId()), notifyId, ev->Sender
+                );
+            } else {
+                return new TMonErrorActor(notifyId, ev,
+                    "VDisk restart in the normal state is not allowed <br>\n"
+                    "<a class=\"btn btn-default\" href=\"?\">Go back to the main VDisk page</a>"
+                );
+            }
         } else {
             auto s = Sprintf("Unknown value '%s' for CGI parameter 'type'", type.data());
             return new TMonErrorActor(notifyId, ev, s);

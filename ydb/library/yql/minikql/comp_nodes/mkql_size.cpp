@@ -1,6 +1,7 @@
 #include "mkql_size.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 
@@ -25,6 +26,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* value, BasicBlock*& block) const {
+        Y_UNUSED(ctx);
         const uint64_t init[] = {Size, 0x100000000000000ULL};
         const auto size = ConstantInt::get(value->getType(), APInt(128, 2, init));
         return SelectInst::Create(IsEmpty(value, block), value, size, "size", block);
@@ -53,7 +55,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto data = GetNodeValue(this->Data, ctx, block);
 
@@ -107,8 +109,8 @@ public:
 
             const auto fnType = FunctionType::get(Type::getVoidTy(context), {strptr->getType()}, false);
             const auto name = "DeleteString";
-            ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteString));
-            const auto func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType);
+            ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteString));
+            const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType);
             CallInst::Create(func, {strptr}, "", block);
             result->addIncoming(full, block);
             BranchInst::Create(done, block);

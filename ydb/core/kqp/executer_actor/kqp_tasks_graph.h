@@ -1,10 +1,12 @@
 #pragma once
 
 #include <ydb/core/kqp/common/kqp_resolve.h>
-#include <ydb/core/kqp/expr_nodes/kqp_expr_nodes.h>
+#include <ydb/core/kqp/common/kqp_user_request_context.h>
 #include <ydb/core/kqp/gateway/kqp_gateway.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
+#include <ydb/core/protos/follower_group.pb.h>
+#include <ydb/core/protos/table_service_config.pb.h>
 
 #include <ydb/library/yql/dq/tasks/dq_connection_builder.h>
 #include <ydb/library/yql/dq/tasks/dq_tasks_graph.h>
@@ -33,6 +35,8 @@ struct TStageInfoMeta {
     TTableId TableId;
     TString TablePath;
     ETableKind TableKind;
+    TIntrusiveConstPtr<TTableConstInfo> TableConstInfo;
+    TIntrusiveConstPtr<NKikimr::NSchemeCache::TSchemeCacheNavigate::TColumnTableInfo> ColumnTableInfoPtr;
 
     TVector<bool> SkipNullKeys;
 
@@ -85,19 +89,44 @@ struct TStageInfoMeta {
 
 // things which are common for all tasks in the graph.
 struct TGraphMeta {
-    TKqpTableKeys TableKeys;
     IKqpGateway::TKqpSnapshot Snapshot;
+    TMaybe<ui64> LockTxId;
     std::unordered_map<ui64, TActorId> ResultChannelProxies;
     TActorId ExecuterId;
+    bool UseFollowers = false;
+    bool AllowInconsistentReads = false;
+    TIntrusivePtr<TProtoArenaHolder> Arena;
+    TString Database;
+    NKikimrConfig::TTableServiceConfig::EChannelTransportVersion ChannelTransportVersion;
+    TIntrusivePtr<NKikimr::NKqp::TUserRequestContext> UserRequestContext;
+
+    const TIntrusivePtr<TProtoArenaHolder>& GetArenaIntrusivePtr() const {
+        return Arena;
+    }
+
+    template<typename TMessage>
+    TMessage* Allocate() {
+        return Arena->Allocate<TMessage>();
+    }
 
     void SetSnapshot(ui64 step, ui64 txId) {
         Snapshot = IKqpGateway::TKqpSnapshot(step, txId);
     }
+
+    void SetLockTxId(TMaybe<ui64> lockTxId) {
+        LockTxId = lockTxId;
+    }
 };
 
-struct TTaskInputMeta {};
+struct TTaskInputMeta {
+    // these message are allocated using the protubuf arena.
+    NKikimrTxDataShard::TKqpReadRangesSourceSettings* SourceSettings = nullptr;
+    NKikimrKqp::TKqpStreamLookupSettings* StreamLookupSettings = nullptr;
+    NKikimrKqp::TKqpSequencerSettings* SequencerSettings = nullptr;
+};
 
 struct TTaskOutputMeta {
+    NKikimrKqp::TKqpTableSinkSettings* SinkSettings = nullptr;
     THashMap<ui64, const TKeyDesc::TPartitionInfo*> ShardPartitions;
 };
 
@@ -138,15 +167,26 @@ public:
     ui64 NodeId = 0;  // only in case of scans over persistent snapshots
     bool ScanTask = false;
     TActorId ExecuterId;
+    ui32 Type = Unknown;
 
-    THashMap<TString, TString> DqTaskParams; // Params for sources/sinks
-    THashMap<TString, TString> DqSecureParams;
+    TActorId ResultChannelActorId;
+    THashMap<TString, TString> TaskParams; // Params for sources/sinks
+    TVector<TString> ReadRanges; // Partitioning for sources
+    THashMap<TString, TString> SecureParams;
+
+    enum TTaskType : ui32 {
+        Unknown = 0,
+        Compute = 1,
+        Scan = 2,
+        DataShard = 3,
+    };
 
     struct TColumn {
         ui32 Id = 0;
         NScheme::TTypeInfo Type;
         TString TypeMod;
         TString Name;
+        bool NotNull;
     };
 
     struct TColumnWrite {
@@ -176,6 +216,7 @@ public:
         EReadType ReadType = EReadType::Rows;
         TKqpOlapProgram OlapProgram;
         TVector<NScheme::TTypeInfo> ResultColumnsTypes;
+        std::vector<std::string> GroupByColumnNames;
     };
 
     struct TWriteInfo {
@@ -214,25 +255,28 @@ using TKqpTasksGraph = NYql::NDq::TDqTasksGraph<TGraphMeta, TStageInfoMeta, TTas
 
 void FillKqpTasksGraphStages(TKqpTasksGraph& tasksGraph, const TVector<IKqpGateway::TPhysicalTxData>& txs);
 void BuildKqpTaskGraphResultChannels(TKqpTasksGraph& tasksGraph, const TKqpPhyTxHolder::TConstPtr& tx, ui64 txIdx);
-void BuildKqpStageChannels(TKqpTasksGraph& tasksGraph, const TKqpTableKeys& tableKeys, const TStageInfo& stageInfo,
+void BuildKqpStageChannels(TKqpTasksGraph& tasksGraph, const TStageInfo& stageInfo,
     ui64 txId, bool enableSpilling);
 
-NYql::NDqProto::TDqTask SerializeTaskToProto(const TKqpTasksGraph& tasksGraph, const TTask& task);
+NYql::NDqProto::TDqTask* ArenaSerializeTaskToProto(TKqpTasksGraph& tasksGraph, const TTask& task, bool serializeAsyncIoSettings);
 void FillTableMeta(const TStageInfo& stageInfo, NKikimrTxDataShard::TKqpTransaction_TTableMeta* meta);
-void FillChannelDesc(const TKqpTasksGraph& tasksGraph, NYql::NDqProto::TChannel& channelDesc, const NYql::NDq::TChannel& channel);
+void FillChannelDesc(const TKqpTasksGraph& tasksGraph, NYql::NDqProto::TChannel& channelDesc, const NYql::NDq::TChannel& channel,
+    const NKikimrConfig::TTableServiceConfig::EChannelTransportVersion chanTransportVersion, bool enableSpilling);
 
 template<typename Proto>
-TVector<TTaskMeta::TColumn> BuildKqpColumns(const Proto& op, const TKqpTableKeys::TTable& table) {
+TVector<TTaskMeta::TColumn> BuildKqpColumns(const Proto& op, TIntrusiveConstPtr<TTableConstInfo> tableInfo) {
     TVector<TTaskMeta::TColumn> columns;
     columns.reserve(op.GetColumns().size());
 
     for (const auto& column : op.GetColumns()) {
         TTaskMeta::TColumn c;
-        const auto& tableColumn = table.Columns.at(column.GetName());
+
+        const auto& tableColumn = tableInfo->Columns.at(column.GetName());
         c.Id = column.GetId();
         c.Type = tableColumn.Type;
         c.TypeMod = tableColumn.TypeMod;
         c.Name = column.GetName();
+        c.NotNull = tableColumn.NotNull;
 
         columns.emplace_back(std::move(c));
     }

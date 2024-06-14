@@ -7,12 +7,13 @@
 #include <ydb/core/tablet/tablet_counters.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/table_index.h>
+#include <ydb/core/protos/table_stats.pb.h>
 
 #include <ydb/public/lib/scheme_types/scheme_type_id.h>
 
 #include <ydb/library/yql/minikql/mkql_type_ops.h>
 
-#include <library/cpp/actors/core/actorid.h>
+#include <ydb/library/actors/core/actorid.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/hash_set.h>

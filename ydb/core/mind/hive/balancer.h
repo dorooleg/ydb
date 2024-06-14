@@ -1,15 +1,19 @@
 #pragma once
 
 #include "hive_impl.h"
+#include "leader_tablet_info.h"
 
 namespace NKikimr {
 namespace NHive {
 
 template<NKikimrConfig::THiveConfig::EHiveNodeBalanceStrategy EHiveNodeBalanceStrategy>
-void BalanceNodes(std::vector<TNodeInfo*>& nodes);
+void BalanceNodes(std::vector<TNodeInfo*>& nodes, EResourceToBalance resourceTobalance);
 
 template<NKikimrConfig::THiveConfig::EHiveTabletBalanceStrategy EHiveTabletBalanceStrategy>
-void BalanceTablets(std::vector<TTabletInfo*>& tablets);
+void BalanceTablets(std::vector<TTabletInfo*>& tablets, EResourceToBalance resourceToBalance);
+
+template <NKikimrConfig::THiveConfig::EHiveChannelBalanceStrategy>
+void BalanceChannels(std::vector<TLeaderTabletInfo::TChannel>& channels, NKikimrConfig::THiveConfig::EHiveStorageBalanceStrategy metricToBalance);
 
 }
 }

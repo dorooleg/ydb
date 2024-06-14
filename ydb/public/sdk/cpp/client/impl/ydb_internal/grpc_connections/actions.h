@@ -7,16 +7,16 @@
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/db_driver_state/state.h>
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/plain_status/status.h>
 
-#include <library/cpp/grpc/client/grpc_client_low.h>
+#include <ydb/library/grpc/client/grpc_client_low.h>
 
 #include <util/thread/pool.h>
 
-#include <grpc++/alarm.h>
+#include <grpcpp/alarm.h>
 
 namespace NYdb {
 
-using NGrpc::IQueueClientContext;
-using NGrpc::IQueueClientEvent;
+using NYdbGrpc::IQueueClientContext;
+using NYdbGrpc::IQueueClientEvent;
 
 class TGRpcConnectionsImpl;
 struct TPlainStatus;
@@ -57,7 +57,7 @@ public:
     virtual void OnError() = 0;
 
     void Start() {
-        Y_VERIFY(this->Context_, "Missing shared context");
+        Y_ABORT_UNLESS(this->Context_, "Missing shared context");
         auto context = this->Context_->CreateContext();
         {
             std::lock_guard lock(Mutex_);
@@ -114,11 +114,11 @@ class TGRpcErrorResponse
 {
 public:
     TGRpcErrorResponse(
-            NGrpc::TGrpcStatus&& status,
+            NYdbGrpc::TGrpcStatus&& status,
             TResponseCb<TResponse>&& userCb,
             TGRpcConnectionsImpl* connections,
             std::shared_ptr<IQueueClientContext> context,
-            const TStringType& endpoint)
+            const std::string& endpoint)
         : TGenericCbHolder<TResponseCb<TResponse>>(std::move(userCb), connections, std::move(context))
         , GRpcStatus_(std::move(status))
         , Endpoint_(endpoint)
@@ -138,8 +138,8 @@ public:
     }
 
 private:
-    NGrpc::TGrpcStatus GRpcStatus_;
-    TStringType Endpoint_;
+    NYdbGrpc::TGrpcStatus GRpcStatus_;
+    std::string Endpoint_;
 };
 
 template<typename TResponse>
@@ -150,11 +150,11 @@ class TResult
 public:
     TResult(
             TResponse&& response,
-            NGrpc::TGrpcStatus&& status,
+            NYdbGrpc::TGrpcStatus&& status,
             TResponseCb<TResponse>&& userCb,
             TGRpcConnectionsImpl* connections,
             std::shared_ptr<IQueueClientContext> context,
-            const TStringType& endpoint,
+            const std::string& endpoint,
             std::multimap<TStringType, TStringType>&& metadata)
         : TGenericCbHolder<TResponseCb<TResponse>>(std::move(userCb), connections, std::move(context))
         , Response_(std::move(response))
@@ -169,8 +169,8 @@ public:
 
 private:
     TResponse Response_;
-    NGrpc::TGrpcStatus GRpcStatus_;
-    const TStringType Endpoint_;
+    NYdbGrpc::TGrpcStatus GRpcStatus_;
+    const std::string Endpoint_;
     std::multimap<TStringType, TStringType> Metadata_;
 };
 

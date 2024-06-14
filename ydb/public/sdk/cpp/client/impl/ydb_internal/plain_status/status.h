@@ -8,7 +8,7 @@
 
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
-#include <library/cpp/grpc/client/grpc_client_low.h>
+#include <ydb/library/grpc/client/grpc_client_low.h>
 
 namespace NYdb {
 
@@ -28,7 +28,7 @@ struct TPlainStatus {
         , Issues(std::move(issues))
     { }
 
-    TPlainStatus(EStatus status, NYql::TIssues&& issues, const TStringType& endpoint,
+    TPlainStatus(EStatus status, NYql::TIssues&& issues, const std::string& endpoint,
         std::multimap<TStringType, TStringType>&& metadata)
         : Status(status)
         , Issues(std::move(issues))
@@ -45,7 +45,7 @@ struct TPlainStatus {
     }
 
     TPlainStatus(
-        const NGrpc::TGrpcStatus& grpcStatus, const TStringType& endpoint = TStringType(),
+        const NYdbGrpc::TGrpcStatus& grpcStatus, const std::string& endpoint = std::string(),
         std::multimap<TStringType, TStringType>&& metadata = {});
 
     template<class T>
@@ -63,6 +63,16 @@ struct TPlainStatus {
         auto status = static_cast<size_t>(Status);
         return TRANSPORT_STATUSES_FIRST <= status && status <= TRANSPORT_STATUSES_LAST;
     }
+
+    TStringBuilder ToDebugString() const {
+        TStringBuilder ret;
+        ret << "Status: " << Status;
+        if(!Ok())
+            ret << ", Description: " << SubstGlobalCopy(Issues.ToString(), '\n', ' ');
+        return ret;
+    }
+
+
 };
 
 } // namespace NYdb

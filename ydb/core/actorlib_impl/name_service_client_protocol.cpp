@@ -8,8 +8,8 @@ void TResolveClientProtocol::ProtocolFunc(
     switch (ev->GetTypeRewrite()) {
 
     case TEvAddressInfo::EventType:
-        Y_VERIFY(ev->Get<TEvAddressInfo>() != nullptr);
-        Y_VERIFY(ev->Get<TEvAddressInfo>()->Address.Get() != nullptr);
+        Y_ABORT_UNLESS(ev->Get<TEvAddressInfo>() != nullptr);
+        Y_ABORT_UNLESS(ev->Get<TEvAddressInfo>()->Address.Get() != nullptr);
 
         MemLogPrintF("TResolveClientProtocol received address info");
 
@@ -21,7 +21,7 @@ void TResolveClientProtocol::ProtocolFunc(
         break;
 
     default:
-        Y_FAIL("Unknown message type dispatched");
+        Y_ABORT("Unknown message type dispatched");
     }
 }
 

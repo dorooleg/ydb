@@ -292,6 +292,9 @@ TExprBase DqPeepholeRewriteMapJoin(const TExprBase& node, TExprContext& ctx) {
     const bool payloads = !rightPayloads.empty();
     rightInput = MakeDictForJoin<true>(PrepareListForJoin(std::move(rightInput), keyTypes, rightKeyColumnNodes, rightPayloads, payloads, false, true, ctx), payloads, withRightSide, ctx);
     leftInput = AddConvertedKeys(std::move(leftInput), ctx, leftKeyColumnNodes, keyTypesLeft, itemTypeLeft);
+    auto [leftKeyColumnNodesCopy, rightKeyColumnNodesCopy] = JoinKeysToAtoms(ctx, mapJoin, leftTableLabel, rightTableLabel);
+    auto [_, rightKeyColumnNodesAnotherCopy] = JoinKeysToAtoms(ctx, mapJoin, leftTableLabel, rightTableLabel);
+
     return Build<TCoExtractMembers>(ctx, pos)
         .Input<TCoFlatMap>()
             .Input(std::move(rightInput))
@@ -302,8 +305,11 @@ TExprBase DqPeepholeRewriteMapJoin(const TExprBase& node, TExprContext& ctx) {
                     .RightDict("dict")
                     .JoinKind(mapJoin.JoinType())
                     .LeftKeysColumns(ctx.NewList(pos, std::move(leftKeyColumnNodes)))
+                    .RightKeysColumns(ctx.NewList(pos,  std::move(rightKeyColumnNodesCopy)))
                     .LeftRenames(ctx.NewList(pos, std::move(leftRenames)))
                     .RightRenames(ctx.NewList(pos, std::move(rightRenames)))
+                    .LeftKeysColumnNames(ctx.NewList(pos,  std::move(leftKeyColumnNodesCopy)))
+                    .RightKeysColumnNames(ctx.NewList(pos,  std::move(rightKeyColumnNodesAnotherCopy)))
                 .Build()
             .Build()
         .Build()
@@ -481,8 +487,8 @@ NNodes::TExprBase DqPeepholeRewriteJoinDict(const NNodes::TExprBase& node, TExpr
                 << "(" << *leftKeyType << ") and " << rightKeys[i]->Content() << "(" << *rightKeyType << ")";
             break;
         }
-        castKeyLeft = (!IsSameAnnotation(*leftDryType, *commonType) || optKeyLeft);
-        castKeyRight = (!IsSameAnnotation(*rightDryType, *commonType) || optKeyRight);
+        castKeyLeft = castKeyLeft || (!IsSameAnnotation(*leftDryType, *commonType) || optKeyLeft);
+        castKeyRight = castKeyRight || (!IsSameAnnotation(*rightDryType, *commonType) || optKeyRight);
         keyTypeItems.emplace_back(commonType);
     }
 
@@ -508,18 +514,18 @@ NNodes::TExprBase DqPeepholeRewriteJoinDict(const NNodes::TExprBase& node, TExpr
         rightKeySelector = BuildDictKeySelector(ctx, joinDict.Pos(), rightKeys, keyTypeItems, castKeyRight);
     }
 
-    auto streamToDict = [&ctx](const TExprBase& input, const TExprNode::TPtr& keySelector) {
+    const auto streamToDict = [&ctx](const TExprBase& input, const TExprNode::TPtr& keySelector) {
         return Build<TCoSqueezeToDict>(ctx, input.Pos())
-            .Stream(input)
+            .Stream(TCoIterator::Match(input.Raw()) ? TExprBase(ctx.RenameNode(input.Ref(), TCoToFlow::CallableName())) : input)
             .KeySelector(keySelector)
             .PayloadSelector()
                 .Args({"item"})
                 .Body("item")
                 .Build()
             .Settings()
-                .Add<TCoAtom>().Build("Hashed")
-                .Add<TCoAtom>().Build("Many")
-                .Add<TCoAtom>().Build("Compact")
+                .Add<TCoAtom>().Build("Hashed", TNodeFlags::Default)
+                .Add<TCoAtom>().Build("Many", TNodeFlags::Default)
+                .Add<TCoAtom>().Build("Compact", TNodeFlags::Default)
                 .Build()
             .Done();
     };
@@ -551,7 +557,9 @@ NNodes::TExprBase DqPeepholeRewriteJoinDict(const NNodes::TExprBase& node, TExpr
     auto unpackData = UnpackJoinedData(leftRowType, rightRowType, leftTableLabel, rightTableLabel, join.Pos(), ctx);
 
     return Build<TCoMap>(ctx, joinDict.Pos())
-        .Input(join)
+        .Input<TCoToFlow>()
+            .Input(join)
+            .Build()
         .Lambda(unpackData)
         .Done();
 }
@@ -576,6 +584,8 @@ NNodes::TExprBase DqPeepholeRewritePureJoin(const NNodes::TExprBase& node, TExpr
                 .RightLabel(join.RightLabel())
                 .JoinType(join.JoinType())
                 .JoinKeys(join.JoinKeys())
+                .LeftJoinKeyNames(join.LeftJoinKeyNames())
+                .RightJoinKeyNames(join.RightJoinKeyNames())
                 .Build()
             .Done();
     } else {
@@ -591,6 +601,8 @@ NNodes::TExprBase DqPeepholeRewritePureJoin(const NNodes::TExprBase& node, TExpr
                 .RightLabel(join.RightLabel())
                 .JoinType(join.JoinType())
                 .JoinKeys(join.JoinKeys())
+                .LeftJoinKeyNames(join.LeftJoinKeyNames())
+                .RightJoinKeyNames(join.RightJoinKeyNames())
                 .Build()
             .Done();
     }
@@ -604,11 +616,10 @@ NNodes::TExprBase DqPeepholeRewriteReplicate(const NNodes::TExprBase& node, TExp
 
     TVector<TExprBase> branches;
     branches.reserve(dqReplicate.Args().Count() - 1);
-
     auto inputIndex = NDq::BuildAtomList("0", dqReplicate.Pos(), ctx);
     for (size_t i = 1; i < dqReplicate.Args().Count(); ++i) {
         branches.emplace_back(inputIndex);
-        branches.emplace_back(ctx.DeepCopyLambda(dqReplicate.Args().Get(i).Ref()));
+        branches.emplace_back(ctx.DeepCopyLambda(dqReplicate.Arg(i).Ref()));
     }
 
     return Build<TCoSwitch>(ctx, dqReplicate.Pos())
@@ -678,7 +689,7 @@ NNodes::TExprBase DqPeepholeRewriteLength(const NNodes::TExprBase& node, TExprCo
     }
 
     auto dqPhyLength = node.Cast<TDqPhyLength>();
-    if (typesCtx.UseBlocks) {
+    if (typesCtx.IsBlockEngineEnabled()) {
         return NNodes::TExprBase(ctx.Builder(node.Pos())
             .Callable("NarrowMap")
                 .Callable(0, "BlockCombineAll")

@@ -1,9 +1,10 @@
 #pragma once
 #include <ydb/core/grpc_services/auth_processor/dynamic_node_auth_processor.h>
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/public/lib/base/defs.h>
 #include <ydb/public/lib/base/msgbus.h>
+#include <ydb/core/protos/tx_proxy.pb.h>
 #include "msgbus_http_server.h"
 #include "msgbus_server_pq_metacache.h"
 
@@ -195,7 +196,7 @@ void CopyProtobufsByFieldName(TProtoTo& protoTo, const TProtoFrom& protoFrom) {
     for (const FieldDescriptor* fieldFrom : fields) {
         const auto& name = fieldFrom->name();
         const FieldDescriptor* fieldTo = descriptorTo.FindFieldByName(name);
-        Y_VERIFY(fieldTo != nullptr, "name=%s", name.c_str());
+        Y_ABORT_UNLESS(fieldTo != nullptr, "name=%s", name.c_str());
         if (fieldTo != nullptr) {
             FieldDescriptor::CppType type = fieldFrom->cpp_type();
             if (fieldFrom->is_repeated()) {
@@ -281,7 +282,6 @@ IActor* CreateMessageBusTabletCountersRequest(TBusMessageContext &msg);
 IActor* CreateMessageBusLocalMKQL(TBusMessageContext &msg);
 IActor* CreateMessageBusLocalSchemeTx(TBusMessageContext &msg);
 IActor* CreateMessageBusSchemeInitRoot(TBusMessageContext &msg);
-IActor* CreateMessageBusBSAdm(TBusMessageContext &msg);
 IActor* CreateMessageBusGetTypes(TBusMessageContext &msg);
 IActor* CreateMessageBusHiveCreateTablet(TBusMessageContext &msg);
 IActor* CreateMessageBusLocalEnumerateTablets(TBusMessageContext &msg);

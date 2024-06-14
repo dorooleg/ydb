@@ -1,29 +1,31 @@
 #include "query_id.h"
 #include "helpers.h"
 
-#include <ydb/public/api/protos/ydb_value.pb.h>
 #include <google/protobuf/util/message_differencer.h>
 
 #include <util/generic/yexception.h>
 
-#include <map>
 #include <memory>
 
 namespace NKikimr::NKqp {
 
-TKqpQueryId::TKqpQueryId(const TString& cluster, const TString& database, const TString& text, NKikimrKqp::EQueryType type, std::shared_ptr<std::map<TString, Ydb::Type>> queryParameterTypes)
+TKqpQueryId::TKqpQueryId(const TString& cluster, const TString& database, const TString& text,
+    const TKqpQuerySettings& settings, std::shared_ptr<std::map<TString, Ydb::Type>> queryParameterTypes,
+    const TGUCSettings& gUCSettings)
     : Cluster(cluster)
     , Database(database)
     , Text(text)
-    , QueryType(type)
+    , Settings(settings)
     , QueryParameterTypes(queryParameterTypes)
+    , GUCSettings(gUCSettings)
 {
-    switch (QueryType) {
+    switch (Settings.QueryType) {
         case NKikimrKqp::QUERY_TYPE_SQL_DML:
         case NKikimrKqp::QUERY_TYPE_SQL_SCAN:
         case NKikimrKqp::QUERY_TYPE_AST_DML:
         case NKikimrKqp::QUERY_TYPE_AST_SCAN:
         case NKikimrKqp::QUERY_TYPE_SQL_GENERIC_QUERY:
+        case NKikimrKqp::QUERY_TYPE_SQL_GENERIC_CONCURRENT_QUERY:
         case NKikimrKqp::QUERY_TYPE_SQL_GENERIC_SCRIPT:
             break;
 
@@ -33,7 +35,7 @@ TKqpQueryId::TKqpQueryId(const TString& cluster, const TString& database, const 
 }
 
 bool TKqpQueryId::IsSql() const {
-    return IsSqlQuery(QueryType);
+    return IsSqlQuery(Settings.QueryType);
 }
 
 bool TKqpQueryId::operator==(const TKqpQueryId& other) const {
@@ -42,8 +44,8 @@ bool TKqpQueryId::operator==(const TKqpQueryId& other) const {
         UserSid == other.UserSid &&
         Text == other.Text &&
         Settings == other.Settings &&
-        QueryType == other.QueryType &&
-        !QueryParameterTypes == !other.QueryParameterTypes)) {
+        !QueryParameterTypes == !other.QueryParameterTypes &&
+        GUCSettings == other.GUCSettings)) {
         return false;
     }
 

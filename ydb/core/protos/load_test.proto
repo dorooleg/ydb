@@ -1,4 +1,5 @@
 import "ydb/core/protos/blobstorage.proto";
+import "ydb/core/protos/blobstorage_base.proto";
 import "ydb/core/protos/blobstorage_disk.proto";
 import "ydb/core/protos/datashard_load.proto";
 
@@ -31,6 +32,18 @@ message TEvLoadTestRequest {
         optional double Weight = 3;
     }
     message TStorageLoad {
+        message TInitialBlobAllocation {
+            oneof DataSize {
+                uint64 TotalSize = 1;
+                uint64 BlobsNumber = 2;
+            }
+            repeated TSizeInfo BlobSizes = 3;
+            optional uint32 MaxWritesInFlight = 4;
+            optional uint32 MaxWriteBytesInFlight = 5;
+            optional NKikimrBlobStorage.EPutHandleClass PutHandleClass = 6;
+            optional uint32 DelayAfterCompletionSec = 7;
+        }
+
         message TRequestInfo {
             optional float SendTime = 1;
             optional uint64 Type = 2;
@@ -38,12 +51,19 @@ message TEvLoadTestRequest {
             optional NKikimrBlobStorage.EPutHandleClass PutHandleClass = 4;
         }
         message TTabletInfo {
-            optional uint64 TabletId = 1;
+            oneof Id {
+                uint64 TabletId = 8;
+                string TabletName = 7;  // only used to distinguish different tablets, will be reassigned
+            }
             optional uint32 Channel = 2;
             optional uint32 GroupId = 3;
             optional uint32 Generation = 4;
             repeated TRequestInfo Requests = 5;
             optional float ScriptedCycleDurationSec = 6;
+        }
+        message THardRateDispatcherInfo {
+            optional double RequestsPerSecondAtStart = 1;
+            optional double RequestsPerSecondOnFinish = 2;
         }
         message TPerTabletProfile {
             repeated TTabletInfo Tablets = 1;
@@ -53,6 +73,7 @@ message TEvLoadTestRequest {
             optional uint32 MaxInFlightWriteBytes = 5;
             repeated TIntervalInfo FlushIntervals = 6;
             optional NKikimrBlobStorage.EPutHandleClass PutHandleClass = 7;
+
             reserved 8; // (deprecated) optional bool Soft = 8;
             optional uint32 MaxInFlightReadRequests = 9;
             optional uint32 MaxInFlightReadBytes = 10;
@@ -60,6 +81,14 @@ message TEvLoadTestRequest {
             repeated TSizeInfo ReadSizes = 12;
             optional uint64 MaxTotalBytesWritten = 13;
             optional NKikimrBlobStorage.EGetHandleClass GetHandleClass = 14;
+
+            optional THardRateDispatcherInfo WriteHardRateDispatcher = 15;
+            optional THardRateDispatcherInfo ReadHardRateDispatcher = 16;
+
+            optional TInitialBlobAllocation InitialAllocation = 17;
+
+            optional uint32 TracingThrottlerRate = 18 [default = 0];
+            optional uint32 TracingThrottlerBurst = 19 [default = 0];
         };
         optional uint64 Tag = 1;
         optional uint32 DurationSeconds = 2;
@@ -217,6 +246,7 @@ message TEvLoadTestRequest {
         optional bool DeleteTableOnFinish = 6;
         optional uint32 UniformPartitionsCount = 7;
         optional uint32 WorkloadType = 8;
+        optional string QueryType = 12;
         oneof Workload {
             TStockWorkload Stock = 9;
             TKvWorkload Kv = 10;

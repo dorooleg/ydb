@@ -13,14 +13,7 @@ namespace NTable {
             ICompactionBackend* backend,
             IResourceBroker* broker,
             ITimeProvider* time,
-            TString taskNameSuffix);
-
-    THolder<ICompactionStrategy> CreateShardedCompactionStrategy(
-            ui32 table,
-            ICompactionBackend* backend,
-            IResourceBroker* broker,
             NUtil::ILogger* logger,
-            ITimeProvider* time,
             TString taskNameSuffix);
 
 }

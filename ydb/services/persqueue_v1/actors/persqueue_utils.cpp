@@ -3,19 +3,20 @@
 #include <ydb/core/base/path.h>
 
 #include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
+#include <ydb/public/api/protos/ydb_issue_message.pb.h>
 
 namespace NKikimr::NGRpcProxy::V1 {
 
 TAclWrapper::TAclWrapper(THolder<NACLib::TSecurityObject> acl)
     : AclOldSchemeCache(std::move(acl))
 {
-    Y_VERIFY(AclOldSchemeCache);
+    Y_ABORT_UNLESS(AclOldSchemeCache);
 }
 
 TAclWrapper::TAclWrapper(TIntrusivePtr<TSecurityObject> acl)
     : AclNewSchemeCache(std::move(acl))
 {
-    Y_VERIFY(AclNewSchemeCache);
+    Y_ABORT_UNLESS(AclNewSchemeCache);
 }
 
 bool TAclWrapper::CheckAccess(NACLib::EAccessRights rights, const NACLib::TUserToken& userToken) {
@@ -36,7 +37,7 @@ TProcessingResult ProcessMetaCacheTopicResponse(const TSchemeCacheNavigate::TEnt
             return TProcessingResult {
                     Ydb::PersQueue::ErrorCode::ErrorCode::BAD_REQUEST,
                     Sprintf("path '%s' has unknown/invalid root prefix '%s', Marker# PQ14",
-                            fullPath.c_str(), entry.Path[0].c_str()),
+                            fullPath.c_str(), entry.Path.empty() ? "" : entry.Path[0].c_str()),
                     true
             };
         }
@@ -101,6 +102,7 @@ Ydb::StatusIds::StatusCode ConvertPersQueueInternalCodeToStatus(const Ydb::PersQ
             return Ydb::StatusIds::ABORTED;
         case OVERLOAD:
         case WRITE_ERROR_PARTITION_IS_FULL:
+        case WRITE_ERROR_PARTITION_INACTIVE:
         case WRITE_ERROR_DISK_IS_FULL:
             return Ydb::StatusIds::OVERLOADED;
         case BAD_REQUEST:
@@ -124,7 +126,9 @@ Ydb::StatusIds::StatusCode ConvertPersQueueInternalCodeToStatus(const Ydb::PersQ
         case ACCESS_DENIED:
             return Ydb::StatusIds::UNAUTHORIZED;
         case ERROR:
-            return Ydb::StatusIds::UNSUPPORTED;
+            return Ydb::StatusIds::UNAVAILABLE;
+        case UNKNOWN_TXID:
+            return Ydb::StatusIds::NOT_FOUND;
 
         default:
             return Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;

@@ -6,7 +6,10 @@
 #include <ydb/library/yql/utils/yql_panic.h>
 #include <ydb/library/yql/minikql/mkql_node.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
+#include <ydb/core/base/path.h>
 #include <ydb/core/base/table_index.h>
+#include <ydb/core/kqp/gateway/utils/scheme_helpers.h>
+#include <ydb/core/protos/replication.pb.h>
 
 #include <util/string/split.h>
 #include <util/string/strip.h>
@@ -39,7 +42,7 @@ static void CreateDirs(std::shared_ptr<TVector<TString>> partsHolder, size_t ind
             CreateDirs(partsHolder, index + 1, promise, createDir);
         });
 
-    TString basePath = IKikimrGateway::CombinePath(parts.begin(), parts.begin() + index);
+    TString basePath = NKikimr::NKqp::NSchemeHelpers::CombinePath(parts.begin(), parts.begin() + index);
 
     createDir(basePath, parts[index], partPromise);
 }
@@ -52,42 +55,28 @@ TKikimrPathId TKikimrPathId::Parse(const TStringBuf& str) {
     return TKikimrPathId(FromString<ui64>(ownerStr), FromString<ui64>(idStr));
 }
 
-TString IKikimrGateway::CanonizePath(const TString& path) {
-    if (path.empty()) {
-        return "/";
+void TReplicationSettings::TOAuthToken::Serialize(NKikimrReplication::TOAuthToken& proto) const {
+    if (Token) {
+        proto.SetToken(Token);
     }
-
-    if (path[0] != '/') {
-        return "/" + path;
+    if (TokenSecretName) {
+        proto.SetTokenSecretName(TokenSecretName);
     }
-
-    return path;
 }
 
-TVector<TString> IKikimrGateway::SplitPath(const TString& path) {
-    TVector<TString> parts;
-    Split(path, "/", parts);
-    return parts;
-}
-
-bool IKikimrGateway::TrySplitTablePath(const TString& path, std::pair<TString, TString>& result, TString& error) {
-    auto parts = SplitPath(path);
-
-    if (parts.size() < 2) {
-        error = TString("Missing scheme root in table path: ") + path;
-        return false;
+void TReplicationSettings::TStaticCredentials::Serialize(NKikimrReplication::TStaticCredentials& proto) const {
+    proto.SetUser(UserName);
+    if (Password) {
+        proto.SetPassword(Password);
     }
-
-    result = std::make_pair(
-        CombinePath(parts.begin(), parts.end() - 1),
-        parts.back());
-
-    return true;
+    if (PasswordSecretName) {
+        proto.SetPasswordSecretName(PasswordSecretName);
+    }
 }
 
 TFuture<IKikimrGateway::TGenericResult> IKikimrGateway::CreatePath(const TString& path, TCreateDirFunc createDir) {
-    auto partsHolder = std::make_shared<TVector<TString>>(SplitPath(path));
-    auto &parts = *partsHolder;
+    auto partsHolder = std::make_shared<TVector<TString>>(NKikimr::SplitPath(path));
+    auto& parts = *partsHolder;
 
     if (parts.size() < 2) {
         TGenericResult result;
@@ -100,11 +89,6 @@ TFuture<IKikimrGateway::TGenericResult> IKikimrGateway::CreatePath(const TString
 
     return pathPromise.GetFuture();
 }
-
-TString IKikimrGateway::CreateIndexTablePath(const TString& tableName, const TString& indexName) {
-    return tableName + "/" + indexName + "/indexImplTable";
-}
-
 
 void IKikimrGateway::BuildIndexMetadata(TTableMetadataResult& loadTableMetadataResult) {
     auto tableMetadata = loadTableMetadataResult.Metadata;
@@ -128,7 +112,7 @@ void IKikimrGateway::BuildIndexMetadata(TTableMetadataResult& loadTableMetadataR
     tableMetadata->SecondaryGlobalIndexMetadata.resize(indexesCount);
     for (size_t i = 0; i < indexesCount; i++) {
         const auto& index = tableMetadata->Indexes[i];
-        auto indexTablePath = CreateIndexTablePath(tableName, index.Name);
+        auto indexTablePath = NKikimr::NKqp::NSchemeHelpers::CreateIndexTablePath(tableName, index.Name);
         NKikimr::NTableIndex::TTableColumns indexTableColumns = NKikimr::NTableIndex::CalcTableImplDescription(
                     tableColumns,
                     NKikimr::NTableIndex::TIndexColumns{index.KeyColumns, {}});
@@ -161,6 +145,21 @@ bool TTtlSettings::TryParse(const NNodes::TCoNameValueTupleList& node, TTtlSetti
             }
 
             settings.ExpireAfter = TDuration::FromValue(value);
+        } else if (name == "columnUnit") {
+            YQL_ENSURE(field.Value().Maybe<TCoAtom>());
+            auto value = field.Value().Cast<TCoAtom>().StringValue();
+            if (value == "seconds") {
+                settings.ColumnUnit = EUnit::Seconds;
+            } else if (value == "milliseconds") {
+                settings.ColumnUnit = EUnit::Milliseconds;
+            } else if (value == "microseconds") {
+                settings.ColumnUnit = EUnit::Microseconds;
+            } else if (value == "nanoseconds") {
+                settings.ColumnUnit = EUnit::Nanoseconds;
+            } else {
+                error = TStringBuilder() << "Invalid unit: " << value;
+                return false;
+            }
         } else {
             error = TStringBuilder() << "Unknown field: " << name;
             return false;
@@ -173,7 +172,8 @@ bool TTtlSettings::TryParse(const NNodes::TCoNameValueTupleList& node, TTtlSetti
 bool TTableSettings::IsSet() const {
     return CompactionPolicy || PartitionBy || AutoPartitioningBySize || UniformPartitions || PartitionAtKeys
         || PartitionSizeMb || AutoPartitioningByLoad || MinPartitions || MaxPartitions || KeyBloomFilter
-        || ReadReplicasSettings || TtlSettings || DataSourcePath || Location || ExternalSourceParameters;
+        || ReadReplicasSettings || TtlSettings || DataSourcePath || Location || ExternalSourceParameters
+        || StoreExternalBlobs;
 }
 
 EYqlIssueCode YqlStatusFromYdbStatus(ui32 ydbStatus) {
@@ -214,7 +214,7 @@ EYqlIssueCode YqlStatusFromYdbStatus(ui32 ydbStatus) {
 void SetColumnType(Ydb::Type& protoType, const TString& typeName, bool notNull) {
     auto* typeDesc = NKikimr::NPg::TypeDescFromPgTypeName(typeName);
     if (typeDesc) {
-        Y_VERIFY(!notNull, "It is not allowed to create NOT NULL pg columns");
+        Y_ABORT_UNLESS(!notNull, "It is not allowed to create NOT NULL pg columns");
         auto* pg = protoType.mutable_pg_type();
         pg->set_type_name(NKikimr::NPg::PgTypeNameFromTypeDesc(typeDesc));
         pg->set_type_modifier(NKikimr::NPg::TypeModFromPgTypeName(typeName));
@@ -297,8 +297,16 @@ bool ConvertReadReplicasSettingsToProto(const TString settings, Ydb::Table::Read
 }
 
 void ConvertTtlSettingsToProto(const NYql::TTtlSettings& settings, Ydb::Table::TtlSettings& proto) {
-    proto.mutable_date_type_column()->set_column_name(settings.ColumnName);
-    proto.mutable_date_type_column()->set_expire_after_seconds(settings.ExpireAfter.Seconds());
+    if (!settings.ColumnUnit) {
+        auto& opts = *proto.mutable_date_type_column();
+        opts.set_column_name(settings.ColumnName);
+        opts.set_expire_after_seconds(settings.ExpireAfter.Seconds());
+    } else {
+        auto& opts = *proto.mutable_value_since_unix_epoch();
+        opts.set_column_name(settings.ColumnName);
+        opts.set_column_unit(static_cast<Ydb::Table::ValueSinceUnixEpochModeSettings::Unit>(*settings.ColumnUnit));
+        opts.set_expire_after_seconds(settings.ExpireAfter.Seconds());
+    }
 }
 
 Ydb::FeatureFlag::Status GetFlagValue(const TMaybe<bool>& value) {

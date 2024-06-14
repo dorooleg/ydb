@@ -1,8 +1,8 @@
 #include "load_network.h"
 
-#include <library/cpp/actors/core/actorid.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/events.h>
+#include <ydb/library/actors/core/actorid.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/events.h>
 
 namespace {
 
@@ -16,8 +16,8 @@ using NActors::TEvents;
 
 class TLoadNetwork:  public NActors::TActorBootstrapped<TLoadNetwork> {
 public:
-    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
-        return NKikimrServices::TActivity::TEST_ACTOR_RUNTIME;
+    static constexpr NActors::IActor::EActivityType ActorActivityType() {
+        return NActors::IActor::EActivityType::TEST_ACTOR_RUNTIME;
     }
 
     TLoadNetwork(ui32 selfNodeId, ui32 totalNodesCount)
@@ -90,10 +90,10 @@ namespace IC_Load {
                            const NKikimr::TAppData* appData,
                            ui32 totalNodesCount)
     {
-        auto actor = new TLoadNetwork(setup->NodeId, totalNodesCount);
+        auto actor = std::make_unique<TLoadNetwork>(setup->NodeId, totalNodesCount);
         setup->LocalServices.emplace_back(
             GetLoadNetworkActorID(setup->NodeId),
-            NActors::TActorSetupCmd(actor,
+            NActors::TActorSetupCmd(std::move(actor),
                                     NActors::TMailboxType::Simple,
                                     appData->UserPoolId));
     }

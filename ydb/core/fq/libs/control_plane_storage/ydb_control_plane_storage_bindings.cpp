@@ -82,7 +82,16 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvCreateBindi
         "    ($scope, $binding_id, $connection_id, $user, $visibility, $name, $binding, $revision, $internal);"
     );
 
-    auto validatorName = CreateUniqueNameValidator(
+    auto connectionNameUniqueValidator = CreateUniqueNameValidator(
+        CONNECTIONS_TABLE_NAME,
+        content.acl().visibility(),
+        scope,
+        content.name(),
+        user,
+        "Connection with the same name already exists. Please choose another name",
+        YdbConnection->TablePathPrefix);
+
+    auto bindingNameUniqueValidator = CreateUniqueNameValidator(
         BINDINGS_TABLE_NAME,
         content.acl().visibility(),
         scope,
@@ -116,10 +125,11 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvCreateBindi
 
     TVector<TValidationQuery> validators;
     if (idempotencyKey) {
-        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix));
+        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix, requestCounters.Common->ParseProtobufError));
     }
 
-    validators.push_back(validatorName);
+    validators.push_back(connectionNameUniqueValidator);
+    validators.push_back(bindingNameUniqueValidator);
     validators.push_back(validatorCountBindings);
     validators.push_back(validatorConnectionExists);
     validators.push_back(connectionValidator);
@@ -190,7 +200,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListBinding
     queryBuilder.AddUint64("limit", limit + 1);
 
     queryBuilder.AddText(
-        "SELECT `" BINDING_ID_COLUMN_NAME "`, `" BINDING_COLUMN_NAME "` FROM `" BINDINGS_TABLE_NAME "`\n"
+        "SELECT `" SCOPE_COLUMN_NAME "`, `" BINDING_ID_COLUMN_NAME "`, `" BINDING_COLUMN_NAME "` FROM `" BINDINGS_TABLE_NAME "`\n"
         "WHERE `" SCOPE_COLUMN_NAME "` = $scope AND `" BINDING_ID_COLUMN_NAME "` >= $last_binding\n"
     );
 
@@ -204,7 +214,11 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListBinding
 
         if (request.filter().name()) {
             queryBuilder.AddString("filter_name", request.filter().name());
-            filters.push_back("`" NAME_COLUMN_NAME "` LIKE '%' || $filter_name || '%'");
+            if (event.IsExactNameMatch) {
+                filters.push_back("`" NAME_COLUMN_NAME "` = $filter_name");
+            } else {
+                filters.push_back("FIND(`" NAME_COLUMN_NAME "`, $filter_name) IS NOT NULL");
+            }
         }
 
         if (request.filter().created_by_me()) {
@@ -227,14 +241,14 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListBinding
     }
 
     queryBuilder.AddText(
-        "ORDER BY `" BINDING_ID_COLUMN_NAME "`\n"
+        "ORDER BY `" SCOPE_COLUMN_NAME "`, `" BINDING_ID_COLUMN_NAME "`\n"
         "LIMIT $limit;"
     );
 
     const auto query = queryBuilder.Build();
     auto debugInfo = Config->Proto.GetEnableDebugMode() ? std::make_shared<TDebugInfo>() : TDebugInfoPtr{};
     auto [result, resultSets] = Read(query.Sql, query.Params, requestCounters, debugInfo);
-    auto prepare = [resultSets=resultSets, limit] {
+    auto prepare = [resultSets=resultSets, limit, commonCounters=requestCounters.Common] {
         if (resultSets->size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 1 but equal " << resultSets->size() << ". Please contact internal support";
         }
@@ -244,6 +258,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListBinding
         while (parser.TryNextRow()) {
             FederatedQuery::Binding binding;
             if (!binding.ParseFromString(*parser.ColumnParser(BINDING_COLUMN_NAME).GetOptionalString())) {
+                commonCounters->ParseProtobufError->Inc();
                 ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for binding. Please contact internal support";
             }
             FederatedQuery::BriefBinding& briefBinding = *result.add_binding();
@@ -338,7 +353,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDescribeBin
     const auto query = queryBuilder.Build();
     auto debugInfo = Config->Proto.GetEnableDebugMode() ? std::make_shared<TDebugInfo>() : TDebugInfoPtr{};
     auto [result, resultSets] = Read(query.Sql, query.Params, requestCounters, debugInfo);
-    auto prepare = [=, resultSets=resultSets] {
+    auto prepare = [=, resultSets=resultSets, commonCounters=requestCounters.Common] {
         if (resultSets->size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 1 but equal " << resultSets->size() << ". Please contact internal support";
         }
@@ -350,6 +365,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDescribeBin
 
         FederatedQuery::DescribeBindingResult result;
         if (!result.mutable_binding()->ParseFromString(*parser.ColumnParser(BINDING_COLUMN_NAME).GetOptionalString())) {
+            commonCounters->ParseProtobufError->Inc();
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for binding. Please contact internal support";
         }
 
@@ -430,7 +446,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyBindi
     );
 
     std::shared_ptr<std::pair<FederatedQuery::ModifyBindingResult, TAuditDetails<FederatedQuery::Binding>>> response = std::make_shared<std::pair<FederatedQuery::ModifyBindingResult, TAuditDetails<FederatedQuery::Binding>>>();
-    auto prepareParams = [=, config=Config](const TVector<TResultSet>& resultSets) {
+    auto prepareParams = [=, config=Config, commonCounters=requestCounters.Common](const TVector<TResultSet>& resultSets) {
         if (resultSets.size() != 2) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 2 but equal " << resultSets.size() << ". Please contact internal support";
         }
@@ -443,6 +459,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyBindi
             }
 
             if (!binding.ParseFromString(*parser.ColumnParser(BINDING_COLUMN_NAME).GetOptionalString())) {
+                commonCounters->ParseProtobufError->Inc();
                 ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for binding. Please contact internal support";
             }
         }
@@ -513,7 +530,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyBindi
 
     TVector<TValidationQuery> validators;
     if (idempotencyKey) {
-        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix));
+        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix, requestCounters.Common->ParseProtobufError));
     }
 
     auto accessValidator = CreateManageAccessValidator(
@@ -540,7 +557,18 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyBindi
     }
 
     {
-        auto modifyUniqueNameValidator = CreateModifyUniqueNameValidator(
+        auto connectionNameUniqueValidator = CreateUniqueNameValidator(
+            CONNECTIONS_TABLE_NAME,
+            request.content().acl().visibility(),
+            scope,
+            request.content().name(),
+            user,
+            "Connection with the same name already exists. Please choose another name",
+            YdbConnection->TablePathPrefix);
+        validators.push_back(connectionNameUniqueValidator);
+    }
+    {
+        auto bindingNameUniqueValidator = CreateModifyUniqueNameValidator(
             BINDINGS_TABLE_NAME,
             BINDING_ID_COLUMN_NAME,
             request.content().acl().visibility(),
@@ -550,7 +578,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyBindi
             bindingId,
             "Binding with the same name already exists. Please choose another name",
             YdbConnection->TablePathPrefix);
-        validators.push_back(modifyUniqueNameValidator);
+        validators.push_back(bindingNameUniqueValidator);
     }
 
     const auto readQuery = readQueryBuilder.Build();
@@ -629,7 +657,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDeleteBindi
 
     TVector<TValidationQuery> validators;
     if (idempotencyKey) {
-        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix));
+        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix, requestCounters.Common->ParseProtobufError));
     }
 
     auto accessValidator = CreateManageAccessValidator(
@@ -662,7 +690,8 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDeleteBindi
         BINDING_ID_COLUMN_NAME,
         BINDINGS_TABLE_NAME,
         response,
-        YdbConnection->TablePathPrefix));
+        YdbConnection->TablePathPrefix,
+        requestCounters.Common->ParseProtobufError));
 
     const auto query = queryBuilder.Build();
     auto debugInfo = Config->Proto.GetEnableDebugMode() ? std::make_shared<TDebugInfo>() : TDebugInfoPtr{};

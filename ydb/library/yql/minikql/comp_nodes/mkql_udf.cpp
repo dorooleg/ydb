@@ -1,6 +1,7 @@
 #include "mkql_udf.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/computation/mkql_validate.h>
 #include <ydb/library/yql/minikql/mkql_function_registry.h>
@@ -27,9 +28,9 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void CreateRun(const TCodegenContext& ctx, BasicBlock*& block, Value* result, Value* args) const final {
-        ctx.Codegen->LoadBitCode(ModuleIR, ModuleIRUniqID);
+        ctx.Codegen.LoadBitCode(ModuleIR, ModuleIRUniqID);
 
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto type = Type::getInt128Ty(context);
         YQL_ENSURE(result->getType() == PointerType::getUnqual(type));
@@ -40,7 +41,7 @@ public:
         const auto builder = ctx.GetBuilder();
 
         const auto funType = FunctionType::get(Type::getVoidTy(context), {boxed->getType(), result->getType(), builder->getType(), args->getType()}, false);
-        const auto runFunc = ctx.Codegen->GetModule().getOrInsertFunction(llvm::StringRef(FunctionName.data(), FunctionName.size()), funType);
+        const auto runFunc = ctx.Codegen.GetModule().getOrInsertFunction(llvm::StringRef(FunctionName.data(), FunctionName.size()), funType);
         CallInst::Create(runFunc, {boxed, result, builder, args}, "", block);
     }
 #endif
@@ -79,7 +80,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetValue(const TCodegenContext& ctx, Value* pointer, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         GetNodeValue(pointer, RunConfigNode, ctx, block);
         const auto conf = new LoadInst(Type::getInt128Ty(context), pointer, "conf", block);
@@ -140,7 +141,7 @@ inline IComputationNode* CreateUdfWrapper(
                 return new TUdfWrapper<TValidateErrorPolicyThrow,TValidateModeGreedy<TValidateErrorPolicyThrow>>(ctx.Mutables, std::move(node), std::move(functionName), runConfigNode, callableType);
             }
         default:
-            Y_FAIL("Unexpected validate mode: %u", static_cast<unsigned>(ctx.ValidateMode));
+            Y_ABORT("Unexpected validate mode: %u", static_cast<unsigned>(ctx.ValidateMode));
     };
 }
 

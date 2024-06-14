@@ -12,10 +12,11 @@ namespace NYdb {
 namespace NConsoleClient {
 
 class TCommandYql : public TYdbOperationCommand, public TCommandWithParameters,
-    public TCommandWithFormat, public TInterruptibleCommand
+    public TInterruptibleCommand
 {
 public:
     TCommandYql();
+    TCommandYql(TString script, TString collectStatsMode);
     virtual void Config(TConfig& config) override;
     virtual void Parse(TConfig& config) override;
     virtual int Run(TConfig& config) override;
@@ -25,9 +26,9 @@ private:
     bool PrintResponse(NScripting::TYqlResultPartIterator& result);
 
     TString CollectStatsMode;
+    TMaybe<TString> FlameGraphPath;
     TString Script;
     TString ScriptFile;
-    bool Interactive = false;
 };
 
 }

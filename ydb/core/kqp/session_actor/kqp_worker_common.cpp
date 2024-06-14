@@ -67,7 +67,7 @@ bool IsSameProtoTypeImpl(const NKikimrMiniKQL::TVariantType& actual, const NKiki
 } // namespace
 
 TKikimrQueryLimits GetQueryLimits(const TKqpWorkerSettings& settings) {
-    const auto& queryLimitsProto = settings.Service.GetQueryLimits();
+    const auto& queryLimitsProto = settings.TableService.GetQueryLimits();
     const auto& phaseLimitsProto = queryLimitsProto.GetPhaseLimits();
 
     TKikimrQueryLimits queryLimits;
@@ -111,7 +111,7 @@ void SlowLogQuery(const TActorContext &ctx, const TKikimrConfiguration* config, 
             username = "UNAUTHENTICATED";
         }
 
-        Y_VERIFY_DEBUG(extractQueryText);
+        Y_DEBUG_ABORT_UNLESS(extractQueryText);
         auto queryText = extractQueryText();
 
         auto paramsText = TStringBuilder()
@@ -171,6 +171,25 @@ bool IsSameProtoType(const NKikimrMiniKQL::TType& actual, const NKikimrMiniKQL::
         case NKikimrMiniKQL::ETypeKind::Reserved_14:
             return false;
     }
+}
+
+bool CanCacheQuery(const NKqpProto::TKqpPhyQuery& query) {
+    for (const auto& tx : query.GetTransactions()) {
+        if (tx.GetType() == NKqpProto::TKqpPhyTx::TYPE_SCHEME) {
+            return false;
+        }
+
+        for (const auto& stage : tx.GetStages()) {
+            for (const auto& source : stage.GetSources()) {
+                // S3 provider stores S3 paths to read in AST, so we can't cache such queries
+                if (source.HasExternalSource() && source.GetExternalSource().GetType() == "S3Source") {
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
 }
 
 } // namespace NKikimr::NKqp

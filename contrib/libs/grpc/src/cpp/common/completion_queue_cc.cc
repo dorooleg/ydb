@@ -1,38 +1,52 @@
-/*
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+// Copyright 2015 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
-#include <memory>
+#include <vector>
+
+#include "y_absl/base/thread_annotations.h"
 
 #include <grpc/grpc.h>
 #include <grpc/support/cpu.h>
 #include <grpc/support/log.h>
+#include <grpc/support/sync.h>
+#include <grpc/support/time.h>
 #include <grpcpp/completion_queue.h>
+#include <grpcpp/impl/completion_queue_tag.h>
 #include <grpcpp/impl/grpc_library.h>
-#include <grpcpp/support/time.h>
 
 #include "src/core/lib/gpr/useful.h"
-#include "src/core/lib/gprpp/manual_constructor.h"
 #include "src/core/lib/gprpp/sync.h"
 #include "src/core/lib/gprpp/thd.h"
+#include "src/core/lib/gprpp/env.h"
+#include "src/core/lib/gpr/string.h"
 
 namespace grpc {
 namespace {
 
-internal::GrpcLibraryInitializer g_gli_initializer;
+size_t GetNextingThreadNumFromEnv() {
+  auto value = grpc_core::GetEnv("GRPC_NEXTING_THREAD_NUM_ENV");
+  if (!value.has_value()) return 0;
+  int parse_succeeded = gpr_parse_nonnegative_int(value->c_str());
+
+  if (parse_succeeded <= 0) {
+      return 0;
+  }
+  return static_cast<size_t>(parse_succeeded);
+}
 
 gpr_once g_once_init_callback_alternative = GPR_ONCE_INIT;
 grpc_core::Mutex* g_callback_alternative_mu;
@@ -54,6 +68,13 @@ struct CallbackAlternativeCQ {
       cq = new CompletionQueue;
       int num_nexting_threads =
           grpc_core::Clamp(gpr_cpu_num_cores() / 2, 2u, 16u);
+
+      auto threads_limit_env = GetNextingThreadNumFromEnv();
+      if (threads_limit_env) {
+        gpr_log(GPR_INFO, "Nexting thread number changed via env from %d to %zd", num_nexting_threads, threads_limit_env);
+        num_nexting_threads = static_cast<int>(threads_limit_env);
+      }
+
       nexting_threads = new std::vector<grpc_core::Thread>;
       for (int i = 0; i < num_nexting_threads; i++) {
         nexting_threads->emplace_back(
@@ -125,12 +146,11 @@ CallbackAlternativeCQ g_callback_alternative_cq;
 // a 'grpc_completion_queue' instance (which is being passed as the input to
 // this constructor), one must have already called grpc_init().
 CompletionQueue::CompletionQueue(grpc_completion_queue* take)
-    : GrpcLibraryCodegen(false), cq_(take) {
+    : GrpcLibrary(false), cq_(take) {
   InitialAvalanching();
 }
 
 void CompletionQueue::Shutdown() {
-  g_gli_initializer.summon();
 #ifndef NDEBUG
   if (!ServerListEmpty()) {
     gpr_log(GPR_ERROR,

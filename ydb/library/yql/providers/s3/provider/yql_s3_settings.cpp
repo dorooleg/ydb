@@ -21,6 +21,11 @@ TS3Configuration::TS3Configuration()
     REGISTER_SETTING(*this, UseBlocksSource);
     REGISTER_SETTING(*this, AtomicUploadCommit);
     REGISTER_SETTING(*this, UseConcurrentDirectoryLister);
+    REGISTER_SETTING(*this, MaxDiscoveryFilesPerDirectory).Lower(1);
+    REGISTER_SETTING(*this, UseRuntimeListing);
+    REGISTER_SETTING(*this, FileQueueBatchSizeLimit);
+    REGISTER_SETTING(*this, FileQueueBatchObjectCountLimit);
+    REGISTER_SETTING(*this, FileQueuePrefetchSize);
 }
 
 TS3Settings::TConstPtr TS3Configuration::Snapshot() const {
@@ -66,6 +71,10 @@ void TS3Configuration::Init(const TS3GatewayConfig& config, TIntrusivePtr<TTypeA
         config.HasAllowConcurrentListings() ? config.GetAllowConcurrentListings() : false;
     GeneratorPathsLimit =
         config.HasGeneratorPathsLimit() ? config.GetGeneratorPathsLimit() : 50'000;
+    MaxListingResultSizePerPhysicalPartition =
+        config.HasMaxListingResultSizePerPartition()
+            ? config.GetMaxListingResultSizePerPartition()
+            : 1'000;
 
     TVector<TString> clusters(Reserve(config.ClusterMappingSize()));
     for (auto& cluster: config.GetClusterMapping()) {

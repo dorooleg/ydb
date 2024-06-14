@@ -4,6 +4,8 @@
 
 #include <util/generic/ptr.h>
 
+extern const ui64 DefaultTestTabletId;
+
 TString CreateData(const TString &orig, ui32 minHugeBlobSize, bool huge);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -97,12 +99,12 @@ protected:
         }
 
         virtual const TDataItem *Get() const override {
-            Y_VERIFY_DEBUG(IsValid());
+            Y_DEBUG_ABORT_UNLESS(IsValid());
             return &*Cur;
         }
 
         virtual void Next() override {
-            Y_VERIFY_DEBUG(IsValid());
+            Y_DEBUG_ABORT_UNLESS(IsValid());
             ++Cur;
         }
 
@@ -166,12 +168,12 @@ private:
             return !Eof;
         }
         virtual const TDataItem *Get() const override {
-            Y_VERIFY_DEBUG(IsValid());
+            Y_DEBUG_ABORT_UNLESS(IsValid());
             return &Cur;
         }
 
         virtual void Next() override {
-            Y_VERIFY_DEBUG(IsValid());
+            Y_DEBUG_ABORT_UNLESS(IsValid());
             Eof = !Generator->Next(Cur);
         }
 
@@ -228,6 +230,14 @@ public:
 IDataGenerator* CreateBlobGenerator(ui64 maxCumSize, ui32 maxNumBlobs, ui32 minBlobSize, ui32 maxBlobSize,
         ui32 differentTablets, ui32 startingStep, TIntrusivePtr<NKikimr::TBlobStorageGroupInfo> info,
         TVector<NKikimr::TVDiskID> matchingVDisks, bool reuseData = false);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// TBadIdsDataSet
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class TBadIdsDataSet : public TVectorDataSet {
+public:
+    TBadIdsDataSet(NKikimrBlobStorage::EPutHandleClass cls, ui32 minHugeBlobSize, bool huge);
+};
 
 
 

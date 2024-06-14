@@ -355,18 +355,18 @@ public:
     // start child process
     void Run();
 
-    inline void Terminate() {
+    inline void Terminate(int signal) {
         if (!!Pid && (ExecutionStatus.load(std::memory_order_acquire) == SHELL_RUNNING)) {
-            bool ok =
 #if defined(_unix_)
-                kill(Options_.DetachSession ? -1 * Pid : Pid, SIGTERM) == 0;
+            bool ok = kill(Options_.DetachSession ? -1 * Pid : Pid, signal) == 0;
             if (!ok && (errno == ESRCH) && Options_.DetachSession) {
                 // this could fail when called before child proc completes setsid().
-                ok = kill(Pid, SIGTERM) == 0;
-                kill(-Pid, SIGTERM); // between a failed kill(-Pid) and a successful kill(Pid) a grandchild could have been spawned
+                ok = kill(Pid, signal) == 0;
+                kill(-Pid, signal); // between a failed kill(-Pid) and a successful kill(Pid) a grandchild could have been spawned
             }
 #else
-                TerminateProcess(Pid, 1 /* exit code */);
+            Y_UNUSED(signal);
+            bool ok = TerminateProcess(Pid, 1 /* exit code */);
 #endif
             if (!ok) {
                 ythrow TSystemError() << "cannot terminate " << Pid;
@@ -687,22 +687,8 @@ void TShellCommand::TImpl::OnFork(TPipes& pipes, sigset_t oldmask, char* const* 
         }
 
         if (Options_.CloseAllFdsOnExec) {
-            int maxOpenFiles = NSystemInfo::MaxOpenFiles();
-            TFsPath fdDir("/proc/self/fd");
-            // For a big MaxOpenFiles value directory listing overhead is negligible against useless fcntl calls
-            if (maxOpenFiles > 1024 && fdDir.IsDirectory()) {
-                TVector<TString> files;
-                fdDir.ListNames(files);
-                for (const TString& f : files) {
-                    int fd;
-                    if (TryFromString(f, fd) && fd > STDERR_FILENO) {
-                        fcntl(fd, F_SETFD, FD_CLOEXEC);
-                    }
-                }
-            } else {
-                for (int fd = maxOpenFiles; fd > STDERR_FILENO; --fd) {
-                    fcntl(fd, F_SETFD, FD_CLOEXEC);
-                }
+            for (int fd = NSystemInfo::MaxOpenFiles(); fd > STDERR_FILENO; --fd) {
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
             }
         }
 
@@ -1160,8 +1146,8 @@ TShellCommand& TShellCommand::Run() {
     return *this;
 }
 
-TShellCommand& TShellCommand::Terminate() {
-    Impl->Terminate();
+TShellCommand& TShellCommand::Terminate(int signal) {
+    Impl->Terminate(signal);
     return *this;
 }
 

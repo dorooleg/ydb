@@ -13,10 +13,6 @@ namespace NKikimr {
 namespace NKqp {
 
 void RegisterKqpReadActor(NYql::NDq::TDqAsyncIoFactory&, TIntrusivePtr<TKqpCounters>);
-
-void InjectRangeEvReadSettings(const NKikimrTxDataShard::TEvRead&);
-void InjectRangeEvReadAckSettings(const NKikimrTxDataShard::TEvReadAck&);
-
 void InterceptReadActorPipeCache(NActors::TActorId);
 
 } // namespace NKqp

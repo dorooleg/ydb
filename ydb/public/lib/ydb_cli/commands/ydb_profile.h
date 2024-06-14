@@ -12,6 +12,18 @@ public:
     virtual void Config(TConfig& config) override;
 };
 
+class TCommandConnectionInfo : public TClientCommand {
+public:
+    TCommandConnectionInfo();
+		
+    virtual void Config(TConfig& config) override;
+    virtual int Run(TConfig& config) override;
+
+private:
+    static void PrintInfo(TConfig& config);
+    static void PrintVerboseInfo(TConfig& config);
+};
+
 class TCommandProfile : public TClientCommandTree {
 public:
     TCommandProfile();
@@ -137,6 +149,8 @@ public:
     virtual void Config(TConfig& config) override;
     virtual void Parse(TConfig& config) override;
     virtual int Run(TConfig& config) override;
+private:
+    bool Force = false;
 };
 
 }

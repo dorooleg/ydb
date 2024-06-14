@@ -147,7 +147,7 @@ enum ESimpleCounters {
     COUNTER_REPLICATION_CONTROLLER_COUNT = 119            [(CounterOpts) = {Name: "ReplicationControllers"}];
     COUNTER_IN_FLIGHT_OPS_TxCreateReplication = 120       [(CounterOpts) = {Name: "InFlightOps/CreateReplication"}];
     COUNTER_IN_FLIGHT_OPS_TxAlterReplication = 121        [(CounterOpts) = {Name: "InFlightOps/AlterReplication"}];
-    COUNTER_IN_FLIGHT_OPS_TxDropReplication = 122         [(CounterOpts) = {Name: "InFlightOps/DropReplication"}];
+    COUNTER_IN_FLIGHT_OPS_TxDropReplicationCascade = 122  [(CounterOpts) = {Name: "InFlightOps/DropReplicationCascade"}];
 
     COUNTER_COMPACTION_QUEUE_SIZE_SH = 123                [(CounterOpts) = {Name: "BackgroundCompactionQueueSizeBySearchHeight"}];
     COUNTER_COMPACTION_QUEUE_SIZE_DELETES = 124           [(CounterOpts) = {Name: "BackgroundCompactionQueueSizeByRowDeletes"}];
@@ -186,6 +186,21 @@ enum ESimpleCounters {
 
     COUNTER_PQ_STATS_QUEUE_SIZE = 151                         [(CounterOpts) = {Name: "PQStatsQueueSize"}];
     COUNTER_DISK_SPACE_TOPICS_TOTAL_BYTES = 152               [(CounterOpts) = {Name: "DiskSpaceTopicsTotalBytes"}];
+
+    COUNTER_STATISTICS_AGGREGATOR_COUNT = 153                 [(CounterOpts) = {Name: "StatisticsAggregatorCount"}];
+
+    COUNTER_VIEW_COUNT = 154                                [(CounterOpts) = {Name: "ViewCount"}];
+    COUNTER_IN_FLIGHT_OPS_TxCreateView = 155                [(CounterOpts) = {Name: "InFlightOps/CreateView"}];
+    COUNTER_IN_FLIGHT_OPS_TxAlterView = 156                 [(CounterOpts) = {Name: "InFlightOps/AlterView"}];
+    COUNTER_IN_FLIGHT_OPS_TxDropView = 157                  [(CounterOpts) = {Name: "InFlightOps/DropView"}];
+
+    COUNTER_GRAPHSHARD_COUNT = 158 [(CounterOpts) = {Name: "GraphShards"}];
+
+    COUNTER_IN_FLIGHT_OPS_TxCopySequence = 159            [(CounterOpts) = {Name: "InFlightOps/CopySequence"}];
+
+    COUNTER_BACKUP_CONTROLLER_TABLET_COUNT = 160 [(CounterOpts) = {Name: "BackupControllers"}];
+
+    COUNTER_IN_FLIGHT_OPS_TxDropReplication = 161         [(CounterOpts) = {Name: "InFlightOps/DropReplication"}];
 }
 
 enum ECumulativeCounters {
@@ -271,7 +286,7 @@ enum ECumulativeCounters {
 
     COUNTER_FINISHED_OPS_TxCreateReplication = 70         [(CounterOpts) = {Name: "FinishedOps/CreateReplication"}];
     COUNTER_FINISHED_OPS_TxAlterReplication = 71          [(CounterOpts) = {Name: "FinishedOps/AlterReplication"}];
-    COUNTER_FINISHED_OPS_TxDropReplication = 72           [(CounterOpts) = {Name: "FinishedOps/DropReplication"}];
+    COUNTER_FINISHED_OPS_TxDropReplicationCascade = 72    [(CounterOpts) = {Name: "FinishedOps/DropReplicationCascade"}];
 
     COUNTER_BACKGROUND_COMPACTION_BORROWED = 73           [(CounterOpts) = {Name: "BackgroundCompactionBorrowed"}];
     COUNTER_BACKGROUND_COMPACTION_NOT_NEEDED = 74         [(CounterOpts) = {Name: "BackgroundCompactionNotNeeded"}];
@@ -302,6 +317,13 @@ enum ECumulativeCounters {
     COUNTER_FINISHED_OPS_TxAlterExternalDataSource = 93   [(CounterOpts) = {Name: "FinishedOps/AlterExternalDataSource"}];
 
     COUNTER_PQ_STATS_WRITTEN = 94                           [(CounterOpts) = {Name: "PQStatsWritten"}];
+
+    COUNTER_FINISHED_OPS_TxCreateView = 95              [(CounterOpts) = {Name: "FinishedOps/CreateView"}];
+    COUNTER_FINISHED_OPS_TxDropView = 96                [(CounterOpts) = {Name: "FinishedOps/DropView"}];
+    COUNTER_FINISHED_OPS_TxAlterView = 97               [(CounterOpts) = {Name: "FinishedOps/AlterView"}];
+    COUNTER_FINISHED_OPS_TxCopySequence = 98              [(CounterOpts) = {Name: "FinishedOps/TxCopySequence"}];
+
+    COUNTER_FINISHED_OPS_TxDropReplication = 99           [(CounterOpts) = {Name: "FinishedOps/DropReplication"}];
 }
 
 enum EPercentileCounters {
@@ -522,4 +544,7 @@ enum ETxTypes {
 
     TXTYPE_PERSQUEUE_PROPOSE_RESULT = 83                  [(TxTypeOpts) = {Name: "TxPersQueueProposeResult"}];
     TXTYPE_PERSQUEUE_PROPOSE_ATTACH_RESULT = 84           [(TxTypeOpts) = {Name: "TxProposeTransactionAttachResult"}];
+    TXTYPE_UPDATE_DOMAIN_REPLY = 85                       [(TxTypeOpts) = {Name: "TxUpdateDomainReply"}];
+
+    TXTYPE_SEQUENCESHARD_GET_SEQUENCE_RESULT = 86    [(TxTypeOpts) = {Name: "TxSequenceShardGetSequenceResult"}];
 }

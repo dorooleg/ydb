@@ -51,6 +51,10 @@
         GROUPS("DataShard"),                                                   \
         TYPES(),                                                               \
         NAMES())                                                               \
+    PROBE(ReadWaitProposeDelayers,                                             \
+        GROUPS("DataShard"),                                                   \
+        TYPES(),                                                               \
+        NAMES())                                                               \
     PROBE(ReadWaitSnapshot,                                                    \
         GROUPS("DataShard"),                                                   \
         TYPES(ui64, ui64),                                                     \
@@ -71,6 +75,19 @@
         GROUPS("DataShard"),                                                   \
         TYPES(),                                                               \
         NAMES())                                                               \
+    PROBE(WriteRequest,                                                        \
+        GROUPS("DataShard", "LWTrackStart"),                                   \
+        TYPES(),                                                               \
+        NAMES())                                                               \
+    PROBE(WriteExecute,                                                        \
+        GROUPS("DataShard"),                                                   \
+        TYPES(),                                                               \
+        NAMES())                                                               \
+    PROBE(WriteResult,                                                         \
+        GROUPS("DataShard"),                                                   \
+        TYPES(),                                                               \
+        NAMES())                                                               \
+
 // DATASHARD_PROVIDER
 
 LWTRACE_DECLARE_PROVIDER(DATASHARD_PROVIDER)

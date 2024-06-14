@@ -4,13 +4,14 @@ option cc_enable_arenas = true;
 package NYql.NDqProto;
 
 import "google/protobuf/any.proto";
+import "ydb/library/yql/dq/actors/protos/dq_stats.proto";
 import "ydb/library/yql/dq/actors/protos/dq_status_codes.proto";
 import "ydb/library/yql/dq/proto/dq_transport.proto";
 import "ydb/library/yql/dq/proto/dq_tasks.proto";
 import "ydb/library/yql/providers/dq/api/protos/service.proto";
 import "ydb/public/api/protos/ydb_issue_message.proto";
 import "ydb/public/api/protos/ydb_value.proto";
-import "library/cpp/actors/protos/actors.proto";
+import "ydb/library/actors/protos/actors.proto";
 
 message TAllocateWorkersRequest {
     uint32 Count = 1;
@@ -37,6 +38,8 @@ message TAllocateWorkersRequest {
     NActorsProto.TActorId ResultActorId = 13; // used for compute actor
 
     uint64 FreeWorkerAfterMs = 14;
+    NYql.NDqProto.EDqStatsMode StatsMode = 16;
+    reserved 17;
 }
 
 message TWorkerGroup {
@@ -210,6 +213,7 @@ message TReadyState {
     repeated TMetric Metric = 3;
     repeated NYql.NDqProto.TDqTask Task = 4; // used for compute actor
     repeated NActorsProto.TActorId ActorId = 5; // used for compute actor
+    NYql.NDqProto.EDqStatsMode StatsMode = 6;
 }
 
 enum EGraphExecutionEventType {

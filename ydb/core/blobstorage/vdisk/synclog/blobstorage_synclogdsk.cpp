@@ -1,9 +1,9 @@
 #include "blobstorage_synclogdsk.h"
 #include "blobstorage_synclog_private_events.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/mon.h>
 
 
 namespace NKikimr {
@@ -32,7 +32,7 @@ namespace NKikimr {
 
         TDeltaToDiskRecLog &TDeltaToDiskRecLog::Append(ui32 chunkIdx,
                                                        const TVector<TSyncLogPageSnap> &pages) {
-            Y_VERIFY(AllAppends.empty() || AllAppends.back().ChunkIdx != chunkIdx);
+            Y_ABORT_UNLESS(AllAppends.empty() || AllAppends.back().ChunkIdx != chunkIdx);
             AllAppends.emplace_back(chunkIdx, pages);
             return *this;
         }
@@ -62,19 +62,19 @@ namespace NKikimr {
         // TOneChunkIndex
         ////////////////////////////////////////////////////////////////////////////
         void TOneChunkIndex::UpdateIndex(const TVector<TSyncLogPageSnap> &pages, ui32 indexBulk) {
-            Y_VERIFY_DEBUG(!Index.empty() && !pages.empty());
+            Y_DEBUG_ABORT_UNLESS(!Index.empty() && !pages.empty());
             TSyncLogPageSnap firstPage = pages.front();
             ui64 firstPageFirstLsn = firstPage.GetFirstLsn();
             ui64 firstPageLastLsn = firstPage.GetLastLsn();
 
-            Y_VERIFY_DEBUG(LastRealLsn < firstPageFirstLsn ||
+            Y_DEBUG_ABORT_UNLESS(LastRealLsn < firstPageFirstLsn ||
                          (firstPageFirstLsn <= LastRealLsn && LastRealLsn < firstPageLastLsn));
             // save freePagePos before updating index
             ui32 freePagePos = FreePagePos();
             if (firstPageFirstLsn <= LastRealLsn) {
                 // remove or update last index rec
                 TDiskIndexRecord &lastRec = Index.back();
-                Y_VERIFY_DEBUG(lastRec.PagesNum >= 1);
+                Y_DEBUG_ABORT_UNLESS(lastRec.PagesNum >= 1);
                 if (lastRec.PagesNum > 1) {
                     lastRec.PagesNum--;
                 } else {
@@ -90,7 +90,7 @@ namespace NKikimr {
                                          ui32 indexBulk,
                                          ui32 freePagePos) {
             ui32 s = pages.size();
-            Y_VERIFY_DEBUG(s > 0);
+            Y_DEBUG_ABORT_UNLESS(s > 0);
             LastRealLsn = pages[s - 1].GetLastLsn();
             for (ui32 i = 0; i < s; i += indexBulk) {
                 ui64 firstLsn = pages[i].GetFirstLsn();
@@ -128,7 +128,7 @@ namespace NKikimr {
         ui32 TOneChunkIndex::Serialize(IOutputStream &s,
                                        const TDeltaToDiskRecLog::TOneAppend &append,
                                        ui32 indexBulk) const {
-            Y_VERIFY(!Index.empty());
+            Y_ABORT_UNLESS(!Index.empty());
 
             // we implement Serialize with Delta via deep copy
             TOneChunkIndex idx(*this);
@@ -289,7 +289,7 @@ namespace NKikimr {
         }
 
         ui32 TDiskRecLogSnapshot::LastChunkIdx() const {
-            Y_VERIFY(!ManyIdxChunks.empty());
+            Y_ABORT_UNLESS(!ManyIdxChunks.empty());
             return ManyIdxChunks.back()->GetChunkIdx();
         }
 
@@ -315,7 +315,7 @@ namespace NKikimr {
             , ManyIdxChunks()
         {
             if (serializedDataBegin) {
-                Y_VERIFY_DEBUG(serializedDataEnd && serializedDataBegin < serializedDataEnd);
+                Y_DEBUG_ABORT_UNLESS(serializedDataEnd && serializedDataBegin < serializedDataEnd);
                 Deserialize(serializedDataBegin, serializedDataEnd);
             }
         }
@@ -372,7 +372,7 @@ namespace NKikimr {
             auto m = Guard(Lock);
             const ui32 curChunks = ManyIdxChunks.size();
             const ui32 numChunksToDelete = Min(nchunks, curChunks);
-            Y_VERIFY(nchunks && curChunks, "nchunks# %" PRIu32 " curChunks# %" PRIu32, nchunks, curChunks);
+            Y_ABORT_UNLESS(nchunks && curChunks, "nchunks# %" PRIu32 " curChunks# %" PRIu32, nchunks, curChunks);
             ui64 newLogStartLsn = 0;
             for (ui32 i = 0; i < numChunksToDelete; i++) {
                 TIndexedChunkPtr chunkPtr = ManyIdxChunks.front();
@@ -415,7 +415,7 @@ namespace NKikimr {
             // ChunkDescription ::= [ChunkIdx=4b] [LastRealLsn=8b]
             //                      [DiskIndexRecsNum=4b] DiskIndexRec*
             // DiskIndexRec ::= [FirstLsn=8b] [OffsetInPages=2b] [PagesNum=2b]
-            Y_VERIFY_DEBUG(pos < end);
+            Y_DEBUG_ABORT_UNLESS(pos < end);
             if (size_t(end - pos) < 4)
                 return false;
 
@@ -476,7 +476,7 @@ namespace NKikimr {
                 const ui32 lastChunkFreePages = PrivateLastChunkFreePagesNum();
                 if (swapPagesSize > lastChunkFreePages) {
                     swapPagesSize -= lastChunkFreePages;
-                    Y_VERIFY_DEBUG(swapPagesSize > 0);
+                    Y_DEBUG_ABORT_UNLESS(swapPagesSize > 0);
                     numChunksToAdd = swapPagesSize / PagesInChunk;
                     if (numChunksToAdd * PagesInChunk != swapPagesSize) {
                         ++numChunksToAdd;
@@ -494,11 +494,11 @@ namespace NKikimr {
                 ManyIdxChunks.push_back(c.first);
                 pos = c.second;
             }
-            Y_VERIFY(ManyIdxChunks.size() == chunksNum);
+            Y_ABORT_UNLESS(ManyIdxChunks.size() == chunksNum);
         }
 
         ui32 TDiskRecLog::PrivateLastChunkIdx() const {
-            Y_VERIFY_DEBUG(!PrivateEmpty());
+            Y_DEBUG_ABORT_UNLESS(!PrivateEmpty());
             return ManyIdxChunks.back()->GetChunkIdx();
         }
 
@@ -513,11 +513,11 @@ namespace NKikimr {
                                              const TVector<TSyncLogPageSnap> &pages) {
             if (!PrivateEmpty() && PrivateLastChunkIdx() == chunkIdx) {
                 // update last chunk
-                Y_VERIFY_DEBUG(pages.size() <= PrivateLastChunkFreePagesNum());
+                Y_DEBUG_ABORT_UNLESS(pages.size() <= PrivateLastChunkFreePagesNum());
                 ManyIdxChunks.back()->UpdateIndex(pages, IndexBulk);
             } else {
                 // add new
-                Y_VERIFY_DEBUG(pages.size() <= PagesInChunk);
+                Y_DEBUG_ABORT_UNLESS(pages.size() <= PagesInChunk);
                 TIndexedChunkPtr ptr(new TIndexedChunk(chunkIdx, pages, IndexBulk));
                 ManyIdxChunks.push_back(ptr);
             }

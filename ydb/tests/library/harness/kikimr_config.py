@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
-import sys
+import copy
 import itertools
 import os
-import tempfile
 import socket
+import sys
+import tempfile
+
 import six
 import yaml
-import copy
+from google.protobuf.text_format import Parse
 from pkg_resources import resource_string
 
-from google.protobuf.text_format import Parse
-from ydb.core.protos import config_pb2
 import ydb.tests.library.common.yatest_common as yatest_common
+from ydb.core.protos import config_pb2
+from ydb.tests.library.common.types import Erasure
 
 from . import tls_tools
-from ydb.tests.library.common.types import Erasure
 from .kikimr_port_allocator import KikimrPortManagerPortAllocator
 from .param_constants import kikimr_driver_path
 from .util import LogLevels
@@ -42,6 +43,7 @@ def get_fqdn():
     assert False, 'Failed to get FQDN'
 
 
+# GRPC_SERVER:DEBUG,TICKET_PARSER:WARN,KQP_COMPILE_ACTOR:DEBUG
 def get_additional_log_configs():
     log_configs = os.getenv('YDB_ADDITIONAL_LOG_CONFIGS', '')
     rt = {}
@@ -93,6 +95,16 @@ def _load_yaml_config(filename):
     return yaml.safe_load(_read_file(filename))
 
 
+def use_in_memory_pdisks_var(pdisk_store_path, use_in_memory_pdisks):
+    if os.getenv('YDB_USE_IN_MEMORY_PDISKS') is not None:
+        return os.getenv('YDB_USE_IN_MEMORY_PDISKS') == "true"
+
+    if pdisk_store_path:
+        return False
+
+    return use_in_memory_pdisks
+
+
 class KikimrConfigGenerator(object):
     def __init__(
             self,
@@ -122,7 +134,7 @@ class KikimrConfigGenerator(object):
             n_to_select=None,
             use_log_files=True,
             grpc_ssl_enable=False,
-            use_in_memory_pdisks=False,
+            use_in_memory_pdisks=True,
             enable_pqcd=True,
             enable_metering=False,
             enable_audit_log=False,
@@ -132,7 +144,6 @@ class KikimrConfigGenerator(object):
             public_http_config=None,
             enable_datastreams=False,
             auth_config_path=None,
-            disable_mvcc=False,
             enable_public_api_external_blobs=False,
             node_kind=None,
             bs_cache_file_path=None,
@@ -144,7 +155,21 @@ class KikimrConfigGenerator(object):
             disable_iterator_lookups=False,
             overrided_actor_system_config=None,
             default_users=None,  # dict[user]=password
+            extra_feature_flags=None,  # list[str]
+            extra_grpc_services=None,  # list[str]
+            hive_config=None,
+            datashard_config=None,
+            enforce_user_token_requirement=False,
+            default_user_sid=None,
+            pg_compatible_expirement=False,
+            generic_connector_config=None,  # typing.Optional[TGenericConnectorConfig]
+            pgwire_port=None,
     ):
+        if extra_feature_flags is None:
+            extra_feature_flags = []
+        if extra_grpc_services is None:
+            extra_grpc_services = []
+
         self._version = version
         self.use_log_files = use_log_files
         self.suppress_version_check = suppress_version_check
@@ -185,7 +210,7 @@ class KikimrConfigGenerator(object):
         self.state_storage_rings = state_storage_rings
         if self.state_storage_rings is None:
             self.state_storage_rings = copy.deepcopy(self.__node_ids[: 9 if erasure == Erasure.MIRROR_3_DC else 8])
-        self.__use_in_memory_pdisks = use_in_memory_pdisks or os.getenv('YDB_USE_IN_MEMORY_PDISKS') == 'true'
+        self.__use_in_memory_pdisks = use_in_memory_pdisks_var(pdisk_store_path, use_in_memory_pdisks)
         self.__pdisks_directory = os.getenv('YDB_PDISKS_DIRECTORY')
         self.static_erasure = erasure
         self.domain_name = domain_name
@@ -199,6 +224,11 @@ class KikimrConfigGenerator(object):
 
         self.__additional_log_configs = {} if additional_log_configs is None else additional_log_configs
         self.__additional_log_configs.update(get_additional_log_configs())
+        if pg_compatible_expirement:
+            self.__additional_log_configs.update({
+                'PGWIRE': LogLevels.from_string('DEBUG'),
+                'LOCAL_PGWIRE': LogLevels.from_string('DEBUG'),
+            })
 
         self.dynamic_pdisk_size = dynamic_pdisk_size
         self.dynamic_storage_pools = dynamic_storage_pools
@@ -217,20 +247,34 @@ class KikimrConfigGenerator(object):
         if overrided_actor_system_config:
             self.yaml_config["actor_system_config"] = overrided_actor_system_config
 
+        if "table_service_config" not in self.yaml_config:
+            self.yaml_config["table_service_config"] = {}
+
+        if os.getenv('YDB_KQP_ENABLE_IMMEDIATE_EFFECTS', 'false').lower() == 'true':
+            self.yaml_config["table_service_config"]["enable_kqp_immediate_effects"] = True
+
+        if os.getenv('YDB_TABLE_ENABLE_PREPARED_DDL', 'false').lower() == 'true':
+            self.yaml_config["table_service_config"]["enable_prepared_ddl"] = True
+
+        if os.getenv('PGWIRE_LISTENING_PORT', ''):
+            self.yaml_config["local_pg_wire_config"] = {}
+            self.yaml_config["local_pg_wire_config"]["listening_port"] = os.getenv('PGWIRE_LISTENING_PORT')
+
+        if pgwire_port:
+            self.yaml_config["local_pg_wire_config"] = {}
+            self.yaml_config["local_pg_wire_config"]["listening_port"] = pgwire_port
+
         if disable_iterator_reads:
-            if "table_service_config" not in self.yaml_config:
-                self.yaml_config["table_service_config"] = {}
             self.yaml_config["table_service_config"]["enable_kqp_scan_query_source_read"] = False
             self.yaml_config["table_service_config"]["enable_kqp_data_query_source_read"] = False
 
         if disable_iterator_lookups:
-            if "table_service_config" not in self.yaml_config:
-                self.yaml_config["table_service_config"] = {}
             self.yaml_config["table_service_config"]["enable_kqp_scan_query_stream_lookup"] = False
             self.yaml_config["table_service_config"]["enable_kqp_data_query_stream_lookup"] = False
 
         self.yaml_config["feature_flags"]["enable_public_api_external_blobs"] = enable_public_api_external_blobs
-        self.yaml_config["feature_flags"]["enable_mvcc"] = "VALUE_FALSE" if disable_mvcc else "VALUE_TRUE"
+        for extra_feature_flag in extra_feature_flags:
+            self.yaml_config["feature_flags"][extra_feature_flag] = True
         if enable_alter_database_create_hive_first:
             self.yaml_config["feature_flags"]["enable_alter_database_create_hive_first"] = enable_alter_database_create_hive_first
         self.yaml_config['pqconfig']['enabled'] = enable_pq
@@ -250,6 +294,8 @@ class KikimrConfigGenerator(object):
             self.yaml_config['pqconfig']['client_service_type'] = []
             for service_type in pq_client_service_types:
                 self.yaml_config['pqconfig']['client_service_type'].append({'name': service_type})
+
+        self.yaml_config['grpc_config']['services'].extend(extra_grpc_services)
 
         # NOTE(shmel1k@): change to 'true' after migration to YDS scheme
         self.yaml_config['sqs_config']['enable_sqs'] = enable_sqs
@@ -307,6 +353,12 @@ class KikimrConfigGenerator(object):
         elif public_http_config_path:
             self.yaml_config["public_http_config"] = _load_yaml_config(public_http_config_path)
 
+        if hive_config:
+            self.yaml_config["hive_config"] = hive_config
+
+        if datashard_config:
+            self.yaml_config["data_shard_config"] = datashard_config
+
         self.__build()
 
         if self.grpc_ssl_enable:
@@ -330,6 +382,47 @@ class KikimrConfigGenerator(object):
 
         if os.getenv("YDB_ALLOW_ORIGIN") is not None:
             self.yaml_config["monitoring_config"] = {"allow_origin": str(os.getenv("YDB_ALLOW_ORIGIN"))}
+
+        if enforce_user_token_requirement:
+            self.yaml_config["domains_config"]["security_config"]["enforce_user_token_requirement"] = True
+
+        if default_user_sid:
+            self.yaml_config["domains_config"]["security_config"]["default_user_sids"] = [default_user_sid]
+
+        if pg_compatible_expirement:
+            self.yaml_config["table_service_config"]["enable_prepared_ddl"] = True
+            self.yaml_config["table_service_config"]["enable_ast_cache"] = True
+            self.yaml_config["table_service_config"]["enable_pg_consts_to_params"] = True
+            self.yaml_config["table_service_config"]["index_auto_choose_mode"] = 'max_used_prefix'
+            self.yaml_config["feature_flags"]['enable_temp_tables'] = True
+            self.yaml_config["feature_flags"]['enable_table_pg_types'] = True
+
+        if generic_connector_config:
+            if "query_service_config" not in self.yaml_config:
+                self.yaml_config["query_service_config"] = {}
+
+            self.yaml_config["query_service_config"]["generic"] = {
+                "connector": {
+                    "endpoint": {
+                        "host": generic_connector_config.Endpoint.host,
+                        "port": generic_connector_config.Endpoint.port,
+                    },
+                    "use_ssl": generic_connector_config.UseSsl
+                },
+                "default_settings": [
+                    {
+                        "name": "DateTimeFormat",
+                        "value": "string"
+                    },
+                    {
+                        "name": "UsePredicatePushdown",
+                        "value": "true"
+                    }
+                ]
+            }
+
+            self.yaml_config["feature_flags"]["enable_external_data_sources"] = True
+            self.yaml_config["feature_flags"]["enable_script_execution_operations"] = True
 
     @property
     def pdisks_info(self):
@@ -423,7 +516,7 @@ class KikimrConfigGenerator(object):
 
     @property
     def audit_file_path(self):
-        return self.yaml_config.get('audit_config', {}).get('audit_file_path')
+        return self.yaml_config.get('audit_config', {}).get('file_backend', {}).get('file_path')
 
     @property
     def nbs_enable(self):

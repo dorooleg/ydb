@@ -50,8 +50,12 @@ inline THashType GetFloatHash(const TUnboxedValuePod& value) {
     return std::isunordered(x, x) ? ~0ULL : std::hash<T>()(x);
 }
 
+inline THashType GetStringHash(TStringBuf value) {
+    return THash<TStringBuf>{}(value);
+}
+
 inline THashType GetStringHash(const TUnboxedValuePod& value) {
-    return THash<TStringBuf>{}(value.AsStringRef());
+    return GetStringHash(value.AsStringRef());
 }
 
 template <typename T, std::enable_if_t<std::is_integral<T>::value>* = nullptr>
@@ -131,17 +135,17 @@ inline THashType GetValueHash<EDataSlot::Uuid>(const TUnboxedValuePod& value) {
 
 template <>
 inline THashType GetValueHash<EDataSlot::Yson>(const TUnboxedValuePod&) {
-    Y_FAIL("Yson isn't hashable.");
+    Y_ABORT("Yson isn't hashable.");
 }
 
 template <>
 inline THashType GetValueHash<EDataSlot::Json>(const TUnboxedValuePod&) {
-    Y_FAIL("Json isn't hashable.");
+    Y_ABORT("Json isn't hashable.");
 }
 
 template <>
 inline THashType GetValueHash<EDataSlot::JsonDocument>(const TUnboxedValuePod&) {
-    Y_FAIL("JsonDocument isn't hashable.");
+    Y_ABORT("JsonDocument isn't hashable.");
 }
 
 template <>
@@ -177,6 +181,26 @@ inline THashType GetValueHash<EDataSlot::TzDatetime>(const TUnboxedValuePod& val
 template <>
 inline THashType GetValueHash<EDataSlot::TzTimestamp>(const TUnboxedValuePod& value) {
     return GetTzIntegerHash<ui64>(value);
+}
+
+template <>
+inline THashType GetValueHash<EDataSlot::Date32>(const TUnboxedValuePod& value) {
+    return GetIntegerHash<i32>(value);
+}
+
+template <>
+inline THashType GetValueHash<EDataSlot::Datetime64>(const TUnboxedValuePod& value) {
+    return GetIntegerHash<i64>(value);
+}
+
+template <>
+inline THashType GetValueHash<EDataSlot::Timestamp64>(const TUnboxedValuePod& value) {
+    return GetIntegerHash<i64>(value);
+}
+
+template <>
+inline THashType GetValueHash<EDataSlot::Interval64>(const TUnboxedValuePod& value) {
+    return GetIntegerHash<i64>(value);
 }
 
 template <>
@@ -322,17 +346,17 @@ inline int CompareValues<EDataSlot::Uuid>(const TUnboxedValuePod& lhs, const TUn
 
 template <>
 inline int CompareValues<EDataSlot::Yson>(const TUnboxedValuePod&, const TUnboxedValuePod&) {
-    Y_FAIL("Yson isn't comparable.");
+    Y_ABORT("Yson isn't comparable.");
 }
 
 template <>
 inline int CompareValues<EDataSlot::Json>(const TUnboxedValuePod&, const TUnboxedValuePod&) {
-    Y_FAIL("Json isn't comparable.");
+    Y_ABORT("Json isn't comparable.");
 }
 
 template <>
 inline int CompareValues<EDataSlot::JsonDocument>(const TUnboxedValuePod&, const TUnboxedValuePod&) {
-    Y_FAIL("JsonDocument isn't comparable.");
+    Y_ABORT("JsonDocument isn't comparable.");
 }
 
 template <>
@@ -368,6 +392,26 @@ inline int CompareValues<EDataSlot::TzDatetime>(const TUnboxedValuePod& lhs, con
 template <>
 inline int CompareValues<EDataSlot::TzTimestamp>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
     return CompareTzIntegers<ui64>(lhs, rhs);
+}
+
+template <>
+inline int CompareValues<EDataSlot::Date32>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return CompareIntegers<i32>(lhs, rhs);
+}
+
+template <>
+inline int CompareValues<EDataSlot::Datetime64>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return CompareIntegers<i64>(lhs, rhs);
+}
+
+template <>
+inline int CompareValues<EDataSlot::Timestamp64>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return CompareIntegers<i64>(lhs, rhs);
+}
+
+template <>
+inline int CompareValues<EDataSlot::Interval64>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return CompareIntegers<i64>(lhs, rhs);
 }
 
 template <>
@@ -492,17 +536,17 @@ inline bool EquateValues<EDataSlot::Uuid>(const TUnboxedValuePod& lhs, const TUn
 
 template <>
 inline bool EquateValues<EDataSlot::Yson>(const TUnboxedValuePod&, const TUnboxedValuePod&) {
-    Y_FAIL("Yson isn't comparable.");
+    Y_ABORT("Yson isn't comparable.");
 }
 
 template <>
 inline bool EquateValues<EDataSlot::Json>(const TUnboxedValuePod&, const TUnboxedValuePod&) {
-    Y_FAIL("Json isn't comparable.");
+    Y_ABORT("Json isn't comparable.");
 }
 
 template <>
 inline bool EquateValues<EDataSlot::JsonDocument>(const TUnboxedValuePod&, const TUnboxedValuePod&) {
-    Y_FAIL("JsonDocument isn't comparable.");
+    Y_ABORT("JsonDocument isn't comparable.");
 }
 
 template <>
@@ -538,6 +582,26 @@ inline bool EquateValues<EDataSlot::TzDatetime>(const TUnboxedValuePod& lhs, con
 template <>
 inline bool EquateValues<EDataSlot::TzTimestamp>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
     return EquateTzIntegers<ui64>(lhs, rhs);
+}
+
+template <>
+inline bool EquateValues<EDataSlot::Date32>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return EquateIntegers<i32>(lhs, rhs);
+}
+
+template <>
+inline bool EquateValues<EDataSlot::Datetime64>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return EquateIntegers<i64>(lhs, rhs);
+}
+
+template <>
+inline bool EquateValues<EDataSlot::Timestamp64>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return EquateIntegers<i64>(lhs, rhs);
+}
+
+template <>
+inline bool EquateValues<EDataSlot::Interval64>(const TUnboxedValuePod& lhs, const TUnboxedValuePod& rhs) {
+    return EquateIntegers<i64>(lhs, rhs);
 }
 
 template <>

@@ -37,20 +37,20 @@ namespace NPageCollection {
             , Slots(Max<ui8>(), Max<ui8>())
         {
             if ((cookieRange.Head & ~Mask) || (cookieRange.Tail & ~Mask)) {
-                Y_FAIL("CookieRange range can use only lower 24 bits");
+                Y_ABORT("CookieRange range can use only lower 24 bits");
             } else if (cookieRange.Head > cookieRange.Tail) {
-                Y_FAIL("Invalid TLogoBlobID cookieRange capacity range");
+                Y_ABORT("Invalid TLogoBlobID cookieRange capacity range");
             }
 
             for (auto &one: row) {
                 auto &place = Slots[one.Channel];
 
-                Y_VERIFY(one.Channel != Max<ui8>(),
+                Y_ABORT_UNLESS(one.Channel != Max<ui8>(),
                     "Channel cannot be set to Max<ui8>() value");
 
                 if (place != Max<ui8>()) {
                     /* Channel already associated with a group */
-                    Y_VERIFY(Group[place] == one.Group,
+                    Y_ABORT_UNLESS(Group[place] == one.Group,
                         "Channel assigned to different groups");
                     continue;
                 }
@@ -109,7 +109,7 @@ namespace NPageCollection {
         {
             auto slot = Slots[channel];
 
-            Y_VERIFY(slot != Max<ui8>(), "Requested unknown channel");
+            Y_ABORT_UNLESS(slot != Max<ui8>(), "Requested unknown channel");
 
             return slot;
         }

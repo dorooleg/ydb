@@ -1,31 +1,34 @@
-/*
- *
- * Copyright 2018 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2018 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
-#ifndef GRPC_CORE_LIB_RESOLVER_SERVER_ADDRESS_H
-#define GRPC_CORE_LIB_RESOLVER_SERVER_ADDRESS_H
+#ifndef GRPC_SRC_CORE_LIB_RESOLVER_SERVER_ADDRESS_H
+#define GRPC_SRC_CORE_LIB_RESOLVER_SERVER_ADDRESS_H
 
 #include <grpc/support/port_platform.h>
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <map>
 #include <memory>
-
-#include "y_absl/container/inlined_vector.h"
-#include "y_absl/strings/str_format.h"
+#include <util/generic/string.h>
+#include <util/string/cast.h>
+#include <vector>
 
 #include "src/core/lib/channel/channel_args.h"
 #include "src/core/lib/gpr/useful.h"
@@ -64,15 +67,13 @@ class ServerAddress {
   };
 
   // Takes ownership of args.
-  ServerAddress(const grpc_resolved_address& address, grpc_channel_args* args,
+  ServerAddress(const grpc_resolved_address& address, const ChannelArgs& args,
                 std::map<const char*, std::unique_ptr<AttributeInterface>>
                     attributes = {});
   ServerAddress(const void* address, size_t address_len,
-                grpc_channel_args* args,
+                const ChannelArgs& args,
                 std::map<const char*, std::unique_ptr<AttributeInterface>>
                     attributes = {});
-
-  ~ServerAddress() { grpc_channel_args_destroy(args_); }
 
   // Copyable.
   ServerAddress(const ServerAddress& other);
@@ -87,7 +88,7 @@ class ServerAddress {
   int Cmp(const ServerAddress& other) const;
 
   const grpc_resolved_address& address() const { return address_; }
-  const grpc_channel_args* args() const { return args_; }
+  const ChannelArgs& args() const { return args_; }
 
   const AttributeInterface* GetAttribute(const char* key) const;
 
@@ -96,11 +97,14 @@ class ServerAddress {
   ServerAddress WithAttribute(const char* key,
                               std::unique_ptr<AttributeInterface> value) const;
 
+  // TODO(ctiller): Prior to making this a public API we should ensure that the
+  // channel args are not part of the generated string, lest we make that debug
+  // format load-bearing via Hyrum's law.
   TString ToString() const;
 
  private:
   grpc_resolved_address address_;
-  grpc_channel_args* args_;
+  ChannelArgs args_;
   std::map<const char*, std::unique_ptr<AttributeInterface>> attributes_;
 };
 
@@ -108,7 +112,7 @@ class ServerAddress {
 // ServerAddressList
 //
 
-typedef y_absl::InlinedVector<ServerAddress, 1> ServerAddressList;
+using ServerAddressList = std::vector<ServerAddress>;
 
 //
 // ServerAddressWeightAttribute
@@ -122,7 +126,7 @@ class ServerAddressWeightAttribute : public ServerAddress::AttributeInterface {
   uint32_t weight() const { return weight_; }
 
   std::unique_ptr<AttributeInterface> Copy() const override {
-    return y_absl::make_unique<ServerAddressWeightAttribute>(weight_);
+    return std::make_unique<ServerAddressWeightAttribute>(weight_);
   }
 
   int Cmp(const AttributeInterface* other) const override {
@@ -131,9 +135,7 @@ class ServerAddressWeightAttribute : public ServerAddress::AttributeInterface {
     return QsortCompare(weight_, other_locality_attr->weight_);
   }
 
-  TString ToString() const override {
-    return y_absl::StrFormat("%d", weight_);
-  }
+  TString ToString() const override;
 
  private:
   uint32_t weight_;
@@ -141,4 +143,4 @@ class ServerAddressWeightAttribute : public ServerAddress::AttributeInterface {
 
 }  // namespace grpc_core
 
-#endif /* GRPC_CORE_LIB_RESOLVER_SERVER_ADDRESS_H */
+#endif  // GRPC_SRC_CORE_LIB_RESOLVER_SERVER_ADDRESS_H

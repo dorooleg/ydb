@@ -3,7 +3,7 @@
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/utils/cast.h>
 
 namespace NKikimr {
@@ -26,12 +26,12 @@ public:
             , State(std::move(state))
             , Switch(outSwitch)
             , UpdateState(std::move(updateState))
-            , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
-            , TempStateIndex(std::exchange(mutables.CurValueIndex, mutables.CurValueIndex + State.size()))
             , SwitchItem(IsPasstrought(Switch, Items))
             , ItemsOnInit(GetPasstroughtMap(Items, InitState))
             , ItemsOnUpdate(GetPasstroughtMap(Items, UpdateState))
             , UpdateOnItems(GetPasstroughtMap(UpdateState, Items))
+            , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
+            , TempStateIndex(std::exchange(mutables.CurValueIndex, mutables.CurValueIndex + State.size()))
     {}
 
     EFetchResult DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx, NUdf::TUnboxedValue*const* output) const {
@@ -106,7 +106,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto next = BasicBlock::Create(context, "next", ctx.Func);

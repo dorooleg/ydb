@@ -15,7 +15,7 @@ TLogCache::TCacheRecord::TCacheRecord(TCacheRecord&& other)
     , BadOffsets(std::move(other.BadOffsets))
 {}
 
-TLogCache::TItem::TItem(TItem&& other) 
+TLogCache::TItem::TItem(TItem&& other)
     : Value(std::move(other.Value))
 {}
 
@@ -42,7 +42,7 @@ const TLogCache::TCacheRecord* TLogCache::FindWithoutPromote(ui64 offset) const 
     if (indexIt == Index.end()) {
         return nullptr;
     }
-    
+
     return &indexIt->second.Value;
 }
 
@@ -57,7 +57,7 @@ bool TLogCache::Pop() {
 
 bool TLogCache::Insert(TCacheRecord&& value) {
     auto [it, inserted] = Index.try_emplace(value.Offset, std::move(value));
-    List.PushFront(&it->second); 
+    List.PushFront(&it->second);
     return inserted;
 }
 
@@ -66,7 +66,7 @@ size_t TLogCache::Erase(ui64 offset) {
 }
 
 size_t TLogCache::EraseRange(ui64 begin, ui64 end) {
-    Y_VERIFY_DEBUG(begin <= end);
+    Y_DEBUG_ABORT_UNLESS(begin <= end);
     auto beginIt = Index.lower_bound(begin);
     auto endIt = Index.lower_bound(end);
     size_t dist = std::distance(beginIt, endIt);

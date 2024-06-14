@@ -60,9 +60,14 @@ namespace NKikimr {
 
         NGc::TKeepStatus TBarriersEssence::KeepLogoBlob(const TLogoBlobID &id,
                                       const TIngress &ingress,
-                                      const ui32 recsMerged,
-                                      const bool allowKeepFlags) const
+                                      TKeepFlagStat keepFlagStat,
+                                      const bool allowKeepFlags,
+                                      bool allowGarbageCollection) const
         {
+            if (!allowGarbageCollection) {
+                return {true};
+            }
+
             // extract gen and step
             const ui32 gen = id.Generation();
             const ui32 step = id.Step();
@@ -83,9 +88,6 @@ namespace NKikimr {
             // flags says us to keep the record?
             const bool keepByFlags = ingress.KeepUnconditionally(IngressMode);
 
-            // is item is spread over multiple ssts?
-            const bool itemIsSpreadOverMultipleSsts = recsMerged > 1;
-
             // check if we have to keep data associated with this blob
             const bool keepData = (keepBySoftBarrier || keepByFlags) && keepByHardBarrier;
 
@@ -93,7 +95,7 @@ namespace NKikimr {
             // index and keep others as this index may contain Keep flag vital for blob consistency -- in case when
             // we drop such record, we will lose keep flag and item will be occasionally on next compaction; anyway,
             // if hard barrier tells us to drop this item, we drop it unconditinally
-            const bool spreadFactor = allowKeepFlags && itemIsSpreadOverMultipleSsts;
+            const bool spreadFactor = allowKeepFlags && keepFlagStat.Needed;
             const bool keepIndex = (keepData || spreadFactor) && keepByHardBarrier;
 
             return NGc::TKeepStatus(keepIndex, keepData, keepBySoftBarrier && keepByHardBarrier);

@@ -13,7 +13,7 @@
 #include <ydb/core/blobstorage/vdisk/synclog/blobstorage_synclog_public_events.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/mon.h>
 
 using namespace NKikimrServices;
 using namespace NKikimr::NSyncer;
@@ -43,7 +43,7 @@ namespace NKikimr {
         }
 
         void WriteReady(const TActorContext &ctx, ui64 seqNum) {
-            Y_VERIFY(!Queue.empty());
+            Y_ABORT_UNLESS(!Queue.empty());
             CommittedSeqNum = seqNum;
 
             while (!Queue.empty() && Queue.front().SeqNum <= CommittedSeqNum) {
@@ -148,7 +148,7 @@ namespace NKikimr {
             , SchedulerId(schedulerId)
             , LogAndPhase(logAndPhase)
         {
-            Y_VERIFY(Ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_ABORT_UNLESS(Ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
         }
     };
 
@@ -187,7 +187,7 @@ namespace NKikimr {
             TSyncerDataSerializer sds;
             SyncerData->Serialize(sds, GInfo.Get());
             CommitterId = ctx.Register(CreateSyncerCommitter(SyncerCtx, std::move(sds)));
-            ActiveActors.Insert(CommitterId);
+            ActiveActors.Insert(CommitterId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             // Sync VDisk Guid
             SyncGuid(ctx);
         }
@@ -210,7 +210,7 @@ namespace NKikimr {
                                                                    va,
                                                                    state,
                                                                    guid));
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
                 PropagatorIds.push_back(aid);
             }
         }
@@ -221,8 +221,8 @@ namespace NKikimr {
         void SyncGuid(const TActorContext &ctx) {
             Become(&TThis::SyncGuidStateFunc);
             GuidRecoveryId = ctx.Register(CreateVDiskGuidRecoveryActor(SyncerCtx->VCtx, GInfo, CommitterId, SelfId(),
-                LocalSyncerState));
-            ActiveActors.Insert(GuidRecoveryId);
+                LocalSyncerState, SyncerCtx->Config->BaseInfo.ReadOnly));
+            ActiveActors.Insert(GuidRecoveryId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             Phase = TPhaseVal::PhaseSyncGuid;
         }
 
@@ -246,7 +246,7 @@ namespace NKikimr {
                     InconsistentState(ctx);
                     break;
                 default:
-                    Y_FAIL("Unexpected case");
+                    Y_ABORT("Unexpected case");
             }
         }
 
@@ -289,11 +289,28 @@ namespace NKikimr {
         // Recover Lost Data
         ////////////////////////////////////////////////////////////////////////
         void RecoverLostData(const TActorContext &ctx) {
+            if (SyncerCtx->Config->BaseInfo.ReadOnly) {
+                LOG_WARN(ctx, BS_SYNCER,
+                    VDISKP(SyncerCtx->VCtx->VDiskLogPrefix,
+                        "Unable to recover lost data in read-only mode. Transitioning to inconsistent state."));
+                InconsistentState(ctx);
+                return;
+            }
+
             Become(&TThis::RecoverLostDataStateFunc);
+            Phase = TPhaseVal::PhaseRecoverLostData;
+
+            if (SyncerCtx->Config->EnableVDiskCooldownTimeout) {
+                Schedule(SyncerCtx->Config->BaseInfo.YardInitDelay, new TEvents::TEvWakeup);
+            } else {
+                RecoverLostDataResumeAfterDelay(ctx);
+            }
+        }
+
+        void RecoverLostDataResumeAfterDelay(const TActorContext& ctx) {
             const TVDiskEternalGuid guid = GuidRecovOutcome->Guid;
             RecoverLostDataId = ctx.Register(CreateSyncerRecoverLostDataActor(SyncerCtx, GInfo, CommitterId, ctx.SelfID, guid));
-            ActiveActors.Insert(RecoverLostDataId);
-            Phase = TPhaseVal::PhaseRecoverLostData;
+            ActiveActors.Insert(RecoverLostDataId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
         }
 
         void Handle(TEvSyncerLostDataRecovered::TPtr &ev, const TActorContext &ctx) {
@@ -314,6 +331,7 @@ namespace NKikimr {
             HFunc(TEvents::TEvPoisonPill, HandlePoison)
             HFunc(TEvSublogLine, Handle)
             HFunc(TEvVGenerationChange, RecoverLostDataModeHandle)
+            CFunc(TEvents::TSystem::Wakeup, RecoverLostDataResumeAfterDelay);
         )
 
         ////////////////////////////////////////////////////////////////////////
@@ -330,8 +348,17 @@ namespace NKikimr {
                      new TEvSyncGuidRecoveryDone(NKikimrProto::OK, LocalSyncerState.DbBirthLsn));
             SyncerData->Neighbors->DbBirthLsn = LocalSyncerState.DbBirthLsn;
             Become(&TThis::StandardModeStateFunc);
-            SchedulerId = ctx.Register(CreateSyncerSchedulerActor(SyncerCtx, GInfo, SyncerData, CommitterId));
-            ActiveActors.Insert(SchedulerId);
+            if (!SyncerCtx->Config->BaseInfo.ReadOnly) {
+                LOG_DEBUG(ctx, BS_SYNCER,
+                    VDISKP(SyncerCtx->VCtx->VDiskLogPrefix,
+                        "%s: Creating syncer scheduler on node %d", __PRETTY_FUNCTION__, SelfId().NodeId()));
+                SchedulerId = ctx.Register(CreateSyncerSchedulerActor(SyncerCtx, GInfo, SyncerData, CommitterId));
+                ActiveActors.Insert(SchedulerId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            } else {
+                LOG_WARN(ctx, BS_SYNCER,
+                    VDISKP(SyncerCtx->VCtx->VDiskLogPrefix,
+                        "%s: Skipping scheduler start due to read-only", __PRETTY_FUNCTION__));
+            }
             Phase = TPhaseVal::PhaseStandardMode;
         }
 
@@ -363,17 +390,25 @@ namespace NKikimr {
                 // FIXME: check that this CACHE works correctly. It can be a good
                 // idea to forward all this messages directly to Committer, because
                 // is knows exact values
+                const ui64 prevGuidInMemory = (*SyncerData->Neighbors)[vdisk].Get().PeerGuidInfo.Info.GetGuid();
                 auto &data = (*SyncerData->Neighbors)[vdisk].Get().PeerGuidInfo;
                 data.Info = info;
                 // create reply
                 auto result = std::make_unique<TEvBlobStorage::TEvVSyncGuidResult>(NKikimrProto::OK, selfVDisk,
                     TAppData::TimeProvider->Now(), nullptr, nullptr, ev->GetChannel());
-                // put reply into the queue and wait until it would be committed
-                ui64 seqNum = DelayedQueue.WriteRequest(ev->Sender, std::move(result));
-                // commit
-                void *cookie = reinterpret_cast<void*>(intptr_t(seqNum));
-                auto msg = TEvSyncerCommit::Remote(vdisk, state, guid, cookie);
-                ctx.Send(CommitterId, msg.release());
+                if (!SyncerCtx->Config->BaseInfo.ReadOnly) {
+                    // put reply into the queue and wait until it would be committed
+                    ui64 seqNum = DelayedQueue.WriteRequest(ev->Sender, std::move(result));
+                    // commit
+                    void *cookie = reinterpret_cast<void*>(intptr_t(seqNum));
+                    auto msg = TEvSyncerCommit::Remote(vdisk, state, guid, cookie);
+                    ctx.Send(CommitterId, msg.release());
+                } else {
+                    LOG_WARN(ctx, BS_SYNCER,
+                        VDISKP(SyncerCtx->VCtx->VDiskLogPrefix,
+                            "%s: Skipping commit of incoming EvVSyncGuid: saved guid %s",
+                            __PRETTY_FUNCTION__, prevGuidInMemory != guid ? "differs" : "matches"));
+                }
             } else {
                 // handle READ request
                 auto &data = (*SyncerData->Neighbors)[vdisk].Get().PeerGuidInfo.Info;
@@ -432,7 +467,7 @@ namespace NKikimr {
         }
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_VERIFY(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
             TActorId schId;
             switch (Phase) {
                 case TPhaseVal::PhaseStandardMode: {
@@ -444,7 +479,7 @@ namespace NKikimr {
                 case TPhaseVal::PhaseRecoverLostData:
                     // no SchedulerId
                     break;
-                default: Y_FAIL("Unexpected case");
+                default: Y_ABORT("Unexpected case");
             }
 
             // print out local info
@@ -453,7 +488,7 @@ namespace NKikimr {
             // create an actor to handle request
             auto actor = std::make_unique<TSyncerHttpInfoActor>(SyncerCtx, ev, ctx.SelfID, schId, str.Str());
             auto aid = ctx.Register(actor.release());
-            ActiveActors.Insert(aid);
+            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
         }
 
         void Handle(TEvSublogLine::TPtr &ev, const TActorContext &ctx) {
@@ -465,7 +500,7 @@ namespace NKikimr {
         // Other handlers
         ////////////////////////////////////////////////////////////////////////
         void Handle(TEvLocalStatus::TPtr &ev, const TActorContext &ctx) {
-            if (Phase == TPhaseVal::PhaseStandardMode) {
+            if (Phase == TPhaseVal::PhaseStandardMode && SchedulerId) {
                 ctx.Send(ev->Forward(SchedulerId));
             } else {
                 auto result = std::make_unique<TEvLocalStatusResult>();
@@ -498,11 +533,13 @@ namespace NKikimr {
             auto *msg = ev->Get();
             Sublog.Log() << "Syncer: GenerationChange (ReadyModeHandle)\n";
             // check that NewInfo has the same topology as the one VDisk started with
-            Y_VERIFY(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
+            Y_ABORT_UNLESS(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
 
             GInfo = msg->NewInfo;
             // reconfigure scheduler
-            ctx.Send(SchedulerId, msg->Clone());
+            if (SchedulerId) {
+                ctx.Send(SchedulerId, msg->Clone());
+            }
             // reconfigure propagators
             for (const auto &aid : PropagatorIds) {
                 ctx.Send(aid, msg->Clone());
@@ -513,11 +550,11 @@ namespace NKikimr {
             auto *msg = ev->Get();
             Sublog.Log() << "Syncer: GenerationChange (SyncGuidModeHandle)\n";
             // check that NewInfo has the same topology as the one VDisk started with
-            Y_VERIFY(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
+            Y_ABORT_UNLESS(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
 
             GInfo = msg->NewInfo;
             // reconfigure guid recovery actor
-            Y_VERIFY(GuidRecoveryId != TActorId());
+            Y_ABORT_UNLESS(GuidRecoveryId != TActorId());
             ctx.Send(GuidRecoveryId, msg->Clone());
         }
 
@@ -525,7 +562,7 @@ namespace NKikimr {
             auto *msg = ev->Get();
             Sublog.Log() << "Syncer: GenerationChange (InconsistencyModeHandle)\n";
             // check that NewInfo has the same topology as the one VDisk started with
-            Y_VERIFY(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
+            Y_ABORT_UNLESS(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
 
             Y_UNUSED(ctx);
             GInfo = msg->NewInfo;
@@ -535,12 +572,12 @@ namespace NKikimr {
             auto *msg = ev->Get();
             Sublog.Log() << "Syncer: GenerationChange (RecoverLostDataModeHandle)\n";
             // check that NewInfo has the same topology as the one VDisk started with
-            Y_VERIFY(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
+            Y_ABORT_UNLESS(SyncerCtx->VCtx->Top->EqualityCheck(msg->NewInfo->GetTopology()));
 
             GInfo = msg->NewInfo;
 
             // reconfigure guid recovery actor
-            Y_VERIFY(RecoverLostDataId != TActorId());
+            Y_ABORT_UNLESS(RecoverLostDataId != TActorId());
             ctx.Send(RecoverLostDataId, msg->Clone());
         }
 
@@ -558,7 +595,7 @@ namespace NKikimr {
             , SyncerData(syncerData)
             , LocalSyncerState(SyncerData->LocalSyncerState)
         {
-            Y_VERIFY(SyncerCtx->VCtx->Top->EqualityCheck(info->GetTopology()));
+            Y_ABORT_UNLESS(SyncerCtx->VCtx->Top->EqualityCheck(info->GetTopology()));
         }
     };
 

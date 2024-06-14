@@ -2,7 +2,6 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include "msgbus_server.h"
-#include "msgbus_server_tracer.h"
 #include "msgbus_http_server.h"
 #include "grpc_server.h"
 
@@ -83,7 +82,7 @@ public:
                 try { \
                     static_cast<TYPE&>(*Message).Record = dynamic_cast<const TYPE::RecordType&>(*RequestContext->GetRequest()); \
                 } catch (const std::bad_cast&) { \
-                    Y_FAIL("incorrect request message type"); \
+                    Y_ABORT("incorrect request message type"); \
                 } \
                 return;
 
@@ -91,7 +90,6 @@ public:
             MTYPE(TBusResponse)
             MTYPE(TBusFakeConfigDummy)
             MTYPE(TBusSchemeInitRoot)
-            MTYPE(TBusBSAdm)
             MTYPE(TBusTypesRequest)
             MTYPE(TBusTypesResponse)
             MTYPE(TBusHiveCreateTablet)
@@ -104,8 +102,6 @@ public:
             MTYPE(TBusOldKeyValue)
             MTYPE(TBusKeyValueResponse)
             MTYPE(TBusPersQueue)
-            MTYPE(TBusMessageBusTraceRequest)
-            MTYPE(TBusMessageBusTraceStatus)
             MTYPE(TBusTabletKillRequest)
             MTYPE(TBusTabletStateRequest)
             MTYPE(TBusTabletCountersRequest)
@@ -116,10 +112,6 @@ public:
             MTYPE(TBusSchemeDescribe)
             MTYPE(TBusOldFlatDescribeRequest)
             MTYPE(TBusOldFlatDescribeResponse)
-            MTYPE(TBusBsTestLoadRequest)
-            MTYPE(TBusBsTestLoadResponse)
-            MTYPE(TBusBsGetRequest)
-            MTYPE(TBusBsGetResponse)
             MTYPE(TBusDbSchema)
             MTYPE(TBusDbOperation)
             MTYPE(TBusDbResponse)
@@ -141,7 +133,7 @@ public:
 #undef MTYPE
         }
 
-        Y_FAIL();
+        Y_ABORT();
     }
 
     ~TImplGRpc() {
@@ -164,26 +156,25 @@ public:
     }
 
     void SendReply(NBus::TBusMessage *resp) {
-        Y_VERIFY(RequestContext);
+        Y_ABORT_UNLESS(RequestContext);
         switch (const ui32 type = resp->GetHeader()->Type) {
 #define REPLY_OPTION(TYPE) \
             case TYPE::MessageType: { \
                 auto *msg = dynamic_cast<TYPE *>(resp); \
-                Y_VERIFY(msg); \
+                Y_ABORT_UNLESS(msg); \
                 RequestContext->Reply(msg->Record); \
                 break; \
             }
 
             REPLY_OPTION(TBusResponse)
             REPLY_OPTION(TBusDbResponse)
-            REPLY_OPTION(TBusBsTestLoadResponse)
             REPLY_OPTION(TBusNodeRegistrationResponse)
             REPLY_OPTION(TBusCmsResponse)
             REPLY_OPTION(TBusSqsResponse)
             REPLY_OPTION(TBusConsoleResponse)
 
             default:
-                Y_FAIL("unexpected response type %" PRIu32, type);
+                Y_ABORT("unexpected response type %" PRIu32, type);
         }
         RequestContext = nullptr;
     }
@@ -223,17 +214,17 @@ TBusMessageContext& TBusMessageContext::operator =(TBusMessageContext other) {
 }
 
 NBus::TBusMessage *TBusMessageContext::GetMessage() {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     return Impl->GetMessage();
 }
 
 NBus::TBusMessage *TBusMessageContext::ReleaseMessage() {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     return Impl->ReleaseMessage();
 }
 
 void TBusMessageContext::SendReplyMove(NBus::TBusMessageAutoPtr response) {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     Impl->SendReplyMove(response);
 }
 
@@ -244,7 +235,7 @@ void TBusMessageContext::Swap(TBusMessageContext &msg) {
 TVector<TStringBuf> TBusMessageContext::FindClientCert() const { return Impl->FindClientCert(); }
 
 THolder<TMessageBusSessionIdentHolder::TImpl> TBusMessageContext::CreateSessionIdentHolder() {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     return Impl->CreateSessionIdentHolder();
 }
 
@@ -324,14 +315,14 @@ public:
     }
 
     void SendReply(NBus::TBusMessage *resp) override {
-        Y_VERIFY(Context);
+        Y_ABORT_UNLESS(Context);
         Context->SendReply(resp);
 
         auto context = std::move(Context);
     }
 
     void SendReplyMove(NBus::TBusMessageAutoPtr resp) override {
-        Y_VERIFY(Context);
+        Y_ABORT_UNLESS(Context);
         Context->SendReplyMove(resp);
 
         auto context = std::move(Context);
@@ -366,17 +357,17 @@ void TMessageBusSessionIdentHolder::InitSession(TBusMessageContext &msg) {
 }
 
 ui64 TMessageBusSessionIdentHolder::GetTotalTimeout() const {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     return Impl->GetTotalTimeout();
 }
 
 void TMessageBusSessionIdentHolder::SendReply(NBus::TBusMessage *resp) {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     Impl->SendReply(resp);
 }
 
 void TMessageBusSessionIdentHolder::SendReplyMove(NBus::TBusMessageAutoPtr resp) {
-    Y_VERIFY(Impl);
+    Y_ABORT_UNLESS(Impl);
     Impl->SendReplyMove(resp);
 }
 
@@ -506,8 +497,6 @@ void TMessageBusServer::OnMessage(TBusMessageContext &msg) {
         return ClientProxyRequest<TEvBusProxy::TEvRequest>(msg);
     case MTYPE_CLIENT_SCHEME_INITROOT:
         return ClientProxyRequest<TEvBusProxy::TEvInitRoot>(msg);
-    case MTYPE_CLIENT_BSADM:
-        return ClientActorRequest(CreateMessageBusBSAdm, msg);
     case MTYPE_CLIENT_SCHEME_NAVIGATE:
         return ClientProxyRequest<TEvBusProxy::TEvNavigate>(msg);
     case MTYPE_CLIENT_TYPES_REQUEST:
@@ -542,10 +531,6 @@ void TMessageBusServer::OnMessage(TBusMessageContext &msg) {
     case MTYPE_CLIENT_FLAT_DESCRIBE_REQUEST:
     case MTYPE_CLIENT_OLD_FLAT_DESCRIBE_REQUEST:
         return ClientProxyRequest<TEvBusProxy::TEvFlatDescribeRequest>(msg);
-    case MTYPE_CLIENT_LOAD_REQUEST:
-        return ClientActorRequest(CreateMessageBusBlobStorageLoadRequest, msg);
-    case MTYPE_CLIENT_GET_REQUEST:
-        return ClientActorRequest(CreateMessageBusBlobStorageGetRequest, msg);
     case MTYPE_CLIENT_DB_SCHEMA:
         return ClientProxyRequest<TEvBusProxy::TEvDbSchema>(msg);
     case MTYPE_CLIENT_DB_OPERATION:

@@ -1,10 +1,14 @@
 #include "yql_data_provider_impl.h"
 
 #include <ydb/library/yql/core/yql_expr_constraint.h>
+#include <ydb/library/yql/core/yql_expr_optimize.h>
+#include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 
 #include <util/system/compiler.h>
 
 namespace NYql {
+
+using namespace NNodes;
 
 void TPlanFormatterBase::WriteDetails(const TExprNode& node, NYson::TYsonWriter& writer) {
     Y_UNUSED(node);
@@ -56,6 +60,16 @@ void TPlanFormatterBase::WritePinDetails(const TExprNode& node, NYson::TYsonWrit
 
 TString TPlanFormatterBase::GetOperationDisplayName(const TExprNode& node) {
     return TString(node.Content());
+}
+
+bool TPlanFormatterBase::WriteSchemaHeader(NYson::TYsonWriter& writer) {
+    Y_UNUSED(writer);
+    return false;
+}
+
+void TPlanFormatterBase::WriteTypeDetails(NYson::TYsonWriter& writer, const TTypeAnnotationNode& type) {
+    Y_UNUSED(writer);
+    Y_UNUSED(type);
 }
 
 void TTrackableNodeProcessorBase::GetUsedNodes(const TExprNode& node, TVector<TString>& usedNodeIds) {
@@ -161,6 +175,7 @@ void TDataProviderBase::Reset() {
         }
     }
     GetRecaptureOptProposalTransformer().Rewind();
+    GetStatisticsProposalTransformer().Rewind();
     GetLogicalOptProposalTransformer().Rewind();
     GetPhysicalOptProposalTransformer().Rewind();
     GetPhysicalFinalizingTransformer().Rewind();
@@ -172,6 +187,10 @@ void TDataProviderBase::Reset() {
 }
 
 IGraphTransformer& TDataProviderBase::GetRecaptureOptProposalTransformer() {
+    return NullTransformer_;
+}
+
+IGraphTransformer& TDataProviderBase::GetStatisticsProposalTransformer() {
     return NullTransformer_;
 }
 
@@ -239,8 +258,7 @@ void TDataProviderBase::LeaveEvaluation(ui64 id) {
 }
 
 TExprNode::TPtr TDataProviderBase::CleanupWorld(const TExprNode::TPtr& node, TExprContext& ctx) {
-    Y_UNUSED(ctx);
-    return node;
+    return DefaultCleanupWorld(node, ctx);
 }
 
 TExprNode::TPtr TDataProviderBase::OptimizePull(const TExprNode::TPtr& source, const TFillSettings& fillSettings,
@@ -265,7 +283,7 @@ bool TDataProviderBase::ValidateExecution(const TExprNode& node, TExprContext& c
 }
 
 void TDataProviderBase::GetRequiredChildren(const TExprNode& node, TExprNode::TListType& children) {
-    TPlanFormatterBase::GetDependencies(node, children, false);
+    GetDependencies(node, children, false);
 }
 
 IGraphTransformer& TDataProviderBase::GetCallableExecutionTransformer() {
@@ -311,6 +329,39 @@ IGraphTransformer& TDataProviderBase::GetPlanInfoTransformer() {
 
 IDqIntegration* TDataProviderBase::GetDqIntegration() {
     return nullptr;
+}
+
+IDqOptimization* TDataProviderBase::GetDqOptimization() {
+    return nullptr;
+}
+
+TExprNode::TPtr DefaultCleanupWorld(const TExprNode::TPtr& node, TExprContext& ctx) {
+    auto root = node;
+    auto status = OptimizeExpr(root, root, [&](const TExprNode::TPtr& node, TExprContext& ctx) -> TExprNode::TPtr {
+        Y_UNUSED(ctx);
+        if (auto right = TMaybeNode<TCoRight>(node)) {
+            auto cons = right.Cast().Input().Maybe<TCoCons>();
+            if (cons) {
+                return cons.Cast().Input().Ptr();
+            }
+
+            if (right.Cast().Input().Ref().IsCallable("PgReadTable!")) {
+                const auto& read = right.Cast().Input().Ref();
+                return ctx.Builder(node->Pos())
+                    .Callable("PgTableContent")
+                        .Add(0, read.Child(1)->TailPtr())
+                        .Add(1, read.ChildPtr(2))
+                        .Add(2, read.ChildPtr(3))
+                        .Add(3, read.ChildPtr(4))
+                    .Seal()
+                    .Build();
+            }
+        }
+
+        return node;
+    }, ctx, TOptimizeExprSettings(nullptr));
+    YQL_ENSURE(status.Level != IGraphTransformer::TStatus::Error);
+    return root;
 }
 
 } // namespace NYql

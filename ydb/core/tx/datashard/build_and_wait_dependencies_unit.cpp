@@ -1,7 +1,8 @@
 #include "datashard_impl.h"
-#include "datashard_counters.h"
 #include "datashard_pipeline.h"
 #include "execution_unit_ctors.h"
+
+#include <ydb/core/tx/locks/time_counters.h>
 
 namespace NKikimr {
 namespace NDataShard {
@@ -41,7 +42,7 @@ TBuildAndWaitDependenciesUnit::~TBuildAndWaitDependenciesUnit()
  */
 bool TBuildAndWaitDependenciesUnit::HasDirectBlockers(const TOperation::TPtr& op) const
 {
-    Y_VERIFY_DEBUG(op->IsWaitingDependencies());
+    Y_DEBUG_ABORT_UNLESS(op->IsWaitingDependencies());
 
     return !op->GetDependencies().empty()
         || !op->GetSpecialDependencies().empty()
@@ -116,7 +117,7 @@ EExecutionStatus TBuildAndWaitDependenciesUnit::Execute(TOperation::TPtr op,
         }
     } else if (BuildVolatileDependencies(op)) {
         // We acquired new volatile dependencies, wait for them too
-        Y_VERIFY(!IsReadyToExecute(op));
+        Y_ABORT_UNLESS(!IsReadyToExecute(op));
         return EExecutionStatus::Continue;
     }
 
@@ -190,7 +191,7 @@ bool TBuildAndWaitDependenciesUnit::BuildVolatileDependencies(const TOperation::
             op->AddVolatileDependency(info->TxId);
             bool added = DataShard.GetVolatileTxManager()
                 .AttachWaitingRemovalOperation(info->TxId, op->GetTxId());
-            Y_VERIFY(added);
+            Y_ABORT_UNLESS(added);
         }
     }
 

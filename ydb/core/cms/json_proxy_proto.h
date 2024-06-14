@@ -7,10 +7,10 @@
 
 #include <google/protobuf/util/json_util.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/mon.h>
 #include <library/cpp/json/json_value.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
@@ -74,6 +74,8 @@ protected:
                 return ReplyWithTypeDescription(*NKikimrConfig::TImmediateControlsConfig::TCoordinatorControls::descriptor(), ctx);
             else if (name == ".NKikimrConfig.TImmediateControlsConfig.TSchemeShardControls")
                 return ReplyWithTypeDescription(*NKikimrConfig::TImmediateControlsConfig::TSchemeShardControls::descriptor(), ctx);
+            else if (name == ".NKikimrConfig.TImmediateControlsConfig.TTCMallocControls")
+                return ReplyWithTypeDescription(*NKikimrConfig::TImmediateControlsConfig::TTCMallocControls::descriptor(), ctx);
         }
 
         ctx.Send(RequestEvent->Sender,
@@ -117,7 +119,7 @@ protected:
         // Add custom field options to json.
         NJson::TJsonValue val;
         auto ok = ReadJsonTree(json, &val);
-        Y_VERIFY(ok);
+        Y_ABORT_UNLESS(ok);
 
         AddCustomFieldOptions(descriptor, val);
         json = WriteJson(val);
@@ -142,7 +144,7 @@ protected:
             auto &opts = field["options"];
 
             auto *fieldDesc = descriptor.FindFieldByNumber(num);
-            Y_VERIFY(fieldDesc);
+            Y_ABORT_UNLESS(fieldDesc);
 
             auto &optsMsg = fieldDesc->options();
             auto *reflection = optsMsg.GetReflection();

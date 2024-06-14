@@ -438,14 +438,14 @@ namespace NNetliba {
                     if (IB->GetSendResult(&sr)) {
                         TIBtoTransferKeyHash::iterator z = IBKeyToTransferKey.find(sr.Handle);
                         if (z == IBKeyToTransferKey.end()) {
-                            Y_VERIFY(0, "unknown handle returned from IB");
+                            Y_ABORT_UNLESS(0, "unknown handle returned from IB");
                         }
                         TTransferKey transferKey = z->second;
                         IBKeyToTransferKey.erase(z);
 
                         TUdpOutXferHash::iterator i = SendQueue.find(transferKey);
                         if (i == SendQueue.end()) {
-                            Y_VERIFY(0, "IBKeyToTransferKey refers nonexisting xfer");
+                            Y_ABORT_UNLESS(0, "IBKeyToTransferKey refers nonexisting xfer");
                         }
                         if (sr.Success) {
                             TUdpOutTransfer& xfer = i->second;
@@ -1034,7 +1034,7 @@ namespace NNetliba {
                 case ACK_RESEND_NOSHMEM: {
                     // abort execution here
                     // failed to open shmem on recv side, need to transmit data without using shmem
-                    Y_VERIFY(0, "not implemented yet");
+                    Y_ABORT_UNLESS(0, "not implemented yet");
                     break;
                 }
                 case PING: {
@@ -1214,7 +1214,7 @@ namespace NNetliba {
             const TUdpAddress& ip = i.first;
             const TCongestionControl& cc = *i.second.UdpCongestion;
             IIBPeer* ibPeer = i.second.IBPeer.Get();
-            sprintf(buf, "%s\tIB: %d, RTT: %g  Timeout: %g  Window: %g  MaxWin: %g  FailRate: %g  TimeSinceLastRecv: %g  Transfers: %d  MTU: %d\n",
+            snprintf(buf, sizeof(buf), "%s\tIB: %d, RTT: %g  Timeout: %g  Window: %g  MaxWin: %g  FailRate: %g  TimeSinceLastRecv: %g  Transfers: %d  MTU: %d\n",
                     GetAddressAsString(ip).c_str(),
                     ibPeer ? ibPeer->GetState() : -1,
                     cc.GetRTT() * 1000, cc.GetTimeout() * 1000, cc.GetWindow(), cc.GetMaxWindow(), cc.GetFailRate(),
@@ -1227,17 +1227,17 @@ namespace NNetliba {
     TString TUdpHost::GetDebugInfo() {
         TString res;
         char buf[1000];
-        sprintf(buf, "Receiving %d msgs, sending %d high prior, %d regular msgs, %d low prior msgs\n",
+        snprintf(buf, sizeof(buf), "Receiving %d msgs, sending %d high prior, %d regular msgs, %d low prior msgs\n",
                 RecvQueue.ysize(), (int)SendOrderHighPrior.size(), (int)SendOrder.size(), (int)SendOrderLow.size());
         res += buf;
 
         TRequesterPendingDataStats pds;
         GetPendingDataSize(&pds);
-        sprintf(buf, "Pending data size: %" PRIu64 "\n", pds.InpDataSize + pds.OutDataSize);
+        snprintf(buf, sizeof(buf), "Pending data size: %" PRIu64 "\n", pds.InpDataSize + pds.OutDataSize);
         res += buf;
-        sprintf(buf, "  in packets: %d, size %" PRIu64 "\n", pds.InpCount, pds.InpDataSize);
+        snprintf(buf, sizeof(buf), "  in packets: %d, size %" PRIu64 "\n", pds.InpCount, pds.InpDataSize);
         res += buf;
-        sprintf(buf, "  out packets: %d, size %" PRIu64 "\n", pds.OutCount, pds.OutDataSize);
+        snprintf(buf, sizeof(buf), "  out packets: %d, size %" PRIu64 "\n", pds.OutCount, pds.OutDataSize);
         res += buf;
 
         res += "\nCongestion info:\n";

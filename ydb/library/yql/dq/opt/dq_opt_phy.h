@@ -105,8 +105,8 @@ NNodes::TExprBase DqBuildExtendStage(NNodes::TExprBase node, TExprContext& ctx);
 
 NNodes::TExprBase DqBuildPrecompute(NNodes::TExprBase node, TExprContext& ctx);
 
-NYql::NNodes::TExprBase DqBuildHasItems(NYql::NNodes::TExprBase node, NYql::TExprContext& ctx,
-    NYql::IOptimizationContext& optCtx);
+NNodes::TExprBase DqBuildHasItems(NYql::NNodes::TExprBase node, NYql::TExprContext& ctx, IOptimizationContext& optCtx,
+    const TParentsMap& parentsMap, bool allowStageMultiUsage = true);
 
 NNodes::TExprBase DqBuildSqlIn(NNodes::TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
     const TParentsMap& parentsMap, bool allowStageMultiUsage);
@@ -126,5 +126,7 @@ TVector<NYql::NNodes::TCoArgument> PrepareArgumentsReplacement(const NYql::NNode
     NYql::TExprContext& ctx, NYql::TNodeOnNodeOwnedMap& replaceMap);
 
 NNodes::TExprBase DqBuildStageWithSourceWrap(NNodes::TExprBase node, TExprContext& ctx);
+
+NNodes::TExprBase DqBuildStageWithReadWrap(NNodes::TExprBase node, TExprContext& ctx);
 
 } // namespace NYql::NDq

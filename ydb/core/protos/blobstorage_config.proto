@@ -1,37 +1,13 @@
 syntax = "proto3";
 
+import "ydb/core/protos/blobstorage_base3.proto";
 import "ydb/core/protos/blobstorage_disk.proto";
 import "ydb/core/protos/blobstorage_disk_color.proto";
 import "ydb/core/protos/blobstorage_pdisk_config.proto";
 import "ydb/core/protos/blob_depot_config.proto";
-import "library/cpp/actors/protos/interconnect.proto";
+import "ydb/library/actors/protos/interconnect.proto";
 
 package NKikimrBlobStorage;
-
-// Enum defining PDisk underlying drive type (rotational or solid state)
-enum EPDiskType {
-    ROT = 0; // rotational drives (HDD)
-    SSD = 1; // solid state drives (SSD)
-    NVME = 2; // PCIe-connected solid state drives (NVMe SSD)
-    UNKNOWN_TYPE = 3; // used if device type is unknown or if group consists of different PDisk device types
-}
-
-// Virtual group life cycle state
-enum EVirtualGroupState {
-    NEW = 0; // just created
-    CREATE_FAILED = 1; // error while creating VirtualGroup
-    WORKING = 2; // operational
-    DELETING = 3; // going to delete from Hive
-}
-
-message TGroupDecommitStatus {
-    enum E {
-        NONE = 0; // no decomission
-        PENDING = 1; // decommission machinery is starting
-        IN_PROGRESS = 2; // decomission underway
-        DONE = 3; // group decomission complete
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // TYPICAL HOST CONFIGURATIONS
@@ -40,7 +16,7 @@ message TGroupDecommitStatus {
 // Single drive descriptor of typical host configuration structure
 message THostConfigDrive {
     string Path = 1; // path to the device on the host node
-    EPDiskType Type = 2; // drive type (rotational or solid state)
+    NKikimrBlobStorage.EPDiskType Type = 2; // drive type (rotational or solid state)
     bool SharedWithOs = 3; // is this drive shared with OS in any way? (i.e. has OS partitions)
     bool ReadCentric = 4; // is this drive read-centric?
     uint64 Kind = 5; // nontransparent user-defined kind used for filtering when picking up groups
@@ -147,7 +123,7 @@ message TGroupUsagePattern {
 message TPDiskFilter {
     message TRequiredProperty {
         oneof Property {
-            EPDiskType Type = 1; // require certain drive type
+            NKikimrBlobStorage.EPDiskType Type = 1; // require certain drive type
             bool SharedWithOs = 2; // require certain SharedWithOs property
             bool ReadCentric = 3; // require certain ReadCentric property
             uint64 Kind = 4; // require certain kind
@@ -215,6 +191,7 @@ enum EDecommitStatus {
     DECOMMIT_NONE = 1; // no decomission
     DECOMMIT_PENDING = 2; // drive is going to be removed soon, but SelfHeal logic would not remove it automatically
     DECOMMIT_IMMINENT = 3; // drive is going to be settled automatically
+    DECOMMIT_REJECTED = 4; // drive is working as usual, but decommitted slots are not placed here
 }
 
 message TGroupStatus {
@@ -269,19 +246,15 @@ message TQueryBaseConfig {
 message TReadSettings {
 }
 
-message TPDiskId {
-    uint32 NodeId = 1;
-    uint32 PDiskId = 2;
-}
-
 message TReassignGroupDisk {
     uint32 GroupId = 1;
     uint32 GroupGeneration = 2;
     uint32 FailRealmIdx = 3;
     uint32 FailDomainIdx = 4;
     uint32 VDiskIdx = 5;
-    TPDiskId TargetPDiskId = 6; // optional; when not specified, selected automatically
+    NKikimrBlobStorage.TPDiskId TargetPDiskId = 6; // optional; when not specified, selected automatically
     bool SuppressDonorMode = 7; // when set, donor mode is not used even if it is enabled through BSC
+    reserved 8;
 }
 
 message TSanitizeGroup {
@@ -422,6 +395,10 @@ message TWipeVDisk {
     NKikimrBlobStorage.TVDiskID VDiskId = 2;
 }
 
+message TRestartPDisk {
+    NKikimrBlobStorage.TPDiskId TargetPDiskId = 1;
+}
+
 message TSetScrubPeriodicity {
     uint32 ScrubPeriodicity = 1; // in seconds; 0 = disable
 }
@@ -430,7 +407,7 @@ message TAddDriveSerial {
     string Serial = 1;
     uint64 BoxId = 2;
     uint64 Kind = 3;
-    EPDiskType PDiskType = 4; // default UNKNOWN type implies auto-detection of drive type
+    NKikimrBlobStorage.EPDiskType PDiskType = 4; // default UNKNOWN type implies auto-detection of drive type
     NKikimrBlobStorage.TPDiskConfig PDiskConfig = 5;
 }
 
@@ -468,6 +445,9 @@ message TUpdateSettings {
     repeated bool EnableGroupLayoutSanitizer = 10;
     // TODO
     // repeated TSerialManagementStage.E SerialManagementStage = 11;
+    repeated bool AllowMultipleRealmsOccupation = 12;
+    repeated bool UseSelfHealLocalPolicy = 13;
+    repeated bool TryToRelocateBrokenDisksLocallyFirst = 14;
 }
 
 message TBoxStoragePoolId {
@@ -500,6 +480,12 @@ message TDecommitGroups {
 
 message TCancelVirtualGroup {
     uint32 GroupId = 1; // id of a group we are going to cancel
+}
+
+message TSetVDiskReadOnly {
+    NKikimrBlobStorage.TVSlotId VSlotId = 1;
+    NKikimrBlobStorage.TVDiskID VDiskId = 2;
+    bool Value = 3;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -544,6 +530,8 @@ message TConfigRequest {
             TSanitizeGroup SanitizeGroup = 42;
             TReadSettings ReadSettings = 43;
             TCancelVirtualGroup CancelVirtualGroup = 44;
+            TSetVDiskReadOnly SetVDiskReadOnly = 47;
+            TRestartPDisk RestartPDisk = 48;
 
             // commands intended for internal use
             TReassignGroupDisk ReassignGroupDisk = 19;
@@ -584,6 +572,12 @@ message TConfigRequest {
 
     // execute this request ASAP
     bool Cito = 10;
+
+    // is this command originated by self-heal decommission?
+    bool IsSelfHealReasonDecommit = 12;
+
+    // requesting user identifier
+    string UserSID = 13;
 }
 
 enum ETriStateBool {
@@ -603,7 +597,7 @@ message TBaseConfig {
         uint32 NodeId = 1;
         uint32 PDiskId = 2;
         string Path = 3;
-        EPDiskType Type = 4;
+        NKikimrBlobStorage.EPDiskType Type = 4;
         ETriStateBool SharedWithOs = 5;
         ETriStateBool ReadCentric = 6;
         uint64 Kind = 7;
@@ -638,13 +632,14 @@ message TBaseConfig {
         string Status = 10; // textual representation of EVDiskStatus or empty string if status is not known/reported
         repeated TDonorDisk Donors = 11;
         bool Ready = 12; // is disk READY in terms of BSC (stable READY status for some period of time)
+        bool ReadOnly = 13;
     }
     message TVirtualGroupInfo {
-        EVirtualGroupState State = 1;
+        NKikimrBlobStorage.EVirtualGroupState State = 1;
         string Name = 2;
         uint64 BlobDepotId = 3;
         string ErrorReason = 4;
-        TGroupDecommitStatus.E DecommitStatus = 5;
+        NKikimrBlobStorage.TGroupDecommitStatus.E DecommitStatus = 5;
     }
     message TGroup {
         uint32 GroupId = 1;
@@ -674,7 +669,7 @@ message TBaseConfig {
         uint32 NodeId = 3;
         uint32 PDiskId = 4;
         string Path = 5;
-        EPDiskType Type = 6;
+        NKikimrBlobStorage.EPDiskType Type = 6;
         uint64 Guid = 7;
         TDriveLifeStage.E LifeStage = 8;
     }
@@ -684,6 +679,7 @@ message TBaseConfig {
     repeated TGroup Group = 3;
     repeated TNode Node = 4;
     repeated TDevice Device = 5;
+    TUpdateSettings Settings = 6;
 }
 
 message TMoveCommand {

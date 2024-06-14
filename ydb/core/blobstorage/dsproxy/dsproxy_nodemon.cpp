@@ -87,6 +87,12 @@ TDsProxyNodeMon::TDsProxyNodeMon(TIntrusivePtr<::NMonitoring::TDynamicCounters> 
         ConnectedMinus2 = group->GetCounter("ConnectedMinus2", false);
         ConnectedMinus3more = group->GetCounter("ConnectedMinus3more", false);
     }
+    // wipe monitoring counters
+    {
+        auto group = Group->GetSubgroup("subsystem", "wipemon");
+        PutStatusQueries = group->GetCounter("StatusQueries", true);
+        IncarnationChanges = group->GetCounter("IncarnationChanges", true);
+    }
 }
 
 ui32 IdxForType(NPDisk::EDeviceType type) {
@@ -105,16 +111,16 @@ void TDsProxyNodeMon::CountPutPesponseTime(NPDisk::EDeviceType type, NKikimrBlob
     const double durationMsFloat = duration.MicroSeconds() / 1000.0;
     PutResponseTime.Increment(durationMs);
     const ui32 idx = IdxForType(type);
-    Y_VERIFY(IsCountersPresentedForIdx[idx]);
+    Y_ABORT_UNLESS(IsCountersPresentedForIdx[idx]);
     switch (cls) {
         case NKikimrBlobStorage::EPutHandleClass::TabletLog:
             PutTabletLogResponseTime.Increment(durationMs);
             if (size < (256 << 10)) {
                 PutTabletLogResponseTime256.Increment(durationMs);
-                Y_VERIFY_DEBUG(PutTabletLogResponseTimeHist256Ki[idx]);
+                Y_DEBUG_ABORT_UNLESS(PutTabletLogResponseTimeHist256Ki[idx]);
                 PutTabletLogResponseTimeHist256Ki[idx]->Collect(durationMsFloat);
             } else {
-                Y_VERIFY_DEBUG(PutTabletLogResponseTimeHistInf[idx]);
+                Y_DEBUG_ABORT_UNLESS(PutTabletLogResponseTimeHistInf[idx]);
                 PutTabletLogResponseTimeHistInf[idx]->Collect(durationMsFloat);
                 if (size < (512 << 10)) {
                     PutTabletLogResponseTime512.Increment(durationMs);
@@ -123,16 +129,16 @@ void TDsProxyNodeMon::CountPutPesponseTime(NPDisk::EDeviceType type, NKikimrBlob
             break;
         case NKikimrBlobStorage::EPutHandleClass::AsyncBlob:
             PutAsyncBlobResponseTime.Increment(durationMs);
-            Y_VERIFY_DEBUG(PutAsyncBlobResponseTimeHist[idx]);
+            Y_DEBUG_ABORT_UNLESS(PutAsyncBlobResponseTimeHist[idx]);
             PutAsyncBlobResponseTimeHist[idx]->Collect(durationMsFloat);
             break;
         case NKikimrBlobStorage::EPutHandleClass::UserData:
             PutUserDataResponseTime.Increment(durationMs);
-            Y_VERIFY_DEBUG(PutUserDataResponseTimeHist[idx]);
+            Y_DEBUG_ABORT_UNLESS(PutUserDataResponseTimeHist[idx]);
             PutUserDataResponseTimeHist[idx]->Collect(durationMsFloat);
             break;
         default:
-            Y_FAIL("Unexpected case, HandleClass# %" PRIu64, (ui64)cls);
+            Y_ABORT("Unexpected case, HandleClass# %" PRIu64, (ui64)cls);
     }
 }
 
@@ -142,36 +148,36 @@ void TDsProxyNodeMon::CountGetResponseTime(NPDisk::EDeviceType type, NKikimrBlob
     const double durationMsFloat = duration.MicroSeconds() / 1000.0;
     GetResponseTime.Increment(durationMs);
     const ui32 idx = IdxForType(type);
-    Y_VERIFY(IsCountersPresentedForIdx[idx]);
+    Y_ABORT_UNLESS(IsCountersPresentedForIdx[idx]);
     switch (cls) {
         case NKikimrBlobStorage::EGetHandleClass::AsyncRead:
             GetAsyncReadResponseTime.Increment(durationMs);
-            Y_VERIFY_DEBUG(GetAsyncReadResponseTimeHist[idx]);
+            Y_DEBUG_ABORT_UNLESS(GetAsyncReadResponseTimeHist[idx]);
             GetAsyncReadResponseTimeHist[idx]->Collect(durationMsFloat);
             break;
         case NKikimrBlobStorage::EGetHandleClass::FastRead:
             if (size < (256 << 10)) {
                 GetFastReadResponseTime256Ki.Increment(durationMs);
-                Y_VERIFY_DEBUG(GetFastReadResponseTimeHist256Ki[idx]);
+                Y_DEBUG_ABORT_UNLESS(GetFastReadResponseTimeHist256Ki[idx]);
                 GetFastReadResponseTimeHist256Ki[idx]->Collect(durationMsFloat);
             } else {
                 GetFastReadResponseTimeInf.Increment(durationMs);
-                Y_VERIFY_DEBUG(GetFastReadResponseTimeHistInf[idx]);
+                Y_DEBUG_ABORT_UNLESS(GetFastReadResponseTimeHistInf[idx]);
                 GetFastReadResponseTimeHistInf[idx]->Collect(durationMsFloat);
             }
             break;
         case NKikimrBlobStorage::EGetHandleClass::Discover:
             GetDiscoverResponseTime.Increment(durationMs);
-            Y_VERIFY_DEBUG(GetDiscoverResponseTimeHist[idx]);
+            Y_DEBUG_ABORT_UNLESS(GetDiscoverResponseTimeHist[idx]);
             GetDiscoverResponseTimeHist[idx]->Collect(durationMsFloat);
             break;
         case NKikimrBlobStorage::EGetHandleClass::LowRead:
             GetLowReadResponseTime.Increment(durationMs);
-            Y_VERIFY_DEBUG(GetLowReadResponseTimeHist[idx]);
+            Y_DEBUG_ABORT_UNLESS(GetLowReadResponseTimeHist[idx]);
             GetLowReadResponseTimeHist[idx]->Collect(durationMsFloat);
             break;
         default:
-            Y_FAIL("Unexpected case, HandleClass# %" PRIu64, (ui64)cls);
+            Y_ABORT("Unexpected case, HandleClass# %" PRIu64, (ui64)cls);
     }
 }
 
@@ -180,7 +186,7 @@ void TDsProxyNodeMon::CountPatchResponseTime(NPDisk::EDeviceType type, TDuration
     const double durationMsFloat = duration.MicroSeconds() / 1000.0;
     PatchResponseTime.Increment(durationMs);
     const ui32 idx = IdxForType(type);
-    Y_VERIFY(IsCountersPresentedForIdx[idx]);
+    Y_ABORT_UNLESS(IsCountersPresentedForIdx[idx]);
     PatchResponseTimeHist[idx]->Collect(durationMsFloat);
 }
 

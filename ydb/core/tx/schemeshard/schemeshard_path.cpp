@@ -51,6 +51,18 @@ const TPath::TChecker& TPath::TChecker::IsResolved(EStatus status) const {
         << ": '" << nearest.PathString() << "' (id: " << nearest.GetPathIdSafe() << ")");
 }
 
+const TPath::TChecker& TPath::TChecker::HasResolvedPrefix(EStatus status) const {
+    if (Failed) {
+        return *this;
+    }
+
+    if (!Path.Elements.empty()) {
+        return *this;
+    }
+
+    return Fail(status, TStringBuilder() << "root not found");
+}
+
 const TPath::TChecker& TPath::TChecker::NotEmpty(EStatus status) const {
     if (Failed) {
         return *this;
@@ -553,6 +565,37 @@ const TPath::TChecker& TPath::TChecker::IsTheSameDomain(const TPath& another, ES
         << ", another path: " << another.PathString());
 }
 
+const TPath::TChecker& TPath::TChecker::FailOnWrongType(const TSet<TPathElement::EPathType>& expectedTypes) const {
+    if (Failed) {
+        return *this;
+    }
+
+    if (!Path.IsResolved()) {
+        return *this;
+    }
+
+    if (Path.IsDeleted()) {
+        return *this;
+    }
+
+    if (!expectedTypes.contains(Path.Base()->PathType)) {
+        return Fail(EStatus::StatusNameConflict, TStringBuilder() << "unexpected path type"
+            << " (" << BasicPathInfo(Path.Base()) << ")"
+            << ", expected types: " << JoinSeq(", ", expectedTypes));
+    }
+
+    if (!Path.Base()->IsCreateFinished()) {
+        return Fail(EStatus::StatusMultipleModifications, TStringBuilder() << "path exists but creating right now"
+            << " (" << BasicPathInfo(Path.Base()) << ")");
+    }
+
+    return *this;
+}
+
+const TPath::TChecker& TPath::TChecker::FailOnWrongType(TPathElement::EPathType expectedType) const {
+    return FailOnWrongType(TSet<TPathElement::EPathType>{expectedType});
+}
+
 const TPath::TChecker& TPath::TChecker::FailOnExist(const TSet<TPathElement::EPathType>& expectedTypes, bool acceptAlreadyExist) const {
     if (Failed) {
         return *this;
@@ -573,7 +616,7 @@ const TPath::TChecker& TPath::TChecker::FailOnExist(const TSet<TPathElement::EPa
     }
 
     if (!Path.Base()->IsCreateFinished()) {
-        return Fail(EStatus::StatusMultipleModifications, TStringBuilder() << "path exist but creating right now"
+        return Fail(EStatus::StatusMultipleModifications, TStringBuilder() << "path exists but creating right now"
             << " (" << BasicPathInfo(Path.Base()) << ")");
     }
 
@@ -793,6 +836,21 @@ const TPath::TChecker& TPath::TChecker::IsExternalDataSource(EStatus status) con
         << " (" << BasicPathInfo(Path.Base()) << ")");
 }
 
+const TPath::TChecker& TPath::TChecker::IsView(EStatus status) const {
+    if (Failed) {
+        return *this;
+    }
+
+    if (Path.Base()->IsView()) {
+        return *this;
+    }
+
+    return Fail(status, TStringBuilder() << "path is not a view"
+        << " (" << BasicPathInfo(Path.Base()) << ")"
+    );
+
+}
+
 const TPath::TChecker& TPath::TChecker::PathShardsLimit(ui64 delta, EStatus status) const {
     if (Failed) {
         return *this;
@@ -865,6 +923,23 @@ const TPath::TChecker& TPath::TChecker::NotChildren(EStatus status) const {
         << ", children: " << childrenCount);
 }
 
+const TPath::TChecker& TPath::TChecker::CanBackupTable(EStatus status) const {
+    if (Failed) {
+        return *this;
+    }
+
+    for (const auto& child: Path.Base()->GetChildren()) {
+        auto name = child.first;
+
+        TPath childPath = Path.Child(name);
+        if (childPath->IsTableIndex()) {
+            return Fail(status, TStringBuilder() << "path has indexes, request doesn't accept it");
+        }
+    }
+
+    return *this;
+}
+
 const TPath::TChecker& TPath::TChecker::NotDeleted(EStatus status) const {
     if (Failed) {
         return *this;
@@ -908,6 +983,58 @@ const TPath::TChecker& TPath::TChecker::IsValidACL(const TString& acl, EStatus s
         << ", new ACL size: " << bytesSize);
 }
 
+const TPath::TChecker& TPath::TChecker::IsNameUniqGrandParentLevel(EStatus status) const {
+    if (Failed) {
+        return *this;
+    }
+
+    if (Path.Elements.size() < 2) {
+        return *this;
+    }
+
+    // must be a copy here
+    auto path = Path.Parent();
+    if (!path.IsResolved()) {
+        return *this;
+    }
+
+    auto parentPathId = path->PathId;
+
+    path.Rise();
+    if (!path.IsResolved()) {
+        return *this;
+    }
+
+    const auto& myName = Path.NameParts.back();
+
+    auto raiseErr = [this](EStatus st, const TString& myName, const TString& conflict) -> const TPath::TChecker& {
+        return Fail(st, TStringBuilder() << "name " << myName
+            << " is not uniq. Found in: " << conflict);
+    };
+
+    if (path.Elements.back()->FindChild(myName)) {
+        return raiseErr(status, myName, path.PathString());
+    }
+
+    TVector<TPathId> uncles;
+    uncles.reserve(path.Elements.back()->GetChildren().size());
+    for (const auto& [x, unclePathId] : path.Elements.back()->GetChildren()) {
+        if (unclePathId != parentPathId) {
+            uncles.emplace_back(unclePathId);
+        }
+    }
+
+    for (const auto& pathid : uncles) {
+        auto& uncle = path.DiveByPathId(pathid);
+        if (uncle->FindChild(myName)) {
+            return raiseErr(status, myName, uncle.PathString());
+        }
+        uncle.Rise();
+    }
+
+    return *this;
+}
+
 TString TPath::TChecker::BasicPathInfo(TPathElement::TPtr element) const {
     return TStringBuilder()
         << "id: " << element->PathId << ", "
@@ -918,24 +1045,24 @@ TString TPath::TChecker::BasicPathInfo(TPathElement::TPtr element) const {
 TPath::TPath(TSchemeShard* ss)
     : SS(ss)
 {
-    Y_VERIFY(SS);
-    Y_VERIFY(IsEmpty() && !IsResolved());
+    Y_ABORT_UNLESS(SS);
+    Y_ABORT_UNLESS(IsEmpty() && !IsResolved());
 }
 
 TPath::TPath(TVector<TPathElement::TPtr>&& elements, TSchemeShard* ss)
     : SS(ss)
     , Elements(std::move(elements))
 {
-    Y_VERIFY(SS);
-    Y_VERIFY(Elements);
+    Y_ABORT_UNLESS(SS);
+    Y_ABORT_UNLESS(Elements);
 
     NameParts.reserve(Elements.size());
     for (const auto& item : Elements) {
         NameParts.push_back(item->Name);
     }
 
-    Y_VERIFY(!IsEmpty());
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(!IsEmpty());
+    Y_ABORT_UNLESS(IsResolved());
 }
 
 TPath::TChecker TPath::Check() const {
@@ -986,7 +1113,7 @@ bool TPath::operator !=(const TPath& another) const {
 }
 
 TPath TPath::Root(TSchemeShard* ss) {
-    Y_VERIFY(ss);
+    Y_ABORT_UNLESS(ss);
     return TPath::Init(ss->RootPathId(), ss);
 }
 
@@ -996,7 +1123,7 @@ TString TPath::PathString() const {
 
 TPath& TPath::Rise() {
     if (!NameParts) {
-        Y_VERIFY(!Elements);
+        Y_ABORT_UNLESS(!Elements);
         return *this;
     }
 
@@ -1054,27 +1181,27 @@ TString TPath::GetDomainPathString() const {
 }
 
 TSubDomainInfo::TPtr TPath::DomainInfo() const {
-    Y_VERIFY(!IsEmpty());
-    Y_VERIFY(Elements.size());
+    Y_ABORT_UNLESS(!IsEmpty());
+    Y_ABORT_UNLESS(Elements.size());
 
     return SS->ResolveDomainInfo(Elements.back());
 }
 
 TPathId TPath::GetPathIdForDomain() const {
-    Y_VERIFY(!IsEmpty());
-    Y_VERIFY(Elements.size());
+    Y_ABORT_UNLESS(!IsEmpty());
+    Y_ABORT_UNLESS(Elements.size());
 
     return SS->ResolvePathIdForDomain(Elements.back());
 }
 
 TPathId TPath::GetDomainKey() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return SS->GetDomainKey(Elements.back());
 }
 
 bool TPath::IsDomain() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->IsDomainRoot();
 }
@@ -1123,7 +1250,7 @@ TPath TPath::Child(const TString& name) const {
 }
 
 TPath TPath::Resolve(const TString path, TSchemeShard* ss) {
-    Y_VERIFY(ss);
+    Y_ABORT_UNLESS(ss);
 
     TPath nullPrefix{ss};
     return Resolve(nullPrefix, SplitPath(path));
@@ -1184,7 +1311,7 @@ TPath TPath::ResolveWithInactive(TOperationId opId, const TString path, TSchemeS
 }
 
 TPath TPath::Init(const TPathId pathId, TSchemeShard* ss) {
-    Y_VERIFY(ss);
+    Y_ABORT_UNLESS(ss);
 
     if (!ss->PathsById.contains(pathId)) {
         return TPath(ss);
@@ -1195,7 +1322,7 @@ TPath TPath::Init(const TPathId pathId, TSchemeShard* ss) {
 
     while (!cur->IsRoot()) {
         parts.push_back(cur);
-        Y_VERIFY(ss->PathsById.contains(cur->ParentPathId));
+        Y_ABORT_UNLESS(ss->PathsById.contains(cur->ParentPathId));
         cur = ss->PathsById.at(cur->ParentPathId);
     }
 
@@ -1220,13 +1347,13 @@ TPathElement* TPath::operator->() const {
 }
 
 bool TPath::IsDeleted() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->Dropped();
 }
 
 bool TPath::IsUnderOperation() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     if (Base()->Dropped()) {
         return false;
@@ -1253,7 +1380,7 @@ bool TPath::IsUnderOperation() const {
 }
 
 TTxId TPath::ActiveOperation() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     if (!IsUnderOperation()) {
         return InvalidTxId;
@@ -1268,7 +1395,7 @@ TTxId TPath::ActiveOperation() const {
         txId = Base()->LastTxId;
     }
 
-    Y_VERIFY(txId != InvalidTxId);
+    Y_ABORT_UNLESS(txId != InvalidTxId);
     Y_VERIFY_S(SS->Operations.contains(txId),
                "no operation,"
                    << " txId: " << txId
@@ -1280,13 +1407,13 @@ TTxId TPath::ActiveOperation() const {
 }
 
 bool TPath::IsUnderCreating() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateCreate;
 }
 
 bool TPath::IsUnderAltering() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateAlter;
 }
@@ -1300,31 +1427,31 @@ bool TPath::IsUnderDomainUpgrade() const {
 }
 
 bool TPath::IsUnderCopying() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateCopying;
 }
 
 bool TPath::IsUnderBackingUp() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateBackup;
 }
 
 bool TPath::IsUnderRestoring() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateRestore;
 }
 
 bool TPath::IsUnderDeleting() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateDrop;
 }
 
 bool TPath::IsUnderMoving() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->PathState == NKikimrSchemeOp::EPathState::EPathStateMoving;
 }
@@ -1350,7 +1477,7 @@ TPath TPath::FindOlapStore() const {
 }
 
 bool TPath::IsCommonSensePath() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     for (auto item = ++Elements.rbegin(); item != Elements.rend(); ++item) {
         // Directories and domain roots are always ok as intermediaries
@@ -1380,7 +1507,7 @@ bool TPath::AtLocalSchemeShardPath() const {
 }
 
 bool TPath::IsInsideTableIndexPath() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     // expected /<root>/.../<table>/<table_index>/<private_tables>
     if (Depth() < 3) {
@@ -1414,7 +1541,7 @@ bool TPath::IsInsideTableIndexPath() const {
 }
 
 bool TPath::IsInsideCdcStreamPath() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     // expected /<root>/.../<table>/<cdc_stream>/<private_topic>
     if (Depth() < 3) {
@@ -1448,13 +1575,13 @@ bool TPath::IsInsideCdcStreamPath() const {
 }
 
 bool TPath::IsTableIndex() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->IsTableIndex();
 }
 
 bool TPath::IsBackupTable() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     if (!Base()->IsTable() || !SS->Tables.contains(Base()->PathId)) {
         return false;
@@ -1466,7 +1593,7 @@ bool TPath::IsBackupTable() const {
 }
 
 bool TPath::IsAsyncReplicaTable() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     if (!Base()->IsTable() || !SS->Tables.contains(Base()->PathId)) {
         return false;
@@ -1478,19 +1605,19 @@ bool TPath::IsAsyncReplicaTable() const {
 }
 
 bool TPath::IsCdcStream() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->IsCdcStream();
 }
 
 bool TPath::IsSequence() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->IsSequence();
 }
 
 bool TPath::IsReplication() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     return Base()->IsReplication();
 }
@@ -1508,12 +1635,12 @@ ui64 TPath::Shards() const {
 }
 
 const TString& TPath::LeafName() const {
-    Y_VERIFY(!IsEmpty());
+    Y_ABORT_UNLESS(!IsEmpty());
     return NameParts.back();
 }
 
 bool TPath::IsValidLeafName(TString& explain) const {
-    Y_VERIFY(!IsEmpty());
+    Y_ABORT_UNLESS(!IsEmpty());
 
     const auto& leaf = NameParts.back();
     if (leaf.empty()) {
@@ -1557,7 +1684,7 @@ bool TPath::IsValidLeafName(TString& explain) const {
 }
 
 TString TPath::GetEffectiveACL() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     ui64 version = 0;
 
@@ -1590,7 +1717,7 @@ TString TPath::GetEffectiveACL() const {
 }
 
 ui64 TPath::GetEffectiveACLVersion() const {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     ui64 version = 0;
 
@@ -1623,7 +1750,7 @@ void TPath::Activate() {
         return;
     }
 
-    Y_VERIFY(Base()->IsCreateFinished());
+    Y_ABORT_UNLESS(Base()->IsCreateFinished());
 
     auto result = SS->AttachChild(Base());
     Y_VERIFY_S(result == EAttachChildResult::AttachedAsNewerActual, "result is: " << result);
@@ -1637,12 +1764,12 @@ void TPath::MaterializeLeaf(const TString& owner, const TPathId& newPathId, bool
     auto result = MaterializeImpl(owner, newPathId);
     switch (result) {
     case EAttachChildResult::Undefined:
-        Y_FAIL("unexpected result: Undefined");
+        Y_ABORT("unexpected result: Undefined");
         break;
 
     case EAttachChildResult::AttachedAsOnlyOne:
     case EAttachChildResult::AttachedAsActual:
-        Y_VERIFY(SS->PathIsActive(newPathId));
+        Y_ABORT_UNLESS(SS->PathIsActive(newPathId));
         break;
 
     case EAttachChildResult::AttachedAsCreatedActual:
@@ -1654,7 +1781,7 @@ void TPath::MaterializeLeaf(const TString& owner, const TPathId& newPathId, bool
 
     case EAttachChildResult::RejectAsInactive:
         if (allowInactivePath) {
-            Y_VERIFY(!SS->PathIsActive(newPathId));
+            Y_ABORT_UNLESS(!SS->PathIsActive(newPathId));
         } else {
             Y_FAIL_S("MaterializeLeaf do not accept shadow paths, use allowInactivePath = true");
         }
@@ -1672,7 +1799,7 @@ void TPath::MaterializeLeaf(const TString& owner, const TPathId& newPathId, bool
 EAttachChildResult TPath::MaterializeImpl(const TString& owner, const TPathId& newPathId) {
     const TString leafName = NameParts.back();
     Rise();
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     TPathId domainId = Base()->IsDomainRoot() ? Base()->PathId : Base()->DomainPathId;
     TPathElement::TPtr newPath = new TPathElement(newPathId, Base()->PathId, domainId, leafName, owner);
@@ -1696,10 +1823,10 @@ EAttachChildResult TPath::MaterializeImpl(const TString& owner, const TPathId& n
 }
 
 TPath& TPath::DiveByPathId(const TPathId& pathId) {
-    Y_VERIFY(IsResolved());
+    Y_ABORT_UNLESS(IsResolved());
 
     TPathElement::TPtr nextElem = SS->PathsById.at(pathId);
-    Y_VERIFY(nextElem->ParentPathId == Elements.back()->PathId);
+    Y_ABORT_UNLESS(nextElem->ParentPathId == Elements.back()->PathId);
 
     Elements.push_back(nextElem);
     NameParts.push_back(nextElem->Name);

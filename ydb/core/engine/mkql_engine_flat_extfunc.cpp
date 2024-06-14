@@ -2,6 +2,7 @@
 #include "mkql_engine_flat_impl.h"
 #include "mkql_keys.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
 #include <ydb/library/yql/minikql/computation/mkql_custom_list.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
@@ -76,7 +77,7 @@ namespace {
     public:
         TEmptyRangeHolder(const THolderFactory& holderFactory)
             : TComputationValue(&holderFactory.GetMemInfo())
-            , EmptyContainer(holderFactory.GetEmptyContainer())
+            , EmptyContainer(holderFactory.GetEmptyContainerLazy())
         {
         }
     private:
@@ -117,7 +118,7 @@ namespace {
                 , Payloads(payloads)
                 , Labels(labels)
             {
-                Y_VERIFY(payloads.size() == labels.size());
+                Y_ABORT_UNLESS(payloads.size() == labels.size());
             }
 
         private:
@@ -209,7 +210,7 @@ namespace {
         {}
 
         NUdf::TUnboxedValuePod DoCalculate(TComputationContext&) const {
-            Y_FAIL("Failed to build value for dummy node");
+            Y_ABORT("Failed to build value for dummy node");
         }
     private:
         void RegisterDependencies() const final {}
@@ -950,7 +951,7 @@ TComputationNodeFactory GetFlatProxyExecutionFactory(TProxyExecData& execData)
             } else if (nameStr == strings.Builtins.Length) {
                 return WrapMergedLength(callable, resultIt, ctx);
             } else {
-                Y_FAIL("Don't know how to merge results for callable: %s", TString(nameStr.Str()).data());
+                Y_ABORT("Don't know how to merge results for callable: %s", TString(nameStr.Str()).data());
             }
         }
 

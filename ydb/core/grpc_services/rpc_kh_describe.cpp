@@ -1,7 +1,7 @@
 #include "service_coordination.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "resolve_local_db_table.h"
 
 #include <ydb/library/aclib/aclib.h>
@@ -9,11 +9,12 @@
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/base/tablet_pipecache.h>
+#include <ydb/public/api/protos/ydb_clickhouse_internal.pb.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 
 #include <util/string/vector.h>
 #include <util/generic/hash.h>
@@ -64,8 +65,8 @@ public:
     }
 
     void Die(const NActors::TActorContext& ctx) override {
-        Y_VERIFY(Finished);
-        Y_VERIFY(!WaitingResolveReply);
+        Y_ABORT_UNLESS(Finished);
+        Y_ABORT_UNLESS(!WaitingResolveReply);
 
         if (TimeoutTimerActorId) {
             ctx.Send(TimeoutTimerActorId, new TEvents::TEvPoisonPill());
@@ -121,7 +122,7 @@ private:
     }
 
     void Handle(TEvPipeCache::TEvDeliveryProblem::TPtr& ev,  const TActorContext& ctx) {
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Got TEvDeliveryProblem, TabletId: " << ev->Get()->TabletId
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Got TEvDeliveryProblem, TabletId: " << ev->Get()->TabletId
                 << ", NotDelivered: " << ev->Get()->NotDelivered);
         return ReplyWithError(Ydb::StatusIds::UNAVAILABLE, "Invalid table path specified", ctx);
     }
@@ -159,7 +160,7 @@ private:
     }
 
     void ProceedWithSchema(const TActorContext& ctx) {
-        Y_VERIFY(ResolveNamesResult->ResultSet.size() == 1);
+        Y_ABORT_UNLESS(ResolveNamesResult->ResultSet.size() == 1);
         const auto& entry = ResolveNamesResult->ResultSet.front();
 
         if (entry.Status != NSchemeCache::TSchemeCacheNavigate::EStatus::Ok) {
@@ -291,7 +292,7 @@ private:
         }
 
         TEvTxProxySchemeCache::TEvResolveKeySetResult *msg = ev->Get();
-        Y_VERIFY(msg->Request->ResultSet.size() == 1);
+        Y_ABORT_UNLESS(msg->Request->ResultSet.size() == 1);
         KeyRange = std::move(msg->Request->ResultSet[0].KeyDescription);
 
         if (msg->Request->ErrorCount > 0) {
@@ -309,7 +310,7 @@ private:
             return JoinVectorIntoString(shards, ", ");
         };
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Table ["
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Table ["
                     << TEvKikhouseDescribeTableRequest::GetProtoRequest(Request)->path()
                     << "] shards: " << getShardsString(KeyRange->GetPartitions()));
 

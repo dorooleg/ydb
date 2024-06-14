@@ -12,6 +12,11 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
+                                "Inputs": [
+                                    {
+                                        "ExternalPlanNodeId": 2
+                                    }
+                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -24,18 +29,24 @@
                                 "PlanNodeType": "Connection",
                                 "Plans": [
                                     {
-                                        "Node Type": "TopSort-TableFullScan",
+                                        "Node Type": "Limit-TableFullScan",
                                         "Operators": [
                                             {
+                                                "Inputs": [
+                                                    {
+                                                        "InternalOperatorId": 1
+                                                    }
+                                                ],
                                                 "Limit": "1001",
-                                                "Name": "TopSort",
-                                                "TopSortBy": "row.col1"
+                                                "Name": "Limit"
                                             },
                                             {
+                                                "Inputs": [],
                                                 "Name": "TableFullScan",
                                                 "ReadColumns": [
                                                     "a"
                                                 ],
+                                                "ReadLimit": "1001",
                                                 "ReadRanges": [
                                                     "a (-\u221e, +\u221e)",
                                                     "b (-\u221e, +\u221e)",
@@ -53,7 +64,7 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "col1 (Asc)"
+                                    "a (Asc)"
                                 ]
                             }
                         ]
@@ -74,6 +85,7 @@
                     "columns": [
                         "a"
                     ],
+                    "limit": "1001",
                     "scan_by": [
                         "a (-\u221e, +\u221e)",
                         "b (-\u221e, +\u221e)",

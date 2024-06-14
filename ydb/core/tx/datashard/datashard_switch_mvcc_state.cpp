@@ -1,5 +1,7 @@
 #include "datashard_txs.h"
 
+#include <ydb/core/base/feature_flags.h>
+
 namespace NKikimr::NDataShard {
 
 void TDataShard::CheckMvccStateChangeCanStart(const TActorContext& ctx) {
@@ -13,8 +15,8 @@ void TDataShard::CheckMvccStateChangeCanStart(const TActorContext& ctx) {
 
                 case TShardState::Ready:
                 case TShardState::Frozen: {
-                    const auto enable = AppData(ctx)->FeatureFlags.GetEnableMvcc();
-                    if (enable && *enable != IsMvccEnabled()) {
+                    if (!IsMvccEnabled()) {
+                        // Force enable mvcc for potential old shards
                         MvccSwitchState = TSwitchState::SWITCHING;
                     } else {
                         MvccSwitchState = TSwitchState::DONE;
@@ -28,7 +30,7 @@ void TDataShard::CheckMvccStateChangeCanStart(const TActorContext& ctx) {
                 case TShardState::Unknown:
                     // We cannot start checking before shard initialization
 
-                    Y_VERIFY_DEBUG(false, "Unexpected shard state State:%d", State);
+                    Y_DEBUG_ABORT("Unexpected shard state State:%d", State);
                     [[fallthrough]];
 
                 case TShardState::Readonly:
@@ -75,14 +77,13 @@ bool TDataShard::TTxExecuteMvccStateChange::Execute(TTransactionContext& txc, co
         return true; // already switched
 
     if (Self->State == TShardState::Ready || Self->State == TShardState::Frozen) {
-        Y_VERIFY(Self->TxInFly() == 0 && Self->ImmediateInFly() == 0);
+        Y_ABORT_UNLESS(Self->TxInFly() == 0 && Self->ImmediateInFly() == 0);
 
         auto [step, txId] = Self->LastCompleteTxVersion();
-        Self->SnapshotManager.ChangeMvccState(step, txId, txc,
-            *AppData(ctx)->FeatureFlags.GetEnableMvcc() ? EMvccState::MvccEnabled : EMvccState::MvccDisabled);
+        Self->SnapshotManager.ChangeMvccState(step, txId, txc, EMvccState::MvccEnabled);
 
         LOG_DEBUG(ctx, NKikimrServices::TX_DATASHARD, TStringBuilder() << "TTxExecuteMvccStateChange.Execute"
-            << " MVCC state switched to" << (*AppData(ctx)->FeatureFlags.GetEnableMvcc() ? " enabled" : " disabled") << " state");
+            << " MVCC state switched to enabled state");
 
         ActivateWaitingOps = true;
     }

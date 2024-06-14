@@ -50,10 +50,10 @@ public:
 };
 
 class TFlatDbIterator : public ITestIterator {
-    TAutoPtr<TTableIt> Iter;
+    TAutoPtr<TTableIter> Iter;
 
 public:
-    explicit TFlatDbIterator(TAutoPtr<TTableIt> iter)
+    explicit TFlatDbIterator(TAutoPtr<TTableIter> iter)
         : Iter(iter)
     {}
 
@@ -108,7 +108,7 @@ public:
 
     void Init(const TScheme& scheme) override {
         Y_UNUSED(scheme);
-        Y_VERIFY("Not supported by flat db wrapper");
+        Y_ABORT_UNLESS("Not supported by flat db wrapper");
     }
 
     const TScheme& GetScheme() const override {
@@ -117,7 +117,7 @@ public:
 
     TString FinishTransaction(bool commit) override {
         Y_UNUSED(commit);
-        Y_VERIFY("Not supported by flat db wrapper");
+        Y_ABORT_UNLESS("Not supported by flat db wrapper");
         return "42";
     }
 
@@ -344,9 +344,9 @@ private:
         const auto num = one.ColumnCount;
 
         if (num != two.ColumnCount) {
-            Y_FAIL("Got different key columns count");
+            Y_ABORT("Got different key columns count");
         } else if (!std::equal(one.Types, one.Types + num, two.Types)) {
-            Y_FAIL("TDbTupleRef rows types vec are not the same");
+            Y_ABORT("TDbTupleRef rows types vec are not the same");
         } else {
             return CompareTypedCellVectors(one.Columns, two.Columns, one.Types, num);
         }

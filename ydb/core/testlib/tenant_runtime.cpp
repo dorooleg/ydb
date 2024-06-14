@@ -24,9 +24,10 @@
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/sys_view/processor/processor.h>
 #include <ydb/core/persqueue/pq.h>
+#include <ydb/core/statistics/aggregator/aggregator.h>
 
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/folder/dirut.h>
@@ -38,9 +39,9 @@ using namespace NSchemeShard;
 using namespace NConsole;
 using namespace NTenantSlotBroker;
 
-const ui64 SCHEME_SHARD1_ID = 0x0000000000840100;
-const ui64 SCHEME_SHARD2_ID = 0x0000000000840101;
-const ui64 HIVE_ID = 0x0000000000840102;
+const ui64 SCHEME_SHARD1_ID = MakeTabletID(false, 0x0000000000840100);
+const ui64 SCHEME_SHARD2_ID = MakeTabletID(false, 0x0000000000840101);
+const ui64 HIVE_ID = MakeTabletID(false, 0x0000000000840102);
 
 const TString DOMAIN1_NAME = "dc-1";
 const TString TENANT1_1_NAME = "/dc-1/users/tenant-1";
@@ -173,9 +174,15 @@ class TFakeSchemeShard : public TActor<TFakeSchemeShard>, public TTabletExecuted
         }
     }
 
+    void DefaultSignalTabletActive(const TActorContext &) override
+    {
+        // must be empty
+    }
+
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
+        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -229,9 +236,15 @@ public:
 };
 
 class TFakeBSController : public TActor<TFakeBSController>, public TTabletExecutedFlat {
+    void DefaultSignalTabletActive(const TActorContext &) override
+    {
+        // must be empty
+    }
+
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
+        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -263,9 +276,15 @@ public:
 };
 
 class TFakeTenantSlotBroker : public TActor<TFakeTenantSlotBroker>, public TTabletExecutedFlat {
+    void DefaultSignalTabletActive(const TActorContext &) override
+    {
+        // must be empty
+    }
+
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
+        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -433,6 +452,8 @@ class TFakeHive : public TActor<TFakeHive>, public TTabletExecutedFlat {
                 bootstrapperActorId = Boot(ctx, type, &NReplication::CreateController, DataGroupErasure);
             } else if (type == TTabletTypes::PersQueue) {
                 bootstrapperActorId = Boot(ctx, type, &NKikimr::CreatePersQueue, DataGroupErasure);
+            } else if (type == TTabletTypes::StatisticsAggregator) {
+                bootstrapperActorId = Boot(ctx, type, &NStat::CreateStatisticsAggregator, DataGroupErasure);
             } else {
                 status = NKikimrProto::ERROR;
             }
@@ -616,9 +637,15 @@ class TFakeHive : public TActor<TFakeHive>, public TTabletExecutedFlat {
         ctx.Send(Sender, new TEvTest::TEvHiveStateHit);
     }
 
+    void DefaultSignalTabletActive(const TActorContext &) override
+    {
+        // must be empty
+    }
+
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
+        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -670,7 +697,7 @@ public:
 
         default:
             if (!HandleDefaultEvents(ev, SelfId())) {
-                //Y_FAIL("TFakeHive::StateWork unexpected event type: %" PRIx32 " event: %s",
+                //Y_ABORT("TFakeHive::StateWork unexpected event type: %" PRIx32 " event: %s",
                 //       ev->GetTypeRewrite(), ev->HasEvent() ? ~ev->GetBase()->ToString() : "serialized?");
             }
         }
@@ -704,7 +731,7 @@ struct TWaitTenantSlotBrokerInitialization {
         : PoolCount(poolCount)
         , NodeInfoCount(0)
     {
-        Y_VERIFY(PoolCount);
+        Y_ABORT_UNLESS(PoolCount);
     }
 
     bool operator()(IEventHandle &ev) {
@@ -766,11 +793,11 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
     if (ENABLE_DETAILED_LOG) {
         SetLogPriority(NKikimrServices::LOCAL, NLog::PRI_DEBUG);
         SetLogPriority(NKikimrServices::TENANT_POOL, NLog::PRI_DEBUG);
-        SetLogPriority(NKikimrServices::LABELS_MAINTAINER, NLog::PRI_DEBUG);
+        //SetLogPriority(NKikimrServices::LABELS_MAINTAINER, NLog::PRI_DEBUG);
         SetLogPriority(NKikimrServices::TENANT_SLOT_BROKER, NLog::PRI_DEBUG);
-        SetLogPriority(NKikimrServices::CMS, NLog::PRI_DEBUG);
-        SetLogPriority(NKikimrServices::CMS_CONFIGS, NLog::PRI_TRACE);
-        SetLogPriority(NKikimrServices::CMS_TENANTS, NLog::PRI_TRACE);
+        //SetLogPriority(NKikimrServices::CMS, NLog::PRI_DEBUG);
+        //SetLogPriority(NKikimrServices::CMS_CONFIGS, NLog::PRI_TRACE);
+        //SetLogPriority(NKikimrServices::CMS_TENANTS, NLog::PRI_TRACE);
         SetLogPriority(NKikimrServices::CONFIGS_DISPATCHER, NLog::PRI_TRACE);
         SetLogPriority(NKikimrServices::CONFIGS_CACHE, NLog::PRI_TRACE);
         SetLogPriority(NKikimrServices::HIVE, NLog::PRI_DEBUG);
@@ -796,6 +823,9 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
     app.ClearDomainsAndHive();
 
     ui32 planResolution = 500;
+
+    Y_ABORT_UNLESS(Config.Domains.size() == 1);
+
     // Add domains info.
     for (ui32 i = 0; i < Config.Domains.size(); ++i) {
         auto &domain = Config.Domains[i];
@@ -810,12 +840,10 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
         poolTypes["hdd-2"] = hddPool;
         poolTypes["hdd-3"] = hddPool;
         auto domainPtr = TDomainsInfo::TDomain::ConstructDomainWithExplicitTabletIds(domain.Name, i, domain.SchemeShardId,
-                                                                i, i, TVector<ui32>{i},
-                                                                i, TVector<ui32>{i},
                                                                 planResolution,
-                                                                TVector<ui64>{TDomainsInfo::MakeTxCoordinatorIDFixed(i, 1)},
-                                                                TVector<ui64>{TDomainsInfo::MakeTxMediatorIDFixed(i, 1)},
-                                                                TVector<ui64>{TDomainsInfo::MakeTxAllocatorIDFixed(i, 1)},
+                                                                TVector<ui64>{TDomainsInfo::MakeTxCoordinatorIDFixed(1)},
+                                                                TVector<ui64>{TDomainsInfo::MakeTxMediatorIDFixed(1)},
+                                                                TVector<ui64>{TDomainsInfo::MakeTxAllocatorIDFixed(1)},
                                                                 poolTypes);
 
         TVector<ui64> ids = GetTxAllocatorTabletIds();
@@ -823,7 +851,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
         SetTxAllocatorTabletIds(ids);
 
         app.AddDomain(domainPtr.Release());
-        app.AddHive(i, Config.HiveId);
+        app.AddHive(Config.HiveId);
     }
 
     for (size_t i = 0; i< Config.Nodes.size(); ++i) {
@@ -838,8 +866,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
         Register(NTabletMonitoringProxy::CreateTabletMonitoringProxy());
     }
 
-    for (auto &pr : GetAppData().DomainsInfo->Domains) {
-        auto &domain = pr.second;
+    if (const auto& domain = GetAppData().DomainsInfo->Domain) {
         for (auto id : domain->TxAllocators) {
             auto aid = CreateTestBootstrapper(*this, CreateTestTabletInfo(id, TTabletTypes::TxAllocator), &CreateTxAllocator);
             EnableScheduleForActor(aid, true);
@@ -913,7 +940,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
                     UNIT_ASSERT_VALUES_EQUAL(event->Record.GetTxId(), 1);
                 }
             }
-            Y_VERIFY(domain.Subdomains.empty(), "Pre-initialized subdomains are not supported for real SchemeShard");
+            Y_ABORT_UNLESS(domain.Subdomains.empty(), "Pre-initialized subdomains are not supported for real SchemeShard");
         }
     }
 
@@ -950,7 +977,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
 
     // Create BS Controller.
     {
-        auto info = CreateTestTabletInfo(MakeBSControllerID(0), TTabletTypes::BSController);
+        auto info = CreateTestTabletInfo(MakeBSControllerID(), TTabletTypes::BSController);
         TActorId actorId = CreateTestBootstrapper(*this, info, [](const TActorId &tablet, TTabletStorageInfo *info) -> IActor* {
                 //return new TFakeBSController(tablet, info);
                 return CreateFlatBsController(tablet, info);
@@ -980,14 +1007,14 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
 
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = NTabletPipe::TClientRetryPolicy::WithRetries();
-        SendToPipe(MakeBSControllerID(0), Sender, request.Release(), 0, pipeConfig);
+        SendToPipe(MakeBSControllerID(), Sender, request.Release(), 0, pipeConfig);
 
         auto reply2 = GrabEdgeEventRethrow<TEvBlobStorage::TEvControllerConfigResponse>(handle);
         UNIT_ASSERT_VALUES_EQUAL(reply2->Record.GetResponse().GetSuccess(), true);
     }
 
     // Create Tenant Slot Pools
-    Y_VERIFY(GetNodeCount() >= Config.Nodes.size());
+    Y_ABORT_UNLESS(GetNodeCount() >= Config.Nodes.size());
     TMultiSet<std::pair<TString, TEvLocal::TEvTenantStatus::EStatus>> statuses;
 
     if (createTenantPools) {
@@ -1007,7 +1034,12 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
                 labels[label.GetName()] = label.GetValue();
             }
             labels.emplace("node_id", ToString(i));
-            auto aid = Register(CreateConfigsDispatcher(Extension, labels));
+            auto aid = Register(CreateConfigsDispatcher(
+                    NKikimr::NConfig::TConfigsDispatcherInitInfo {
+                        .InitialConfig = Extension,
+                        .Labels = labels,
+                    }
+                ));
             EnableScheduleForActor(aid, true);
             RegisterService(MakeConfigsDispatcherID(GetNodeId(0)), aid, 0);
         }
@@ -1025,7 +1057,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
 
     // Create Console
     {
-        auto info = CreateTestTabletInfo(MakeConsoleID(0), TTabletTypes::Console, TErasureType::ErasureNone);
+        auto info = CreateTestTabletInfo(MakeConsoleID(), TTabletTypes::Console, TErasureType::ErasureNone);
         TActorId actorId = CreateTestBootstrapper(*this, info, [](const TActorId &tablet, TTabletStorageInfo *info) -> IActor* {
                 return CreateConsole(tablet, info);
             });
@@ -1092,7 +1124,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
 
     // Create Tenant Slot Broker
     {
-        auto info = CreateTestTabletInfo(MakeTenantSlotBrokerID(0), TTabletTypes::TenantSlotBroker, TErasureType::ErasureNone);
+        auto info = CreateTestTabletInfo(MakeTenantSlotBrokerID(), TTabletTypes::TenantSlotBroker, TErasureType::ErasureNone);
         TActorId actorId = CreateTestBootstrapper(*this, info, [&config=this->Config](const TActorId &tablet, TTabletStorageInfo *info) -> IActor* {
                 if (config.FakeTenantSlotBroker)
                     return new TFakeTenantSlotBroker(tablet, info);
@@ -1130,12 +1162,12 @@ void TTenantTestRuntime::WaitForHiveState(const TVector<TEvTest::TEvWaitHiveStat
 
 void TTenantTestRuntime::SendToBroker(IEventBase* event)
 {
-    SendToPipe(MakeTenantSlotBrokerID(0), Sender, event, 0, GetPipeConfigWithRetries());
+    SendToPipe(MakeTenantSlotBrokerID(), Sender, event, 0, GetPipeConfigWithRetries());
 }
 
 void TTenantTestRuntime::SendToConsole(IEventBase* event)
 {
-    SendToPipe(MakeConsoleID(0), Sender, event, 0, GetPipeConfigWithRetries());
+    SendToPipe(MakeConsoleID(), Sender, event, 0, GetPipeConfigWithRetries());
 }
 
 NKikimrTenantPool::TSlotStatus MakeSlotStatus(const TString &id, const TString &type, const TString &tenant,
@@ -1152,11 +1184,11 @@ NKikimrTenantPool::TSlotStatus MakeSlotStatus(const TString &id, const TString &
     return res;
 }
 
-void CheckTenantPoolStatus(TTenantTestRuntime &runtime, ui32 domain,
+void CheckTenantPoolStatus(TTenantTestRuntime &runtime,
                            THashMap<TString, NKikimrTenantPool::TSlotStatus> status,
                            ui32 nodeId)
 {
-    runtime.Send(new IEventHandle(MakeTenantPoolID(runtime.GetNodeId(nodeId), domain),
+    runtime.Send(new IEventHandle(MakeTenantPoolID(runtime.GetNodeId(nodeId)),
                                   runtime.Sender,
                                   new TEvTenantPool::TEvGetStatus));
     TAutoPtr<IEventHandle> handle;

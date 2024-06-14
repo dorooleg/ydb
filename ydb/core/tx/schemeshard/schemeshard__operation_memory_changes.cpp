@@ -5,13 +5,13 @@ namespace NKikimr::NSchemeShard {
 
 template <typename I, typename C, typename H>
 static void GrabNew(const I& id, const C& cont, H& holder) {
-    Y_VERIFY(!cont.contains(id));
+    Y_ABORT_UNLESS(!cont.contains(id));
     holder.emplace(id, nullptr);
 }
 
 template <typename T, typename I, typename C, typename H>
 static void Grab(const I& id, const C& cont, H& holder) {
-    Y_VERIFY(cont.contains(id));
+    Y_ABORT_UNLESS(cont.contains(id));
     holder.emplace(id, new T(*cont.at(id)));
 }
 
@@ -40,14 +40,20 @@ void TMemoryChanges::GrabNewShard(TSchemeShard*, const TShardIdx& shardId) {
 }
 
 void TMemoryChanges::GrabShard(TSchemeShard *ss, const TShardIdx &shardId) {
-    Y_VERIFY(ss->ShardInfos.contains(shardId));
+    Y_ABORT_UNLESS(ss->ShardInfos.contains(shardId));
 
     const auto& shard = ss->ShardInfos.at(shardId);
     Shards.emplace(shardId, MakeHolder<TShardInfo>(shard));
 }
 
 void TMemoryChanges::GrabDomain(TSchemeShard* ss, const TPathId& pathId) {
-    Grab<TSubDomainInfo>(pathId, ss->SubDomains, SubDomains);
+    // Copy TSubDomainInfo from ss->SubDomains to local SubDomains.
+    // Make sure that copy will be made only when needed.
+    const auto found = ss->SubDomains.find(pathId);
+    Y_ABORT_UNLESS(found != ss->SubDomains.end());
+    if (!SubDomains.contains(pathId)) {
+        SubDomains.emplace(pathId, MakeIntrusive<TSubDomainInfo>(*found->second));
+    }
 }
 
 void TMemoryChanges::GrabNewIndex(TSchemeShard* ss, const TPathId& pathId) {
@@ -67,18 +73,18 @@ void TMemoryChanges::GrabCdcStream(TSchemeShard* ss, const TPathId& pathId) {
 }
 
 void TMemoryChanges::GrabNewTableSnapshot(TSchemeShard* ss, const TPathId& pathId, TTxId snapshotTxId) {
-    Y_VERIFY(!ss->TablesWithSnapshots.contains(pathId));
+    Y_ABORT_UNLESS(!ss->TablesWithSnapshots.contains(pathId));
     TablesWithSnapshots.emplace(pathId, snapshotTxId);
 }
 
 void TMemoryChanges::GrabNewLongLock(TSchemeShard* ss, const TPathId& pathId) {
-    Y_VERIFY(!ss->LockedPaths.contains(pathId));
+    Y_ABORT_UNLESS(!ss->LockedPaths.contains(pathId));
     LockedPaths.emplace(pathId, InvalidTxId); // will be removed on UnDo()
 }
 
 void TMemoryChanges::GrabLongLock(TSchemeShard* ss, const TPathId& pathId, TTxId lockTxId) {
-    Y_VERIFY(ss->LockedPaths.contains(pathId));
-    Y_VERIFY(ss->LockedPaths.at(pathId) == lockTxId);
+    Y_ABORT_UNLESS(ss->LockedPaths.contains(pathId));
+    Y_ABORT_UNLESS(ss->LockedPaths.at(pathId) == lockTxId);
     LockedPaths.emplace(pathId, lockTxId); // will be restored on UnDo()
 }
 
@@ -88,6 +94,14 @@ void TMemoryChanges::GrabExternalTable(TSchemeShard* ss, const TPathId& pathId) 
 
 void TMemoryChanges::GrabExternalDataSource(TSchemeShard* ss, const TPathId& pathId) {
     Grab<TExternalDataSourceInfo>(pathId, ss->ExternalDataSources, ExternalDataSources);
+}
+
+void TMemoryChanges::GrabNewView(TSchemeShard* ss, const TPathId& pathId) {
+    GrabNew(pathId, ss->Views, Views);
+}
+
+void TMemoryChanges::GrabView(TSchemeShard* ss, const TPathId& pathId) {
+    Grab<TViewInfo>(pathId, ss->Views, Views);
 }
 
 void TMemoryChanges::UnDo(TSchemeShard* ss) {
@@ -170,22 +184,19 @@ void TMemoryChanges::UnDo(TSchemeShard* ss) {
         Shards.pop();
     }
 
-    while (SubDomains) {
-        const auto& [id, elem] = SubDomains.top();
-        if (elem) {
-            ss->SubDomains[id] = elem;
-        } else {
-            ss->SubDomains.erase(id);
-        }
-        SubDomains.pop();
+    // Restore ss->SubDomains entries to saved copies of TSubDomainInfo objects.
+    // No copy, simple pointer replacement.
+    for (const auto& [id, elem] : SubDomains) {
+        ss->SubDomains[id] = elem;
     }
+    SubDomains.clear();
 
     while (TxStates) {
         const auto& [id, elem] = TxStates.top();
         if (!elem) {
             ss->TxInFlight.erase(id);
         } else {
-            Y_FAIL("No such cases are exist");
+            Y_ABORT("No such cases are exist");
         }
         TxStates.pop();
     }
@@ -208,6 +219,16 @@ void TMemoryChanges::UnDo(TSchemeShard* ss) {
             ss->ExternalDataSources.erase(id);
         }
         ExternalDataSources.pop();
+    }
+
+    while (Views) {
+        const auto& [id, elem] = Views.top();
+        if (elem) {
+            ss->Views[id] = elem;
+        } else {
+            ss->Views.erase(id);
+        }
+        Views.pop();
     }
 }
 

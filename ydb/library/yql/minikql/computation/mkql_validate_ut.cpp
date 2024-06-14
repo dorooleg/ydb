@@ -112,7 +112,7 @@ namespace NUdf {
                 case 0: return ToUnboxedValue(FirstName);
                 case 1: return ToUnboxedValue(LastName);
                 case 2: return NUdf::TUnboxedValuePod(Age);
-                default: Y_FAIL("Unexpected");
+                default: Y_ABORT("Unexpected");
             }
         }
     };
@@ -140,7 +140,7 @@ namespace NUdf {
                 case 3: return Tags.empty() ?
                     NUdf::TUnboxedValuePod() :
                     NUdf::TUnboxedValuePod(new TListRef<TTagList>(Tags));
-                default: Y_FAIL("Unexpected");
+                default: Y_ABORT("Unexpected");
             }
         }
     };
@@ -162,9 +162,9 @@ namespace NImpl {
                 .AddField<ui32>("Age", &PersonStruct::MetaIndexes[2]);
             auto structType = structBuilder->Build();
             for (const auto& index: PersonStruct::MetaIndexes) {
-                Y_VERIFY(index < NUdf::PersonStruct::MEMBERS_COUNT);
+                Y_ABORT_UNLESS(index < NUdf::PersonStruct::MEMBERS_COUNT);
                 NUdf::PersonStruct::MetaBackIndexes[index] = &index - PersonStruct::MetaIndexes;
-                Y_VERIFY(NUdf::PersonStruct::MetaBackIndexes[index] < NUdf::PersonStruct::MEMBERS_COUNT);
+                Y_ABORT_UNLESS(NUdf::PersonStruct::MetaBackIndexes[index] < NUdf::PersonStruct::MEMBERS_COUNT);
             }
             return structType;
         }
@@ -182,9 +182,9 @@ namespace NImpl {
                 .AddField("Tags", optionalListTags, &PersonStructWithOptList::MetaIndexes[3]);
             auto structType = structBuilder->Build();
             for (const auto& index: PersonStructWithOptList::MetaIndexes) {
-                Y_VERIFY(index < NUdf::PersonStructWithOptList::MEMBERS_COUNT);
+                Y_ABORT_UNLESS(index < NUdf::PersonStructWithOptList::MEMBERS_COUNT);
                 NUdf::PersonStructWithOptList::MetaBackIndexes[index] = &index - PersonStructWithOptList::MetaIndexes;
-                Y_VERIFY(NUdf::PersonStructWithOptList::MetaBackIndexes[index] < NUdf::PersonStructWithOptList::MEMBERS_COUNT);
+                Y_ABORT_UNLESS(NUdf::PersonStructWithOptList::MetaBackIndexes[index] < NUdf::PersonStructWithOptList::MEMBERS_COUNT);
             }
             return structType;
         }
@@ -305,7 +305,7 @@ namespace {
                 case 1: return ToUnboxedValue(std::get<1>(Tuple));
                 case 2: return ToUnboxedValue(std::get<2>(Tuple));
                 case 3: return ToUnboxedValue(std::get<3>(Tuple));
-                default: Y_FAIL("Unexpected");
+                default: Y_ABORT("Unexpected");
             }
         }
     };
@@ -707,7 +707,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLValidateTest) {
         TScopedAlloc alloc(__LOCATION__);
         TTypeEnvironment env(alloc);
         bool wrapped = false;
-        UNIT_ASSERT_EXCEPTION(TValidate<TValidateErrorPolicyThrow>::Value(nullptr, env.GetTypeOfType(),
+        UNIT_ASSERT_EXCEPTION(TValidate<TValidateErrorPolicyThrow>::Value(nullptr, env.GetTypeOfTypeLazy(),
             NUdf::TUnboxedValuePod(), "ut for verify empty value exception", &wrapped), TUdfValidateException);
         UNIT_ASSERT(!wrapped);
     }

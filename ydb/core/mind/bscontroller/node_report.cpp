@@ -22,6 +22,10 @@ public:
 
         STLOG(PRI_DEBUG, BS_CONTROLLER, BSCTXNR01, "TTxNodeReport execute");
 
+        if (!Self->ValidateIncomingNodeWardenEvent(*Event)) {
+            return true;
+        }
+
         State.emplace(*Self, Self->HostRecords, TActivationContext::Now());
         State->CheckConsistency();
 
@@ -54,7 +58,7 @@ public:
                 case NKikimrBlobStorage::TEvControllerNodeReport::DESTROYED:
                     if (slot->IsBeingDeleted()) {
                         const size_t num = const_cast<TPDiskInfo&>(*slot->PDisk).VSlotsOnPDisk.erase(slot->VSlotId.VSlotId);
-                        Y_VERIFY(num);
+                        Y_ABORT_UNLESS(num);
                         State->DeleteDestroyedVSlot(slot);
                     }
                     break;
@@ -69,6 +73,30 @@ public:
                             break;
                         case TMood::Donor:
                             break;
+                    }
+                    break;
+            }
+        }
+
+        for (const auto& report : record.GetPDiskReports()) {
+            if (!report.HasPDiskId() || !report.HasPhase()) {
+                continue; // ignore incorrect report
+            }
+
+            TPDiskId pdiskId(record.GetNodeId(), report.GetPDiskId());
+
+            TPDiskInfo *pdisk = State->PDisks.FindForUpdate(pdiskId);
+            if (!pdisk) {
+                continue;
+            }
+
+            switch (report.GetPhase()) {
+                case NKikimrBlobStorage::TEvControllerNodeReport::PD_UNKNOWN:
+                    continue;
+
+                case NKikimrBlobStorage::TEvControllerNodeReport::PD_RESTARTED:
+                    if (pdisk->Mood == TPDiskMood::Restarting) {
+                        pdisk->Mood = TPDiskMood::Normal;
                     }
                     break;
             }

@@ -90,7 +90,7 @@ Y_ABSL_NAMESPACE_BEGIN
 //
 // Such implicit cast chaining may be useful within template logic.
 template <typename To>
-constexpr To implicit_cast(typename y_absl::internal::identity_t<To> to) {
+constexpr To implicit_cast(typename y_absl::internal::type_identity_t<To> to) {
   return to;
 }
 
@@ -149,17 +149,17 @@ using std::bit_cast;
 
 #else  // defined(__cpp_lib_bit_cast) && __cpp_lib_bit_cast >= 201806L
 
-template <typename Dest, typename Source,
-          typename std::enable_if<
-              sizeof(Dest) == sizeof(Source) &&
-                  type_traits_internal::is_trivially_copyable<Source>::value &&
-                  type_traits_internal::is_trivially_copyable<Dest>::value
+template <
+    typename Dest, typename Source,
+    typename std::enable_if<sizeof(Dest) == sizeof(Source) &&
+                                std::is_trivially_copyable<Source>::value &&
+                                std::is_trivially_copyable<Dest>::value
 #if !Y_ABSL_HAVE_BUILTIN(__builtin_bit_cast)
-                  && std::is_default_constructible<Dest>::value
+                                && std::is_default_constructible<Dest>::value
 #endif  // !Y_ABSL_HAVE_BUILTIN(__builtin_bit_cast)
-              ,
-              int>::type = 0>
-#if Y_ABSL_HAVE_BUILTIN(__builtin_bit_cast) && (!defined(__CUDACC__) || CUDA_VERSION >= 11010)
+                            ,
+                            int>::type = 0>
+#if Y_ABSL_HAVE_BUILTIN(__builtin_bit_cast)
 inline constexpr Dest bit_cast(const Source& source) {
   return __builtin_bit_cast(Dest, source);
 }

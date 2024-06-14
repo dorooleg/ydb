@@ -24,7 +24,7 @@ namespace NKikimr {
             ProcessLogoBlobs(str, tabletId, prettyPrint);
 
             Result->SetResult(str.Str());
-            SendVDiskResponse(ctx, Ev->Sender, Result.release(), 0);
+            SendVDiskResponse(ctx, Ev->Sender, Result.release(), 0, HullCtx->VCtx);
             ctx.Send(ParentId, new TEvents::TEvActorDied);
             TThis::Die(ctx);
         }
@@ -164,7 +164,7 @@ namespace NKikimr {
                         val.DataSizeMem += memRec.DataSize();
                         break;
                     default:
-                        Y_FAIL("Unexpected case");
+                        Y_ABORT("Unexpected case");
                 }
             }
         }

@@ -15,8 +15,11 @@
 #include <ydb/library/yql/public/issue/yql_issue.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/core/issue/protos/issue_id.pb.h>
+#include <ydb/core/protos/console_config.pb.h>
+#include <ydb/core/protos/console_base.pb.h>
+#include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
-#include <library/cpp/grpc/client/grpc_client_low.h>
+#include <ydb/library/grpc/client/grpc_client_low.h>
 
 #include <util/thread/factory.h>
 
@@ -149,7 +152,7 @@ Y_UNIT_TEST_SUITE(YdbYqlClient) {
                 );
             )___").ExtractValueSync();
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);
+            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SCHEME_ERROR);
         }
 
         {
@@ -161,7 +164,7 @@ Y_UNIT_TEST_SUITE(YdbYqlClient) {
                 );
             )___").ExtractValueSync();
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);
+            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SCHEME_ERROR);
         }
     }
 
@@ -587,7 +590,7 @@ Y_UNIT_TEST_SUITE(YdbYqlClient) {
                 .UseSecureConnection(NYdbSslTestData::CaCrt)
                 .SetEndpoint(location));
 
-        auto& tableSettings = server.GetServer().GetSettings().AppConfig.GetTableServiceConfig();
+        auto& tableSettings = server.GetServer().GetSettings().AppConfig->GetTableServiceConfig();
         bool useSchemeCacheMeta = tableSettings.GetUseSchemeCacheMetadata();
 
         {
@@ -1147,11 +1150,11 @@ R"___(<main>: Error: Transaction not found: , code: 2015
                 PRIMARY KEY (Key)
             );
         )___").ExtractValueSync();
-        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SCHEME_ERROR);
 
         auto ref = R"___(<main>: Error: Execution, code: 1060
     <main>:5:30: Error: Executing CREATE TABLE
-        <main>: Error: Scheme operation failed, status: ExecError, reason: Column Key has wrong key type Double
+        <main>: Error: Column Key has wrong key type Double, code: 2003
 )___";
         UNIT_ASSERT_NO_DIFF(result.GetIssues().ToString(), ref);
     }
@@ -1521,6 +1524,195 @@ R"___(<main>: Error: Transaction not found: , code: 2015
         }
     }
 
+    Y_UNIT_TEST(TestReadTableNotNullBorder) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto connection = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+        NYdb::NTable::TTableClient client(connection);
+        auto session = client.CreateSession().ExtractValueSync().GetSession();
+
+        auto result = session.ExecuteSchemeQuery(R"___(
+            CREATE TABLE `Root/Test` (
+                Key Uint64 NOT NULL,
+                Value String,
+                PRIMARY KEY (Key)
+            );
+        )___").ExtractValueSync();
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        result = session.ExecuteDataQuery(R"___(
+            UPSERT INTO `Root/Test` (Key, Value) VALUES (0u, "Zero");
+            UPSERT INTO `Root/Test` (Key, Value) VALUES (1u, "One");
+        )___", TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        {
+            TValueBuilder valueFrom;
+            valueFrom.BeginTuple()
+                .AddElement()
+                    .Uint64(1)
+                .EndTuple();
+
+            auto settings = TReadTableSettings()
+                .Ordered()
+                .From(TKeyBound::Inclusive(valueFrom.Build()));
+
+            auto it = session.ReadTable("Root/Test", settings).ExtractValueSync();
+
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(streamPart.GetStatus(), EStatus::SUCCESS);
+
+            auto str = NYdb::FormatResultSetYson(streamPart.ExtractPart());
+            UNIT_ASSERT_VALUES_EQUAL(str, "[[[1u];[\"One\"]]]");
+        }
+
+        {
+            // Allow to use Optional values for NOT NULL columns
+            TValueBuilder valueFrom;
+            valueFrom.BeginTuple()
+                .AddElement()
+                    .OptionalUint64(1)
+                .EndTuple();
+
+            auto settings = TReadTableSettings()
+                .Ordered()
+                .From(TKeyBound::Inclusive(valueFrom.Build()));
+
+            auto it = session.ReadTable("Root/Test", settings).ExtractValueSync();
+
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(streamPart.GetStatus(), EStatus::SUCCESS, streamPart.GetIssues().ToString());
+
+            auto str = NYdb::FormatResultSetYson(streamPart.ExtractPart());
+            UNIT_ASSERT_VALUES_EQUAL(str, "[[[1u];[\"One\"]]]");
+        }
+
+        {
+            // Allow to use Optional values for NOT NULL columns
+            TValueBuilder valueFrom;
+            valueFrom.BeginTuple()
+                .AddElement()
+                    .OptionalUint64(1)
+                .EndTuple();
+
+            auto settings = TReadTableSettings()
+                .Ordered()
+                .From(TKeyBound::Inclusive(valueFrom.Build()));
+
+            auto it = session.ReadTable("Root/Test", settings).ExtractValueSync();
+
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(streamPart.GetStatus(), EStatus::SUCCESS, streamPart.GetIssues().ToString());
+
+            auto str = NYdb::FormatResultSetYson(streamPart.ExtractPart());
+            UNIT_ASSERT_VALUES_EQUAL(str, "[[[1u];[\"One\"]]]");
+        }
+
+        {
+            // Allow to use Optional values for NOT NULL columns
+            TValueBuilder valueFrom;
+            valueFrom.BeginTuple()
+                .AddElement()
+                    .OptionalUint64(Nothing())
+                .EndTuple();
+
+            auto settings = TReadTableSettings()
+                .Ordered()
+                .From(TKeyBound::Inclusive(valueFrom.Build()));
+
+            auto it = session.ReadTable("Root/Test", settings).ExtractValueSync();
+
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(streamPart.GetStatus(), EStatus::SUCCESS, streamPart.GetIssues().ToString());
+
+            auto str = NYdb::FormatResultSetYson(streamPart.ExtractPart());
+            UNIT_ASSERT_VALUES_EQUAL(str, "[[[0u];[\"Zero\"]];[[1u];[\"One\"]]]");
+        }
+
+        {
+            TValueBuilder valueFrom;
+            valueFrom.BeginTuple()
+                .AddElement()
+                    .Uint64(1)
+                .EndTuple();
+
+            auto settings = TReadTableSettings()
+                .Ordered()
+                .From(TKeyBound::Exclusive(valueFrom.Build()));
+
+            auto it = session.ReadTable("Root/Test", settings).ExtractValueSync();
+
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(streamPart.GetStatus(), EStatus::SUCCESS);
+
+            auto str = NYdb::FormatResultSetYson(streamPart.ExtractPart());
+            UNIT_ASSERT_VALUES_EQUAL(str, "[]");
+        }
+    }
+
+    // Same but use reverce order of column in tuple
+    Y_UNIT_TEST(TestReadTableNotNullBorder2) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto connection = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+        NYdb::NTable::TTableClient client(connection);
+        auto session = client.CreateSession().ExtractValueSync().GetSession();
+
+        auto result = session.ExecuteSchemeQuery(R"___(
+            CREATE TABLE `Root/Test` (
+                aaa String,
+                zzz Uint64 NOT NULL,
+                PRIMARY KEY (zzz)
+            );
+        )___").ExtractValueSync();
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        result = session.ExecuteDataQuery(R"___(
+            UPSERT INTO `Root/Test` (zzz, aaa) VALUES (1u, "One");
+        )___", TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        {
+            auto selectResult = session.ExecuteDataQuery(R"(
+                SELECT zzz, aaa FROM `Root/Test`;
+            )", TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
+
+            UNIT_ASSERT_EQUAL(selectResult.GetStatus(), EStatus::SUCCESS);
+            auto text = FormatResultSetYson(selectResult.GetResultSet(0));
+            UNIT_ASSERT_VALUES_EQUAL("[[1u;[\"One\"]]]", text);
+        }
+
+        {
+            TValueBuilder valueFrom;
+            valueFrom.BeginTuple()
+                .AddElement()
+                    .Uint64(1)
+                .EndTuple();
+
+            auto settings = TReadTableSettings()
+                .Ordered()
+                .From(TKeyBound::Inclusive(valueFrom.Build()));
+
+            auto it = session.ReadTable("Root/Test", settings).ExtractValueSync();
+
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(streamPart.GetStatus(), EStatus::SUCCESS);
+
+            auto str = NYdb::FormatResultSetYson(streamPart.ExtractPart());
+            UNIT_ASSERT_VALUES_EQUAL(str, "[[[\"One\"];[1u]]]");
+        }
+    }
+
     enum class EReadTableMultiShardMode {
         Normal,
         UseSnapshot,
@@ -1738,10 +1930,12 @@ R"___(<main>: Error: Transaction not found: , code: 2015
 
                 UNIT_ASSERT_VALUES_EQUAL(streamPart.IsSuccess(), true);
 
+                int readRows = 0;
                 auto rsParser = TResultSetParser(streamPart.ExtractPart());
                 while (rsParser.TryNextRow()) {
                     auto columns = rsParser.ColumnsCount();
                     const auto& expRow = expected[row++];
+                    ++readRows;
                     TString tmp = "[";
                     for (size_t c = 0; c < columns; c++) {
                         auto colYson = FormatValueYson(rsParser.GetValue(c));
@@ -1751,6 +1945,9 @@ R"___(<main>: Error: Transaction not found: , code: 2015
                     }
                     tmp += "]";
                     UNIT_ASSERT_VALUES_EQUAL(tmp, expRow);
+                }
+                if (rowLimit) {
+                    UNIT_ASSERT(readRows <= 1);
                 }
             }
         }
@@ -1763,6 +1960,101 @@ R"___(<main>: Error: Transaction not found: , code: 2015
 
     Y_UNIT_TEST(TestReadTableMultiShardWithDescribeAndRowLimit) {
         TestReadTableMultiShardWithDescribe(true);
+    }
+
+
+    void TestReadTable(TSession& session, int rowsTotalCount, int batchLimitBytes, int batchLimitRows) {
+        int row = 0;
+        TReadTableSettings readTableSettings;
+        readTableSettings.Ordered(true);
+        readTableSettings.BatchLimitBytes(batchLimitBytes);
+        readTableSettings.BatchLimitRows(batchLimitRows);
+
+        auto it = session.ReadTable("Root/Test", readTableSettings).ExtractValueSync();
+
+        TStringStream out;
+        while (true) {
+            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
+
+            if (streamPart.EOS()) {
+                break;
+            }
+
+            UNIT_ASSERT_VALUES_EQUAL(streamPart.IsSuccess(), true);
+
+            auto rsParser = TResultSetParser(streamPart.ExtractPart());
+            i64 batchRows = 0;
+            out << "---- batch start ----" << Endl;
+            while (rsParser.TryNextRow()) {
+                auto columns = rsParser.ColumnsCount();
+                ++row;
+                ++batchRows;
+                TString tmp = "[";
+                for (size_t c = 0; c < columns; c++) {
+                    auto colYson = FormatValueYson(rsParser.GetValue(c));
+                    tmp += colYson;
+                    if (c != columns - 1)
+                        tmp += ";";
+                }
+                tmp += "]";
+                out << tmp << Endl;
+            }
+            out << "---- batch end ----" << Endl;
+            UNIT_ASSERT(!batchLimitRows || batchRows <= batchLimitRows);
+        }
+        Cerr << out.Str();
+        UNIT_ASSERT_VALUES_EQUAL(row, rowsTotalCount);
+    }
+
+    Y_UNIT_TEST(TestReadTableBatchLimits) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::GRPC_SERVER, NLog::PRI_TRACE);
+        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::READ_TABLE_API, NLog::PRI_TRACE);
+        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto connection = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+        NYdb::NTable::TTableClient client(connection);
+        auto session = client.CreateSession().ExtractValueSync().GetSession();
+
+        auto tableBuilder = client.GetTableBuilder();
+        tableBuilder
+            .AddNullableColumn("Key", EPrimitiveType::Uint32)
+            .AddNullableColumn("Key2", EPrimitiveType::Uint32)
+            .AddNullableColumn("Value", EPrimitiveType::String);
+        tableBuilder.SetPrimaryKeyColumns(TVector<TString>{"Key", "Key2"});
+
+        TCreateTableSettings createTableSettings =
+            TCreateTableSettings()
+                .PartitioningPolicy(TPartitioningPolicy().UniformPartitions(10));
+
+        auto result = session.CreateTable("Root/Test", tableBuilder.Build(), createTableSettings).ExtractValueSync();
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        int rowsTotalCount = 100;
+        TStringStream query;
+        query << R"_(  UPSERT INTO `Root/Test` (Key, Key2, Value) VALUES )_";
+        for (int i = 0; i < rowsTotalCount; ++i) {
+            query << Sprintf(R"_( (%d, %d, "A")%s)_", i, 2 * i, i + 1 < rowsTotalCount ? "," : ";");
+        }
+        result = session.ExecuteDataQuery(query.Str(),
+            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
+
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        // all limits disabled
+        TestReadTable(session, rowsTotalCount, 0, 0);
+        for (int i = 1; i <= rowsTotalCount; i *= 2) {
+            // test BatchLimitRows
+            TestReadTable(session, rowsTotalCount, 0, i);
+        }
+        // test BatchLimitBytes == 1 returns not more than one row
+        TestReadTable(session, rowsTotalCount, 1, 1);
     }
 
     Y_UNIT_TEST(TestReadWrongTable) {
@@ -1839,7 +2131,7 @@ R"___(<main>: Error: Transaction not found: , code: 2015
         UNIT_ASSERT_VALUES_EQUAL(lastPart.EOS(), true);
     }
 
-    Y_UNIT_TEST(RetryOperation) {
+    Y_UNIT_TEST(RetryOperationTemplate) {
         TKikimrWithGrpcAndRootSchema server;
         NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
         NYdb::NTable::TTableClient client(driver);
@@ -1887,6 +2179,162 @@ R"___(<main>: Error: Transaction not found: , code: 2015
 
         TResultSetParser parser(*selectResult);
         UNIT_ASSERT(parser.TryNextRow());
+        driver.Stop(true);
+    }
+
+    void CheckRetryResult(const TStatus& status, const TVector<TResultSet>& resultSets, bool expectSuccess)
+    {
+        if (expectSuccess) {
+            UNIT_ASSERT_C(status.IsSuccess(), status);
+            UNIT_ASSERT_VALUES_EQUAL(resultSets.size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(resultSets[0].ColumnsCount(), 3);
+        } else {
+            UNIT_ASSERT_C(!status.IsSuccess(), status);
+        }
+    }
+
+    void TestRetryOperationAsync(NYdb::NTable::TTableClient& client,
+        const TVector<EStatus>& retriableStatuses, bool expectSuccess,
+        TRetryOperationSettings settings = TRetryOperationSettings())
+    {
+        size_t retryNumber = 0;
+        TVector<TResultSet> resultSets;
+        auto operation = [&retryNumber, &resultSets, &retriableStatuses] (TSession session) -> TAsyncStatus {
+            // iterate over all providen statuses and return TStatus to emulate error
+            if (retryNumber < retriableStatuses.size()) {
+                TStatus status(retriableStatuses[retryNumber++], {});
+                return NThreading::MakeFuture<TStatus>(status);
+            }
+            auto queryStatus = session.ExecuteDataQuery(
+                "SELECT 1, 2, 3", TTxControl::BeginTx().CommitTx()).GetValueSync();
+            resultSets = queryStatus.GetResultSets();
+            return NThreading::MakeFuture<TStatus>(queryStatus);
+        };
+        auto operationWithoutSession = [&operation] (TTableClient client) -> TAsyncStatus {
+            auto session = client.CreateSession().GetValueSync().GetSession();
+            return operation(session);
+        };
+
+        const auto retrySettings = settings.MaxRetries(retriableStatuses.size()).Verbose(true);
+        auto result = client.RetryOperation(operation, retrySettings);
+        CheckRetryResult(result.GetValueSync(), resultSets, expectSuccess);
+
+        retryNumber = 0;
+        auto resultWithoutSession = client.RetryOperation(operationWithoutSession, retrySettings);
+        CheckRetryResult(resultWithoutSession.GetValueSync(), resultSets, expectSuccess);
+    }
+
+    void TestRetryOperationSync(NYdb::NTable::TTableClient& client,
+        const TVector<EStatus>& retriableStatuses, bool expectSuccess,
+        TRetryOperationSettings settings = TRetryOperationSettings())
+    {
+        size_t retryNumber = 0;
+        TVector<TResultSet> resultSets;
+        auto operation = [&retryNumber, &resultSets, &retriableStatuses] (TSession session) -> TStatus {
+            // iterate over all providen statuses and return TStatus to emulate error
+            if (retryNumber < retriableStatuses.size()) {
+                TStatus status(retriableStatuses[retryNumber++], {});
+                return status;
+            }
+            auto queryStatus = session.ExecuteDataQuery(
+                "SELECT 1, 2, 3", TTxControl::BeginTx().CommitTx()).GetValueSync();
+            resultSets = queryStatus.GetResultSets();
+            return TStatus(queryStatus);
+        };
+        auto operationWithoutSession = [&operation] (TTableClient client) -> TStatus {
+            auto session = client.CreateSession().GetValueSync().GetSession();
+            return operation(session);
+        };
+
+        const auto retrySettings = settings.MaxRetries(retriableStatuses.size()).Verbose(true);
+        auto result = client.RetryOperationSync(operation, retrySettings);
+        CheckRetryResult(result, resultSets, expectSuccess);
+
+        retryNumber = 0;
+        auto resultWithoutSession = client.RetryOperationSync(operationWithoutSession, retrySettings);
+        CheckRetryResult(resultWithoutSession, resultSets, expectSuccess);
+    }
+
+    TVector<EStatus> GetRetriableAlwaysStatuses() {
+        return {EStatus::OVERLOADED, EStatus::CLIENT_RESOURCE_EXHAUSTED, EStatus::UNAVAILABLE,
+            EStatus::BAD_SESSION, EStatus::SESSION_BUSY};
+    }
+
+    TVector<EStatus> GetRetriableOnOptionStatuses() {
+        return {EStatus::NOT_FOUND, EStatus::UNDETERMINED, EStatus::TRANSPORT_UNAVAILABLE};
+    }
+
+    Y_UNIT_TEST(RetryOperationAsync) {
+        TKikimrWithGrpcAndRootSchema server;
+        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+        NYdb::NTable::TTableClient client(driver);
+
+        TestRetryOperationAsync(client, GetRetriableAlwaysStatuses(), true);
+        TestRetryOperationAsync(client, {EStatus::NOT_FOUND}, true, TRetryOperationSettings().RetryNotFound(true));
+        TestRetryOperationAsync(client, {EStatus::UNDETERMINED}, true, TRetryOperationSettings().Idempotent(true));
+        TestRetryOperationAsync(client, {EStatus::TRANSPORT_UNAVAILABLE}, true, TRetryOperationSettings().Idempotent(true));
+        TestRetryOperationAsync(client, {EStatus::NOT_FOUND}, false, TRetryOperationSettings().RetryNotFound(false));
+        TestRetryOperationAsync(client, {EStatus::UNDETERMINED}, false, TRetryOperationSettings().Idempotent(false));
+        TestRetryOperationAsync(client, {EStatus::TRANSPORT_UNAVAILABLE}, false, TRetryOperationSettings().Idempotent(false));
+
+        driver.Stop(true);
+    }
+
+    Y_UNIT_TEST(RetryOperationSync) {
+        TKikimrWithGrpcAndRootSchema server;
+        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+        NYdb::NTable::TTableClient client(driver);
+
+        TestRetryOperationSync(client, GetRetriableAlwaysStatuses(), true);
+        TestRetryOperationSync(client, {EStatus::NOT_FOUND}, true, TRetryOperationSettings().RetryNotFound(true));
+        TestRetryOperationSync(client, {EStatus::UNDETERMINED}, true, TRetryOperationSettings().Idempotent(true));
+        TestRetryOperationSync(client, {EStatus::TRANSPORT_UNAVAILABLE}, true, TRetryOperationSettings().Idempotent(true));
+        TestRetryOperationSync(client, {EStatus::NOT_FOUND}, false, TRetryOperationSettings().RetryNotFound(false));
+        TestRetryOperationSync(client, {EStatus::UNDETERMINED}, false, TRetryOperationSettings().Idempotent(false));
+        TestRetryOperationSync(client, {EStatus::TRANSPORT_UNAVAILABLE}, false, TRetryOperationSettings().Idempotent(false));
+
+        driver.Stop(true);
+    }
+
+    Y_UNIT_TEST(RetryOperationLimitedDuration) {
+        TKikimrWithGrpcAndRootSchema server;
+        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+        NYdb::NTable::TTableClient client(driver);
+
+        const size_t MaxRetries = 3; // OVERLOADED error has slow backoff policy, 2 retries takes about 2 sec
+        const double MaxDurationSec = 0.5; // Less than 2 sec, should be enough to fail on retry with duration limit
+        const auto retrySettings = TRetryOperationSettings().MaxRetries(MaxRetries).Verbose(true);
+        const auto retrySettingsLimited = TRetryOperationSettings(retrySettings).MaxTimeout(TDuration::Seconds(MaxDurationSec));
+        size_t retryNumber = 0;
+
+        // Asynchronous version
+        auto operation = [&retryNumber] (TSession /*session*/) -> TAsyncStatus {
+            if (retryNumber++ < MaxRetries) {
+                return NThreading::MakeFuture(TStatus(EStatus::OVERLOADED, {}));
+            }
+            return NThreading::MakeFuture(TStatus(EStatus::SUCCESS, {}));
+        };
+
+        retryNumber = 0;
+        UNIT_ASSERT(client.RetryOperation(operation, retrySettings).GetValueSync().IsSuccess());
+
+        retryNumber = 0;
+        UNIT_ASSERT(!client.RetryOperation(operation, retrySettingsLimited).GetValueSync().IsSuccess());
+
+        // Synchronous version
+        auto operationSync = [&retryNumber] (TSession /*session*/) -> TStatus {
+            if (retryNumber++ < MaxRetries) {
+                return TStatus(EStatus::OVERLOADED, {});
+            }
+            return TStatus(EStatus::SUCCESS, {});
+        };
+
+        retryNumber = 0;
+        UNIT_ASSERT(client.RetryOperationSync(operationSync, retrySettings).IsSuccess());
+
+        retryNumber = 0;
+        UNIT_ASSERT(!client.RetryOperationSync(operationSync, retrySettingsLimited).IsSuccess());
+
         driver.Stop(true);
     }
 
@@ -2186,10 +2634,20 @@ R"___(<main>: Error: Transaction not found: , code: 2015
             auto settings = NYdb::NTable::TAlterTableSettings()
                 .AppendAddIndexes({TIndexDescription("NewIndex", {"Value"})});
 
+            // Check that forget_after is not supported
+            {
+                auto settingsWithForgetAfter = settings;
+                settingsWithForgetAfter.ForgetAfter(TDuration::Hours(1));
+                auto result = session.AlterTableLong("/Root/Test", settingsWithForgetAfter).ExtractValueSync();
+                UNIT_ASSERT(!result.Status().IsSuccess());
+                UNIT_ASSERT_C(result.Ready(), result.Status().GetIssues().ToString());
+                UNIT_ASSERT_VALUES_EQUAL_C(result.Status().GetStatus(), NYdb::EStatus::UNSUPPORTED, result.Status().GetIssues().ToString());
+            }
+
             auto result = session.AlterTableLong("/Root/Test", settings).ExtractValueSync();
 
             // Build index is async operation
-            UNIT_ASSERT(!result.Ready());
+            UNIT_ASSERT_C(!result.Ready(), result.Status().GetIssues().ToString());
 
             NYdb::NOperation::TOperationClient operationClient(driver);
 

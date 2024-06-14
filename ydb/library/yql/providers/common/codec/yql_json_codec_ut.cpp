@@ -68,10 +68,10 @@ Y_UNIT_TEST_SUITE(SerializeVoid) {
     Y_UNIT_TEST(Null) {
         TTestContext ctx;
         auto value = NUdf::TUnboxedValuePod();
-        auto nullJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfNull());
+        auto nullJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfNullLazy());
         UNIT_ASSERT_VALUES_EQUAL(nullJson, "null");
 
-        auto voidJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfVoid());
+        auto voidJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfVoidLazy());
         UNIT_ASSERT_VALUES_EQUAL(voidJson, "null");
     }
 }
@@ -110,9 +110,9 @@ Y_UNIT_TEST_SUITE(SerializeJson) {
     Y_UNIT_TEST(ScalarJson) {
         TTestContext ctx;
         auto type = TDataType::Create(NUdf::TDataType<NUdf::TJson>::Id, ctx.TypeEnv);
-        auto value = ctx.Vb.NewString("\"some string с русскими йЁ\"");
+        auto value = ctx.Vb.NewString("\"some string с русскими йЁ");
         auto json = WriteValueToFuncJsonStr(value, type);
-        UNIT_ASSERT_VALUES_EQUAL(json, "\"\"some string с русскими йЁ\"\"");
+        UNIT_ASSERT_VALUES_EQUAL(json, "\"\\\"some string \xD1\x81 \xD1\x80\xD1\x83\xD1\x81\xD1\x81\xD0\xBA\xD0\xB8\xD0\xBC\xD0\xB8 \xD0\xB9\xD0\x81\"");
     }
 
     Y_UNIT_TEST(ComplexJson) {
@@ -125,22 +125,22 @@ Y_UNIT_TEST_SUITE(SerializeJson) {
 
         NUdf::TUnboxedValue* items;
         auto value = ctx.Vb.NewArray(2, items);
-        items[0] = ctx.Vb.NewString("{\"a\":500,\"b\":[1,2,3]}");
+        items[0] = ctx.Vb.NewString(R"({"a":500,"b":[1,2,3]})");
         items[1] = NUdf::TUnboxedValuePod(ui32(73));
 
         auto json = WriteValueToExportJsonStr(value, type);
-        UNIT_ASSERT_VALUES_EQUAL(json, "{\"X\":\"{\"a\":500,\"b\":[1,2,3]}\",\"Y\":73}");
+        UNIT_ASSERT_VALUES_EQUAL(json, R"({"X":"{\"a\":500,\"b\":[1,2,3]}","Y":73})");
     }
 }
 
 Y_UNIT_TEST_SUITE(SerializeContainers) {
     Y_UNIT_TEST(EmptyContainer) {
         TTestContext ctx;
-        auto value = ctx.HolderFactory.GetEmptyContainer();
-        auto dictJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfEmptyDict());
+        auto value = ctx.HolderFactory.GetEmptyContainerLazy();
+        auto dictJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfEmptyDictLazy());
         UNIT_ASSERT_VALUES_EQUAL(dictJson, "[]");
 
-        auto listJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfEmptyList());
+        auto listJson = WriteValueToFuncJsonStr(value, ctx.TypeEnv.GetTypeOfEmptyListLazy());
         UNIT_ASSERT_VALUES_EQUAL(listJson, "[]");
     }
 
@@ -222,7 +222,7 @@ Y_UNIT_TEST_SUITE(SerializeContainers) {
         TTestContext ctx;
         auto type = TDictType::Create(
             TDataType::Create(NUdf::TDataType<NUdf::TUtf8>::Id, ctx.TypeEnv),
-            ctx.TypeEnv.GetTypeOfVoid(),
+            ctx.TypeEnv.GetTypeOfVoidLazy(),
             ctx.TypeEnv
         );
         auto dictBuilder = ctx.Vb.NewDict(type, NUdf::TDictFlags::EDictKind::Hashed);
@@ -359,7 +359,7 @@ Y_UNIT_TEST_SUITE(DeserializeDict) {
 
         auto type = TDictType::Create(
             TDataType::Create(NUdf::TDataType<i32>::Id, ctx.TypeEnv),
-            ctx.TypeEnv.GetTypeOfVoid(),
+            ctx.TypeEnv.GetTypeOfVoidLazy(),
             ctx.TypeEnv
         );
         auto value = ReadJsonStrValue(&json, type, ctx.HolderFactory);
@@ -672,9 +672,9 @@ Y_UNIT_TEST_SUITE(DeserializeNumbers) {
 Y_UNIT_TEST_SUITE(SerializeStringTypes) {
     Y_UNIT_TEST(Utf8) {
         TTestContext ctx;
-        auto value = ctx.Vb.NewString("aaaaabbbbbcccccc");
+        auto value = ctx.Vb.NewString("aaaaabbb \" ' ` bbcccccc");
         auto json = WriteValueToFuncJsonStr(value, TDataType::Create(NUdf::TDataType<NUdf::TUtf8>::Id, ctx.TypeEnv));
-        UNIT_ASSERT_VALUES_EQUAL(json, "\"aaaaabbbbbcccccc\"");
+        UNIT_ASSERT_VALUES_EQUAL(json, "\"aaaaabbb \\\" ' ` bbcccccc\"");
     }
 
     Y_UNIT_TEST(String) {

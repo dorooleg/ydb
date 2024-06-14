@@ -19,12 +19,12 @@
 #include <ydb/core/util/queue_oneone_inplace.h>
 #include <ydb/library/pdisk_io/aio.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/executor_pool_io.h>
-#include <library/cpp/actors/core/executor_pool_basic.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/mon.h>
-#include <library/cpp/actors/core/scheduler_basic.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/executor_pool_io.h>
+#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/mon.h>
+#include <ydb/library/actors/core/scheduler_basic.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
 #include <util/generic/algorithm.h>
@@ -75,7 +75,7 @@ void FormatPDisk(TString path, ui64 diskSizeBytes, ui32 sectorSizeBytes, ui32 us
                 ->DetectFileParameters(path, diskSizeBytes, isBlockDevice);
         }
     }
-    if (enableSmallDiskOptimization && diskSizeBytes > 0 && diskSizeBytes < NPDisk::FullSizeDiskMinimumSize && 
+    if (enableSmallDiskOptimization && diskSizeBytes > 0 && diskSizeBytes < NPDisk::FullSizeDiskMinimumSize &&
         userAccessibleChunkSizeBytes > NPDisk::SmallDiskMaximumChunkSize) {
         throw NPDisk::TPDiskFormatBigChunkException() << "diskSizeBytes# " << diskSizeBytes <<
             " userAccessibleChunkSizeBytes# " << userAccessibleChunkSizeBytes <<
@@ -149,12 +149,12 @@ bool ReadPDiskFormatInfo(const TString &path, const NPDisk::TMainKey &mainKey, T
 
     THolder<NPDisk::TBufferPool> bufferPool(NPDisk::CreateBufferPool(512 << 10, 2, useSdpkNvmeDriver, {}));
     NPDisk::TBuffer::TPtr formatRaw(bufferPool->Pop());
-    Y_VERIFY(formatRaw->Size() >= formatSectorsSize);
+    Y_ABORT_UNLESS(formatRaw->Size() >= formatSectorsSize);
 
     blockDevice->PreadSync(formatRaw->Data(), formatSectorsSize, 0,
             NPDisk::TReqId(NPDisk::TReqId::ReadFormatInfo, 0), {});
 
-    for (auto& key : mainKey) { 
+    for (auto& key : mainKey.Keys) {
         NPDisk::TPDiskStreamCypher cypher(true); // Format record is always encrypted
         cypher.SetKey(key);
         bool isOk = false;
@@ -201,7 +201,7 @@ bool ReadPDiskFormatInfo(const TString &path, const NPDisk::TMainKey &mainKey, T
             const ui32 sysLogRawParts = (sysLogSize + bufferSize - 1) / bufferSize;
             for (ui32 i = 0; i < sysLogRawParts; i++) {
                 const ui32 sysLogPartSize = Min(bufferSize, sysLogSize - i * bufferSize);
-                Y_VERIFY(buffer->Size() >= sysLogPartSize);
+                Y_ABORT_UNLESS(buffer->Size() >= sysLogPartSize);
                 blockDevice->PreadSync(buffer->Data(), sysLogPartSize, sysLogOffset + i * bufferSize,
                         NPDisk::TReqId(NPDisk::TReqId::ReadSysLogData, 0), {});
                 memcpy(sysLogRaw.Get() + i * bufferSize, buffer->Data(), sysLogPartSize);

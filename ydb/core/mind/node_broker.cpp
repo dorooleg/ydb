@@ -3,6 +3,8 @@
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 #include <ydb/core/base/appdata.h>
+#include <ydb/core/base/feature_flags.h>
+#include <ydb/core/base/nameservice.h>
 #include <ydb/core/base/path.h>
 #include <ydb/core/cms/console/config_helpers.h>
 #include <ydb/core/protos/node_broker.pb.h>
@@ -32,19 +34,37 @@ bool IsReady(T &t, Ts &...args)
     return t.IsReady() && IsReady(args...);
 }
 
+std::atomic<INodeBrokerHooks*> NodeBrokerHooks{ nullptr };
+
 } // anonymous namespace
+
+void INodeBrokerHooks::OnActivateExecutor(ui64 tabletId) {
+    Y_UNUSED(tabletId);
+}
+
+INodeBrokerHooks* INodeBrokerHooks::Get() {
+    return NodeBrokerHooks.load(std::memory_order_acquire);
+}
+
+void INodeBrokerHooks::Set(INodeBrokerHooks* hooks) {
+    NodeBrokerHooks.store(hooks, std::memory_order_release);
+}
 
 void TNodeBroker::OnActivateExecutor(const TActorContext &ctx)
 {
+    if (auto* hooks = INodeBrokerHooks::Get()) {
+        hooks->OnActivateExecutor(TabletID());
+    }
+
     const auto *appData = AppData(ctx);
 
-    DomainId = appData->DomainsInfo->GetDomainUidByTabletId(TabletID());
-    Y_VERIFY(DomainId < DOMAINS_COUNT);
-    SingleDomain = appData->DomainsInfo->Domains.size() == 1;
-    SingleDomainAlloc = SingleDomain && appData->FeatureFlags.GetEnableNodeBrokerSingleDomainMode();
+    Y_ABORT_UNLESS(appData->FeatureFlags.GetEnableNodeBrokerSingleDomainMode());
 
     MaxStaticId = Min(appData->DynamicNameserviceConfig->MaxStaticNodeId, TActorId::MaxNodeId);
-    MaxDynamicId = Min(appData->DynamicNameserviceConfig->MaxDynamicNodeId, TActorId::MaxNodeId);
+    MinDynamicId = Max(MaxStaticId + 1, (ui64)Min(appData->DynamicNameserviceConfig->MinDynamicNodeId, TActorId::MaxNodeId));
+    MaxDynamicId = Max(MinDynamicId, (ui64)Min(appData->DynamicNameserviceConfig->MaxDynamicNodeId, TActorId::MaxNodeId));
+
+    EnableDynamicNodeNameGeneration = appData->FeatureFlags.GetEnableDynamicNodeNameGeneration();
 
     ClearState();
 
@@ -68,17 +88,9 @@ void TNodeBroker::OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev,
     Die(ctx);
 }
 
-void TNodeBroker::Enqueue(TAutoPtr<IEventHandle> &ev)
+void TNodeBroker::DefaultSignalTabletActive(const TActorContext &ctx)
 {
-    switch (ev->GetTypeRewrite()) {
-    case TEvNodeBroker::EvListNodes:
-    case TEvNodeBroker::EvResolveNode:
-    case TEvNodeBroker::EvRegistrationRequest:
-        EnqueuedEvents.push_back(ev);
-        break;
-    default:
-        TTabletExecutedFlat::Enqueue(ev);
-    }
+    Y_UNUSED(ctx);
 }
 
 bool TNodeBroker::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
@@ -90,11 +102,12 @@ bool TNodeBroker::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
     TStringStream str;
     HTML(str) {
         PRE() {
-            str << "Served domain: " << AppData(ctx)->DomainsInfo->Domains.at(DomainId)->Name << Endl
+            str << "Served domain: " << AppData(ctx)->DomainsInfo->GetDomain()->Name << Endl
                 << "DynamicNameserviceConfig:" << Endl
                 << "  MaxStaticNodeId: " << AppData(ctx)->DynamicNameserviceConfig->MaxStaticNodeId << Endl
                 << "  MaxDynamicNodeId: " << AppData(ctx)->DynamicNameserviceConfig->MaxDynamicNodeId << Endl
                 << "  EpochDuration: " << EpochDuration << Endl
+                << "  NodeNamePrefix: " << NodeNamePrefix << Endl
                 << "  BannedIds:";
             for (auto &pr : BannedIds)
                 str << " [" << pr.first << ", " << pr.second << "]";
@@ -115,11 +128,38 @@ bool TNodeBroker::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
                     << "   Location: " << node.Location.ToString() << Endl
                     << "   Lease: " << node.Lease << Endl
                     << "   Expire: " << node.ExpirationString() << Endl
-                    << "   AuthorizedByCertificate: " << (node.AuthorizedByCertificate ? "true" : "false") << Endl;
+                    << "   AuthorizedByCertificate: " << (node.AuthorizedByCertificate ? "true" : "false") << Endl
+                    << "   ServicedSubDomain: " << node.ServicedSubDomain << Endl
+                    << "   SlotIndex: " << node.SlotIndex << Endl;
             }
             str << Endl;
 
             str << "Free Node IDs count: " << FreeIds.Count() << Endl;
+
+            str << Endl;
+            str << "Slot Indexes Pools usage: " << Endl;
+            size_t totalSize = 0;
+            size_t totalCapacity = 0;
+            for (const auto &[subdomainKey, slotIndexesPool] : SlotIndexesPools) {
+                const size_t size = slotIndexesPool.Size();
+                totalSize += size;
+                const size_t capacity = slotIndexesPool.Capacity();
+                totalCapacity += capacity;
+                const double usagePercent = floor(size * 100.0 / capacity);
+                str << "   " << subdomainKey
+                    << " = " << usagePercent << "% (" << size << " of " << capacity << ")"
+                    << Endl;
+            }
+            str << Endl;
+
+            if (totalCapacity > 0) {
+                const double totalUsagePercent = floor(totalSize * 100.0 / totalCapacity);
+                str << "   Total"
+                    << " = " << totalUsagePercent << "% (" << totalSize << " of " << totalCapacity << ")"
+                    << Endl;
+            } else {
+                str << "   No Slot Indexes Pools" << Endl;
+            }
         }
     }
 
@@ -149,11 +189,15 @@ void TNodeBroker::ClearState()
     Hosts.clear();
 
     RecomputeFreeIds();
+    RecomputeSlotIndexesPools();
 }
 
 void TNodeBroker::AddNode(const TNodeInfo &info)
 {
     FreeIds.Reset(info.NodeId);
+    if (info.SlotIndex.has_value()) {
+        SlotIndexesPools[info.ServicedSubDomain].Acquire(info.SlotIndex.value());
+    }    
 
     if (info.Expire > Epoch.Start) {
         LOG_DEBUG_S(TActorContext::AsActorContext(), NKikimrServices::NODE_BROKER,
@@ -191,24 +235,7 @@ void TNodeBroker::FixNodeId(TNodeInfo &node)
 void TNodeBroker::RecomputeFreeIds()
 {
     FreeIds.Clear();
-
-    if (SingleDomainAlloc) {
-        FreeIds.Set(MaxStaticId + 1, MaxDynamicId + 1);
-    } else {
-        auto firstId = RewriteNodeId(MaxStaticId + 1);
-        if (firstId <= MaxStaticId)
-            firstId += NodeIdStep();
-
-        auto lastId = RewriteNodeId(MaxDynamicId);
-        if (lastId > MaxDynamicId)
-            lastId -= NodeIdStep();
-
-        // Only ids marked with our domain id are available
-        FreeIds.Reserve(lastId + 1);
-        for (ui32 id = firstId; id <= lastId; id += NodeIdStep()) {
-            FreeIds.Set(id);
-        }
-    }
+    FreeIds.Set(MinDynamicId, MaxDynamicId + 1);
 
     // Remove all allocated IDs from the set.
     for (auto &pr : Nodes)
@@ -219,6 +246,24 @@ void TNodeBroker::RecomputeFreeIds()
     // Remove banned intervals from the set.
     for (auto &pr : BannedIds) {
         FreeIds.Reset(pr.first, pr.second + 1);
+    }
+}
+
+void TNodeBroker::RecomputeSlotIndexesPools()
+{
+    for (auto &[_, slotIndexesPool] : SlotIndexesPools) {
+        slotIndexesPool.ReleaseAll();
+    }
+
+    for (const auto &[_, node] : Nodes) {
+        if (node.SlotIndex.has_value()) {
+            SlotIndexesPools[node.ServicedSubDomain].Acquire(node.SlotIndex.value());
+        }
+    }
+    for (const auto &[_, node] : ExpiredNodes) {
+        if (node.SlotIndex.has_value()) {
+            SlotIndexesPools[node.ServicedSubDomain].Acquire(node.SlotIndex.value());
+        }
     }
 }
 
@@ -233,7 +278,7 @@ bool TNodeBroker::IsBannedId(ui32 id) const
 void TNodeBroker::AddDelayedListNodesRequest(ui64 epoch,
                                              TEvNodeBroker::TEvListNodes::TPtr &ev)
 {
-    Y_VERIFY(epoch > Epoch.Id);
+    Y_ABORT_UNLESS(epoch > Epoch.Id);
     LOG_DEBUG_S(TActorContext::AsActorContext(), NKikimrServices::NODE_BROKER,
                 "Delaying list nodes request for epoch #" << epoch);
 
@@ -246,7 +291,7 @@ void TNodeBroker::ProcessListNodesRequest(TEvNodeBroker::TEvListNodes::TPtr &ev)
 
     NKikimrNodeBroker::TNodesInfo info;
     Epoch.Serialize(*info.MutableEpoch());
-    info.SetDomain(DomainId);
+    info.SetDomain(AppData()->DomainsInfo->GetDomain()->DomainUid);
     TAutoPtr<TEvNodeBroker::TEvNodesInfo> resp = new TEvNodeBroker::TEvNodesInfo(info);
     if (version != Epoch.Version)
         resp->PreSerializedData = EpochCache;
@@ -285,13 +330,6 @@ void TNodeBroker::ScheduleEpochUpdate(const TActorContext &ctx)
     }
 }
 
-void TNodeBroker::ProcessEnqueuedEvents(const TActorContext&)
-{
-    for (auto &ev : EnqueuedEvents)
-        Receive(ev);
-    EnqueuedEvents.clear();
-}
-
 void TNodeBroker::FillNodeInfo(const TNodeInfo &node,
                                NKikimrNodeBroker::TNodeInfo &info) const
 {
@@ -302,6 +340,16 @@ void TNodeBroker::FillNodeInfo(const TNodeInfo &node,
     info.SetAddress(node.Address);
     info.SetExpire(node.Expire.GetValue());
     node.Location.Serialize(info.MutableLocation(), false);
+    FillNodeName(node.SlotIndex, info);
+}
+
+void TNodeBroker::FillNodeName(const std::optional<ui32> &slotIndex,
+                               NKikimrNodeBroker::TNodeInfo &info) const
+{
+    if (EnableDynamicNodeNameGeneration && slotIndex.has_value()) {
+        const TString name = TStringBuilder() << NodeNamePrefix << slotIndex.value();
+        info.SetName(name);
+    }
 }
 
 void TNodeBroker::ComputeNextEpochDiff(TStateDiff &diff)
@@ -325,7 +373,7 @@ void TNodeBroker::ApplyStateDiff(const TStateDiff &diff)
 {
     for (auto id : diff.NodesToExpire) {
         auto it = Nodes.find(id);
-        Y_VERIFY(it != Nodes.end());
+        Y_ABORT_UNLESS(it != Nodes.end());
 
         LOG_DEBUG_S(TActorContext::AsActorContext(), NKikimrServices::NODE_BROKER,
                     "Node " << it->second.IdString() << " has expired");
@@ -337,14 +385,18 @@ void TNodeBroker::ApplyStateDiff(const TStateDiff &diff)
 
     for (auto id : diff.NodesToRemove) {
         auto it = ExpiredNodes.find(id);
-        Y_VERIFY(it != ExpiredNodes.end());
+        Y_ABORT_UNLESS(it != ExpiredNodes.end());
 
         LOG_DEBUG_S(TActorContext::AsActorContext(), NKikimrServices::NODE_BROKER,
                     "Remove node " << it->second.IdString());
 
-        ExpiredNodes.erase(it);
-        if (!IsBannedId(id) && NodeIdDomain(id) == DomainId)
+        if (!IsBannedId(id) && id >= MinDynamicId && id <= MaxDynamicId) {
             FreeIds.Set(id);
+        }
+        if (it->second.SlotIndex.has_value()) {
+            SlotIndexesPools[it->second.ServicedSubDomain].Release(it->second.SlotIndex.value());
+        }
+        ExpiredNodes.erase(it);
     }
 
     LOG_DEBUG_S(TActorContext::AsActorContext(), NKikimrServices::NODE_BROKER,
@@ -393,8 +445,9 @@ void TNodeBroker::AddNodeToEpochCache(const TNodeInfo &node)
 
 void TNodeBroker::SubscribeForConfigUpdates(const TActorContext &ctx)
 {
-    ui32 item = (ui32)NKikimrConsole::TConfigItem::NodeBrokerConfigItem;
-    NConsole::SubscribeViaConfigDispatcher(ctx, {item}, ctx.SelfID);
+    ui32 nodeBrokerItem = (ui32)NKikimrConsole::TConfigItem::NodeBrokerConfigItem;
+    ui32 featureFlagsItem = (ui32)NKikimrConsole::TConfigItem::FeatureFlagsItem;
+    NConsole::SubscribeViaConfigDispatcher(ctx, {nodeBrokerItem, featureFlagsItem}, ctx.SelfID);
 }
 
 void TNodeBroker::ProcessTx(ITransaction *tx,
@@ -435,6 +488,8 @@ void TNodeBroker::LoadConfigFromProto(const NKikimrNodeBroker::TConfig &config)
         EpochDuration = MIN_LEASE_DURATION;
     }
 
+    NodeNamePrefix = config.GetNodeNamePrefix();
+
     BannedIds.clear();
     for (auto &banned : config.GetBannedNodeIds())
         BannedIds.emplace_back(banned.GetFrom(), banned.GetTo());
@@ -451,7 +506,9 @@ void TNodeBroker::DbAddNode(const TNodeInfo &node,
                 << " dc=" << node.Location.GetDataCenterId()
                 << " location=" << node.Location.ToString()
                 << " lease=" << node.Lease
-                << " expire=" << node.ExpirationString());
+                << " expire=" << node.ExpirationString()
+                << " servicedsubdomain=" << node.ServicedSubDomain
+                << " slotindex= " << node.SlotIndex);
 
     NIceDb::TNiceDb db(txc.DB);
     using T = Schema::Nodes;
@@ -462,7 +519,16 @@ void TNodeBroker::DbAddNode(const TNodeInfo &node,
         .Update<T::Address>(node.Address)
         .Update<T::Lease>(node.Lease)
         .Update<T::Expire>(node.Expire.GetValue())
-        .Update<T::Location>(node.Location.GetSerializedLocation());
+        .Update<T::Location>(node.Location.GetSerializedLocation())
+        .Update<T::ServicedSubDomain>(node.ServicedSubDomain);
+
+    if (node.SlotIndex.has_value()) {
+        db.Table<T>().Key(node.NodeId)
+            .Update<T::SlotIndex>(node.SlotIndex.value());
+    } else {
+        db.Table<T>().Key(node.NodeId)
+            .UpdateToNull<T::SlotIndex>();
+    }
 }
 
 void TNodeBroker::DbApplyStateDiff(const TStateDiff &diff,
@@ -540,10 +606,10 @@ bool TNodeBroker::DbLoadState(TTransactionContext &txc,
     }
 
     if (currentEpochIdRow.IsValid()) {
-        Y_VERIFY(currentEpochVersionRow.IsValid());
-        Y_VERIFY(currentEpochStartRow.IsValid());
-        Y_VERIFY(currentEpochEndRow.IsValid());
-        Y_VERIFY(nextEpochEndRow.IsValid());
+        Y_ABORT_UNLESS(currentEpochVersionRow.IsValid());
+        Y_ABORT_UNLESS(currentEpochStartRow.IsValid());
+        Y_ABORT_UNLESS(currentEpochEndRow.IsValid());
+        Y_ABORT_UNLESS(nextEpochEndRow.IsValid());
         TString val;
 
         Epoch.Id = currentEpochIdRow.GetValue<Schema::Params::Value>();
@@ -577,12 +643,7 @@ bool TNodeBroker::DbLoadState(TTransactionContext &txc,
         // mode, and now temporarily restarted without this mode enabled. We
         // should still support nodes that have been registered before we
         // restarted, even though it's not available for allocation.
-        if (!SingleDomain && NodeIdDomain(id) != DomainId) {
-            LOG_ERROR_S(ctx, NKikimrServices::NODE_BROKER,
-                        "Ignoring node with wrong ID " << id << " from domain "
-                        << NodeIdDomain(id) << " (expected " << DomainId <<  ")");
-            toRemove.push_back(id);
-        } else if (id <= MaxStaticId || id > MaxDynamicId) {
+        if (id <= MaxStaticId || id > MaxDynamicId) {
             LOG_ERROR_S(ctx, NKikimrServices::NODE_BROKER,
                         "Ignoring node with wrong ID " << id << " not in range ("
                         << MaxStaticId << ", " << MaxDynamicId << "]");
@@ -597,7 +658,7 @@ bool TNodeBroker::DbLoadState(TTransactionContext &txc,
             TNodeLocation location;
 
             // only modern value found in database
-            Y_VERIFY(modernLocation);
+            Y_ABORT_UNLESS(modernLocation);
             location = std::move(*modernLocation);
 
             TNodeInfo info{id,
@@ -609,7 +670,10 @@ bool TNodeBroker::DbLoadState(TTransactionContext &txc,
 
             info.Lease = nodesRowset.GetValue<T::Lease>();
             info.Expire = expire;
-
+            info.ServicedSubDomain = TSubDomainKey(nodesRowset.GetValueOrDefault<T::ServicedSubDomain>());
+            if (nodesRowset.HaveValue<T::SlotIndex>()) {
+                info.SlotIndex = nodesRowset.GetValue<T::SlotIndex>();
+            } 
             AddNode(info);
 
             LOG_DEBUG_S(ctx, NKikimrServices::NODE_BROKER,
@@ -725,7 +789,12 @@ void TNodeBroker::DbUpdateNodeLocation(const TNodeInfo &node,
 
 void TNodeBroker::Handle(TEvConsole::TEvConfigNotificationRequest::TPtr &ev,
                          const TActorContext &ctx)
-{
+{   
+    const auto& appConfig = ev->Get()->Record.GetConfig();
+    if (appConfig.HasFeatureFlags()) {
+        EnableDynamicNodeNameGeneration = appConfig.GetFeatureFlags().GetEnableDynamicNodeNameGeneration();
+    }
+
     if (ev->Get()->Record.HasLocal() && ev->Get()->Record.GetLocal()) {
         ProcessTx(CreateTxUpdateConfig(ev), ctx);
     } else {
@@ -748,13 +817,6 @@ void TNodeBroker::Handle(TEvConsole::TEvReplaceConfigSubscriptionsResponse::TPtr
     }
 
     ProcessTx(0, CreateTxUpdateConfigSubscription(ev), ctx);
-}
-
-void TNodeBroker::Handle(TEvents::TEvPoisonPill::TPtr &ev,
-                         const TActorContext &ctx)
-{
-    Y_UNUSED(ev);
-    ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
 }
 
 void TNodeBroker::Handle(TEvNodeBroker::TEvListNodes::TPtr &ev,
@@ -802,6 +864,7 @@ void TNodeBroker::Handle(TEvNodeBroker::TEvRegistrationRequest::TPtr &ev,
         TEvNodeBroker::TEvRegistrationRequest::TPtr Ev;
         TNodeBroker *Self;
         NActors::TScopeId ScopeId;
+        TSubDomainKey ServicedSubDomain;
 
     public:
         static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -835,16 +898,21 @@ void TNodeBroker::Handle(TEvNodeBroker::TEvRegistrationRequest::TPtr &ev,
         void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const TActorContext& ctx) {
             const auto& navigate = ev->Get()->Request;
             auto& rset = navigate->ResultSet;
-            Y_VERIFY(rset.size() == 1);
+            Y_ABORT_UNLESS(rset.size() == 1);
             auto& response = rset.front();
 
             LOG_TRACE_S(ctx, NKikimrServices::NODE_BROKER, "Handle TEvTxProxySchemeCache::TEvNavigateKeySetResult"
                 << ": response# " << response.ToString(*AppData()->TypeRegistry));
 
             if (response.Status == NSchemeCache::TSchemeCacheNavigate::EStatus::Ok && response.DomainInfo) {
-                ScopeId = {response.DomainInfo->DomainKey.OwnerId, response.DomainInfo->DomainKey.LocalPathId};
+                if (response.DomainInfo->IsServerless()) {
+                    ScopeId = {response.DomainInfo->ResourcesDomainKey.OwnerId, response.DomainInfo->ResourcesDomainKey.LocalPathId};
+                } else {
+                    ScopeId = {response.DomainInfo->DomainKey.OwnerId, response.DomainInfo->DomainKey.LocalPathId};
+                }
+                ServicedSubDomain = TSubDomainKey(response.DomainInfo->DomainKey.OwnerId, response.DomainInfo->DomainKey.LocalPathId);
             } else {
-                LOG_WARN_S(ctx, NKikimrServices::NODE_BROKER, "Cannot resolve scope id"
+                LOG_WARN_S(ctx, NKikimrServices::NODE_BROKER, "Cannot resolve tenant"
                     << ": request# " << Ev->Get()->Record.ShortDebugString()
                     << ", response# " << response.ToString(*AppData()->TypeRegistry));
             }
@@ -857,11 +925,12 @@ void TNodeBroker::Handle(TEvNodeBroker::TEvRegistrationRequest::TPtr &ev,
         }
 
         void Finish(const TActorContext& ctx) {
-            LOG_TRACE_S(ctx, NKikimrServices::NODE_BROKER, "Finished resolving scope id"
+            LOG_TRACE_S(ctx, NKikimrServices::NODE_BROKER, "Finished resolving tenant"
                 << ": request# " << Ev->Get()->Record.ShortDebugString()
-                << ": scope id# " << ScopeIdToString(ScopeId));
+                << ": scope id# " << ScopeIdToString(ScopeId)
+                << ": serviced subdomain# " << ServicedSubDomain);
 
-            Self->ProcessTx(Self->CreateTxRegisterNode(Ev, ScopeId), ctx);
+            Self->ProcessTx(Self->CreateTxRegisterNode(Ev, ScopeId, ServicedSubDomain), ctx);
             Die(ctx);
         }
 
@@ -878,6 +947,14 @@ void TNodeBroker::Handle(TEvNodeBroker::TEvExtendLeaseRequest::TPtr &ev,
 {
     ui32 nodeId = ev->Get()->Record.GetNodeId();
     ProcessTx(nodeId, CreateTxExtendLease(ev), ctx);
+}
+
+void TNodeBroker::Handle(TEvNodeBroker::TEvCompactTables::TPtr &ev,
+                         const TActorContext &ctx)
+{
+    Y_UNUSED(ev);
+    Y_UNUSED(ctx);
+    Executor()->CompactTables();
 }
 
 void TNodeBroker::Handle(TEvNodeBroker::TEvGetConfigRequest::TPtr &ev,

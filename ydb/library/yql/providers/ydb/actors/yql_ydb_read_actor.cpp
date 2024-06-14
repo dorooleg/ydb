@@ -4,11 +4,11 @@
 #include <ydb/library/yql/utils/yql_panic.h>
 #include <ydb/library/yql/providers/ydb/proto/range.pb.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/event_local.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/event_local.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <ydb/public/lib/experimental/ydb_clickhouse_internal.h>
 #include <ydb/core/scheme/scheme_tablecell.h>
@@ -72,6 +72,7 @@ class TYdbReadActor : public TActorBootstrapped<TYdbReadActor>, public IDqComput
 public:
     TYdbReadActor(
         ui64 inputIndex,
+        TCollectStatsLevel statsLevel,
         const TString& database,
         const TString& endpoint,
         std::shared_ptr<::NYdb::ICredentialsProviderFactory> credentialsProviderFactory,
@@ -96,7 +97,9 @@ public:
         , RequestSent(false)
         , RequestsDone(!EndKey.empty() && RangeFinished(LastReadKey, EndKey, KeyColumnTypes))
         , MemoryUsed(0U)
-    {}
+    {
+        IngressStats.Level = statsLevel;
+    }
 
     void Bootstrap() {
         Become(&TYdbReadActor::StateFunc);
@@ -109,7 +112,14 @@ private:
     void SaveState(const NDqProto::TCheckpoint&, NDqProto::TSourceState&) final {}
     void LoadState(const NDqProto::TSourceState&) final {}
     void CommitState(const NDqProto::TCheckpoint&) final {}
-    ui64 GetInputIndex() const final { return InputIndex; }
+    
+    ui64 GetInputIndex() const final {
+        return InputIndex;
+    }
+
+    const TDqAsyncStats& GetIngressStats() const final {
+        return IngressStats;
+    }
 
     STRICT_STFUNC(StateFunc,
         hFunc(TEvPrivate::TEvScanResult, Handle);
@@ -126,10 +136,9 @@ private:
         TActorBootstrapped<TYdbReadActor>::PassAway();
     }
 
-    i64 GetAsyncInputData(NKikimr::NMiniKQL::TUnboxedValueVector& buffer, TMaybe<TInstant>&, bool& finished, i64 freeSpace) final {
+    i64 GetAsyncInputData(NKikimr::NMiniKQL::TUnboxedValueBatch& buffer, TMaybe<TInstant>&, bool& finished, i64 freeSpace) final {
         i64 total = 0LL;
         if (!Blocks.empty()) {
-            buffer.reserve(buffer.size() + Blocks.size());
             do {
                 const auto size = Blocks.front().size();
                 buffer.emplace_back(NKikimr::NMiniKQL::MakeString(Blocks.front()));
@@ -203,6 +212,7 @@ private:
     static constexpr auto MaxQueueVolume = 4_MB;
 
     const ui64 InputIndex;
+    TDqAsyncStats IngressStats;
     const NActors::TActorId ComputeActorId;
 
     TActorSystem* const ActorSystem;
@@ -232,6 +242,7 @@ private:
 std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateYdbReadActor(
     NYql::NYdb::TSource&& params,
     ui64 inputIndex,
+    TCollectStatsLevel statsLevel,
     const THashMap<TString, TString>& secureParams,
     const THashMap<TString, TString>& taskParams,
     const NActors::TActorId& computeActorId,
@@ -262,7 +273,7 @@ std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateYdbReadActor(
 
     ui64 maxRowsInRequest = 0ULL;
     ui64 maxBytesInRequest = 0ULL;
-    const auto actor = new TYdbReadActor(inputIndex, params.GetDatabase(), params.GetEndpoint(), credentialsProviderFactory, params.GetSecure(), params.GetTable(), std::move(driver), computeActorId, columns, keyColumnTypes, maxRowsInRequest, maxBytesInRequest, keyFrom, keyTo);
+    const auto actor = new TYdbReadActor(inputIndex, statsLevel, params.GetDatabase(), params.GetEndpoint(), credentialsProviderFactory, params.GetSecure(), params.GetTable(), std::move(driver), computeActorId, columns, keyColumnTypes, maxRowsInRequest, maxBytesInRequest, keyFrom, keyTo);
     return {actor, actor};
 }
 

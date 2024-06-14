@@ -441,7 +441,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui8>::max() || intValue < std::numeric_limits<ui8>::min()) {
+                if (intValue > std::numeric_limits<ui8>::max()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt8 type");
                 }
                 ValueBuilder.Uint8(intValue);
@@ -461,7 +461,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui16>::max() || intValue < std::numeric_limits<ui16>::min()) {
+                if (intValue > std::numeric_limits<ui16>::max()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt16 type");
                 }
                 ValueBuilder.Uint16(intValue);
@@ -481,7 +481,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui32>::max() || intValue < std::numeric_limits<ui32>::min()) {
+                if (intValue > std::numeric_limits<ui32>::max()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt32 type");
                 }
                 ValueBuilder.Uint32(intValue);
@@ -501,7 +501,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui64>::max() || intValue < std::numeric_limits<ui64>::min()) {
+                if (intValue > std::numeric_limits<ui64>::max()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt64 type");
                 }
                 ValueBuilder.Uint64(intValue);
@@ -677,22 +677,20 @@ namespace {
                 ValueBuilder.Decimal(jsonValue.GetString());
                 break;
 
-            case TTypeParser::ETypeKind::Pg: {
-                    TPgType pgType(""); // TODO: correct type?
-                    if (jsonValue.GetType() == NJson::JSON_STRING) {
-                        ValueBuilder.Pg(TPgValue(TPgValue::VK_TEXT, jsonValue.GetString(), pgType));
-                    } else if (jsonValue.GetType() == NJson::JSON_NULL) {
-                        ValueBuilder.Pg(TPgValue(TPgValue::VK_NULL, {}, pgType));
-                    } else {
-                        EnsureType(jsonValue, NJson::JSON_ARRAY);
-                        if (jsonValue.GetArray().size() != 1) {
-                            ThrowFatalError(TStringBuilder() << "Pg type should be encoded as array with size 1, but not " << jsonValue.GetArray().size());
-                        }
-                        auto& innerJsonValue = jsonValue.GetArray().at(0);
-                        EnsureType(innerJsonValue, NJson::JSON_STRING);
-                        auto binary = JsonStringToBinaryString(innerJsonValue.GetString());
-                        ValueBuilder.Pg(TPgValue(TPgValue::VK_BINARY, binary, pgType));
+            case TTypeParser::ETypeKind::Pg:
+                if (jsonValue.GetType() == NJson::JSON_STRING) {
+                    ValueBuilder.Pg(TPgValue(TPgValue::VK_TEXT, jsonValue.GetString(), TypeParser.GetPg()));
+                } else if (jsonValue.GetType() == NJson::JSON_NULL) {
+                    ValueBuilder.Pg(TPgValue(TPgValue::VK_NULL, {}, TypeParser.GetPg()));
+                } else {
+                    EnsureType(jsonValue, NJson::JSON_ARRAY);
+                    if (jsonValue.GetArray().size() != 1) {
+                        ThrowFatalError(TStringBuilder() << "Pg type should be encoded as array with size 1, but not " << jsonValue.GetArray().size());
                     }
+                    auto& innerJsonValue = jsonValue.GetArray().at(0);
+                    EnsureType(innerJsonValue, NJson::JSON_STRING);
+                    auto binary = JsonStringToBinaryString(innerJsonValue.GetString());
+                    ValueBuilder.Pg(TPgValue(TPgValue::VK_BINARY, binary, TypeParser.GetPg()));
                 }
                 break;
 
@@ -723,14 +721,16 @@ namespace {
             case TTypeParser::ETypeKind::List:
                 EnsureType(jsonValue, NJson::JSON_ARRAY);
                 TypeParser.OpenList();
-                ValueBuilder.BeginList();
-
-                for (const auto& element : jsonValue.GetArray()) {
-                    ValueBuilder.AddListItem();
-                    ParseValue(element);
+                if (jsonValue.GetArray().empty()) {
+                    ValueBuilder.EmptyList(GetType());
+                } else {
+                    ValueBuilder.BeginList();
+                    for (const auto& element : jsonValue.GetArray()) {
+                        ValueBuilder.AddListItem();
+                        ParseValue(element);
+                    }
+                    ValueBuilder.EndList();
                 }
-
-                ValueBuilder.EndList();
                 TypeParser.CloseList();
                 break;
 

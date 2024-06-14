@@ -1,7 +1,7 @@
 #include "service_discovery.h"
 
 #include <ydb/core/grpc_services/base/base.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/core/security/ticket_parser.h>
 #include <ydb/public/api/protos/ydb_discovery.pb.h>
 
@@ -25,7 +25,7 @@ public:
         //TODO: Do we realy realy need to make call to the ticket parser here???
         //we have done it already in grpc_request_proxy
         auto req = dynamic_cast<TEvWhoAmIRequest*>(Request.get());
-        Y_VERIFY(req, "Unexpected request type for TWhoAmIRPC");
+        Y_ABORT_UNLESS(req, "Unexpected request type for TWhoAmIRPC");
         TMaybe<TString> authToken = req->GetYdbToken();
         if (authToken) {
             TMaybe<TString> database = Request->GetDatabaseName();

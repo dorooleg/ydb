@@ -2,9 +2,9 @@
 
 #include "world.h"
 #include "storage.h"
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 #include <ydb/core/base/blobstorage.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/tablet_flat/util_fmt_logger.h>
 #include <util/system/type_name.h>
 
@@ -30,7 +30,7 @@ namespace NFake {
         TWarden(ui32 groups)
             : ::NActors::IActorCallback(static_cast<TReceiveFunc>(&TWarden::Inbox), NKikimrServices::TActivity::FAKE_ENV_A)
         {
-             Y_VERIFY(groups < State.size(), "Too many groups requested");
+             Y_ABORT_UNLESS(groups < State.size(), "Too many groups requested");
 
              for (auto group: xrange(groups))
                 State[group] = EState::Allow;
@@ -62,7 +62,7 @@ namespace NFake {
                 } else if (State[group] == EState::Allow) {
                     State[group] = EState::Fired;
 
-                    Y_VERIFY(++Alive <= State.size(), "Out of group states");
+                    Y_ABORT_UNLESS(++Alive <= State.size(), "Out of group states");
 
                     StartGroup(group);
 
@@ -84,7 +84,7 @@ namespace NFake {
 
             } else if (eh->CastAsLocal<TEvents::TEvPoison>()) {
                 if (std::exchange(Shutting, true)) {
-                    Y_FAIL("Got double BS storage shut order");
+                    Y_ABORT("Got double BS storage shut order");
                 } else if (auto logl = Logger->Log(ELnLev::Info))
                     logl << "Shut order, stopping " << Alive << " BS groups";
 
@@ -106,9 +106,9 @@ namespace NFake {
                 const auto group = eh->Cookie;
 
                 if (group >= State.size() || State[group] < EState::Fired) {
-                    Y_FAIL("Got an TEvGone event form unknown BS group");
+                    Y_ABORT("Got an TEvGone event form unknown BS group");
                 } else if (!Shutting || State[group] != EState::Shut) {
-                    Y_FAIL("Got unexpected TEvGone from BS group mock");
+                    Y_ABORT("Got unexpected TEvGone from BS group mock");
                 }
 
                 --Alive, State[group] = EState::Gone;
@@ -118,7 +118,7 @@ namespace NFake {
             } else if (eh->CastAsLocal<NFake::TEvTerm>()) {
 
             } else {
-                Y_FAIL("Got unexpected message");
+                Y_ABORT("Got unexpected message");
             }
         }
 

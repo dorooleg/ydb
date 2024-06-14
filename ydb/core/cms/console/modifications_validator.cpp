@@ -231,8 +231,8 @@ TModificationsValidator::ComputeAffectedConfigs(const TDynBitMap &kinds,
         } else if (item->UsageScope.NodeType) {
             affectedNodeTypes.insert(item->UsageScope.NodeType);
         } else {
-            Y_VERIFY(item->UsageScope.NodeIds.empty());
-            Y_VERIFY(item->UsageScope.Hosts.empty());
+            Y_ABORT_UNLESS(item->UsageScope.NodeIds.empty());
+            Y_ABORT_UNLESS(item->UsageScope.Hosts.empty());
             domainAffected = true;
         }
     }
@@ -268,7 +268,7 @@ TModificationsValidator::ComputeAffectedConfigs(const TDynBitMap &kinds,
         }
     } else {
         if (ValidationLevel == NKikimrConsole::VALIDATE_DOMAIN) {
-            Y_FAIL("Trying to validate unmodified kinds");
+            Y_ABORT("Trying to validate unmodified kinds");
         } else {
             // If tenant was modified but it has no more config items in
             // the resulting config index then its config is equal to

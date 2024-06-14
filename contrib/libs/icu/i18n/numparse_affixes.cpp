@@ -29,7 +29,7 @@ namespace {
  * Either both arguments must be null or the pattern string inside the AffixPatternMatcher must equal
  * the given pattern string.
  */
-static bool matched(const AffixPatternMatcher* affix, const UnicodeString& patternString) {
+bool matched(const AffixPatternMatcher* affix, const UnicodeString& patternString) {
     return (affix == nullptr && patternString.isBogus()) ||
            (affix != nullptr && affix->getPattern() == patternString);
 }
@@ -37,7 +37,7 @@ static bool matched(const AffixPatternMatcher* affix, const UnicodeString& patte
 /**
  * Helper method to return the length of the given AffixPatternMatcher. Returns 0 for null.
  */
-static int32_t length(const AffixPatternMatcher* matcher) {
+int32_t length(const AffixPatternMatcher* matcher) {
     return matcher == nullptr ? 0 : matcher->getPattern().length();
 }
 
@@ -45,7 +45,7 @@ static int32_t length(const AffixPatternMatcher* matcher) {
  * Helper method to return whether (1) both lhs and rhs are null/invalid, or (2) if they are both
  * valid, whether they are equal according to operator==.  Similar to Java Objects.equals()
  */
-static bool equals(const AffixPatternMatcher* lhs, const AffixPatternMatcher* rhs) {
+bool equals(const AffixPatternMatcher* lhs, const AffixPatternMatcher* rhs) {
     if (lhs == nullptr && rhs == nullptr) {
         return true;
     }
@@ -101,7 +101,7 @@ void AffixPatternMatcherBuilder::consumeToken(AffixPatternType type, UChar32 cp,
                 addMatcher(fWarehouse.currency(status));
                 break;
             default:
-                UPRV_UNREACHABLE;
+                UPRV_UNREACHABLE_EXIT;
         }
 
     } else if (fIgnorables != nullptr && fIgnorables->getSet()->contains(cp)) {
@@ -127,8 +127,8 @@ void AffixPatternMatcherBuilder::addMatcher(NumberParseMatcher& matcher) {
     fMatchers[fMatchersLen++] = &matcher;
 }
 
-AffixPatternMatcher AffixPatternMatcherBuilder::build() {
-    return AffixPatternMatcher(fMatchers, fMatchersLen, fPattern);
+AffixPatternMatcher AffixPatternMatcherBuilder::build(UErrorCode& status) {
+    return AffixPatternMatcher(fMatchers, fMatchersLen, fPattern, status);
 }
 
 AffixTokenMatcherWarehouse::AffixTokenMatcherWarehouse(const AffixTokenMatcherSetupData* setupData)
@@ -167,6 +167,10 @@ NumberParseMatcher* AffixTokenMatcherWarehouse::nextCodePointMatcher(UChar32 cp,
         status = U_MEMORY_ALLOCATION_ERROR;
     }
     return result;
+}
+
+bool AffixTokenMatcherWarehouse::hasEmptyCurrencySymbol() const {
+    return fSetupData->currencySymbols.hasEmptyCurrencySymbol();
 }
 
 
@@ -209,12 +213,13 @@ AffixPatternMatcher AffixPatternMatcher::fromAffixPattern(const UnicodeString& a
 
     AffixPatternMatcherBuilder builder(affixPattern, tokenWarehouse, ignorables);
     AffixUtils::iterateWithConsumer(affixPattern, builder, status);
-    return builder.build();
+    return builder.build(status);
 }
 
 AffixPatternMatcher::AffixPatternMatcher(MatcherArray& matchers, int32_t matchersLen,
-                                         const UnicodeString& pattern)
-        : ArraySeriesMatcher(matchers, matchersLen), fPattern(pattern) {}
+                                         const UnicodeString& pattern, UErrorCode& status)
+    : ArraySeriesMatcher(matchers, matchersLen), fPattern(pattern, status) {
+}
 
 UnicodeString AffixPatternMatcher::getPattern() const {
     return fPattern.toAliasedUnicodeString();
@@ -279,8 +284,16 @@ void AffixMatcherWarehouse::createAffixMatchers(const AffixPatternProvider& patt
     AffixPatternMatcher* posSuffix = nullptr;
 
     // Pre-process the affix strings to resolve LDML rules like sign display.
-    for (int8_t typeInt = 0; typeInt < PATTERN_SIGN_TYPE_COUNT; typeInt++) {
-        auto type = static_cast<PatternSignType>(typeInt);
+    for (int8_t typeInt = 0; typeInt < PATTERN_SIGN_TYPE_COUNT * 2; typeInt++) {
+        auto type = static_cast<PatternSignType>(typeInt / 2);
+        bool dropCurrencySymbols = (typeInt % 2) == 1;
+
+        if (dropCurrencySymbols && !patternInfo.hasCurrencySign()) {
+            continue;
+        }
+        if (dropCurrencySymbols && !fTokenWarehouse->hasEmptyCurrencySymbol()) {
+            continue;
+        }
 
         // Skip affixes in some cases
         if (type == PATTERN_SIGN_TYPE_POS
@@ -293,18 +306,20 @@ void AffixMatcherWarehouse::createAffixMatchers(const AffixPatternProvider& patt
         }
 
         // Generate Prefix
+        // TODO: Handle approximately sign?
         bool hasPrefix = false;
         PatternStringUtils::patternInfoToStringBuilder(
-                patternInfo, true, type, StandardPlural::OTHER, false, sb);
+                patternInfo, true, type, false, StandardPlural::OTHER, false, dropCurrencySymbols, sb);
         fAffixPatternMatchers[numAffixPatternMatchers] = AffixPatternMatcher::fromAffixPattern(
                 sb, *fTokenWarehouse, parseFlags, &hasPrefix, status);
         AffixPatternMatcher* prefix = hasPrefix ? &fAffixPatternMatchers[numAffixPatternMatchers++]
                                                 : nullptr;
 
         // Generate Suffix
+        // TODO: Handle approximately sign?
         bool hasSuffix = false;
         PatternStringUtils::patternInfoToStringBuilder(
-                patternInfo, false, type, StandardPlural::OTHER, false, sb);
+                patternInfo, false, type, false, StandardPlural::OTHER, false, dropCurrencySymbols, sb);
         fAffixPatternMatchers[numAffixPatternMatchers] = AffixPatternMatcher::fromAffixPattern(
                 sb, *fTokenWarehouse, parseFlags, &hasSuffix, status);
         AffixPatternMatcher* suffix = hasSuffix ? &fAffixPatternMatchers[numAffixPatternMatchers++]
@@ -446,28 +461,3 @@ UnicodeString AffixMatcher::toString() const {
 
 
 #endif /* #if !UCONFIG_NO_FORMATTING */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

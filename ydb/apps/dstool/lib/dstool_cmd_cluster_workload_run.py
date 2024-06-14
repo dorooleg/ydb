@@ -3,7 +3,7 @@ import time
 import random
 import subprocess
 import ydb.apps.dstool.lib.grouptool as grouptool
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import sys
 
@@ -12,9 +12,13 @@ description = 'Create workload to stress failure model'
 
 def add_options(p):
     p.add_argument('--disable-wipes', action='store_true', help='Disable VDisk wipes')
+    p.add_argument('--disable-readonly', action='store_true', help='Disable VDisk SetVDiskReadOnly requests')
     p.add_argument('--disable-evicts', action='store_true', help='Disable VDisk evicts')
     p.add_argument('--disable-restarts', action='store_true', help='Disable node restarts')
     p.add_argument('--enable-pdisk-encryption-keys-changes', action='store_true', help='Enable changes of PDisk encryption keys')
+    p.add_argument('--enable-kill-tablets', action='store_true', help='Enable tablet killer')
+    p.add_argument('--enable-kill-blob-depot', action='store_true', help='Enable BlobDepot killer')
+    p.add_argument('--kill-signal', type=str, default='KILL', help='Kill signal to send to restart node')
 
 
 def fetch_start_time_map(base_config):
@@ -83,10 +87,18 @@ def do(args):
                 config_retries -= 1
             continue
 
+        tablets = common.fetch_json_info('tabletinfo') if args.enable_kill_tablets or args.enable_kill_blob_depot else {}
+
         config_retries = None
 
         for vslot in base_config.VSlot:
             assert not vslot.Ready or vslot.Status == 'READY'
+
+        vslot_readonly = {
+            common.get_vslot_id(vslot.VSlotId)
+            for vslot in base_config.VSlot
+            if vslot.ReadOnly
+        }
 
         if (len(pdisk_keys) == 0):
             # initialize pdisk_keys and pdisk_key_versions
@@ -101,7 +113,7 @@ def do(args):
                 key = *vslot_id, *common.get_vdisk_id_json(vdisk['VDiskId'])
                 vdisk_status[key] = vdisk['Replicated'] and vdisk['VDiskState'] == 'OK'
             except KeyError:
-                common.print_if_not_quiet(args, 'Failed to fetch VDisk status for VSlotId %s' % vslot_id, file=sys.stderr)
+                common.print_if_not_quiet(args, 'Failed to fetch VDisk status for VSlotId %s' % (vslot_id,), file=sys.stderr)
                 error = True
         if error:
             common.print_if_not_quiet(args, 'Waiting for the next round...', file=sys.stdout)
@@ -128,7 +140,7 @@ def do(args):
             host = node_fqdn_map[node_id]
             if args.enable_pdisk_encryption_keys_changes:
                 update_pdisk_key_config(node_fqdn_map, pdisk_keys, node_id)
-            subprocess.call(['ssh', host, 'sudo', 'killall', '-9', 'kikimr'])
+            subprocess.call(['ssh', host, 'sudo', 'killall', '-%s' % args.kill_signal, 'kikimr'])
             if args.enable_pdisk_encryption_keys_changes:
                 remove_old_pdisk_keys(pdisk_keys, pdisk_key_versions, node_id)
 
@@ -157,9 +169,17 @@ def do(args):
             assert can_act_on_vslot(*common.get_vslot_id(vslot.VSlotId))
             try:
                 request = common.create_wipe_request(args, vslot)
-                common.invoke_wipe_request(request)
+                common.invoke_bsc_request(request)
             except Exception as e:
                 raise Exception('Failed to perform wipe request: %s' % e)
+
+        def do_readonly(vslot, value):
+            assert not value or can_act_on_vslot(*common.get_vslot_id(vslot.VSlotId))
+            try:
+                request = common.create_readonly_request(args, vslot, value)
+                common.invoke_bsc_request(request)
+            except Exception as e:
+                raise Exception('Failed to perform readonly request: %s' % e)
 
         def do_add_pdisk_key(node_id):
             pdisk_key_versions[node_id] += 1
@@ -170,23 +190,76 @@ def do(args):
                                         "version" : v,
                                         "file" : "keynumber" + str(v)})
 
+        def do_kill_tablet():
+            tablet_list = [
+                value
+                for key, value in tablets.items()
+                if value['State'] == 'Active' and value['Leader']
+            ]
+            item = random.choice(tablet_list)
+            tablet_id = int(item['TabletId'])
+            print('Killing tablet %d of type %s' % (tablet_id, item['Type']))
+            common.fetch('tablets', dict(RestartTabletID=tablet_id), fmt='raw', cache=False)
+
+        def do_kill_blob_depot():
+            tablet_list = [
+                value
+                for key, value in tablets.items()
+                if value['State'] == 'Active' and value['Leader'] and value['Type'] == 'BlobDepot'
+            ]
+            if tablet_list:
+                item = random.choice(tablet_list)
+                tablet_id = int(item['TabletId'])
+                print('Killing tablet %d of type %s' % (tablet_id, item['Type']))
+                common.fetch('tablets', dict(RestartTabletID=tablet_id), fmt='raw', cache=False)
+
         ################################################################################################################
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         while recent_restarts and recent_restarts[0] + timedelta(minutes=1) < now:
             recent_restarts.pop(0)
 
         possible_actions = []
 
+        if args.enable_kill_tablets:
+            possible_actions.append(('kill tablet', (do_kill_tablet,)))
+        if args.enable_kill_blob_depot:
+            possible_actions.append(('kill blob depot', (do_kill_blob_depot,)))
+
+        evicts = []
+        wipes = []
+        readonlies = []
+        unreadonlies = []
+
         for vslot in base_config.VSlot:
             if common.is_dynamic_group(vslot.GroupId):
                 vslot_id = common.get_vslot_id(vslot.VSlotId)
+                vdisk_id = '[%08x:%d:%d:%d]' % (vslot.GroupId, vslot.FailRealmIdx, vslot.FailDomainIdx, vslot.VDiskIdx)
+                if vslot_id in vslot_readonly and not args.disable_readonly:
+                    unreadonlies.append(('un-readonly vslot id: %s, vdisk id: %s' % (vslot_id, vdisk_id), (do_readonly, vslot, False)))
                 if can_act_on_vslot(*vslot_id) and (recent_restarts or args.disable_restarts):
-                    vdisk_id = '[%08x:%d:%d:%d]' % (vslot.GroupId, vslot.FailRealmIdx, vslot.FailDomainIdx, vslot.VDiskIdx)
                     if not args.disable_evicts:
-                        possible_actions.append(('evict vslot id: %s, vdisk id: %s' % (vslot_id, vdisk_id), (do_evict, vslot_id)))
+                        evicts.append(('evict vslot id: %s, vdisk id: %s' % (vslot_id, vdisk_id), (do_evict, vslot_id)))
                     if not args.disable_wipes:
-                        possible_actions.append(('wipe vslot id: %s, vdisk id: %s' % (vslot_id, vdisk_id), (do_wipe, vslot)))
+                        wipes.append(('wipe vslot id: %s, vdisk id: %s' % (vslot_id, vdisk_id), (do_wipe, vslot)))
+                    if not args.disable_readonly:
+                        readolies.append(('readonly vslot id: %s, vdisk id: %s' % (vslot_id, vdisk_id), (do_readonly, vslot, True)))
+
+        def pick(v):
+            action_name, action = random.choice(v)
+            print(action_name)
+            action[0](*action[1:])
+
+        if evicts:
+            possible_actions.append(('evict', (pick, evicts)))
+        if wipes:
+            possible_actions.append(('wipe', (pick, wipes)))
+        if readonlies:
+            possible_actions.append(('readonly', (pick, readonlies)))
+        if unreadonlies:
+            possible_actions.append(('un-readonly', (pick, unreadonlies)))
+
+        restarts = []
 
         if start_time_map and len(recent_restarts) < 3:
             # sort so that the latest restarts come first
@@ -197,7 +270,10 @@ def do(args):
                 if args.enable_pdisk_encryption_keys_changes:
                     possible_actions.append(('add new pdisk key to node with id: %d' % node_id, (do_add_pdisk_key, node_id)))
                 if not args.disable_restarts:
-                    possible_actions.append(('restart node with id: %d' % node_id, (do_restart, node_id)))
+                    restarts.append(('restart node with id: %d' % node_id, (do_restart, node_id)))
+
+        if restarts:
+            possible_actions.append(('restart', (pick, restarts)))
 
         if not possible_actions:
             common.print_if_not_quiet(args, 'Waiting for the next round...', file=sys.stdout)
@@ -207,7 +283,7 @@ def do(args):
         ################################################################################################################
 
         action_name, action = random.choice(possible_actions)
-        common.print_if_not_quiet(args, '%s' % action_name, file=sys.stdout)
+        print('%s %s' % (action_name, datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')))
 
         try:
             action[0](*action[1:])

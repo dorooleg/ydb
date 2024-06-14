@@ -2,10 +2,11 @@
 #include <ydb/core/keyvalue/defs.h>
 #include <ydb/core/tablet/tablet_counters.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/actorid.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/actorid.h>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/protos/msgbus.pb.h>
+#include <ydb/core/protos/msgbus_pq.pb.h>
 #include <ydb/core/tx/datashard/datashard.h>
 #include <ydb/public/api/protos/draft/persqueue_common.pb.h>
 
@@ -35,7 +36,7 @@ struct TEvPersQueue {
         EvDescribeResponse,
         EvGetReadSessionsInfo,
         EvReadSessionsInfoResponse,
-        EvWakeupClient,
+        EvWakeupClient, // deprecated
         EvUpdateACL,
         EvCheckACL,
         EvCheckACLResponse,
@@ -47,6 +48,10 @@ struct TEvPersQueue {
         EvProposeTransactionResult,
         EvCancelTransactionProposal,
         EvPeriodicTopicStats,
+        EvGetPartitionsLocation,
+        EvGetPartitionsLocationResponse,
+        EvReadingPartitionFinished,
+        EvReadingPartitionStarted,
         EvResponse = EvRequest + 256,
         EvInternalEvents = EvResponse + 256,
         EvEnd
@@ -83,9 +88,16 @@ struct TEvPersQueue {
 
     struct TEvGetReadSessionsInfo: public TEventPB<TEvGetReadSessionsInfo,
             NKikimrPQ::TGetReadSessionsInfo, EvGetReadSessionsInfo> {
-            TEvGetReadSessionsInfo(const TString& consumer = "") {
+            explicit TEvGetReadSessionsInfo(const TString& consumer = "") {
                 if (!consumer.empty()) {
                     Record.SetClientId(consumer);
+                }
+            }
+            explicit TEvGetReadSessionsInfo(const TVector<ui32>& partitions) {
+                if (!partitions.empty()) {
+                    for (auto p: partitions) {
+                        Record.AddPartitions(p);
+                    }
                 }
             }
     };
@@ -93,6 +105,19 @@ struct TEvPersQueue {
     struct TEvReadSessionsInfoResponse: public TEventPB<TEvReadSessionsInfoResponse,
             NKikimrPQ::TReadSessionsInfoResponse, EvReadSessionsInfoResponse> {
             TEvReadSessionsInfoResponse() {}
+    };
+
+    struct TEvGetPartitionsLocation: public TEventPB<TEvGetPartitionsLocation,
+            NKikimrPQ::TGetPartitionsLocation, EvGetPartitionsLocation> {
+            TEvGetPartitionsLocation(const TVector<ui64>& partitionIds = {}) {
+                for (const auto& p : partitionIds) {
+                    Record.AddPartitions(p);
+                }
+            }
+    };
+
+    struct TEvGetPartitionsLocationResponse: public TEventPB<TEvGetPartitionsLocationResponse,
+            NKikimrPQ::TPartitionsLocationResponse, EvGetPartitionsLocationResponse> {
     };
 
     struct TEvLockPartition : public TEventPB<TEvLockPartition,
@@ -173,16 +198,6 @@ struct TEvPersQueue {
         TEvPartitionClientInfoResponse() = default;
     };
 
-    struct TEvWakeupClient : TEventLocal<TEvWakeupClient, EvWakeupClient> {
-        TEvWakeupClient(const TString& client, const ui32 group)
-            : Client(client)
-            , Group(group)
-        {}
-
-        TString Client;
-        ui32 Group;
-    };
-
     struct TEvDescribe : public TEventPB<TEvDescribe, NKikimrPQ::TDescribe, EvDescribe> {
         TEvDescribe()
         {}
@@ -235,6 +250,8 @@ struct TEvPersQueue {
     };
 
     struct TEvCancelTransactionProposal : public TEventPB<TEvCancelTransactionProposal, NKikimrPQ::TEvCancelTransactionProposal, EvCancelTransactionProposal> {
+        TEvCancelTransactionProposal() = default;
+
         explicit TEvCancelTransactionProposal(ui64 txId) {
             Record.SetTxId(txId);
         }
@@ -245,5 +262,26 @@ struct TEvPersQueue {
 
     using TEvProposeTransactionAttach = TEvDataShard::TEvProposeTransactionAttach;
     using TEvProposeTransactionAttachResult = TEvDataShard::TEvProposeTransactionAttachResult;
+
+    struct TEvReadingPartitionFinishedRequest : public TEventPB<TEvReadingPartitionFinishedRequest, NKikimrPQ::TEvReadingPartitionFinishedRequest, EvReadingPartitionFinished> {
+        TEvReadingPartitionFinishedRequest() = default;
+
+        TEvReadingPartitionFinishedRequest(const TString& consumer, ui32 partitionId, bool scaleAwareSDK, bool startedReadingFromEndOffset) {
+            Record.SetConsumer(consumer);
+            Record.SetPartitionId(partitionId);
+            Record.SetScaleAwareSDK(scaleAwareSDK);
+            Record.SetStartedReadingFromEndOffset(startedReadingFromEndOffset);
+        }
+    };
+
+    struct TEvReadingPartitionStartedRequest : public TEventPB<TEvReadingPartitionStartedRequest, NKikimrPQ::TEvReadingPartitionStartedRequest, EvReadingPartitionStarted> {
+        TEvReadingPartitionStartedRequest() = default;
+
+        TEvReadingPartitionStartedRequest(const TString& consumer, ui32 partitionId) {
+            Record.SetConsumer(consumer);
+            Record.SetPartitionId(partitionId);
+        }
+    };
+
 };
 } //NKikimr

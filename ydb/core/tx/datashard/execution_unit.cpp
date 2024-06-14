@@ -12,6 +12,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
     switch (kind) {
     case EExecutionUnitKind::CheckDataTx:
         return CreateCheckDataTxUnit(dataShard, pipeline);
+    case EExecutionUnitKind::CheckWrite:
+        return CreateCheckWriteUnit(dataShard, pipeline);
     case EExecutionUnitKind::CheckSchemeTx:
         return CreateCheckSchemeTxUnit(dataShard, pipeline);
     case EExecutionUnitKind::CheckSnapshotTx:
@@ -22,6 +24,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
         return CreateCheckCommitWritesTxUnit(dataShard, pipeline);
     case EExecutionUnitKind::StoreDataTx:
         return CreateStoreDataTxUnit(dataShard, pipeline);
+    case EExecutionUnitKind::StoreWrite:
+        return CreateStoreWriteUnit(dataShard, pipeline);
     case EExecutionUnitKind::StoreSchemeTx:
         return CreateStoreSchemeTxUnit(dataShard, pipeline);
     case EExecutionUnitKind::StoreSnapshotTx:
@@ -34,6 +38,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
         return CreateBuildAndWaitDependenciesUnit(dataShard, pipeline);
     case EExecutionUnitKind::FinishPropose:
         return CreateFinishProposeUnit(dataShard, pipeline);
+    case EExecutionUnitKind::FinishProposeWrite:
+        return CreateFinishProposeWriteUnit(dataShard, pipeline);
     case EExecutionUnitKind::CompletedOperations:
         return CreateCompletedOperationsUnit(dataShard, pipeline);
     case EExecutionUnitKind::WaitForPlan:
@@ -42,6 +48,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
         return CreatePlanQueueUnit(dataShard, pipeline);
     case EExecutionUnitKind::LoadTxDetails:
         return CreateLoadTxDetailsUnit(dataShard, pipeline);
+    case EExecutionUnitKind::LoadWriteDetails:
+        return CreateLoadWriteDetailsUnit(dataShard, pipeline);
     case EExecutionUnitKind::FinalizeDataTxPlan:
         return CreateFinalizeDataTxPlanUnit(dataShard, pipeline);
     case EExecutionUnitKind::ProtectSchemeEchoes:
@@ -52,12 +60,18 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
         return CreateBuildDistributedEraseTxOutRSUnit(dataShard, pipeline);
     case EExecutionUnitKind::BuildKqpDataTxOutRS:
         return CreateBuildKqpDataTxOutRSUnit(dataShard, pipeline);
+    case EExecutionUnitKind::BuildWriteOutRS:
+        return CreateBuildWriteOutRSUnit(dataShard, pipeline);
     case EExecutionUnitKind::StoreAndSendOutRS:
         return CreateStoreAndSendOutRSUnit(dataShard, pipeline);
+    case EExecutionUnitKind::StoreAndSendWriteOutRS:
+        return CreateStoreAndSendWriteOutRSUnit(dataShard, pipeline);
     case EExecutionUnitKind::PrepareDataTxInRS:
         return CreatePrepareDataTxInRSUnit(dataShard, pipeline);
     case EExecutionUnitKind::PrepareKqpDataTxInRS:
         return CreatePrepareKqpDataTxInRSUnit(dataShard, pipeline);
+    case EExecutionUnitKind::PrepareWriteTxInRS:
+        return CreatePrepareWriteTxInRSUnit(dataShard, pipeline);
     case EExecutionUnitKind::PrepareDistributedEraseTxInRS:
         return CreatePrepareDistributedEraseTxInRSUnit(dataShard, pipeline);
     case EExecutionUnitKind::LoadAndWaitInRS:
@@ -72,6 +86,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
         return CreateExecuteCommitWritesTxUnit(dataShard, pipeline);
     case EExecutionUnitKind::CompleteOperation:
         return CreateCompleteOperationUnit(dataShard, pipeline);
+    case EExecutionUnitKind::CompleteWrite:
+        return CreateCompleteWriteUnit(dataShard, pipeline);
     case EExecutionUnitKind::ExecuteKqpScanTx:
         return CreateExecuteKqpScanTxUnit(dataShard, pipeline);
     case EExecutionUnitKind::MakeScanSnapshot:
@@ -132,6 +148,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
         return CreateCheckReadUnit(dataShard, pipeline);
     case EExecutionUnitKind::ExecuteRead:
         return CreateReadUnit(dataShard, pipeline);
+    case EExecutionUnitKind::ExecuteWrite:
+        return CreateExecuteWriteUnit(dataShard, pipeline);
     default:
         Y_FAIL_S("Unexpected execution kind " << kind << " (" << (ui32)kind << ")");
     }
@@ -140,6 +158,8 @@ THolder<TExecutionUnit> CreateExecutionUnit(EExecutionUnitKind kind,
 }
 
 bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext& ctx) {
+    TWriteOperation* writeOp = TWriteOperation::TryCastWriteOperation(op);
+
     // Reject operations after receiving EvSplit
     // This is to avoid races when split is in progress
     if (DataShard.GetState() == TShardState::SplitSrcWaitForNoTxInFlight ||
@@ -150,8 +170,13 @@ bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext&
         TString err = TStringBuilder()
             << "Wrong shard state: " << (TShardState)DataShard.GetState()
             << " tablet id: " << DataShard.TabletID();
-        BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
-            ->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+
+        if (writeOp) {
+            writeOp->SetError(NKikimrDataEvents::TEvWriteResult::STATUS_OVERLOADED, err);
+        } else {
+            BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
+                ->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+        }
 
         LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD,
             "Tablet " << DataShard.TabletID() << " rejecting tx due to split");
@@ -169,7 +194,11 @@ bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext&
             << "Wrong shard state: " << (TShardState)DataShard.GetState()
             << " tablet id: " << DataShard.TabletID();
         // TODO: Return SCHEME_CHANGED if the shard has been split
-        BuildResult(op)->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+        if (writeOp) {
+            writeOp->SetError(NKikimrDataEvents::TEvWriteResult::STATUS_INTERNAL_ERROR, err);
+        } else {        
+            BuildResult(op)->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+        }
 
         LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, err);
 
@@ -180,8 +209,13 @@ bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext&
     if (DataShard.IsStopping()) {
         TString err = TStringBuilder()
             << "Tablet " << DataShard.TabletID() << " is restarting";
-        BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
-            ->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+
+        if (writeOp) {
+            writeOp->SetError(NKikimrDataEvents::TEvWriteResult::STATUS_OVERLOADED, err);
+        } else {
+            BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
+                ->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+        }
 
         LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, err);
 
@@ -193,8 +227,13 @@ bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext&
         TString err = TStringBuilder()
                 << "Wrong shard state: " << (TShardState)DataShard.GetState()
                 << " tablet id: " << DataShard.TabletID();
-        BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
+
+        if (writeOp) {
+            writeOp->SetError(NKikimrDataEvents::TEvWriteResult::STATUS_OVERLOADED, err);
+        } else {
+            BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
                 ->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+        }
 
         LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD,
                      "Tablet " << DataShard.TabletID() << " rejecting tx due to mvcc state change");
@@ -206,8 +245,15 @@ bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext&
     if (!op->IsReadOnly() && DataShard.CheckChangesQueueOverflow()) {
         TString err = TStringBuilder()
                 << "Can't execute at blocked shard: " << " tablet id: " << DataShard.TabletID();
-        BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
-                ->AddError(NKikimrTxDataShard::TError::SHARD_IS_BLOCKED, err);
+
+        if (writeOp) {
+            writeOp->SetError(NKikimrDataEvents::TEvWriteResult::STATUS_OVERLOADED, err);
+
+            DataShard.SetOverloadSubscribed(writeOp->GetWriteTx()->GetOverloadSubscribe(), writeOp->GetRecipient(), op->GetTarget(), ERejectReasons::ChangesQueueOverflow, writeOp->GetWriteResult()->Record);
+        } else {                
+            BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED)
+                    ->AddError(NKikimrTxDataShard::TError::SHARD_IS_BLOCKED, err);
+        }
 
         LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD,
                      "Tablet " << DataShard.TabletID() << " rejecting tx due to changes queue overflow");
@@ -220,8 +266,13 @@ bool TExecutionUnit::CheckRejectDataTx(TOperation::TPtr op, const TActorContext&
         TString err = TStringBuilder()
             << "Can't execute write tx at replicated table:"
             << " tablet id: " << DataShard.TabletID();
-        BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::EXEC_ERROR)
+
+        if (writeOp) {
+            writeOp->SetError(NKikimrDataEvents::TEvWriteResult::STATUS_BAD_REQUEST, err);
+        } else {            
+            BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::EXEC_ERROR)
                 ->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, err);
+        }
 
         LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, err);
 

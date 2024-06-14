@@ -1,10 +1,12 @@
 syntax = "proto3";
 
+import "ydb/core/graph/protos/graph.proto";
 import "ydb/core/protos/tablet_counters.proto";
 import "ydb/core/protos/node_whiteboard.proto";
 import "ydb/core/protos/flat_scheme_op.proto";
 import "ydb/core/protos/tablet.proto";
 import "ydb/core/protos/hive.proto";
+import "ydb/core/protos/kqp.proto";
 import "ydb/public/api/protos/ydb_cms.proto";
 
 package NKikimrViewer;
@@ -37,6 +39,7 @@ enum EObjectType {
     BlobDepot = 23;
     ExternalTable = 24;
     ExternalDataSource = 25;
+    View = 26;
 }
 
 message TBrowseInfo {
@@ -321,6 +324,7 @@ message TClusterInfo {
     uint64 Hosts = 44;
     uint64 Tenants = 45;
     uint64 Tablets = 46;
+    string Domain = 47;
 }
 
 enum ETenantType {
@@ -329,6 +333,17 @@ enum ETenantType {
     Dedicated = 2;
     Shared = 3;
     Serverless = 4;
+}
+
+message TStorageUsage {
+    enum EType {
+        None = 0;
+        HDD = 1;
+        SSD = 2;
+    }
+    EType Type = 1;
+    uint64 Size = 2;
+    uint64 Limit = 3;
 }
 
 message TTenant {
@@ -357,6 +372,10 @@ message TTenant {
     uint64 MemoryLimit = 38;
     double CoresUsed = 39;
     uint64 StorageGroups = 40;
+    uint64 StorageAllocatedLimit = 41;
+    Ydb.Cms.DatabaseQuotas DatabaseQuotas = 42;
+    repeated TStorageUsage StorageUsage = 43;
+    repeated TStorageUsage QuotaUsage = 44;
 }
 
 message TTenants {
@@ -384,13 +403,20 @@ message TStoragePoolInfo {
     float MaximumIOPS = 9;
     uint64 MaximumThroughput = 10;
     uint64 MaximumSize = 11;
+    string MediaType = 12;
 }
 
 message TStorageInfo {
     EFlag Overall = 1;
     repeated TStoragePoolInfo StoragePools = 2;
-    uint64 TotalGroups = 3;
-    uint64 FoundGroups = 4;
+    optional uint64 TotalGroups = 3;
+    optional uint64 FoundGroups = 4;
+    repeated TStorageGroupInfo StorageGroups = 5;
+}
+
+message TStorageUsageStats {
+    uint32 Pace = 1;
+    repeated uint32 Buckets = 2;
 }
 
 message TNodeInfo {
@@ -398,14 +424,14 @@ message TNodeInfo {
     NKikimrWhiteboard.TSystemStateInfo SystemState = 2;
     repeated NKikimrWhiteboard.TPDiskStateInfo PDisks = 3;
     repeated NKikimrWhiteboard.TVDiskStateInfo VDisks = 4;
-    repeated NKikimrWhiteboard.TTabletStateInfo Tablets = 5;
+    repeated TTabletStateInfo Tablets = 5;
 }
 
 message TNodesInfo {
     EFlag Overall = 1;
     repeated TNodeInfo Nodes = 2;
-    uint64 TotalNodes = 3;
-    uint64 FoundNodes = 4;
+    optional uint64 TotalNodes = 3;
+    optional uint64 FoundNodes = 4;
 }
 
 enum ENodeType {
@@ -474,6 +500,7 @@ message TComputeNodeInfo {
     optional uint64 MemoryLimit = 27;
     NKikimrTabletBase.TMetrics Metrics = 32;
     repeated TTabletStateInfo Tablets = 33;
+    optional string Tenant = 41; // for response without tenant groups
 }
 
 message TComputeTenantInfo {
@@ -486,10 +513,26 @@ message TComputeInfo {
     EFlag Overall = 1;
     repeated TComputeTenantInfo Tenants = 2;
     repeated string Errors = 3;
+    uint64 TotalNodes = 4;
+    uint64 FoundNodes = 5;
+    repeated TComputeNodeInfo Nodes = 6;
 }
 
 message TNodeLocation {
     repeated uint32 NodeId = 1;
+}
+
+message THttpProxyRequest {
+    string Uri = 1;
+    bytes Content = 2;
+    bytes UserToken = 3;
+}
+
+message TSchemeCacheRequest {
+    string Database = 1;
+    repeated string Tables = 2;
+    string Prefix = 3;
+    uint32 Limit = 4;
 }
 
 message TEvViewerRequest {
@@ -497,6 +540,13 @@ message TEvViewerRequest {
     uint32 Timeout = 2; // ms
     oneof Request {
         NKikimrWhiteboard.TEvTabletStateRequest TabletRequest = 11;
+        NKikimrWhiteboard.TEvSystemStateRequest SystemRequest = 12;
+        THttpProxyRequest QueryRequest = 13;
+        THttpProxyRequest RenderRequest = 14;
+        TSchemeCacheRequest AutocompleteRequest = 15;
+        bytes Reserved16 = 16;
+        bytes Reserved17 = 17;
+        bytes Reserved18 = 18;
     }
 }
 
@@ -504,6 +554,13 @@ message TEvViewerResponse {
     TNodeLocation LocationResponded = 2;
     oneof Response {
         NKikimrWhiteboard.TEvTabletStateResponse TabletResponse = 11;
+        NKikimrWhiteboard.TEvSystemStateResponse SystemResponse = 12;
+        NKikimrKqp.TEvQueryResponse QueryResponse = 13;
+        NKikimrGraph.TEvMetricsResult RenderResponse = 14;
+        TQueryAutocomplete AutocompleteResponse = 15;
+        bytes Reserved16 = 16;
+        bytes Reserved17 = 17;
+        bytes Reserved18 = 18;
     }
 }
 
@@ -518,7 +575,7 @@ message TEvDescribeSchemeInfo {
     optional string Reason = 2;
     optional string Path = 3;
     optional NKikimrSchemeOp.TPathDescription PathDescription = 4;
-    optional fixed64 PathOwner = 5;
+    optional fixed64 DEPRECATED_PathOwner = 5;  // replaced by PathOwnerId
     optional fixed64 PathId = 6;
 
     optional string LastExistedPrefixPath = 7;
@@ -526,4 +583,46 @@ message TEvDescribeSchemeInfo {
     optional NKikimrSchemeOp.TPathDescription LastExistedPrefixDescription = 9;
     optional fixed64 PathOwnerId = 10;
     optional ESource Source = 11;
+}
+
+enum EAutocompleteType {
+    unknown = 0;
+    dir = 1;
+    table = 2;
+    pers_queue_group = 3;
+    sub_domain = 4;
+    rtmr_volume = 5;
+    block_store_volume = 6;
+    kesus = 7;
+    solomon_volume = 8;
+    table_index = 9;
+    ext_sub_domain = 10;
+    file_store = 11;
+    column_store = 12;
+    column_table = 13;
+    cdc_stream = 14;
+    sequence = 15;
+    replication = 16;
+    blob_depot = 17;
+    external_table = 18;
+    external_data_source = 19;
+    view = 20;
+    column = 21;
+    index = 22;
+}
+
+message TQueryAutocomplete {
+    message TResult {
+        message TEntity {
+            string Name = 1;
+            EAutocompleteType Type = 2;
+            string Parent = 3;
+        }
+        uint32 Total = 1;
+        repeated TEntity Entities = 2;
+    }
+
+    bool Success = 1;
+    TResult Result = 2;
+    repeated string Error = 3;
 }

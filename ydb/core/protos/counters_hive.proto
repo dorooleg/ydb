@@ -22,6 +22,13 @@ enum ESimpleCounters {
     COUNTER_BALANCE_USAGE_MAX = 12 [(CounterOpts) = {Name: "BalanceUsageMax"}];
     COUNTER_SEQUENCE_FREE = 13 [(CounterOpts) = {Name: "SequenceFree"}];
     COUNTER_SEQUENCE_ALLOCATED = 14 [(CounterOpts) = {Name: "SequenceAllocated"}];
+    COUNTER_EVENTQUEUE_SIZE = 15 [(CounterOpts) = {Name: "EventQueueSize"}];
+    COUNTER_NODES_TOTAL = 16 [(CounterOpts) = {Name: "NodesTotal"}];
+    COUNTER_NODES_CONNECTED = 17 [(CounterOpts) = {Name: "NodesConnected"}];
+    COUNTER_BALANCE_OBJECT_IMBALANCE = 18 [(CounterOpts) = {Name: "BalanceObjectImbalance"}];
+    COUNTER_IMBALANCED_OBJECTS = 19 [(CounterOpts) = {Name: "ImbalancedObjects"}];
+    COUNTER_WORST_OBJECT_VARIANCE = 20 [(CounterOpts) = {Name: "WorstObjectVariance"}];
+    COUNTER_STORAGE_SCATTER = 21 [(CounterOpts) = {Name: "StorageScatter"}];
 }
 
 enum ECumulativeCounters {
@@ -37,6 +44,8 @@ enum ECumulativeCounters {
     COUNTER_TABLETS_MOVED = 9 [(CounterOpts) = {Name: "TabletsMoved"}];
     COUNTER_SUGGESTED_SCALE_UP = 10 [(CounterOpts) = {Name: "SuggestedScaleUp"}];
     COUNTER_SUGGESTED_SCALE_DOWN = 11 [(CounterOpts) = {Name: "SuggestedScaleDown"}];
+    COUNTER_STORAGE_BALANCER_EXECUTED = 12 [(CounterOpts) = {Name: "StorageBalancerExecuted"}];
+    COUNTER_TABLETS_STORAGE_REASSIGNED = 13 [(CounterOpts) = {Name: "TabletsStorageReassigned"}];
 }
 
 enum EPercentileCounters {
@@ -46,6 +55,26 @@ enum EPercentileCounters {
     };
 
     COUNTER_PERCENTILE_IGNORE = 0;
+
+    COUNTER_NODE_USAGE = 1 [(CounterOpts) = {
+        Name: "NodeUsage",
+        Integral: true,
+        Ranges: { Value: 30    Name: "30%"       },
+        Ranges: { Value: 35    Name: "35%"       },
+        Ranges: { Value: 40    Name: "40%"       },
+        Ranges: { Value: 45    Name: "45%"       },
+        Ranges: { Value: 50    Name: "50%"       },
+        Ranges: { Value: 55    Name: "55%"       },
+        Ranges: { Value: 60    Name: "60%"       },
+        Ranges: { Value: 65    Name: "65%"       },
+        Ranges: { Value: 70    Name: "70%"       },
+        Ranges: { Value: 75    Name: "75%"       },
+        Ranges: { Value: 80    Name: "80%"       },
+        Ranges: { Value: 85    Name: "85%"       },
+        Ranges: { Value: 90    Name: "90%"       },
+        Ranges: { Value: 95    Name: "95%"       },
+        Ranges: { Value: 100   Name: "100%"      },
+    }];
 }
 
 enum ETxTypes {
@@ -110,4 +139,9 @@ enum ETxTypes {
     TXTYPE_TABLET_OWNERS_REPLY = 58                       [(TxTypeOpts) = {Name: "TxTabletOwnersReply"}];
     TXTYPE_REQUEST_TABLET_OWNERS = 59                     [(TxTypeOpts) = {Name: "TxRequestTabletOwners"}];
     TXTYPE_REASSIGN_GROUPS_ON_DECOMMIT = 60               [(TxTypeOpts) = {Name: "TxReassignGroupsOnDecommit"}];
+    TXTYPE_UPDATE_TABLETS_OBJECT = 61                     [(TxTypeOpts) = {Name: "TxUpdateTabletsObject"}];
+    TXTYPE_MON_REBALANCE_FROM_SCRATCH = 62                [(TxTypeOpts) = {Name: "TxMonRebalanceFromScratch"}];
+    TXTYPE_MON_OBJECT_STATS = 63                          [(TxTypeOpts) = {Name: "TxMonObjectStats"}];
+    TXTYPE_MON_SUBACTORS = 64                             [(TxTypeOpts) = {Name: "TxMonSubactors"}];
+    TXTYPE_MON_TABLET_AVAILABILITY = 65                   [(TxTypeOpts) = {Name: "TxMonTabletAvailability"}];
 }

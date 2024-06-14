@@ -63,7 +63,7 @@ TUserToken::TUserToken(NACLibProto::TUserToken&& token) {
 }
 
 TUserToken::TUserToken(const TString& token) {
-    Y_VERIFY(ParseFromString(token));
+    Y_ABORT_UNLESS(ParseFromString(token));
     Serialized_ = token;
 }
 
@@ -178,7 +178,7 @@ ui32 TSecurityObject::GetEffectiveAccessRights(const TUserToken& user) const {
 
 bool TSecurityObject::CheckAccess(ui32 access, const TUserToken& user) const {
     if (user.IsSystemUser()) {
-        return true; // the system alway has access
+        return true; // the system always has access
     }
     if (HasOwnerSID() && user.IsExist(GetOwnerSID()))
         return true; // the owner always has access
@@ -384,7 +384,7 @@ void TACL::SortACL() {
 }
 
 TACL::TACL(const TString& string) {
-    Y_VERIFY(ParseFromString(string));
+    Y_ABORT_UNLESS(ParseFromString(string));
 }
 
 std::pair<ui32, ui32> TACL::ApplyDiff(const NACLibProto::TDiffACL& diffACL) Y_NO_SANITIZE("undefined") {
@@ -700,7 +700,7 @@ void TACL::FromString(const TString& string) {
 }
 
 TDiffACL::TDiffACL(const TString& string) {
-    Y_VERIFY(ParseFromString(string));
+    Y_ABORT_UNLESS(ParseFromString(string));
 }
 
 void TDiffACL::AddAccess(EAccessType type, ui32 access, const TSID& sid, ui32 inheritance) {

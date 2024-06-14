@@ -14,8 +14,8 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_CORE_LIB_IOMGR_RESOLVE_ADDRESS_POSIX_H
-#define GRPC_CORE_LIB_IOMGR_RESOLVE_ADDRESS_POSIX_H
+#ifndef GRPC_SRC_CORE_LIB_IOMGR_RESOLVE_ADDRESS_POSIX_H
+#define GRPC_SRC_CORE_LIB_IOMGR_RESOLVE_ADDRESS_POSIX_H
 
 #include <grpc/support/port_platform.h>
 
@@ -29,19 +29,35 @@ namespace grpc_core {
 // A DNS resolver which uses the native platform's getaddrinfo API.
 class NativeDNSResolver : public DNSResolver {
  public:
-  // Gets the singleton instance, creating it first if it doesn't exist
-  static NativeDNSResolver* GetOrCreate();
+  NativeDNSResolver() = default;
 
-  OrphanablePtr<DNSResolver::Request> ResolveName(
-      y_absl::string_view name, y_absl::string_view default_port,
-      grpc_pollset_set* interested_parties,
+  TaskHandle LookupHostname(
       std::function<void(y_absl::StatusOr<std::vector<grpc_resolved_address>>)>
-          on_done) override;
+          on_done,
+      y_absl::string_view name, y_absl::string_view default_port, Duration timeout,
+      grpc_pollset_set* interested_parties,
+      y_absl::string_view name_server) override;
 
-  y_absl::StatusOr<std::vector<grpc_resolved_address>> ResolveNameBlocking(
+  y_absl::StatusOr<std::vector<grpc_resolved_address>> LookupHostnameBlocking(
       y_absl::string_view name, y_absl::string_view default_port) override;
+
+  TaskHandle LookupSRV(
+      std::function<void(y_absl::StatusOr<std::vector<grpc_resolved_address>>)>
+          on_resolved,
+      y_absl::string_view name, Duration timeout,
+      grpc_pollset_set* interested_parties,
+      y_absl::string_view name_server) override;
+
+  TaskHandle LookupTXT(
+      std::function<void(y_absl::StatusOr<TString>)> on_resolved,
+      y_absl::string_view name, Duration timeout,
+      grpc_pollset_set* interested_parties,
+      y_absl::string_view name_server) override;
+
+  // NativeDNSResolver does not support cancellation.
+  bool Cancel(TaskHandle handle) override;
 };
 
 }  // namespace grpc_core
 
-#endif  // GRPC_CORE_LIB_IOMGR_RESOLVE_ADDRESS_POSIX_H
+#endif  // GRPC_SRC_CORE_LIB_IOMGR_RESOLVE_ADDRESS_POSIX_H

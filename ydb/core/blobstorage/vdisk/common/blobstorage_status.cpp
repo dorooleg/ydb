@@ -36,7 +36,7 @@ namespace NKikimr {
                 SetRacingGroupInfo(record, Result->Record, GroupInfo);
                 LOG_DEBUG(ctx, BS_VDISK_OTHER, VDISKP(VCtx->VDiskLogPrefix, "TEvVStatusResult Request# {%s} Response# {%s}",
                     SingleLineProto(record).data(), SingleLineProto(Result->Record).data()));
-                SendVDiskResponse(ctx, Ev->Sender, Result.release(), Ev->Cookie, Ev->GetChannel());
+                SendVDiskResponse(ctx, Ev->Sender, Result.release(), Ev->Cookie, Ev->GetChannel(), VCtx);
                 Die(ctx);
                 return;
             }
@@ -63,7 +63,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvLocalStatusResult::TPtr &ev, const TActorContext &ctx) {
-            Y_VERIFY_DEBUG(Counter > 0);
+            Y_DEBUG_ABORT_UNLESS(Counter > 0);
             --Counter;
 
             Result->Record.MergeFrom(ev->Get()->Record);
@@ -72,7 +72,7 @@ namespace NKikimr {
                 ctx.Send(NotifyId, new TEvents::TEvActorDied());
                 LOG_DEBUG(ctx, BS_VDISK_GET,
                     VDISKP(VCtx->VDiskLogPrefix, "TEvVStatusResult"));
-                SendVDiskResponse(ctx, Ev->Sender, Result.release(), Ev->Cookie, Ev->GetChannel());
+                SendVDiskResponse(ctx, Ev->Sender, Result.release(), Ev->Cookie, Ev->GetChannel(), VCtx);
                 Die(ctx);
             }
         }

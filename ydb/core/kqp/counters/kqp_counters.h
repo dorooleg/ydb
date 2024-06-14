@@ -12,6 +12,8 @@
 #include <ydb/core/tx/tx_proxy/mon.h>
 
 #include <ydb/library/yql/minikql/aligned_page_pool.h>
+#include <ydb/library/yql/dq/actors/spilling/spilling_counters.h>
+#include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
 #include <util/system/spinlock.h>
 
@@ -42,6 +44,7 @@ protected:
     void ReportPingSession(ui64 requestSize);
     void ReportCloseSession(ui64 requestSize);
     void ReportQueryRequest(ui64 requestBytes, ui64 parametersBytes, ui64 queryBytes);
+    void ReportCancelQuery(ui64 requestSize);
 
     void ReportQueryWithRangeScan();
     void ReportQueryWithFullScan();
@@ -56,7 +59,8 @@ protected:
     void ReportResultsBytes(ui64 resultsSize);
 
     static TString GetIssueName(ui32 issueCode);
-    void ReportIssues(const Ydb::Issue::IssueMessage& issue);
+    void ReportIssues(THashMap<ui32, ::NMonitoring::TDynamicCounters::TCounterPtr>& issueCounters,
+        const Ydb::Issue::IssueMessage& issue);
 
     void ReportQueryLatency(NKikimrKqp::EQueryAction action, const TDuration& duration);
 
@@ -112,6 +116,7 @@ protected:
     ::NMonitoring::TDynamicCounters::TCounterPtr CloseSessionRequests;
     ::NMonitoring::TDynamicCounters::TCounterPtr CreateSessionRequests;
     ::NMonitoring::TDynamicCounters::TCounterPtr PingSessionRequests;
+    ::NMonitoring::TDynamicCounters::TCounterPtr CancelQueryRequests;
 
     ::NMonitoring::TDynamicCounters::TCounterPtr RequestBytes;
     ::NMonitoring::TDynamicCounters::TCounterPtr YdbRequestBytes;
@@ -149,8 +154,6 @@ protected:
     ::NMonitoring::TDynamicCounters::TCounterPtr ResponseBytes;
     ::NMonitoring::TDynamicCounters::TCounterPtr YdbResponseBytes;
     ::NMonitoring::TDynamicCounters::TCounterPtr QueryResultsBytes;
-
-    THashMap<ui32, ::NMonitoring::TDynamicCounters::TCounterPtr> IssueCounters;
 
     // Workers
     NMonitoring::THistogramPtr WorkerLifeSpan;
@@ -245,8 +248,7 @@ private:
 
 using TKqpDbCountersPtr = TIntrusivePtr<TKqpDbCounters>;
 
-
-class TKqpCounters : public TThrRefBase, public TKqpCountersBase {
+class TKqpCounters : public TKqpCountersBase, public NYql::NDq::TSpillingCounters {
 private:
     struct TTxByKindCounters {
         NMonitoring::THistogramPtr TotalDuration;
@@ -272,10 +274,13 @@ public:
     void ReportQueryAction(TKqpDbCountersPtr dbCounters, NKikimrKqp::EQueryAction action);
     void ReportQueryType(TKqpDbCountersPtr dbCounters, NKikimrKqp::EQueryType type);
     void ReportQueryRequest(TKqpDbCountersPtr dbCounters, ui64 requestBytes, ui64 parametersBytes, ui64 queryBytes);
+    void ReportCancelQuery(TKqpDbCountersPtr dbCounters, ui64 requestSize);
 
     void ReportResponseStatus(TKqpDbCountersPtr dbCounters, ui64 responseSize, Ydb::StatusIds::StatusCode ydbStatus);
     void ReportResultsBytes(TKqpDbCountersPtr dbCounters, ui64 resultsSize);
-    void ReportIssues(TKqpDbCountersPtr dbCounters, const Ydb::Issue::IssueMessage& issue);
+    void ReportIssues(TKqpDbCountersPtr dbCounters,
+        THashMap<ui32, ::NMonitoring::TDynamicCounters::TCounterPtr>& issueCounters,
+        const Ydb::Issue::IssueMessage& issue);
 
     void ReportQueryWithRangeScan(TKqpDbCountersPtr dbCounters);
     void ReportQueryWithFullScan(TKqpDbCountersPtr dbCounters);
@@ -290,6 +295,9 @@ public:
         NKikimrKqp::EQueryAction action, const TDuration& duration);
     void ReportSqlVersion(TKqpDbCountersPtr dbCounters, ui16 sqlVersion);
     void ReportTransaction(TKqpDbCountersPtr dbCounters, const TKqpTransactionInfo& txInfo);
+
+    void ReportLeaseUpdateLatency(const TDuration& duration);
+    void ReportRunActorLeaseUpdateBacklog(const TDuration& duration);
 
     void ReportWorkerCreated(TKqpDbCountersPtr dbCounters);
     void ReportWorkerFinished(TKqpDbCountersPtr dbCounters, TDuration lifeSpan);
@@ -329,6 +337,8 @@ public:
     ::NMonitoring::TDynamicCounterPtr GetKqpCounters() const;
     ::NMonitoring::TDynamicCounterPtr GetQueryReplayCounters() const;
     const ::NMonitoring::TDynamicCounters::TCounterPtr GetActiveSessionActors() const;
+    const ::NMonitoring::TDynamicCounters::TCounterPtr GetTxReplySizeExceededError() const;
+    const ::NMonitoring::TDynamicCounters::TCounterPtr GetDataShardTxReplySizeExceededError() const;
 
     ::NMonitoring::TDynamicCounters::TCounterPtr GetQueryTypeCounter(NKikimrKqp::EQueryType queryType);
 
@@ -336,14 +346,26 @@ public:
     void RemoveDbCounters(const TString& database);
 
 public:
+    ::NMonitoring::TDynamicCounters::TCounterPtr FullScansExecuted;
+    
+    // Lease updates counters
+    ::NMonitoring::THistogramPtr LeaseUpdateLatency;
+    ::NMonitoring::THistogramPtr RunActorLeaseUpdateBacklog;
+
     // Transactions
     THashMap<TKqpTransactionInfo::EKind, TTxByKindCounters> TxByKind;
+    ::NMonitoring::TDynamicCounters::TCounterPtr TxReplySizeExceededError;
+    ::NMonitoring::TDynamicCounters::TCounterPtr DataShardTxReplySizeExceededError;
 
     // Compile service
     ::NMonitoring::TDynamicCounters::TCounterPtr CompileQueryCacheSize;
     ::NMonitoring::TDynamicCounters::TCounterPtr CompileQueryCacheBytes;
     ::NMonitoring::TDynamicCounters::TCounterPtr CompileQueryCacheEvicted;
     ::NMonitoring::TDynamicCounters::TCounterPtr CompileQueueSize;
+
+    // Compile computation pattern service
+    ::NMonitoring::TDynamicCounters::TCounterPtr CompiledComputationPatterns;
+    ::NMonitoring::TDynamicCounters::TCounterPtr CompileComputationPatternsQueueSize;
 
     // Resource Manager
     ::NMonitoring::TDynamicCounters::TCounterPtr RmComputeActors;
@@ -353,15 +375,12 @@ public:
     ::NMonitoring::TDynamicCounters::TCounterPtr RmNotEnoughComputeActors;
     ::NMonitoring::TDynamicCounters::TCounterPtr RmExtraMemAllocs;
     ::NMonitoring::TDynamicCounters::TCounterPtr RmInternalError;
-
-    // Spilling counters
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingWriteBlobs;
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingReadBlobs;
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingStoredBlobs;
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingTotalSpaceUsed;
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingTooBigFileErrors;
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingNoSpaceErrors;
-    ::NMonitoring::TDynamicCounters::TCounterPtr SpillingIoErrors;
+    NMonitoring::THistogramPtr RmSnapshotLatency;
+    NMonitoring::THistogramPtr NodeServiceStartEventDelivery;
+    NMonitoring::THistogramPtr NodeServiceProcessTime;
+    NMonitoring::THistogramPtr NodeServiceProcessCancelTime;
+    ::NMonitoring::TDynamicCounters::TCounterPtr RmMaxSnapshotLatency;
+    ::NMonitoring::TDynamicCounters::TCounterPtr RmNodeNumberInSnapshot;
 
     // Scan queries counters
     ::NMonitoring::TDynamicCounters::TCounterPtr ScanQueryShardDisconnect;
@@ -375,11 +394,19 @@ public:
     ::NMonitoring::TDynamicCounters::TCounterPtr SentIteratorCancels;
     ::NMonitoring::TDynamicCounters::TCounterPtr CreatedIterators;
     ::NMonitoring::TDynamicCounters::TCounterPtr ReadActorsCount;
+    ::NMonitoring::TDynamicCounters::TCounterPtr ReadActorRemoteFirstFetch;
+    ::NMonitoring::TDynamicCounters::TCounterPtr ReadActorRemoteFetch;
+    ::NMonitoring::TDynamicCounters::TCounterPtr ReadActorAbsentNodeId;
     ::NMonitoring::TDynamicCounters::TCounterPtr StreamLookupActorsCount;
     ::NMonitoring::TDynamicCounters::TCounterPtr ReadActorRetries;
     ::NMonitoring::TDynamicCounters::TCounterPtr DataShardIteratorFails;
     ::NMonitoring::TDynamicCounters::TCounterPtr DataShardIteratorMessages;
     ::NMonitoring::TDynamicCounters::TCounterPtr IteratorDeliveryProblems;
+
+    // Sequences counters
+    ::NMonitoring::TDynamicCounters::TCounterPtr SequencerActorsCount;
+    ::NMonitoring::TDynamicCounters::TCounterPtr SequencerErrors;
+    ::NMonitoring::TDynamicCounters::TCounterPtr SequencerOk;
 
     // Physical tx duration
     NMonitoring::THistogramPtr LiteralTxTotalTimeHistogram;

@@ -2,6 +2,8 @@
 
 #include <ydb/public/lib/ydb_cli/common/pretty_table.h>
 #include <ydb/public/lib/ydb_cli/common/query_stats.h>
+#include <ydb/public/lib/ydb_cli/common/interactive.h>
+#include <ydb/public/lib/stat_visualization/flame_graph_builder.h>
 
 #include <util/folder/path.h>
 #include <util/folder/dirut.h>
@@ -24,6 +26,8 @@ void TCommandExecuteYqlScript::Config(TConfig& config) {
     TYdbOperationCommand::Config(config);
     config.Opts->AddLongOption("stats", "Collect statistics mode [none, basic, full]")
         .RequiredArgument("[String]").StoreResult(&CollectStatsMode);
+    config.Opts->AddLongOption("flame-graph", "Path for statistics flame graph image, works only with full stats")
+            .RequiredArgument("[Path]").StoreResult(&FlameGraphPath);
     config.Opts->AddLongOption('s', "script", "Text of script to execute").RequiredArgument("[String]").StoreResult(&Script);
     config.Opts->AddLongOption('f', "file", "[Required] Script file").RequiredArgument("PATH").StoreResult(&ScriptFile);
     config.Opts->AddLongOption("explain", "Explain query").Optional().StoreTrue(&Explain);
@@ -34,7 +38,8 @@ void TCommandExecuteYqlScript::Config(TConfig& config) {
         EOutputFormat::JsonUnicode,
         EOutputFormat::JsonUnicodeArray,
         EOutputFormat::JsonBase64,
-        EOutputFormat::JsonBase64Array
+        EOutputFormat::JsonBase64Array,
+        EOutputFormat::Parquet,
     });
 
     AddParametersOption(config);
@@ -48,6 +53,8 @@ void TCommandExecuteYqlScript::Config(TConfig& config) {
         EOutputFormat::JsonUnicode,
         EOutputFormat::JsonBase64,
         EOutputFormat::Raw,
+        EOutputFormat::Csv,
+        EOutputFormat::Tsv
     }, {
         EOutputFormat::NoFraming,
         EOutputFormat::NewlineDelimited
@@ -87,6 +94,10 @@ void TCommandExecuteYqlScript::Parse(TConfig& config) {
     if (ScriptFile) {
         Script = ReadFromFile(ScriptFile, "script");
     }
+    if(FlameGraphPath && FlameGraphPath->Empty())
+    {
+        throw TMisuseException() << "FlameGraph path can not be empty.";
+    }
     ParseParameters(config);
 }
 
@@ -103,19 +114,25 @@ int TCommandExecuteYqlScript::Run(TConfig& config) {
         PrintExplainResult(result);
     } else {
         NScripting::TExecuteYqlRequestSettings settings;
-        settings.CollectQueryStats(ParseQueryStatsMode(CollectStatsMode, NTable::ECollectQueryStatsMode::None));
+        settings.CollectQueryStats(ParseQueryStatsModeOrThrow(CollectStatsMode, NTable::ECollectQueryStatsMode::None));
+
+        if (FlameGraphPath && (settings.CollectQueryStats_ != NTable::ECollectQueryStatsMode::Full
+                               && settings.CollectQueryStats_ != NTable::ECollectQueryStatsMode::Profile)) {
+            throw TMisuseException() << "Flame graph is available for full or profile stats. Current: "
+                                        + (CollectStatsMode.Empty() ? "none" : CollectStatsMode) + '.';
+        }
 
         if (!Parameters.empty() || !IsStdinInteractive()) {
             ValidateResult = MakeHolder<NScripting::TExplainYqlResult>(
                 ExplainQuery(config, Script, NScripting::ExplainYqlRequestMode::Validate));
             THolder<TParamsBuilder> paramBuilder;
-            while (GetNextParams(ValidateResult->GetParameterTypes(), InputFormat, StdinFormat, FramingFormat, paramBuilder)) {
+            while (GetNextParams(paramBuilder)) {
                 auto asyncResult = client.ExecuteYqlScript(
                         Script,
                         paramBuilder->Build(),
                         FillSettings(settings)
                 );
-                
+
                 auto result = asyncResult.GetValueSync();
                 ThrowOnError(result);
                 PrintResponseHeader(result);
@@ -151,6 +168,24 @@ void TCommandExecuteYqlScript::PrintResponse(NScripting::TExecuteYqlResult& resu
     const TMaybe<NTable::TQueryStats>& stats = result.GetStats();
     if (stats.Defined()) {
         Cout << Endl << "Statistics:" << Endl << stats->ToString();
+
+        auto fullStats = stats->GetPlan();
+        if (fullStats) {
+            Cout << Endl << "Full statistics:" << Endl;
+
+            TQueryPlanPrinter queryPlanPrinter(OutputFormat, /* analyzeMode */ true);
+            queryPlanPrinter.Print(*fullStats);
+
+            if (FlameGraphPath) {
+                try {
+                    NKikimr::NVisual::GenerateFlameGraphSvg(*FlameGraphPath, *fullStats);
+                    Cout << "Resource usage flame graph is successfully saved to " << *FlameGraphPath << Endl;
+                }
+                catch (const yexception& ex) {
+                    Cout << "Can't save resource usage flame graph, error: " << ex.what() << Endl;
+                }
+            }
+        }
     }
 }
 

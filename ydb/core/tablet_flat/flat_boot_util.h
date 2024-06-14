@@ -49,7 +49,7 @@ namespace NBoot {
         {
             if (Value > Max<decltype(Value)>() - inc) {
 
-                Y_FAIL("TLeft counter is overflowed");
+                Y_ABORT("TLeft counter is overflowed");
             }
 
             Value += inc;
@@ -59,7 +59,7 @@ namespace NBoot {
 
         TLeft& operator -=(size_t dec) noexcept
         {
-            Y_VERIFY(Value >= dec, "TLeft counter is underflowed");
+            Y_ABORT_UNLESS(Value >= dec, "TLeft counter is underflowed");
 
             Value -= dec;
 

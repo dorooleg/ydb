@@ -34,7 +34,7 @@ namespace NKikimr::NBlobDepot {
             STLOG(PRI_DEBUG, BLOB_DEPOT, BDT77, "TTxCollectGarbage::Execute", (Id, Self->GetLogId()),
                 (Sender, Request->Sender), (Cookie, Request->Cookie));
 
-            Y_VERIFY(Self->Data->IsLoaded());
+            Y_ABORT_UNLESS(Self->Data->IsLoaded());
 
             if (!ValidateRequest()) {
                 return true;
@@ -90,8 +90,12 @@ namespace NKikimr::NBlobDepot {
             TGenStep& barrierGenCtr = hard ? barrier.HardGenCtr : barrier.SoftGenCtr;
             TGenStep& barrierGenStep = hard ? barrier.Hard : barrier.Soft;
 
-            Y_VERIFY(barrierGenCtr <= genCtr);
-            Y_VERIFY(barrierGenStep <= collectGenStep);
+            if (genCtr < barrierGenCtr) { // obsolete barrier command, just ignore the barrier
+                return true;
+            }
+
+            Y_ABORT_UNLESS(barrierGenCtr <= genCtr);
+            Y_ABORT_UNLESS(barrierGenStep <= collectGenStep);
 
             if (!Self->Data->OnBarrierShift(tabletId, channel, hard, barrierGenStep, collectGenStep, MaxItems, txc, this)) {
                 return false;
@@ -122,7 +126,6 @@ namespace NKikimr::NBlobDepot {
             const auto& record = Request->Get()->Record;
 
             const ui64 tabletId = record.GetTabletId();
-            const ui8 channel = record.GetChannel();
             const ui32 generation = record.GetGeneration();
             if (!Self->BlocksManager->CheckBlock(tabletId, generation)) {
                 Finish("block race detected", NKikimrProto::BLOCKED);
@@ -136,6 +139,7 @@ namespace NKikimr::NBlobDepot {
                 return false;
             }
 
+            const ui8 channel = record.GetChannel();
             const auto key = std::make_tuple(tabletId, channel);
             auto& barriers = Self->BarrierServer->Barriers;
             if (const auto it = barriers.find(key); it != barriers.end()) {
@@ -149,8 +153,10 @@ namespace NKikimr::NBlobDepot {
 
                 // validate them
                 if (genCtr < barrierGenCtr) {
-                    Finish("record generation:counter is obsolete");
-                    return false;
+                    if (barrierGenStep < collectGenStep) {
+                        Finish("incorrect barrier sequence");
+                        return false;
+                    }
                 } else if (genCtr == barrierGenCtr) {
                     if (barrierGenStep != collectGenStep) {
                         Finish("repeated command with different collect parameters received");
@@ -166,7 +172,7 @@ namespace NKikimr::NBlobDepot {
         }
 
         void Finish(std::optional<TString> error, std::optional<NKikimrProto::EReplyStatus> status = {}) {
-            Y_VERIFY(!Finished);
+            Y_ABORT_UNLESS(!Finished);
             auto [response, _] = TEvBlobDepot::MakeResponseFor(*Request, status.value_or(error ? NKikimrProto::ERROR :
                 NKikimrProto::OK), std::move(error));
             STLOG(PRI_DEBUG, BLOB_DEPOT, BDT82, "TTxCollectGarbage::Finish", (Id, Self->GetLogId()),
@@ -266,7 +272,7 @@ namespace NKikimr::NBlobDepot {
 #ifndef NDEBUG
         for (const bool hard : {true, false}) {
             const auto it = Barriers.find(std::make_tuple(tabletId, channel));
-            Y_VERIFY(it != Barriers.end());
+            Y_ABORT_UNLESS(it != Barriers.end());
             const TBarrier& barrier = it->second;
             const TGenStep& barrierGenStep = hard ? barrier.Hard : barrier.Soft;
             const TData::TKey first(TLogoBlobID(tabletId, 0, 0, channel, 0, 0));
@@ -287,7 +293,7 @@ namespace NKikimr::NBlobDepot {
         Self->Data->ScanRange(r, nullptr, nullptr, [&](const TData::TKey& key, const TData::TValue& value) {
             bool underSoft, underHard;
             Self->BarrierServer->GetBlobBarrierRelation(key.GetBlobId(), &underSoft, &underHard);
-            Y_VERIFY(!underHard && (!underSoft || value.KeepState == NKikimrBlobDepot::EKeepState::Keep));
+            Y_ABORT_UNLESS(!underHard && (!underSoft || value.KeepState == NKikimrBlobDepot::EKeepState::Keep));
             return true;
         });
 #   endif

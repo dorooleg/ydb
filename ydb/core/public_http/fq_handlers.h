@@ -2,12 +2,12 @@
 
 #include "grpc_request_context_wrapper.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/protobuf/json/json2proto.h>
 #include <ydb/core/fq/libs/result_formatter/result_formatter.h>
 #include <ydb/core/grpc_services/grpc_request_proxy.h>
 #include <ydb/core/grpc_services/service_fq.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/public_http/protos/fq.pb.h>
 
 namespace NKikimr::NPublicHttp {
@@ -251,7 +251,7 @@ template <typename GrpcProtoRequestType, typename HttpProtoRequestType, typename
 class TGrpcCallWrapper : public TActorBootstrapped<TGrpcCallWrapper<GrpcProtoRequestType, HttpProtoRequestType, GrpcProtoResultType, HttpProtoResultType, GrpcProtoResponseType>> {
     THttpRequestContext RequestContext;
 
-    typedef std::function<std::unique_ptr<NGRpcService::TEvProxyRuntimeEvent>(TIntrusivePtr<NGrpc::IRequestContextBase> ctx)> TGrpcProxyEventFactory;
+    typedef std::function<std::unique_ptr<NGRpcService::TEvProxyRuntimeEvent>(TIntrusivePtr<NYdbGrpc::IRequestContextBase> ctx)> TGrpcProxyEventFactory;
     TGrpcProxyEventFactory EventFactory;
 
     NProtobufJson::TJson2ProtoConfig Json2ProtoConfig;
@@ -345,8 +345,8 @@ public:
     }
 
     static void SendReply(const THttpRequestContext& requestContext, const TJsonSettings& jsonSettings, NProtoBuf::Message* resp, ui32 status) {
-        Y_VERIFY(resp);
-        Y_VERIFY(resp->GetArena());
+        Y_ABORT_UNLESS(resp);
+        Y_ABORT_UNLESS(resp->GetArena());
         Y_UNUSED(status);
         auto* typedResponse = static_cast<TGrpcProtoResponseType*>(resp);
         if (!typedResponse->operation().result().template Is<TGrpcProtoResultType>()) {

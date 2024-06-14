@@ -18,7 +18,7 @@
 #include <ydb/services/metadata/secret/snapshot.h>
 #include <ydb/services/metadata/service.h>
 
-#include <library/cpp/actors/core/av_bootstrapped.h>
+#include <ydb/library/actors/core/av_bootstrapped.h>
 #include <library/cpp/protobuf/json/proto2json.h>
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -66,8 +66,13 @@ Y_UNIT_TEST_SUITE(Secret) {
         YDB_ACCESSOR(ui32, ExpectedAccessCount, 1);
         using TKeyCheckers = TMap<NMetadata::NSecret::TSecretId, TJsonChecker>;
         YDB_ACCESSOR_DEF(TKeyCheckers, Checkers);
-    public:
 
+    private:
+        ui64 SecretsCountInLastSnapshot = 0;
+        ui64 AccessCountInLastSnapshot = 0;
+        TString LastSnapshotDebugString;
+
+    public:
         void ResetConditions() {
             FoundFlag = false;
             Checkers.clear();
@@ -77,12 +82,12 @@ Y_UNIT_TEST_SUITE(Secret) {
             switch (ev->GetTypeRewrite()) {
                 hFunc(NMetadata::NProvider::TEvRefreshSubscriberData, Handle);
                 default:
-                    Y_VERIFY(false);
+                    Y_ABORT_UNLESS(false);
             }
         }
 
         void CheckRuntime(TTestActorRuntime& runtime) {
-            const auto pred = [this](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& event)->TTestActorRuntimeBase::EEventAction {
+            const auto pred = [this](TAutoPtr<IEventHandle>& event)->TTestActorRuntimeBase::EEventAction {
                 if (event->HasBuffer() && !event->HasEvent()) {
                 } else if (!event->HasEvent()) {
                 } else {
@@ -100,28 +105,35 @@ Y_UNIT_TEST_SUITE(Secret) {
                 runtime.SimulateSleep(TDuration::Seconds(1));
             }
             runtime.SetObserverFunc(TTestActorRuntime::DefaultObserverFunc);
-            Y_VERIFY(IsFound());
+            Y_ABORT_UNLESS(IsFound());
         }
 
         void CheckFound(NMetadata::NProvider::TEvRefreshSubscriberData* event) {
             auto snapshot = event->GetSnapshotAs<NMetadata::NSecret::TSnapshot>();
-            Y_VERIFY(!!snapshot);
+            Y_ABORT_UNLESS(!!snapshot);
+            SecretsCountInLastSnapshot = snapshot->GetSecrets().size();
+            AccessCountInLastSnapshot = snapshot->GetAccess().size();
+            LastSnapshotDebugString = snapshot->SerializeToString();
+            CheckFound();
+        }
+
+        void CheckFound() {
             if (ExpectedSecretsCount) {
-                if (snapshot->GetSecrets().size() != ExpectedSecretsCount) {
-                    Cerr << "snapshot->GetSecrets().size() incorrect: " << snapshot->SerializeToString() << Endl;
+                if (SecretsCountInLastSnapshot != ExpectedSecretsCount) {
+                    Cerr << "snapshot->GetSecrets().size() incorrect: " << LastSnapshotDebugString << Endl;
                     return;
                 }
-            } else if (snapshot->GetSecrets().size()) {
-                Cerr << "snapshot->GetSecrets().size() incorrect (zero expects): " << snapshot->SerializeToString() << Endl;
+            } else if (SecretsCountInLastSnapshot) {
+                Cerr << "snapshot->GetSecrets().size() incorrect (zero expects): " << LastSnapshotDebugString << Endl;
                 return;
             }
             if (ExpectedAccessCount) {
-                if (snapshot->GetAccess().size() != ExpectedAccessCount) {
-                    Cerr << "snapshot->GetAccess().size() incorrect: " << snapshot->SerializeToString() << Endl;
+                if (AccessCountInLastSnapshot != ExpectedAccessCount) {
+                    Cerr << "snapshot->GetAccess().size() incorrect: " << LastSnapshotDebugString << Endl;
                     return;
                 }
-            } else if (snapshot->GetAccess().size()) {
-                Cerr << "snapshot->GetAccess().size() incorrect (zero expects): " << snapshot->SerializeToString() << Endl;
+            } else if (AccessCountInLastSnapshot) {
+                Cerr << "snapshot->GetAccess().size() incorrect (zero expects): " << LastSnapshotDebugString << Endl;
                 return;
             }
             FoundFlag = true;
@@ -134,17 +146,20 @@ Y_UNIT_TEST_SUITE(Secret) {
         void Bootstrap() {
             auto manager = std::make_shared<NMetadata::NSecret::TSnapshotsFetcher>();
             Become(&TThis::StateInit);
-            Y_VERIFY(NMetadata::NProvider::TServiceOperator::IsEnabled());
+            Y_ABORT_UNLESS(NMetadata::NProvider::TServiceOperator::IsEnabled());
             Sender<NMetadata::NProvider::TEvSubscribeExternal>(manager).SendTo(NMetadata::NProvider::MakeServiceId(SelfId().NodeId()));
             Start = Now();
         }
     };
 
-    Y_UNIT_TEST(Simple) {
+    void SimpleImpl(bool useQueryService) {
         TPortManager pm;
 
         ui32 grpcPort = pm.GetPort();
         ui32 msgbPort = pm.GetPort();
+
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableTableServiceConfig()->SetEnablePreparedDdl(true);
 
         Tests::TServerSettings serverSettings(msgbPort);
         serverSettings.Port = msgbPort;
@@ -152,7 +167,8 @@ Y_UNIT_TEST_SUITE(Secret) {
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
             .SetEnableMetadataProvider(true)
-            .SetEnableOlapSchemaOperations(true);
+            .SetEnableOlapSchemaOperations(true)
+            .SetAppConfig(appConfig);
         ;
 
         Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
@@ -173,57 +189,85 @@ Y_UNIT_TEST_SUITE(Secret) {
             Cerr << "Initialization finished" << Endl;
 
             Tests::NCS::THelper lHelper(*server);
-            lHelper.StartSchemaRequest("CREATE OBJECT secret1 (TYPE SECRET) WITH value = `100`");
+            lHelper.SetUseQueryService(useQueryService);
 
-            emulator->SetExpectedSecretsCount(1).SetExpectedAccessCount(0);
+            lHelper.StartSchemaRequest("CREATE OBJECT secret1 (TYPE SECRET) WITH value = `100`");
+            lHelper.StartSchemaRequest("UPSERT OBJECT secret1_1 (TYPE SECRET) WITH value = `100`");
+            lHelper.StartSchemaRequest("UPSERT OBJECT secret1_1 (TYPE SECRET) WITH value = `200`");
+            {
+                TString resultData;
+                lHelper.StartDataRequest("SELECT COUNT(*) FROM `/Root/.metadata/initialization/migrations`", true, &resultData);
+                UNIT_ASSERT_EQUAL_C(resultData, "[6u]", resultData);
+            }
+
+            emulator->SetExpectedSecretsCount(2).SetExpectedAccessCount(0).CheckFound();
             {
                 const TInstant start = Now();
                 while (!emulator->IsFound() && Now() - start < TDuration::Seconds(20)) {
                     runtime.SimulateSleep(TDuration::Seconds(1));
                 }
-                Y_VERIFY(emulator->IsFound());
+                UNIT_ASSERT(emulator->IsFound());
             }
 
             lHelper.StartSchemaRequest("ALTER OBJECT secret1 (TYPE SECRET) SET value = `abcde`");
             lHelper.StartSchemaRequest("CREATE OBJECT `secret1:test@test1` (TYPE SECRET_ACCESS)");
+            {
+                TString resultData;
+                lHelper.StartDataRequest("SELECT COUNT(*) FROM `/Root/.metadata/initialization/migrations`", true, &resultData);
+                UNIT_ASSERT_EQUAL_C(resultData, "[10u]", resultData);
+            }
 
-            emulator->SetExpectedSecretsCount(1).SetExpectedAccessCount(1);
+            emulator->SetExpectedSecretsCount(2).SetExpectedAccessCount(1).CheckFound();
             {
                 const TInstant start = Now();
                 while (!emulator->IsFound() && Now() - start < TDuration::Seconds(20)) {
                     runtime.SimulateSleep(TDuration::Seconds(1));
                 }
-                Y_VERIFY(emulator->IsFound());
+                UNIT_ASSERT(emulator->IsFound());
             }
 
             lHelper.StartSchemaRequest("DROP OBJECT `secret1:test@test1` (TYPE SECRET_ACCESS)");
             lHelper.StartSchemaRequest("DROP OBJECT `secret1` (TYPE SECRET)");
             lHelper.StartDataRequest("SELECT * FROM `/Root/.metadata/initialization/migrations`");
 
-            emulator->SetExpectedSecretsCount(0).SetExpectedAccessCount(0);
+            emulator->SetExpectedSecretsCount(1).SetExpectedAccessCount(0).CheckFound();
             {
                 const TInstant start = Now();
                 while (!emulator->IsFound() && Now() - start < TDuration::Seconds(20)) {
                     runtime.SimulateSleep(TDuration::Seconds(1));
                 }
-                Y_VERIFY(emulator->IsFound());
+                UNIT_ASSERT(emulator->IsFound());
             }
         }
     }
 
-    Y_UNIT_TEST(Validation) {
+    Y_UNIT_TEST(Simple) {
+        SimpleImpl(false);
+    }
+
+    Y_UNIT_TEST(SimpleQueryService) {
+        SimpleImpl(true);
+    }
+
+    void ValidationImpl(bool useQueryService) {
         TPortManager pm;
 
         ui32 grpcPort = pm.GetPort();
         ui32 msgbPort = pm.GetPort();
 
-        Tests::TServerSettings serverSettings(msgbPort);
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableTableServiceConfig()->SetEnablePreparedDdl(true);
+
+        NKikimrProto::TAuthConfig authConfig;
+        authConfig.SetUseBuiltinDomain(true);
+        Tests::TServerSettings serverSettings(msgbPort, authConfig);
         serverSettings.Port = msgbPort;
         serverSettings.GrpcPort = grpcPort;
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
             .SetEnableMetadataProvider(true)
-            .SetEnableOlapSchemaOperations(true);
+            .SetEnableOlapSchemaOperations(true)
+            .SetAppConfig(appConfig);
         ;
 
         Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
@@ -241,23 +285,41 @@ Y_UNIT_TEST_SUITE(Secret) {
             Cerr << "Initialization finished" << Endl;
 
             Tests::NCS::THelper lHelper(*server);
+            lHelper.SetUseQueryService(useQueryService);
+
             lHelper.StartSchemaRequest("CREATE OBJECT secret-1 (TYPE SECRET) WITH value = `100`", false);
             lHelper.StartSchemaRequest("ALTER OBJECT secret1 (TYPE SECRET) SET value = `abcde`", false);
             lHelper.StartSchemaRequest("CREATE OBJECT secret1 (TYPE SECRET) WITH value = `100`");
             lHelper.StartSchemaRequest("ALTER OBJECT secret1 (TYPE SECRET) SET value = `abcde`");
             lHelper.StartSchemaRequest("CREATE OBJECT `secret1:test@test1` (TYPE SECRET_ACCESS)");
             lHelper.StartSchemaRequest("CREATE OBJECT `secret2:test@test1` (TYPE SECRET_ACCESS)", false);
+            lHelper.StartSchemaRequest("CREATE OBJECT IF NOT EXISTS `secret1:test@test1` (TYPE SECRET_ACCESS)");
             lHelper.StartSchemaRequest("DROP OBJECT `secret1` (TYPE SECRET)", false);
             lHelper.StartDataRequest("SELECT * FROM `/Root/.metadata/secrets/values`", false);
-            lHelper.StartDataRequest("SELECT * FROM `/Root/.metadata/initialization/migrations`", true);
+            {
+                TString resultData;
+                lHelper.StartDataRequest("SELECT COUNT(*) FROM `/Root/.metadata/initialization/migrations`", true, &resultData);
+                UNIT_ASSERT_EQUAL_C(resultData, "[10u]", resultData);
+            }
         }
     }
 
-    Y_UNIT_TEST(Deactivated) {
+    Y_UNIT_TEST(Validation) {
+        ValidationImpl(false);
+    }
+
+    Y_UNIT_TEST(ValidationQueryService) {
+        ValidationImpl(true);
+    }
+
+    void DeactivatedImpl(bool useQueryService) {
         TPortManager pm;
 
         ui32 grpcPort = pm.GetPort();
         ui32 msgbPort = pm.GetPort();
+
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableTableServiceConfig()->SetEnablePreparedDdl(true);
 
         Tests::TServerSettings serverSettings(msgbPort);
         serverSettings.Port = msgbPort;
@@ -265,7 +327,8 @@ Y_UNIT_TEST_SUITE(Secret) {
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
             .SetEnableMetadataProvider(false)
-            .SetEnableOlapSchemaOperations(true);
+            .SetEnableOlapSchemaOperations(true)
+            .SetAppConfig(appConfig);
         ;
 
         Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
@@ -283,8 +346,18 @@ Y_UNIT_TEST_SUITE(Secret) {
             Cerr << "Initialization finished" << Endl;
 
             Tests::NCS::THelper lHelper(*server);
+            lHelper.SetUseQueryService(useQueryService);
+
             lHelper.StartSchemaRequest("CREATE OBJECT secret1 (TYPE SECRET) WITH value = `100`", false);
         }
+    }
+
+    Y_UNIT_TEST(Deactivated) {
+        DeactivatedImpl(false);
+    }
+
+    Y_UNIT_TEST(DeactivatedQueryService) {
+        DeactivatedImpl(true);
     }
 }
 }

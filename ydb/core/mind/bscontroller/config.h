@@ -4,6 +4,8 @@
 #include "error.h"
 #include "impl.h"
 
+#include <ydb/core/protos/blob_depot_config.pb.h>
+
 namespace NKikimr {
     namespace NBsController {
 
@@ -59,6 +61,7 @@ namespace NKikimr {
             TCowHolder<TMap<TBoxId, TBoxInfo>> Boxes;
             TCowHolder<TMap<TBoxStoragePoolId, TStoragePoolInfo>> StoragePools;
             TCowHolder<TMultiMap<TBoxStoragePoolId, TGroupId>> StoragePoolGroups;
+            TCowHolder<TMap<TGroupId, TBlobDepotDeleteQueueInfo>> BlobDepotDeleteQueue;
 
             // system-level configuration
             TOverlayMap<TPDiskId, TPDiskInfo> PDisks;
@@ -88,7 +91,9 @@ namespace NKikimr {
             THashSet<TPDiskId> PDisksToRemove;
 
             // outgoing messages
-            std::deque<std::unique_ptr<IEventHandle>> Outbox;
+            std::deque<std::tuple<TNodeId, std::unique_ptr<IEventBase>, ui64>> Outbox;
+            std::deque<std::unique_ptr<IEventBase>> StatProcessorOutbox;
+            std::deque<std::unique_ptr<IEventBase>> NodeWhiteboardOutbox;
             THolder<TEvControllerUpdateSelfHealInfo> UpdateSelfHealInfoMsg;
 
             // deferred callbacks
@@ -113,6 +118,11 @@ namespace NKikimr {
 
             TConfigFitAction Fit;
 
+            THashSet<TGroupId> GroupContentChanged;
+            THashSet<TGroupId> GroupFailureModelChanged;
+
+            bool PushStaticGroupsToSelfHeal = false;
+
         public:
             TConfigState(TBlobStorageController &controller, const THostRecordMap &hostRecords, TInstant timestamp)
                 : Self(controller)
@@ -120,6 +130,7 @@ namespace NKikimr {
                 , Boxes(&controller.Boxes)
                 , StoragePools(&controller.StoragePools)
                 , StoragePoolGroups(&controller.StoragePoolGroups)
+                , BlobDepotDeleteQueue(&controller.BlobDepotDeleteQueue)
                 , PDisks(controller.PDisks)
                 , DrivesSerials(controller.DrivesSerials)
                 , Nodes(&controller.Nodes)
@@ -138,16 +149,17 @@ namespace NKikimr {
                 , SerialManagementStage(&controller.SerialManagementStage)
                 , StoragePoolStat(*controller.StoragePoolStat)
             {
-                Y_VERIFY(HostRecords);
+                Y_ABORT_UNLESS(HostRecords);
             }
 
             void Commit() {
-                Y_VERIFY(!Fit);
+                Y_ABORT_UNLESS(!Fit);
 
                 HostConfigs.Commit();
                 Boxes.Commit();
                 StoragePools.Commit();
                 StoragePoolGroups.Commit();
+                BlobDepotDeleteQueue.Commit();
                 PDisks.Commit();
                 DrivesSerials.Commit();
                 Nodes.Commit();
@@ -168,9 +180,10 @@ namespace NKikimr {
 
             bool Changed() const {
                 return HostConfigs.Changed() || Boxes.Changed() || StoragePools.Changed() ||
-                    StoragePoolGroups.Changed() || PDisks.Changed() || DrivesSerials.Changed() || Nodes.Changed() ||
-                    VSlots.Changed() || Groups.Changed() || IndexGroupSpeciesToGroup.Changed() || NextGroupId.Changed() ||
-                    NextStoragePoolId.Changed() || SerialManagementStage.Changed() || NextVirtualGroupId.Changed();
+                    StoragePoolGroups.Changed() || BlobDepotDeleteQueue.Changed() || PDisks.Changed() ||
+                    DrivesSerials.Changed() || Nodes.Changed() || VSlots.Changed() || Groups.Changed() ||
+                    IndexGroupSpeciesToGroup.Changed() || NextGroupId.Changed() || NextStoragePoolId.Changed() ||
+                    SerialManagementStage.Changed() || NextVirtualGroupId.Changed();
             }
 
             bool NormalizeHostKey(NKikimrBlobStorage::THostKey *host) const {
@@ -201,7 +214,7 @@ namespace NKikimr {
             NKikimrBlobStorage::THostKey NormalizeHostKey(const NKikimrBlobStorage::THostKey& host) const {
                 NKikimrBlobStorage::THostKey res(host);
                 if (!NormalizeHostKey(&res)) {
-                    throw TExHostNotFound(host) << "HostKey# " << host.DebugString() << " incorrect";
+                    throw TExHostNotFound(host) << " HostKey# " << host.DebugString() << " incorrect";
                 }
                 return res;
             }
@@ -234,6 +247,26 @@ namespace NKikimr {
                 };
                 PDisks.ForEachInRange(TPDiskId::MinForNode(nodeId), TPDiskId::MaxForNode(nodeId), callback);
                 return res;
+            }
+
+            void DeleteExistingGroup(TGroupId groupId) {
+                const TGroupInfo *group = Groups.Find(groupId);
+                Y_ABORT_UNLESS(group);
+                if (group->VirtualGroupState) { // this was a BlobDepot-based group, enqueue BlobDepot for deletion
+                    // parse blob depot config to figure out whether hive was contacted; if not, skip the HiveId field
+                    Y_ABORT_UNLESS(group->BlobDepotConfig);
+                    NKikimrBlobDepot::TBlobDepotConfig config;
+                    const bool success = config.ParseFromString(*group->BlobDepotConfig);
+                    Y_ABORT_UNLESS(success);
+                    if (config.GetHiveContacted()) {
+                        const auto [it, inserted] = BlobDepotDeleteQueue.Unshare().try_emplace(groupId, group->HiveId,
+                            config.HasTabletId() ? MakeMaybe(config.GetTabletId()) : Nothing());
+                        Y_ABORT_UNLESS(inserted);
+                    }
+                }
+                Groups.DeleteExistingEntry(groupId);
+                GroupContentChanged.erase(groupId);
+                GroupFailureModelChanged.erase(groupId);
             }
 
         private:
@@ -277,6 +310,8 @@ namespace NKikimr {
             void ExecuteStep(const NKikimrBlobStorage::TWipeVDisk& cmd, TStatus& status);
             void ExecuteStep(const NKikimrBlobStorage::TSanitizeGroup& cmd, TStatus& status);
             void ExecuteStep(const NKikimrBlobStorage::TCancelVirtualGroup& cmd, TStatus& status);
+            void ExecuteStep(const NKikimrBlobStorage::TSetVDiskReadOnly& cmd, TStatus& status);
+            void ExecuteStep(const NKikimrBlobStorage::TRestartPDisk& cmd, TStatus& status);
         };
 
     } // NBsController

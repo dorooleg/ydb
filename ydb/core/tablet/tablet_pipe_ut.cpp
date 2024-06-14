@@ -1,13 +1,13 @@
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/protos/services_common.pb.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/protos/services_common.pb.h>
 #include <ydb/core/base/tablet_resolver.h>
 #include <ydb/core/tx/tx.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
     struct TEvProducerTablet {
@@ -81,7 +81,6 @@ namespace NKikimr {
                 HFunc(TEvTabletPipe::TEvClientConnected, Handle);
                 HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
                 HFunc(TEvents::TEvPong, Handle);
-                HFunc(TEvents::TEvPoisonPill, Handle);
             default:
                 HandleDefaultEvents(ev, SelfId());
             }
@@ -147,11 +146,6 @@ namespace NKikimr {
             Cout << "Got pong\n";
         }
 
-        void Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
-            Y_UNUSED(ev);
-            ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
-        }
-
         void Send(const TActorContext& ctx) {
             Cout << "Send data to another tablet\n";
             NTabletPipe::SendData(ctx, ClientId, new TEvents::TEvPing());
@@ -170,9 +164,13 @@ namespace NKikimr {
             return Die(ctx);
         }
 
+        void DefaultSignalTabletActive(const TActorContext&) override {
+            // must be empty
+        }
+
         void OnActivateExecutor(const TActorContext &ctx) override {
-            Y_UNUSED(ctx);
             Become(&TThis::StateWork);
+            SignalTabletActive(ctx);
             Cout << "Producer loaded\n";
         }
 
@@ -219,9 +217,14 @@ namespace NKikimr {
         }
 
     private:
-        void OnActivateExecutor(const TActorContext&) override {
+        void DefaultSignalTabletActive(const TActorContext&) override {
+            // must be empty
+        }
+
+        void OnActivateExecutor(const TActorContext& ctx) override {
             Become(&TThis::StateWork);
             Cout << "Consumer loaded\n";
+            SignalTabletActive(ctx);
             PipeConnectAcceptor->Activate(SelfId(), SelfId());
         }
 
@@ -237,7 +240,6 @@ namespace NKikimr {
                 HFunc(TEvTabletPipe::TEvServerDisconnected, Handle);
                 HFunc(TEvTabletPipe::TEvServerDestroyed, Handle);
                 HFunc(TEvents::TEvPing, Handle);
-                HFunc(TEvents::TEvPoisonPill, Handle);
                 HFunc(TEvConsumerTablet::TEvReject, Handle);
                 HFunc(TEvPrivate::TEvGetServerPipeInfo, Handle);
             default:
@@ -268,11 +270,6 @@ namespace NKikimr {
             UNIT_ASSERT_VALUES_EQUAL(ev->GetRecipientRewrite(), ctx.SelfID);
             UNIT_ASSERT_VALUES_EQUAL(ev->Recipient, LastServerId);
             ctx.Send(ev->Sender, new TEvents::TEvPong());
-        }
-
-        void Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
-            Y_UNUSED(ev);
-            ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
         }
 
         void Handle(TEvTabletPipe::TEvServerConnected::TPtr &ev, const TActorContext &ctx) {
@@ -342,9 +339,13 @@ namespace NKikimr {
         }
 
     private:
+        void DefaultSignalTabletActive(const TActorContext&) override {
+            // must be empty
+        }
+
         void OnActivateExecutor(const TActorContext& ctx) override {
-            Y_UNUSED(ctx);
             Become(&TThis::StateWork);
+            SignalTabletActive(ctx);
             Cout << "Consumer loaded\n";
         }
 
@@ -358,7 +359,6 @@ namespace NKikimr {
                 HFunc(TEvTabletPipe::TEvServerConnected, Handle);
                 HFunc(TEvTabletPipe::TEvServerDisconnected, Handle);
                 HFunc(TEvents::TEvPing, Handle);
-                HFunc(TEvents::TEvPoisonPill, Handle);
             default:
                 HandleDefaultEvents(ev, SelfId());
             }
@@ -368,11 +368,6 @@ namespace NKikimr {
             Cout << "Got ping\n";
             UNIT_ASSERT_VALUES_EQUAL(ev->GetRecipientRewrite(), ctx.SelfID);
             ctx.Send(ev->Sender, new TEvents::TEvPong());
-        }
-
-        void Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
-            Y_UNUSED(ev);
-            ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
         }
 
         void Handle(TEvTabletPipe::TEvServerConnected::TPtr &ev, const TActorContext &ctx) {
@@ -494,7 +489,7 @@ Y_UNIT_TEST_SUITE(TTabletPipeTest) {
 
             // We want to close the client right after it has sent EvConnect to the target tablet but before
             // the client received the EvConnectResult
-            runtime.SetObserverFunc([clientId, sender](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
+            runtime.SetObserverFunc([clientId, sender, &runtime](TAutoPtr<IEventHandle>& event) {
                 if (event->Type == TEvTabletPipe::EvConnect) {
                     runtime.Send(new IEventHandle(clientId, sender, new TEvents::TEvPoisonPill()), 0);
                 }
@@ -852,7 +847,7 @@ Y_UNIT_TEST_SUITE(TTabletPipeTest) {
         }
 
         TActorId proxy = runtime.GetInterconnectProxy(0, 1);
-        Y_VERIFY(proxy);
+        Y_ABORT_UNLESS(proxy);
         runtime.Send(new IEventHandle(proxy, sender1, new TEvInterconnect::TEvConnectNode), 0);
         TAutoPtr<IEventHandle> handle;
         runtime.GrabEdgeEvent<TEvInterconnect::TEvNodeConnected>(handle);
@@ -1067,9 +1062,13 @@ Y_UNIT_TEST_SUITE(TTabletPipeTest) {
         }
 
     private:
+        void DefaultSignalTabletActive(const TActorContext&) override {
+            // must be empty
+        }
+
         void OnActivateExecutor(const TActorContext& ctx) override {
-            Y_UNUSED(ctx);
             Become(&TThis::StateWork);
+            SignalTabletActive(ctx);
         }
 
         STFUNC(StateInit) {
@@ -1082,7 +1081,6 @@ Y_UNIT_TEST_SUITE(TTabletPipeTest) {
                 IgnoreFunc(TEvTabletPipe::TEvServerConnected);
                 IgnoreFunc(TEvTabletPipe::TEvServerDisconnected);
                 HFunc(TEvents::TEvPing, Handle);
-                HFunc(TEvents::TEvPoisonPill, Handle);
             default:
                 HandleDefaultEvents(ev, SelfId());
             }
@@ -1108,11 +1106,6 @@ Y_UNIT_TEST_SUITE(TTabletPipeTest) {
             }
 
             SendViaSession(ev->InterconnectSession, ctx, ev->Sender, new TEvents::TEvPong());
-        }
-
-        void Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
-            Y_UNUSED(ev);
-            ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
         }
 
         void OnDetach(const TActorContext &ctx) override {

@@ -35,7 +35,7 @@ namespace NKikimr {
                 auto actor = std::make_unique<TLevelSegmentLoader>(VCtx, PDiskCtx, Addition[Index++].Sst.Get(),
                         ctx.SelfID, Origin);
                 auto aid = ctx.Register(actor.release());
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             }
         }
 
@@ -45,7 +45,7 @@ namespace NKikimr {
         }
 
         void Finish(const TActorContext &ctx) {
-            Y_VERIFY(Index == Addition.size());
+            Y_ABORT_UNLESS(Index == Addition.size());
             auto msg = std::make_unique<TEvBulkSstEssenceLoaded>(RecoveryLogRecLsn);
             msg->Essence.Replace(std::move(Addition));
             ctx.Send(Recipient, msg.release());
@@ -90,7 +90,7 @@ namespace NKikimr {
         {
             for (const auto &x : proto) {
                 auto sst = MakeIntrusive<TLevelSegment>(VCtx, x.GetSst());
-                Y_VERIFY(!sst->GetEntryPoint().Empty());
+                Y_ABORT_UNLESS(!sst->GetEntryPoint().Empty());
                 const ui32 recsNum = x.GetRecsNum();
                 Addition.emplace_back(std::move(sst), recsNum);
             }
@@ -132,7 +132,7 @@ namespace NKikimr {
                 auto actor = std::make_unique<TLoader>(VCtx, PDiskCtx, *Proto.MutableLogoBlobsAdditions(),
                         ctx.SelfID, RecoveryLogRecLsn, origin);
                 auto aid = ctx.Register(actor.release());
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
                 ++RunActors;
             }
             if (Proto.BlocksAdditionsSize() && LoadBlocks) {
@@ -140,7 +140,7 @@ namespace NKikimr {
                 auto actor = std::make_unique<TLoader>(VCtx, PDiskCtx, *Proto.MutableBlocksAdditions(),
                         ctx.SelfID, RecoveryLogRecLsn, origin);
                 auto aid = ctx.Register(actor.release());
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
                 ++RunActors;
             }
             if (Proto.BarriersAdditionsSize() && LoadBarriers) {
@@ -148,16 +148,16 @@ namespace NKikimr {
                 auto actor = std::make_unique<TLoader>(VCtx, PDiskCtx, *Proto.MutableBarriersAdditions(),
                         ctx.SelfID, RecoveryLogRecLsn, origin);
                 auto aid = ctx.Register(actor.release());
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
                 ++RunActors;
             }
-            Y_VERIFY(RunActors);
+            Y_ABORT_UNLESS(RunActors);
             TThis::Become(&TThis::StateFunc);
         }
 
         void Handle(TEvBulkSstEssenceLoaded::TPtr &ev, const TActorContext &ctx) {
             ActiveActors.Erase(ev->Sender);
-            Y_VERIFY(RecoveryLogRecLsn == ev->Get()->RecoveryLogRecLsn);
+            Y_ABORT_UNLESS(RecoveryLogRecLsn == ev->Get()->RecoveryLogRecLsn);
             Essence.DestructiveMerge(std::move(ev->Get()->Essence));
             --RunActors;
             if (RunActors == 0) {

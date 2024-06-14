@@ -1,16 +1,16 @@
 #include "mkql_block_agg_minmax.h"
-#include "mkql_block_builder.h"
 
-#include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
+#include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 
+#include <ydb/library/yql/minikql/computation/mkql_block_builder.h>
+#include <ydb/library/yql/minikql/computation/mkql_block_reader.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
+
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
 #include <ydb/library/yql/minikql/arrow/arrow_util.h>
 #include <ydb/library/yql/minikql/arrow/mkql_bit_utils.h>
-
-#include <ydb/library/yql/minikql/comp_nodes/mkql_block_reader.h>
 
 #include <ydb/library/yql/public/udf/arrow/block_item_comparator.h>
 
@@ -31,7 +31,7 @@ inline bool AggLess(T a, T b) {
         }
     }
     return a < b;
-}    
+}
 
 template <bool IsMin, typename T>
 inline T UpdateMinMax(T x, T y) {
@@ -181,7 +181,9 @@ void PushValueToState(TGenericState* typedState, const arrow::Datum& datum, ui64
             stateChanged = true;
         }
     } else {
-        stateItem = converter.MakeItem(*typedState);
+        if (*typedState) {
+            stateItem = converter.MakeItem(*typedState);
+        }
 
         const auto& array = datum.array();
 
@@ -238,11 +240,13 @@ public:
                 stateChanged = true;
             }
         } else {
-            stateItem = Converter_->MakeItem(typedState);
-            
+            if (typedState) {
+                stateItem = Converter_->MakeItem(typedState);
+            }
+
             const auto& array = datum.array();
             auto len = array->length;
-            
+
             const ui8* filterBitmap = nullptr;
             if (filtered) {
                 const auto& filterDatum = TArrowBlock::From(columns[*FilterColumn_]).GetDatum();
@@ -251,7 +255,7 @@ public:
                 filterBitmap = filterArray->template GetValues<uint8_t>(1);
             }
             auto& comparator = *Compare_;
-            for (size_t i = 0; i < len; ++i) {
+            for (auto i = 0; i < len; ++i) {
                 TBlockItem curr = currReader->GetItem(*array, i);
                 if (curr && (!filterBitmap || filterBitmap[i])) {
                     bool changed = false;
@@ -298,9 +302,9 @@ public:
     {
     }
 
-    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TGenericState();
-        UpdateKey(state, columns, row);
+        UpdateKey(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -309,7 +313,8 @@ public:
         *typedState = TGenericState();
     }
 
-    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TGenericState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<IsMin>(typedState, datum, row, *Reader_, *Converter_, *Compare_, Ctx_);
@@ -342,9 +347,9 @@ public:
     {
     }
 
-    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TGenericState();
-        UpdateState(state, columns, row);
+        UpdateState(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -353,7 +358,8 @@ public:
         *typedState = TGenericState();
     }
 
-    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TGenericState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<IsMin>(typedState, datum, row, *Reader_, *Converter_, *Compare_, Ctx_);
@@ -534,9 +540,9 @@ public:
     {
     }
 
-    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TGenericState();
-        UpdateKey(state, columns, row);
+        UpdateKey(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -545,7 +551,8 @@ public:
         *typedState = TGenericState();
     }
 
-    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TGenericState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<TStringType, IsMin>(typedState, datum, row);
@@ -572,9 +579,9 @@ public:
     {
     }
 
-    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TGenericState();
-        UpdateState(state, columns, row);
+        UpdateState(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -583,7 +590,8 @@ public:
         *typedState = TGenericState();
     }
 
-    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TGenericState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<TStringType, IsMin>(typedState, datum, row);
@@ -758,9 +766,9 @@ public:
     {
     }
 
-    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TStateType();
-        UpdateKey(state, columns, row);
+        UpdateKey(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -768,7 +776,8 @@ public:
         Y_UNUSED(state);
     }
 
-    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TStateType*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<IsNullable, IsScalar, TIn, IsMin>(typedState, datum, row);
@@ -797,9 +806,9 @@ public:
     {
     }
 
-    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TStateType();
-        UpdateState(state, columns, row);
+        UpdateState(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -807,7 +816,8 @@ public:
         Y_UNUSED(state);
     }
 
-    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TStateType*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         PushValueToState<IsNullable, IsScalar, TIn, IsMin>(typedState, datum, row);
@@ -906,7 +916,7 @@ template <typename TTag, bool IsMin>
 std::unique_ptr<typename TTag::TPreparedAggregator> PrepareMinMax(TTupleType* tupleType, std::optional<ui32> filterColumn, ui32 argColumn) {
     auto blockType = AS_TYPE(TBlockType, tupleType->GetElementType(argColumn));
     const bool isScalar = blockType->GetShape() == TBlockType::EShape::Scalar;
-    auto argType = blockType->GetItemType();    
+    auto argType = blockType->GetItemType();
 
     bool isOptional;
     auto unpacked = UnpackOptional(argType, isOptional);
@@ -935,12 +945,16 @@ std::unique_ptr<typename TTag::TPreparedAggregator> PrepareMinMax(TTupleType* tu
     case NUdf::EDataSlot::Date:
         return PrepareMinMaxFixed<TTag, ui16, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
     case NUdf::EDataSlot::Int32:
+    case NUdf::EDataSlot::Date32:
         return PrepareMinMaxFixed<TTag, i32, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
     case NUdf::EDataSlot::Uint32:
     case NUdf::EDataSlot::Datetime:
         return PrepareMinMaxFixed<TTag, ui32, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
     case NUdf::EDataSlot::Int64:
     case NUdf::EDataSlot::Interval:
+    case NUdf::EDataSlot::Interval64:
+    case NUdf::EDataSlot::Timestamp64:
+    case NUdf::EDataSlot::Datetime64:
         return PrepareMinMaxFixed<TTag, i64, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
     case NUdf::EDataSlot::Uint64:
     case NUdf::EDataSlot::Timestamp:
@@ -994,6 +1008,6 @@ std::unique_ptr<IBlockAggregatorFactory> MakeBlockMinFactory() {
 std::unique_ptr<IBlockAggregatorFactory> MakeBlockMaxFactory() {
     return std::make_unique<TBlockMinMaxFactory<false>>();
 }
- 
+
 }
 }

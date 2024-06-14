@@ -1,8 +1,8 @@
 #pragma once
 
 #include "tablet_flat_executor.h"
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/actorsystem.h>
 
 namespace NKikimr {
 namespace NFake {
@@ -29,7 +29,7 @@ namespace NFake {
         TEvFire(ui32 level, const TActorId &alias, TActorSetupCmd cmd)
             : Level(level)
             , Alias(alias)
-            , Cmd(cmd)
+            , Cmd(std::move(cmd))
         {
 
         }

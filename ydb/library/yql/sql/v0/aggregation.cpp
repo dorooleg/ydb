@@ -308,7 +308,7 @@ private:
         ui32 adjustArgsCount = isFactory ? 0 : 2;
         if (exprs.size() != adjustArgsCount) {
             ctx.Error(Pos) << "Aggregation function " << (isFactory ? "factory " : "") << Name << " requires " <<
-                adjustArgsCount << "arguments, given: " << exprs.size();
+                adjustArgsCount << " arguments, given: " << exprs.size();
             return false;
         }
 
@@ -629,9 +629,9 @@ private:
 
     void Join(IAggregation* aggr) final {
         const auto percentile = dynamic_cast<TPercentileFactory*>(aggr);
-        Y_VERIFY(percentile);
-        Y_VERIFY(*Column == *percentile->Column);
-        Y_VERIFY(AggMode == percentile->AggMode);
+        Y_ABORT_UNLESS(percentile);
+        Y_ABORT_UNLESS(*Column == *percentile->Column);
+        Y_ABORT_UNLESS(AggMode == percentile->AggMode);
         Percentiles.insert(percentile->Percentiles.cbegin(), percentile->Percentiles.cend());
         percentile->Percentiles.clear();
     }

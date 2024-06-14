@@ -2,8 +2,8 @@
 
 #include <ydb/services/persqueue_cluster_discovery/cluster_ordering/weighed_ordering.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/digest/numeric.h>
 #include <util/generic/hash.h>
@@ -222,7 +222,7 @@ public:
     void IncrementLabeledCounter(TMappedCounters& counters, const TLabel& label) const {
         auto it = counters.find(label);
 
-        Y_VERIFY(it != counters.end());
+        Y_ABORT_UNLESS(it != counters.end());
 
         it->second->Inc();
     }
@@ -241,7 +241,7 @@ public:
         } else if (statusCode == Ydb::StatusIds::BAD_REQUEST) {
             Counters->BadRequestsCount->Inc();
         } else {
-            Y_VERIFY(statusCode == Ydb::StatusIds::INTERNAL_ERROR);
+            Y_ABORT_UNLESS(statusCode == Ydb::StatusIds::INTERNAL_ERROR);
             Counters->FailedRequestsCount->Inc();
         }
 

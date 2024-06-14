@@ -2,15 +2,16 @@
 #include "http_req.h"
 #include "events.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/log.h>
-#include <library/cpp/actors/http/http_proxy.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/http/http_proxy.h>
+#include <ydb/library/http_proxy/error/error.h>
+
+#include <ydb/core/protos/config.pb.h>
 
 #include <util/stream/file.h>
-
-#include <ydb/library/http_proxy/error/error.h>
 
 namespace NKikimr::NHttpProxy {
 
@@ -47,6 +48,8 @@ namespace NKikimr::NHttpProxy {
         Processors->Initialize();
         if (cfg.UseSDK) {
             auto config = NYdb::TDriverConfig().SetNetworkThreadsNum(1)
+                .SetClientThreadsNum(1)
+                .SetMaxQueuedRequests(10000)
                 .SetGRpcKeepAlivePermitWithoutCalls(true)
                 .SetGRpcKeepAliveTimeout(TDuration::Seconds(90))
                 .SetDiscoveryMode(NYdb::EDiscoveryMode::Async);
@@ -66,6 +69,7 @@ namespace NKikimr::NHttpProxy {
         const auto& config = Config.GetHttpConfig();
         THolder<NHttp::TEvHttpProxy::TEvAddListeningPort> ev =
             MakeHolder<NHttp::TEvHttpProxy::TEvAddListeningPort>(config.GetPort());
+        ev->MaxRecycledRequestsCount = 0;
         ev->Secure = config.GetSecure();
         ev->CertificateFile = config.GetCert();
         ev->PrivateKeyFile = config.GetKey();
@@ -94,7 +98,7 @@ namespace NKikimr::NHttpProxy {
                       " incoming request from [" << context.SourceAddress << "]" <<
                       " request [" << context.MethodName << "]" <<
                       " url [" << context.Request->URL << "]" <<
-                      " database [" << context.DatabaseName << "]" <<
+                      " database [" << context.DatabasePath << "]" <<
                       " requestId: " << context.RequestId);
 
         try {

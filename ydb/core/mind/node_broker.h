@@ -2,8 +2,8 @@
 
 #include "defs.h"
 
-#include <library/cpp/actors/interconnect/events_local.h>
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/interconnect/events_local.h>
+#include <ydb/library/actors/core/actor.h>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/domain.h>
 #include <ydb/core/protos/node_broker.pb.h>
@@ -99,6 +99,8 @@ struct TEvNodeBroker {
         // internal
         //EvNodeExpire = EvListNodes + 512,
 
+        EvCompactTables = EvListNodes + 1024, // for tests
+
         EvEnd
     };
 
@@ -126,6 +128,9 @@ struct TEvNodeBroker {
     struct TEvExtendLeaseRequest : public TEventPB<TEvExtendLeaseRequest,
                                                    NKikimrNodeBroker::TExtendLeaseRequest,
                                                    EvExtendLeaseRequest> {
+    };
+
+    struct TEvCompactTables : public TEventLocal<TEvCompactTables, EvCompactTables> {
     };
 
     struct TEvNodesInfo : public TEventPreSerializedPB<TEvNodesInfo,
@@ -180,20 +185,6 @@ struct TEvNodeBroker {
 constexpr ui32 DOMAIN_BITS = TDomainsInfo::DomainBits;
 constexpr ui32 DOMAINS_COUNT = 1 << DOMAIN_BITS;
 constexpr ui32 DOMAIN_MASK = (1 << DOMAIN_BITS) - 1;
-
-inline ui32 NodeIdToDomain(ui32 nodeId)
-{
-    return nodeId & DOMAIN_MASK;
-}
-
-inline ui32 NodeIdToDomain(ui32 nodeId, const TDomainsInfo& domains) {
-    // All nodes belong to the same domain when it's the only one defined
-    if (Y_LIKELY(domains.Domains.size() == 1)) {
-        return domains.Domains.begin()->first;
-    }
-
-    return NodeIdToDomain(nodeId);
-}
 
 IActor *CreateNodeBroker(const TActorId &tablet, TTabletStorageInfo *info);
 

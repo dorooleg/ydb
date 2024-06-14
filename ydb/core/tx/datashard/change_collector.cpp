@@ -116,7 +116,7 @@ public:
 
         Y_VERIFY_S(Self->IsUserTable(tableId), "Unknown table: " << tableId);
         auto userTable = Self->GetUserTables().at(tableId.PathId.LocalPathId);
-        Y_VERIFY(userTable->GetTableSchemaVersion());
+        Y_ABORT_UNLESS(userTable->GetTableSchemaVersion());
 
         TChangeRecordBuilder builder(kind);
         if (!WriteTxId) {
@@ -133,14 +133,17 @@ public:
                 .WithLockOffset(lockOffset);
         }
 
-        auto record = builder
+        auto recordPtr = builder
             .WithPathId(pathId)
             .WithTableId(tableId.PathId)
             .WithSchemaVersion(userTable->GetTableSchemaVersion())
+            .WithSchema(userTable) // used for debugging purposes
             .WithBody(body.SerializeAsString())
             .Build();
 
+        const auto& record = *recordPtr->Get<TChangeRecord>();
         Self->PersistChangeRecord(db, record);
+
         if (record.GetLockId() == 0) {
             Collected.push_back(TChange{
                 .Order = record.GetOrder(),
@@ -204,7 +207,7 @@ IDataShardChangeCollector* CreateChangeCollector(
         NTable::TDatabase& db,
         ui64 tableId)
 {
-    Y_VERIFY(dataShard.GetUserTables().contains(tableId));
+    Y_ABORT_UNLESS(dataShard.GetUserTables().contains(tableId));
     const TUserTable& tableInfo = *dataShard.GetUserTables().at(tableId);
     return CreateChangeCollector(dataShard, userDb, groupProvider, db, tableInfo);
 }

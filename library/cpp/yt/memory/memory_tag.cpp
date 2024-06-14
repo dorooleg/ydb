@@ -1,21 +1,23 @@
 #include "memory_tag.h"
 
+#include <library/cpp/yt/misc/tls.h>
+
 #include <util/system/compiler.h>
 
 namespace NYT {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-thread_local TMemoryTag CurrentMemoryTag;
+YT_DEFINE_THREAD_LOCAL(TMemoryTag, CurrentMemoryTag);
 
 Y_WEAK TMemoryTag GetCurrentMemoryTag()
 {
-    return CurrentMemoryTag;
+    return CurrentMemoryTag();
 }
 
 Y_WEAK void SetCurrentMemoryTag(TMemoryTag tag)
 {
-    CurrentMemoryTag = tag;
+    CurrentMemoryTag() = tag;
 }
 
 Y_WEAK size_t GetMemoryUsageForTag(TMemoryTag /*tag*/)

@@ -1,6 +1,6 @@
 #include "defs.h"
-#include "datashard_locks.h"
-#include "datashard_ut_common.h"
+#include <ydb/core/tx/locks/locks.h>
+#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
 
 #include <ydb/core/tablet_flat/flat_dbase_apply.h>
 #include <ydb/core/tablet_flat/flat_exec_commit.h>
@@ -152,7 +152,7 @@ namespace NTest {
             TmpLockVec.emplace_back(TCell::Make(TmpLock.SchemeShard));
             TmpLockVec.emplace_back(TCell::Make(TmpLock.PathId));
 
-            Locks.UpdateSchema(tableId.PathId, DataShard.TableInfos[tid]);
+            Locks.UpdateSchema(tableId.PathId, DataShard.TableInfos[tid].KeyColumnTypes);
         }
 
         //
@@ -574,7 +574,10 @@ void CheckLocksCacheUsage(bool waitForLocksStore) {
     TPortManager pm;
     TServerSettings serverSettings(pm.GetPort(2134));
     serverSettings.SetDomainName("Root")
-        .SetUseRealThreads(false);
+        .SetUseRealThreads(false)
+        // Note: disable volatile transactions, since they don't persist lock
+        // state, and this test actually checks validated lock persistence.
+        .SetEnableDataShardVolatileTransactions(false);
 
     Tests::TServer::TPtr server = new TServer(serverSettings);
     auto &runtime = *server->GetRuntime();
@@ -586,7 +589,6 @@ void CheckLocksCacheUsage(bool waitForLocksStore) {
     //runtime.SetLogPriority(NKikimrServices::KQP_YQL, NLog::PRI_TRACE);
 
     InitRoot(server, sender);
-
 
     TAutoPtr<IEventHandle> handle;
     NTabletPipe::TClientConfig pipeConfig;
@@ -654,8 +656,7 @@ void CheckLocksCacheUsage(bool waitForLocksStore) {
         // should use RS. Hold one RS to 'pause' one transaction
         // and then restart its shard. This will cause locks
         // cache to be used.
-        auto captureRS = [shards](TTestActorRuntimeBase&,
-                                  TAutoPtr<IEventHandle> &event) -> auto {
+        auto captureRS = [shards](TAutoPtr<IEventHandle> &event) -> auto {
             if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
                 auto &rec = event->Get<TEvTxProcessing::TEvReadSet>()->Record;
                 if (rec.GetTabletDest() == shards[0])
@@ -705,14 +706,15 @@ void CheckLocksCacheUsage(bool waitForLocksStore) {
         runtime.Send(new IEventHandle(NKqp::MakeKqpProxyID(runtime.GetNodeId()), sender, request.Release()));
         auto reply = runtime.GrabEdgeEventRethrow<NKqp::TEvKqp::TEvQueryResponse>(handle);
         auto &resp = reply->Record.GetRef().GetResponse();
-        UNIT_ASSERT_VALUES_EQUAL(resp.ResultsSize(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(resp.YdbResultsSize(), 1);
+
         if (waitForLocksStore)
-            UNIT_ASSERT_VALUES_EQUAL(resp.GetResults(0).GetValue().GetStruct(0).ListSize(), 4);
+            UNIT_ASSERT_VALUES_EQUAL(resp.GetYdbResults(0).rows_size(), 4);
         else {
             // We don't actually know whether we killed tablet before locks were stored or after.
             // So either 2 or 4 records are allowed.
-            UNIT_ASSERT(resp.GetResults(0).GetValue().GetStruct(0).ListSize() == 4
-                        || resp.GetResults(0).GetValue().GetStruct(0).ListSize() == 2);
+            UNIT_ASSERT(resp.GetYdbResults(0).rows_size() == 4
+                        || resp.GetYdbResults(0).rows_size() == 2);
         }
     }
 }

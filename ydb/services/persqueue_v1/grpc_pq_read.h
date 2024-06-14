@@ -1,12 +1,13 @@
 #pragma once
 
 #include "actors/read_session_actor.h"
+#include "actors/direct_read_actor.h"
 
 #include <ydb/core/client/server/grpc_base.h>
 #include <ydb/core/persqueue/cluster_tracker.h>
 #include <ydb/core/mind/address_classification/net_classifier.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actorsystem.h>
 
 #include <util/generic/hash.h>
 #include <util/system/mutex.h>
@@ -42,6 +43,7 @@ private:
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NGRpcService::TEvStreamTopicReadRequest, Handle);
+            HFunc(NGRpcService::TEvStreamTopicDirectReadRequest, Handle);
             HFunc(NGRpcService::TEvStreamPQMigrationReadRequest, Handle);
             HFunc(NGRpcService::TEvCommitOffsetRequest, Handle);
             HFunc(NGRpcService::TEvPQReadInfoRequest, Handle);
@@ -56,6 +58,7 @@ private:
 
 private:
     void Handle(NGRpcService::TEvStreamTopicReadRequest::TPtr& ev, const TActorContext& ctx);
+    void Handle(NGRpcService::TEvStreamTopicDirectReadRequest::TPtr& ev, const TActorContext& ctx);
     void Handle(NGRpcService::TEvStreamPQMigrationReadRequest::TPtr& ev, const TActorContext& ctx);
     void Handle(NGRpcService::TEvCommitOffsetRequest::TPtr& ev, const TActorContext& ctx);
     void Handle(NGRpcService::TEvPQReadInfoRequest::TPtr& ev, const TActorContext& ctx);
@@ -98,6 +101,9 @@ auto FillReadResponse(const TString& errorReason, const PersQueue::ErrorCode::Er
     return res;
 }
 
+Topic::StreamDirectReadMessage::FromServer FillDirectReadResponse(const TString& errorReason, const PersQueue::ErrorCode::ErrorCode code);
+
+
 template <typename ReadRequest>
 void TPQReadService::HandleStreamPQReadRequest(typename ReadRequest::TPtr& ev, const TActorContext& ctx) {
     constexpr bool UseMigrationProtocol = std::is_same_v<ReadRequest, NGRpcService::TEvStreamPQMigrationReadRequest>;
@@ -121,7 +127,7 @@ void TPQReadService::HandleStreamPQReadRequest(typename ReadRequest::TPtr& ev, c
         return;
     } else {
 
-        Y_VERIFY(TopicsHandler != nullptr);
+        Y_ABORT_UNLESS(TopicsHandler != nullptr);
         const ui64 cookie = NextCookie();
 
         LOG_DEBUG_S(ctx, NKikimrServices::PQ_READ_PROXY, "new session created cookie " << cookie);

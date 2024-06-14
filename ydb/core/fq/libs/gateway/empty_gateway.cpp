@@ -4,7 +4,7 @@
 #include <ydb/core/fq/libs/events/events.h>
 #include <ydb/core/fq/libs/tasks_packer/tasks_packer.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 
 namespace NFq {
 
@@ -21,8 +21,9 @@ public:
         return result;
     }
 
-    void CloseSession(const TString& action) override {
+    NThreading::TFuture<void> CloseSessionAsync(const TString& action) override {
         Y_UNUSED(action);
+        return NThreading::MakeFuture();
     }
 
     NThreading::TFuture<TResult> ExecutePlan(
@@ -65,6 +66,27 @@ public:
         auto result = NThreading::NewPromise<NYql::IDqGateway::TResult>();
         auto event = MakeHolder<TEvents::TEvGraphParams>(params);
         event->IsEvaluation = FromString<bool>(queryParams.Value("Evaluation", "false")) || FromString<bool>(queryParams.Value("Precompute", "false"));
+
+        // result promise should be resolved here
+        // in the same thread which execute yql facade functions
+        // to avoid data races for TExprNode
+        if (!event->IsEvaluation) {
+            NYql::IDqGateway::TResult gatewayResult;
+            // fake it till you make it
+            // generate dummy result for YQL facade now, remove this gateway completely
+            // when top-level YQL facade call like Preprocess() is implemented
+            if (params.GetResultType()) {
+                // for resultable graphs return dummy "select 1" result (it is not used and is required to satisfy YQL facade only)
+                gatewayResult.SetSuccess();
+                gatewayResult.Data = "[[\001\0021]]";
+                gatewayResult.Truncated = true;
+                gatewayResult.RowsCount = 0;
+            } else {
+                // for resultless results expect infinite INSERT FROM SELECT and just return "nothing"
+            }
+            result.SetValue(gatewayResult);
+        }
+
         event->Result = result;
         NActors::TActivationContext::Send(new NActors::IEventHandle(RunActorId, {}, event.Release()));
 

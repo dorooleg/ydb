@@ -34,7 +34,7 @@ public:
                 return Process(state, info, groupDiskRequests, true);
 
             default:
-                Y_FAIL("unexpected Tactic");
+                Y_ABORT("unexpected Tactic");
         }
     }
 
@@ -46,14 +46,12 @@ protected:
             }
         }
         const TIntervalVec<i32> interval(0, state.Id.BlobSize());
-        Y_VERIFY(interval.IsSubsetOf(state.Whole.Here), "missing blob data State# %s", state.ToString().data());
-        TRope wholeBuffer(TSharedData::Uninitialized(state.Id.BlobSize()));
-        state.Whole.Data.Read(0, wholeBuffer.UnsafeGetContiguousSpanMut().data(), state.Id.BlobSize());
-        TDataPartSet partSet;
-        info.Type.SplitData((TErasureType::ECrcMode)state.Id.CrcMode(), wholeBuffer, partSet);
-        TRope s = partSet.Parts[0].OwnedString;
-        state.Parts[0].Data.SetMonolith(s);
-        return s;
+        Y_ABORT_UNLESS(interval.IsSubsetOf(state.Whole.Here()), "missing blob data State# %s", state.ToString().data());
+        std::array<TRope, 3> parts;
+        ErasureSplit((TErasureType::ECrcMode)state.Id.CrcMode(), info.Type,
+            state.Whole.Data.Read(0, state.Id.BlobSize()), parts);
+        state.Parts[0].Data.SetMonolith(std::move(parts[0]));
+        return parts[1]; // must be the same as parts[0]
     }
 
     EStrategyOutcome Process(TBlobState& state, const TBlobStorageGroupInfo& info, TGroupDiskRequests& groupDiskRequests, bool minLatency) {
@@ -140,8 +138,6 @@ protected:
                                     GetDataBuffer(state, info),
                                     diskIdx == group.DiskIdx[0] ? TDiskPutRequest::ReasonInitial : TDiskPutRequest::ReasonError,
                                     diskIdx != group.DiskIdx[0],
-                                    state.ExtraBlockChecks,
-                                    state.Span,
                                     state.BlobIdx);
                                 s = TBlobState::ESituation::Sent;
                                 any |= {&info.GetTopology(), diskIdx};
@@ -163,7 +159,7 @@ protected:
                         continue;
                     }
                     auto& part = disk.DiskParts[2];
-                    Y_VERIFY(part.Situation != TBlobState::ESituation::Present && part.Situation != TBlobState::ESituation::Sent);
+                    Y_ABORT_UNLESS(part.Situation != TBlobState::ESituation::Present && part.Situation != TBlobState::ESituation::Sent);
                     if (considerLost && part.Situation != TBlobState::ESituation::Lost) {
                         continue; // here we process only lost disks
                     }
@@ -174,8 +170,6 @@ protected:
                         TRope(TString()),
                         handoff ? TDiskPutRequest::ReasonError : TDiskPutRequest::ReasonInitial,
                         handoff,
-                        state.ExtraBlockChecks,
-                        state.Span,
                         state.BlobIdx);
                     part.Situation = TBlobState::ESituation::Sent;
                     any |= {&info.GetTopology(), (ui8)diskIdx};
@@ -183,7 +177,7 @@ protected:
             }
         }
 
-        Y_VERIFY(anyPresent != any || dataPresent != data, "state# %s", state.ToString().data());
+        Y_ABORT_UNLESS(anyPresent != any || dataPresent != data, "state# %s", state.ToString().data());
         return EStrategyOutcome::IN_PROGRESS;
     }
 };

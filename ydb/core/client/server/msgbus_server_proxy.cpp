@@ -3,10 +3,10 @@
 #include "msgbus_server_proxy.h"
 #include "msgbus_securereq.h"
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/core/base/ticket_parser.h>
 #include <ydb/core/client/server/msgbus_server_persqueue.h>
 #include <ydb/core/tx/scheme_board/cache.h>
@@ -164,6 +164,8 @@ void TMessageBusServerProxy::Handle(TEvBusProxy::TEvFlatDescribeRequest::TPtr& e
 //void TMessageBusServerProxy::Handle(TEvBusProxy::TEvDbOperation::TPtr& ev, const TActorContext& ctx); // see msgbus_server_db.cpp
 
 void TMessageBusServerProxy::Bootstrap(const TActorContext& ctx) {
+    LOG_TRACE_S(ctx, NKikimrServices::MSGBUS_PROXY, "TMessageBusServerProxy::Bootstrap");
+
     SelfID = ctx.SelfID;
 
     TxProxy = MakeTxProxyID();
@@ -177,11 +179,6 @@ void TMessageBusServerProxy::Bootstrap(const TActorContext& ctx) {
 
     if (Server) {
         Server->InitSession(ctx.ExecutorThread.ActorSystem, ctx.SelfID);
-    }
-
-    if (Server) {
-        if (auto *busMonPage = AppData(ctx)->BusMonPage)
-            Server->RegisterMonPage(busMonPage);
     }
 
     Become(&TThis::StateFunc);

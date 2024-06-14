@@ -4,6 +4,48 @@
 
 namespace NKikimr::NSchemeShard {
 
+namespace {
+
+void UpdateSpaceBegin(TSpaceLimits& limits, ui64 newValue, ui64 oldValue) {
+    if (newValue <= oldValue) {
+        return;
+    }
+
+    // Space increase is handled at tx begin
+    limits.Allocated += newValue - oldValue;
+}
+
+void UpdateSpaceCommit(TSpaceLimits& limits, ui64 newValue, ui64 oldValue) {
+    if (newValue >= oldValue) {
+        return;
+    }
+
+    // Space decrease is handled at tx commit
+    const ui64 diff = oldValue - newValue;
+    Y_ABORT_UNLESS(limits.Allocated >= diff);
+    limits.Allocated -= diff;
+}
+
+bool CheckSpaceChanged(const TSpaceLimits& limits, ui64 newValue, ui64 oldValue,
+        TString& errStr, const char* tabletType, const char* suffix) {
+    if (newValue <= oldValue) {
+        return true;
+    }
+
+    const ui64 diff = newValue - oldValue;
+    const ui64 newAllocated = limits.Allocated + diff;
+    if (newAllocated <= limits.Limit) {
+        return true;
+    }
+
+    errStr = TStringBuilder()
+        << "New " << tabletType << " space is over a limit" << suffix
+        << ": " << newAllocated << " > " << limits.Limit;
+    return false;
+}
+
+}
+
 TPathElement::TPathElement(TPathId pathId, TPathId parentPathId, TPathId domainPathId, const TString& name, const TString& owner)
     : PathId(pathId)
     , ParentPathId(parentPathId)
@@ -26,21 +68,21 @@ ui64 TPathElement::GetBackupChildren() const {
 }
 
 void TPathElement::IncAliveChildren(ui64 delta, bool isBackup) {
-    Y_VERIFY(Max<ui64>() - AliveChildrenCount >= delta);
+    Y_ABORT_UNLESS(Max<ui64>() - AliveChildrenCount >= delta);
     AliveChildrenCount += delta;
 
     if (isBackup) {
-        Y_VERIFY(Max<ui64>() - BackupChildrenCount >= delta);
+        Y_ABORT_UNLESS(Max<ui64>() - BackupChildrenCount >= delta);
         BackupChildrenCount += delta;
     }
 }
 
 void TPathElement::DecAliveChildren(ui64 delta, bool isBackup) {
-    Y_VERIFY(AliveChildrenCount >= delta);
+    Y_ABORT_UNLESS(AliveChildrenCount >= delta);
     AliveChildrenCount -= delta;
 
     if (isBackup) {
-        Y_VERIFY(BackupChildrenCount >= delta);
+        Y_ABORT_UNLESS(BackupChildrenCount >= delta);
         BackupChildrenCount -= delta;
     }
 }
@@ -54,12 +96,12 @@ void TPathElement::SetShardsInside(ui64 val) {
 }
 
 void TPathElement::IncShardsInside(ui64 delta) {
-    Y_VERIFY(Max<ui64>() - ShardsInsideCount >= delta);
+    Y_ABORT_UNLESS(Max<ui64>() - ShardsInsideCount >= delta);
     ShardsInsideCount += delta;
 }
 
 void TPathElement::DecShardsInside(ui64 delta) {
-    Y_VERIFY(ShardsInsideCount >= delta);
+    Y_ABORT_UNLESS(ShardsInsideCount >= delta);
     ShardsInsideCount -= delta;
 }
 
@@ -173,6 +215,10 @@ bool TPathElement::IsExternalDataSource() const {
     return PathType == EPathType::EPathTypeExternalDataSource;
 }
 
+bool TPathElement::IsView() const {
+    return PathType == EPathType::EPathTypeView;
+}
+
 void TPathElement::SetDropped(TStepId step, TTxId txId) {
     PathState = EPathState::EPathStateNotExist;
     StepDropped = step;
@@ -256,6 +302,8 @@ void TPathElement::ApplySpecialAttributes() {
     VolumeSpaceHDD.Limit = Max<ui64>();
     VolumeSpaceSSDNonrepl.Limit = Max<ui64>();
     VolumeSpaceSSDSystem.Limit = Max<ui64>();
+    FileStoreSpaceSSD.Limit = Max<ui64>();
+    FileStoreSpaceHDD.Limit = Max<ui64>();
     ExtraPathSymbolsAllowed = TString();
     DocumentApiVersion = 0;
     AsyncReplication = NJson::TJsonValue();
@@ -276,6 +324,12 @@ void TPathElement::ApplySpecialAttributes() {
                 break;
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_SYSTEM:
                 HandleAttributeValue(value, VolumeSpaceSSDSystem.Limit);
+                break;
+            case EAttribute::FILESTORE_SPACE_LIMIT_SSD:
+                HandleAttributeValue(value, FileStoreSpaceSSD.Limit);
+                break;
+            case EAttribute::FILESTORE_SPACE_LIMIT_HDD:
+                HandleAttributeValue(value, FileStoreSpaceHDD.Limit);
                 break;
             case EAttribute::EXTRA_PATH_SYMBOLS_ALLOWED:
                 HandleAttributeValue(value, ExtraPathSymbolsAllowed);
@@ -311,53 +365,46 @@ void TPathElement::HandleAttributeValue(const TString& value, NJson::TJsonValue&
 }
 
 void TPathElement::ChangeVolumeSpaceBegin(TVolumeSpace newSpace, TVolumeSpace oldSpace) {
-    auto update = [](TVolumeSpaceLimits& limits, ui64 newValue, ui64 oldValue) {
-        if (newValue > oldValue) {
-            // Volume space increase is handled at tx begin
-            limits.Allocated += newValue - oldValue;
-        }
-    };
-    update(VolumeSpaceRaw, newSpace.Raw, oldSpace.Raw);
-    update(VolumeSpaceSSD, newSpace.SSD, oldSpace.SSD);
-    update(VolumeSpaceHDD, newSpace.HDD, oldSpace.HDD);
-    update(VolumeSpaceSSDNonrepl, newSpace.SSDNonrepl, oldSpace.SSDNonrepl);
-    update(VolumeSpaceSSDSystem, newSpace.SSDSystem, oldSpace.SSDSystem);
+    UpdateSpaceBegin(VolumeSpaceRaw, newSpace.Raw, oldSpace.Raw);
+    UpdateSpaceBegin(VolumeSpaceSSD, newSpace.SSD, oldSpace.SSD);
+    UpdateSpaceBegin(VolumeSpaceHDD, newSpace.HDD, oldSpace.HDD);
+    UpdateSpaceBegin(VolumeSpaceSSDNonrepl, newSpace.SSDNonrepl, oldSpace.SSDNonrepl);
+    UpdateSpaceBegin(VolumeSpaceSSDSystem, newSpace.SSDSystem, oldSpace.SSDSystem);
 }
 
 void TPathElement::ChangeVolumeSpaceCommit(TVolumeSpace newSpace, TVolumeSpace oldSpace) {
-    auto update = [](TVolumeSpaceLimits& limits, ui64 newValue, ui64 oldValue) {
-        if (newValue < oldValue) {
-            // Volume space decrease is handled at tx commit
-            ui64 diff = oldValue - newValue;
-            Y_VERIFY(limits.Allocated >= diff);
-            limits.Allocated -= diff;
-        }
-    };
-    update(VolumeSpaceRaw, newSpace.Raw, oldSpace.Raw);
-    update(VolumeSpaceSSD, newSpace.SSD, oldSpace.SSD);
-    update(VolumeSpaceHDD, newSpace.HDD, oldSpace.HDD);
-    update(VolumeSpaceSSDNonrepl, newSpace.SSDNonrepl, oldSpace.SSDNonrepl);
-    update(VolumeSpaceSSDSystem, newSpace.SSDSystem, oldSpace.SSDSystem);
+    UpdateSpaceCommit(VolumeSpaceRaw, newSpace.Raw, oldSpace.Raw);
+    UpdateSpaceCommit(VolumeSpaceSSD, newSpace.SSD, oldSpace.SSD);
+    UpdateSpaceCommit(VolumeSpaceHDD, newSpace.HDD, oldSpace.HDD);
+    UpdateSpaceCommit(VolumeSpaceSSDNonrepl, newSpace.SSDNonrepl, oldSpace.SSDNonrepl);
+    UpdateSpaceCommit(VolumeSpaceSSDSystem, newSpace.SSDSystem, oldSpace.SSDSystem);
 }
 
 bool TPathElement::CheckVolumeSpaceChange(TVolumeSpace newSpace, TVolumeSpace oldSpace, TString& errStr) {
-    auto check = [&errStr](const TVolumeSpaceLimits& limits, ui64 newValue, ui64 oldValue, const char* suffix) -> bool {
-        if (newValue > oldValue) {
-            ui64 newAllocated = limits.Allocated + newValue - oldValue;
-            if (newAllocated > limits.Limit) {
-                errStr = TStringBuilder()
-                    << "New volume space is over a limit" << suffix
-                    << ": " << newAllocated << " > " << limits.Limit;
-                return false;
-            }
-        }
-        return true;
-    };
-    return (check(VolumeSpaceRaw, newSpace.Raw, oldSpace.Raw, "") &&
-            check(VolumeSpaceSSD, newSpace.SSD, oldSpace.SSD, " (ssd)") &&
-            check(VolumeSpaceHDD, newSpace.HDD, oldSpace.HDD, " (hdd)") &&
-            check(VolumeSpaceSSDNonrepl, newSpace.SSDNonrepl, oldSpace.SSDNonrepl, " (ssd_nonrepl)") &&
-            check(VolumeSpaceSSDSystem, newSpace.SSDSystem, oldSpace.SSDSystem, " (ssd_system)"));
+    return (CheckSpaceChanged(VolumeSpaceRaw, newSpace.Raw, oldSpace.Raw, errStr, "volume", "") &&
+            CheckSpaceChanged(VolumeSpaceSSD, newSpace.SSD, oldSpace.SSD, errStr, "volume", " (ssd)") &&
+            CheckSpaceChanged(VolumeSpaceHDD, newSpace.HDD, oldSpace.HDD, errStr, "volume", " (hdd)") &&
+            CheckSpaceChanged(VolumeSpaceSSDNonrepl, newSpace.SSDNonrepl, oldSpace.SSDNonrepl, errStr, "volume", " (ssd_nonrepl)") &&
+            CheckSpaceChanged(VolumeSpaceSSDSystem, newSpace.SSDSystem, oldSpace.SSDSystem, errStr, "volume", " (ssd_system)"));
+}
+
+void TPathElement::ChangeFileStoreSpaceBegin(TFileStoreSpace newSpace, TFileStoreSpace oldSpace) {
+    UpdateSpaceBegin(FileStoreSpaceSSD, newSpace.SSD, oldSpace.SSD);
+    UpdateSpaceBegin(FileStoreSpaceHDD, newSpace.HDD, oldSpace.HDD);
+}
+
+void TPathElement::ChangeFileStoreSpaceCommit(TFileStoreSpace newSpace, TFileStoreSpace oldSpace) {
+    UpdateSpaceCommit(FileStoreSpaceSSD, newSpace.SSD, oldSpace.SSD);
+    UpdateSpaceCommit(FileStoreSpaceHDD, newSpace.HDD, oldSpace.HDD);
+}
+
+bool TPathElement::CheckFileStoreSpaceChange(TFileStoreSpace newSpace, TFileStoreSpace oldSpace, TString& errStr) {
+    return (CheckSpaceChanged(FileStoreSpaceSSD, newSpace.SSD, oldSpace.SSD, errStr, "filestore", " (ssd)") &&
+            CheckSpaceChanged(FileStoreSpaceHDD, newSpace.HDD, oldSpace.HDD, errStr, "filestore", " (hdd)"));
+}
+
+void TPathElement::SetAsyncReplica() {
+    IsAsyncReplica = true;
 }
 
 bool TPathElement::HasRuntimeAttrs() const {
@@ -365,24 +412,39 @@ bool TPathElement::HasRuntimeAttrs() const {
             VolumeSpaceSSD.Allocated > 0 ||
             VolumeSpaceHDD.Allocated > 0 ||
             VolumeSpaceSSDNonrepl.Allocated > 0 ||
-            VolumeSpaceSSDSystem.Allocated > 0);
+            VolumeSpaceSSDSystem.Allocated > 0 ||
+            FileStoreSpaceSSD.Allocated > 0 ||
+            FileStoreSpaceHDD.Allocated > 0 ||
+            IsAsyncReplica);
 }
 
 void TPathElement::SerializeRuntimeAttrs(
         google::protobuf::RepeatedPtrField<NKikimrSchemeOp::TUserAttribute>* userAttrs) const
 {
-    auto process = [userAttrs](const TVolumeSpaceLimits& limits, const char* name) {
+    auto process = [userAttrs](const TSpaceLimits& limits, const char* name) {
         if (limits.Allocated > 0) {
             auto* attr = userAttrs->Add();
             attr->SetKey(name);
             attr->SetValue(TStringBuilder() << limits.Allocated);
         }
     };
+
+    // blockstore volume
     process(VolumeSpaceRaw, "__volume_space_allocated");
     process(VolumeSpaceSSD, "__volume_space_allocated_ssd");
     process(VolumeSpaceHDD, "__volume_space_allocated_hdd");
     process(VolumeSpaceSSDNonrepl, "__volume_space_allocated_ssd_nonrepl");
     process(VolumeSpaceSSDSystem, "__volume_space_allocated_ssd_system");
+
+    // filestore
+    process(FileStoreSpaceSSD, "__filestore_space_allocated_ssd");
+    process(FileStoreSpaceHDD, "__filestore_space_allocated_hdd");
+
+    if (IsAsyncReplica) {
+        auto* attr = userAttrs->Add();
+        attr->SetKey(ToString(ATTR_ASYNC_REPLICA));
+        attr->SetValue("true");
+    }
 }
 
 }

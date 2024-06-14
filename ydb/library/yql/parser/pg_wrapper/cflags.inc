@@ -9,11 +9,13 @@ CFLAGS(
     -Wno-duplicate-decl-specifier
     -Wno-unused-function
     -Wno-unused-variable
+    -Wno-unused-but-set-variable
     -Wno-unused-private-field
     -Wno-register
     -Wno-unguarded-availability-new
     -Wno-int-conversion
     -Wno-deprecated-declarations
+    -Wno-null-pointer-subtraction
 )
 
 IF (OS_WINDOWS)
@@ -88,6 +90,7 @@ CFLAGS(
     -Dpg_mode_mask=yql_pg_mode_mask
     -Dpg_strong_random=yql_pg_strong_random
     -Dpg_strong_random_init=yql_pg_strong_random_init
+    -DScanKeywordBareLabel=yql_ScanKeywordBareLabel
     -DScanKeywordCategories=yql_ScanKeywordCategories
     -DScanKeywords=yql_ScanKeywords
     -Dscram_ClientKey=yql_scram_ClientKey
@@ -96,4 +99,21 @@ CFLAGS(
     -Dscram_ServerKey=yql_scram_ServerKey
     -Dscram_build_secret=yql_scram_build_secret
     -Dpg_is_ascii=yql_pg_is_ascii
+    -DmakeJsonLexContextCstringLen=yql_makeJsonLexContextCstringLen
+    -DIsValidJsonNumber=yql_IsValidJsonNumber
+    -Djson_lex=yql_json_lex
+    -Dpg_parse_json=yql_pg_parse_json
+    -Djson_count_array_elements=yql_json_count_array_elements
+    -DnullSemAction=yql_nullSemAction
+    -Dpg_cryptohash_free=yql_pg_cryptohash_free
+    -Dpg_cryptohash_final=yql_pg_cryptohash_final
+    -Dpg_cryptohash_update=yql_pg_cryptohash_update
+    -Dpg_cryptohash_init=yql_pg_cryptohash_init
+    -Dpg_cryptohash_create=yql_pg_cryptohash_create
+    -Dpg_hmac_free=yql_pg_hmac_free
+    -Dpg_hmac_final=yql_pg_hmac_final
+    -Dpg_hmac_update=yql_pg_hmac_update
+    -Dpg_hmac_init=yql_pg_hmac_init
+    -Dpg_hmac_create=yql_pg_hmac_create
+    -Dpg_pwritev_with_retry=yql_pg_pwritev_with_retry
 )

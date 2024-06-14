@@ -13,11 +13,11 @@ TDataShard::TTxPlanStep::TTxPlanStep(TDataShard *self, TEvTxProcessing::TEvPlanS
     , IsAccepted(false)
     , RequestStartTime(TAppData::TimeProvider->Now())
 {
-    Y_VERIFY(Ev);
+    Y_ABORT_UNLESS(Ev);
 }
 
 bool TDataShard::TTxPlanStep::Execute(TTransactionContext &txc, const TActorContext &ctx) {
-    Y_VERIFY(Ev);
+    Y_ABORT_UNLESS(Ev);
 
     // TEvPlanStep are strictly ordered by mediator so this Tx must not be retried not to break this ordering!
     txc.DB.NoMoreReadsForTx();
@@ -31,8 +31,8 @@ bool TDataShard::TTxPlanStep::Execute(TTransactionContext &txc, const TActorCont
     TVector<ui64> txIds;
     txIds.reserve(Ev->Get()->Record.TransactionsSize());
     for (const auto& tx : Ev->Get()->Record.GetTransactions()) {
-        Y_VERIFY(tx.HasTxId());
-        Y_VERIFY(tx.HasAckTo());
+        Y_ABORT_UNLESS(tx.HasTxId());
+        Y_ABORT_UNLESS(tx.HasAckTo());
 
         txIds.push_back(tx.GetTxId());
 
@@ -63,13 +63,20 @@ bool TDataShard::TTxPlanStep::Execute(TTransactionContext &txc, const TActorCont
                     << " at tablet " << Self->TabletID() << " " << Ev->Get()->Record);
     }
 
+    // We already know that max observed step is at least this step, avoid
+    // waiting for a TEvNotifyPlanStep which would be delayed until mediator
+    // processes all acks in the same time cast bucket.
+    Self->SendAfterMediatorStepActivate(step, ctx);
+    Self->Pipeline.ActivateWaitingTxOps(ctx);
+    Self->CheckMediatorStateRestored();
+
     Self->PlanQueue.Progress(ctx);
     Self->IncCounter(COUNTER_PLAN_STEP_ACCEPTED);
     return true;
 }
 
 void TDataShard::TTxPlanStep::Complete(const TActorContext &ctx) {
-    Y_VERIFY(Ev);
+    Y_ABORT_UNLESS(Ev);
     ui64 step = Ev->Get()->Record.GetStep();
 
     for (auto& kv : TxByAck) {
@@ -89,6 +96,49 @@ void TDataShard::TTxPlanStep::Complete(const TActorContext &ctx) {
     if (IsAccepted) {
         TDuration duration = TAppData::TimeProvider->Now() - RequestStartTime;
         Self->IncCounter(COUNTER_ACCEPTED_PLAN_STEP_COMPLETE_LATENCY, duration);
+    }
+}
+
+class TDataShard::TTxPlanPredictedTxs : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
+public:
+    TTxPlanPredictedTxs(TDataShard* self)
+        : TTransactionBase(self)
+    {}
+
+    TTxType GetTxType() const override { return TXTYPE_PLAN_PREDICTED_TXS; }
+
+    bool Execute(TTransactionContext& txc, const TActorContext& ctx) override {
+        Self->ScheduledPlanPredictedTxs = false;
+
+        ui64 step = Self->MediatorTimeCastEntry->Get(Self->TabletID());
+        bool planned = Self->Pipeline.PlanPredictedTxs(step, txc, ctx);
+
+        if (Self->Pipeline.HasPredictedPlan()) {
+            ui64 nextStep = Self->Pipeline.NextPredictedPlanStep();
+            Y_ABORT_UNLESS(step < nextStep);
+            Self->WaitPredictedPlanStep(nextStep);
+        }
+
+        if (planned) {
+            Self->PlanQueue.Progress(ctx);
+        }
+        return true;
+    }
+
+    void Complete(const TActorContext&) override {
+        // nothing
+    }
+};
+
+void TDataShard::Handle(TEvPrivate::TEvPlanPredictedTxs::TPtr&, const TActorContext& ctx) {
+    Y_ABORT_UNLESS(ScheduledPlanPredictedTxs);
+    Execute(new TTxPlanPredictedTxs(this), ctx);
+}
+
+void TDataShard::SchedulePlanPredictedTxs() {
+    if (!ScheduledPlanPredictedTxs) {
+        ScheduledPlanPredictedTxs = true;
+        Send(SelfId(), new TEvPrivate::TEvPlanPredictedTxs());
     }
 }
 

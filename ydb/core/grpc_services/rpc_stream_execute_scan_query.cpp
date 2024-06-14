@@ -1,21 +1,21 @@
 #include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "rpc_kqp_base.h"
 #include "service_table.h"
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
 #include <ydb/core/kqp/opt/kqp_query_plan.h>
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/protos/ydb_table_impl.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -187,7 +187,6 @@ private:
             HFunc(TEvents::TEvWakeup, Handle);
             HFunc(TRpcServices::TEvGrpcNextReply, Handle);
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            HFunc(NKqp::TEvKqp::TEvProcessResponse, Handle);
             HFunc(NKqp::TEvKqp::TEvAbortExecution, Handle);
             HFunc(NKqp::TEvKqpExecuter::TEvStreamData, Handle);
             HFunc(NKqp::TEvKqpExecuter::TEvStreamProfile, Handle);
@@ -228,6 +227,8 @@ private:
             nullptr
         );
 
+        ev->Record.MutableRequest()->SetCollectDiagnostics(req->Getcollect_full_diagnostics());
+
         if (!ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release())) {
             NYql::TIssues issues;
             issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Internal error"));
@@ -255,7 +256,7 @@ private:
             GRpcResponsesSize_ -= GRpcResponsesSizeQueue_.front();
             GRpcResponsesSizeQueue_.pop();
         }
-        Y_VERIFY_DEBUG(GRpcResponsesSizeQueue_.empty() == (GRpcResponsesSize_ == 0));
+        Y_DEBUG_ABORT_UNLESS(GRpcResponsesSizeQueue_.empty() == (GRpcResponsesSize_ == 0));
         LastDataStreamTimestamp_ = TAppData::TimeProvider->Now();
 
         if (WaitOnSeqNo_ && RpcBufferSize_ > GRpcResponsesSize_) {
@@ -284,6 +285,8 @@ private:
         NYql::IssuesFromMessage(issueMessage, issues);
 
         if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
+            Request_->SetRuHeader(record.GetConsumedRu());
+
             Ydb::Table::ExecuteScanQueryPartialResponse response;
             TString out;
             auto& kqpResponse = record.GetResponse();
@@ -312,22 +315,13 @@ private:
                     response.mutable_result()->mutable_query_stats()->set_query_ast(kqpResponse.GetQueryAst());
                 }
 
+                response.mutable_result()->set_query_full_diagnostics(kqpResponse.GetQueryDiagnostics());
+
                 Y_PROTOBUF_SUPPRESS_NODISCARD response.SerializeToString(&out);
                 Request_->SendSerializedResult(std::move(out), record.GetYdbStatus());
             }
         }
-
         ReplyFinishStream(record.GetYdbStatus(), issues);
-    }
-
-    void Handle(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext&) {
-        const auto& kqpResponse = ev->Get()->Record;
-        NYql::TIssues issues;
-        if (kqpResponse.HasError()) {
-            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, kqpResponse.GetError()));
-        }
-
-        ReplyFinishStream(kqpResponse.GetYdbStatus(), issues);
     }
 
     void Handle(NKqp::TEvKqp::TEvAbortExecution::TPtr& ev, const TActorContext& ctx) {
@@ -475,7 +469,7 @@ private:
             Request_->SendSerializedResult(std::move(out), status);
         }
 
-        Request_->FinishStream();
+        Request_->FinishStream(status);
         this->PassAway();
     }
 
@@ -498,9 +492,9 @@ private:
 } // namespace
 
 void DoExecuteScanQueryRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
-    ui64 rpcBufferSize = f.GetAppConfig()->GetTableServiceConfig().GetResourceManager().GetChannelBufferSize();
+    ui64 rpcBufferSize = f.GetChannelBufferSize();
     auto* req = dynamic_cast<TEvStreamExecuteScanQueryRequest*>(p.release());
-    Y_VERIFY(req != nullptr, "Wrong using of TGRpcRequestWrapper");
+    Y_ABORT_UNLESS(req != nullptr, "Wrong using of TGRpcRequestWrapper");
     f.RegisterActor(new TStreamExecuteScanQueryRPC(req, rpcBufferSize));
 }
 

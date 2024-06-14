@@ -16,12 +16,12 @@
                     ],
                     "limit": "1001",
                     "lookup_by": [
-                        "Group (0)"
+                        "Group (null)"
                     ],
                     "scan_by": [
-                        "Name (-\u221e, \u00abName2\u00bb)"
+                        "Name (null, Name2)"
                     ],
-                    "type": "Lookup"
+                    "type": "Scan"
                 }
             ]
         }

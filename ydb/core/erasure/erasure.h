@@ -1,9 +1,10 @@
 #pragma once
 
 #include <array>
+#include <span>
 
 #include <ydb/core/debug/valgrind_check.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 
 #include <util/stream/str.h>
 #include <util/generic/string.h>
@@ -12,7 +13,7 @@
 
 #include <util/generic/list.h>
 #include <library/cpp/containers/stack_vector/stack_vec.h>
-#include <library/cpp/actors/util/rope.h>
+#include <ydb/library/actors/util/rope.h>
 
 namespace NKikimr {
 
@@ -106,7 +107,7 @@ struct TPartFragment {
     }
 
     void ReferenceTo(const TRope &whole) {
-        Y_VERIFY(whole.IsContiguous());
+        Y_ABORT_UNLESS(whole.IsContiguous());
         OwnedString = whole;
         Bytes = OwnedString.UnsafeGetContiguousSpanMut().data();
         Offset = 0;
@@ -115,13 +116,13 @@ struct TPartFragment {
     }
 
     void ReferenceTo(const TRope &piece, ui64 offset, ui64 size, ui64 partSize) {
-        Y_VERIFY(piece.IsContiguous());
+        Y_ABORT_UNLESS(piece.IsContiguous());
         OwnedString = piece;
         Bytes = OwnedString.UnsafeGetContiguousSpanMut().data();
         Offset = offset;
-        Y_VERIFY(size <= piece.size());
+        Y_ABORT_UNLESS(size <= piece.size());
         Size = size;
-        Y_VERIFY(offset + size <= partSize);
+        Y_ABORT_UNLESS(offset + size <= partSize);
         PartSize = partSize;
     }
 
@@ -137,10 +138,10 @@ struct TPartFragment {
 
 
     char *GetDataAt(ui64 get_offset) const {
-        Y_VERIFY_DEBUG(Size);
-        Y_VERIFY_DEBUG(get_offset >= Offset, "%s", (TStringBuilder() << "get_offset# " << get_offset
+        Y_DEBUG_ABORT_UNLESS(Size);
+        Y_DEBUG_ABORT_UNLESS(get_offset >= Offset, "%s", (TStringBuilder() << "get_offset# " << get_offset
                     << " Offset# " << Offset << " Size# " << Size << " capacity# " << OwnedString.capacity()).c_str());
-        Y_VERIFY_DEBUG(get_offset < Offset + Size, "%s", (TStringBuilder() << "get_offset# " << get_offset
+        Y_DEBUG_ABORT_UNLESS(get_offset < Offset + Size, "%s", (TStringBuilder() << "get_offset# " << get_offset
                     << " Offset# " << Offset << " Size# " << Size << " capacity# " << OwnedString.capacity()).c_str());
         return Bytes + get_offset - Offset;
     }
@@ -293,7 +294,6 @@ struct TErasureType {
         : ErasureSpecies(s)
     {}
 
-    virtual ~TErasureType() = default;
     TErasureType(const TErasureType &) = default;
     TErasureType &operator =(const TErasureType &) = default;
 
@@ -302,7 +302,7 @@ struct TErasureType {
     }
 
     TString ToString() const {
-        Y_VERIFY((ui64)ErasureSpecies < ErasureSpeciesCount);
+        Y_ABORT_UNLESS((ui64)ErasureSpecies < ErasureSpeciesCount);
         return ErasureName[ErasureSpecies];
     }
 
@@ -378,6 +378,19 @@ protected:
 };
 
 bool CheckCrcAtTheEnd(TErasureType::ECrcMode crcMode, const TContiguousSpan& buf);
+bool CheckCrcAtTheEnd(TErasureType::ECrcMode crcMode, const TRope& rope);
+
+struct TErasureSplitContext {
+    ui32 MaxSizeAtOnce = 0;
+    ui32 Offset = 0;
+
+    static TErasureSplitContext Init(ui32 maxSizeAtOnce) { return {maxSizeAtOnce, 0}; }
+};
+
+bool ErasureSplit(TErasureType::ECrcMode crcMode, TErasureType erasure, const TRope& whole, std::span<TRope> parts,
+    TErasureSplitContext *context = nullptr);
+
+void ErasureRestore(TErasureType::ECrcMode crcMode, TErasureType erasure, ui32 fullSize, TRope *whole,
+    std::span<TRope> parts, ui32 restoreMask, ui32 offset = 0, bool isFragment = false);
 
 }
-

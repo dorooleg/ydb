@@ -6,8 +6,8 @@
 #include <contrib/libs/aws-sdk-cpp/aws-cpp-sdk-core/include/aws/core/Aws.h>
 #include <contrib/libs/curl/include/curl/curl.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/digest/md5/md5.h>
 #include <util/string/cast.h>
 
@@ -65,49 +65,44 @@ TEvListObjectsResponse::TResult TFakeExternalStorage::BuildListObjectsResult(con
     return awsResult;
 }
 
-void TFakeExternalStorage::Execute(TEvListObjectsRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvListObjectsRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     auto awsResult = BuildListObjectsResult(ev->Get()->GetRequest());
-    auto result = MakeHolder<TEvListObjectsResponse>(awsResult);
-    TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+    auto result = std::make_unique<TEvListObjectsResponse>(awsResult);
+    adapter.Reply(ev->Sender, std::move(result));
 }
 
-void TFakeExternalStorage::Execute(TEvGetObjectRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvGetObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     TGuard<TMutex> g(Mutex);
     auto& bucket = GetBucket(AwsToString(ev->Get()->GetRequest().GetBucket()));
     const TString key = AwsToString(ev->Get()->GetRequest().GetKey());
     auto object = bucket.GetObject(key);
     TString data;
 
-    if (!!object) {
-        Aws::S3::Model::GetObjectResult awsResult;
-        awsResult.SetETag(MD5::Calc(*object));
-        data = *object;
+    std::pair<ui64, ui64> range;
+    auto awsRange = ev->Get()->GetRequest().GetRange();
+    Y_ABORT_UNLESS(awsRange.size());
+    const TString strRange(awsRange.data(), awsRange.size());
+    AFL_VERIFY(TryParseRange(strRange, range))("original", strRange);
 
-        auto awsRange = ev->Get()->GetRequest().GetRange();
-        if (awsRange.size()) {
-            const TString strRange(awsRange.data(), awsRange.size());
-            std::pair<ui64, ui64> range;
-            if (!TryParseRange(strRange, range)) {
-                Aws::Utils::Outcome<Aws::S3::Model::GetObjectResult, Aws::S3::S3Error> awsOutcome;
-                THolder<TEvGetObjectResponse> result(new TEvGetObjectResponse(key, std::move(awsOutcome), std::move(data)));
-                TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
-                return;
-            } else {
-                data = data.substr(range.first, range.second - range.first + 1);
-            }
-        }
+    if (!!object) {
+        AFL_DEBUG(NKikimrServices::S3_WRAPPER)("method", "GetObject")("id", key)("range", strRange)("object_exists", true);
+        Aws::S3::Model::GetObjectResult awsResult;
+        awsResult.WithAcceptRanges(awsRange).SetETag(MD5::Calc(*object));
+        data = *object;
+        data = data.substr(range.first, range.second - range.first + 1);
 
         Aws::Utils::Outcome<Aws::S3::Model::GetObjectResult, Aws::S3::S3Error> awsOutcome(std::move(awsResult));
-        THolder<TEvGetObjectResponse> result(new TEvGetObjectResponse(key, std::move(awsOutcome), std::move(data)));
-        TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+        std::unique_ptr<TEvGetObjectResponse> result(new TEvGetObjectResponse(key, range, std::move(awsOutcome), std::move(data)));
+        adapter.Reply(ev->Sender, std::move(result));
     } else {
+        AFL_DEBUG(NKikimrServices::S3_WRAPPER)("method", "GetObject")("id", key)("range", strRange)("object_exists", false);
         Aws::Utils::Outcome<Aws::S3::Model::GetObjectResult, Aws::S3::S3Error> awsOutcome;
-        THolder<TEvGetObjectResponse> result(new TEvGetObjectResponse(key, std::move(awsOutcome), std::move(data)));
-        TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+        std::unique_ptr<TEvGetObjectResponse> result(new TEvGetObjectResponse(key, range, std::move(awsOutcome), std::move(data)));
+        adapter.Reply(ev->Sender, std::move(result));
     }
 }
 
-void TFakeExternalStorage::Execute(TEvHeadObjectRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvHeadObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     TGuard<TMutex> g(Mutex);
     auto& bucket = GetBucket(AwsToString(ev->Get()->GetRequest().GetBucket()));
     const TString key = AwsToString(ev->Get()->GetRequest().GetKey());
@@ -117,38 +112,40 @@ void TFakeExternalStorage::Execute(TEvHeadObjectRequest::TPtr& ev) const {
         awsResult.SetETag(MD5::Calc(*object));
         awsResult.SetContentLength(object->size());
         Aws::Utils::Outcome<Aws::S3::Model::HeadObjectResult, Aws::S3::S3Error> awsOutcome(awsResult);
-        THolder<TEvHeadObjectResponse> result(new TEvHeadObjectResponse(key, std::move(awsOutcome)));
-        TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+        std::unique_ptr<TEvHeadObjectResponse> result(new TEvHeadObjectResponse(key, std::move(awsOutcome)));
+        adapter.Reply(ev->Sender, std::move(result));
     } else {
         Aws::Utils::Outcome<Aws::S3::Model::HeadObjectResult, Aws::S3::S3Error> awsOutcome;
-        THolder<TEvHeadObjectResponse> result(new TEvHeadObjectResponse(key, std::move(awsOutcome)));
-        TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+        std::unique_ptr<TEvHeadObjectResponse> result(new TEvHeadObjectResponse(key, std::move(awsOutcome)));
+        adapter.Reply(ev->Sender, std::move(result));
     }
 }
 
-void TFakeExternalStorage::Execute(TEvPutObjectRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvPutObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     TGuard<TMutex> g(Mutex);
     const TString key = AwsToString(ev->Get()->GetRequest().GetKey());
+    AFL_DEBUG(NKikimrServices::S3_WRAPPER)("method", "PutObject")("id", key);
     auto& bucket = MutableBucket(AwsToString(ev->Get()->GetRequest().GetBucket()));
     bucket.PutObject(key, ev->Get()->Body);
     Aws::S3::Model::PutObjectResult awsResult;
 
-    THolder<TEvPutObjectResponse> result(new TEvPutObjectResponse(key, awsResult));
-    TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+    std::unique_ptr<TEvPutObjectResponse> result(new TEvPutObjectResponse(key, awsResult));
+    adapter.Reply(ev->Sender, std::move(result));
 }
 
-void TFakeExternalStorage::Execute(TEvDeleteObjectRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvDeleteObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     TGuard<TMutex> g(Mutex);
     Aws::S3::Model::DeleteObjectResult awsResult;
     auto& bucket = MutableBucket(AwsToString(ev->Get()->GetRequest().GetBucket()));
     const TString key = AwsToString(ev->Get()->GetRequest().GetKey());
+    AFL_DEBUG(NKikimrServices::S3_WRAPPER)("method", "DeleteObject")("id", key);
     bucket.Remove(key);
 
-    THolder<TEvDeleteObjectResponse> result(new TEvDeleteObjectResponse(key, awsResult));
-    TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+    std::unique_ptr<TEvDeleteObjectResponse> result(new TEvDeleteObjectResponse(key, awsResult));
+    adapter.Reply(ev->Sender, std::move(result));
 }
 
-void TFakeExternalStorage::Execute(TEvDeleteObjectsRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvDeleteObjectsRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     TGuard<TMutex> g(Mutex);
     auto& bucket = MutableBucket(AwsToString(ev->Get()->GetRequest().GetBucket()));
     Aws::S3::Model::DeleteObjectsResult awsResult;
@@ -160,29 +157,47 @@ void TFakeExternalStorage::Execute(TEvDeleteObjectsRequest::TPtr& ev) const {
         awsResult.AddDeleted(std::move(dObject));
     }
 
-    THolder<TEvDeleteObjectsResponse> result(new TEvDeleteObjectsResponse(awsResult));
-    TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
+    std::unique_ptr<TEvDeleteObjectsResponse> result(new TEvDeleteObjectsResponse(awsResult));
+    adapter.Reply(ev->Sender, std::move(result));
 }
 
-void TFakeExternalStorage::Execute(TEvCreateMultipartUploadRequest::TPtr& /*ev*/) const {
+void TFakeExternalStorage::Execute(TEvCreateMultipartUploadRequest::TPtr& /*ev*/, const TReplyAdapterContainer& /*adapter*/) const {
 }
 
-void TFakeExternalStorage::Execute(TEvUploadPartRequest::TPtr& /*ev*/) const {
+void TFakeExternalStorage::Execute(TEvUploadPartRequest::TPtr& /*ev*/, const TReplyAdapterContainer& /*adapter*/) const {
 }
 
-void TFakeExternalStorage::Execute(TEvCompleteMultipartUploadRequest::TPtr& /*ev*/) const {
+void TFakeExternalStorage::Execute(TEvCompleteMultipartUploadRequest::TPtr& /*ev*/, const TReplyAdapterContainer& /*adapter*/) const {
 }
 
-void TFakeExternalStorage::Execute(TEvAbortMultipartUploadRequest::TPtr& /*ev*/) const {
+void TFakeExternalStorage::Execute(TEvAbortMultipartUploadRequest::TPtr& /*ev*/, const TReplyAdapterContainer& /*adapter*/) const {
 }
 
-void TFakeExternalStorage::Execute(TEvCheckObjectExistsRequest::TPtr& ev) const {
+void TFakeExternalStorage::Execute(TEvCheckObjectExistsRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const {
     TGuard<TMutex> g(Mutex);
-    auto awsResult = BuildListObjectsResult(ev->Get()->GetRequest());
-    THolder<TEvCheckObjectExistsResponse> result(new TEvCheckObjectExistsResponse(awsResult, ev->Get()->GetRequestContext()));
-    TlsActivationContext->ActorSystem()->Send(ev->Sender, result.Release());
 
+    auto& bucket = GetBucket(AwsToString(ev->Get()->GetRequest().GetBucket()));
+    const TString key = AwsToString(ev->Get()->GetRequest().GetKey());
+    auto object = bucket.GetObject(key);
+    std::unique_ptr<TEvCheckObjectExistsResponse> result;
+    if (object) {
+        Aws::S3::Model::HeadObjectResult awsResult;
+        awsResult.SetETag(MD5::Calc(*object));
+        awsResult.SetContentLength(object->size());
+        result.reset(new TEvCheckObjectExistsResponse(awsResult, ev->Get()->GetRequestContext()));
+        Y_DEBUG_ABORT_UNLESS(result->IsSuccess());
+    } else {
+        Aws::Utils::Outcome<Aws::S3::Model::HeadObjectResult, Aws::S3::S3Error> awsOutcome;
+        result.reset(new TEvCheckObjectExistsResponse(awsOutcome, ev->Get()->GetRequestContext()));
+        Y_DEBUG_ABORT_UNLESS(!result->IsSuccess());
+    }
+
+    adapter.Reply(ev->Sender, std::move(result));
 }
+
+void TFakeExternalStorage::Execute(TEvUploadPartCopyRequest::TPtr& /*ev*/, const TReplyAdapterContainer& /*adapter*/) const {
+}
+
 }
 
 #endif // KIKIMR_DISABLE_S3_OPS

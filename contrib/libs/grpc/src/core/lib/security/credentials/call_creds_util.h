@@ -14,8 +14,8 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_CORE_LIB_SECURITY_CREDENTIALS_CALL_CREDS_UTIL_H
-#define GRPC_CORE_LIB_SECURITY_CREDENTIALS_CALL_CREDS_UTIL_H
+#ifndef GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_CALL_CREDS_UTIL_H
+#define GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_CALL_CREDS_UTIL_H
 
 #include <grpc/support/port_platform.h>
 
@@ -25,19 +25,20 @@
 #include <grpc/grpc_security.h>
 
 #include "src/core/lib/security/credentials/credentials.h"
+#include "src/core/lib/transport/transport.h"
 
 namespace grpc_core {
 
 // Helper function to construct service URL for jwt call creds.
 TString MakeJwtServiceUrl(
-    const ClientInitialMetadata& initial_metadata,
+    const ClientMetadataHandle& initial_metadata,
     const grpc_call_credentials::GetRequestMetadataArgs* args);
 
 // Helper function to construct context for plugin call creds.
 grpc_auth_metadata_context MakePluginAuthMetadataContext(
-    const ClientInitialMetadata& initial_metadata,
+    const ClientMetadataHandle& initial_metadata,
     const grpc_call_credentials::GetRequestMetadataArgs* args);
 
 }  // namespace grpc_core
 
-#endif /* GRPC_CORE_LIB_SECURITY_CREDENTIALS_CALL_CREDS_UTIL_H */
+#endif  // GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_CALL_CREDS_UTIL_H

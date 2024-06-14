@@ -1,11 +1,11 @@
 #include "filter.h"
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/log.h>
 
 namespace NKikimr::NOlap {
 
-NKikimr::NArrow::TColumnFilter TPKRangesFilter::BuildFilter(std::shared_ptr<arrow::RecordBatch> data) const {
+NKikimr::NArrow::TColumnFilter TPKRangesFilter::BuildFilter(const arrow::Datum& data) const {
     if (SortedRanges.empty()) {
-        return NArrow::TColumnFilter();
+        return NArrow::TColumnFilter::BuildAllowFilter();
     }
     NArrow::TColumnFilter result = SortedRanges.front().BuildFilter(data);
     for (ui32 i = 1; i < SortedRanges.size(); ++i) {
@@ -21,6 +21,7 @@ bool TPKRangesFilter::Add(std::shared_ptr<NOlap::TPredicate> f, std::shared_ptr<
     auto fromContainer = TPredicateContainer::BuildPredicateFrom(f, indexInfo);
     auto toContainer = TPredicateContainer::BuildPredicateTo(t, indexInfo);
     if (!fromContainer || !toContainer) {
+        AFL_ERROR(NKikimrServices::TX_COLUMNSHARD_SCAN)("event", "add_range_filter")("problem", "incorrect from/to containers")("from", !!fromContainer)("to", !!toContainer);
         return false;
     }
     if (SortedRanges.size() && !FakeRanges) {
@@ -83,11 +84,20 @@ bool TPKRangesFilter::IsPortionInUsage(const TPortionInfo& info, const TIndexInf
     return SortedRanges.empty();
 }
 
+bool TPKRangesFilter::IsPortionInPartialUsage(const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& end, const TIndexInfo& indexInfo) const {
+    for (auto&& i : SortedRanges) {
+        if (i.IsPortionInPartialUsage(start, end, indexInfo)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 TPKRangesFilter::TPKRangesFilter(const bool reverse)
     : ReverseFlag(reverse)
 {
     auto range = TPKRangeFilter::Build(TPredicateContainer::BuildNullPredicateFrom(), TPredicateContainer::BuildNullPredicateTo());
-    Y_VERIFY(range);
+    Y_ABORT_UNLESS(range);
     SortedRanges.emplace_back(*range);
 }
 

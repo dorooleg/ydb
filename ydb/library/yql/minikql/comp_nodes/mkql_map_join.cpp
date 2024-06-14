@@ -1,7 +1,8 @@
 #include "mkql_map_join.h"
 
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
@@ -38,7 +39,7 @@ protected:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* GenMakeKeysTuple(Value* keysPtr, const ICodegeneratorInlineWideNode::TGettersList& getters, const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto zero = ConstantInt::get(Type::getInt128Ty(context), 0);
         const auto keys = getters[LeftKeyColumns.front()](ctx, block);
         new StoreInst(keys, keysPtr, block);
@@ -47,7 +48,7 @@ protected:
     }
 
     Value* GenMakeKeysTuple(Value* keysPtr, const ICodegeneratorInlineWideNode::TGettersList& getters, Value* itemsPtr, const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto idxType = Type::getInt32Ty(context);
         const auto zero = ConstantInt::get(Type::getInt128Ty(context), 0);
 
@@ -98,11 +99,18 @@ protected:
         }
     }
 
+    bool IsUnusedInput(const ui32 index) const {
+        for (auto i = 0U; i < LeftRenames.size(); ++++i)
+            if (LeftRenames[i] == index)
+                return false;
+        return true;
+    }
+
     template<class TLeftSideSource>
     std::array<Value*, 2U> GenFillOutput(ui32 idx, const TCodegenContext& ctx, const TLeftSideSource& input, ICodegeneratorInlineWideNode::TGettersList& output) const {
         GenFillLeftStruct(input, output);
 
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto zero = ConstantInt::get(valueType, 0);
@@ -133,7 +141,7 @@ protected:
             const auto to = RightRenames[++i];
             const auto kind = OutputRepresentations[to];
             output[to] = [from, kind, item, pointer, placeholder, arrayType, valueType](const TCodegenContext& ctx, BasicBlock*& block) {
-                auto& context = ctx.Codegen->GetContext();
+                auto& context = ctx.Codegen.GetContext();
 
                 const auto index = ConstantInt::get(Type::getInt32Ty(context), from);
                 const auto pointerType = PointerType::getUnqual(arrayType);
@@ -179,7 +187,7 @@ protected:
             NUdf::TUnboxedValue* items = nullptr;
             const auto keys = KeyTuple.NewArray(ctx, LeftKeyColumns.size(), items);
             if (!LeftKeyColumns.empty()) {
-                Y_VERIFY(items);
+                Y_ABORT_UNLESS(items);
                 for (auto i = 0U; i < LeftKeyColumns.size(); ++i) {
                     const auto value = fields[LeftKeyColumns[i]];
                     const auto converter = LeftKeyConverters[i].Function;
@@ -301,7 +309,7 @@ public:
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* lookupPtr, BasicBlock*& block) const {
         MKQL_ENSURE(!this->Dict->IsTemporaryValue(), "Dict can't be temporary");
 
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto resultType = Type::getInt32Ty(context);
@@ -343,7 +351,7 @@ public:
         if constexpr (WithoutRight) {
             this->GenFillLeftStruct(current.second, getters);
 
-            if (RightRequired) {
+            if constexpr (RightRequired) {
                 BranchInst::Create(loop, step, none, block);
             } else {
                 result->addIncoming(ConstantInt::get(resultType, i32(EFetchResult::One)), block);
@@ -353,6 +361,10 @@ public:
             block = step;
 
             const auto cont = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::Contains>(Type::getInt1Ty(context), dict, ctx.Codegen, block, keysPtr);
+
+            if constexpr (!IsTuple) {
+                ValueCleanup(GetValueRepresentation(this->DictType->GetKeyType()), keysPtr, ctx, block);
+            }
 
             result->addIncoming(ConstantInt::get(resultType, i32(EFetchResult::One)), block);
 
@@ -377,8 +389,12 @@ public:
             CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::Lookup>(lookupPtr, dict, ctx.Codegen, block, keysPtr);
 
             const auto lookup = new LoadInst(valueType, lookupPtr, "lookup", block);
-            const auto ok = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, lookup, zero, "ok", block);
 
+            if constexpr (!IsTuple) {
+                ValueCleanup(GetValueRepresentation(this->DictType->GetKeyType()), keysPtr, ctx, block);
+            }
+
+            const auto ok = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, lookup, zero, "ok", block);
             const auto full = BasicBlock::Create(context, "full", ctx.Func);
 
             if constexpr (RightRequired)
@@ -471,7 +487,7 @@ public:
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* iteraratorPtr, Value* itemPtr, BasicBlock*& block) const {
         MKQL_ENSURE(!this->Dict->IsTemporaryValue(), "Dict can't be temporary");
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto resultType = Type::getInt32Ty(context);
         const auto valueType = Type::getInt128Ty(context);
@@ -582,6 +598,12 @@ public:
         ValueUnRef(EValueRepresentation::Boxed, itemPtr, ctx, block);
         CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::Lookup>(itemPtr, dict, ctx.Codegen, block, keysPtr);
 
+        if constexpr (!IsTuple) {
+            if (this->IsUnusedInput(this->LeftKeyColumns.front())) {
+                ValueCleanup(GetValueRepresentation(this->DictType->GetKeyType()), keysPtr, ctx, block);
+            }
+        }
+
         const auto lookup = new LoadInst(valueType, itemPtr, "lookup", block);
         const auto ok = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, lookup, zero, "ok", block);
 
@@ -651,7 +673,7 @@ protected:
         if (renames.empty()) {
             return;
         }
-        Y_VERIFY(items);
+        Y_ABORT_UNLESS(items);
         if (const auto ptr = structObj.GetElements()) {
             for (auto i = 0U; i < renames.size();) {
                 const auto prevIndex = renames[i++];
@@ -680,7 +702,7 @@ protected:
             NUdf::TUnboxedValue* items = nullptr;
             const auto keys = KeyTuple.NewArray(ctx, LeftKeyColumns.size(), items);
             if (!LeftKeyColumns.empty()) {
-                Y_VERIFY(items);
+                Y_ABORT_UNLESS(items);
                 const auto ptr = structObj.GetElements();
                 for (auto i = 0U; i < LeftKeyColumns.size(); ++i) {
                     auto value = ptr ? ptr[LeftKeyColumns[i]] : structObj.GetElement(LeftKeyColumns[i]);
@@ -699,7 +721,7 @@ protected:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     void GenFillLeftStruct(Value* left, Value* items, const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto idxType = Type::getInt32Ty(context);
         const auto valType = Type::getInt128Ty(context);
         const auto ptrType = PointerType::getUnqual(valType);
@@ -743,7 +765,7 @@ protected:
     }
 
     void GenFillRightStruct(Value* right, Value* items, const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto idxType = Type::getInt32Ty(context);
         const auto valType = Type::getInt128Ty(context);
         const auto ptrType = PointerType::getUnqual(valType);
@@ -787,7 +809,7 @@ protected:
     }
 
     Value* GenMakeKeysTuple(Value* keysPtr, Value* current, const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto idxType = Type::getInt32Ty(context);
         const auto zero = ConstantInt::get(Type::getInt128Ty(context), 0);
 
@@ -807,7 +829,7 @@ protected:
     }
 
     Value* GenMakeKeysTuple(Value* keysPtr, Value* current, Value* itemsPtr, const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto idxType = Type::getInt32Ty(context);
         const auto valueType = Type::getInt128Ty(context);
         const auto zero = ConstantInt::get(valueType, 0);
@@ -964,7 +986,7 @@ public:
                         break;
                 }
             default:
-                Y_FAIL("Unreachable");
+                Y_ABORT("Unreachable");
             }
 
             NUdf::TUnboxedValue* items = nullptr;
@@ -1013,7 +1035,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto zero = ConstantInt::get(valueType, 0);
@@ -1106,7 +1128,7 @@ public:
             break;
         }
         case ERightKind::Many:
-            Y_FAIL("Wrong case");
+            Y_ABORT("Wrong case");
         }
 
         {
@@ -1136,7 +1158,7 @@ public:
     }
 
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* currentPtr, Value* iteraratorPtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto zero = ConstantInt::get(valueType, 0);
@@ -1396,7 +1418,7 @@ private:
                             break;
                     }
                 default:
-                    Y_FAIL("Unreachable");
+                    Y_ABORT("Unreachable");
                 }
 
                 NUdf::TUnboxedValue* items = nullptr;
@@ -1498,19 +1520,19 @@ private:
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
         MapJoinFunc = RightKind == ERightKind::Many ? GenerateStatefulMapper(codegen) : GenerateMapper(codegen);
-        codegen->ExportSymbol(MapJoinFunc);
+        codegen.ExportSymbol(MapJoinFunc);
     }
 
-    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
         if (MapJoinFunc)
-            MapJoin = reinterpret_cast<TMapJoinPtr>(codegen->GetPointerToFunction(MapJoinFunc));
+            MapJoin = reinterpret_cast<TMapJoinPtr>(codegen.GetPointerToFunction(MapJoinFunc));
     }
 
-    Function* GenerateMapper(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
-        auto& module = codegen->GetModule();
-        auto& context = codegen->GetContext();
+    Function* GenerateMapper(NYql::NCodegen::ICodegen& codegen) const {
+        auto& module = codegen.GetModule();
+        auto& context = codegen.GetContext();
 
         const auto& name = TBaseComputation::MakeName("Fetch");
         if (const auto f = module.getFunction(name.c_str()))
@@ -1519,9 +1541,8 @@ private:
         const auto valueType = Type::getInt128Ty(context);
         const auto arrayType = ArrayType::get(valueType, this->OutputRepresentations.size());
         const auto keysType = IsTuple ? ArrayType::get(valueType, this->LeftKeyColumns.size()) : nullptr;
-        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
-        const auto idxType = Type::getInt32Ty(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto funcType = FunctionType::get(statusType, {PointerType::getUnqual(contextType), containerType, containerType, PointerType::getUnqual(valueType)}, false);
 
@@ -1538,10 +1559,10 @@ private:
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
         auto block = main;
 
-        const auto stream = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+        const auto stream = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
             new LoadInst(valueType, streamArg, "load_stream", false, block) : static_cast<Value*>(streamArg);
 
-        const auto dict = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+        const auto dict = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
             new LoadInst(valueType, dictArg, "load_dict", false, block) : static_cast<Value*>(dictArg);
 
         const auto zero = ConstantInt::get(valueType, 0);
@@ -1634,7 +1655,7 @@ private:
             break;
         }
         case ERightKind::Many:
-            Y_FAIL("Wrong case");
+            Y_ABORT("Wrong case");
         }
 
         {
@@ -1664,9 +1685,9 @@ private:
         return ctx.Func;
     }
 
-    Function* GenerateStatefulMapper(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
-        auto& module = codegen->GetModule();
-        auto& context = codegen->GetContext();
+    Function* GenerateStatefulMapper(NYql::NCodegen::ICodegen& codegen) const {
+        auto& module = codegen.GetModule();
+        auto& context = codegen.GetContext();
 
         const auto& name = TBaseComputation::MakeName("Fetch");
         if (const auto f = module.getFunction(name.c_str()))
@@ -1675,9 +1696,8 @@ private:
         const auto valueType = Type::getInt128Ty(context);
         const auto arrayType = ArrayType::get(valueType, this->OutputRepresentations.size());
         const auto keysType = IsTuple ? ArrayType::get(valueType, this->LeftKeyColumns.size()) : nullptr;
-        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
-        const auto idxType = Type::getInt32Ty(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto funcType = FunctionType::get(statusType, {PointerType::getUnqual(contextType), containerType, containerType, PointerType::getUnqual(valueType), PointerType::getUnqual(valueType), PointerType::getUnqual(valueType)}, false);
 
@@ -1696,10 +1716,10 @@ private:
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
         auto block = main;
 
-        const auto stream = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+        const auto stream = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
             new LoadInst(valueType, streamArg, "load_stream", false, block) : static_cast<Value*>(streamArg);
 
-        const auto dict = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+        const auto dict = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
             new LoadInst(valueType, dictArg, "load_dict", false, block) : static_cast<Value*>(dictArg);
 
         const auto zero = ConstantInt::get(valueType, 0);

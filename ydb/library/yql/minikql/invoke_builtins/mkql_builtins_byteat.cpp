@@ -1,4 +1,4 @@
-#include "mkql_builtins_impl.h"
+#include "mkql_builtins_impl.h"  // Y_IGNORE 
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -35,7 +35,7 @@ struct TByteAt {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
         const auto type = Type::getInt8Ty(context);
         const auto embType = FixedVectorType::get(type, 16);
         const auto cast = CastInst::Create(Instruction::BitCast, left, embType, "cast", block);

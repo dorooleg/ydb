@@ -2,14 +2,16 @@
 #include "monitoring.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/pathid.h>
+#include <ydb/core/scheme/scheme_pathid.h>
 #include <ydb/core/base/statestorage_impl.h>
+#include <ydb/core/base/tabletid.h>
+#include <ydb/core/base/domain.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/mon.h>
 
 #include <library/cpp/monlib/service/pages/mon_page.h>
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -98,7 +100,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
         }
 
         auto byActivity = ByActivityType.find(registered->second.ActivityType);
-        Y_VERIFY(byActivity != ByActivityType.end());
+        Y_ABORT_UNLESS(byActivity != ByActivityType.end());
 
         byActivity->second.erase(ev->Sender);
         if (byActivity->second.empty()) {
@@ -286,7 +288,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
 
     const TJsonValue::TMapType& GetAttrs(const TActorId& actorId) const {
         auto it = RegisteredActors.find(actorId);
-        Y_VERIFY(it != RegisteredActors.end());
+        Y_ABORT_UNLESS(it != RegisteredActors.end());
 
         return it->second.Attributes.GetMapSafe();
     }
@@ -565,7 +567,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
                                     TABLEH() { str << "#"; }
                                     TABLEH() { str << "Actor"; }
 
-                                    Y_VERIFY(!actorIds.empty());
+                                    Y_ABORT_UNLESS(!actorIds.empty());
                                     for (const auto& [key, _] : GetAttrs(*actorIds.begin())) {
                                         TABLEH() { str << key; }
                                     }
@@ -648,7 +650,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderReplica(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kReplicaResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kReplicaResponse);
         const auto& response = record.GetReplicaResponse();
 
         TStringStream str;
@@ -732,7 +734,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderPopulator(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kPopulatorResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kPopulatorResponse);
         const auto& response = record.GetPopulatorResponse();
 
         TStringStream str;
@@ -828,7 +830,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderReplicaPopulator(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kReplicaPopulatorResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kReplicaPopulatorResponse);
         const auto& response = record.GetReplicaPopulatorResponse();
 
         TStringStream str;
@@ -903,7 +905,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderSubscriber(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kSubscriberResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kSubscriberResponse);
         const auto& response = record.GetSubscriberResponse();
 
         TStringStream str;
@@ -977,7 +979,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderSubscriberProxy(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kSubscriberProxyResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kSubscriberProxyResponse);
         const auto& response = record.GetSubscriberProxyResponse();
 
         TStringStream str;
@@ -1003,7 +1005,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderReplicaSubscriber(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kReplicaSubscriberResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kReplicaSubscriberResponse);
         const auto& response = record.GetReplicaSubscriberResponse();
 
         TStringStream str;
@@ -1028,7 +1030,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TString RenderCache(const NKikimrSchemeBoardMon::TEvInfoResponse& record) {
-        Y_VERIFY(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kCacheResponse);
+        Y_ABORT_UNLESS(record.GetResponseCase() == NKikimrSchemeBoardMon::TEvInfoResponse::kCacheResponse);
 
         TStringStream str;
 
@@ -1054,14 +1056,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
     }
 
     static TActorId MakeStateStorageProxyId() {
-        const auto& domains = AppData()->DomainsInfo->Domains;
-        Y_VERIFY(domains.size() <= 1);
-
-        for (const auto& domain : domains) {
-            return NKikimr::MakeStateStorageProxyID(domain.second->DefaultSchemeBoardGroup);
-        }
-
-        Y_FAIL("unreachable");
+        return NKikimr::MakeStateStorageProxyID();
     }
 
     template <typename TDerived, typename TEvResponse>
@@ -1157,7 +1152,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
             case 1:
                 return new TEvStateStorage::TEvResolveSchemeBoard(std::get<TPathId>(Path));
             default:
-                Y_FAIL("unreachable");
+                Y_ABORT("unreachable");
             }
         }
 
@@ -1228,7 +1223,7 @@ class TMonitoring: public TActorBootstrapped<TMonitoring> {
             case 1:
                 return new TSchemeBoardMonEvents::TEvDescribeRequest(std::get<TPathId>(Path));
             default:
-                Y_FAIL("unreachable");
+                Y_ABORT("unreachable");
             }
         }
 

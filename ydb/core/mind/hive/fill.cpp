@@ -1,4 +1,4 @@
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include "hive_impl.h"
 #include "hive_log.h"
 #include "node_info.h"
@@ -32,6 +32,14 @@ protected:
         PassAway();
     }
 
+    TString GetDescription() const override {
+        return TStringBuilder() << "Fill(" << NodeId << ")";
+    }
+
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
+    }
+
     void ReplyAndDie(NKikimrProto::EReplyStatus status, const TActorContext& ctx) {
         ctx.Send(Initiator, new TEvHive::TEvFillNodeResult(status));
         Die(ctx);
@@ -56,7 +64,7 @@ protected:
                                << " from node " << tablet->Node->Id << " " << tablet->Node->ResourceValues
                                << " to node " << result.BestNode->Id << " " << result.BestNode->ResourceValues);
                         Hive->TabletCounters->Cumulative()[NHive::COUNTER_FILL_EXECUTED].Increment(1);
-                        Hive->TabletCounters->Cumulative()[NHive::COUNTER_TABLETS_MOVED].Increment(1);
+                        Hive->RecordTabletMove(THive::TTabletMoveInfo(TInstant::Now(), *tablet, tablet->Node->Id, result.BestNode->Id));
                         Hive->Execute(Hive->CreateRestartTablet(tablet->GetFullTabletId(), result.BestNode->Id), ctx);
                     }
                 }
@@ -134,7 +142,8 @@ void THive::StartHiveFill(TNodeId nodeId, const TActorId& initiator) {
         SubActors.emplace_back(balancer);
         RegisterWithSameMailbox(balancer);
     } else {
-        Send(initiator, new TEvHive::TEvDrainNodeResult(NKikimrProto::ALREADY));
+        BLOG_W("It's not possible to start fill on node " << nodeId << ", the node is already busy");
+        Send(initiator, new TEvHive::TEvFillNodeResult(NKikimrProto::ALREADY));
     }
 }
 

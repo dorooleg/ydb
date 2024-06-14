@@ -89,7 +89,7 @@ namespace NKikimr {
                 // calculate keep status
                 bool allowKeepFlags = HullCtx->AllowKeepFlags;
                 NGc::TKeepStatus keep = brs->Keep(dbIt.GetCurKey(), dbMerger.GetMemRec(),
-                                                  dbMerger.GetMemRecsMerged(), allowKeepFlags);
+                    {subsMerger, dbMerger}, allowKeepFlags, true /*allowGarbageCollection*/);
                 if (keep.KeepIndex && !keep.KeepByBarrier) {
                     // we keep this record because of keep flags
                     candidates.AddCandidate(dbIt.GetCurKey().LogoBlobID());

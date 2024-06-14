@@ -4,9 +4,9 @@
 #include <util/generic/map.h>
 #include <util/generic/maybe.h>
 
-#include <library/cpp/actors/core/event_pb.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/interconnect/events_local.h>
+#include <ydb/library/actors/core/event_pb.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/interconnect/events_local.h>
 
 #include <ydb/core/fq/libs/protos/fq_private.pb.h>
 #include <ydb/public/api/protos/draft/fq.pb.h>
@@ -32,8 +32,8 @@ struct TAuditDetails {
 
     size_t GetByteSize() const {
         return sizeof(*this)
-                + Before.Empty() ? 0 : Before->ByteSizeLong()
-                + After.Empty() ? 0 : After->ByteSizeLong()
+                + (Before.Empty() ? 0 : Before->ByteSizeLong())
+                + (After.Empty() ? 0 : After->ByteSizeLong())
                 + CloudId.Size();
     }
 };
@@ -51,10 +51,8 @@ struct TPermissions {
         VIEW_AST = 0x4,
         MANAGE_PUBLIC = 0x8,
         MANAGE_PRIVATE = 0x10,
-        CONNECTIONS_USE = 0x40,
-        BINDINGS_USE = 0x80,
-        QUERY_INVOKE = 0x100,
-        VIEW_QUERY_TEXT = 0x400
+        QUERY_INVOKE = 0x40,
+        VIEW_QUERY_TEXT = 0x80
     };
 
 private:
@@ -166,23 +164,32 @@ struct TEvControlPlaneStorage {
         EvDeleteRateLimiterResourceRequest,
         EvDeleteRateLimiterResourceResponse,
         EvDbRequestResult, // private // internal_events.h
+        EvCreateDatabaseRequest,
+        EvCreateDatabaseResponse,
+        EvDescribeDatabaseRequest,
+        EvDescribeDatabaseResponse,
+        EvModifyDatabaseRequest,
+        EvModifyDatabaseResponse,
+        EvFinalStatusReport,
         EvEnd,
     };
 
     static_assert(EvEnd <= YqEventSubspaceEnd(NFq::TYqEventSubspace::ControlPlaneStorage), "All events must be in their subspace");
 
-    template<typename ProtoMessage, ui32 EventType>
-    struct TControlPlaneRequest : NActors::TEventLocal<TControlPlaneRequest<ProtoMessage, EventType>, EventType> {
+    template<typename TDerived, typename ProtoMessage, ui32 EventType>
+    struct TBaseControlPlaneRequest : NActors::TEventLocal<TDerived, EventType> {
         using TProto = ProtoMessage;
 
-        explicit TControlPlaneRequest(const TString& scope,
-                                      const ProtoMessage& request,
-                                      const TString& user,
-                                      const TString& token,
-                                      const TString& cloudId,
-                                      TPermissions permissions,
-                                      TMaybe<TQuotaMap> quotas,
-                                      TTenantInfo::TPtr tenantInfo)
+        explicit TBaseControlPlaneRequest(
+            const TString& scope,
+            const ProtoMessage& request,
+            const TString& user,
+            const TString& token,
+            const TString& cloudId,
+            TPermissions permissions,
+            TMaybe<TQuotaMap> quotas,
+            TTenantInfo::TPtr tenantInfo,
+            const FederatedQuery::Internal::ComputeDatabaseInternal& computeDatabase)
             : Scope(scope)
             , Request(request)
             , User(user)
@@ -191,8 +198,7 @@ struct TEvControlPlaneStorage {
             , Permissions(permissions)
             , Quotas(std::move(quotas))
             , TenantInfo(tenantInfo)
-        {
-        }
+            , ComputeDatabase(computeDatabase) { }
 
         size_t GetByteSize() const {
             return sizeof(*this)
@@ -211,6 +217,52 @@ struct TEvControlPlaneStorage {
         TPermissions Permissions;
         TMaybe<TQuotaMap> Quotas;
         TTenantInfo::TPtr TenantInfo;
+        FederatedQuery::Internal::ComputeDatabaseInternal ComputeDatabase;
+        bool ExtractSensitiveFields = false;
+    };
+
+    template<typename TProtoMessage, ui32 EventType>
+    struct TControlPlaneRequest :
+        TBaseControlPlaneRequest<TControlPlaneRequest<TProtoMessage, EventType>,
+                                 TProtoMessage,
+                                 EventType> {
+        using TBaseControlPlaneRequest<TControlPlaneRequest<TProtoMessage, EventType>,
+                                       TProtoMessage,
+                                       EventType>::TBaseControlPlaneRequest;
+    };
+
+    template<typename ProtoMessage, ui32 EventType>
+    struct TControlPlaneListRequest :
+        public TBaseControlPlaneRequest<TControlPlaneListRequest<ProtoMessage, EventType>,
+                                        ProtoMessage,
+                                        EventType> {
+        using TProto = ProtoMessage;
+
+        explicit TControlPlaneListRequest(
+            const TString& scope,
+            const ProtoMessage& request,
+            const TString& user,
+            const TString& token,
+            const TString& cloudId,
+            TPermissions permissions,
+            TMaybe<TQuotaMap> quotas,
+            TTenantInfo::TPtr tenantInfo,
+            const FederatedQuery::Internal::ComputeDatabaseInternal& computeDatabase,
+            bool isExactNameMatch = false)
+            : TBaseControlPlaneRequest<TControlPlaneListRequest<ProtoMessage, EventType>,
+                                       ProtoMessage,
+                                       EventType>(scope,
+                                                  request,
+                                                  user,
+                                                  token,
+                                                  cloudId,
+                                                  permissions,
+                                                  std::move(quotas),
+                                                  tenantInfo,
+                                                  computeDatabase)
+            , IsExactNameMatch(isExactNameMatch) { }
+
+        bool IsExactNameMatch = false;
     };
 
     template<typename TDerived, typename ProtoMessage, ui32 EventType>
@@ -319,7 +371,7 @@ struct TEvControlPlaneStorage {
     using TEvDescribeJobResponse = TControlPlaneNonAuditableResponse<FederatedQuery::DescribeJobResult, EvDescribeJobResponse>;
     using TEvCreateConnectionRequest = TControlPlaneRequest<FederatedQuery::CreateConnectionRequest, EvCreateConnectionRequest>;
     using TEvCreateConnectionResponse = TControlPlaneAuditableResponse<FederatedQuery::CreateConnectionResult, FederatedQuery::Connection, EvCreateConnectionResponse>;
-    using TEvListConnectionsRequest = TControlPlaneRequest<FederatedQuery::ListConnectionsRequest, EvListConnectionsRequest>;
+    using TEvListConnectionsRequest = TControlPlaneListRequest<FederatedQuery::ListConnectionsRequest, EvListConnectionsRequest>;
     using TEvListConnectionsResponse = TControlPlaneNonAuditableResponse<FederatedQuery::ListConnectionsResult, EvListConnectionsResponse>;
     using TEvDescribeConnectionRequest = TControlPlaneRequest<FederatedQuery::DescribeConnectionRequest, EvDescribeConnectionRequest>;
     using TEvDescribeConnectionResponse = TControlPlaneNonAuditableResponse<FederatedQuery::DescribeConnectionResult, EvDescribeConnectionResponse>;
@@ -329,7 +381,7 @@ struct TEvControlPlaneStorage {
     using TEvDeleteConnectionResponse = TControlPlaneAuditableResponse<FederatedQuery::DeleteConnectionResult, FederatedQuery::Connection, EvDeleteConnectionResponse>;
     using TEvCreateBindingRequest = TControlPlaneRequest<FederatedQuery::CreateBindingRequest, EvCreateBindingRequest>;
     using TEvCreateBindingResponse = TControlPlaneAuditableResponse<FederatedQuery::CreateBindingResult, FederatedQuery::Binding, EvCreateBindingResponse>;
-    using TEvListBindingsRequest = TControlPlaneRequest<FederatedQuery::ListBindingsRequest, EvListBindingsRequest>;
+    using TEvListBindingsRequest = TControlPlaneListRequest<FederatedQuery::ListBindingsRequest, EvListBindingsRequest>;
     using TEvListBindingsResponse = TControlPlaneNonAuditableResponse<FederatedQuery::ListBindingsResult, EvListBindingsResponse>;
     using TEvDescribeBindingRequest = TControlPlaneRequest<FederatedQuery::DescribeBindingRequest, EvDescribeBindingRequest>;
     using TEvDescribeBindingResponse = TControlPlaneNonAuditableResponse<FederatedQuery::DescribeBindingResult, EvDescribeBindingResponse>;
@@ -613,6 +665,163 @@ struct TEvControlPlaneStorage {
         TProto Record;
         NYql::TIssues Issues;
         TDebugInfoPtr DebugInfo;
+    };
+
+    struct TEvCreateDatabaseRequest : NActors::TEventLocal<TEvCreateDatabaseRequest, EvCreateDatabaseRequest> {
+        TEvCreateDatabaseRequest() = default;
+
+        explicit TEvCreateDatabaseRequest(const TString& cloudId, const TString& scope, const FederatedQuery::Internal::ComputeDatabaseInternal& record)
+            : CloudId(cloudId)
+            , Scope(scope)
+            , Record(record)
+        {}
+
+        size_t GetByteSize() const {
+            return sizeof(*this)
+                    + CloudId.Size()
+                    + Scope.Size()
+                    + Record.ByteSizeLong();
+        }
+
+        TString CloudId;
+        TString Scope;
+        FederatedQuery::Internal::ComputeDatabaseInternal Record;
+    };
+
+    struct TEvCreateDatabaseResponse : NActors::TEventLocal<TEvCreateDatabaseResponse, EvCreateDatabaseResponse> {
+        static constexpr bool Auditable = false;
+
+        explicit TEvCreateDatabaseResponse()
+        {}
+
+        explicit TEvCreateDatabaseResponse(const NYql::TIssues& issues)
+            : Issues(issues)
+        {}
+
+        size_t GetByteSize() const {
+            return sizeof(*this)
+                    + GetIssuesByteSize(Issues)
+                    + GetDebugInfoByteSize(DebugInfo);
+        }
+
+        NYql::TIssues Issues;
+        TDebugInfoPtr DebugInfo;
+    };
+
+    struct TEvDescribeDatabaseRequest : NActors::TEventLocal<TEvDescribeDatabaseRequest, EvDescribeDatabaseRequest> {
+
+        TEvDescribeDatabaseRequest() = default;
+
+        explicit TEvDescribeDatabaseRequest(const TString& cloudId, const TString& scope)
+            : CloudId(cloudId)
+            , Scope(scope)
+        {}
+
+        size_t GetByteSize() const {
+            return sizeof(*this)
+                    + Request.ByteSizeLong()
+                    + CloudId.Size()
+                    + Scope.Size();
+        }
+
+        google::protobuf::Empty Request;
+        TString CloudId;
+        TString Scope;
+    };
+
+    struct TEvDescribeDatabaseResponse : NActors::TEventLocal<TEvDescribeDatabaseResponse, EvDescribeDatabaseResponse> {
+        static constexpr bool Auditable = false;
+
+        explicit TEvDescribeDatabaseResponse(const FederatedQuery::Internal::ComputeDatabaseInternal& record)
+            : Record(record)
+        {}
+
+        explicit TEvDescribeDatabaseResponse(
+            const NYql::TIssues& issues
+            )
+            : Issues(issues)
+        {}
+
+        size_t GetByteSize() const {
+            return sizeof(*this)
+                    + Record.ByteSizeLong()
+                    + GetIssuesByteSize(Issues)
+                    + GetDebugInfoByteSize(DebugInfo);
+        }
+
+        FederatedQuery::Internal::ComputeDatabaseInternal Record;
+        NYql::TIssues Issues;
+        TDebugInfoPtr DebugInfo;
+    };
+
+    struct TEvModifyDatabaseRequest : NActors::TEventLocal<TEvModifyDatabaseRequest, EvModifyDatabaseRequest> {
+        TEvModifyDatabaseRequest() = default;
+
+        explicit TEvModifyDatabaseRequest(const TString& cloudId, const TString& scope)
+            : CloudId(cloudId)
+            , Scope(scope)
+        {}
+
+        size_t GetByteSize() const {
+            return sizeof(*this)
+                    + CloudId.Size()
+                    + Scope.Size();
+        }
+
+        TString CloudId;
+        TString Scope;
+        TMaybe<bool> Synchronized;
+        TMaybe<TInstant> LastAccessAt;
+    };
+
+    struct TEvModifyDatabaseResponse : NActors::TEventLocal<TEvModifyDatabaseResponse, EvModifyDatabaseResponse> {
+        static constexpr bool Auditable = false;
+
+        explicit TEvModifyDatabaseResponse()
+        {}
+
+        explicit TEvModifyDatabaseResponse(const NYql::TIssues& issues)
+            : Issues(issues)
+        {}
+
+        size_t GetByteSize() const {
+            return sizeof(*this)
+                    + GetIssuesByteSize(Issues)
+                    + GetDebugInfoByteSize(DebugInfo);
+        }
+
+        NYql::TIssues Issues;
+        TDebugInfoPtr DebugInfo;
+    };
+
+    struct TEvFinalStatusReport : NActors::TEventLocal<TEvFinalStatusReport, EvFinalStatusReport> {
+        TEvFinalStatusReport(
+            const TString& queryId, const TString& jobId, const TString& cloudId, const TString& scope,
+            std::vector<std::pair<TString, ui64>>&& statistics, FederatedQuery::QueryMeta::ComputeStatus status,
+            NYql::NDqProto::StatusIds::StatusCode statusCode, FederatedQuery::QueryContent::QueryType queryType,
+            const NYql::TIssues& issues, const NYql::TIssues& transientIssues)
+            : QueryId(queryId)
+            , JobId(jobId)
+            , CloudId(cloudId)
+            , Scope(scope)
+            , Statistics(std::move(statistics))
+            , Status(status)
+            , StatusCode(statusCode)
+            , QueryType(queryType)
+            , Issues(issues)
+            , TransientIssues(transientIssues)
+        {}
+
+        TString QueryId;
+        TString JobId;
+        TString CloudId;
+        TString Scope;
+        std::vector<std::pair<TString, ui64>> Statistics;
+        FederatedQuery::QueryMeta::ComputeStatus Status = FederatedQuery::QueryMeta::COMPUTE_STATUS_UNSPECIFIED;
+        NYql::NDqProto::StatusIds::StatusCode StatusCode = NYql::NDqProto::StatusIds::UNSPECIFIED;
+        FederatedQuery::QueryContent::QueryType QueryType = FederatedQuery::QueryContent::QUERY_TYPE_UNSPECIFIED;
+        NYql::TIssues Issues;
+        NYql::TIssues TransientIssues;
     };
 };
 

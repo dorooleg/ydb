@@ -1,18 +1,36 @@
 #pragma once
 
+#include <ydb/public/sdk/cpp/client/ydb_topic/impl/common.h>
+
 #define INCLUDE_YDB_INTERNAL_H
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/make_request/make.h>
 #undef INCLUDE_YDB_INTERNAL_H
 
 #include <ydb/public/sdk/cpp/client/ydb_common_client/impl/client.h>
-#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/impl/common.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/impl/executor.h>
 #include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 
 #include <ydb/public/api/grpc/ydb_topic_v1.grpc.pb.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 
 namespace NYdb::NTopic {
+
+struct TOffsetsRange {
+    ui64 Start;
+    ui64 End;
+};
+
+struct TPartitionOffsets {
+    ui64 PartitionId;
+    TVector<TOffsetsRange> Offsets;
+};
+
+struct TTopicOffsets {
+    TString Path;
+    TVector<TPartitionOffsets> Partitions;
+};
+
+struct TUpdateOffsetsInTransactionSettings : public TOperationRequestSettings<TUpdateOffsetsInTransactionSettings> {
+    using TOperationRequestSettings<TUpdateOffsetsInTransactionSettings>::TOperationRequestSettings;
+};
 
 class TTopicClient::TImpl : public TClientImplCommon<TTopicClient::TImpl> {
 public:
@@ -84,7 +102,6 @@ public:
 
         return request;
     }
-
 
     TAsyncStatus CreateTopic(const TString& path, const TCreateTopicSettings& settings) {
         auto request = MakePropsCreateRequest(path, settings);
@@ -175,6 +192,10 @@ public:
             request.set_include_stats(true);
         }
 
+        if (settings.IncludeLocation_) {
+            request.set_include_location(true);
+        }
+
         auto promise = NThreading::NewPromise<TDescribeTopicResult>();
 
         auto extractor = [promise]
@@ -208,6 +229,10 @@ public:
             request.set_include_stats(true);
         }
 
+        if (settings.IncludeLocation_) {
+            request.set_include_location(true);
+        }
+
         auto promise = NThreading::NewPromise<TDescribeConsumerResult>();
 
         auto extractor = [promise]
@@ -232,6 +257,42 @@ public:
         return promise.GetFuture();
     }
 
+    TAsyncDescribePartitionResult DescribePartition(const TString& path, i64 partitionId, const TDescribePartitionSettings& settings) {
+        auto request = MakeOperationRequest<Ydb::Topic::DescribePartitionRequest>(settings);
+        request.set_path(path);
+        request.set_partition_id(partitionId);
+
+        if (settings.IncludeStats_) {
+            request.set_include_stats(true);
+        }
+
+        if (settings.IncludeLocation_) {
+            request.set_include_location(true);
+        }
+
+        auto promise = NThreading::NewPromise<TDescribePartitionResult>();
+
+        auto extractor = [promise](google::protobuf::Any* any, TPlainStatus status) mutable {
+            Ydb::Topic::DescribePartitionResult result;
+            if (any) {
+                any->UnpackTo(&result);
+            }
+
+            TDescribePartitionResult val(TStatus(std::move(status)), std::move(result));
+            promise.SetValue(std::move(val));
+        };
+
+        Connections_->RunDeferred<Ydb::Topic::V1::TopicService, Ydb::Topic::DescribePartitionRequest, Ydb::Topic::DescribePartitionResponse>(
+            std::move(request),
+            extractor,
+            &Ydb::Topic::V1::TopicService::Stub::AsyncDescribePartition,
+            DbDriverState_,
+            INITIAL_DEFERRED_CALL_DELAY,
+            TRpcRequestSettings::Make(settings));
+
+        return promise.GetFuture();
+    }
+
     TAsyncStatus CommitOffset(const TString& path, ui64 partitionId, const TString& consumerName, ui64 offset,
         const TCommitOffsetSettings& settings) {
         Ydb::Topic::CommitOffsetRequest request = MakeOperationRequest<Ydb::Topic::CommitOffsetRequest>(settings);
@@ -246,24 +307,59 @@ public:
             TRpcRequestSettings::Make(settings));
     }
 
+    TAsyncStatus UpdateOffsetsInTransaction(const NTable::TTransaction& tx,
+                                            const TVector<TTopicOffsets>& topics,
+                                            const TString& consumerName,
+                                            const TUpdateOffsetsInTransactionSettings& settings)
+    {
+        auto request = MakeOperationRequest<Ydb::Topic::UpdateOffsetsInTransactionRequest>(settings);
+
+        request.mutable_tx()->set_id(tx.GetId());
+        request.mutable_tx()->set_session(tx.GetSession().GetId());
+
+        for (auto& t : topics) {
+            auto* topic = request.mutable_topics()->Add();
+            topic->set_path(t.Path);
+
+            for (auto& p : t.Partitions) {
+                auto* partition = topic->mutable_partitions()->Add();
+                partition->set_partition_id(p.PartitionId);
+
+                for (auto& r : p.Offsets) {
+                    auto *range = partition->mutable_partition_offsets()->Add();
+                    range->set_start(r.Start);
+                    range->set_end(r.End);
+                }
+            }
+        }
+
+        request.set_consumer(consumerName);
+
+        return RunSimple<Ydb::Topic::V1::TopicService, Ydb::Topic::UpdateOffsetsInTransactionRequest, Ydb::Topic::UpdateOffsetsInTransactionResponse>(
+            std::move(request),
+            &Ydb::Topic::V1::TopicService::Stub::AsyncUpdateOffsetsInTransaction,
+            TRpcRequestSettings::Make(settings)
+        );
+    }
+
     // Runtime API.
     std::shared_ptr<IReadSession> CreateReadSession(const TReadSessionSettings& settings);
     std::shared_ptr<ISimpleBlockingWriteSession> CreateSimpleWriteSession(const TWriteSessionSettings& settings);
     std::shared_ptr<IWriteSession> CreateWriteSession(const TWriteSessionSettings& settings);
 
     using IReadSessionConnectionProcessorFactory =
-        NYdb::NPersQueue::ISessionConnectionProcessorFactory<Ydb::Topic::StreamReadMessage::FromClient,
-                                                             Ydb::Topic::StreamReadMessage::FromServer>;
+        ISessionConnectionProcessorFactory<Ydb::Topic::StreamReadMessage::FromClient,
+                                           Ydb::Topic::StreamReadMessage::FromServer>;
 
     std::shared_ptr<IReadSessionConnectionProcessorFactory> CreateReadSessionConnectionProcessorFactory();
 
     using IWriteSessionConnectionProcessorFactory =
-        NYdb::NPersQueue::ISessionConnectionProcessorFactory<Ydb::Topic::StreamWriteMessage::FromClient,
-                                                             Ydb::Topic::StreamWriteMessage::FromServer>;
+        ISessionConnectionProcessorFactory<Ydb::Topic::StreamWriteMessage::FromClient,
+                                           Ydb::Topic::StreamWriteMessage::FromServer>;
 
     std::shared_ptr<IWriteSessionConnectionProcessorFactory> CreateWriteSessionConnectionProcessorFactory();
 
-    NGrpc::IQueueClientContextPtr CreateContext() {
+    NYdbGrpc::IQueueClientContextPtr CreateContext() {
         return Connections_->CreateContext();
     }
 

@@ -139,7 +139,6 @@ TExprNode::TPtr DeduplicateAggregateSameTraits(const TExprNode::TPtr& node, TExp
         .Build()
         .Value();
 
-    YQL_CLOG(DEBUG, Core) << "Deduplicate " << node->Content() << " traits";
     return ctx.Builder(self.Pos())
         .Callable("Map")
             .Add(0, dedupedAggregate.Ptr())
@@ -206,6 +205,97 @@ TExprNode::TPtr DeduplicateAggregateSameTraits(const TExprNode::TPtr& node, TExp
             .Seal()
         .Seal()
         .Build();
+}
+
+TExprNode::TPtr MergeAggregateTraits(const TExprNode::TPtr& node, TExprContext& ctx) {
+    const TCoAggregate self(node);
+    using TMergeKey = std::pair<TExprNodeList, TStringBuf>; // all TCoAggregationTraits args (except finish), distinct column name
+    struct TCompareMergeKey {
+        bool operator()(const TMergeKey& a, const TMergeKey& b) const {
+            size_t len = std::min(a.first.size(), b.first.size());
+            for (size_t i = 0; i < len; ++i) {
+                if (a.first[i] != b.first[i]) {
+                    return a.first[i].Get() < b.first[i].Get();
+                }
+            }
+            if (a.first.size() != b.first.size()) {
+                return a.first.size() < b.first.size();
+            }
+            return a.second < b.second;
+        }
+    };
+    TExprNodeList resultAggTuples;
+    TMap<TMergeKey, TVector<TCoAggregateTuple>, TCompareMergeKey> tuplesByKey;
+    TVector<TMergeKey> mergeKeys;
+    for (const auto& aggTuple : self.Handlers()) {
+        auto maybeAggTraits = aggTuple.Trait().Maybe<TCoAggregationTraits>();
+        if (!maybeAggTraits || !maybeAggTraits.Cast().FinishHandler().Ref().IsComplete() || !aggTuple.ColumnName().Ref().IsAtom()) {
+            resultAggTuples.emplace_back(aggTuple.Ptr());
+            continue;
+        }
+
+        TExprNodeList aggTraits = maybeAggTraits.Cast().Ref().ChildrenList();
+        YQL_ENSURE(aggTraits.size() > TCoAggregationTraits::idx_FinishHandler);
+        aggTraits.erase(aggTraits.begin() + TCoAggregationTraits::idx_FinishHandler);
+
+        TStringBuf distinctKey;
+        if (aggTuple.DistinctName()) {
+            distinctKey = aggTuple.DistinctName().Cast().Value();
+        }
+
+        TMergeKey key(std::move(aggTraits), distinctKey);
+        auto& tuples = tuplesByKey[key];
+        if (tuples.empty()) {
+            mergeKeys.push_back(key);
+        }
+        tuples.push_back(aggTuple);
+    }
+
+    bool merged = false;
+    for (auto& key : mergeKeys) {
+        auto it = tuplesByKey.find(key);
+        YQL_ENSURE(it != tuplesByKey.end());
+        auto& tuples = it->second;
+        if (tuples.size() == 1) {
+            resultAggTuples.push_back(tuples.front().Ptr());
+            continue;
+        }
+        merged = true;
+        YQL_ENSURE(!tuples.empty());
+        auto arg = ctx.NewArgument(tuples.front().Pos(), "arg");
+        TExprNodeList bodyItems;
+        TExprNodeList columnNames;
+
+        for (auto& tuple : tuples) {
+            bodyItems.push_back(
+                ctx.Builder(tuple.Trait().Cast<TCoAggregationTraits>().FinishHandler().Pos())
+                    .Apply(tuple.Trait().Cast<TCoAggregationTraits>().FinishHandler().Ref())
+                        .With(0, arg)
+                    .Seal()
+                    .Build()
+            );
+            columnNames.push_back(tuple.ColumnName().Cast<TCoAtom>().Ptr());
+        }
+
+        auto newHandler = ctx.NewLambda(arg->Pos(), ctx.NewArguments(arg->Pos(), { arg }), ctx.NewList(arg->Pos(), std::move(bodyItems)));
+        auto newTraits = Build<TCoAggregationTraits>(ctx, tuples.front().Pos())
+            .InitFrom(tuples.front().Trait().Cast<TCoAggregationTraits>())
+            .FinishHandler(newHandler)
+            .Done().Ptr();
+        auto newTuple = ctx.ChangeChild(tuples.front().Ref(), TCoAggregateTuple::idx_Trait, std::move(newTraits));
+        newTuple = ctx.ChangeChild(*newTuple, TCoAggregateTuple::idx_ColumnName, ctx.NewList(tuples.front().Pos(), std::move(columnNames)));
+        resultAggTuples.push_back(std::move(newTuple));
+    }
+
+    if (!merged) {
+        return node;
+    }
+
+    return Build<TCoAggregate>(ctx, node->Pos())
+        .InitFrom(self)
+        .Handlers(ctx.NewList(self.Pos(), std::move(resultAggTuples)))
+        .Done()
+        .Ptr();
 }
 
 TExprNode::TPtr SimplifySync(const TExprNode::TPtr& node, TExprContext& ctx) {
@@ -382,6 +472,14 @@ TExprNode::TPtr OptimizeAnd(const TExprNode::TPtr& node, TExprContext& ctx) {
     return ctx.ChangeChildren(*node, std::move(newChildren));
 }
 
+TExprNode::TPtr OptimizeMinMax(const TExprNode::TPtr& node, TExprContext& ctx) {
+    if (node->GetTypeAnn()->IsOptionalOrNull()) {
+        return node;
+    }
+
+    return OptimizeDups(node, ctx);
+}
+
 TExprNode::TPtr CheckIfWorldWithSame(const TExprNode::TPtr& node, TExprContext& ctx) {
     if (node->Child(3U) == node->Child(2U)) {
         YQL_CLOG(DEBUG, Core) << node->Content() << " with identical branches";
@@ -480,7 +578,18 @@ void RegisterCoSimpleCallables2(TCallableOptimizerMap& map) {
 
     map["If"] = std::bind(&CheckIfWithSame, _1, _2);
 
-    map["Aggregate"] = std::bind(&DeduplicateAggregateSameTraits, _1, _2);
+    map["Aggregate"] = [](const TExprNode::TPtr& node, TExprContext& ctx, TOptimizeContext&) {
+        if (auto deduplicated = DeduplicateAggregateSameTraits(node, ctx); deduplicated != node) {
+            YQL_CLOG(DEBUG, Core) << "Deduplicate " << node->Content() << " traits";
+            return deduplicated;
+
+        }
+        if (auto merged = MergeAggregateTraits(node, ctx); merged != node) {
+            YQL_CLOG(DEBUG, Core) << "Merge aggregation traits in " << node->Content();
+            return merged;
+        }
+        return node;
+    };
 
     map["Xor"] = std::bind(&OptimizeXor, _1, _2);
     map["Not"] = std::bind(&OptimizeNot, _1, _2);
@@ -488,7 +597,7 @@ void RegisterCoSimpleCallables2(TCallableOptimizerMap& map) {
     map["And"] = std::bind(&OptimizeAnd, _1, _2);
     map["Or"] = std::bind(OptimizeDups, _1, _2);
 
-    map["Min"] = map["Max"] = std::bind(&OptimizeDups, _1, _2);
+    map["Min"] = map["Max"] = std::bind(&OptimizeMinMax, _1, _2);
 
     map["AggrMin"] = map["AggrMax"] = map["Coalesce"] = std::bind(&DropAggrOverSame, _1);
 

@@ -1,15 +1,19 @@
 #include "service_query.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/core/grpc_services/base/base.h>
+#include <ydb/core/grpc_services/rpc_request_base.h>
 #include <ydb/core/kqp/common/kqp.h>
-#include <ydb/public/api/protos/draft/ydb_query.pb.h>
+#include <ydb/core/kqp/common/kqp_script_executions.h>
+#include <ydb/core/kqp/common/simple/services.h>
+#include <ydb/core/kqp/proxy_service/kqp_script_executions.h>
+#include <ydb/public/api/protos/ydb_query.pb.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 namespace NKikimr::NGRpcService {
 
@@ -22,27 +26,22 @@ using TEvFetchScriptResultsRequest = TGrpcRequestNoOperationCall<Ydb::Query::Fet
 
 constexpr i64 MAX_ROWS_LIMIT = 1000;
 
-class TFetchScriptResultsRPC : public TActorBootstrapped<TFetchScriptResultsRPC> {
+class TFetchScriptResultsRPC : public TRpcRequestActor<TFetchScriptResultsRPC, TEvFetchScriptResultsRequest, false> {
 public:
+    using TRpcRequestActorBase = TRpcRequestActor<TFetchScriptResultsRPC, TEvFetchScriptResultsRequest, false>;
+
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::GRPC_REQ;
     }
 
     TFetchScriptResultsRPC(TEvFetchScriptResultsRequest* request)
-        : Request_(request)
+        : TRpcRequestActorBase(request)
     {}
 
     void Bootstrap() {
-        const auto* req = Request_->GetProtoRequest();
+        const auto* req = GetProtoRequest();
         if (!req) {
             Reply(Ydb::StatusIds::INTERNAL_ERROR, "Internal error");
-            return;
-        }
-
-        const TString& executionId = req->execution_id();
-        NActors::TActorId runScriptActor;
-        if (!NKqp::ScriptExecutionIdToActorId(executionId, runScriptActor)) {
-            Reply(Ydb::StatusIds::BAD_REQUEST, "Incorrect execution id");
             return;
         }
 
@@ -51,26 +50,27 @@ public:
             return;
         }
 
-        if (req->rows_offset() < 0) {
-            Reply(Ydb::StatusIds::BAD_REQUEST, "Invalid rows offset");
-            return;
-        }
-
         if (req->rows_limit() > MAX_ROWS_LIMIT) {
             Reply(Ydb::StatusIds::BAD_REQUEST, TStringBuilder() << "Rows limit is too large. Values <= " << MAX_ROWS_LIMIT << " are allowed");
             return;
         }
 
-        auto ev = MakeHolder<NKqp::TEvKqp::TEvFetchScriptResultsRequest>();
-        ev->Record.SetRowsOffset(req->rows_offset());
-        ev->Record.SetRowsLimit(req->rows_limit());
-
-        ui64 flags = IEventHandle::FlagTrackDelivery;
-        if (runScriptActor.NodeId() != SelfId().NodeId()) {
-            flags |= IEventHandle::FlagSubscribeOnSession;
-            SubscribedOnSession = runScriptActor.NodeId();
+        RowsOffset = 0;
+        if (!req->fetch_token().Empty()) {
+            auto fetch_token = TryFromString<ui64>(req->fetch_token());
+            if (fetch_token) {
+                RowsOffset = *fetch_token;
+            } else {
+                Reply(Ydb::StatusIds::BAD_REQUEST, "Invalid fetch token");
+                return;
+            }
         }
-        Send(runScriptActor, std::move(ev), flags);
+
+        if (!GetExecutionIdFromRequest()) {
+            return;
+        }
+
+        Register(NKqp::CreateGetScriptExecutionResultActor(SelfId(), DatabaseName, ExecutionId, req->result_set_index(), RowsOffset, req->rows_limit() + 1));
 
         Become(&TFetchScriptResultsRPC::StateFunc);
     }
@@ -78,8 +78,6 @@ public:
 private:
     STRICT_STFUNC(StateFunc,
         hFunc(NKqp::TEvKqp::TEvFetchScriptResultsResponse, Handle);
-        hFunc(NActors::TEvents::TEvUndelivered, Handle);
-        hFunc(NActors::TEvInterconnect::TEvNodeDisconnected, Handle);
     )
 
     void Handle(NKqp::TEvKqp::TEvFetchScriptResultsResponse::TPtr& ev) {
@@ -89,27 +87,14 @@ private:
         resp.set_result_set_index(static_cast<i64>(ev->Get()->Record.GetResultSetIndex()));
         if (ev->Get()->Record.HasResultSet()) {
             resp.mutable_result_set()->Swap(ev->Get()->Record.MutableResultSet());
+
+            const auto* userReq = GetProtoRequest();
+            if (resp.mutable_result_set()->rows_size() == userReq->rows_limit() + 1) {
+                resp.mutable_result_set()->mutable_rows()->DeleteSubrange(userReq->rows_limit(), 1);
+                resp.set_next_fetch_token(ToString(RowsOffset + userReq->rows_limit()));
+            }
         }
         Reply(resp.status(), std::move(resp));
-    }
-
-    void Handle(NActors::TEvents::TEvUndelivered::TPtr& ev) {
-        if (ev->Get()->Reason == NActors::TEvents::TEvUndelivered::ReasonActorUnknown) {
-            Reply(Ydb::StatusIds::NOT_FOUND, "No such execution");
-        } else {
-            Reply(Ydb::StatusIds::UNAVAILABLE, "Failed to deliver request to destination");
-        }
-    }
-
-    void Handle(NActors::TEvInterconnect::TEvNodeDisconnected::TPtr&) {
-        Reply(Ydb::StatusIds::UNAVAILABLE, "Failed to deliver request to destination");
-    }
-
-    void PassAway() override {
-        if (SubscribedOnSession) {
-            Send(TActivationContext::InterconnectProxy(*SubscribedOnSession), new TEvents::TEvUnsubscribe());
-        }
-        TActorBootstrapped<TFetchScriptResultsRPC>::PassAway();
     }
 
     void Reply(Ydb::StatusIds::StatusCode status, Ydb::Query::FetchScriptResultsResponse&& result, const NYql::TIssues& issues = {}) {
@@ -126,7 +111,7 @@ private:
         TString serializedResult;
         Y_PROTOBUF_SUPPRESS_NODISCARD result.SerializeToString(&serializedResult);
 
-        Request_->SendSerializedResult(std::move(serializedResult), status);
+        Request->SendSerializedResult(std::move(serializedResult), status);
 
         PassAway();
     }
@@ -142,18 +127,31 @@ private:
         Reply(status, issues);
     }
 
+    bool GetExecutionIdFromRequest() {
+        TMaybe<TString> executionId = NKqp::ScriptExecutionIdFromOperation(GetProtoRequest()->operation_id());
+        if (!executionId) {
+            Reply(Ydb::StatusIds::BAD_REQUEST, "Invalid operation id");
+            return false;
+        }
+        ExecutionId = *executionId;
+        return true;
+    }
+
 private:
-    std::unique_ptr<TEvFetchScriptResultsRequest> Request_;
-    TMaybe<ui32> SubscribedOnSession;
+    TString ExecutionId;
+    ui64 RowsOffset = 0;
 };
 
 } // namespace
 
+namespace NQuery {
+
 void DoFetchScriptResults(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
-    Y_UNUSED(f);
     auto* req = dynamic_cast<TEvFetchScriptResultsRequest*>(p.release());
-    Y_VERIFY(req != nullptr, "Wrong using of TGRpcRequestWrapper");
-    TActivationContext::AsActorContext().Register(new TFetchScriptResultsRPC(req));
+    Y_ABORT_UNLESS(req != nullptr, "Wrong using of TGRpcRequestWrapper");
+    f.RegisterActor(new TFetchScriptResultsRPC(req));
+}
+
 }
 
 } // namespace NKikimr::NGRpcService

@@ -34,6 +34,7 @@ sql_stmt_core:
   | import_stmt
   | export_stmt
   | alter_table_stmt
+  | alter_external_table_stmt
   | do_stmt
   | define_action_or_subquery_stmt
   | if_stmt
@@ -48,12 +49,20 @@ sql_stmt_core:
   | alter_object_stmt
   | drop_object_stmt
   | create_external_data_source_stmt
+  | alter_external_data_source_stmt
   | drop_external_data_source_stmt
   | create_replication_stmt
   | drop_replication_stmt
   | create_topic_stmt
   | alter_topic_stmt
   | drop_topic_stmt
+  | grant_permissions_stmt
+  | revoke_permissions_stmt
+  | alter_table_store_stmt
+  | upsert_object_stmt
+  | create_view_stmt
+  | drop_view_stmt
+  | alter_replication_stmt
 ;
 
 expr:
@@ -72,7 +81,7 @@ cond_expr:
     NOT? match_op eq_subexpr (ESCAPE eq_subexpr)?
   | NOT? IN COMPACT? in_expr
   | (ISNULL | NOTNULL | IS NULL | (IS)? NOT NULL)
-  | NOT? BETWEEN eq_subexpr AND eq_subexpr
+  | NOT? BETWEEN (SYMMETRIC | ASYMMETRIC)? eq_subexpr AND eq_subexpr
   | ((EQUALS | EQUALS2 | NOT_EQUALS | NOT_EQUALS2 | distinct_from_op) eq_subexpr)+ /* order of the eq subexpressions is reversed! */
 ;
 
@@ -374,6 +383,108 @@ select_core:
   group_by_clause? (HAVING expr)? window_clause? ext_order_by_clause?
 ;
 
+// ISO/IEC 9075-2:2016(E) 7.7 <row pattern recognition clause>
+row_pattern_recognition_clause: MATCH_RECOGNIZE LPAREN
+    window_partition_clause?
+    order_by_clause?
+    row_pattern_measures?
+    row_pattern_rows_per_match?
+    row_pattern_common_syntax
+  RPAREN
+;
+
+row_pattern_rows_per_match:
+      ONE ROW PER MATCH
+    | ALL ROWS PER MATCH row_pattern_empty_match_handling?
+;
+
+row_pattern_empty_match_handling: SHOW EMPTY MATCHES | OMIT EMPTY MATCHES | WITH UNMATCHED ROWS;
+
+// ISO/IEC 9075-2:2016(E) 7.8 <row pattern measures>
+row_pattern_measures: MEASURES row_pattern_measure_list;
+
+row_pattern_measure_list: row_pattern_measure_definition (COMMA row_pattern_measure_definition)*;
+
+row_pattern_measure_definition: expr AS an_id;
+
+// ISO/IEC 9075-2:2016(E) 7.9 <row pattern common syntax>
+row_pattern_common_syntax:
+    (AFTER MATCH row_pattern_skip_to)?
+    row_pattern_initial_or_seek?
+    PATTERN LPAREN row_pattern RPAREN
+    row_pattern_subset_clause?
+    DEFINE row_pattern_definition_list
+;
+
+row_pattern_skip_to:
+      SKIP TO NEXT ROW
+    | SKIP PAST LAST ROW
+    | SKIP TO FIRST row_pattern_skip_to_variable_name
+    | SKIP TO LAST row_pattern_skip_to_variable_name
+    | SKIP TO row_pattern_skip_to_variable_name
+;
+
+row_pattern_skip_to_variable_name: row_pattern_variable_name;
+
+row_pattern_initial_or_seek: INITIAL | SEEK;
+
+row_pattern: row_pattern_term (PIPE row_pattern_term)*;
+
+row_pattern_term: row_pattern_factor+;
+
+row_pattern_factor: row_pattern_primary row_pattern_quantifier?;
+
+row_pattern_quantifier:
+      ASTERISK QUESTION?
+    | PLUS QUESTION?
+    | QUESTION QUESTION?
+    | LBRACE_CURLY integer? COMMA integer? RBRACE_CURLY QUESTION?
+    | LBRACE_CURLY integer RBRACE_CURLY
+;
+
+row_pattern_primary:
+      row_pattern_primary_variable_name
+    | DOLLAR
+    | CARET
+    | LPAREN row_pattern? RPAREN
+    | LBRACE_CURLY MINUS row_pattern MINUS RBRACE_CURLY //TODO This rule accepts spaces between brace and minus sign, i.e: {   -  S2 - } that is not supposed to. Handle this case in https://st.yandex-team.ru/YQL-16227
+    | row_pattern_permute
+;
+
+row_pattern_primary_variable_name: row_pattern_variable_name;
+
+row_pattern_permute: PERMUTE LPAREN
+    row_pattern (COMMA row_pattern)*
+    RPAREN
+;
+
+row_pattern_subset_clause: SUBSET row_pattern_subset_list;
+
+row_pattern_subset_list: row_pattern_subset_item (COMMA row_pattern_subset_item)*;
+
+row_pattern_subset_item: row_pattern_subset_item_variable_name EQUALS LPAREN
+    row_pattern_subset_rhs RPAREN
+;
+
+row_pattern_subset_item_variable_name: row_pattern_variable_name;
+
+row_pattern_subset_rhs: row_pattern_subset_rhs_variable_name (COMMA row_pattern_subset_rhs_variable_name)*;
+
+row_pattern_subset_rhs_variable_name: row_pattern_variable_name;
+
+row_pattern_definition_list: row_pattern_definition (COMMA row_pattern_definition)*;
+
+row_pattern_definition: row_pattern_definition_variable_name AS row_pattern_definition_search_condition;
+
+row_pattern_definition_variable_name: row_pattern_variable_name;
+
+row_pattern_definition_search_condition: search_condition;
+
+search_condition: expr;
+
+//TODO allow use tokens as vars https://st.yandex-team.ru/YQL-16223
+row_pattern_variable_name: identifier;
+
 order_by_clause: ORDER BY sort_specification_list;
 
 ext_order_by_clause: ASSUME? order_by_clause;
@@ -419,7 +530,7 @@ flatten_by_arg:
 
 flatten_source: named_single_source (FLATTEN ((OPTIONAL|LIST|DICT)? BY flatten_by_arg | COLUMNS))?;
 
-named_single_source: single_source (((AS an_id) | an_id_as_compat) pure_column_list?)? (sample_clause | tablesample_clause)?;
+named_single_source: single_source row_pattern_recognition_clause? (((AS an_id) | an_id_as_compat) pure_column_list?)? (sample_clause | tablesample_clause)?;
 
 single_source:
     table_ref
@@ -445,7 +556,9 @@ join_constraint:
   | USING pure_column_or_named_list
 ;
 
-into_table_stmt: (INSERT | INSERT OR ABORT | INSERT OR REVERT | INSERT OR IGNORE | UPSERT | REPLACE) INTO into_simple_table_ref into_values_source;
+returning_columns_list: RETURNING (ASTERISK | an_id (COMMA an_id)*);
+
+into_table_stmt: (INSERT | INSERT OR ABORT | INSERT OR REVERT | INSERT OR IGNORE | UPSERT | REPLACE) INTO into_simple_table_ref into_values_source returning_columns_list?;
 
 into_values_source:
     pure_column_list? values_source
@@ -460,13 +573,34 @@ values_source_row: LPAREN expr_list RPAREN;
 
 simple_values_source: expr_list | select_stmt;
 
-create_external_data_source_stmt: CREATE EXTERNAL DATA SOURCE object_ref
+create_external_data_source_stmt: CREATE (OR REPLACE)? EXTERNAL DATA SOURCE (IF NOT EXISTS)? object_ref
     with_table_settings
 ;
 
-drop_external_data_source_stmt: DROP EXTERNAL DATA SOURCE object_ref;
+alter_external_data_source_stmt: ALTER EXTERNAL DATA SOURCE object_ref
+    alter_external_data_source_action (COMMA alter_external_data_source_action)*
+;
+alter_external_data_source_action:
+    alter_table_set_table_setting_uncompat
+  | alter_table_set_table_setting_compat
+  | alter_table_reset_table_setting
+//| alter_table_rename_to // TODO
+;
 
-create_object_stmt: CREATE OBJECT object_ref
+drop_external_data_source_stmt: DROP EXTERNAL DATA SOURCE (IF EXISTS)? object_ref;
+
+create_view_stmt: CREATE VIEW object_ref
+    with_table_settings
+    AS select_stmt
+;
+
+drop_view_stmt: DROP VIEW object_ref;
+
+upsert_object_stmt: UPSERT OBJECT object_ref
+    LPAREN TYPE object_type_ref RPAREN
+    create_object_features?
+;
+create_object_stmt: CREATE OBJECT (IF NOT EXISTS)? object_ref
     LPAREN TYPE object_type_ref RPAREN
     create_object_features?
 ;
@@ -478,13 +612,13 @@ alter_object_stmt: ALTER OBJECT object_ref
 ;
 alter_object_features: SET object_features;
 
-drop_object_stmt: DROP OBJECT object_ref
+drop_object_stmt: DROP OBJECT (IF EXISTS)? object_ref
     LPAREN TYPE object_type_ref RPAREN
     drop_object_features?
 ;
 drop_object_features: WITH object_features;
 
-object_feature_value: an_id_or_type | bind_parameter;
+object_feature_value: id_or_type | bind_parameter | STRING_VALUE;
 object_feature_kv: an_id_or_type EQUALS object_feature_value;
 object_feature_flag: an_id_or_type;
 object_feature: object_feature_kv | object_feature_flag;
@@ -492,17 +626,19 @@ object_features: object_feature | LPAREN object_feature (COMMA object_feature)* 
 
 object_type_ref: an_id_or_type;
 
-create_table_stmt: CREATE (TABLE | TABLESTORE | EXTERNAL TABLE) simple_table_ref LPAREN create_table_entry (COMMA create_table_entry)* RPAREN
+create_table_stmt: CREATE (OR REPLACE)? (TABLE | TABLESTORE | EXTERNAL TABLE | TEMP TABLE | TEMPORARY TABLE) (IF NOT EXISTS)? simple_table_ref LPAREN create_table_entry (COMMA create_table_entry)* COMMA? RPAREN
     table_inherits?
     table_partition_by?
     with_table_settings?
-    table_tablestore?;
+    table_tablestore?
+    table_as_source?;
 create_table_entry:
     column_schema
   | table_constraint
   | table_index
   | family_entry
   | changefeed
+  | an_id_schema
 ;
 
 table_inherits: INHERITS LPAREN simple_table_ref_core (COMMA simple_table_ref_core)* RPAREN;
@@ -510,6 +646,7 @@ table_partition_by: PARTITION BY HASH pure_column_list;
 with_table_settings: WITH LPAREN table_settings_entry (COMMA table_settings_entry)* RPAREN;
 table_tablestore: TABLESTORE simple_table_ref_core;
 table_settings_entry: an_id EQUALS table_setting_value;
+table_as_source: AS values_source;
 
 alter_table_stmt: ALTER TABLE simple_table_ref alter_table_action (COMMA alter_table_action)*;
 alter_table_action:
@@ -530,6 +667,22 @@ alter_table_action:
   | alter_table_rename_index_to
 ;
 
+alter_external_table_stmt: ALTER EXTERNAL TABLE simple_table_ref alter_external_table_action (COMMA alter_external_table_action)*;
+alter_external_table_action:
+    alter_table_add_column
+  | alter_table_drop_column
+  | alter_table_set_table_setting_uncompat
+  | alter_table_set_table_setting_compat
+  | alter_table_reset_table_setting
+//| alter_table_rename_to // TODO
+;
+
+alter_table_store_stmt: ALTER TABLESTORE object_ref alter_table_store_action (COMMA alter_table_store_action)*;
+alter_table_store_action:
+    alter_table_add_column
+  | alter_table_drop_column
+;
+
 alter_table_add_column: ADD COLUMN? column_schema;
 alter_table_drop_column: DROP COLUMN? an_id;
 alter_table_alter_column: ALTER COLUMN an_id SET family_relation;
@@ -546,8 +699,9 @@ alter_table_add_changefeed: ADD changefeed;
 alter_table_alter_changefeed: ALTER CHANGEFEED an_id changefeed_alter_settings;
 alter_table_drop_changefeed: DROP CHANGEFEED an_id;
 
-column_schema: an_id_schema type_name_or_bind family_relation? (NOT? NULL)?;
+column_schema: an_id_schema type_name_or_bind family_relation? opt_column_constraints;
 family_relation: FAMILY an_id;
+opt_column_constraints: (NOT? NULL)? (DEFAULT expr)?;
 column_order_by_specification: an_id (ASC | DESC)?;
 
 table_constraint:
@@ -557,7 +711,7 @@ table_constraint:
 ;
 
 table_index: INDEX an_id table_index_type
-    (WITH LPAREN an_id EQUALS an_id COMMA (an_id EQUALS an_id)* RPAREN)?
+    (WITH LPAREN an_id EQUALS an_id (COMMA an_id EQUALS an_id)* COMMA? RPAREN)?
     ON LPAREN an_id_schema (COMMA an_id_schema)* RPAREN
     (COVER LPAREN an_id_schema (COMMA an_id_schema)* RPAREN)?;
 
@@ -585,7 +739,8 @@ table_setting_value:
     | STRING_VALUE
     | integer
     | split_boundaries
-    | expr ON an_id
+    | expr ON an_id (AS (SECONDS | MILLISECONDS | MICROSECONDS | NANOSECONDS))?
+    | bool_value
 ;
 
 family_entry: FAMILY an_id family_settings;
@@ -605,13 +760,35 @@ drop_table_stmt: DROP (TABLE | TABLESTORE | EXTERNAL TABLE) (IF EXISTS)? simple_
 create_user_stmt: CREATE USER role_name create_user_option?;
 alter_user_stmt: ALTER USER role_name (WITH? create_user_option | RENAME TO role_name);
 
-create_group_stmt: CREATE GROUP role_name;
+create_group_stmt: CREATE GROUP role_name (WITH USER role_name (COMMA role_name)* COMMA?)?;
 alter_group_stmt: ALTER GROUP role_name ((ADD|DROP) USER role_name (COMMA role_name)* COMMA? | RENAME TO role_name);
 
 drop_role_stmt: DROP (USER|GROUP) (IF EXISTS)? role_name (COMMA role_name)* COMMA?;
 
 role_name: an_id_or_type | bind_parameter;
 create_user_option: ENCRYPTED? PASSWORD expr;
+
+grant_permissions_stmt: GRANT permission_name_target ON an_id_schema (COMMA an_id_schema)* TO role_name (COMMA role_name)* COMMA? (WITH GRANT OPTION)?;
+revoke_permissions_stmt: REVOKE (GRANT OPTION FOR)? permission_name_target ON an_id_schema (COMMA an_id_schema)* FROM role_name (COMMA role_name)*;
+
+permission_id:
+      CONNECT
+    | LIST
+    | INSERT
+    | MANAGE
+    | DROP
+    | GRANT
+    | MODIFY (TABLES | ATTRIBUTES)
+    | (UPDATE | ERASE) ROW
+    | (REMOVE | DESCRIBE | ALTER) SCHEMA
+    | SELECT (TABLES | ATTRIBUTES | ROW)?
+    | (USE | FULL) LEGACY?
+    | CREATE (DIRECTORY | TABLE | QUEUE)?
+;
+
+permission_name: permission_id | STRING_VALUE;
+
+permission_name_target: permission_name (COMMA permission_name)* COMMA? | ALL PRIVILEGES?;
 
 create_replication_stmt: CREATE ASYNC REPLICATION object_ref
     FOR replication_target (COMMA replication_target)*
@@ -622,6 +799,13 @@ replication_target: object_ref AS object_ref;
 replication_settings: replication_settings_entry (COMMA replication_settings_entry)*;
 replication_settings_entry: an_id EQUALS STRING_VALUE;
 
+alter_replication_stmt: ALTER ASYNC REPLICATION object_ref alter_replication_action (COMMA alter_replication_action)*;
+alter_replication_action:
+    alter_replication_set_setting
+;
+
+alter_replication_set_setting: SET LPAREN replication_settings RPAREN;
+
 drop_replication_stmt: DROP ASYNC REPLICATION object_ref CASCADE?;
 
 action_or_subquery_args: opt_bind_parameter (COMMA opt_bind_parameter)*;
@@ -630,12 +814,12 @@ define_action_or_subquery_stmt: DEFINE (ACTION|SUBQUERY) bind_parameter LPAREN a
 define_action_or_subquery_body: SEMICOLON* (sql_stmt_core (SEMICOLON+ sql_stmt_core)* SEMICOLON*)?;
 
 if_stmt: EVALUATE? IF expr do_stmt (ELSE do_stmt)?;
-for_stmt: EVALUATE? FOR bind_parameter IN expr do_stmt (ELSE do_stmt)?;
+for_stmt: EVALUATE? PARALLEL? FOR bind_parameter IN expr do_stmt (ELSE do_stmt)?;
 
-table_ref: (cluster_expr DOT)? AT? (table_key | an_id_expr LPAREN (table_arg (COMMA table_arg)* COMMA?)? RPAREN | bind_parameter (LPAREN expr_list? RPAREN)? (VIEW an_id)?) table_hints?;
+table_ref: (cluster_expr DOT)? AT? (table_key | an_id_expr LPAREN (table_arg (COMMA table_arg)* COMMA?)? RPAREN | bind_parameter (LPAREN expr_list? RPAREN)? (VIEW view_name)?) table_hints?;
 
-table_key: id_table_or_type (VIEW an_id)?;
-table_arg: AT? named_expr (VIEW an_id)?;
+table_key: id_table_or_type (VIEW view_name)?;
+table_arg: AT? named_expr (VIEW view_name)?;
 table_hints: WITH (table_hint | LPAREN table_hint (COMMA table_hint)* RPAREN);
 table_hint:
       an_id_hint (EQUALS (type_name_tag | LPAREN type_name_tag (COMMA type_name_tag)* COMMA? RPAREN))?
@@ -648,8 +832,8 @@ simple_table_ref_core: object_ref | AT? bind_parameter;
 simple_table_ref: simple_table_ref_core table_hints?;
 into_simple_table_ref: simple_table_ref (ERASE BY pure_column_list)?;
 
-delete_stmt: DELETE FROM simple_table_ref (WHERE expr | ON into_values_source)?;
-update_stmt: UPDATE simple_table_ref (SET set_clause_choice (WHERE expr)? | ON into_values_source);
+delete_stmt: DELETE FROM simple_table_ref (WHERE expr | ON into_values_source)? returning_columns_list?;
+update_stmt: UPDATE simple_table_ref (SET set_clause_choice (WHERE expr)? | ON into_values_source)  returning_columns_list?;
 
 /// out of 2003 standart
 set_clause_choice: set_clause_list | multiple_column_assignment;
@@ -874,6 +1058,8 @@ an_id_hint: id_hint | STRING_VALUE;
 an_id_pure: identifier | STRING_VALUE;
 an_id_as_compat: id_as_compat | STRING_VALUE;
 
+view_name: an_id | PRIMARY KEY;
+
 opt_id_prefix: (an_id DOT)?;
 cluster_expr: (an_id COLON)? (pure_column_or_named | ASTERISK);
 
@@ -895,7 +1081,8 @@ keyword:
 ;
 
 keyword_expr_uncompat:
-    BETWEEN
+    ASYMMETRIC
+  | BETWEEN
   | BITCAST
   | CASE
   | CAST
@@ -917,8 +1104,10 @@ keyword_expr_uncompat:
   | PROCESS
   | REDUCE
   | RETURN
+  | RETURNING
   | ROLLUP
   | SELECT
+  | SYMMETRIC
   | UNBOUNDED
   | WHEN
   | WHERE
@@ -964,12 +1153,52 @@ keyword_hint_uncompat:
 ;
 
 keyword_as_compat:
-    CONSUMER
+    ATTRIBUTES
+  | CONNECT
+  | CONSUMER
   | DATA
+  | DESCRIBE
+  | DIRECTORY
+  | FIRST
+  | GRANT
+  | INITIAL
+  | LAST
+  | LEGACY
+  | MANAGE
+  | MATCHES
+  | MATCH_RECOGNIZE
+  | MEASURES
+  | MICROSECONDS
+  | MILLISECONDS
+  | MODIFY
+  | NANOSECONDS
+  | NEXT
+  | OMIT
+  | ONE
+  | OPTION
+  | PARALLEL
+  | PAST
+  | PATTERN
+  | PER
+  | PERMUTE
+  | PRIVILEGES
+  | QUEUE
+//  | READ
+  | REMOVE
   | REPLICATION
+  | REVOKE
+  | SECONDS
+  | SEEK
+  | SHOW
+  | SKIP
   | SOURCE
+  | SUBSET
+  | TABLES
   | TOPIC
   | TYPE
+  | UNMATCHED
+//  | WRITE
+
 ;
 
 // insert new keyword into keyword_as_compat also
@@ -986,6 +1215,7 @@ keyword_compat: (
   | ASC
   | ASYNC
   | ATTACH
+  | ATTRIBUTES
   | AUTOINCREMENT
   | BEFORE
   | BEGIN
@@ -998,6 +1228,7 @@ keyword_compat: (
   | COMMIT
   | CONDITIONAL
   | CONFLICT
+  | CONNECT
   | CONSTRAINT
   | CONSUMER
   | COVER
@@ -1014,7 +1245,9 @@ keyword_compat: (
   | DEFINE
   | DELETE
   | DESC
+  | DESCRIBE
   | DETACH
+  | DIRECTORY
   | DISABLE
   | DISCARD
   | DO
@@ -1036,12 +1269,14 @@ keyword_compat: (
   | FAIL
   | FAMILY
   | FILTER
+  | FIRST
   | FLATTEN
   | FOLLOWING
   | FOR
   | FOREIGN
   | FUNCTION
   | GLOB
+  | GRANT
   | GROUP
   | GROUPING
   | HASH
@@ -1054,6 +1289,7 @@ keyword_compat: (
   | INDEX
   | INDEXED
   | INHERITS
+  | INITIAL
   | INITIALLY
   | INNER
   | INSERT
@@ -1063,37 +1299,60 @@ keyword_compat: (
   | ISNULL
   | JOIN
   | KEY
+  | LAST
   | LEFT
+  | LEGACY
   | LIKE
+  | MANAGE
   | MATCH
+  | MATCHES
+  | MATCH_RECOGNIZE
+  | MEASURES
+  | MICROSECONDS
+  | MILLISECONDS
+  | MODIFY
+  | NANOSECONDS
   | NATURAL
+  | NEXT
   | NO
   | NOTNULL
   | NULLS
   | OBJECT
   | OF
   | OFFSET
+  | OMIT
   | ON
+  | ONE
   | ONLY
+  | OPTION
   | OR
   | ORDER
   | OTHERS
   | OUTER
   | OVER
+  | PARALLEL
   | PARTITION
   | PASSING
   | PASSWORD
+  | PAST
+  | PATTERN
+  | PER
+  | PERMUTE
   | PLAN
   | PRAGMA
   | PRECEDING
   | PRESORT
   | PRIMARY
+  | PRIVILEGES
 //  | QUERY
+  | QUEUE
   | RAISE
+//  | READ
   | REFERENCES
   | REGEXP
   | REINDEX
   | RELEASE
+  | REMOVE
   | RENAME
   | REPLACE
   | REPLICATION
@@ -1101,36 +1360,43 @@ keyword_compat: (
   | RESPECT
   | RESTRICT
   | RESULT
-  | RETURNING
   | REVERT
+  | REVOKE
   | RIGHT
   | RLIKE
   | ROLLBACK
   | ROW
   | SAMPLE
   | SAVEPOINT
+  | SECONDS
+  | SEEK
   | SEMI
   | SETS
+  | SHOW
+  | SKIP
   | SOURCE
   | SUBQUERY
+  | SUBSET
   | SYMBOLS
   | SYNC
   | SYSTEM
   | TABLE
+  | TABLES
   | TABLESAMPLE
   | TABLESTORE
   | TEMP
   | TEMPORARY
   | THEN
   | TIES
-  | TYPE
   | TO
   | TOPIC
   | TRANSACTION
   | TRIGGER
+  | TYPE
   | UNCONDITIONAL
   | UNIQUE
   | UNKNOWN
+  | UNMATCHED
   | UPDATE
   | UPSERT
   | USE
@@ -1142,6 +1408,7 @@ keyword_compat: (
   | VIRTUAL
   | WITH
   | WRAPPER
+//  | WRITE
   | XOR
   );
 
@@ -1254,8 +1521,10 @@ ARRAY: A R R A Y;
 AS: A S;
 ASC: A S C;
 ASSUME: A S S U M E;
+ASYMMETRIC: A S Y M M E T R I C;
 ASYNC: A S Y N C;
 ATTACH: A T T A C H;
+ATTRIBUTES: A T T R I B U T E S;
 AUTOINCREMENT: A U T O I N C R E M E N T;
 AUTOMAP: A U T O M A P;
 BEFORE: B E F O R E;
@@ -1277,6 +1546,7 @@ COMMIT: C O M M I T;
 COMPACT: C O M P A C T;
 CONDITIONAL: C O N D I T I O N A L;
 CONFLICT: C O N F L I C T;
+CONNECT: C O N N E C T;
 CONSTRAINT: C O N S T R A I N T;
 CONSUMER: C O N S U M E R;
 COVER: C O V E R;
@@ -1284,8 +1554,8 @@ CREATE: C R E A T E;
 CROSS: C R O S S;
 CUBE: C U B E;
 CURRENT: C U R R E N T;
-CURRENT_TIME: C U R R E N T '_' T I M E;
 CURRENT_DATE: C U R R E N T '_' D A T E;
+CURRENT_TIME: C U R R E N T '_' T I M E;
 CURRENT_TIMESTAMP: C U R R E N T '_' T I M E S T A M P;
 DATA: D A T A;
 DATABASE: D A T A B A S E;
@@ -1297,8 +1567,10 @@ DEFERRED: D E F E R R E D;
 DEFINE: D E F I N E;
 DELETE: D E L E T E;
 DESC: D E S C;
+DESCRIBE: D E S C R I B E;
 DETACH: D E T A C H;
 DICT: D I C T;
+DIRECTORY: D I R E C T O R Y;
 DISABLE: D I S A B L E;
 DISCARD: D I S C A R D;
 DISTINCT: D I S T I N C T;
@@ -1307,26 +1579,28 @@ DROP: D R O P;
 // TODO: fix sql formatter and drop EACH
 EACH: E A C H;
 ELSE: E L S E;
-ERROR: E R R O R;
 EMPTY: E M P T Y;
 EMPTY_ACTION: E M P T Y '_' A C T I O N;
 ENCRYPTED: E N C R Y P T E D;
 END: E N D;
 ENUM: E N U M;
 ERASE: E R A S E;
+ERROR: E R R O R;
 ESCAPE: E S C A P E;
 EVALUATE: E V A L U A T E;
 EXCEPT: E X C E P T;
 EXCLUDE: E X C L U D E;
-EXCLUSIVE: E X C L U S I V E;
 EXCLUSION: E X C L U S I O N;
+EXCLUSIVE: E X C L U S I V E;
 EXISTS: E X I S T S;
 EXPLAIN: E X P L A I N;
 EXPORT: E X P O R T;
 EXTERNAL: E X T E R N A L;
 FAIL: F A I L;
+FALSE: F A L S E;
 FAMILY: F A M I L Y;
 FILTER: F I L T E R;
+FIRST: F I R S T;
 FLATTEN: F L A T T E N;
 FLOW: F L O W;
 FOLLOWING: F O L L O W I N G;
@@ -1337,6 +1611,7 @@ FULL: F U L L;
 FUNCTION: F U N C T I O N;
 GLOB: G L O B;
 GLOBAL: G L O B A L;
+GRANT: G R A N T;
 GROUP: G R O U P;
 GROUPING: G R O U P I N G;
 GROUPS: G R O U P S;
@@ -1352,6 +1627,7 @@ IN: I N;
 INDEX: I N D E X;
 INDEXED: I N D E X E D;
 INHERITS: I N H E R I T S;
+INITIAL: I N I T I A L;
 INITIALLY: I N I T I A L L Y;
 INNER: I N N E R;
 INSERT: I N S E R T;
@@ -1362,16 +1638,27 @@ IS: I S;
 ISNULL: I S N U L L;
 JOIN: J O I N;
 JSON_EXISTS: J S O N '_' E X I S T S;
-JSON_VALUE: J S O N '_' V A L U E;
 JSON_QUERY: J S O N '_' Q U E R Y;
+JSON_VALUE: J S O N '_' V A L U E;
 KEY: K E Y;
+LAST: L A S T;
 LEFT: L E F T;
+LEGACY: L E G A C Y;
 LIKE: L I K E;
 LIMIT: L I M I T;
 LIST: L I S T;
 LOCAL: L O C A L;
+MANAGE: M A N A G E;
 MATCH: M A T C H;
+MATCHES: M A T C H E S;
+MATCH_RECOGNIZE: M A T C H '_' R E C O G N I Z E;
+MEASURES: M E A S U R E S;
+MICROSECONDS: M I C R O S E C O N D S;
+MILLISECONDS: M I L L I S E C O N D S;
+MODIFY: M O D I F Y;
+NANOSECONDS: N A N O S E C O N D S;
 NATURAL: N A T U R A L;
+NEXT: N E X T;
 NO: N O;
 NOT: N O T;
 NOTNULL: N O T N U L L;
@@ -1380,31 +1667,43 @@ NULLS: N U L L S;
 OBJECT: O B J E C T;
 OF: O F;
 OFFSET: O F F S E T;
+OMIT: O M I T;
 ON: O N;
+ONE: O N E;
 ONLY: O N L Y;
+OPTION: O P T I O N;
 OPTIONAL: O P T I O N A L;
 OR: O R;
 ORDER: O R D E R;
 OTHERS: O T H E R S;
 OUTER: O U T E R;
 OVER: O V E R;
+PARALLEL: P A R A L L E L;
 PARTITION: P A R T I T I O N;
 PASSING: P A S S I N G;
 PASSWORD: P A S S W O R D;
+PAST: P A S T;
+PATTERN: P A T T E R N;
+PER: P E R;
+PERMUTE: P E R M U T E;
 PLAN: P L A N;
 PRAGMA: P R A G M A;
 PRECEDING: P R E C E D I N G;
 PRESORT: P R E S O R T;
 PRIMARY: P R I M A R Y;
+PRIVILEGES: P R I V I L E G E S;
 PROCESS: P R O C E S S;
 //QUERY: Q U E R Y;
+QUEUE: Q U E U E;
 RAISE: R A I S E;
 RANGE: R A N G E;
+//READ: R E A D;
 REDUCE: R E D U C E;
 REFERENCES: R E F E R E N C E S;
 REGEXP: R E G E X P;
 REINDEX: R E I N D E X;
 RELEASE: R E L E A S E;
+REMOVE: R E M O V E;
 RENAME: R E N A M E;
 REPEATABLE: R E P E A T A B L E;
 REPLACE: R E P L A C E;
@@ -1417,6 +1716,7 @@ RESULT: R E S U L T;
 RETURN: R E T U R N;
 RETURNING: R E T U R N I N G;
 REVERT: R E V E R T;
+REVOKE: R E V O K E;
 RIGHT: R I G H T;
 RLIKE: R L I K E;
 ROLLBACK: R O L L B A C K;
@@ -1426,18 +1726,25 @@ ROWS: R O W S;
 SAMPLE: S A M P L E;
 SAVEPOINT: S A V E P O I N T;
 SCHEMA: S C H E M A;
+SECONDS: S E C O N D S;
+SEEK: S E E K;
 SELECT: S E L E C T;
 SEMI: S E M I;
 SET: S E T;
 SETS: S E T S;
+SHOW: S H O W;
+SKIP: S K I P;
 SOURCE: S O U R C E;
 STREAM: S T R E A M;
 STRUCT: S T R U C T;
 SUBQUERY: S U B Q U E R Y;
+SUBSET: S U B S E T;
 SYMBOLS: S Y M B O L S;
+SYMMETRIC: S Y M M E T R I C;
 SYNC: S Y N C;
 SYSTEM: S Y S T E M;
 TABLE: T A B L E;
+TABLES: T A B L E S;
 TABLESAMPLE: T A B L E S A M P L E;
 TABLESTORE: T A B L E S T O R E;
 TAGGED: T A G G E D;
@@ -1445,17 +1752,19 @@ TEMP: T E M P;
 TEMPORARY: T E M P O R A R Y;
 THEN: T H E N;
 TIES: T I E S;
-TYPE: T Y P E;
 TO: T O;
 TOPIC: T O P I C;
 TRANSACTION: T R A N S A C T I O N;
 TRIGGER: T R I G G E R;
+TRUE: T R U E;
 TUPLE: T U P L E;
+TYPE: T Y P E;
 UNBOUNDED: U N B O U N D E D;
 UNCONDITIONAL: U N C O N D I T I O N A L;
 UNION: U N I O N;
 UNIQUE: U N I Q U E;
 UNKNOWN: U N K N O W N;
+UNMATCHED: U N M A T C H E D;
 UPDATE: U P D A T E;
 UPSERT: U P S E R T;
 USE: U S E;
@@ -1472,9 +1781,8 @@ WINDOW: W I N D O W;
 WITH: W I T H;
 WITHOUT: W I T H O U T;
 WRAPPER: W R A P P E R;
+//WRITE: W R I T E;
 XOR: X O R;
-TRUE: T R U E;
-FALSE: F A L S E;
 
 // YQL Default Lexer:
 // GRAMMAR_STRING_CORE_SINGLE = ~(QUOTE_SINGLE | BACKSLASH) | (BACKSLASH .)
@@ -1491,7 +1799,7 @@ fragment STRING_SINGLE: (QUOTE_SINGLE STRING_CORE_SINGLE* QUOTE_SINGLE);
 fragment STRING_DOUBLE: (QUOTE_DOUBLE STRING_CORE_DOUBLE* QUOTE_DOUBLE);
 fragment STRING_MULTILINE: (DOUBLE_AT .* DOUBLE_AT)+ AT?;
 
-STRING_VALUE: ((STRING_SINGLE | STRING_DOUBLE | STRING_MULTILINE) (U | Y | J | P (T | B | V)?)?);
+STRING_VALUE: ((STRING_SINGLE | STRING_DOUBLE | STRING_MULTILINE) (S | U | Y | J | P (T | B | V)?)?);
 
 ID_PLAIN: ('a'..'z' | 'A'..'Z' | '_') ('a'..'z' | 'A'..'Z' | '_' | DIGIT)*;
 

@@ -20,10 +20,10 @@ namespace NKikimr {
 
         bool Check(const TKeyLogoBlob &key,
                    const TMemRecLogoBlob &memRec,
-                   ui32 recsMerged,
-                   bool allowKeepFlags) const {
-            return TLogoBlobFilter::Check(key.LogoBlobID()) &&
-                    BarriersEssence->Keep(key, memRec, recsMerged, allowKeepFlags).KeepData;
+                   bool allowKeepFlags,
+                   bool allowGarbageCollection) const {
+            return TLogoBlobFilter::Check(key.LogoBlobID()) && BarriersEssence->Keep(key, memRec, {},
+                allowKeepFlags, allowGarbageCollection).KeepData;
         }
 
         TIntrusivePtr<THullCtx> HullCtx;
@@ -100,20 +100,20 @@ namespace NKikimr {
                     pres = Process(ctx, FullSnap.LogoBlobsSnap, KeyLogoBlob, LogoBlobFilter);
                     if (pres & MsgFullFlag)
                         break;
-                    Y_VERIFY(pres & EmptyFlag);
+                    Y_ABORT_UNLESS(pres & EmptyFlag);
                     [[fallthrough]];
                 case NKikimrBlobStorage::Blocks:
                     Stage = NKikimrBlobStorage::Blocks;
                     pres = Process(ctx, FullSnap.BlocksSnap, KeyBlock, FakeFilter);
                     if (pres & MsgFullFlag)
                         break;
-                    Y_VERIFY(pres & EmptyFlag);
+                    Y_ABORT_UNLESS(pres & EmptyFlag);
                     [[fallthrough]];
                 case NKikimrBlobStorage::Barriers:
                     Stage = NKikimrBlobStorage::Barriers;
                     pres = Process(ctx, FullSnap.BarriersSnap, KeyBarrier, FakeFilter);
                     break;
-                default: Y_FAIL("Unexpected case: stage=%d", Stage);
+                default: Y_ABORT("Unexpected case: stage=%d", Stage);
             }
 
             bool finished = (bool)(pres & EmptyFlag) && Stage == NKikimrBlobStorage::Barriers;
@@ -125,7 +125,7 @@ namespace NKikimr {
             Result->Record.SetBlockTabletFrom(KeyBlock.TabletId);
             KeyBarrier.Serialize(*Result->Record.MutableBarrierFrom());
             // send reply
-            SendVDiskResponse(ctx, Recipient, Result.release(), 0);
+            SendVDiskResponse(ctx, Recipient, Result.release(), 0, HullCtx->VCtx);
             // notify parent about death
             ctx.Send(ParentId, new TEvents::TEvActorDied);
             Die(ctx);
@@ -150,7 +150,7 @@ namespace NKikimr {
             // copy data until we have some space
             while (it.Valid() && (data->size() + NSyncLog::MaxRecFullSize <= data->capacity())) {
                 key = it.GetCurKey();
-                if (filter.Check(key, it.GetMemRec(), it.GetMemRecsMerged(), HullCtx->AllowKeepFlags))
+                if (filter.Check(key, it.GetMemRec(), HullCtx->AllowKeepFlags, true /*allowGarbageCollection*/))
                     Serialize(ctx, data, key, it.GetMemRec());
                 it.Next();
             }

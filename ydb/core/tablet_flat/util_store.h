@@ -76,7 +76,7 @@ namespace NUtil {
                     Head = Head->Next.load(std::memory_order_acquire);
                 }
 
-                Y_VERIFY_DEBUG(Head && Head->Offset <= Offset && Offset < Head->EndOffset(),
+                Y_DEBUG_ABORT_UNLESS(Head && Head->Offset <= Offset && Offset < Head->EndOffset(),
                     "Unexpected failure to find chunk for offset %" PRISZT, Offset);
 
                 return true;
@@ -92,8 +92,8 @@ namespace NUtil {
 
         private:
             const T* GetPtr() const noexcept {
-                Y_VERIFY_DEBUG(IsValid());
-                Y_VERIFY_DEBUG(Head->Offset <= Offset && Offset < Head->EndOffset());
+                Y_DEBUG_ABORT_UNLESS(IsValid());
+                Y_DEBUG_ABORT_UNLESS(Head->Offset <= Offset && Offset < Head->EndOffset());
 
                 return Head->Values() + (Offset - Head->Offset);
             }
@@ -173,7 +173,7 @@ namespace NUtil {
          */
         void truncate(size_t new_size) {
             size_t prev_size = Count.load(std::memory_order_relaxed);
-            Y_VERIFY(new_size <= prev_size);
+            Y_ABORT_UNLESS(new_size <= prev_size);
 
             if (new_size < prev_size) {
                 auto* tail = Tail.load(std::memory_order_acquire);
@@ -205,7 +205,7 @@ namespace NUtil {
          * Returns non thread-safe mutable reference, complexity is O(logN)
          */
         T& operator[](size_t index) {
-            Y_VERIFY_DEBUG(index < Count.load(std::memory_order_relaxed));
+            Y_DEBUG_ABORT_UNLESS(index < Count.load(std::memory_order_relaxed));
 
             return *FindPtr(Tail.load(std::memory_order_relaxed), index);
         }
@@ -214,7 +214,7 @@ namespace NUtil {
          * Returns a thread-safe immutable reference, complexity is O(logN)
          */
         const T& operator[](size_t index) const {
-            Y_VERIFY_DEBUG(index < size());
+            Y_DEBUG_ABORT_UNLESS(index < size());
 
             return *FindPtr(Tail.load(std::memory_order_acquire), index);
         }
@@ -224,13 +224,13 @@ namespace NUtil {
          */
         template<class TCallback>
         void Enumerate(size_t index, size_t endIndex, TCallback&& callback) {
-            Y_VERIFY(index <= endIndex);
+            Y_ABORT_UNLESS(index <= endIndex);
             if (index == endIndex) {
                 return;
             }
 
             size_t count = Count.load(std::memory_order_acquire);
-            Y_VERIFY(endIndex <= count);
+            Y_ABORT_UNLESS(endIndex <= count);
 
             auto* tail = Tail.load(std::memory_order_acquire);
             while (tail && index < tail->Offset) {
@@ -238,9 +238,9 @@ namespace NUtil {
             }
 
             do {
-                Y_VERIFY_DEBUG(tail);
+                Y_DEBUG_ABORT_UNLESS(tail);
                 auto endOffset = tail->EndOffset();
-                Y_VERIFY_DEBUG(tail->Offset <= index && index < endOffset);
+                Y_DEBUG_ABORT_UNLESS(tail->Offset <= index && index < endOffset);
                 T* values = tail->Values() + (index - tail->Offset);
                 while (index < endOffset && index < endIndex) {
                     callback(index, *values);
@@ -260,7 +260,7 @@ namespace NUtil {
                 tail = tail->Prev;
             }
 
-            Y_VERIFY_DEBUG(tail && index < tail->EndOffset());
+            Y_DEBUG_ABORT_UNLESS(tail && index < tail->EndOffset());
 
             return tail->Values() + (index - tail->Offset);
         }

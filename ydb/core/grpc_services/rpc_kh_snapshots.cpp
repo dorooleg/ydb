@@ -4,12 +4,12 @@
 #include "rpc_kh_snapshots.h"
 #include "resolve_local_db_table.h"
 
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "rpc_deferrable.h"
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/string/vector.h>
 #include <util/generic/hash.h>

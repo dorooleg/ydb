@@ -1,11 +1,12 @@
 #include "grpc_endpoint.h"
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 
 #include <ydb/core/base/path.h>
 #include <ydb/core/base/appdata.h>
+#include <ydb/core/base/domain.h>
 #include <ydb/core/base/location.h>
 #include <ydb/core/base/statestorage.h>
 
@@ -28,7 +29,6 @@ class TGRpcEndpointPublishActor : public TActorBootstrapped<TGRpcEndpointPublish
         if (!domainInfo)
             return;
 
-        auto statestorageGroupId = domainInfo->DefaultStateStorageGroup;
         auto assignedPath = MakeEndpointsBoardPath(database);
         TString payload;
         NKikimrStateStorage::TEndpointBoardEntry entry;
@@ -51,9 +51,9 @@ class TGRpcEndpointPublishActor : public TActorBootstrapped<TGRpcEndpointPublish
         for (const auto &service : Description->ServedServices)
             entry.AddServices(service);
 
-        Y_VERIFY(entry.SerializeToString(&payload));
+        Y_ABORT_UNLESS(entry.SerializeToString(&payload));
 
-        PublishActor = Register(CreateBoardPublishActor(assignedPath, payload, SelfId(), statestorageGroupId, 0, true));
+        PublishActor = Register(CreateBoardPublishActor(assignedPath, payload, SelfId(), 0, true));
     }
 
     void PassAway() override {

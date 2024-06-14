@@ -1,9 +1,6 @@
 #pragma once
 
 #include <ydb/library/yql/core/yql_execution.h>
-#include <ydb/library/yql/dq/runtime/dq_input_channel.h>
-#include <ydb/library/yql/dq/runtime/dq_output_channel.h>
-#include <ydb/library/yql/dq/runtime/dq_tasks_runner.h>
 
 #include <util/string/split.h>
 
@@ -56,14 +53,16 @@ struct TCounters {
 
     template<typename T>
     void AddCounter(const TString& name, T value) const {
-        auto& counter = Counters[name];
-        counter.Count += value;
+        Counters[name].Add(TEntry(value));
     }
 
     template<typename T>
     void SetCounter(const TString& name, T value) const {
-        auto& counter = Counters[name];
-        counter.Count = value;
+        Counters[name] = TEntry(value);
+    }
+
+    void SetTimeCounter(const TString& name, i64 value) const {
+        SetCounter(name, value * 1000); // ms => us
     }
 
     THashMap<i64, ui64>& GetHistogram(const TString& name) {
@@ -75,7 +74,7 @@ struct TCounters {
     }
 
     void AddCounter(const TString& name, TDuration value) const {
-        auto val = value.MilliSeconds();
+        auto val = value.MicroSeconds();
         auto& counter = Counters[name];
         counter.Sum += val;
         counter.Min = counter.Count == 0
@@ -142,6 +141,25 @@ struct TCounters {
         i64 Min = 0;
         i64 Avg = 0;
         i64 Count = 0;
+
+        TEntry() = default;
+        explicit TEntry(i64 value) {
+            Sum = value;
+            Max = value;
+            Min = value;
+            Avg = value;
+            Count = 1;
+        }
+
+        void Add(const TEntry& entry) {
+            if (entry.Count) {
+                Sum += entry.Sum;
+                Min = (Count == 0) ? entry.Min : ::Min(Min, entry.Min);
+                Max = (Count == 0) ? entry.Max : ::Max(Max, entry.Max);
+                Count += entry.Count;
+                Avg = Sum / Count;
+            }
+        }
     };
 
     struct TCounterBlock {
@@ -171,18 +189,7 @@ struct TCounters {
     }
 
     void AddCounter(const TString& name, const TEntry& value) const {
-        auto& counter = Counters[name];
-        if (value.Count) {
-            counter.Sum += value.Sum;
-            counter.Min = counter.Count == 0
-                ? value.Min
-                : Min(counter.Min, value.Min);
-            counter.Max = counter.Count == 0
-                ? value.Max
-                : Max(counter.Max, value.Max);
-            counter.Count += value.Count;
-            counter.Avg = counter.Sum / counter.Count;
-        }
+        Counters[name].Add(value);
     }
 
     void Clear() const {
@@ -190,97 +197,9 @@ struct TCounters {
         Start.clear();
     }
 
-#define ADD_COUNTER(name) \
-    do {                                                                \
-        auto value = currentStats.name - oldStats.name;                 \
-        if (value) {                                                    \
-            AddCounter(GetCounterName("TaskRunner", labels, #name), value); \
-        }                                                               \
-        oldStats.name = currentStats.name;                              \
-    } while (0);
-
-    void AddInputChannelStats(
-        const NDq::TDqInputChannelStats& currentStats,
-        NDq::TDqInputChannelStats& oldStats,
-        ui64 taskId,
-        ui64 channelId)
-    {
-        std::map<TString, TString> labels = {
-            {"Task", ToString(taskId)},
-            {"InputChannel", ToString(channelId)}
-        };
-
-        ADD_COUNTER(Chunks);
-        ADD_COUNTER(Bytes);
-        ADD_COUNTER(RowsIn);
-        ADD_COUNTER(RowsOut);
-        ADD_COUNTER(RowsInMemory);
-        ADD_COUNTER(MaxMemoryUsage);
-        ADD_COUNTER(DeserializationTime);
+    void ClearCounters() {
+        Counters.clear();
     }
-
-    void AddSourceStats(
-        const NDq::TDqAsyncInputBufferStats& currentStats,
-        NDq::TDqAsyncInputBufferStats& oldStats,
-        ui64 taskId, ui64 inputIndex)
-    {
-        std::map<TString, TString> labels = {
-            {"Task", ToString(taskId)},
-            {"SourceIndex", ToString(inputIndex)}
-        };
-
-        ADD_COUNTER(Chunks);
-        ADD_COUNTER(Bytes);
-        ADD_COUNTER(RowsIn);
-        ADD_COUNTER(RowsOut);
-        ADD_COUNTER(RowsInMemory);
-        ADD_COUNTER(MaxMemoryUsage);
-        ADD_COUNTER(InputIndex);
-    }
-
-    void AddOutputChannelStats(
-        const NDq::TDqOutputChannelStats& currentStats,
-        NDq::TDqOutputChannelStats& oldStats,
-        ui64 taskId, ui64 channelId)
-    {
-        std::map<TString, TString> labels = {
-            {"Task", ToString(taskId)},
-            {"OutputChannel", ToString(channelId)}
-        };
-
-        ADD_COUNTER(Chunks)
-        ADD_COUNTER(Bytes);
-        ADD_COUNTER(RowsIn);
-        ADD_COUNTER(RowsOut);
-        ADD_COUNTER(MaxMemoryUsage);
-        ADD_COUNTER(MaxRowsInMemory);
-
-        ADD_COUNTER(SerializationTime);
-
-        ADD_COUNTER(SpilledBytes);
-        ADD_COUNTER(SpilledRows);
-        ADD_COUNTER(SpilledBlobs);
-    }
-
-    void AddTaskRunnerStats(
-        const NDq::TDqTaskRunnerStats& currentStats,
-        NDq::TDqTaskRunnerStats& oldStats,
-        ui64 taskId)
-    {
-        std::map<TString, TString> labels = {
-            {"Task", ToString(taskId)}
-        };
-
-        // basic stats
-        ADD_COUNTER(ComputeCpuTime)
-        ADD_COUNTER(BuildCpuTime)
-
-        // profile stats
-        ADD_COUNTER(WaitTime)
-        ADD_COUNTER(WaitOutputTime)
-    }
-
-#undef ADD_COUNTER
 
 protected:
 
@@ -288,7 +207,5 @@ protected:
     mutable THashMap<TString, THashMap<i64, ui64>> Histograms;
     mutable THashMap<TString, TInstant> Start;
 };
-
-TCounters AggregateQueryStatsByStage(TCounters& queryStat, const THashMap<ui64, ui64>& task2Stage);
 
 } // namespace NYql

@@ -308,11 +308,24 @@ function loadConfigItems() {
     $.get(url).done(onConfigItemsLoaded).fail(onConfigItemsFailed);
 }
 
+function onYamlConfigEnabledFetched(data) {
+    if (data) {
+        if (data['enabled']) {
+            $('#yaml-configs-enabled-warning').show();
+        } else if ($('#yaml-config').hasClass('active')) {
+            $('#cms-nav a[href="#configs"]').tab('show');
+        }
+    }
+}
+
 function loadConfigsContent() {
     for (var kind of ConfigsState.editableItemKinds)
         getOrCreateItemKind(cmsEnums.parse('ItemKinds', kind));
 
     loadConfigItems();
+
+    var url = 'cms/yaml-config-enabled';
+    $.get(url).done(onYamlConfigEnabledFetched);
 }
 
 function loadTypes() {

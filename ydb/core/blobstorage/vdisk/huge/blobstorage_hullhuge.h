@@ -5,7 +5,7 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdiskctx.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_defrag.h>
-#include <library/cpp/actors/wilson/wilson_span.h>
+#include <ydb/library/actors/wilson/wilson_span.h>
 
 namespace NKikimr {
 
@@ -23,6 +23,8 @@ namespace NKikimr {
         const NKikimrBlobStorage::EPutHandleClass HandleClass;
         std::unique_ptr<TEvBlobStorage::TEvVPutResult> Result;
         NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> ExtraBlockChecks;
+
+        mutable NLWTrace::TOrbit Orbit;
 
         TEvHullWriteHugeBlob(const TActorId &senderId,
                              ui64 cookie,
@@ -131,19 +133,19 @@ namespace NKikimr {
         const TDiskPartVec HugeBlobs;
         const ui64 DeletionLsn;
         const TLogSignature Signature; // identifies database we send update for
+        const ui64 WId;
 
-        TEvHullFreeHugeSlots(TDiskPartVec &&hugeBlobs, ui64 deletionLsn,
-                             TLogSignature signature)
+        TEvHullFreeHugeSlots(TDiskPartVec &&hugeBlobs, ui64 deletionLsn, TLogSignature signature, ui64 wId)
             : HugeBlobs(std::move(hugeBlobs))
             , DeletionLsn(deletionLsn)
             , Signature(signature)
+            , WId(wId)
         {}
 
         TString ToString() const {
             TStringStream str;
-            str << "{" << Signature.ToString()
-                << " DelLsn# " << DeletionLsn << " Slots# "
-                << HugeBlobs.ToString() << "}";
+            str << "{" << Signature.ToString() << " DelLsn# " << DeletionLsn << " Slots# " << HugeBlobs.ToString()
+                << " WId# " << WId << "}";
             return str.Str();
         }
     };
@@ -207,6 +209,16 @@ namespace NKikimr {
         NHuge::THeapStat Stat;
     };
 
+    struct TEvHugePreCompact : TEventLocal<TEvHugePreCompact, TEvBlobStorage::EvHugePreCompact> {
+        ui64 LsnInfimum; // the resulting LSN of the operation MUST be not less that the provided value
+        TEvHugePreCompact(ui64 lsnInfimum) : LsnInfimum(lsnInfimum) {}
+    };
+
+    struct TEvHugePreCompactResult : TEventLocal<TEvHugePreCompactResult, TEvBlobStorage::EvHugePreCompactResult> {
+        ui64 WId; // this is going to be provided in free slots operation
+        TEvHugePreCompactResult(ui64 wId) : WId(wId) {}
+    };
+
     ////////////////////////////////////////////////////////////////////////////
     // THugeKeeperCtx
     ////////////////////////////////////////////////////////////////////////////
@@ -222,6 +234,7 @@ namespace NKikimr {
         const TString LocalRecoveryInfoDbg;
         NMonGroup::TLsmHullGroup LsmHullGroup;
         NMonGroup::TDskOutOfSpaceGroup DskOutOfSpaceGroup;
+        const bool IsReadOnlyVDisk;
 
         THugeKeeperCtx(
                 TIntrusivePtr<TVDiskContext> vctx,
@@ -230,7 +243,8 @@ namespace NKikimr {
                 TActorId skeletonId,
                 TActorId loggerId,
                 TActorId logCutterId,
-                const TString &localRecoveryInfoDbg);
+                const TString &localRecoveryInfoDbg,
+                bool isReadOnlyVDisk);
         ~THugeKeeperCtx();
     };
 

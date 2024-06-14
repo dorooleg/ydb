@@ -11,9 +11,11 @@ SelfHeal can:
 
 SelfHeal is enabled by default.
 
+{{ ydb-short-name }} component responsible for SelfHeal is called "Sentinel".
+
 ## Enabling and disabling SelfHeal {#on-off}
 
-You can enable and disable SelfHeal using [{{ ydb-short-name }} DSTool](../../administration/ydb-dstool-overview.md).
+You can enable and disable SelfHeal using [{{ ydb-short-name }} DSTool](../../reference/ydb-dstool/index.md).
 
 To enable SelfHeal, run the command:
 

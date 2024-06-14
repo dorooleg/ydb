@@ -3,7 +3,7 @@
 #include "events.h"
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 #include <util/system/type_name.h>
 
 namespace NKikimr {
@@ -45,13 +45,13 @@ namespace NFake {
         void Inbox(TEventHandlePtr &eh)
         {
             if (auto *ev = eh->CastAsLocal<NFake::TEvExecute>()) {
-                Y_VERIFY(State == EState::Work, "Cannot handle TX now");
+                Y_ABORT_UNLESS(State == EState::Work, "Cannot handle TX now");
 
                 for (auto& f : ev->Funcs) {
                     Execute(f.Release(), this->ActorContext());
                 }
             } else if (auto *ev = eh->CastAsLocal<NFake::TEvCompact>()) {
-                Y_VERIFY(State == EState::Work, "Cannot handle compaction now");
+                Y_ABORT_UNLESS(State == EState::Work, "Cannot handle compaction now");
 
                 if (ev->MemOnly) {
                     Executor()->CompactMemTable(ev->Table);
@@ -87,17 +87,23 @@ namespace NFake {
 
         void Enqueue(TEventHandlePtr &eh) override
         {
-            const auto *name = eh->GetTypeName().c_str();
+            const auto &name = eh->GetTypeName();
 
-            Y_FAIL("Got unexpected event %s on tablet booting", name);
+            Y_ABORT("Got unexpected event %s on tablet booting", name.c_str());
+        }
+
+        void DefaultSignalTabletActive(const TActorContext&) override
+        {
+            // must be empty
         }
 
         void OnActivateExecutor(const TActorContext&) override
         {
             if (std::exchange(State, EState::Work) != EState::Work) {
+                SignalTabletActive(SelfId());
                 Send(Owner, new NFake::TEvReady(TabletID(), SelfId()));
             } else {
-                Y_FAIL("Received unexpected TExecutor activation");
+                Y_ABORT("Received unexpected TExecutor activation");
             }
         }
 
@@ -124,7 +130,7 @@ namespace NFake {
             if (auto* snapContext = dynamic_cast<TDummySnapshotContext*>(rawSnapContext.Get())) {
                 Send(SelfId(), snapContext->OnFinished());
             } else {
-                Y_FAIL("Unsupported snapshot context");
+                Y_ABORT("Unsupported snapshot context");
             }
         }
 

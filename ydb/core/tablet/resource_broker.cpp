@@ -119,7 +119,7 @@ TDurationStat::TDurationStat(TDuration def,
                              size_t history)
     : Current(0)
 {
-    Y_VERIFY(history > 0);
+    Y_ABORT_UNLESS(history > 0);
     Values.resize(history, def);
     Total = def * history;
 }
@@ -178,7 +178,7 @@ bool TTaskQueue::Empty() const
 
 void TTaskQueue::InsertTask(TTaskPtr task, TInstant now)
 {
-    Y_VERIFY(!task->Queue, "TTaskQueue::InsertTask: task is already in resource queue");
+    Y_ABORT_UNLESS(!task->Queue, "TTaskQueue::InsertTask: task is already in resource queue");
 
     if (task->InFly) {
         // Update resource consumption.
@@ -204,8 +204,8 @@ void TTaskQueue::InsertTask(TTaskPtr task, TInstant now)
 
 void TTaskQueue::EraseTask(TTaskPtr task, bool finished, TInstant now)
 {
-    Y_VERIFY(task->Queue.Get() == this);
-    Y_VERIFY(task->InFly || !finished);
+    Y_ABORT_UNLESS(task->Queue.Get() == this);
+    Y_ABORT_UNLESS(task->InFly || !finished);
 
     if (task->InFly) {
         // Update resources consumption.
@@ -241,13 +241,13 @@ void TTaskQueue::EraseTask(TTaskPtr task, bool finished, TInstant now)
 
 TTaskPtr TTaskQueue::FrontTask()
 {
-    Y_VERIFY(!Tasks.empty());
+    Y_ABORT_UNLESS(!Tasks.empty());
     return *Tasks.begin();
 }
 
 void TTaskQueue::PopTask()
 {
-    Y_VERIFY(!Tasks.empty());
+    Y_ABORT_UNLESS(!Tasks.empty());
     EraseTask(*Tasks.begin(), false, TInstant());
 }
 
@@ -746,7 +746,7 @@ void TScheduler::Configure(const TResourceBrokerConfig &config, const TActorSyst
                                              ResourceLimit, TotalCounters);
         Queues.emplace(queue->Name, queue);
     }
-    Y_VERIFY(Queues.contains(NLocalDb::DefaultQueueName), "default queue '%s' wasn't found in config", NLocalDb::DefaultQueueName.data());
+    Y_ABORT_UNLESS(Queues.contains(NLocalDb::DefaultQueueName), "default queue '%s' wasn't found in config", NLocalDb::DefaultQueueName.data());
 
     // Read new tasks config.
     TaskConfigs.clear();
@@ -755,12 +755,12 @@ void TScheduler::Configure(const TResourceBrokerConfig &config, const TActorSyst
         TTaskConfig taskConfig(task.GetName(),
                                TDuration::MicroSeconds(task.GetDefaultDuration()),
                                counters);
-        Y_VERIFY(Queues.contains(task.GetQueueName()), " queue '%s' wasn't found in config", task.GetQueueName().data());
+        Y_ABORT_UNLESS(Queues.contains(task.GetQueueName()), " queue '%s' wasn't found in config", task.GetQueueName().data());
         taskConfig.Queue = Queues.at(task.GetQueueName());
 
         TaskConfigs.emplace(taskConfig.Name, taskConfig);
     }
-    Y_VERIFY(TaskConfigs.contains(NLocalDb::UnknownTaskName), "task '%s' wasn't found in config", NLocalDb::UnknownTaskName.data());
+    Y_ABORT_UNLESS(TaskConfigs.contains(NLocalDb::UnknownTaskName), "task '%s' wasn't found in config", NLocalDb::UnknownTaskName.data());
 
     // Move all tasks to queues.
     for (auto &entry : Tasks)
@@ -862,7 +862,7 @@ bool TResourceBroker::SubmitTaskInstant(const TEvResourceBroker::TEvSubmitTask& 
 
             if (!success) {
                 auto removed = Scheduler.RemoveQueuedTask(ev.Task.TaskId, sender, *ActorSystem);
-                Y_VERIFY_DEBUG(removed.Success);
+                Y_DEBUG_ABORT_UNLESS(removed.Success);
             }
         }
 
@@ -916,13 +916,13 @@ bool TResourceBroker::MergeTasksInstant(ui64 recipientTaskId, ui64 donorTaskId, 
 
         bool updated = Scheduler.UpdateTask(recipientTaskId, sender, mergedResources, recipientTask->Priority,
             recipientTask->Type, /* resubmit */ false, *ActorSystem);
-        Y_VERIFY_DEBUG(updated);
+        Y_DEBUG_ABORT_UNLESS(updated);
 
         auto finished = Scheduler.FinishTask(donorTaskId, sender, /* cancel */ false, *ActorSystem);
-        Y_VERIFY_DEBUG(finished.Success);
+        Y_DEBUG_ABORT_UNLESS(finished.Success);
 
         Scheduler.ScheduleTasks(*ActorSystem, [this, recipientTaskId](const TTask &task) {
-            Y_VERIFY_DEBUG(task.TaskId != recipientTaskId);
+            Y_DEBUG_ABORT_UNLESS(task.TaskId != recipientTaskId);
             ActorSystem->Send(task.Client, new TEvResourceBroker::TEvResourceAllocated(task.TaskId, task.Cookie));
         });
 
@@ -1269,6 +1269,11 @@ NKikimrResourceBroker::TResourceBrokerConfig MakeDefaultConfig()
     const ui64 KqpRmQueueCPU = 4;
     const ui64 KqpRmQueueMemory = 10ULL << 30;
 
+    const ui64 CSTTLCompactionMemoryLimit = 1ULL << 30;
+    const ui64 CSInsertCompactionMemoryLimit = 1ULL << 30;
+    const ui64 CSGeneralCompactionMemoryLimit = 3ULL << 30;
+    const ui64 CSScanMemoryLimit = 3ULL << 30;
+
     const ui64 TotalCPU = 20;
     const ui64 TotalMemory = 16ULL << 30;
 
@@ -1303,6 +1308,36 @@ NKikimrResourceBroker::TResourceBrokerConfig MakeDefaultConfig()
     queue->SetName("queue_compaction_borrowed");
     queue->SetWeight(100);
     queue->MutableLimit()->SetCpu(3);
+
+    queue = config.AddQueues();
+    queue->SetName("queue_cs_indexation");
+    queue->SetWeight(100);
+    queue->MutableLimit()->SetCpu(3);
+    queue->MutableLimit()->SetMemory(CSInsertCompactionMemoryLimit);
+
+    queue = config.AddQueues();
+    queue->SetName("queue_cs_ttl");
+    queue->SetWeight(100);
+    queue->MutableLimit()->SetCpu(3);
+    queue->MutableLimit()->SetMemory(CSTTLCompactionMemoryLimit);
+
+    queue = config.AddQueues();
+    queue->SetName("queue_cs_general");
+    queue->SetWeight(100);
+    queue->MutableLimit()->SetCpu(3);
+    queue->MutableLimit()->SetMemory(CSGeneralCompactionMemoryLimit);
+
+    queue = config.AddQueues();
+    queue->SetName("queue_cs_scan_read");
+    queue->SetWeight(100);
+    queue->MutableLimit()->SetCpu(3);
+    queue->MutableLimit()->SetMemory(CSScanMemoryLimit);
+
+    queue = config.AddQueues();
+    queue->SetName("queue_cs_normalizer");
+    queue->SetWeight(100);
+    queue->MutableLimit()->SetCpu(3);
+    queue->MutableLimit()->SetMemory(CSScanMemoryLimit);
 
     queue = config.AddQueues();
     queue->SetName("queue_transaction");
@@ -1355,6 +1390,11 @@ NKikimrResourceBroker::TResourceBrokerConfig MakeDefaultConfig()
     queue->SetWeight(100);
     queue->MutableLimit()->SetCpu(4);
 
+    queue = config.AddQueues();
+    queue->SetName("queue_statistics_scan");
+    queue->SetWeight(100);
+    queue->MutableLimit()->SetCpu(1);
+
     auto task = config.AddTasks();
     task->SetName(NLocalDb::UnknownTaskName);
     task->SetQueueName(NLocalDb::DefaultQueueName);
@@ -1383,6 +1423,31 @@ NKikimrResourceBroker::TResourceBrokerConfig MakeDefaultConfig()
     task = config.AddTasks();
     task->SetName("compaction_borrowed");
     task->SetQueueName("queue_compaction_borrowed");
+    task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
+
+    task = config.AddTasks();
+    task->SetName("CS::TTL");
+    task->SetQueueName("queue_cs_ttl");
+    task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
+
+    task = config.AddTasks();
+    task->SetName("CS::INDEXATION");
+    task->SetQueueName("queue_cs_indexation");
+    task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
+
+    task = config.AddTasks();
+    task->SetName("CS::GENERAL");
+    task->SetQueueName("queue_cs_general");
+    task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
+
+    task = config.AddTasks();
+    task->SetName("CS::SCAN_READ");
+    task->SetQueueName("queue_cs_scan_read");
+    task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
+
+    task = config.AddTasks();
+    task->SetName("CS::NORMALIZER");
+    task->SetQueueName("queue_cs_normalizer");
     task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
 
     task = config.AddTasks();
@@ -1453,6 +1518,11 @@ NKikimrResourceBroker::TResourceBrokerConfig MakeDefaultConfig()
     task = config.AddTasks();
     task->SetName("cdc_initial_scan");
     task->SetQueueName("queue_cdc_initial_scan");
+    task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
+
+    task = config.AddTasks();
+    task->SetName("statistics_scan");
+    task->SetQueueName("queue_statistics_scan");
     task->SetDefaultDuration(TDuration::Minutes(10).GetValue());
 
     config.MutableResourceLimit()->SetCpu(TotalCPU);

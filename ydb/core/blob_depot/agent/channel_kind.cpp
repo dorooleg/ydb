@@ -17,7 +17,7 @@ namespace NKikimr::NBlobDepot {
         for (const auto& [_, givenIdRanges] : GivenIdRangePerChannel) {
             count += givenIdRanges.GetNumAvailableItems();
         }
-        Y_VERIFY(count == NumAvailableItems);
+        Y_ABORT_UNLESS(count == NumAvailableItems);
 #endif
         return NumAvailableItems;
     }
@@ -51,7 +51,7 @@ namespace NKikimr::NBlobDepot {
             const TBlobSeqId& blobSeqId, EBlobType type, ui32 part, ui32 size) const {
         auto id = blobSeqId.MakeBlobId(agent.TabletId, type, part, size);
         const auto [channel, groupId] = ChannelGroups[ChannelToIndex[blobSeqId.Channel]];
-        Y_VERIFY_DEBUG(channel == blobSeqId.Channel);
+        Y_DEBUG_ABORT_UNLESS(channel == blobSeqId.Channel);
         return {id, groupId};
     }
 

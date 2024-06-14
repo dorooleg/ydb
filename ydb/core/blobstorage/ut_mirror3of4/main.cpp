@@ -1,5 +1,5 @@
 #include <library/cpp/testing/unittest/registar.h>
-#include <library/cpp/actors/core/actor_coroutine.h>
+#include <ydb/library/actors/core/actor_coroutine.h>
 #include <ydb/core/util/testactorsys.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/blobstorage/backpressure/queue_backpressure_client.h>
@@ -197,10 +197,10 @@ public:
             std::optional<TIngress> Ingress;
             std::optional<TString> Data;
 
-            TGotItem(const NKikimrBlobStorage::TQueryResult& pb)
+            TGotItem(const NKikimrBlobStorage::TQueryResult& pb, TEvBlobStorage::TEvVGetResult& ev)
                 : Status(pb.GetStatus())
                 , Ingress(pb.HasIngress() ? std::make_optional(TIngress(pb.GetIngress())) : std::nullopt)
-                , Data(pb.HasBuffer() ? std::make_optional(pb.GetBuffer()) : std::nullopt)
+                , Data(ev.HasBlob(pb) ? std::make_optional(ev.GetBlobData(pb).ConvertToString()) : std::nullopt)
             {
                 UNIT_ASSERT(pb.HasStatus());
             }
@@ -225,7 +225,7 @@ public:
             auto& record = ev->Get()->Record;
             TGetResult res;
             for (const auto& item : record.GetResult()) {
-                const bool inserted = res.emplace(LogoBlobIDFromLogoBlobID(item.GetBlobID()), TGotItem(item)).second;
+                const bool inserted = res.try_emplace(LogoBlobIDFromLogoBlobID(item.GetBlobID()), item, *ev->Get()).second;
                 UNIT_ASSERT(inserted); // blob ids should not repeat
             }
             return res;

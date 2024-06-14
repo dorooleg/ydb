@@ -1,7 +1,7 @@
 #include "guid_proxyobtain.h"
 #include "guid_proxybase.h"
 
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 using namespace NKikimrServices;
 
@@ -19,7 +19,7 @@ namespace NKikimr {
         virtual void HandleReply(const TActorContext &ctx,
                                  const NKikimrBlobStorage::TEvVSyncGuidResult &record) override {
             // all checks are passed
-            Y_VERIFY(record.GetStatus() == NKikimrProto::OK);
+            Y_ABORT_UNLESS(record.GetStatus() == NKikimrProto::OK);
             TVDiskID fromVDisk = VDiskIDFromVDiskID(record.GetVDiskID());
             auto guidInfo = record.GetReadInfo();
             auto guid = guidInfo.GetGuid();

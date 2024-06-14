@@ -169,6 +169,11 @@ NDB::DataTypePtr PgMetaToClickHouse(const TPgConvertInfo& info) {
     if (info.TypeName == TStringRef("float8")) {
         return std::make_shared<NDB::DataTypeFloat64>();
     }
+
+    if (info.TypeName == TStringRef("timestamp")) {
+        return std::make_shared<NDB::DataTypeDateTime64>(6, "UTC");
+    }
+
     return std::make_shared<NDB::DataTypeString>();
 }
 
@@ -1159,7 +1164,7 @@ class TSerializeFormat : public TBoxedValue {
 
                         bool flush = !insertedNew && partIt->second.Block.bytes() >= BlockSizeLimit;
                         if (flush) {
-                            Y_VERIFY(FlushKey(partIt, result));
+                            Y_ABORT_UNLESS(FlushKey(partIt, result));
                         }
 
                         if (!flush && TotalSizeLimit && TotalSizeLimit <= TotalSize) {

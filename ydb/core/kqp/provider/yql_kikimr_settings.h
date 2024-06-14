@@ -3,7 +3,13 @@
 #include <ydb/library/yql/dq/common/dq_common.h>
 #include <ydb/library/yql/providers/common/config/yql_dispatch.h>
 #include <ydb/library/yql/providers/common/config/yql_setting.h>
-#include <ydb/core/protos/config.pb.h>
+#include <ydb/library/yql/sql/settings/translation_settings.h>
+#include <ydb/core/protos/feature_flags.pb.h>
+
+namespace NKikimrConfig {
+    enum TTableServiceConfig_EIndexAutoChooseMode : int;
+    enum TTableServiceConfig_EBlockChannelsMode : int;
+}
 
 namespace NYql {
 
@@ -31,6 +37,7 @@ struct TKikimrSettings {
     NCommon::TConfSetting<ui32, false> _KqpMaxComputeActors;
     NCommon::TConfSetting<bool, false> _KqpEnableSpilling;
     NCommon::TConfSetting<bool, false> _KqpDisableLlvmForUdfStages;
+    NCommon::TConfSetting<ui64, false> _KqpYqlCombinerMemoryLimit;
 
     /* No op just to avoid errors in Cloud Logging until they remove this from their queries */
     NCommon::TConfSetting<bool, false> KqpPushOlapProcess;
@@ -41,19 +48,24 @@ struct TKikimrSettings {
     NCommon::TConfSetting<ui32, false> _ResultRowsLimit;
     NCommon::TConfSetting<bool, false> EnableSystemColumns;
     NCommon::TConfSetting<bool, false> UseLlvm;
+    NCommon::TConfSetting<bool, false> EnableLlvm;
     NCommon::TConfSetting<NDq::EHashJoinMode, false> HashJoinMode;
 
     /* Disable optimizer rules */
-    NCommon::TConfSetting<bool, false> OptDisableJoinRewrite;
-    NCommon::TConfSetting<bool, false> OptDisableJoinTableLookup;
-    NCommon::TConfSetting<bool, false> OptDisableJoinReverseTableLookup;
-    NCommon::TConfSetting<bool, false> OptDisableJoinReverseTableLookupLeftSemi;
     NCommon::TConfSetting<bool, false> OptDisableTopSort;
     NCommon::TConfSetting<bool, false> OptDisableSqlInToJoin;
     NCommon::TConfSetting<bool, false> OptEnableInplaceUpdate;
     NCommon::TConfSetting<bool, false> OptEnablePredicateExtract;
     NCommon::TConfSetting<bool, false> OptEnableOlapPushdown;
+    NCommon::TConfSetting<bool, false> OptEnableOlapProvideComputeSharding;
     NCommon::TConfSetting<bool, false> OptUseFinalizeByKey;
+    NCommon::TConfSetting<ui32, false> CostBasedOptimizationLevel;
+    NCommon::TConfSetting<bool, false> OptEnableConstantFolding;
+
+    NCommon::TConfSetting<ui32, false> MaxDPccpDPTableSize;
+
+
+    NCommon::TConfSetting<ui32, false> MaxTasksPerStage;
 
     /* Runtime */
     NCommon::TConfSetting<bool, true> ScanQuery;
@@ -65,14 +77,14 @@ struct TKikimrSettings {
     bool SpillingEnabled() const;
     bool DisableLlvmForUdfStages() const;
 
-    bool HasOptDisableJoinRewrite() const;
-    bool HasOptDisableJoinTableLookup() const;
-    bool HasOptDisableJoinReverseTableLookup() const;
-    bool HasOptDisableJoinReverseTableLookupLeftSemi() const;
     bool HasOptDisableTopSort() const;
     bool HasOptDisableSqlInToJoin() const;
     bool HasOptEnableOlapPushdown() const;
+    bool HasOptEnableOlapProvideComputeSharding() const;
     bool HasOptUseFinalizeByKey() const;
+    bool HasOptEnableConstantFolding() const;
+
+
     EOptionalFlag GetOptPredicateExtract() const;
     EOptionalFlag GetUseLlvm() const;
     NDq::EHashJoinMode GetHashJoinMode() const;
@@ -102,7 +114,7 @@ struct TKikimrConfiguration : public TKikimrSettings, public NCommon::TSettingDi
         this->SetValidClusters(clusters);
 
         if (defaultCluster) {
-            this->Dispatch(NCommon::ALL_CLUSTERS, "_DefaultCluster", *defaultCluster, EStage::CONFIG);
+            this->Dispatch(NCommon::ALL_CLUSTERS, "_DefaultCluster", *defaultCluster, EStage::CONFIG, NCommon::TSettingDispatcher::GetDefaultErrorCallback());
         }
 
         // Init settings from config
@@ -119,7 +131,7 @@ struct TKikimrConfiguration : public TKikimrSettings, public NCommon::TSettingDi
     {
         this->SetValidClusters(TVector<TString>{cluster});
 
-        this->Dispatch(NCommon::ALL_CLUSTERS, "_DefaultCluster", cluster, EStage::CONFIG);
+        this->Dispatch(NCommon::ALL_CLUSTERS, "_DefaultCluster", cluster, EStage::CONFIG, NCommon::TSettingDispatcher::GetDefaultErrorCallback());
         this->Dispatch(defaultSettings);
         this->Dispatch(NCommon::ALL_CLUSTERS, settings);
 
@@ -136,12 +148,25 @@ struct TKikimrConfiguration : public TKikimrSettings, public NCommon::TSettingDi
     bool EnableKqpDataQuerySourceRead = false;
     bool EnableKqpScanQueryStreamLookup = false;
     bool EnableKqpDataQueryStreamLookup = false;
-    bool EnableKqpDataQueryStreamPointLookup = false;
     bool EnableKqpScanQueryStreamIdxLookupJoin = false;
-    bool EnablePredicateExtractForScanQuery = true;
-    bool EnablePredicateExtractForDataQuery = false;
+    bool EnableKqpDataQueryStreamIdxLookupJoin = false;
+    bool PredicateExtract20 = false;
     bool EnableKqpImmediateEffects = false;
-    bool EnableSequentialReads = false;
+    bool EnablePreparedDdl = false;
+    bool EnableSequences = false;
+    bool EnableColumnsWithDefault = false;
+    NSQLTranslation::EBindingsMode BindingsMode = NSQLTranslation::EBindingsMode::ENABLED;
+    NKikimrConfig::TTableServiceConfig_EIndexAutoChooseMode IndexAutoChooserMode;
+    bool EnableAstCache = false;
+    bool EnablePgConstsToParams = false;
+    ui64 ExtractPredicateRangesLimit = 0;
+    bool EnablePerStatementQueryExecution = false;
+    bool EnableCreateTableAs = false;
+    ui64 IdxLookupJoinsPrefixPointLimit = 1;
+    bool OldLookupJoinBehaviour = true;
+    bool EnableOlapSink = false;
+    bool EnableOltpSink = false;
+    NKikimrConfig::TTableServiceConfig_EBlockChannelsMode BlockChannelsMode;
 };
 
 }

@@ -13,12 +13,12 @@
     {% cut "Через переменную окружения `YDB_LOG_SEVERITY_LEVEL`" %}
 
     Данная переменная окружения включает встроенный в `ydb-go-sdk` логгер (синхронный, неблочный) с выводом в стандартный поток вывода.
-    Выставить переменную окружения можно так: 
+    Выставить переменную окружения можно так:
     ```shell
     export YDB_LOG_SEVERITY_LEVEL=info
-    ``` 
+    ```
     (доступные значения `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `quiet`, по умолчанию `quiet`).
-    
+
     {% endcut %}
 
     {% cut "Подключить сторонний логгер `go.uber.org/zap`" %}
@@ -44,7 +44,7 @@
             os.Getenv("YDB_CONNECTION_STRING"),
             ydbZap.WithTraces(
                 log,
-                ydbZap.WithDetails(trace.DetailsAll),
+                trace.DetailsAll,
             ),
         )
         if err != nil {
@@ -78,8 +78,8 @@
         db, err := ydb.Open(ctx,
             os.Getenv("YDB_CONNECTION_STRING"),
             ydbZerolog.WithTraces(
-                log,
-                ydbZerolog.WithDetails(trace.DetailsAll),
+                &log,
+                trace.DetailsAll,
             ),
         )
         if err != nil {
@@ -113,8 +113,8 @@
         db, err := ydb.Open(ctx,
             os.Getenv("YDB_CONNECTION_STRING"),
             ydb.WithLogger(
+                logger,
                 trace.DetailsAll,
-                ydb.WithExternalLogger(logger),
             ),
         )
         if err != nil {
@@ -139,10 +139,10 @@
     {% cut "Через переменную окружения `YDB_LOG_SEVERITY_LEVEL`" %}
 
     Данная переменная окружения включает встроенный в `ydb-go-sdk` логгер (синхронный, неблочный) с выводом в стандартный поток вывода.
-    Выставить переменную окружения можно так: 
+    Выставить переменную окружения можно так:
     ```shell
     export YDB_LOG_SEVERITY_LEVEL=info
-    ``` 
+    ```
     (доступные значения `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `quiet`, по умолчанию `quiet`).
 
     {% endcut %}
@@ -171,7 +171,7 @@
             os.Getenv("YDB_CONNECTION_STRING"),
             ydbZap.WithTraces(
                 log,
-                ydbZap.WithDetails(trace.DetailsAll),
+                trace.DetailsAll,
             ),
         )
         if err != nil {
@@ -183,8 +183,9 @@
         if err != nil {
             panic(err)
         }
+        defer connector.Close()
 
-        db := sql.OpnDB(connector)
+        db := sql.OpenDB(connector)
         defer db.Close()
         ...
     }
@@ -214,8 +215,8 @@
         nativeDriver, err := ydb.Open(ctx,
             os.Getenv("YDB_CONNECTION_STRING"),
             ydbZerolog.WithTraces(
-                log,
-                ydbZerolog.WithDetails(trace.DetailsAll),
+                &log,
+                trace.DetailsAll,
             ),
         )
         if err != nil {
@@ -227,8 +228,9 @@
         if err != nil {
             panic(err)
         }
+        defer connector.Close()
 
-        db := sql.OpnDB(connector)
+        db := sql.OpenDB(connector)
         defer db.Close()
         ...
     }
@@ -258,8 +260,8 @@
         nativeDriver, err := ydb.Open(ctx,
             os.Getenv("YDB_CONNECTION_STRING"),
             ydb.WithLogger(
+                logger,
                 trace.DetailsAll,
-                ydb.WithExternalLogger(logger),
             ),
         )
         if err != nil {
@@ -271,8 +273,9 @@
         if err != nil {
             panic(err)
         }
+        defer connector.Close()
 
-        db := sql.OpnDB(connector)
+        db := sql.OpenDB(connector)
         defer db.Close()
         ...
     }
@@ -289,7 +292,7 @@
 
     В {{ ydb-short-name }} Java SDK для логирования используется библиотека slf4j, которая позволяет использовать различные уровни логирования (`error`, `warn`, `info`, `debug`, `trace`) для одного или нескольких логгеров. В текущей реализации доступны следующие логгеры:
 
-    * Логгер `tech.ydb.core.grpc` предоставляет информацию о внутренней реализации grpc протокола 
+    * Логгер `tech.ydb.core.grpc` предоставляет информацию о внутренней реализации grpc протокола
     * уровень `debug` логирует все операции по протоколу grpc, рекомедуется использовать только для отладки
     * уровень `info` рекомендуется использовать по умолчанию
 
@@ -336,6 +339,21 @@
             </Root>
         </Loggers>
     </Configuration>
+    ```
+
+- PHP
+
+    В YDB PHP SDK для логирования вам нужно использовать класс, который реализует `\Psr\Log\LoggerInterface`.
+    В YDB-PHP-SDK встроены логгеры в пространстве имен `YdbPlatform\Ydb\Logger`:
+    * `NullLogger` - по умолчанию, который ничего не выводит
+    * `SimpleStdLogger($level)` - логгер, который выводит логи в stderr.
+
+    Пример использования:
+    ```php
+    $config = [
+        'logger' => new \YdbPlatform\Ydb\Logger\SimpleStdLogger(\YdbPlatform\Ydb\Logger\SimpleStdLogger::INFO)
+    ]
+    $ydb = new \YdbPlatform\Ydb\Ydb($config);
     ```
 
 {% endlist %}

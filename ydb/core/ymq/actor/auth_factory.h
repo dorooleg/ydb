@@ -1,7 +1,7 @@
 #pragma once
 
 #include "actor.h"
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/core/ymq/base/action.h>
 #include <ydb/core/ymq/base/counters.h>
 #include <ydb/library/http_proxy/authorization/signature.h>
@@ -15,6 +15,7 @@ struct TAuthActorData {
 
     THolder<NKikimrClient::TSqsRequest> SQSRequest;
     THolder<IReplyCallback> HTTPCallback;
+    std::function<void(TString)> UserSidCallback;
 
     bool EnableQueueLeader;
 
@@ -75,7 +76,7 @@ public:
         NActors::TActorSystemSetup::TLocalServices&,
         const TAppData&,
         const TSqsConfig& config) final {
-        Y_VERIFY(!config.GetYandexCloudMode());
+        Y_ABORT_UNLESS(!config.GetYandexCloudMode());
     }
 
     void RegisterAuthActor(NActors::TActorSystem& system, TAuthActorData&& data) final;

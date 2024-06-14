@@ -14,7 +14,7 @@ public:
     TConclusion(TConclusionStatus&& status)
         : Result(std::move(status)) {
         auto* resStatus = std::get_if<TConclusionStatus>(&Result);
-        Y_VERIFY(resStatus->IsFail());
+        Y_ABORT_UNLESS(resStatus->IsFail());
     }
 
     bool IsFail() const {
@@ -27,33 +27,49 @@ public:
 
     TConclusion(const TConclusionStatus& status)
         : Result(status) {
-        Y_VERIFY(IsFail());
+        Y_ABORT_UNLESS(IsFail());
     }
 
-    TConclusion(TResult&& result)
+    template <class TResultArg>
+    TConclusion(TResultArg&& result)
         : Result(std::move(result)) {
     }
 
-    TConclusion(const TResult& result)
+    template <class TResultArg>
+    TConclusion(const TResultArg& result)
         : Result(result) {
     }
 
     const TConclusionStatus& GetError() const {
         auto result = std::get_if<TConclusionStatus>(&Result);
-        Y_VERIFY(result, "incorrect object for error request");
+        Y_ABORT_UNLESS(result, "incorrect object for error request");
         return *result;
     }
 
     const TResult& GetResult() const {
         auto result = std::get_if<TResult>(&Result);
-        Y_VERIFY(result, "incorrect object for result request");
+        Y_ABORT_UNLESS(result, "incorrect object for result request");
+        return *result;
+    }
+
+    TResult& MutableResult() {
+        auto result = std::get_if<TResult>(&Result);
+        Y_ABORT_UNLESS(result, "incorrect object for result request");
         return *result;
     }
 
     TResult&& DetachResult() {
         auto result = std::get_if<TResult>(&Result);
-        Y_VERIFY(result, "incorrect object for result request");
+        Y_ABORT_UNLESS(result, "incorrect object for result request: %s", GetErrorMessage().data());
         return std::move(*result);
+    }
+
+    const TResult* operator->() const {
+        return &GetResult();
+    }
+
+    TResult* operator->() {
+        return &MutableResult();
     }
 
     const TResult& operator*() const {
@@ -64,8 +80,8 @@ public:
         return IsFail();
     }
 
-    explicit operator bool() const {
-        return IsSuccess();
+    operator TConclusionStatus() const {
+        return GetError();
     }
 
     const TString& GetErrorMessage() const {
@@ -74,6 +90,15 @@ public:
             return Default<TString>();
         } else {
             return status->GetErrorMessage();
+        }
+    }
+
+    Ydb::StatusIds::StatusCode GetStatus() const {
+        auto* status = std::get_if<TConclusionStatus>(&Result);
+        if (!status) {
+            return Ydb::StatusIds::SUCCESS;
+        } else {
+            return status->GetStatus();
         }
     }
 };

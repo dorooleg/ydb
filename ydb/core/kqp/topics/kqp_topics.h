@@ -4,9 +4,10 @@
 #include <ydb/public/api/protos/ydb_topic.pb.h>
 #include <ydb/core/protos/pqconfig.pb.h>
 
+#include <ydb/core/tx/long_tx_service/public/lock_handle.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 
 #include <util/system/types.h>
 
@@ -88,6 +89,9 @@ public:
     bool HasOperations() const;
     bool HasReadOperations() const;
     bool HasWriteOperations() const;
+    bool HasWriteId() const;
+    ui64 GetWriteId() const;
+    void SetWriteId(NLongTxService::TLockHandle handle);
 
     bool TabletHasReadOperations(ui64 tabletId) const;
 
@@ -117,6 +121,7 @@ private:
     bool HasWriteOperations_ = false;
 
     TMaybe<TString> Consumer_;
+    NLongTxService::TLockHandle WriteId_;
 };
 
 }

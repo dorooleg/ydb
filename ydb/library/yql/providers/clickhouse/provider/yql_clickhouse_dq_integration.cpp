@@ -26,8 +26,8 @@ public:
         return TClReadTable::Match(&read);
     }
 
-    TMaybe<ui64> EstimateReadSize(ui64 /*dataSizePerJob*/, ui32 /*maxTasksPerStage*/, const TExprNode& read, TExprContext&) override {
-        if (TClReadTable::Match(&read)) {
+    TMaybe<ui64> EstimateReadSize(ui64 /*dataSizePerJob*/, ui32 /*maxTasksPerStage*/, const TVector<const TExprNode*>& read, TExprContext&) override {
+        if (AllOf(read, [](const auto val) { return TClReadTable::Match(val); })) {
             return 0ul; // TODO: return real size
         }
         return Nothing();
@@ -75,7 +75,7 @@ public:
         return 0ULL;
     }
 
-    void FillSourceSettings(const TExprNode& node, ::google::protobuf::Any& protoSettings, TString& sourceType) override {
+    void FillSourceSettings(const TExprNode& node, ::google::protobuf::Any& protoSettings, TString& sourceType, size_t) override {
         const TDqSource source(&node);
         if (const auto maySettings = source.Settings().Maybe<TClSourceSettings>()) {
             const auto settings = maySettings.Cast();

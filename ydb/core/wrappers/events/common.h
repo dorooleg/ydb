@@ -2,7 +2,7 @@
 #include "abstract.h"
 #include "s3_out.h"
 
-#include <library/cpp/actors/core/event_local.h>
+#include <ydb/library/actors/core/event_local.h>
 
 #include <ydb/core/base/events.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
@@ -206,17 +206,6 @@ public:
         DEFINE_GENERIC_REQUEST(name); \
         DEFINE_GENERIC_RESPONSE(name)
 
-DEFINE_GENERIC_REQUEST(GetObject);
-DECLARE_RESPONSE_WITH_BODY(GetObject, Aws::String)
-    static TResult ResultFromOutcome(const TOutcome & outcome) {
-        if (outcome.IsSuccess()) {
-            return outcome.GetResult().GetETag();
-        } else {
-            return outcome.GetError();
-        }
-    }
-};
-
 DEFINE_REQUEST(PutObject, TRequestWithBody);
 DEFINE_GENERIC_RESPONSE(PutObject);
 
@@ -228,6 +217,9 @@ DEFINE_GENERIC_REQUEST_RESPONSE(DeleteObject);
 DEFINE_GENERIC_REQUEST_RESPONSE(CreateMultipartUpload);
 DEFINE_GENERIC_REQUEST_RESPONSE(CompleteMultipartUpload);
 DEFINE_GENERIC_REQUEST_RESPONSE(AbortMultipartUpload);
+
+DEFINE_GENERIC_REQUEST(UploadPartCopy);
+DEFINE_GENERIC_RESPONSE(UploadPartCopy);
 
 #undef DEFINE_REQUEST
 #undef DEFINE_GENERIC_REQUEST

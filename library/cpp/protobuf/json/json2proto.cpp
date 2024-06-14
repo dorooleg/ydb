@@ -2,6 +2,7 @@
 #include "util.h"
 
 #include <library/cpp/json/json_value.h>
+#include <library/cpp/protobuf/json/proto/enum_options.pb.h>
 
 #include <google/protobuf/util/time_util.h>
 #include <google/protobuf/message.h>
@@ -73,7 +74,7 @@ static TString GetFieldName(const google::protobuf::FieldDescriptor& field,
             NProtobufJson::ToSnakeCaseDense(&name);
             break;
         default:
-            Y_VERIFY_DEBUG(false, "Unknown FieldNameMode.");
+            Y_DEBUG_ABORT_UNLESS(false, "Unknown FieldNameMode.");
     }
     return name;
 }
@@ -187,6 +188,18 @@ FindEnumValue(const NProtoBuf::EnumDescriptor* enumField,
     return nullptr;
 }
 
+static const NProtoBuf::EnumValueDescriptor*
+FindEnumValueByJsonName(const NProtoBuf::EnumDescriptor* enumField, TStringBuf target) {
+    for (int i = 0; i < enumField->value_count(); i++) {
+        auto* valueDescriptor = enumField->value(i);
+        if (valueDescriptor->options().GetExtension(json_enum_value) == target) {
+            return valueDescriptor;
+        }
+    }
+    return nullptr;
+}
+
+
 static void
 JsonEnum2Field(const NJson::TJsonValue& json,
                google::protobuf::Message& proto,
@@ -211,12 +224,16 @@ JsonEnum2Field(const NJson::TJsonValue& json,
         }
     } else if (json.IsString()) {
         const auto& value = json.GetString();
-        if (config.EnumValueMode == NProtobufJson::TJson2ProtoConfig::EnumCaseInsensetive) {
-            enumFieldValue = FindEnumValue(enumField, value, AsciiEqualsIgnoreCase);
-        } else if (config.EnumValueMode == NProtobufJson::TJson2ProtoConfig::EnumSnakeCaseInsensitive) {
-            enumFieldValue = FindEnumValue(enumField, value, NProtobufJson::EqualsIgnoringCaseAndUnderscores);
+        if (config.UseJsonEnumValue) {
+            enumFieldValue = FindEnumValueByJsonName(enumField, value);
         } else {
-            enumFieldValue = enumField->FindValueByName(value);
+            if (config.EnumValueMode == NProtobufJson::TJson2ProtoConfig::EnumCaseInsensetive) {
+                enumFieldValue = FindEnumValue(enumField, value, AsciiEqualsIgnoreCase);
+            } else if (config.EnumValueMode == NProtobufJson::TJson2ProtoConfig::EnumSnakeCaseInsensitive) {
+                enumFieldValue = FindEnumValue(enumField, value, NProtobufJson::EqualsIgnoringCaseAndUnderscores);
+            } else {
+                enumFieldValue = enumField->FindValueByName(value);
+            }
         }
         if (!enumFieldValue) {
             ythrow yexception() << "Invalid string value of JSON enum field: " << TStringBuf(value).Head(100) << ".";
@@ -243,20 +260,30 @@ Json2SingleField(const NJson::TJsonValue& json,
     const Reflection* reflection = proto.GetReflection();
     Y_ASSERT(!!reflection);
 
-    TString name;
+    const NJson::TJsonValue* fieldJsonPtr = &json;
+    TString nameHolder;
+    TStringBuf name;
     if (!isMapValue) {
-        name = GetFieldName(field, config);
-        if (!json.Has(name) || json[name].GetType() == NJson::JSON_UNDEFINED || json[name].GetType() == NJson::JSON_NULL) {
+        nameHolder = GetFieldName(field, config);
+        name = nameHolder;
+        const NJson::TJsonValue& fieldJson = json[name];
+        if (auto fieldJsonType = fieldJson.GetType(); fieldJsonType == NJson::JSON_UNDEFINED || fieldJsonType == NJson::JSON_NULL) {
             if (field.is_required() && !field.has_default_value() && !reflection->HasField(proto, &field) && config.CheckRequiredFields) {
                 ythrow yexception() << "JSON has no field for required field "
                                     << name << ".";
             }
-
             return;
+        }
+        if (name) {  // For compatibility with previous implementation. Not sure if GetFieldName is allowed to return empty strings,
+            fieldJsonPtr = &fieldJson;
         }
     }
 
-    const NJson::TJsonValue& fieldJson = name ? json[name] : json;
+    const NJson::TJsonValue& fieldJson = *fieldJsonPtr;
+
+    if (name && config.UnknownFieldsCollector) {
+        config.UnknownFieldsCollector->OnEnterMapItem(nameHolder);
+    }
 
     switch (field.cpp_type()) {
         JSON_TO_FIELD(CPPTYPE_INT32, field.name(), fieldJson, IsInteger, SetInt32, GetInteger);
@@ -294,6 +321,10 @@ Json2SingleField(const NJson::TJsonValue& json,
         default:
             ythrow yexception() << "Unknown protobuf field type: "
                                 << static_cast<int>(field.cpp_type()) << ".";
+    }
+
+    if (name && config.UnknownFieldsCollector) {
+        config.UnknownFieldsCollector->OnLeaveMapItem();
     }
 }
 
@@ -336,7 +367,7 @@ Json2RepeatedFieldValue(const NJson::TJsonValue& jsonValue,
                         const google::protobuf::FieldDescriptor& field,
                         const NProtobufJson::TJson2ProtoConfig& config,
                         const google::protobuf::Reflection* reflection,
-                        const TMaybe<TString>& key = {}) {
+                        const TString* key = nullptr) {
     using namespace google::protobuf;
 
     switch (field.cpp_type()) {
@@ -361,12 +392,12 @@ Json2RepeatedFieldValue(const NJson::TJsonValue& jsonValue,
         case FieldDescriptor::CPPTYPE_MESSAGE: {
             Message* innerProto = reflection->AddMessage(&proto, &field);
             Y_ASSERT(!!innerProto);
-            if (key.Defined()) {
-                const FieldDescriptor* keyField = innerProto->GetDescriptor()->FindFieldByName("key");
+            if (key) {
+                const FieldDescriptor* keyField = innerProto->GetDescriptor()->map_key();
                 Y_ENSURE(keyField, "Map entry key field not found: " << field.name());
                 SetKey(*innerProto, *keyField, *key);
 
-                const FieldDescriptor* valueField = innerProto->GetDescriptor()->FindFieldByName("value");
+                const FieldDescriptor* valueField = innerProto->GetDescriptor()->map_value();
                 Y_ENSURE(valueField, "Map entry value field not found.");
                 Json2SingleField(jsonValue, *innerProto, *valueField, config, /*isMapValue=*/true);
             } else {
@@ -390,12 +421,14 @@ Json2RepeatedField(const NJson::TJsonValue& json,
     using namespace google::protobuf;
 
     TString name = GetFieldName(field, config);
-    if (!json.Has(name))
-        return;
 
     const NJson::TJsonValue& fieldJson = json[name];
     if (fieldJson.GetType() == NJson::JSON_UNDEFINED || fieldJson.GetType() == NJson::JSON_NULL)
         return;
+
+    if (config.UnknownFieldsCollector) {
+        config.UnknownFieldsCollector->OnEnterMapItem(name);
+    }
 
     bool isMap = fieldJson.GetType() == NJson::JSON_MAP;
     if (isMap) {
@@ -417,11 +450,17 @@ Json2RepeatedField(const NJson::TJsonValue& json,
     Y_ASSERT(!!reflection);
 
     if (isMap) {
-        const THashMap<TString, NJson::TJsonValue> jsonMap = fieldJson.GetMap();
+        const THashMap<TString, NJson::TJsonValue>& jsonMap = fieldJson.GetMap();
         for (const auto& x : jsonMap) {
             const TString& key = x.first;
             const NJson::TJsonValue& jsonValue = x.second;
-            Json2RepeatedFieldValue(jsonValue, proto, field, config, reflection, key);
+            if (config.UnknownFieldsCollector) {
+                config.UnknownFieldsCollector->OnEnterMapItem(key);
+            }
+            Json2RepeatedFieldValue(jsonValue, proto, field, config, reflection, &key);
+            if (config.UnknownFieldsCollector) {
+                config.UnknownFieldsCollector->OnLeaveMapItem();
+            }
         }
     } else {
         if (config.ReplaceRepeatedFields) {
@@ -429,16 +468,36 @@ Json2RepeatedField(const NJson::TJsonValue& json,
         }
         if (fieldJson.GetType() == NJson::JSON_ARRAY) {
             const NJson::TJsonValue::TArray& jsonArray = fieldJson.GetArray();
+            ui64 id = 0;
             for (const NJson::TJsonValue& jsonValue : jsonArray) {
+                if (config.UnknownFieldsCollector) {
+                    config.UnknownFieldsCollector->OnEnterArrayItem(id);
+                }
                 Json2RepeatedFieldValue(jsonValue, proto, field, config, reflection);
+                if (config.UnknownFieldsCollector) {
+                    config.UnknownFieldsCollector->OnLeaveArrayItem();
+                }
+                ++id;
             }
         } else if (config.ValueVectorizer) {
+            ui64 id = 0;
             for (const NJson::TJsonValue& jsonValue : config.ValueVectorizer(fieldJson)) {
+                if (config.UnknownFieldsCollector) {
+                    config.UnknownFieldsCollector->OnEnterArrayItem(id);
+                }
                 Json2RepeatedFieldValue(jsonValue, proto, field, config, reflection);
+                if (config.UnknownFieldsCollector) {
+                    config.UnknownFieldsCollector->OnLeaveArrayItem();
+                }
+                ++id;
             }
         } else if (config.VectorizeScalars) {
             Json2RepeatedFieldValue(fieldJson, proto, field, config, reflection);
         }
+    }
+
+    if (config.UnknownFieldsCollector) {
+        config.UnknownFieldsCollector->OnLeaveMapItem();
     }
 }
 
@@ -463,14 +522,18 @@ namespace NProtobufJson {
             }
         }
 
-        if (!config.AllowUnknownFields) {
+        if (!config.AllowUnknownFields || config.UnknownFieldsCollector) {
             THashMap<TString, bool> knownFields;
             for (int f = 0, endF = descriptor->field_count(); f < endF; ++f) {
                 const google::protobuf::FieldDescriptor* field = descriptor->field(f);
                 knownFields[GetFieldName(*field, config)] = 1;
             }
             for (const auto& f : json.GetMap()) {
-                Y_ENSURE(knownFields.contains(f.first), "unknown field \"" << f.first << "\" for \"" << descriptor->full_name() << "\"");
+                const bool isFieldKnown = knownFields.contains(f.first);
+                Y_ENSURE(config.AllowUnknownFields || isFieldKnown, "unknown field \"" << f.first << "\" for \"" << descriptor->full_name() << "\"");
+                if (!isFieldKnown) {
+                    config.UnknownFieldsCollector->OnUnknownField(f.first, *descriptor);
+                }
             }
         }
     }

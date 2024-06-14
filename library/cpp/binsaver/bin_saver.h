@@ -14,6 +14,7 @@
 #include <util/generic/ylimits.h>
 #include <util/memory/blob.h>
 #include <util/digest/murmur.h>
+#include <util/system/compiler.h>
 
 #include <array>
 #include <bitset>
@@ -76,8 +77,9 @@ private:
     template <class T>
     void CallObjectSerialize(T* p, NBinSaverInternals::TOverloadPriority<0>) { // lower priority - will be resolved last
 #if (!defined(_MSC_VER))
+        // broken in clang16 for some types
         // In MSVC __has_trivial_copy returns false to enums, primitive types and arrays.
-        static_assert(__has_trivial_copy(T), "Class is nontrivial copyable, you must define operator&, see");
+        // static_assert(__is_trivially_copyable(T), "Class is nontrivial copyable, you must define operator&, see");
 #endif
         DataChunk(p, sizeof(T));
     }
@@ -623,24 +625,24 @@ struct TRegisterSaveLoadType {
     int operator&(IBinSaver& f) { \
         f.AddMulti(__VA_ARGS__);  \
         return 0;                 \
-    }
+    } Y_SEMICOLON_GUARD
 
 #define SAVELOAD_OVERRIDE_WITHOUT_BASE(...) \
     int operator&(IBinSaver& f) override {  \
         f.AddMulti(__VA_ARGS__);            \
         return 0;                           \
-    }
+    } Y_SEMICOLON_GUARD
 
 #define SAVELOAD_OVERRIDE(base, ...)       \
     int operator&(IBinSaver& f) override { \
         base::operator&(f);                \
         f.AddMulti(__VA_ARGS__);           \
         return 0;                          \
-    }
+    } Y_SEMICOLON_GUARD
 
 #define SAVELOAD_BASE(...)        \
     int operator&(IBinSaver& f) { \
         TBase::operator&(f);      \
         f.AddMulti(__VA_ARGS__);  \
         return 0;                 \
-    }
+    } Y_SEMICOLON_GUARD

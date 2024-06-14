@@ -17,7 +17,9 @@ namespace NKikimr {
     };
 
     struct TNodeWardenConfig : public TThrRefBase {
-        NKikimrBlobStorage::TNodeWardenServiceSet ServiceSet;
+        NKikimrConfig::TBlobStorageConfig BlobStorageConfig;
+        NKikimrConfig::TStaticNameserviceConfig NameserviceConfig;
+        std::optional<NKikimrConfig::TDomainsConfig> DomainsConfig;
         TIntrusivePtr<IPDiskServiceFactory> PDiskServiceFactory;
         TIntrusivePtr<TAllVDiskKinds> AllVDiskKinds;
         TIntrusivePtr<NPDisk::TDriveModelDb> AllDriveModels;
@@ -28,7 +30,7 @@ namespace NKikimr {
         std::unique_ptr<ICacheAccessor> CacheAccessor;
         TEncryptionKey TenantKey;
         TEncryptionKey StaticKey;
-        TVector<TEncryptionKey> PDiskKey;
+        NPDisk::TMainKey PDiskKey;
         bool CachePDisks = false;
         bool CacheVDisks = false;
         bool EnableVDiskCooldownTimeout = false;
@@ -42,21 +44,6 @@ namespace NKikimr {
             , AllDriveModels(new NPDisk::TDriveModelDb)
         {}
 
-        NPDisk::TMainKey CreatePDiskKey() const {
-            if (PDiskKey.size() > 0) {
-                NPDisk::TMainKey mainKey;
-                for (ui32 i = 0; i < PDiskKey.size(); ++i) {
-                    const ui8 *key;
-                    ui32 keySize;
-                    PDiskKey[i].Key.GetKeyBytes(&key, &keySize);
-                    mainKey.push_back(*(ui64*)key);
-                }
-                return mainKey;
-            } else {
-                return { NPDisk::YdbDefaultPDiskSequence };
-            }
-        }
-
         bool IsCacheEnabled() const {
             return static_cast<bool>(CacheAccessor);
         }
@@ -66,7 +53,7 @@ namespace NKikimr {
 
     bool ObtainTenantKey(TEncryptionKey *key, const NKikimrProto::TKeyConfig& keyConfig);
     bool ObtainStaticKey(TEncryptionKey *key);
-    bool ObtainPDiskKey(TVector<TEncryptionKey> *key, const NKikimrProto::TKeyConfig& keyConfig);
+    bool ObtainPDiskKey(NPDisk::TMainKey *key, const NKikimrProto::TKeyConfig& keyConfig);
 
     std::unique_ptr<ICacheAccessor> CreateFileCacheAccessor(const TString& templ, const std::unordered_map<char, TString>& vars);
 

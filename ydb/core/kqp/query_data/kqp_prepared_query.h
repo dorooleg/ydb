@@ -1,13 +1,19 @@
 #pragma once
 
+#include <ydb/core/kqp/common/simple/temp_tables.h>
 #include <ydb/core/kqp/query_data/kqp_predictor.h>
-#include <ydb/core/kqp/provider/yql_kikimr_settings.h>
+#include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/protos/kqp.pb.h>
+#include <ydb/core/protos/kqp_physical.pb.h>
 
 #include <util/generic/vector.h>
 
 #include <memory>
 #include <vector>
+
+namespace NYql {
+    struct TKikimrConfiguration;
+}
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -24,11 +30,17 @@ class TKqpPhyTx;
 
 namespace NKikimr::NKqp {
 
+struct TTableConstInfo;
+
 class TPreparedQueryAllocHolder;
 
 struct TPhyTxResultMetadata {
     NKikimr::NMiniKQL::TType* MkqlItemType;
     TVector<ui32> ColumnOrder;
+};
+
+struct TTableConstInfoMap : public TAtomicRefCount<TTableConstInfoMap> {
+    THashMap<NKikimr::TTableId, TIntrusivePtr<TTableConstInfo>> Map;
 };
 
 class TKqpPhyTxHolder {
@@ -38,6 +50,8 @@ class TKqpPhyTxHolder {
     TVector<TPhyTxResultMetadata> TxResultsMeta;
     std::shared_ptr<TPreparedQueryAllocHolder> Alloc;
     std::vector<TStagePredictor> Predictors;
+    TIntrusivePtr<TTableConstInfoMap> TableConstInfoById;
+
 public:
     using TConstPtr = std::shared_ptr<const TKqpPhyTxHolder>;
 
@@ -85,14 +99,27 @@ public:
         return Proto->GetTables();
     }
 
+    const NKqpProto::TKqpSchemeOperation& GetSchemeOperation() const {
+        return Proto->GetSchemeOperation();
+    }
+
+    const google::protobuf::RepeatedPtrField<TProtoStringType>& GetSecretNames() const {
+        return Proto->GetSecretNames();
+    }
+
     TProtoStringType DebugString() const {
         return Proto->ShortDebugString();
     }
 
+    TIntrusiveConstPtr<TTableConstInfoMap> GetTableConstInfoById() const;
+
     TKqpPhyTxHolder(const std::shared_ptr<const NKikimrKqp::TPreparedQuery>& pq, const NKqpProto::TKqpPhyTx* proto,
-        const std::shared_ptr<TPreparedQueryAllocHolder>& alloc);
+        const std::shared_ptr<TPreparedQueryAllocHolder>& alloc, TIntrusivePtr<TTableConstInfoMap> tableConstInfoById);
 
     bool IsLiteralTx() const;
+
+    std::optional<std::pair<bool, std::pair<TString, TString>>>
+    GetSchemeOpTempTablePath() const;
 };
 
 class TLlvmSettings {
@@ -100,7 +127,7 @@ private:
     YDB_READONLY(bool, DisableLlvmForUdfStages, false);
     YDB_READONLY_DEF(std::optional<bool>, UseLlvmExternalDirective);
 public:
-    void Fill(NYql::TKikimrConfiguration::TPtr config, const NKikimrKqp::EQueryType qType);
+    void Fill(TIntrusivePtr<NYql::TKikimrConfiguration> config, const NKikimrKqp::EQueryType qType);
 
     bool GetUseLlvm(const NYql::NDqProto::TProgram::TSettings& kqpSettingsProto) const;
 };
@@ -112,6 +139,7 @@ private:
     std::shared_ptr<TPreparedQueryAllocHolder> Alloc;
     TVector<TString> QueryTables;
     std::vector<TKqpPhyTxHolder::TConstPtr> Transactions;
+    TIntrusivePtr<TTableConstInfoMap> TableConstInfoById;
 
 public:
 
@@ -156,6 +184,16 @@ public:
     const NKqpProto::TKqpPhyQuery& GetPhysicalQuery() const {
         return Proto->GetPhysicalQuery();
     }
+
+    TIntrusivePtr<TTableConstInfo>& GetInfo(const TTableId& tableId);
+
+    const THashMap<TTableId, TIntrusivePtr<TTableConstInfo>>& GetTableConstInfo() const;
+
+    void FillTable(const NKqpProto::TKqpPhyTable& phyTable);
+
+    void FillTables(const google::protobuf::RepeatedPtrField< ::NKqpProto::TKqpPhyStage>& stages);
+
+    bool HasTempTables(TKqpTempTablesState::TConstPtr tempTablesState, bool withSessionId) const;
 };
 
 

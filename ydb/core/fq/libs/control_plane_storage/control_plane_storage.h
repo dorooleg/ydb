@@ -1,6 +1,6 @@
 #pragma once
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 #include <ydb/core/fq/libs/config/protos/common.pb.h>
@@ -46,6 +46,7 @@ NActors::IActor* CreateYdbControlPlaneStorageServiceActor(
     const NConfig::TControlPlaneStorageConfig& config,
     const NYql::TS3GatewayConfig& s3Config,
     const NConfig::TCommonConfig& common,
+    const NConfig::TComputeConfig& computeConfig,
     const ::NMonitoring::TDynamicCounterPtr& counters,
     const NFq::TYqSharedResources::TPtr& yqSharedResources,
     const NKikimr::TYdbCredentialsProviderFactory& credentialsProviderFactory,

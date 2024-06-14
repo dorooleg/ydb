@@ -5,6 +5,7 @@
 #include "blobstorage_pdisk_ut_env.h"
 
 #include <ydb/core/blobstorage/crypto/default.h>
+#include <ydb/core/driver_lib/version/ut/ut_helpers.h>
 #include <ydb/core/testlib/actors/test_runtime.h>
 
 #include <util/system/hp_timer.h>
@@ -360,14 +361,58 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
         UNIT_ASSERT(errors > 0);
     }
 
+    Y_UNIT_TEST(TestFakeErrorPDiskLogRead) {
+        TActorTestContext testCtx({ false });
+
+        TVDiskMock vdisk(&testCtx);
+        vdisk.InitFull();
+
+        for (int i = 0; i < 100; i++) {
+            vdisk.SendEvLogSync(1024);
+        }
+
+        testCtx.RestartPDiskSync();
+
+        vdisk.Init();
+
+        // Make sure there will be read error.
+        testCtx.TestCtx.SectorMap->ImitateReadIoErrorProbability = 1;
+
+        auto res = vdisk.ReadLog(true);
+
+        // Zero log records should be read.
+        UNIT_ASSERT_EQUAL(0, res);
+
+        auto device = testCtx.GetPDisk()->BlockDevice.Get();
+
+        // After unsuccessful log read, pdisk should be shut down.
+        UNIT_ASSERT(!device->IsGood());
+    }
+
+    Y_UNIT_TEST(TestFakeErrorPDiskSysLogRead) {
+        TActorTestContext testCtx({ false });
+
+        TVDiskMock vdisk(&testCtx);
+        vdisk.InitFull();
+
+        // Make sure there will be syslog read error.
+        testCtx.TestCtx.SectorMap->ImitateReadIoErrorProbability = 1;
+
+        testCtx.TestResponse<NPDisk::TEvYardControlResult>(
+                new NPDisk::TEvYardControl(NPDisk::TEvYardControl::PDiskStop, nullptr),
+                NKikimrProto::OK);
+
+        testCtx.TestResponse<NPDisk::TEvYardControlResult>(
+                new NPDisk::TEvYardControl(NPDisk::TEvYardControl::PDiskStart, (void*)(&testCtx.MainKey)),
+                NKikimrProto::CORRUPTED);
+    }
+
     Y_UNIT_TEST(TestFakeErrorPDiskManyChunkRead) {
         TActorTestContext testCtx({ false });
         testCtx.TestCtx.SectorMap->ImitateReadIoErrorProbability = 1e-4;
 
         TVDiskMock vdisk(&testCtx);
         vdisk.InitFull();
-
-        ui32 errors = 0;
 
         vdisk.ReserveChunk();
         vdisk.CommitReservedChunks();
@@ -388,7 +433,6 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
             const auto res = testCtx.Recv<NPDisk::TEvChunkReadResult>();
             //Ctest << res->ToString() << Endl;
             if (res->Status != NKikimrProto::OK) {
-                ++errors;
                 if (!printed) {
                     printed = true;
                     Ctest << res->ToString() << Endl;
@@ -459,8 +503,8 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
         TVDiskMock vdisk(&testCtx);
         vdisk.InitFull();
         vdisk.SendEvLogSync();
-        testCtx.Send(new TEvBlobStorage::TEvRestartPDisk(testCtx.GetPDisk()->PDiskId, testCtx.MainKey, nullptr));
-        const auto evInitRes = testCtx.Recv<TEvBlobStorage::TEvRestartPDiskResult>();
+        testCtx.Send(new TEvBlobStorage::TEvAskWardenRestartPDiskResult(testCtx.GetPDisk()->PDiskId, testCtx.MainKey, true, nullptr));
+        const auto evInitRes = testCtx.Recv<TEvBlobStorage::TEvNotifyWardenPDiskRestarted>();
         vdisk.InitFull();
         vdisk.SendEvLogSync();
     }
@@ -481,7 +525,7 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
             testCtx.Send(new NPDisk::TEvLog(evInitRes->PDiskParams->Owner, evInitRes->PDiskParams->OwnerRound, 0,
                         logData, TLsnSeg(lsn, lsn), nullptr));
             if (i == 100) {
-                testCtx.Send(new TEvBlobStorage::TEvRestartPDisk(testCtx.GetPDisk()->PDiskId, testCtx.MainKey, nullptr));
+                testCtx.Send(new TEvBlobStorage::TEvAskWardenRestartPDiskResult(testCtx.GetPDisk()->PDiskId, testCtx.MainKey, true, nullptr));
             }
             ++lsn;
         }
@@ -494,7 +538,7 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
                 Ctest << "TEvLogResult status is error" << Endl;
             }
         }
-        testCtx.Recv<TEvBlobStorage::TEvRestartPDiskResult>();
+        testCtx.Recv<TEvBlobStorage::TEvNotifyWardenPDiskRestarted>();
     }
 
     Y_UNIT_TEST(CommitDeleteChunks) {
@@ -690,7 +734,7 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
                 NKikimrProto::OK);
         round = evInitRes->PDiskParams->OwnerRound + 1;
 
-        testCtx.MainKey[0] += 123;
+        testCtx.MainKey.Keys[0] += 123;
         testCtx.UpdateConfigRecreatePDisk(testCtx.GetPDiskConfig());
 
         evInitRes = testCtx.TestResponse<NPDisk::TEvYardInitResult>(
@@ -728,27 +772,27 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
 
         readChunk();
 
-        testCtx.MainKey.push_back(0xFull);
+        testCtx.MainKey.Keys.push_back(0xFull);
         testCtx.RestartPDiskSync();
         mock.InitFull();
         readChunk();
 
-        testCtx.MainKey = { 0xFull };
+        testCtx.MainKey.Keys = { 0xFull };
         testCtx.RestartPDiskSync();
         mock.InitFull();
         readChunk();
 
-        testCtx.MainKey = { 0xFull, 0xA };
+        testCtx.MainKey.Keys = { 0xFull, 0xA };
         testCtx.RestartPDiskSync();
         mock.InitFull();
         readChunk();
 
-        testCtx.MainKey = { 0xFull, 0xA, 0xB, 0xC };
+        testCtx.MainKey.Keys = { 0xFull, 0xA, 0xB, 0xC };
         testCtx.RestartPDiskSync();
         mock.InitFull();
         readChunk();
 
-        testCtx.MainKey = { 0xC };
+        testCtx.MainKey.Keys = { 0xC };
         testCtx.RestartPDiskSync();
         mock.InitFull();
         readChunk();
@@ -779,13 +823,31 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
                         chunk, 0, data.size(), 0, nullptr),
                 NKikimrProto::OK);
 
-        testCtx.MainKey = { 0xABCDEF };
+        testCtx.MainKey.Keys = { 0xABCDEF };
         testCtx.TestResponse<NPDisk::TEvYardControlResult>(
                 new NPDisk::TEvYardControl(NPDisk::TEvYardControl::PDiskStop, nullptr),
                 NKikimrProto::OK);
 
         testCtx.TestResponse<NPDisk::TEvYardControlResult>(
                 new NPDisk::TEvYardControl(NPDisk::TEvYardControl::PDiskStart, (void*)(&testCtx.MainKey)),
+                NKikimrProto::CORRUPTED);
+    }
+
+    Y_UNIT_TEST(RecreateWithInvalidPDiskKey) {
+        TActorTestContext testCtx({ false });
+        int round = 2;
+        const TVDiskID vDiskID(0, 1, 0, 0, 0);
+
+        auto evInitRes = testCtx.TestResponse<NPDisk::TEvYardInitResult>(
+                new NPDisk::TEvYardInit(round, vDiskID, testCtx.TestCtx.PDiskGuid),
+                NKikimrProto::OK);
+        round = evInitRes->PDiskParams->OwnerRound + 1;
+
+        testCtx.MainKey.Keys = {};
+        testCtx.UpdateConfigRecreatePDisk(testCtx.GetPDiskConfig());
+
+        evInitRes = testCtx.TestResponse<NPDisk::TEvYardInitResult>(
+                new NPDisk::TEvYardInit(round, vDiskID, testCtx.TestCtx.PDiskGuid),
                 NKikimrProto::CORRUPTED);
     }
 
@@ -796,6 +858,10 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
             .DiskSize = diskSize,
             .SmallDisk = true,
         });
+
+        TString data(NPDisk::SmallDiskMaximumChunkSize, '0');
+
+        auto parts = MakeIntrusive<NPDisk::TEvChunkWrite::TStrokaBackedUpParts>(data);
 
         ui64 dataMb = 0;
         for (ui32 i = 0; i < 200; ++i) {
@@ -811,10 +877,9 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
                     if (resp->Status == NKikimrProto::OK) {
                         ui32 chunk = resp->ChunkIds.front();
                         chunks.push_back(chunk);
-                        TString data(NPDisk::SmallDiskMaximumChunkSize, '0');
                         testCtx.TestResponse<NPDisk::TEvChunkWriteResult>(new NPDisk::TEvChunkWrite(
                             evInitRes->PDiskParams->Owner, evInitRes->PDiskParams->OwnerRound,
-                            chunk, 0, new NPDisk::TEvChunkWrite::TStrokaBackedUpParts(data), nullptr, false, 0),
+                            chunk, 0, parts, nullptr, false, 0),
                             NKikimrProto::OK);
                         dataMb += NPDisk::SmallDiskMaximumChunkSize >> 20;
                     } else {
@@ -840,5 +905,179 @@ Y_UNIT_TEST_SUITE(TPDiskTest) {
     Y_UNIT_TEST(SmallDisk40) {
         SmallDisk(40);
     }
+
+    Y_UNIT_TEST(PDiskIncreaseLogChunksLimitAfterRestart) {
+        TActorTestContext testCtx({
+            .IsBad=false,
+            .DiskSize = 1_GB,
+            .ChunkSize = 1_MB,
+        });
+
+        TVDiskMock vdisk(&testCtx);
+        vdisk.InitFull();
+        vdisk.SendEvLogSync();
+
+        TRcBuf buf(TString(64_MB, 'a'));
+        auto writeLog = [&]() {
+            testCtx.Send(new NPDisk::TEvLog(vdisk.PDiskParams->Owner, vdisk.PDiskParams->OwnerRound, 0,
+                        buf, vdisk.GetLsnSeg(), nullptr));
+            const auto logRes = testCtx.Recv<NPDisk::TEvLogResult>();
+            return logRes->Status;
+        };
+
+        while (writeLog() == NKikimrProto::OK) {}
+        UNIT_ASSERT_VALUES_EQUAL(writeLog(), NKikimrProto::OUT_OF_SPACE);
+
+        testCtx.Send(new TEvBlobStorage::TEvAskWardenRestartPDiskResult(testCtx.GetPDisk()->PDiskId, testCtx.MainKey, true, nullptr));
+        const auto evInitRes = testCtx.Recv<TEvBlobStorage::TEvNotifyWardenPDiskRestarted>();
+
+        vdisk.InitFull();
+        vdisk.SendEvLogSync();
+
+        UNIT_ASSERT_VALUES_EQUAL(writeLog(), NKikimrProto::OK);
+    }
+
+}
+
+Y_UNIT_TEST_SUITE(PDiskCompatibilityInfo) {
+    using TCurrent = NKikimrConfig::TCurrentCompatibilityInfo;
+    THolder<NPDisk::TEvYardInitResult> RestartPDisk(TActorTestContext& testCtx, ui32 pdiskId, TVDiskMock& vdisk, TCurrent* newInfo) {
+        TCompatibilityInfoTest::Reset(newInfo);
+        testCtx.Send(new TEvBlobStorage::TEvAskWardenRestartPDiskResult(pdiskId, testCtx.MainKey, true, nullptr));
+        testCtx.Recv<TEvBlobStorage::TEvNotifyWardenPDiskRestarted>();
+        testCtx.Send(new NPDisk::TEvYardInit(vdisk.OwnerRound.fetch_add(1), vdisk.VDiskID, testCtx.TestCtx.PDiskGuid));
+        return testCtx.Recv<NPDisk::TEvYardInitResult>();
+    }
+
+    void TestRestartWithDifferentVersion(TCurrent oldInfo, TCurrent newInfo, bool isCompatible, bool suppressCompatibilityCheck = false) {
+        TCompatibilityInfoTest::Reset(&oldInfo);
+
+        TActorTestContext testCtx({
+            .IsBad = false,
+            .SuppressCompatibilityCheck = suppressCompatibilityCheck,
+        });
+
+        TVDiskMock vdisk(&testCtx);
+        vdisk.InitFull();
+        vdisk.SendEvLogSync();
+        auto pdiskId = testCtx.GetPDisk()->PDiskId;
+
+        const auto evInitRes = RestartPDisk(testCtx, pdiskId, vdisk, &newInfo);
+        if (isCompatible) {
+            UNIT_ASSERT(evInitRes->Status == NKikimrProto::OK);
+        } else {
+            UNIT_ASSERT(evInitRes->Status != NKikimrProto::OK);
+        }
+    }
+
+    void TestMajorVerionMigration(TCurrent oldInfo, TCurrent intermediateInfo, TCurrent newInfo) {
+        TCompatibilityInfoTest::Reset(&oldInfo);
+    
+        TActorTestContext testCtx({
+            .IsBad = false,
+            .SuppressCompatibilityCheck = false,
+        });
+
+        TVDiskMock vdisk(&testCtx);
+        vdisk.InitFull();
+        vdisk.SendEvLogSync();
+        auto pdiskId = testCtx.GetPDisk()->PDiskId;
+
+        {
+            const auto evInitRes = RestartPDisk(testCtx, pdiskId, vdisk, &intermediateInfo);
+            UNIT_ASSERT(evInitRes->Status == NKikimrProto::OK);
+        }
+
+        {
+            const auto evInitRes = RestartPDisk(testCtx, pdiskId, vdisk, &newInfo);
+            UNIT_ASSERT(evInitRes->Status == NKikimrProto::OK);
+        }
+    }
+
+    Y_UNIT_TEST(OldCompatible) {
+        TestRestartWithDifferentVersion(
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 1, .Minor = 26, .Hotfix = 0 },
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 2, .Minor = 1, .Hotfix = 0 },
+            }.ToPB(),
+            true
+        );
+    }
+
+    Y_UNIT_TEST(Incompatible) {
+        TestRestartWithDifferentVersion(
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 1, .Minor = 26, .Hotfix = 0 },
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 3, .Minor = 1, .Hotfix = 0 },
+            }.ToPB(),
+            false
+        );
+    }
+
+    Y_UNIT_TEST(NewIncompatibleWithDefault) {
+        TestRestartWithDifferentVersion(
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 24, .Major = 3, .Minor = 1, .Hotfix = 0 },
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 24, .Major = 4, .Minor = 1, .Hotfix = 0 },
+            }.ToPB(),
+            true
+        );
+    }
+
+    Y_UNIT_TEST(Trunk) {
+        TestRestartWithDifferentVersion(
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+            }.ToPB(),
+            true
+        );
+    }
+
+    Y_UNIT_TEST(SuppressCompatibilityCheck) {
+        TestRestartWithDifferentVersion(
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "trunk",
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 3, .Minor = 8, .Hotfix = 0 },
+            }.ToPB(),
+            true,
+            true
+        );
+    }
+
+    Y_UNIT_TEST(Migration) {
+        TestMajorVerionMigration(
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 3, .Minor = 20, .Hotfix = 0 },
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 4, .Minor = 1, .Hotfix = 0 },
+            }.ToPB(),
+            TCompatibilityInfo::TProtoConstructor::TCurrentCompatibilityInfo{
+                .Application = "ydb",
+                .Version = TCompatibilityInfo::TProtoConstructor::TVersion{ .Year = 23, .Major = 5, .Minor = 1, .Hotfix = 0 },
+            }.ToPB()
+        );
+    }
+
 }
 } // namespace NKikimr

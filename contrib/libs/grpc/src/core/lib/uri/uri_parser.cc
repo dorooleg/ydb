@@ -18,19 +18,28 @@
 
 #include "src/core/lib/uri/uri_parser.h"
 
-#include <string.h>
+#include <ctype.h>
+#include <stddef.h>
 
+#include <algorithm>
+#include <functional>
+#include <initializer_list>
 #include <map>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
+#include <utility>
 
+#include "y_absl/status/status.h"
+#include "y_absl/strings/ascii.h"
 #include "y_absl/strings/escaping.h"
+#include "y_absl/strings/match.h"
+#include "y_absl/strings/str_cat.h"
 #include "y_absl/strings/str_format.h"
+#include "y_absl/strings/str_join.h"
 #include "y_absl/strings/str_split.h"
+#include "y_absl/strings/strip.h"
 
 #include <grpc/support/log.h>
-
-#include "src/core/lib/gpr/string.h"
 
 namespace grpc_core {
 
@@ -200,7 +209,6 @@ TString URI::PercentDecode(y_absl::string_view str) {
 }
 
 y_absl::StatusOr<URI> URI::Parse(y_absl::string_view uri_text) {
-  y_absl::StatusOr<TString> decoded;
   y_absl::string_view remaining = uri_text;
   // parse scheme
   size_t offset = remaining.find(':');

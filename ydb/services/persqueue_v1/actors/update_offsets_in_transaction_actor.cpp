@@ -1,4 +1,6 @@
 #include "update_offsets_in_transaction_actor.h"
+#include <ydb/core/base/feature_flags.h>
+
 
 namespace NKikimr::NGRpcService {
 
@@ -36,11 +38,10 @@ void TUpdateOffsetsInTransactionActor::Proceed(const NActors::TActorContext& ctx
     SetAuthToken(ev, *Request_);
     SetDatabase(ev, *Request_);
 
-    NYql::TIssues issues;
-    if (CheckSession(req->tx().session(), issues)) {
+    if (CheckSession(req->tx().session(), Request_.get())) {
         ev->Record.MutableRequest()->SetSessionId(req->tx().session());
     } else {
-        return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
+        return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
     }
 
     ev->Record.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_UNDEFINED);

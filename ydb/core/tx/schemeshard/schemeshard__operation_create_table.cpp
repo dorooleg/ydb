@@ -3,6 +3,7 @@
 #include "schemeshard_impl.h"
 
 #include <ydb/core/protos/flat_scheme_op.pb.h>
+#include <ydb/core/protos/datashard_config.pb.h>
 
 #include <ydb/core/base/subdomain.h>
 
@@ -23,6 +24,14 @@ bool CheckColumnTypesConstraints(NKikimrSchemeOp::TTableDescription& desc, TStri
     THashSet<TString> keyColumns(desc.GetKeyColumnNames().begin(), desc.GetKeyColumnNames().end());
 
     for (const auto& column : desc.GetColumns()) {
+        const auto& type = column.GetType();
+        if (type == "Uuid") {
+            if (!AppData()->FeatureFlags.GetEnableUuidAsPrimaryKey() && keyColumns.contains(column.GetName())) {
+                errMsg = TStringBuilder() << "Uuid as primary key is forbiden by configuration: " << column.GetName();
+                return false;
+            }
+        }
+
         if (column.GetNotNull()) {
             bool isPrimaryKey = keyColumns.contains(column.GetName());
 
@@ -62,7 +71,7 @@ bool InitPartitioning(const NKikimrSchemeOp::TTableDescription& op,
 
     TVector<TString> rangeEnds;
     if (op.HasUniformPartitionsCount()) {
-        Y_VERIFY(!keyColIds.empty());
+        Y_ABORT_UNLESS(!keyColIds.empty());
         auto firstKeyColType = keyColTypeIds[0];
         if (!TSchemeShard::FillUniformPartitioning(rangeEnds, keyColIds.size(), firstKeyColType, partitionCount, typeRegistry, errStr)) {
             return false;
@@ -92,7 +101,6 @@ bool InitPartitioning(const NKikimrSchemeOp::TTableDescription& op,
 
     return true;
 }
-
 
 bool DoInitPartitioning(TTableInfo::TPtr tableInfo,
                         const NKikimrSchemeOp::TTableDescription& op,
@@ -186,7 +194,7 @@ public:
                    << " at tabletId# " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState->TxType == TTxState::TxCreateTable);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateTable);
 
         NKikimrTxDataShard::TFlatSchemeTransaction txTemplate;
         context.SS->FillAsyncIndexInfo(txState->TargetPathId, txTemplate);
@@ -272,7 +280,7 @@ public:
                      << ", stepId: " << step);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState->TxType == TTxState::TxCreateTable);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateTable);
 
         TPathId pathId = txState->TargetPathId;
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
@@ -283,7 +291,7 @@ public:
         context.SS->PersistCreateStep(db, pathId, step);
 
         TTableInfo::TPtr table = context.SS->Tables[pathId];
-        Y_VERIFY(table);
+        Y_ABORT_UNLESS(table);
         table->AlterVersion = NEW_TABLE_ALTER_VERSION;
 
         if (table->IsTTLEnabled() && !context.SS->TTLEnabledTables.contains(pathId)) {
@@ -293,7 +301,7 @@ public:
             const auto now = context.Ctx.Now();
             for (auto& shard : table->GetPartitions()) {
                 auto& lag = shard.LastCondEraseLag;
-                Y_VERIFY_DEBUG(!lag.Defined());
+                Y_DEBUG_ABORT_UNLESS(!lag.Defined());
 
                 lag = now - shard.LastCondErase;
                 context.SS->TabletCounters->Percentile()[COUNTER_NUM_SHARDS_BY_TTL_LAG].IncrementFor(lag->Seconds());
@@ -324,8 +332,8 @@ public:
                      << " at tablet: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxCreateTable);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateTable);
 
         TSet<TTabletId> shardSet;
         for (const auto& shard : txState->Shards) {
@@ -420,6 +428,12 @@ public:
 
         auto result = MakeHolder<TProposeResponse>(NKikimrScheme::StatusAccepted, ui64(OperationId.GetTxId()), ui64(ssId));
 
+        if (AppData()->DataShardConfig.GetDisabledOnSchemeShard()) {
+            result->SetError(NKikimrScheme::StatusPreconditionFailed,
+                "OLTP schema operations are not supported");
+            return result;
+        }
+
         NSchemeShard::TPath parentPath = NSchemeShard::TPath::Resolve(parentPathStr, context.SS);
         {
             NSchemeShard::TPath::TChecker checks = parentPath.Check();
@@ -509,9 +523,9 @@ public:
         bool transactionSupport = domainInfo->IsSupportTransactions();
         if (domainInfo->GetAlter()) {
             TPathId domainPathId = dstPath.GetPathIdForDomain();
-            Y_VERIFY(context.SS->PathsById.contains(domainPathId));
+            Y_ABORT_UNLESS(context.SS->PathsById.contains(domainPathId));
             TPathElement::TPtr domain = context.SS->PathsById.at(domainPathId);
-            Y_VERIFY(domain->PlannedToCreate() || domain->HasActiveChanges());
+            Y_ABORT_UNLESS(domain->PlannedToCreate() || domain->HasActiveChanges());
 
             transactionSupport |= domainInfo->GetAlter()->IsSupportTransactions();
         }
@@ -523,6 +537,12 @@ public:
         PrepareScheme(schema);
 
         TString errStr;
+
+        if ((schema.HasTemporary() && schema.GetTemporary()) && !context.SS->EnableTempTables) {
+            result->SetError(NKikimrScheme::StatusPreconditionFailed,
+                TStringBuilder() << "It is not allowed to create temp table: " << schema.GetName());
+            return result;
+        }
 
         if (!CheckColumnTypesConstraints(schema, errStr)) {
             result->SetError(NKikimrScheme::StatusPreconditionFailed, errStr);
@@ -544,7 +564,7 @@ public:
 
         const NScheme::TTypeRegistry* typeRegistry = AppData()->TypeRegistry;
         const TSchemeLimits& limits = domainInfo->GetSchemeLimits();
-        TTableInfo::TAlterDataPtr alterData = TTableInfo::CreateAlterData(nullptr, schema, *typeRegistry, limits, *domainInfo, errStr, LocalSequences);
+        TTableInfo::TAlterDataPtr alterData = TTableInfo::CreateAlterData(nullptr, schema, *typeRegistry, limits, *domainInfo, context.SS->EnableTablePgTypes, errStr, LocalSequences);
         if (!alterData.Get()) {
             result->SetError(NKikimrScheme::StatusSchemeError, errStr);
             return result;
@@ -559,7 +579,7 @@ public:
             result->SetError(NKikimrScheme::StatusSchemeError, errStr);
             return result;
         }
-        Y_VERIFY(shardsToCreate == partitions.size());
+        Y_ABORT_UNLESS(shardsToCreate == partitions.size());
 
         TChannelsBindings channelsBinding;
 
@@ -623,7 +643,16 @@ public:
 
         ApplyPartitioning(OperationId.GetTxId(), newTable->PathId, tableInfo, txState, channelsBinding, context.SS, partitions);
 
-        Y_VERIFY(tableInfo->GetPartitions().back().EndOfRange.empty(), "End of last range must be +INF");
+        Y_ABORT_UNLESS(tableInfo->GetPartitions().back().EndOfRange.empty(), "End of last range must be +INF");
+
+        if (schema.HasTemporary() && schema.GetTemporary()) {
+            tableInfo->IsTemporary = true;
+            tableInfo->OwnerActorId = ActorIdFromProto(Transaction.GetTempTableOwnerActorId());
+        }
+
+        if (tableInfo->IsAsyncReplica()) {
+            newTable->SetAsyncReplica();
+        }
 
         context.SS->Tables[newTable->PathId] = tableInfo;
         context.SS->TabletCounters->Simple()[COUNTER_TABLE_COUNT].Add(1);
@@ -637,13 +666,12 @@ public:
         context.SS->ChangeTxState(db, OperationId, TTxState::CreateParts);
         context.OnComplete.ActivateTx(OperationId);
 
-        context.SS->PersistPath(db, newTable->PathId);
         context.SS->ApplyAndPersistUserAttrs(db, newTable->PathId);
 
         if (!acl.empty()) {
             newTable->ApplyACL(acl);
-            context.SS->PersistACL(db, newTable);
         }
+        context.SS->PersistPath(db, newTable->PathId);
         context.SS->PersistTable(db, newTable->PathId);
         context.SS->PersistTxState(db, OperationId);
 
@@ -651,7 +679,7 @@ public:
         context.SS->PersistUpdateNextShardIdx(db);
         // Persist new shards info
         for (const auto& shard : tableInfo->GetPartitions()) {
-            Y_VERIFY(context.SS->ShardInfos.contains(shard.ShardIdx), "shard info is set before");
+            Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shard.ShardIdx), "shard info is set before");
             auto tabletType = context.SS->ShardInfos[shard.ShardIdx].TabletType;
             const auto& bindedChannels = context.SS->ShardInfos[shard.ShardIdx].BindedChannels;
             context.SS->PersistShardMapping(db, shard.ShardIdx, InvalidTabletId, newTable->PathId, OperationId.GetTxId(), tabletType);
@@ -673,7 +701,18 @@ public:
         context.SS->ClearDescribePathCaches(dstPath.Base());
         context.OnComplete.PublishToSchemeBoard(OperationId, dstPath.Base()->PathId);
 
-        Y_VERIFY(shardsToCreate == txState.Shards.size());
+        if (schema.HasTemporary() && schema.GetTemporary()) {
+            const auto& ownerActorId = tableInfo->OwnerActorId;
+            LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                    "Processing create temp table with Name: " << name
+                    << ", WorkingDir: " << parentPathStr
+                    << ", OwnerActorId: " << ownerActorId
+                    << ", PathId: " << newTable->PathId);
+            context.OnComplete.UpdateTempTablesToCreateState(
+                ownerActorId, newTable->PathId);
+        }
+
+        Y_ABORT_UNLESS(shardsToCreate == txState.Shards.size());
         dstPath.DomainInfo()->IncPathsInside();
         dstPath.DomainInfo()->AddInternalShards(txState);
 
@@ -685,7 +724,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_FAIL("no AbortPropose for TCreateTable");
+        Y_ABORT("no AbortPropose for TCreateTable");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -710,7 +749,7 @@ ISubOperation::TPtr CreateNewTable(TOperationId id, const TTxTransaction& tx, co
 }
 
 ISubOperation::TPtr CreateNewTable(TOperationId id, TTxState::ETxState state) {
-    Y_VERIFY(state != TTxState::Invalid);
+    Y_ABORT_UNLESS(state != TTxState::Invalid);
     return MakeSubOperation<TCreateTable>(id, state);
 }
 
@@ -721,7 +760,7 @@ ISubOperation::TPtr CreateInitializeBuildIndexImplTable(TOperationId id, const T
 }
 
 ISubOperation::TPtr CreateInitializeBuildIndexImplTable(TOperationId id, TTxState::ETxState state) {
-    Y_VERIFY(state != TTxState::Invalid);
+    Y_ABORT_UNLESS(state != TTxState::Invalid);
     auto obj = MakeSubOperation<TCreateTable>(id, state);
     static_cast<TCreateTable*>(obj.Get())->SetAllowShadowDataForBuildIndex();
     return obj;

@@ -1,17 +1,22 @@
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
 
-#include <grpc++/client_context.h>
-#include <grpc++/create_channel.h>
+#include <grpcpp/client_context.h>
+#include <grpcpp/create_channel.h>
 
 #include <ydb/core/testlib/test_client.h>
+#include <ydb/core/protos/console_config.pb.h>
+#include <ydb/core/protos/console_base.pb.h>
+#include <ydb/core/protos/console.pb.h>
+#include <ydb/core/protos/cms.pb.h>
+#include <ydb/core/protos/console_tenant.pb.h>
 
 #include <ydb/library/aclib/aclib.h>
 
 #include <ydb/public/api/grpc/ydb_cms_v1.grpc.pb.h>
 #include <ydb/public/api/grpc/ydb_operation_v1.grpc.pb.h>
 
-#include <library/cpp/grpc/client/grpc_client_low.h>
+#include <ydb/library/grpc/client/grpc_client_low.h>
 
 #include <google/protobuf/any.h>
 
@@ -439,7 +444,7 @@ Y_UNIT_TEST_SUITE(TGRpcCmsTest) {
                 UNIT_ASSERT_VALUES_EQUAL(zone.labels().at("any_data_center"), "true");
                 UNIT_ASSERT_VALUES_EQUAL(zone.labels().at("collocation"), "disabled");
             } else {
-                Y_FAIL("unexpected zone");
+                Y_ABORT("unexpected zone");
             }
             zones.erase(zone.name());
         }

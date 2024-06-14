@@ -1,12 +1,14 @@
 #pragma once
 #include <ydb/core/base/events.h>
-#include <ydb/services/bg_tasks/protos/container.pb.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/services/services.pb.h>
+#include <ydb/library/conclusion/status.h>
 
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/object_factory/object_factory.h>
 #include <library/cpp/json/writer/json_value.h>
 #include <library/cpp/json/json_reader.h>
-#include <library/cpp/actors/core/log.h>
+#include <library/cpp/object_factory/object_factory.h>
+#include <library/cpp/string_utils/base64/base64.h>
 
 namespace NKikimr::NBackgroundTasks {
 
@@ -108,7 +110,26 @@ public:
     TCommonInterfaceContainer() = default;
     TCommonInterfaceContainer(std::shared_ptr<IInterface> object)
         : Object(object) {
+    }
 
+    template <class TDerived>
+    TCommonInterfaceContainer(std::shared_ptr<TDerived> object)
+        : Object(object) {
+        static_assert(std::is_base_of<IInterface, TDerived>::value);
+    }
+
+    bool Initialize(const TString& className, const bool maybeExists = false) {
+        AFL_VERIFY(maybeExists || !Object)("problem", "initialize for not-empty-object");
+        Object.reset(TFactory::Construct(className));
+        if (!Object) {
+            ALS_ERROR(NKikimrServices::BG_TASKS) << "incorrect class name: " << className << " for " << typeid(IInterface).name();
+            return false;
+        }
+        return true;
+    }
+
+    TString GetClassName() const {
+        return Object ? Object->GetClassName() : "UNDEFINED";
     }
 
     bool HasObject() const {
@@ -117,27 +138,42 @@ public:
 
     template <class T>
     const T& GetAsSafe() const {
-        auto result = std::dynamic_pointer_cast<T>(Object);
-        Y_VERIFY(!!result);
-        return *result;
+        return *GetObjectPtrVerifiedAs<T>();
     }
 
     template <class T>
     T& GetAsSafe() {
-        auto result = std::dynamic_pointer_cast<T>(Object);
-        Y_VERIFY(!!result);
-        return *result;
+        return *GetObjectPtrVerifiedAs<T>();
     }
 
     std::shared_ptr<IInterface> GetObjectPtr() const {
         return Object;
     }
 
+    std::shared_ptr<IInterface> GetObjectPtrVerified() const {
+        AFL_VERIFY(Object);
+        return Object;
+    }
+
+    template <class T>
+    std::shared_ptr<T> GetObjectPtrVerifiedAs() const {
+        auto result = std::dynamic_pointer_cast<T>(Object);
+        Y_ABORT_UNLESS(!!result);
+        return result;
+    }
+
+    const IInterface& GetObjectVerified() const {
+        AFL_VERIFY(Object);
+        return *Object;
+    }
+
     const IInterface* operator->() const {
+        AFL_VERIFY(Object);
         return Object.get();
     }
 
     IInterface* operator->() {
+        AFL_VERIFY(Object);
         return Object.get();
     }
 
@@ -145,6 +181,17 @@ public:
         return !Object;
     }
 
+    operator bool() const {
+        return !!Object;
+    }
+
+};
+
+class TStringContainerProcessor {
+public:
+    static bool DeserializeFromContainer(const TString& data, TString& className, TString& binary);
+
+    static TString SerializeToContainer(const TString& className, const TString& binary);
 };
 
 template <class IInterface>
@@ -160,13 +207,11 @@ public:
     }
 
     TString SerializeToString() const {
-        NKikimrProto::TStringContainer result;
         if (!Object) {
-            return result.SerializeAsString();
+            return TStringContainerProcessor::SerializeToContainer("__UNDEFINED", "");
+        } else {
+            return TStringContainerProcessor::SerializeToContainer(Object->GetClassName(), Object->SerializeToString());
         }
-        result.SetClassName(Object->GetClassName());
-        result.SetBinaryData(Object->SerializeToString());
-        return result.SerializeAsString();
     }
 
     bool DeserializeFromString(const TString& data) {
@@ -174,19 +219,22 @@ public:
             Object = nullptr;
             return true;
         }
-        NKikimrProto::TStringContainer protoData;
-        if (!protoData.ParseFromArray(data.data(), data.size())) {
+        TString className;
+        TString binaryData;
+        if (!TStringContainerProcessor::DeserializeFromContainer(data, className, binaryData)) {
             ALS_ERROR(NKikimrServices::BG_TASKS) << "cannot parse string as proto: " << Base64Encode(data);
-            return {};
+            return false;
         }
-        const TString& className = protoData.GetClassName();
-        std::shared_ptr<IInterface> object(TFactory::Construct(protoData.GetClassName()));
+        if (className == "__UNDEFINED") {
+            return true;
+        }
+        std::shared_ptr<IInterface> object(TFactory::Construct(className));
         if (!object) {
             ALS_ERROR(NKikimrServices::BG_TASKS) << "incorrect class name: " << className << " for " << typeid(IInterface).name();
             return false;
         }
 
-        if (!object->DeserializeFromString(protoData.GetBinaryData())) {
+        if (!object->DeserializeFromString(binaryData)) {
             ALS_ERROR(NKikimrServices::BG_TASKS) << "cannot parse class instance: " << className << " for " << typeid(IInterface).name();
             return false;
         }
@@ -194,6 +242,37 @@ public:
         return true;
     }
 };
+
+template <class TProto, class IBaseInterface>
+class TInterfaceProtoAdapter: public IBaseInterface {
+private:
+    using TBase = IBaseInterface;
+    virtual TConclusionStatus DoDeserializeFromProto(const TProto& proto) = 0;
+    virtual TProto DoSerializeToProto() const = 0;
+protected:
+    using TProtoStorage = TProto;
+    virtual TConclusionStatus DoDeserializeFromString(const TString& data) override final {
+        TProto proto;
+        if (!proto.ParseFromArray(data.data(), data.size())) {
+            return TConclusionStatus::Fail("cannot parse proto string as " + TypeName<TProto>());
+        }
+        return DoDeserializeFromProto(proto);
+    }
+    virtual TString DoSerializeToString() const override final {
+        TProto proto = DoSerializeToProto();
+        return proto.SerializeAsString();
+    }
+public:
+    using TBase::TBase;
+
+    TConclusionStatus DeserializeFromProto(const TProto& proto) {
+        return DoDeserializeFromProto(proto);
+    }
+    TProto SerializeToProto() const {
+        return DoSerializeToProto();
+    }
+};
+
 
 class TDefaultJsonContainerPolicy {
 public:
@@ -216,6 +295,7 @@ public:
     NJson::TJsonValue SerializeToJson() const {
         NJson::TJsonValue result = NJson::JSON_MAP;
         if (!Object) {
+            TOperatorPolicy::SetClassName(result, "__UNDEFINED");
             return result;
         }
         TOperatorPolicy::SetClassName(result, Object->GetClassName());
@@ -225,6 +305,9 @@ public:
 
     bool DeserializeFromJson(const NJson::TJsonValue& data) {
         const TString& className = TOperatorPolicy::GetClassName(data);
+        if (className == "__UNDEFINED") {
+            return true;
+        }
         std::shared_ptr<IInterface> object(TFactory::Construct(className));
         if (!object) {
             ALS_ERROR(NKikimrServices::BG_TASKS) << "incorrect class name: " << className << " for " << typeid(IInterface).name();
@@ -263,6 +346,9 @@ public:
     using TBase::TBase;
     bool DeserializeFromProto(const TProto& data) {
         const TString& className = TOperatorPolicy::GetClassName(data);
+        if (className == "__UNDEFINED") {
+            return true;
+        }
         std::shared_ptr<IInterface> object(TFactory::Construct(className));
         if (!object) {
             ALS_ERROR(NKikimrServices::BG_TASKS) << "incorrect class name: " << className << " for " << typeid(IInterface).name();
@@ -281,9 +367,19 @@ public:
         if (!Object) {
             return result;
         }
-        result = Object->SerializeToProto();
+        Object->SerializeToProto(result);
         TOperatorPolicy::SetClassName(result, Object->GetClassName());
         return result;
+    }
+
+    template <class TProto>
+    void SerializeToProto(TProto& result) const {
+        if (!Object) {
+            TOperatorPolicy::SetClassName(result, "__UNDEFINED");
+            return;
+        }
+        Object->SerializeToProto(result);
+        TOperatorPolicy::SetClassName(result, Object->GetClassName());
     }
 };
 

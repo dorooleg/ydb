@@ -12,9 +12,9 @@
 #include <ydb/library/yql/utils/failure_injector/failure_injector.h>
 #include <ydb/library/yql/utils/log/log.h>
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 
 #include "worker_manager_common.h"
 
@@ -40,7 +40,7 @@ static_assert(sizeof(TDqLocalResourceId) == 8);
 
 struct TMemoryQuotaManager : public NYql::NDq::TGuaranteeQuotaManager {
 
-    TMemoryQuotaManager(std::shared_ptr<NDq::TResourceQuoter> nodeQuoter, const NDq::TTxId& txId, ui64 limit) 
+    TMemoryQuotaManager(std::shared_ptr<NDq::TResourceQuoter> nodeQuoter, const NDq::TTxId& txId, ui64 limit)
         : NYql::NDq::TGuaranteeQuotaManager(limit, limit)
         , NodeQuoter(nodeQuoter)
         , TxId(txId) {
@@ -72,6 +72,7 @@ public:
     TLocalWorkerManager(const TLocalWorkerManagerOptions& options)
         : TWorkerManagerCommon<TLocalWorkerManager>(&TLocalWorkerManager::Handler)
         , Options(options)
+        , TaskCounters(Options.Counters.TaskCounters)
         , MemoryQuoter(std::make_shared<NDq::TResourceQuoter>(Options.MkqlTotalMemoryLimit))
     {
         Options.Counters.MkqlMemoryLimit->Set(Options.MkqlTotalMemoryLimit);
@@ -173,7 +174,7 @@ private:
 
     void OnUndelivered(TEvents::TEvUndelivered::TPtr& ev)
     {
-        Y_VERIFY(ev->Get()->Reason == TEvents::TEvUndelivered::Disconnected
+        Y_ABORT_UNLESS(ev->Get()->Reason == TEvents::TEvUndelivered::Disconnected
             || ev->Get()->Reason == TEvents::TEvUndelivered::ReasonActorUnknown);
 
         YQL_CLOG(DEBUG, ProviderDq) << "Undelivered " << ev->Sender;
@@ -230,14 +231,14 @@ private:
 
         auto traceId = ev->Get()->Record.GetTraceId();
         auto count = ev->Get()->Record.GetCount();
-        Y_VERIFY(count > 0);
+        Y_ABORT_UNLESS(count > 0);
 
         auto& tasks = *ev->Get()->Record.MutableTask();
 
         ui64 totalInitialTaskMemoryLimit = 0;
         std::vector<ui64> quotas;
         if (createComputeActor) {
-            Y_VERIFY(static_cast<int>(tasks.size()) == static_cast<int>(count));
+            Y_ABORT_UNLESS(static_cast<int>(tasks.size()) == static_cast<int>(count));
             quotas.reserve(count);
             for (auto& task : tasks) {
                 auto taskLimit = task.GetInitialTaskMemoryLimit();
@@ -271,10 +272,10 @@ private:
             auto resultId = ActorIdFromProto(ev->Get()->Record.GetResultActorId());
             ::NMonitoring::TDynamicCounterPtr taskCounters;
 
-            if (createComputeActor && Options.DqTaskCounters) {
+            if (createComputeActor && TaskCounters) {
                 auto& info = TaskCountersMap[traceId];
                 if (!info.TaskCounters) {
-                    info.TaskCounters = Options.DqTaskCounters->GetSubgroup("operation", traceId);
+                    info.TaskCounters = TaskCounters->GetSubgroup("operation", traceId);
                 }
                 info.ReferenceCount += count;
                 taskCounters = info.TaskCounters;
@@ -285,16 +286,17 @@ private:
 
                 if (createComputeActor) {
                     YQL_CLOG(DEBUG, ProviderDq) << "Create compute actor: " << computeActorType;
-
+                    NYql::NDqProto::TDqTask* taskPtr = &(tasks[i]);
                     actor.Reset(NYql::CreateComputeActor(
                         Options,
-                        std::make_shared<TMemoryQuotaManager>(MemoryQuoter, allocationInfo.TxId, quotas[i]), 
+                        std::make_shared<TMemoryQuotaManager>(MemoryQuoter, allocationInfo.TxId, quotas[i]),
                         resultId,
                         traceId,
-                        std::move(tasks[i]),
+                        taskPtr,
                         computeActorType,
                         Options.TaskRunnerActorFactory,
-                        taskCounters));
+                        taskCounters,
+                        ev->Get()->Record.GetStatsMode()));
                 } else {
                     actor.Reset(CreateWorkerActor(
                         Options.RuntimeData,
@@ -328,6 +330,20 @@ private:
         Send(ev->Sender, response.Release());
     }
 
+    void DropTaskCounters(const auto& info) {
+        auto traceId = std::get<TString>(info.TxId);
+        if (auto it = TaskCountersMap.find(traceId); it != TaskCountersMap.end()) {
+            if (it->second.ReferenceCount <= info.WorkerActors.size()) {
+                if (TaskCounters) {
+                    TaskCounters->RemoveSubgroup("operation", traceId);
+                }
+                TaskCountersMap.erase(it);
+            } else {
+                it->second.ReferenceCount -= info.WorkerActors.size();
+            }
+        }
+    }
+
     void FreeGroup(ui64 id, NActors::TActorId sender = NActors::TActorId()) {
         YQL_CLOG(DEBUG, ProviderDq) << "Free Group " << id;
         auto it = AllocatedWorkers.find(id);
@@ -341,17 +357,8 @@ private:
                 YQL_CLOG(ERROR, ProviderDq) << "Free Group " << id << " mismatched alloc-free senders: " << it->second.Sender << " and " << sender << " TxId: " << it->second.TxId;
             }
 
-            auto traceId = std::get<TString>(it->second.TxId);
-            auto itt = TaskCountersMap.find(traceId);
-            if (itt != TaskCountersMap.end()) {
-                if (itt->second.ReferenceCount <= it->second.WorkerActors.size()) {
-                    if (Options.DqTaskCounters) {
-                        Options.DqTaskCounters->RemoveSubgroup("operation", traceId);
-                    }
-                    TaskCountersMap.erase(itt);
-                } else {
-                    itt->second.ReferenceCount -= it->second.WorkerActors.size();
-                }
+            if (Options.DropTaskCountersOnFinish) {
+                DropTaskCounters(it->second);
             }
 
             Options.Counters.ActiveWorkers->Sub(it->second.WorkerActors.size());
@@ -374,6 +381,7 @@ private:
     }
 
     TLocalWorkerManagerOptions Options;
+    NMonitoring::TDynamicCounterPtr TaskCounters;
 
     struct TAllocationInfo {
         TVector<NActors::TActorId> WorkerActors;

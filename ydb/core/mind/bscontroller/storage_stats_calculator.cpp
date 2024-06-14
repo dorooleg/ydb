@@ -6,11 +6,11 @@
 #include "sys_view.h"
 
 #include <ydb/core/blobstorage/base/utility.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/actor_coroutine.h>
-#include <library/cpp/actors/core/events.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/actor_coroutine.h>
+#include <ydb/library/actors/core/events.h>
 
 #include <util/generic/ptr.h>
 #include <util/system/yassert.h>
@@ -50,7 +50,7 @@ public:
                 throw TExPoison();
         }
 
-        Y_FAIL("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
+        Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
     }
 
     void Run() override {
@@ -95,9 +95,9 @@ public:
                 storageStats.push_back(std::move(entry));
             } else {
                 const auto& entry = storageStats[index];
-                Y_VERIFY(entry.GetPDiskFilter() == value.GetPDiskFilter());
-                Y_VERIFY(entry.GetErasureSpecies() == value.GetErasureSpeciesV2());
-                Y_VERIFY(entry.GetPDiskFilterData() == value.GetPDiskFilterData());
+                Y_ABORT_UNLESS(entry.GetPDiskFilter() == value.GetPDiskFilter());
+                Y_ABORT_UNLESS(entry.GetErasureSpecies() == value.GetErasureSpeciesV2());
+                Y_ABORT_UNLESS(entry.GetPDiskFilterData() == value.GetPDiskFilterData());
             }
             spToEntity[key] = index;
         }
@@ -147,7 +147,7 @@ public:
                                 .Operational = true,
                                 .Decommitted = false,
                             });
-                            Y_VERIFY(ok);
+                            Y_ABORT_UNLESS(ok);
                             break;
                         }
                     }

@@ -23,7 +23,7 @@ public:
     }
 
     ~TQueueResource() {
-        Y_VERIFY_DEBUG(BufferBytes == CurrentMemUsage());
+        Y_DEBUG_ABORT_UNLESS(BufferBytes == CurrentMemUsage());
         MKQL_MEM_RETURN(GetMemInfo(), &Buffer, CurrentMemUsage());
         Buffer.Clear();
     }
@@ -85,7 +85,7 @@ void TQueueResourceUser::UpdateBufferStats(const TUnboxedValuePod& resource) con
 
 TQueueResource& TQueueResourceUser::GetResource(const TUnboxedValuePod& resource) const {
     const TStringBuf tag = resource.GetResourceTag();
-    Y_VERIFY_DEBUG(tag == Tag, "Expected correct Queue resource");
+    Y_DEBUG_ABORT_UNLESS(tag == Tag, "Expected correct Queue resource");
     return *static_cast<TQueueResource*>(resource.GetResource());
 }
 
@@ -326,7 +326,7 @@ private:
             case EPreserveState::Yield:
                 break;
             default:
-                Y_VERIFY(Outpace > 0);
+                Y_ABORT_UNLESS(Outpace > 0);
                 Buffer.PopFront();
                 --Outpace;
         }

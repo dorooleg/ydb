@@ -15,6 +15,9 @@
 // for particular TU by discarding this macro identifier.
 #define YT_ENABLE_TRACE_LOGGING
 
+// This define should be used to compile YT with vanilla protobuf instead of patched one.
+// #define YT_USE_VANILLA_PROTOBUF
+
 #ifndef NDEBUG
     // This define enables thread affinity check -- a user-defined verification ensuring
     // that some functions are called from particular threads.
@@ -65,4 +68,10 @@
     #define YT_ATTRIBUTE_USED
 #else
     #error Unsupported compiler
+#endif
+
+#if defined(_unix_)
+    #define YT_ATTRIBUTE_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#else
+    #define YT_ATTRIBUTE_NO_UNIQUE_ADDRESS
 #endif

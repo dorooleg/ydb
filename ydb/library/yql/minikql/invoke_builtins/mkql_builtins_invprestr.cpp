@@ -1,4 +1,4 @@
-#include "mkql_builtins_impl.h"
+#include "mkql_builtins_impl.h"  // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/minikql/computation/presort.h>
 #include <util/thread/singleton.h>
@@ -43,7 +43,7 @@ struct TInversePresortString {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* arg, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return CallUnaryUnboxedValueFunction(&Presort, Type::getInt128Ty(ctx.Codegen->GetContext()), arg, ctx.Codegen, block);
+        return CallUnaryUnboxedValueFunction(&Presort, Type::getInt128Ty(ctx.Codegen.GetContext()), arg, ctx.Codegen, block);
     }
 #endif
 };
@@ -58,7 +58,7 @@ struct TInverseString {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* arg, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return CallUnaryUnboxedValueFunction(&Inverse, Type::getInt128Ty(ctx.Codegen->GetContext()), arg, ctx.Codegen, block);
+        return CallUnaryUnboxedValueFunction(&Inverse, Type::getInt128Ty(ctx.Codegen.GetContext()), arg, ctx.Codegen, block);
     }
 #endif
 };

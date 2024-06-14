@@ -161,7 +161,7 @@ bool TLoadBlobQueue::ProcessResult(TEvBlobStorage::TEvGetResult* msg) {
             return false;
         }
 
-        Y_VERIFY(x->Shift == 0, "Got blob read result with non-zero offset");
+        Y_ABORT_UNLESS(x->Shift == 0, "Got blob read result with non-zero offset");
 
         const auto p = Active.equal_range(x->Id);
         if (p.first == p.second) {
@@ -171,11 +171,13 @@ bool TLoadBlobQueue::ProcessResult(TEvBlobStorage::TEvGetResult* msg) {
 
         ActiveBytesInFly -= x->Id.BlobSize();
 
+        TString buffer = x->Buffer.ConvertToString();
+
         if (std::next(p.first) == p.second) {
             // Common case: unique load of the blob
             auto item = p.first->second;
             Active.erase(p.first);
-            item.Load->OnBlobLoaded(x->Id, std::move(x->Buffer), item.Cookie);
+            item.Load->OnBlobLoaded(x->Id, std::move(buffer), item.Cookie);
         } else {
             // May rarely happen: concurrent load of the same blob
             TVector<TActiveItem> items;
@@ -183,15 +185,15 @@ bool TLoadBlobQueue::ProcessResult(TEvBlobStorage::TEvGetResult* msg) {
                 items.push_back(it->second);
             }
             Active.erase(p.first, p.second);
-            Y_VERIFY(items.size() > 1);
+            Y_ABORT_UNLESS(items.size() > 1);
 
             size_t last = items.size() - 1;
             for (size_t i = 0; i < last; ++i) {
                 // We have to make a copy of the buffer
-                items[i].Load->OnBlobLoaded(x->Id, x->Buffer, items[i].Cookie);
+                items[i].Load->OnBlobLoaded(x->Id, buffer, items[i].Cookie);
             }
             // Last load may consume our buffer
-            items[last].Load->OnBlobLoaded(x->Id, std::move(x->Buffer), items[last].Cookie);
+            items[last].Load->OnBlobLoaded(x->Id, std::move(buffer), items[last].Cookie);
         }
     }
 

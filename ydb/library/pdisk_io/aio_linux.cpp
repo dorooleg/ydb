@@ -3,10 +3,10 @@
 
 //#include <ydb/core/blobstorage/base/wilson_events.h>
 #include <ydb/core/debug/valgrind_check.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 
 #include <ydb/library/pdisk_io/spdk_state.h>
-#include <library/cpp/actors/util/intrinsics.h>
+#include <ydb/library/actors/util/intrinsics.h>
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 #include <util/system/file.h>
 #include <util/stream/format.h>
@@ -33,7 +33,7 @@ TBufferPoolHugePages::TBufferPoolHugePages(ui32 bufferSize, ui32 bufferCount, TB
     constexpr ui32 alignment = 512;
     auto spdkState = Singleton<TSpdkStateOSS>();
     AlignedBuffer = spdkState->Malloc(AlignUp(ui32(bufferSize), ui32(alignment)) * bufferCount, alignment);
-    Y_VERIFY((ui64)AlignedBuffer % alignment == 0);
+    Y_ABORT_UNLESS((ui64)AlignedBuffer % alignment == 0);
     MarkUpPool(AlignedBuffer);
 }
 
@@ -221,13 +221,13 @@ public:
     }
 
     void PreparePRead(IAsyncIoOperation *op, void *destination, size_t size, size_t offset) override {
-        Y_VERIFY_DEBUG(File);
+        Y_DEBUG_ABORT_UNLESS(File);
         iocb* cb =  static_cast<iocb*>(static_cast<TAsyncIoOperation*>(op));
         io_prep_pread(cb, static_cast<FHANDLE>(*File), destination, size, offset);
     }
 
     void PreparePWrite(IAsyncIoOperation *op, const void *source, size_t size, size_t offset) override {
-        Y_VERIFY_DEBUG(File);
+        Y_DEBUG_ABORT_UNLESS(File);
         iocb* cb =  static_cast<iocb*>(static_cast<TAsyncIoOperation*>(op));
         io_prep_pwrite(cb, static_cast<FHANDLE>(*File), const_cast<void*>(source), size, offset);
     }
@@ -239,7 +239,7 @@ public:
 
     bool DoTrim(IAsyncIoOperation *op) override {
         TAsyncIoOperation *trim = static_cast<TAsyncIoOperation*>(op);
-        Y_VERIFY(trim->IsTrim);
+        Y_ABORT_UNLESS(trim->IsTrim);
 
         ui64 range[2] = {trim->GetOffset(), trim->GetSize()};
         bool tryAgain = true;
@@ -538,10 +538,10 @@ public:
     }
 
     void PreparePRead(IAsyncIoOperation *op, void *destination, size_t size, size_t offset) override {
-        Y_VERIFY_DEBUG(File);
+        Y_DEBUG_ABORT_UNLESS(File);
 
         auto tOp = dynamic_cast<TAsyncIoOperationLiburing*>(op);
-        Y_VERIFY(tOp != nullptr);
+        Y_ABORT_UNLESS(tOp != nullptr);
 
         tOp->IsReadOp = true;
         tOp->DataPtr = destination;
@@ -550,10 +550,10 @@ public:
     }
 
     void PreparePWrite(IAsyncIoOperation *op, const void *source, size_t size, size_t offset) override {
-        Y_VERIFY_DEBUG(File);
+        Y_DEBUG_ABORT_UNLESS(File);
 
         auto tOp = dynamic_cast<TAsyncIoOperationLiburing*>(op);
-        Y_VERIFY(tOp != nullptr);
+        Y_ABORT_UNLESS(tOp != nullptr);
 
         tOp->IsReadOp = false;
         tOp->DataPtr = const_cast<void*>(source);
@@ -568,8 +568,8 @@ public:
 
     bool DoTrim(IAsyncIoOperation *op) override {
         auto trim = dynamic_cast<TAsyncIoOperationLiburing*>(op);
-        Y_VERIFY(trim != nullptr);
-        Y_VERIFY(trim->IsTrim);
+        Y_ABORT_UNLESS(trim != nullptr);
+        Y_ABORT_UNLESS(trim->IsTrim);
 
         ui64 range[2] = {trim->GetOffset(), trim->GetSize()};
         bool tryAgain = true;
@@ -670,7 +670,7 @@ public:
         }
 
         auto tOp = dynamic_cast<TAsyncIoOperationLiburing*>(op);
-        Y_VERIFY(tOp != nullptr);
+        Y_ABORT_UNLESS(tOp != nullptr);
 
         if (tOp->IsReadOp) {
             io_uring_prep_read(sqe, static_cast<FHANDLE>(*File), tOp->DataPtr, tOp->DataSize, tOp->DataOffset);

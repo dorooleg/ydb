@@ -32,7 +32,7 @@ public:
                 result = TTableResult(TTableResult::Error, "Unknown table " + table.TableName);
             } else {
                 const auto *tableInfo = Scheme.Tables.FindPtr(*tableId);
-                Y_VERIFY(tableInfo);
+                Y_ABORT_UNLESS(tableInfo);
 
                 result.KeyColumnCount = tableInfo->KeyColumns.size();
                 result.Table = table;
@@ -46,12 +46,12 @@ public:
                     }
 
                     const auto *columnInfo = tableInfo->Columns.FindPtr(*columnId);
-                    Y_VERIFY(columnInfo);
+                    Y_ABORT_UNLESS(columnInfo);
 
                     auto nullConstraint = columnInfo->NotNull ? EColumnTypeConstraint::NotNull : EColumnTypeConstraint::Nullable;
                     auto insertResult = result.Columns.insert(std::make_pair(column, IDbSchemeResolver::TTableResult::TColumn
                     {*columnId, (i32)columnInfo->KeyOrder, columnInfo->PType, 0, nullConstraint}));
-                    Y_VERIFY(insertResult.second);
+                    Y_ABORT_UNLESS(insertResult.second);
                 }
             }
 
@@ -64,7 +64,7 @@ public:
     virtual void ResolveTables(const TVector<TTable>& tables, NActors::TActorId responseTo) override {
         Y_UNUSED(tables);
         Y_UNUSED(responseTo);
-        Y_FAIL("Not implemented for local resolve.");
+        Y_ABORT("Not implemented for local resolve.");
     }
 private:
     const NTable::TScheme& Scheme;
@@ -95,7 +95,7 @@ class TFlatLocalMiniKQL : public NTabletFlatExecutor::ITransaction {
         }
         expr.Context.IssueManager.AddIssues(astResult.Issues);
 
-        if (!NYql::CompileExpr(*astResult.Root, expr.Root, expr.Context, nullptr)) {
+        if (!NYql::CompileExpr(*astResult.Root, expr.Root, expr.Context, nullptr, nullptr)) {
             errors = expr.Context.IssueManager.GetIssues();
             return false;
         }
@@ -281,7 +281,7 @@ class TFlatLocalMiniKQL : public NTabletFlatExecutor::ITransaction {
             if (affectedShardCount == 0) {
                 proxyEngine->AfterShardProgramsExtracted();
             } else {
-                Y_VERIFY(affectedShardCount == 1);
+                Y_ABORT_UNLESS(affectedShardCount == 1);
 
                 IEngineFlat::TShardData shardData;
                 EngineResultStatusCode = proxyEngine->GetAffectedShard(0, shardData);
@@ -317,14 +317,14 @@ class TFlatLocalMiniKQL : public NTabletFlatExecutor::ITransaction {
                 if (EngineResultStatusCode != IEngineFlat::EResult::Ok)
                     return MakeResponse(engine.Get(), ctx);
 
-                Y_VERIFY(engine->GetOutgoingReadsetsCount() == 0);
+                Y_ABORT_UNLESS(engine->GetOutgoingReadsetsCount() == 0);
                 engine->AfterOutgoingReadsetsExtracted();
 
                 EngineResultStatusCode = engine->PrepareIncomingReadsets();
                 if (EngineResultStatusCode != IEngineFlat::EResult::Ok)
                     return MakeResponse(engine.Get(), ctx);
 
-                Y_VERIFY(engine->GetExpectedIncomingReadsetsCount() == 0);
+                Y_ABORT_UNLESS(engine->GetExpectedIncomingReadsetsCount() == 0);
 
                 EngineResultStatusCode = engine->Execute();
                 if (EngineResultStatusCode != IEngineFlat::EResult::Ok)
@@ -350,7 +350,7 @@ class TFlatLocalMiniKQL : public NTabletFlatExecutor::ITransaction {
             ++PageFaultCount;
             return false;
         } catch (...) {
-            Y_FAIL("there must be no leaked exceptions");
+            Y_ABORT("there must be no leaked exceptions");
         }
     }
 

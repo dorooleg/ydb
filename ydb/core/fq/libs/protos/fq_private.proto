@@ -3,6 +3,7 @@ option cc_enable_arenas = true;
 
 package Fq.Private;
 
+import "ydb/core/fq/libs/config/protos/storage.proto";
 import "ydb/core/fq/libs/protos/dq_effects.proto";
 
 import "ydb/library/yql/dq/actors/protos/dq_status_codes.proto";
@@ -114,6 +115,11 @@ message GetTaskResult {
 
         TaskResources resources = 33;
         FederatedQuery.QueryContent.QuerySyntax query_syntax = 34;
+        string operation_id = 35;
+        string execution_id = 36;
+        NFq.NConfig.TYdbStorageConfig compute_connection = 37;
+        google.protobuf.Duration result_ttl = 38;
+        map<string, Ydb.TypedValue> parameters = 39;
     }
     repeated Task tasks = 1;
 }
@@ -154,6 +160,11 @@ message PingTaskRequest {
     string tenant = 104;
     TaskResources resources = 33;
     repeated Ydb.Issue.IssueMessage internal_issues = 34;
+    string operation_id = 35;
+    string execution_id = 36;
+    NYql.NDqProto.StatusIds.StatusCode pending_status_code = 37;
+    bool dump_raw_statistics = 38;
+    repeated Ydb.ValuePair flat_stats = 39;
 }
 
 message PingTaskResult {

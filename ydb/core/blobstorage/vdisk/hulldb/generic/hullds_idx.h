@@ -77,7 +77,7 @@ namespace NKikimr {
         }
 
         void SerializeToProto(NKikimrVDiskData::TLevelIndex &pb) const {
-            Y_VERIFY(Valid());
+            Y_ABORT_UNLESS(Valid());
             if (ExplicitlySet) {
                 // we save current value iff if was explicitly set
                 pb.SetCompactedLsn(Lsn.Value());
@@ -85,7 +85,7 @@ namespace NKikimr {
         }
 
         void Update(ui64 lsn) {
-            Y_VERIFY(lsn > 0 && Valid());
+            Y_ABORT_UNLESS(lsn > 0 && Valid());
             ExplicitlySet = true;
             Lsn.SetMax(lsn);
         }
@@ -122,10 +122,10 @@ namespace NKikimr {
             return str.Str();
         }
 
-        bool operator < (ui64 lsn) const { Y_VERIFY(Valid()); return Lsn < lsn; }
-        bool operator <=(ui64 lsn) const { Y_VERIFY(Valid()); return Lsn <= lsn; }
-        bool operator > (ui64 lsn) const { Y_VERIFY(Valid()); return Lsn > lsn; }
-        bool operator >=(ui64 lsn) const { Y_VERIFY(Valid()); return Lsn >= lsn; }
+        bool operator < (ui64 lsn) const { Y_ABORT_UNLESS(Valid()); return Lsn < lsn; }
+        bool operator <=(ui64 lsn) const { Y_ABORT_UNLESS(Valid()); return Lsn <= lsn; }
+        bool operator > (ui64 lsn) const { Y_ABORT_UNLESS(Valid()); return Lsn > lsn; }
+        bool operator >=(ui64 lsn) const { Y_ABORT_UNLESS(Valid()); return Lsn >= lsn; }
 
     private:
         // all log records <= Lsn have been compacted
@@ -203,7 +203,7 @@ namespace NKikimr {
         // optimization applies;
         // This function is private and must not be called directly
         TLevelIndexSnapshot PrivateGetSnapshot(TActorSystem *actorSystemToNotifyLevelIndex) {
-            Y_VERIFY_DEBUG(Loaded);
+            Y_DEBUG_ABORT_UNLESS(Loaded);
             return TLevelIndexSnapshot(CurSlice, Fresh.GetSnapshot(), CurSlice->Level0CurSstsNum(),
                     actorSystemToNotifyLevelIndex, DelayedCompactionDeleterInfo);
         }
@@ -267,23 +267,23 @@ namespace NKikimr {
         // Operations with Fresh
         //////////////////////////////////////////////////////////////////////////////////////
         void PutToFresh(ui64 lsn, const TKey &key, ui8 partId, const TIngress &ingress, TRope buffer) {
-            Y_VERIFY_DEBUG(Loaded);
+            Y_DEBUG_ABORT_UNLESS(Loaded);
             Fresh.PutLogoBlobWithData(lsn, key, partId, ingress, std::move(buffer));
         }
 
         void PutToFresh(ui64 lsn, const TKey &key, const TMemRec &memRec) {
-            Y_VERIFY_DEBUG(Loaded);
+            Y_DEBUG_ABORT_UNLESS(Loaded);
             Fresh.Put(lsn, key, memRec);
         }
 
         void PutToFresh(std::shared_ptr<TFreshAppendix> &&a, ui64 firstLsn, ui64 lastLsn) {
-            Y_VERIFY_DEBUG(Loaded);
+            Y_DEBUG_ABORT_UNLESS(Loaded);
             Fresh.PutAppendix(std::move(a), firstLsn, lastLsn);
         }
 
         // Fresh Compaction
         bool NeedsFreshCompaction(ui64 yardFreeUpToLsn, bool force) const {
-            Y_VERIFY_DEBUG(Loaded);
+            Y_DEBUG_ABORT_UNLESS(Loaded);
             return Fresh.NeedsCompaction(yardFreeUpToLsn, force);
         }
 
@@ -309,12 +309,12 @@ namespace NKikimr {
         //////////////////////////////////////////////////////////////////////////////////////
 
         ui64 GetFirstLsnToKeep() const {
-            Y_VERIFY_DEBUG(Loaded);
+            Y_DEBUG_ABORT_UNLESS(Loaded);
             return Min(Min(CurEntryPointLsn, PrevEntryPointLsn), Fresh.GetFirstLsnToKeep());
         }
 
         virtual void LoadCompleted() {
-            Y_VERIFY_DEBUG(!Loaded);
+            Y_DEBUG_ABORT_UNLESS(!Loaded);
             Loaded = true;
 
             // NOTE: compatibility issue, see comment for UpdateWithObsoleteLastCompactedLsn method
@@ -356,7 +356,7 @@ namespace NKikimr {
             switch (s) {
                 case ESatisfactionRankType::Fresh: return Fresh.GetSatisfactionRank();
                 case ESatisfactionRankType::Level: return CurSlice->GetSatisfactionRank();
-                default: Y_FAIL("Unexpected rank type");
+                default: Y_ABORT("Unexpected rank type");
             }
         }
 
@@ -388,7 +388,7 @@ namespace NKikimr {
             auto& pbLevel0 = *pb.MutableLevel0();
             auto& bulkFormedSstInfoSet = *pb.MutableBulkFormedSstInfoSet();
             for (const TIntrusivePtr<TLevelSegment>& seg : UncommittedReplSegments) {
-                Y_VERIFY(seg->Info.FirstLsn && seg->Info.LastLsn);
+                Y_ABORT_UNLESS(seg->Info.FirstLsn && seg->Info.LastLsn);
                 // store level-0 SSTable
                 seg->SerializeToProto(*pbLevel0.AddSsts());
 
@@ -404,7 +404,7 @@ namespace NKikimr {
         void ApplyUncommittedReplSegment(TIntrusivePtr<TLevelSegment>&& seg, const THullCtxPtr &hullCtx) {
             // remove this SST from uncommitted list
             auto it = std::find(UncommittedReplSegments.begin(), UncommittedReplSegments.end(), seg);
-            Y_VERIFY(it != UncommittedReplSegments.end());
+            Y_ABORT_UNLESS(it != UncommittedReplSegments.end());
             UncommittedReplSegments.erase(it);
 
             // create matching entry in bulk-formed segments list

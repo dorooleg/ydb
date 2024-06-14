@@ -7,6 +7,7 @@
 #include <ydb/library/yql/dq/actors/dq.h>
 #include <ydb/library/yql/utils/actor_log/log.h>
 #include <ydb/library/yql/core/services/mounts/yql_mounts.h>
+#include <ydb/library/yql/core/services/yql_out_transformers.h>
 #include <ydb/library/yql/core/facade/yql_facade.h>
 #include <ydb/library/yql/minikql/mkql_function_registry.h>
 #include <ydb/library/yql/minikql/comp_nodes/mkql_factories.h>
@@ -22,14 +23,13 @@
 #include <ydb/library/yql/providers/dq/provider/yql_dq_gateway.h>
 #include <ydb/library/yql/providers/dq/provider/yql_dq_provider.h>
 #include <ydb/library/yql/providers/dq/provider/exec/yql_dq_exectransformer.h>
+#include <ydb/library/yql/providers/generic/provider/yql_generic_provider.h>
 #include <ydb/library/yql/dq/integration/transform/yql_dq_task_transform.h>
 #include <ydb/library/yql/providers/pq/gateway/native/yql_pq_gateway.h>
 #include <ydb/library/yql/providers/pq/provider/yql_pq_provider.h>
 #include <ydb/library/yql/providers/pq/proto/dq_io.pb.h>
 #include <ydb/library/yql/providers/pq/task_meta/task_meta.h>
 #include <ydb/library/yql/providers/s3/provider/yql_s3_provider.h>
-#include <ydb/library/yql/providers/ydb/provider/yql_ydb_provider.h>
-#include <ydb/library/yql/providers/clickhouse/provider/yql_clickhouse_provider.h>
 #include <ydb/library/yql/providers/solomon/gateway/yql_solomon_gateway.h>
 #include <ydb/library/yql/providers/solomon/provider/yql_solomon_provider.h>
 #include <ydb/library/yql/providers/s3/actors/yql_s3_applicator_actor.h>
@@ -44,21 +44,24 @@
 #include <ydb/library/yql/providers/dq/worker_manager/interface/events.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/protos/issue_message.pb.h>
+#include <ydb/library/yql/utils/actor_log/log.h>
 
 #include <ydb/library/mkql_proto/mkql_proto.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
 #include <ydb/core/fq/libs/actors/nodes_manager.h>
+#include <ydb/core/fq/libs/checkpoint_storage/storage_service.h>
+#include <ydb/core/fq/libs/checkpointing/checkpoint_coordinator.h>
+#include <ydb/core/fq/libs/checkpointing_common/defs.h>
 #include <ydb/core/fq/libs/common/compression.h>
 #include <ydb/core/fq/libs/common/entity_id.h>
+#include <ydb/core/fq/libs/compute/common/pinger.h>
+#include <ydb/core/fq/libs/compute/common/utils.h>
 #include <ydb/core/fq/libs/control_plane_storage/control_plane_storage.h>
 #include <ydb/core/fq/libs/control_plane_storage/events/events.h>
 #include <ydb/core/fq/libs/control_plane_storage/util.h>
 #include <ydb/core/fq/libs/db_id_async_resolver_impl/db_async_resolver_impl.h>
 #include <ydb/core/fq/libs/gateway/empty_gateway.h>
-#include <ydb/core/fq/libs/checkpointing/checkpoint_coordinator.h>
-#include <ydb/core/fq/libs/checkpointing_common/defs.h>
-#include <ydb/core/fq/libs/checkpoint_storage/storage_service.h>
 #include <ydb/core/fq/libs/private_client/events.h>
 #include <ydb/core/fq/libs/private_client/private_client.h>
 #include <ydb/core/fq/libs/rate_limiter/utils/path.h>
@@ -66,10 +69,10 @@
 #include <ydb/core/fq/libs/read_rule/read_rule_deleter.h>
 #include <ydb/core/fq/libs/tasks_packer/tasks_packer.h>
 
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/json/yson/json2yson.h>
 #include <library/cpp/yson/node/node_io.h>
 
@@ -121,6 +124,32 @@ struct TEvPrivate {
     };
 };
 
+class TTraceOptPipelineConfigurator : public IPipelineConfigurator {
+public:
+    TTraceOptPipelineConfigurator() = default;
+
+    void AfterCreate(TTransformationPipeline* pipeline) const final {
+        Y_UNUSED(pipeline);
+    }
+
+    void AfterTypeAnnotation(TTransformationPipeline* pipeline) const final {
+        pipeline->Add(
+            TExprLogTransformer::Sync(
+                "OptimizedExpr",
+                NYql::NLog::EComponent::Core,
+                NYql::NLog::ELevel::TRACE),
+            "OptTrace",
+            TIssuesIds::CORE,
+            "OptTrace");
+    }
+
+    void AfterOptimize(TTransformationPipeline* pipeline) const final {
+        Y_UNUSED(pipeline);
+    }
+};
+
+static TTraceOptPipelineConfigurator TraceOptPipelineConfigurator;
+
 }
 
 class TProgramRunnerActor : public NActors::TActorBootstrapped<TProgramRunnerActor> {
@@ -153,64 +182,68 @@ public:
     }
 
     void Bootstrap() {
-        TProgramFactory progFactory(false, FunctionRegistry, NextUniqueId, DataProvidersInit, "yq");
-        progFactory.SetModules(ModuleResolver);
-        progFactory.SetUdfResolver(NYql::NCommon::CreateSimpleUdfResolver(FunctionRegistry, nullptr));
-        progFactory.SetGatewaysConfig(&GatewaysConfig);
+        try {
+            TProgramFactory progFactory(false, FunctionRegistry, NextUniqueId, DataProvidersInit, "yq");
+            progFactory.SetModules(ModuleResolver);
+            progFactory.SetUdfResolver(NYql::NCommon::CreateSimpleUdfResolver(FunctionRegistry, nullptr));
+            progFactory.SetGatewaysConfig(&GatewaysConfig);
 
-        Program = progFactory.Create("-stdin-", Sql, SessionId);
-        Program->EnableResultPosition();
+            Program = progFactory.Create("-stdin-", Sql, SessionId);
+            Program->EnableResultPosition();
 
-        // parse phase
-        {
-            if (!Program->ParseSql(SqlSettings)) {
-                SendStatusAndDie(TProgram::TStatus::Error, "Failed to parse query");
+            // parse phase
+            {
+                if (!Program->ParseSql(SqlSettings)) {
+                    SendStatusAndDie(TProgram::TStatus::Error, "Failed to parse query");
+                    return;
+                }
+
+                if (ExecuteMode == FederatedQuery::ExecuteMode::PARSE) {
+                    SendStatusAndDie(TProgram::TStatus::Ok);
+                    return;
+                }
+            }
+
+            // compile phase
+            {
+                if (!Program->Compile("")) {
+                    SendStatusAndDie(TProgram::TStatus::Error, "Failed to compile query");
+                    return;
+                }
+
+                if (ExecuteMode == FederatedQuery::ExecuteMode::COMPILE) {
+                    SendStatusAndDie(TProgram::TStatus::Ok);
+                    return;
+                }
+            }
+
+            Compiled = true;
+
+            // next phases can be async: optimize, validate, run
+            TProgram::TFutureStatus futureStatus;
+            switch (ExecuteMode) {
+            case FederatedQuery::ExecuteMode::EXPLAIN:
+                futureStatus = Program->OptimizeAsyncWithConfig("", TraceOptPipelineConfigurator);
+                break;
+            case FederatedQuery::ExecuteMode::VALIDATE:
+                futureStatus = Program->ValidateAsync("");
+                break;
+            case FederatedQuery::ExecuteMode::RUN:
+                futureStatus = Program->RunAsyncWithConfig("", TraceOptPipelineConfigurator);
+                break;
+            default:
+                SendStatusAndDie(TProgram::TStatus::Error, TStringBuilder() << "Unexpected execute mode " << static_cast<int>(ExecuteMode));
                 return;
             }
 
-            if (ExecuteMode == FederatedQuery::ExecuteMode::PARSE) {
-                SendStatusAndDie(TProgram::TStatus::Ok);
-                return;
-            }
+            futureStatus.Subscribe([actorSystem = NActors::TActivationContext::ActorSystem(), selfId = SelfId()](const TProgram::TFutureStatus& f) {
+                actorSystem->Send(selfId, new TEvents::TEvAsyncContinue(f));
+            });
+
+            Become(&TProgramRunnerActor::StateFunc);
+        } catch (...) {
+            SendStatusAndDie(TProgram::TStatus::Error, CurrentExceptionMessage());
         }
-
-        // compile phase
-        {
-            if (!Program->Compile("")) {
-                SendStatusAndDie(TProgram::TStatus::Error, "Failed to compile query");
-                return;
-            }
-
-            if (ExecuteMode == FederatedQuery::ExecuteMode::COMPILE) {
-                SendStatusAndDie(TProgram::TStatus::Ok);
-                return;
-            }
-        }
-
-        Compiled = true;
-
-        // next phases can be async: optimize, validate, run
-        TProgram::TFutureStatus futureStatus;
-        switch (ExecuteMode) {
-        case FederatedQuery::ExecuteMode::EXPLAIN:
-            futureStatus = Program->OptimizeAsync("");
-            break;
-        case FederatedQuery::ExecuteMode::VALIDATE:
-            futureStatus = Program->ValidateAsync("");
-            break;
-        case FederatedQuery::ExecuteMode::RUN:
-            futureStatus = Program->RunAsync("");
-            break;
-        default:
-            SendStatusAndDie(TProgram::TStatus::Error, TStringBuilder() << "Unexpected execute mode " << static_cast<int>(ExecuteMode));
-            return;
-        }
-
-        futureStatus.Subscribe([actorSystem = NActors::TActivationContext::ActorSystem(), selfId = SelfId()](const TProgram::TFutureStatus& f) {
-            actorSystem->Send(selfId, new TEvents::TEvAsyncContinue(f));
-        });
-
-        Become(&TProgramRunnerActor::StateFunc);
     }
 
     void SendStatusAndDie(NYql::TProgram::TStatus status, const TString& message = "") {
@@ -302,12 +335,30 @@ public:
         , Params(std::move(params))
         , CreatedAt(Params.CreatedAt)
         , QueryCounters(queryCounters)
-        , EnableCheckpointCoordinator(Params.QueryType == FederatedQuery::QueryContent::STREAMING && Params.Config.GetCheckpointCoordinator().GetEnabled())
         , MaxTasksPerStage(Params.Config.GetCommon().GetMaxTasksPerStage() ? Params.Config.GetCommon().GetMaxTasksPerStage() : 500)
         , MaxTasksPerOperation(Params.Config.GetCommon().GetMaxTasksPerOperation() ? Params.Config.GetCommon().GetMaxTasksPerOperation() : 40)
         , Compressor(Params.Config.GetCommon().GetQueryArtifactsCompressionMethod(), Params.Config.GetCommon().GetQueryArtifactsCompressionMinSize())
     {
         QueryCounters.SetUptimePublicAndServiceCounter(0);
+
+        switch (Params.Config.GetControlPlaneStorage().GetStatsMode()) {
+            case Ydb::Query::StatsMode::STATS_MODE_NONE:
+                StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_NONE;
+                break;
+            case Ydb::Query::StatsMode::STATS_MODE_BASIC:
+                StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_BASIC;
+                break;
+            case Ydb::Query::StatsMode::STATS_MODE_FULL:
+                StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_FULL;
+                break;
+            case Ydb::Query::StatsMode::STATS_MODE_PROFILE:
+                StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_PROFILE;
+                break;
+            case Ydb::Query::StatsMode::STATS_MODE_UNSPECIFIED:
+            default:
+                StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_FULL;
+                break;
+        }
     }
 
     static constexpr char ActorName[] = "YQ_RUN_ACTOR";
@@ -784,7 +835,7 @@ private:
                 break;
             }
             default: {
-                Y_VERIFY(false);
+                Y_ABORT_UNLESS(false);
             }
         }
     }
@@ -821,7 +872,8 @@ private:
 
     void HandleFinish(TEvents::TEvEffectApplicationResult::TPtr ev) {
         if (ev->Get()->FatalError) {
-            // TODO: special fatal error handling
+            Fail(ev->Get()->Issues.ToOneLineString());
+            return;
         }
         if (ev->Get()->Issues) {
             LOG_W("Effect Issues: " << ev->Get()->Issues.ToOneLineString());
@@ -869,27 +921,12 @@ private:
             EvalInfos.emplace(info.ExecuterId, info);
         } else {
             DqGraphParams.push_back(ev->Get()->GraphParams);
-
-            NYql::IDqGateway::TResult gatewayResult;
-            // fake it till you make it
-            // generate dummy result for YQL facade now, remove this gateway completely
-            // when top-level YQL facade call like Preprocess() is implemented
-            if (ev->Get()->GraphParams.GetResultType()) {
-                // for resultable graphs return dummy "select 1" result (it is not used and is required to satisfy YQL facade only)
-                gatewayResult.SetSuccess();
-                gatewayResult.Data = "[[\001\0021]]";
-                gatewayResult.Truncated = true;
-                gatewayResult.RowsCount = 0;
-            } else {
-                // for resultless results expect infinite INSERT FROM SELECT and just return "nothing"
-            }
-            ev->Get()->Result.SetValue(gatewayResult);
         }
     }
 
     void Handle(TEvCheckpointCoordinator::TEvZeroCheckpointDone::TPtr&) {
         LOG_D("Coordinator saved zero checkpoint");
-        Y_VERIFY(ControlId);
+        Y_ABORT_UNLESS(ControlId);
         SetLoadFromCheckpointMode();
     }
 
@@ -898,6 +935,11 @@ private:
     }
 
     void Handle(TEvDqStats::TPtr& ev) {
+
+        if (!CollectBasic()) {
+            return;
+        }
+
         auto& proto = ev->Get()->Record;
 
         TString GraphKey;
@@ -1009,14 +1051,46 @@ private:
 
         struct TStatisticsNode {
             std::map<TString, TStatisticsNode> Children;
+            TString Name;
             i64 Avg;
             i64 Count;
             i64 Min;
             i64 Max;
             i64 Sum;
+            void AssignStats(const TStatisticsNode& other) {
+                Name  = other.Name;
+                Avg   = other.Avg;
+                Count = other.Count;
+                Min   = other.Min;
+                Max   = other.Max;
+                Sum   = other.Sum;
+            }
             void Write(NYson::TYsonWriter& writer) {
                 writer.OnBeginMap();
                 if (Children.empty()) {
+                    if (Name.EndsWith("Us")) { // TDuration
+                        writer.OnKeyedItem("sum");
+                        writer.OnStringScalar(FormatDurationUs(Sum));
+                        writer.OnKeyedItem("count");
+                        writer.OnInt64Scalar(Count);
+                        writer.OnKeyedItem("avg");
+                        writer.OnStringScalar(FormatDurationUs(Avg));
+                        writer.OnKeyedItem("max");
+                        writer.OnStringScalar(FormatDurationUs(Max));
+                        writer.OnKeyedItem("min");
+                        writer.OnStringScalar(FormatDurationUs(Min));
+                    } else if (Name.EndsWith("Ms")) { // TInstant
+                        writer.OnKeyedItem("sum");
+                        writer.OnStringScalar("N/A");
+                        writer.OnKeyedItem("count");
+                        writer.OnInt64Scalar(Count);
+                        writer.OnKeyedItem("avg");
+                        writer.OnStringScalar(FormatInstant(TInstant::MilliSeconds(Avg)));
+                        writer.OnKeyedItem("max");
+                        writer.OnStringScalar(FormatInstant(TInstant::MilliSeconds(Max)));
+                        writer.OnKeyedItem("min");
+                        writer.OnStringScalar(FormatInstant(TInstant::MilliSeconds(Min)));
+                    } else {
                         writer.OnKeyedItem("sum");
                         writer.OnInt64Scalar(Sum);
                         writer.OnKeyedItem("count");
@@ -1027,6 +1101,7 @@ private:
                         writer.OnInt64Scalar(Max);
                         writer.OnKeyedItem("min");
                         writer.OnInt64Scalar(Min);
+                    }
                 } else {
                     for (auto& [name, child]: Children) {
                         writer.OnKeyedItem(name);
@@ -1063,11 +1138,24 @@ private:
 
             node = &node->Children[name];
 
+            node->Name = name;
             node->Sum = metric.GetSum();
             node->Count = metric.GetCount();
             node->Avg = metric.GetAvg();
             node->Max = metric.GetMax();
             node->Min = metric.GetMin();
+        }
+
+        //
+        // Copy Ingress/Egress to top level
+        // TODO: move all TaskRunner::Stage=Total stats to top level???
+        //
+        auto& stageTotalNode = statistics.Children["TaskRunner"].Children["Stage=Total"];
+        if (const auto& it = stageTotalNode.Children.find("IngressBytes"); it != stageTotalNode.Children.end()) {
+            statistics.Children["IngressBytes"].AssignStats(it->second);
+        }
+        if (const auto& it = stageTotalNode.Children.find("EgressBytes"); it != stageTotalNode.Children.end()) {
+            statistics.Children["EgressBytes"].AssignStats(it->second);
         }
 
         NYson::TYsonWriter writer(&out);
@@ -1139,9 +1227,11 @@ private:
 
         QueryStateUpdateRequest.mutable_result_id()->set_value(Params.ResultId);
 
-        TString statistics;
-        if (SaveAndPackStatistics("Graph=" + ToString(DqGraphIndex), result.metric(), statistics)) {
-            QueryStateUpdateRequest.set_statistics(statistics);
+        if (CollectBasic()) {
+            TString statistics;
+            if (SaveAndPackStatistics("Graph=" + ToString(DqGraphIndex), result.metric(), statistics)) {
+                QueryStateUpdateRequest.set_statistics(statistics);
+            }
         }
         KillExecuter();
     }
@@ -1193,9 +1283,11 @@ private:
                 queryResult.SetSuccess();
             }
 
-            TString statistics;
-            if (SaveAndPackStatistics("Precompute=" + ToString(it->second.Index), result.metric(), statistics)) {
-                QueryStateUpdateRequest.set_statistics(statistics);
+            if (CollectBasic()) {
+                TString statistics;
+                if (SaveAndPackStatistics("Precompute=" + ToString(it->second.Index), result.metric(), statistics)) {
+                    QueryStateUpdateRequest.set_statistics(statistics);
+                }
             }
 
             queryResult.AddIssues(issues);
@@ -1223,7 +1315,7 @@ private:
         if (statusCode == NYql::NDqProto::StatusIds::UNSPECIFIED) {
            LOG_E("StatusCode == NYql::NDqProto::StatusIds::UNSPECIFIED, it is not expected, the query will be failed.");
         }
-        
+
         if (statusCode != NYql::NDqProto::StatusIds::SUCCESS) {
             // Error
             ResignQuery(statusCode);
@@ -1433,7 +1525,12 @@ private:
         dqConfiguration->FreezeDefaults();
         dqConfiguration->FallbackPolicy = EFallbackPolicy::Never;
 
-        ExecuterId = Register(NYql::NDq::MakeDqExecuter(MakeNodesManagerId(), SelfId(), Params.QueryId, "", dqConfiguration, QueryCounters.Counters, TInstant::Now(), EnableCheckpointCoordinator));
+        bool enableCheckpointCoordinator =
+            Params.QueryType == FederatedQuery::QueryContent::STREAMING && 
+            Params.Config.GetCheckpointCoordinator().GetEnabled() && 
+            !dqConfiguration->DisableCheckpoints.Get().GetOrElse(false);
+
+        ExecuterId = Register(NYql::NDq::MakeDqExecuter(MakeNodesManagerId(), SelfId(), Params.QueryId, "", dqConfiguration, QueryCounters.Counters, TInstant::Now(), enableCheckpointCoordinator));
 
         NActors::TActorId resultId;
         if (dqGraphParams.GetResultType()) {
@@ -1457,7 +1554,7 @@ private:
             resultId = ExecuterId;
         }
 
-        if (EnableCheckpointCoordinator) {
+        if (enableCheckpointCoordinator) {
             ControlId = Register(MakeCheckpointCoordinator(
                 ::NFq::TCoordinatorId(Params.QueryId + "-" + ToString(DqGraphIndex), Params.PreviousQueryRevision),
                 NYql::NDq::MakeCheckpointStorageID(),
@@ -1497,9 +1594,16 @@ private:
         auto& commonTaskParams = *request.MutableCommonTaskParams();
         commonTaskParams["fq.job_id"] = Params.JobId;
         commonTaskParams["fq.restart_count"] = ToString(Params.RestartCount);
+        request.SetStatsMode(StatsMode);
+
         NTasksPacker::UnPack(*request.MutableTask(), dqGraphParams.GetTasks(), dqGraphParams.GetStageProgram());
         Send(ExecuterId, new NYql::NDqs::TEvGraphRequest(request, ControlId, resultId));
         LOG_D("Executer: " << ExecuterId << ", Controller: " << ControlId << ", ResultIdActor: " << resultId);
+    }
+
+    void SetupYqlCore(NYql::TYqlCoreConfig& yqlCore) const {
+        auto flags = yqlCore.MutableFlags();
+        *flags = Params.Config.GetGateways().GetYqlCore().GetFlags();
     }
 
     void SetupDqSettings(NYql::TDqGatewayConfig& dqGatewaysConfig) const {
@@ -1531,6 +1635,8 @@ private:
         apply("WatermarksGranularityMs", "1000");
         apply("WatermarksLateArrivalDelayMs", "5000");
         apply("WatermarksIdlePartitions", "true");
+        apply("EnableChannelStats", "true");
+        apply("ExportStats", "true");
 
         switch (Params.QueryType) {
         case FederatedQuery::QueryContent::STREAMING: {
@@ -1753,6 +1859,10 @@ private:
             issue.set_severity(NYql::TSeverityIds::S_ERROR);
         }
 
+        if (!QueryStateUpdateRequest.has_result_id() && FinalQueryStatus != FederatedQuery::QueryMeta::COMPLETED && FinalQueryStatus != FederatedQuery::QueryMeta::COMPLETING) {
+            QueryStateUpdateRequest.mutable_result_id()->set_value("");
+        }
+
         Send(Pinger, new TEvents::TEvForwardPingRequest(QueryStateUpdateRequest, true));
 
         PassAway();
@@ -1766,19 +1876,29 @@ private:
     void FillDqGraphParams() {
         for (const auto& s : Params.DqGraphs) {
             NFq::NProto::TGraphParams dqGraphParams;
-            Y_VERIFY(dqGraphParams.ParseFromString(s));
+            Y_ABORT_UNLESS(dqGraphParams.ParseFromString(s));
             DqGraphParams.emplace_back(std::move(dqGraphParams));
         }
     }
 
     void RunProgram() {
+        //NYql::NLog::YqlLogger().SetComponentLevel(NYql::NLog::EComponent::Core, NYql::NLog::ELevel::TRACE);
+        //NYql::NLog::YqlLogger().SetComponentLevel(NYql::NLog::EComponent::CoreEval, NYql::NLog::ELevel::TRACE);
+        //NYql::NLog::YqlLogger().SetComponentLevel(NYql::NLog::EComponent::CorePeepHole, NYql::NLog::ELevel::TRACE);
+
         LOG_D("Compiling query ...");
         NYql::TGatewaysConfig gatewaysConfig;
+
+        SetupYqlCore(*gatewaysConfig.MutableYqlCore());
+
         SetupDqSettings(*gatewaysConfig.MutableDq());
         // the main idea of having Params.GatewaysConfig is to copy clusters only
         // but in this case we have to copy S3 provider limits
         *gatewaysConfig.MutableS3() = Params.Config.GetGateways().GetS3();
         gatewaysConfig.MutableS3()->ClearClusterMapping();
+
+        *gatewaysConfig.MutableGeneric() = Params.Config.GetGateways().GetGeneric();
+        gatewaysConfig.MutableGeneric()->ClearClusterMapping();
 
         THashMap<TString, TString> clusters;
 
@@ -1786,9 +1906,8 @@ private:
 
         //todo: consider cluster name clashes
         AddClustersFromConfig(gatewaysConfig, clusters);
-        AddClustersFromConnections(YqConnections,
-            Params.Config.GetCommon().GetUseBearerForYdb(),
-            Params.Config.GetCommon().GetObjectStorageEndpoint(),
+        AddClustersFromConnections(Params.Config.GetCommon(),
+            YqConnections,
             monitoringEndpoint,
             Params.AuthToken,
             Params.AccountIdSignatures,
@@ -1797,8 +1916,13 @@ private:
             clusters);
 
         TVector<TDataProviderInitializer> dataProvidersInit;
-        const std::shared_ptr<IDatabaseAsyncResolver> dbResolver = std::make_shared<TDatabaseAsyncResolverImpl>(NActors::TActivationContext::ActorSystem(), Params.DatabaseResolver,
-            Params.Config.GetCommon().GetYdbMvpCloudEndpoint(), Params.Config.GetCommon().GetMdbGateway(), Params.Config.GetCommon().GetMdbTransformHost(), Params.QueryId);
+        const std::shared_ptr<IDatabaseAsyncResolver> dbResolver = std::make_shared<TDatabaseAsyncResolverImpl>(
+            NActors::TActivationContext::ActorSystem(),
+            Params.DatabaseResolver,
+            Params.Config.GetCommon().GetYdbMvpCloudEndpoint(),
+            Params.Config.GetCommon().GetMdbGateway(),
+            Params.MdbEndpointGenerator,
+            Params.QueryId);
         {
             // TBD: move init to better place
             QueryStateUpdateRequest.set_scope(Params.Scope.ToString());
@@ -1808,15 +1932,11 @@ private:
         }
 
         {
-            dataProvidersInit.push_back(GetYdbDataProviderInitializer(Params.YqSharedResources->UserSpaceYdbDriver, Params.CredentialsFactory, dbResolver));
+           dataProvidersInit.push_back(GetGenericDataProviderInitializer(Params.ConnectorClient, dbResolver, Params.CredentialsFactory));
         }
 
         {
-            dataProvidersInit.push_back(GetClickHouseDataProviderInitializer(Params.S3Gateway, dbResolver));
-        }
-
-        {
-            dataProvidersInit.push_back(GetS3DataProviderInitializer(Params.S3Gateway, Params.CredentialsFactory,
+           dataProvidersInit.push_back(GetS3DataProviderInitializer(Params.S3Gateway, Params.CredentialsFactory,
                 Params.Config.GetReadActorsFactoryConfig().GetS3ReadActorFactoryConfig().GetAllowLocalFiles()));
         }
 
@@ -1850,7 +1970,7 @@ private:
         sqlSettings.SyntaxVersion = 1;
         sqlSettings.PgParser = (Params.QuerySyntax == FederatedQuery::QueryContent::PG);
         sqlSettings.V0Behavior = NSQLTranslation::EV0Behavior::Disable;
-        sqlSettings.Flags.insert({ "DqEngineEnable", "DqEngineForce", "DisableAnsiOptionalAs", "FlexibleTypes" });
+        sqlSettings.Flags.insert({ "DqEngineEnable", "DqEngineForce", "DisableAnsiOptionalAs", "FlexibleTypes", "AnsiInForEmptyOrNullableItemsCollections" });
         try {
             AddTableBindingsFromBindings(Params.Bindings, YqConnections, sqlSettings);
         } catch (const std::exception& e) {
@@ -1860,7 +1980,7 @@ private:
             return;
         }
 
-        ProgramRunnerId = Register(new TProgramRunnerActor(
+        ProgramRunnerId = Register(new NYql::NDq::TLogWrapReceive(new TProgramRunnerActor(
             SelfId(),
             Params.FunctionRegistry,
             Params.NextUniqueId,
@@ -1872,7 +1992,7 @@ private:
             sqlSettings,
             Params.ExecuteMode,
             Params.QueryId
-        ));
+        ), Params.QueryId));
     }
 
     void Handle(TEvPrivate::TEvProgramFinished::TPtr& ev) {
@@ -2005,6 +2125,9 @@ private:
                 case FederatedQuery::ConnectionSetting::kMonitoring:
                     html << "MONITORING";
                     break;
+                case FederatedQuery::ConnectionSetting::kPostgresqlCluster:
+                    html << "POSTGRESQL";
+                    break;
                 default:
                     html << "UNDEFINED";
                     break;
@@ -2093,6 +2216,10 @@ private:
             << " }");
     }
 
+    bool CollectBasic() {
+        return StatsMode >= NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_BASIC;
+    }
+
 private:
     TActorId FetcherId;
     TActorId ProgramRunnerId;
@@ -2117,15 +2244,16 @@ private:
     TString SessionId;
     ::NYql::NCommon::TServiceCounters QueryCounters;
     const ::NMonitoring::TDynamicCounters::TCounterPtr QueryUptime;
-    bool EnableCheckpointCoordinator = false;
     Fq::Private::PingTaskRequest QueryStateUpdateRequest;
 
     const ui64 MaxTasksPerStage;
     const ui64 MaxTasksPerOperation;
     const TCompressor Compressor;
 
-    // Consumers creation
+    NYql::NDqProto::EDqStatsMode StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_NONE;
     TMap<TString, TString> Statistics;
+
+    // Consumers creation
     NActors::TActorId ReadRulesCreatorId;
 
     // Rate limiter resource creation
@@ -2161,7 +2289,8 @@ IActor* CreateRunActor(
     const ::NYql::NCommon::TServiceCounters& serviceCounters,
     TRunActorParams&& params
 ) {
-    return new TRunActor(fetcherId, serviceCounters, std::move(params));
+    auto queryId = params.QueryId;
+    return new NYql::NDq::TLogWrapReceive(new TRunActor(fetcherId, serviceCounters, std::move(params)), queryId);
 }
 
 } /* NFq */

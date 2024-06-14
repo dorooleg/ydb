@@ -2,10 +2,11 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/protos/netclassifier.pb.h>
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/http/http_proxy.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/http/http_proxy.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 #include <library/cpp/json/json_reader.h>
 
 #include <util/stream/zlib.h>
@@ -136,7 +137,7 @@ private:
                 // cookied config item is missing, add it
                 InitDefaultConfiguration();
             } else {
-                Y_VERIFY(record.ConfigItemsSize() == 1); // only one config item should have the cookie
+                Y_ABORT_UNLESS(record.ConfigItemsSize() == 1); // only one config item should have the cookie
 
                 BLOG_D("NetClassifierUpdater found the distributable config via cookie");
 
@@ -293,7 +294,7 @@ private:
     void HandleWhileWorking(TEvConsole::TEvGetConfigItemsResponse::TPtr& ev) {
         const auto& record = ev->Get()->Record;
         if (record.GetStatus().GetCode() == Ydb::StatusIds::SUCCESS) {
-            Y_VERIFY(record.ConfigItemsSize() == 1); // only one config item should have the cookie
+            Y_ABORT_UNLESS(record.ConfigItemsSize() == 1); // only one config item should have the cookie
 
             auto event = MakeHolder<TEvConsole::TEvConfigureRequest>();
 

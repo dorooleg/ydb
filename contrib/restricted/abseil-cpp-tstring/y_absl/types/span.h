@@ -63,6 +63,7 @@
 #include "y_absl/base/attributes.h"
 #include "y_absl/base/internal/throw_delegate.h"
 #include "y_absl/base/macros.h"
+#include "y_absl/base/nullability.h"
 #include "y_absl/base/optimization.h"
 #include "y_absl/base/port.h"    // TODO(strel): remove this include
 #include "y_absl/meta/type_traits.h"
@@ -172,6 +173,8 @@ class Span {
  public:
   using element_type = T;
   using value_type = y_absl::remove_cv_t<T>;
+  // TODO(b/316099902) - pointer should be Nullable<T*>, but this makes it hard
+  // to recognize foreach loops as safe.
   using pointer = T*;
   using const_pointer = const T*;
   using reference = T&;
@@ -296,8 +299,7 @@ class Span {
   //
   // Returns a reference to the i'th element of this span.
   constexpr reference operator[](size_type i) const noexcept {
-    // MSVC 2015 accepts this as constexpr, but not ptr_[i]
-    return Y_ABSL_HARDENING_ASSERT(i < size()), *(data() + i);
+    return Y_ABSL_HARDENING_ASSERT(i < size()), ptr_[i];
   }
 
   // Span::at()
@@ -680,12 +682,12 @@ bool operator>=(Span<T> a, const U& b) {
 //   }
 //
 template <int&... ExplicitArgumentBarrier, typename T>
-constexpr Span<T> MakeSpan(T* ptr, size_t size) noexcept {
+constexpr Span<T> MakeSpan(y_absl::Nullable<T*> ptr, size_t size) noexcept {
   return Span<T>(ptr, size);
 }
 
 template <int&... ExplicitArgumentBarrier, typename T>
-Span<T> MakeSpan(T* begin, T* end) noexcept {
+Span<T> MakeSpan(y_absl::Nullable<T*> begin, y_absl::Nullable<T*> end) noexcept {
   return Y_ABSL_HARDENING_ASSERT(begin <= end),
          Span<T>(begin, static_cast<size_t>(end - begin));
 }
@@ -726,12 +728,14 @@ constexpr Span<T> MakeSpan(T (&array)[N]) noexcept {
 //   ProcessInts(y_absl::MakeConstSpan(std::vector<int>{ 0, 0, 0 }));
 //
 template <int&... ExplicitArgumentBarrier, typename T>
-constexpr Span<const T> MakeConstSpan(T* ptr, size_t size) noexcept {
+constexpr Span<const T> MakeConstSpan(y_absl::Nullable<T*> ptr,
+                                      size_t size) noexcept {
   return Span<const T>(ptr, size);
 }
 
 template <int&... ExplicitArgumentBarrier, typename T>
-Span<const T> MakeConstSpan(T* begin, T* end) noexcept {
+Span<const T> MakeConstSpan(y_absl::Nullable<T*> begin,
+                            y_absl::Nullable<T*> end) noexcept {
   return Y_ABSL_HARDENING_ASSERT(begin <= end), Span<const T>(begin, end - begin);
 }
 

@@ -3,7 +3,7 @@
 namespace NKikimr::NMetadata::NInternal {
 
 bool TYDBValue::IsSameType(const Ydb::Value& v, const Ydb::Type& type) {
-    Y_VERIFY(type.has_type_id());
+    Y_ABORT_UNLESS(type.has_type_id());
     if (type.type_id() == Ydb::Type::BOOL) {
         return v.has_bool_value();
     } else if (type.type_id() == Ydb::Type::INT32) {
@@ -19,7 +19,7 @@ bool TYDBValue::IsSameType(const Ydb::Value& v, const Ydb::Type& type) {
     } else if (type.type_id() == Ydb::Type::UTF8) {
         return v.has_text_value();
     }
-    Y_VERIFY(false);
+    Y_ABORT_UNLESS(false);
 }
 
 bool TYDBValue::IsSameType(const Ydb::Value& l, const Ydb::Value& r) {
@@ -32,7 +32,7 @@ bool TYDBValue::IsSameType(const Ydb::Value& l, const Ydb::Value& r) {
     if (l.has_text_value()) {
         return r.has_text_value();
     }
-    Y_VERIFY(false);
+    Y_ABORT_UNLESS(false);
 }
 
 bool TYDBValue::Compare(const Ydb::Value& l, const Ydb::Value& r) {
@@ -48,11 +48,11 @@ bool TYDBValue::Compare(const Ydb::Value& l, const Ydb::Value& r) {
     if (l.has_text_value()) {
         return l.text_value() == r.text_value();
     }
-    Y_VERIFY(false);
+    Y_ABORT_UNLESS(false);
 }
 
 TString TYDBValue::TypeToString(const Ydb::Type& type) {
-    Y_VERIFY(type.has_type_id());
+    Y_ABORT_UNLESS(type.has_type_id());
     if (type.type_id() == Ydb::Type::BOOL) {
         return "Bool";
     } else if (type.type_id() == Ydb::Type::INT32) {
@@ -68,7 +68,7 @@ TString TYDBValue::TypeToString(const Ydb::Type& type) {
     } else if (type.type_id() == Ydb::Type::UTF8) {
         return "Utf8";
     } else {
-        Y_VERIFY(false);
+        Y_ABORT_UNLESS(false);
     }
 }
 
@@ -226,6 +226,14 @@ std::optional<Ydb::Type::PrimitiveTypeId> TYDBType::ConvertYQLToYDB(const NSchem
             return Ydb::Type::UTF8;
         case NScheme::NTypeIds::Timestamp:
             return Ydb::Type::TIMESTAMP;
+        case NScheme::NTypeIds::Timestamp64:
+            return Ydb::Type::TIMESTAMP64;
+        case NScheme::NTypeIds::Date32:
+            return Ydb::Type::DATE32;
+        case NScheme::NTypeIds::Datetime64:
+            return Ydb::Type::DATETIME64;
+        case NScheme::NTypeIds::Interval64:
+            return Ydb::Type::INTERVAL64;
         default:
             return {};
     }
@@ -255,6 +263,14 @@ std::optional<NKikimr::NScheme::TTypeId> TYDBType::ConvertYDBToYQL(const Ydb::Ty
             return NScheme::NTypeIds::Utf8;
         case Ydb::Type::TIMESTAMP:
             return NScheme::NTypeIds::Timestamp;
+        case Ydb::Type::DATE32:
+            return NScheme::NTypeIds::Date32;
+        case Ydb::Type::DATETIME64:
+            return NScheme::NTypeIds::Datetime64;
+        case Ydb::Type::TIMESTAMP64:
+            return NScheme::NTypeIds::Timestamp64;
+        case Ydb::Type::INTERVAL64:
+            return NScheme::NTypeIds::Interval64;
         default:
             return {};
     }

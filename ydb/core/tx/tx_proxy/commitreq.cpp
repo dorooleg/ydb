@@ -7,8 +7,8 @@
 #include <ydb/core/base/path.h>
 #include <ydb/core/base/tablet_pipecache.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NTxProxy {
@@ -89,7 +89,7 @@ public:
         WallClockAccepted = Now();
 
         const auto& record = Request->Record;
-        Y_VERIFY(record.HasTransaction());
+        Y_ABORT_UNLESS(record.HasTransaction());
 
         if (record.HasProxyFlags()) {
             ProxyFlags = record.GetProxyFlags();
@@ -119,7 +119,7 @@ public:
         }
 
         const auto& tx = record.GetTransaction();
-        Y_VERIFY(tx.HasCommitWrites());
+        Y_ABORT_UNLESS(tx.HasCommitWrites());
 
         TxFlags = tx.GetFlags() & ~NTxDataShard::TTxFlags::Immediate;
 
@@ -157,7 +157,7 @@ private:
     }
 
     void HandleResolve(TEvResolveTablesResponse::TPtr& ev, const TActorContext& ctx) {
-        Y_VERIFY_DEBUG(ev->Sender == ResolveActorID);
+        Y_DEBUG_ABORT_UNLESS(ev->Sender == ResolveActorID);
         ResolveActorID = { };
 
         auto* msg = ev->Get();
@@ -274,8 +274,8 @@ private:
             auto& state = kv.second;
 
             // TODO: support colocated tables
-            Y_VERIFY(state.Tables.size() == 1, "TODO: support colocated tables");
-            Y_VERIFY(state.Status == TPerShardState::EStatus::Unknown);
+            Y_ABORT_UNLESS(state.Tables.size() == 1, "TODO: support colocated tables");
+            Y_ABORT_UNLESS(state.Status == TPerShardState::EStatus::Unknown);
 
             auto tableId = *state.Tables.begin();
             auto path = tableId.PathId;
@@ -622,7 +622,7 @@ private:
             ReportStatus(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyPrepared, NKikimrIssues::TStatusIds::TRANSIENT, false, ctx);
         }
 
-        Y_VERIFY(SelectedCoordinator, "Unexpected null SelectedCoordinator");
+        Y_ABORT_UNLESS(SelectedCoordinator, "Unexpected null SelectedCoordinator");
 
         auto req = MakeHolder<TEvTxProxy::TEvProposeTransaction>(
             SelectedCoordinator, TxId, 0, AggrMinStep, AggrMaxStep);
@@ -877,7 +877,7 @@ private:
     void ExtractDatashardErrors(const NKikimrTxDataShard::TEvProposeTransactionResult& record) {
         TStringBuilder builder;
         for (const auto &er : record.GetError()) {
-            builder << "[" << NKikimrTxDataShard::TError_EKind_Name(er.GetKind()) << "] " << er.GetReason() << Endl;
+            builder << "[" << er.GetKind() << "] " << er.GetReason() << Endl;
         }
 
         DatashardErrors = builder;
@@ -907,7 +907,7 @@ private:
         Y_UNUSED(shardId);
 
         ++TabletErrors;
-        Y_VERIFY_DEBUG(TabletsToPrepare > 0);
+        Y_DEBUG_ABORT_UNLESS(TabletsToPrepare > 0);
         if (!--TabletsToPrepare) {
             LOG_ERROR_S_SAMPLED_BY(ctx, NKikimrServices::TX_PROXY, TxId,
                 "Actor# " << ctx.SelfID.ToString() << " txid# " << TxId
@@ -1028,14 +1028,14 @@ private:
 
 IActor* CreateTxProxyCommitWritesReq(const TTxProxyServices& services, const ui64 txid, TEvTxUserProxy::TEvProposeTransaction::TPtr&& ev, const TIntrusivePtr<TTxProxyMon>& mon) {
     const auto& record = ev->Get()->Record;
-    Y_VERIFY(record.HasTransaction());
+    Y_ABORT_UNLESS(record.HasTransaction());
     const auto& tx = record.GetTransaction();
 
     if (tx.HasCommitWrites()) {
         return new TCommitWritesReq(services, txid, std::move(ev), mon);
     }
 
-    Y_FAIL("Unexpected transaction proposal");
+    Y_ABORT("Unexpected transaction proposal");
 }
 
 

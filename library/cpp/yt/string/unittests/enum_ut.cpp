@@ -13,7 +13,7 @@ namespace {
 // Some compile-time sanity checks.
 DEFINE_ENUM(ESample, (One)(Two));
 static_assert(TFormatTraits<ESample>::HasCustomFormatValue);
-static_assert(TFormatTraits<TEnumIndexedVector<ESample, int>>::HasCustomFormatValue);
+static_assert(TFormatTraits<TEnumIndexedArray<ESample, int>>::HasCustomFormatValue);
 
 DEFINE_ENUM(EColor,
     (Red)
@@ -27,6 +27,11 @@ DEFINE_BIT_ENUM(ELangs,
     ((Rust)       (0x04))
     ((Python)     (0x08))
     ((JavaScript) (0x10))
+);
+
+DEFINE_ENUM(ECustomDomainName,
+    ((A) (1) ("value_a"))
+    ((B) (2) ("value_b"))
 );
 
 TEST(TFormatTest, Enum)
@@ -51,6 +56,28 @@ TEST(TFormatTest, Enum)
     auto four = ELangs::Cpp | ELangs::Go | ELangs::Python | ELangs::JavaScript;
     EXPECT_EQ("Cpp | Go | Python | JavaScript", Format("%v", four));
     EXPECT_EQ("cpp | go | python | java_script", Format("%lv", four));
+}
+
+TEST(TFormatEnumTest, FormatEnumWithCustomDomainName)
+{
+    EXPECT_EQ("value_a", FormatEnum(ECustomDomainName::A));
+    EXPECT_EQ("value_b", FormatEnum(ECustomDomainName::B));
+}
+
+TEST(TParseEnumTest, ParseEnumWithCustomDomainName)
+{
+    EXPECT_EQ(ECustomDomainName::A, TryParseEnum<ECustomDomainName>("value_a"));
+    EXPECT_EQ(ECustomDomainName::B, TryParseEnum<ECustomDomainName>("value_b"));
+    EXPECT_EQ(std::nullopt, TryParseEnum<ECustomDomainName>("b"));
+}
+
+TEST(TParseEnumTest, ParseBitEnum)
+{
+    EXPECT_EQ(ELangs::None, TryParseEnum<ELangs>(""));
+    EXPECT_EQ(ELangs::Cpp, TryParseEnum<ELangs>("cpp"));
+    EXPECT_EQ(ELangs::Cpp | ELangs::Rust, TryParseEnum<ELangs>("cpp|rust"));
+    EXPECT_EQ(ELangs::Cpp | ELangs::Rust, TryParseEnum<ELangs>("cpp | rust"));
+    EXPECT_EQ(std::nullopt, TryParseEnum<ELangs>("unk | rust"));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

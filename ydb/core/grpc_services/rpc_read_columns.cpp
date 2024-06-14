@@ -1,18 +1,19 @@
 #include "service_coordination.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "rpc_kh_snapshots.h"
 #include "resolve_local_db_table.h"
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/datashard/datashard.h>
-#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/actorlib_impl/long_timer.h>
 #include <ydb/core/kqp/compute_actor/kqp_compute_events.h>
 #include <ydb/core/sys_view/scan.h>
 #include <ydb/core/formats/factory.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
+#include <ydb/public/api/protos/ydb_clickhouse_internal.pb.h>
 
 #include <util/string/vector.h>
 
@@ -109,8 +110,8 @@ public:
     }
 
     void Die(const NActors::TActorContext& ctx) override {
-        Y_VERIFY(Finished);
-        Y_VERIFY(!WaitingResolveReply);
+        Y_ABORT_UNLESS(Finished);
+        Y_ABORT_UNLESS(!WaitingResolveReply);
         ctx.Send(LeaderPipeCache, new TEvPipeCache::TEvUnlink(0));
         if (TimeoutTimerActorId) {
             ctx.Send(TimeoutTimerActorId, new TEvents::TEvPoisonPill());
@@ -203,7 +204,7 @@ private:
     }
 
     void ProceedWithSchema(const TActorContext& ctx) {
-        Y_VERIFY(ResolveNamesResult->ResultSet.size() == 1);
+        Y_ABORT_UNLESS(ResolveNamesResult->ResultSet.size() == 1);
         const auto& entry = ResolveNamesResult->ResultSet.front();
         if (entry.Status != NSchemeCache::TSchemeCacheNavigate::EStatus::Ok) {
             return ReplyWithError(Ydb::StatusIds::SCHEME_ERROR, ToString(entry.Status), ctx);
@@ -290,7 +291,7 @@ private:
             }
         }
 
-        Y_VERIFY_DEBUG(columns.size() == KeyColumnTypes.size() + ValueColumnTypes.size());
+        Y_DEBUG_ABORT_UNLESS(columns.size() == KeyColumnTypes.size() + ValueColumnTypes.size());
 
         {
             TString format = "clickhouse_native";
@@ -335,7 +336,7 @@ private:
     }
 
     void ScanLocalDbTable(const NActors::TActorContext& ctx) {
-        Y_VERIFY(ResolveNamesResult);
+        Y_ABORT_UNLESS(ResolveNamesResult);
 
         ui64 tabletId = -1;
         TString tabletIdStr = ResolveNamesResult->ResultSet.front().Path[2];
@@ -362,7 +363,7 @@ private:
         ev->Record.SetMaxRows(proto->max_rows());
         ev->Record.SetMaxBytes(proto->max_bytes());
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Sending request to tablet " << tabletId);
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Sending request to tablet " << tabletId);
 
         ctx.Send(LeaderPipeCache, new TEvPipeCache::TEvForward(ev.release(), tabletId, true), IEventHandle::FlagTrackDelivery);
 
@@ -381,7 +382,7 @@ private:
         size_t rowsExtracted = 0;
         bool skippedBeforeMinKey = false;
 
-        if (ev->Get()->GetDataFormat() == NKikimrTxDataShard::ARROW) {
+        if (ev->Get()->GetDataFormat() == NKikimrDataEvents::FORMAT_ARROW) {
             return ReplyWithError(Ydb::StatusIds::INTERNAL_ERROR, "Arrow format not supported yet", ctx);
         }
 
@@ -402,7 +403,7 @@ private:
 
                 // Skip rows before MinKey just in case (because currently sys view scan ignores key range)
                 if (cmp > 0 || (cmp == 0 && !MinKeyInclusive)) {
-                    LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Skipped rows by sys view scan");
+                    LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Skipped rows by sys view scan");
                     continue;
                 } else {
                     skippedBeforeMinKey = true;
@@ -492,7 +493,7 @@ private:
             columnByName[ci.second.Name] = ci.second.Id;
             i32 keyOrder = ci.second.KeyOrder;
             if (keyOrder != -1) {
-                Y_VERIFY(keyOrder >= 0);
+                Y_ABORT_UNLESS(keyOrder >= 0);
                 KeyColumnTypes.resize(Max<size_t>(KeyColumnTypes.size(), keyOrder + 1));
                 KeyColumnTypes[keyOrder] = ci.second.PType;
                 keyColumnIds.resize(Max<size_t>(keyColumnIds.size(), keyOrder + 1));
@@ -533,7 +534,7 @@ private:
             MinKeyInclusive = proto->from_key_inclusive();
         } else {
             TVector<TCell> allNulls(KeyColumnTypes.size());
-            MinKey.Parse(TSerializedCellVec::Serialize(allNulls));
+            MinKey = TSerializedCellVec(allNulls);
             MinKeyInclusive = true;
         }
 
@@ -547,7 +548,7 @@ private:
             MaxKeyInclusive = proto->to_key_inclusive();
         } else {
             TVector<TCell> infinity;
-            MaxKey.Parse(TSerializedCellVec::Serialize(infinity));
+            MaxKey = TSerializedCellVec(infinity);
             MaxKeyInclusive = false;
         }
 
@@ -568,7 +569,7 @@ private:
         TTableRange range(MinKey.GetCells(), true, MinKey.GetCells(), true, false);
         KeyRange.Reset(new TKeyDesc(entry.TableId, range, TKeyDesc::ERowOperation::Read, KeyColumnTypes, columns));
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Resolving range: "
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Resolving range: "
                     << " fromKey: " << PrintKey(MinKey.GetBuffer(), *AppData(ctx)->TypeRegistry)
                     << " fromInclusive: " << true);
 
@@ -600,7 +601,7 @@ private:
         }
 
         TEvTxProxySchemeCache::TEvResolveKeySetResult *msg = ev->Get();
-        Y_VERIFY(msg->Request->ResultSet.size() == 1);
+        Y_ABORT_UNLESS(msg->Request->ResultSet.size() == 1);
         KeyRange = std::move(msg->Request->ResultSet[0].KeyDescription);
 
         if (msg->Request->ErrorCount > 0) {
@@ -617,14 +618,14 @@ private:
             return JoinVectorIntoString(shards, ", ");
         };
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Range shards: "
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Range shards: "
             << getShardsString(KeyRange->GetPartitions()));
 
         MakeShardRequests(ctx);
     }
 
     void MakeShardRequests(const NActors::TActorContext& ctx) {
-        Y_VERIFY(!KeyRange->GetPartitions().empty());
+        Y_ABORT_UNLESS(!KeyRange->GetPartitions().empty());
         auto proto = GetProtoRequest();
 
         // Send request to the first shard
@@ -645,7 +646,7 @@ private:
 
         ui64 shardId = KeyRange->GetPartitions()[0].ShardId;
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Sending request to shards " << shardId);
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Sending request to shards " << shardId);
 
         ctx.Send(LeaderPipeCache, new TEvPipeCache::TEvForward(ev.release(), shardId, true), IEventHandle::FlagTrackDelivery);
 
@@ -717,7 +718,7 @@ private:
         Result.set_last_key_inclusive(shardResponse.GetLastKeyInclusive());
         Result.set_eos(shardResponse.GetLastKey().empty()); // TODO: ??
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Got reply from shard: " << shardResponse.GetTabletID()
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Got reply from shard: " << shardResponse.GetTabletID()
                     << " lastKey: " << PrintKey(shardResponse.GetLastKey(), *AppData(ctx)->TypeRegistry)
                     << " inclusive: " << shardResponse.GetLastKeyInclusive());
 
@@ -743,7 +744,7 @@ private:
         Result.set_last_key_inclusive(shardResponse.GetLastKeyInclusive());
         Result.set_eos(shardResponse.GetLastKey().empty()); // TODO: ??
 
-        LOG_DEBUG_S(ctx, NKikimrServices::MSGBUS_REQUEST, "Got reply from shard: " << shardResponse.GetTabletID()
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Got reply from shard: " << shardResponse.GetTabletID()
                     << " lastKey: " << PrintKey(shardResponse.GetLastKey(), *AppData(ctx)->TypeRegistry)
                     << " inclusive: " << shardResponse.GetLastKeyInclusive());
 

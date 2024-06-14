@@ -23,6 +23,28 @@ public:
 
     TTxType GetTxType() const override { return NHive::TXTYPE_UPDATE_TABLET_GROUPS; }
 
+    static bool MaySkipChannelReassign(const TLeaderTabletInfo* tablet, const TTabletChannelInfo* channel, const NKikimrBlobStorage::TEvControllerSelectGroupsResult::TGroupParameters* group) {
+        if (tablet->ChannelProfileReassignReason == NKikimrHive::TEvReassignTablet::HIVE_REASSIGN_REASON_BALANCE) {
+            // Only a reassign for balancing may be skipped
+            if (channel->History.back().GroupID == group->GetGroupID()) {
+                // We decided to keep the group the same
+                return true;
+            }
+            auto channelId = channel->Channel;
+            auto tabletChannel = tablet->GetChannel(channelId);
+            auto oldGroupId = channel->History.back().GroupID;
+            auto& pool = tablet->GetStoragePool(channelId);
+            auto& oldGroup = pool.GetStorageGroup(oldGroupId);
+            auto& newGroup = pool.GetStorageGroup(group->GetGroupID());
+            auto usageBefore = oldGroup.GetUsageForChannel(tabletChannel);
+            auto usageAfter = newGroup.GetUsageForChannel(tabletChannel);
+            if (usageAfter > usageBefore) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool Execute(TTransactionContext &txc, const TActorContext& ctx) override {
         SideEffects.Reset(Self->SelfId());
 
@@ -40,7 +62,7 @@ public:
         BLOG_D("THive::TTxUpdateTabletGroups::Execute{" << (ui64)this << "}("
                << tablet->Id << "," << tablet->ChannelProfileReassignReason << "," << Groups << ")");
 
-        Y_VERIFY(tablet->TabletStorageInfo);
+        Y_ABORT_UNLESS(tablet->TabletStorageInfo);
         TIntrusivePtr<TTabletStorageInfo>& tabletStorageInfo(tablet->TabletStorageInfo);
         ui32 channels = tablet->GetChannelCount();
         NIceDb::TNiceDb db(txc.DB);
@@ -134,10 +156,7 @@ public:
 
             if (channelId < tabletChannels.size()) {
                 channel = &tabletChannels[channelId];
-                Y_VERIFY(channel->Channel == channelId);
-                if (!tablet->ReleaseAllocationUnit(channelId)) {
-                    BLOG_W("Failed to release AU for tablet " << tablet->Id << " channel " << channelId);
-                }
+                Y_ABORT_UNLESS(channel->Channel == channelId);
             } else {
                 // increasing number of tablet channels
                 tabletChannels.emplace_back();
@@ -145,12 +164,20 @@ public:
                 channel->Channel = channelId;
             }
 
+            if (MaySkipChannelReassign(tablet, channel, group)) {
+                BLOG_D("THive::TTxUpdateTabletGroups::Execute{" << (ui64)this << "}: tablet "
+                    << tablet->Id
+                    << " skipped reassign of channel "
+                    << channelId);
+                continue;
+            }
+
             if (group->HasStoragePoolName()) {
                 channel->StoragePool = group->GetStoragePoolName();
             } else if (group->HasErasureSpecies()) {
                 channel->Type = TBlobStorageGroupType(static_cast<TErasureType::EErasureSpecies>(group->GetErasureSpecies()));
             } else {
-                Y_VERIFY(channelId < tablet->BoundChannels.size());
+                Y_ABORT_UNLESS(channelId < tablet->BoundChannels.size());
                 auto& boundChannel = tablet->BoundChannels[channelId];
                 channel->StoragePool = boundChannel.GetStoragePoolName();
             }
@@ -175,6 +202,7 @@ public:
                         NIceDb::TUpdate<Schema::TabletChannelGen::Group>(group->GetGroupID()),
                         NIceDb::TUpdate<Schema::TabletChannelGen::Version>(tabletStorageInfo->Version),
                         NIceDb::TUpdate<Schema::TabletChannelGen::Timestamp>(timestamp.MilliSeconds()));
+            tablet->ReleaseAllocationUnit(channelId);
             if (!channel->History.empty() && fromGeneration == channel->History.back().FromGeneration) {
                 channel->History.back().GroupID = group->GetGroupID(); // we overwrite history item when generation is the same as previous one (so the tablet didn't run yet)
                 channel->History.back().Timestamp = timestamp;
@@ -250,6 +278,9 @@ public:
                         tablet->ChannelProfileNewGroup.reset(channelId);
                     }
                 }
+                for (const TActorId& actor : tablet->ActorsToNotifyOnRestart) {
+                    SideEffects.Send(actor, new TEvPrivate::TEvRestartCancelled(tablet->GetFullTabletId()));
+                }
                 newTabletState = ETabletState::ReadyToWork;
             }
         }
@@ -279,6 +310,7 @@ public:
                 // Use best effort to kill currently running tablet
                 SideEffects.Register(CreateTabletKiller(TabletId, /* nodeId */ 0, tablet->KnownGeneration));
             }
+            SideEffects.Callback([counters = Self->TabletCounters] { counters->Cumulative()[NHive::COUNTER_TABLETS_STORAGE_REASSIGNED].Increment(1); });
         }
         if (needToIncreaseGeneration) {
             tablet->IncreaseGeneration();

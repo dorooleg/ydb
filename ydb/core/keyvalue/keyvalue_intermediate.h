@@ -7,7 +7,9 @@
 #include <ydb/core/protos/base.pb.h>
 #include <ydb/core/protos/msgbus_kv.pb.h>
 #include <ydb/core/protos/msgbus.pb.h>
+#include <ydb/core/util/fragmented_buffer.h>
 #include <ydb/core/keyvalue/protos/events.pb.h>
+#include <ydb/library/actors/wilson/wilson_span.h>
 
 namespace NKikimr {
 namespace NKeyValue {
@@ -34,7 +36,7 @@ struct TIntermediate {
 
         TVector<TReadItem> ReadItems;
         TString Key;
-        TString Value;
+        TFragmentedBuffer Value;
         ui32 Offset;
         ui32 Size;
         ui32 ValueSize;
@@ -50,6 +52,7 @@ struct TIntermediate {
                 NKikimrClient::TKeyValueRequest::EStorageChannel storageChannel);
         NKikimrProto::EReplyStatus ItemsStatus() const;
         NKikimrProto::EReplyStatus CumulativeStatus() const;
+        TRope BuildRope();
     };
     struct TRangeRead {
         TDeque<TRead> Reads;
@@ -61,7 +64,7 @@ struct TIntermediate {
     struct TWrite {
         TVector<TLogoBlobID> LogoBlobIds;
         TString Key;
-        TRcBuf Data;
+        TRope Data;
         TEvBlobStorage::TEvPut::ETactic Tactic;
         NKikimrBlobStorage::EPutHandleClass HandleClass;
         NKikimrProto::EReplyStatus Status;
@@ -87,7 +90,7 @@ struct TIntermediate {
     };
     struct TGetStatus {
         NKikimrClient::TKeyValueRequest::EStorageChannel StorageChannel;
-        TLogoBlobID LogoBlobId;
+        ui32 GroupId;
         NKikimrProto::EReplyStatus Status;
         TStorageStatusFlags StatusFlags;
     };
@@ -99,13 +102,30 @@ struct TIntermediate {
     struct TSetExecutorFastLogPolicy {
         bool IsAllowed;
     };
+    struct TPatch {
+        struct TDiff {
+            ui32 Offset;
+            TRope Buffer;
+        };
 
-    using TCmd = std::variant<TWrite, TDelete, TRename, TCopyRange, TConcat>;
+        TString OriginalKey;
+        TLogoBlobID OriginalBlobId;
+        TString PatchedKey;
+        TLogoBlobID PatchedBlobId;
+
+        NKikimrProto::EReplyStatus Status;
+        TStorageStatusFlags StatusFlags;
+
+        TVector<TDiff> Diffs;
+    };
+
+    using TCmd = std::variant<TWrite, TDelete, TRename, TCopyRange, TConcat, TPatch>;
     using TReadCmd = std::variant<TRead, TRangeRead>;
 
     TDeque<TRead> Reads;
     TDeque<TRangeRead> RangeReads;
     TDeque<TWrite> Writes;
+    TDeque<TPatch> Patches;
     TDeque<TDelete> Deletes;
     TDeque<TRename> Renames;
     TDeque<TCopyRange> CopyRanges;
@@ -117,6 +137,7 @@ struct TIntermediate {
 
     TStackVec<TCmd, 1> Commands;
     TStackVec<ui32, 1> WriteIndices;
+    TStackVec<ui32, 1> PatchIndices;
     std::optional<TReadCmd> ReadCommand;
 
     ui64 WriteCount = 0;
@@ -148,9 +169,12 @@ struct TIntermediate {
 
     bool IsReplied;
 
+    bool UsePayloadInResponse = false;
+
     TRequestStat Stat;
 
     NKikimrClient::TResponse Response;
+    std::vector<TRope> Payload;
     NKikimrKeyValue::ExecuteTransactionResult ExecuteTransactionResponse;
     NKikimrKeyValue::GetStorageChannelStatusResult GetStorageChannelStatusResponse;
 
@@ -158,8 +182,10 @@ struct TIntermediate {
 
     ui32 EvType = 0;
 
+    NWilson::TSpan Span;
+
     TIntermediate(TActorId respondTo, TActorId keyValueActorId, ui64 channelGeneration, ui64 channelStep,
-            TRequestType::EType requestType);
+            TRequestType::EType requestType, NWilson::TTraceId traceId);
 
     void UpdateStat();
 };

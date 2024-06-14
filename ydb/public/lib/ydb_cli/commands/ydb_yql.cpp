@@ -1,10 +1,11 @@
 #include "ydb_yql.h"
 
 #include <ydb/public/lib/json_value/ydb_json_value.h>
+#include <ydb/public/lib/stat_visualization/flame_graph_builder.h>
 #include <ydb/public/lib/ydb_cli/common/pretty_table.h>
 #include <ydb/public/lib/ydb_cli/common/print_operation.h>
 #include <ydb/public/lib/ydb_cli/common/query_stats.h>
-#include <ydb/public/lib/ydb_cli/commands/interactive/interactive_cli.h>
+#include <ydb/public/lib/ydb_cli/common/interactive.h>
 #include <util/generic/queue.h>
 
 namespace NYdb {
@@ -14,11 +15,20 @@ TCommandYql::TCommandYql()
     : TYdbOperationCommand("yql", {}, "Execute YQL script (streaming)")
 {}
 
+TCommandYql::TCommandYql(TString script, TString collectStatsMode)
+    : TYdbOperationCommand("yql", {}, "Execute YQL script (streaming)")
+{
+    Script = std::move(script);
+    CollectStatsMode = std::move(collectStatsMode);
+}
+
 void TCommandYql::Config(TConfig& config) {
     TYdbOperationCommand::Config(config);
     AddExamplesOption(config);
     config.Opts->AddLongOption("stats", "Collect statistics mode [none, basic, full]")
         .RequiredArgument("[String]").StoreResult(&CollectStatsMode);
+    config.Opts->AddLongOption("flame-graph", "Path for statistics flame graph image, works only with full stats")
+            .RequiredArgument("[Path]").StoreResult(&FlameGraphPath);
     config.Opts->AddLongOption('s', "script", "Text of script to execute").RequiredArgument("[String]").StoreResult(&Script);
     config.Opts->AddLongOption('f', "file", "Script file").RequiredArgument("PATH").StoreResult(&ScriptFile);
 
@@ -29,7 +39,8 @@ void TCommandYql::Config(TConfig& config) {
         EOutputFormat::JsonBase64,
         EOutputFormat::JsonBase64Array,
         EOutputFormat::Csv,
-        EOutputFormat::Tsv
+        EOutputFormat::Tsv,
+        EOutputFormat::Parquet,
     });
 
     AddParametersOption(config);
@@ -43,6 +54,8 @@ void TCommandYql::Config(TConfig& config) {
         EOutputFormat::JsonUnicode,
         EOutputFormat::JsonBase64,
         EOutputFormat::Raw,
+        EOutputFormat::Csv,
+        EOutputFormat::Tsv
     }, {
         EOutputFormat::NoFraming,
         EOutputFormat::NewlineDelimited
@@ -58,15 +71,6 @@ void TCommandYql::Config(TConfig& config) {
 void TCommandYql::Parse(TConfig& config) {
     TClientCommand::Parse(config);
     ParseFormats();
-    if (!Script && !ScriptFile) {
-#ifdef _win32_
-        throw TMisuseException() << "Neither \"Text of script\" (\"--script\", \"-s\") "
-            << "nor \"Path to file with script text\" (\"--file\", \"-f\") were provided. "
-            << "Interactive CLI is not supported on Windows.";
-#else
-        Interactive = true;
-#endif
-    }
     if (Script && ScriptFile) {
         throw TMisuseException() << "Both mutually exclusive options \"Text of script\" (\"--script\", \"-s\") "
             << "and \"Path to file with script text\" (\"--file\", \"-f\") were provided.";
@@ -74,83 +78,43 @@ void TCommandYql::Parse(TConfig& config) {
     if (ScriptFile) {
         Script = ReadFromFile(ScriptFile, "script");
     }
+    if(FlameGraphPath && FlameGraphPath->Empty())
+    {
+        throw TMisuseException() << "FlameGraph path can not be empty.";
+    }
     ParseParameters(config);
 }
 
 int TCommandYql::Run(TConfig& config) {
-    if (Interactive) {
-        // run interactive cli
-
-        class TLogic : public TInteractiveCli::ILogic {
-        public:
-            TLogic(TCommandYql *base, TConfig& config)
-                : Base(base)
-                , Config(config)
-            {}
-
-            virtual bool Ready(const std::string &text) override {
-                bool done = text.find(';') != std::string::npos;
-                return done;
-            }
-
-            virtual void Run(const std::string &text, const std::string &stat) override {
-                Y_UNUSED(stat);
-                try {
-                    Base->RunCommand(Config, TString(text.c_str()));
-                } catch (TYdbErrorException &error) {
-                    Cerr << error;
-                }
-                TTerminalOutput::Print("\n");
-            }
-
-        private:
-            TCommandYql* Base;
-            TConfig& Config;
-        };
-
-    
-        TTerminalOutput::Print("\033[32mYDB Interactive CLI \033[0m");
-        TTerminalOutput::Print("\033[31m(experimental, no compatibility guarantees)\033[0m\n\n");
-        TInteractiveCli::TConfig interactiveCfg;
-        interactiveCfg.Prompt = "\033[32m=> \033[0m";
-        TInteractiveCli cli(std::make_shared<TLogic>(this, config), std::move(interactiveCfg));
-        cli.Run();
-        while(true) {
-            // blocking until input
-            auto action = GetKeyboardAction();
-            cli.HandleInput(action);
-        }
-
-        return EXIT_SUCCESS;
-    } else {
-        return RunCommand(config, Script);    
-    }
+    return RunCommand(config, Script);
 }
 
-int TCommandYql::RunCommand(TConfig& config, const TString &script) {
+int TCommandYql::RunCommand(TConfig& config, const TString& script) {
     TDriver driver = CreateDriver(config);
     NScripting::TScriptingClient client(driver);
 
     NScripting::TExecuteYqlRequestSettings settings;
-    settings.CollectQueryStats(ParseQueryStatsMode(CollectStatsMode, NTable::ECollectQueryStatsMode::None));
+    settings.CollectQueryStats(ParseQueryStatsModeOrThrow(CollectStatsMode, NTable::ECollectQueryStatsMode::None));
 
-    if (!Interactive) {
-        SetInterruptHandlers();
+    if (FlameGraphPath && (settings.CollectQueryStats_ != NTable::ECollectQueryStatsMode::Full
+                           && settings.CollectQueryStats_ != NTable::ECollectQueryStatsMode::Profile)) {
+        throw TMisuseException() << "Flame graph is available for full or profile stats. Current: "
+                                    + (CollectStatsMode.Empty() ? "none" : CollectStatsMode) + '.';
     }
+
+    SetInterruptHandlers();
 
     if (!Parameters.empty() || !IsStdinInteractive()) {
         ValidateResult = MakeHolder<NScripting::TExplainYqlResult>(
             ExplainQuery(config, Script, NScripting::ExplainYqlRequestMode::Validate));
         THolder<TParamsBuilder> paramBuilder;
-        while (!IsInterrupted() && 
-            GetNextParams(ValidateResult->GetParameterTypes(), InputFormat, StdinFormat, FramingFormat, paramBuilder)) {
-            
+        while (!IsInterrupted() && GetNextParams(paramBuilder)) {
             auto asyncResult = client.StreamExecuteYqlScript(
                     script,
                     paramBuilder->Build(),
                     FillSettings(settings)
             );
-            
+
             auto result = asyncResult.GetValueSync();
             ThrowOnError(result);
             if (!PrintResponse(result)) {
@@ -174,6 +138,7 @@ int TCommandYql::RunCommand(TConfig& config, const TString &script) {
 
 bool TCommandYql::PrintResponse(NScripting::TYqlResultPartIterator& result) {
     TStringStream statsStr;
+    TMaybe<TString> fullStats;
     {
         ui32 currentIndex = 0;
         TResultSetPrinter printer(OutputFormat, &IsInterrupted);
@@ -202,12 +167,33 @@ bool TCommandYql::PrintResponse(NScripting::TYqlResultPartIterator& result) {
             if (streamPart.HasQueryStats()) {
                 const auto& queryStats = streamPart.GetQueryStats();
                 statsStr << Endl << queryStats.ToString() << Endl;
+
+                if (queryStats.GetPlan()) {
+                    fullStats = queryStats.GetPlan();
+                }
             }
         }
     } // TResultSetPrinter destructor should be called before printing stats
 
     if (statsStr.Size()) {
         Cout << Endl << "Statistics:" << statsStr.Str();
+    }
+
+    if (fullStats) {
+        Cout << Endl << "Full statistics:" << Endl;
+
+        TQueryPlanPrinter queryPlanPrinter(OutputFormat, /* analyzeMode */ true);
+        queryPlanPrinter.Print(*fullStats);
+
+        if (FlameGraphPath) {
+            try {
+                NKikimr::NVisual::GenerateFlameGraphSvg(*FlameGraphPath, *fullStats);
+                Cout << "Resource usage flame graph is successfully saved to " << *FlameGraphPath << Endl;
+            }
+            catch (const yexception& ex) {
+                Cout << "Can't save resource usage flame graph, error: " << ex.what() << Endl;
+            }
+        }
     }
 
     if (IsInterrupted()) {
@@ -219,4 +205,3 @@ bool TCommandYql::PrintResponse(NScripting::TYqlResultPartIterator& result) {
 
 }
 }
-

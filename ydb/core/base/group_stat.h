@@ -2,8 +2,6 @@
 
 #include "defs.h"
 
-#include <ydb/core/protos/blobstorage.pb.h>
-
 #include <util/datetime/base.h>
 
 #include <array>
@@ -56,14 +54,14 @@ namespace NKikimr {
 
         void Replace(const TLatencyHistogram& current, const TLatencyHistogram& previous) {
             for (size_t i = 0; i < NumGroupStatBuckets; ++i) {
-                Y_VERIFY_DEBUG(Buckets[i] + current.Buckets[i] >= previous.Buckets[i]);
+                Y_DEBUG_ABORT_UNLESS(Buckets[i] + current.Buckets[i] >= previous.Buckets[i]);
                 Buckets[i] += current.Buckets[i] - previous.Buckets[i];
             }
         }
 
         void Subtract(const TLatencyHistogram& other) {
             for (size_t i = 0; i < NumGroupStatBuckets; ++i) {
-                Y_VERIFY_DEBUG(Buckets[i] >= other.Buckets[i]);
+                Y_DEBUG_ABORT_UNLESS(Buckets[i] >= other.Buckets[i]);
                 Buckets[i] -= other.Buckets[i];
             }
         }
@@ -88,7 +86,7 @@ namespace NKikimr {
 
             // find it in the buckets array
             size_t index = std::upper_bound(accum.begin(), accum.end(), quantile) - accum.begin();
-            Y_VERIFY(index > 0 && index <= NumGroupStatBuckets);
+            Y_ABORT_UNLESS(index > 0 && index <= NumGroupStatBuckets);
 
             const double w = (quantile - accum[index - 1]) / (accum[index] - accum[index - 1]);
             return TDuration::FromValue(GetBucketValue(index - 1).GetValue() * (1 - w) + GetBucketValue(index).GetValue() * w);
@@ -160,14 +158,16 @@ namespace NKikimr {
             }
         }
 
-        void Serialize(NKikimrBlobStorage::TEvGroupStatReport::TLatencyHistogram *pb) const {
+        template<typename TProto>
+        void Serialize(TProto *pb) const {
             pb->ClearBuckets();
             for (ui32 value : Buckets) {
                 pb->AddBuckets(value);
             }
         }
 
-        bool Deserialize(const NKikimrBlobStorage::TEvGroupStatReport::TLatencyHistogram& pb) {
+        template<typename TProto>
+        bool Deserialize(const TProto& pb) {
             if (pb.BucketsSize() != NumGroupStatBuckets) {
                 return false;
             }
@@ -222,13 +222,15 @@ namespace NKikimr {
             histogram.Update(sample, now);
         }
 
-        void Serialize(NKikimrBlobStorage::TEvGroupStatReport *pb) const {
+        template<typename TProto>
+        void Serialize(TProto *pb) const {
             PutTabletLog.Serialize(pb->MutablePutTabletLog());
             PutUserData.Serialize(pb->MutablePutUserData());
             GetFast.Serialize(pb->MutableGetFast());
         }
 
-        bool Deserialize(const NKikimrBlobStorage::TEvGroupStatReport& pb) {
+        template<typename TProto>
+        bool Deserialize(const TProto& pb) {
             return PutTabletLog.Deserialize(pb.GetPutTabletLog()) &&
                 PutUserData.Deserialize(pb.GetPutUserData()) &&
                 GetFast.Deserialize(pb.GetGetFast());
@@ -256,7 +258,7 @@ namespace NKikimr {
                 case EKind::GET_FAST:
                     return GetFast;
             }
-            Y_FAIL("unexpected TGroupStat::EKind value");
+            Y_ABORT("unexpected TGroupStat::EKind value");
         }
     };
 

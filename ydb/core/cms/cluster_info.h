@@ -3,7 +3,6 @@
 #include "defs.h"
 #include "config.h"
 #include "downtime.h"
-#include "erasure_checkers.h"
 #include "node_checkers.h"
 #include "services.h"
 
@@ -15,10 +14,11 @@
 #include <ydb/core/protos/cms.pb.h>
 #include <ydb/core/protos/config.pb.h>
 #include <ydb/core/protos/console.pb.h>
-#include <ydb/public/api/protos/draft/ydb_maintenance.pb.h>
+#include <ydb/core/protos/blobstorage_config.pb.h>
+#include <ydb/core/protos/bootstrap.pb.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/hash.h>
@@ -98,11 +98,14 @@ struct TRequestInfo {
         request.MutableActions()->CopyFrom(Request.GetActions());
         request.SetPartialPermissionAllowed(Request.GetPartialPermissionAllowed());
         request.SetReason(Request.GetReason());
+        request.SetAvailabilityMode(Request.GetAvailabilityMode());
+        request.SetPriority(Priority);
     }
 
     TString RequestId;
     TString Owner;
     ui64 Order = 0;
+    i32 Priority = 0;
     NKikimrCms::TPermissionRequest Request;
 };
 
@@ -204,10 +207,10 @@ public:
     };
 
     struct TScheduledLock : TBaseLock {
-        TScheduledLock(const NKikimrCms::TAction &action, const TString &owner, const TString &requestId, ui64 order)
+        TScheduledLock(const NKikimrCms::TAction &action, const TString &owner, const TString &requestId, i32 priority)
             : TBaseLock(owner, action)
             , RequestId(requestId)
-            , Order(order)
+            , Priority(priority)
         {
         }
 
@@ -218,7 +221,7 @@ public:
         TScheduledLock &operator=(TScheduledLock &&other) = default;
 
         TString RequestId;
-        ui64 Order = 0;
+        i32 Priority = 0;
     };
 
     struct TTemporaryLock : TBaseLock {
@@ -253,7 +256,7 @@ public:
     }
 
     void AddLock(const TPermissionInfo &permission) {
-        Y_VERIFY(Lock.Empty());
+        Y_ABORT_UNLESS(Lock.Empty());
         Lock.ConstructInPlace(permission);
     }
 
@@ -269,7 +272,7 @@ public:
 
     void ScheduleLock(TScheduledLock &&lock) {
         auto pos = LowerBound(ScheduledLocks.begin(), ScheduledLocks.end(), lock, [](auto &l, auto &r) {
-            return l.Order < r.Order;
+            return l.Priority < r.Priority;
         });
         ScheduledLocks.insert(pos, lock);
     }
@@ -279,7 +282,7 @@ public:
 
     void RollbackLocks(ui64 point);
 
-    void DeactivateScheduledLocks(ui64 order);
+    void DeactivateScheduledLocks(i32 priority);
     void ReactivateScheduledLocks();
     void RemoveScheduledLocks(const TString &requestId);
 
@@ -297,7 +300,8 @@ public:
     std::list<TExternalLock> ExternalLocks;
     std::list<TScheduledLock> ScheduledLocks;
     TVector<TTemporaryLock> TempLocks;
-    ui64 DeactivatedLocksOrder = Max<ui64>();
+    i32 DeactivatedLocksPriority = Max<i32>();
+    THashSet<NKikimrCms::EMarker> Markers;
 };
 
 using TLockableItemPtr = TIntrusivePtr<TLockableItem>;
@@ -473,8 +477,6 @@ struct TBSGroupInfo {
     ui32 GroupId = 0;
     TErasureType Erasure;
     TSet<TVDiskID> VDisks;
-
-    TSimpleSharedPtr<IStorageGroupChecker> GroupChecker;
 };
 
 /**
@@ -600,32 +602,6 @@ public:
     }
 };
 
-class TLockDiskOperation : public TOperationBase {
-private:
-    TVDiskID VDiskId;
-
-private:
-    TSimpleSharedPtr<IStorageGroupChecker> StorageGroupChecker;
-
-public:
-    TLockDiskOperation(const TVDiskID& vdiskId, TSimpleSharedPtr<IStorageGroupChecker> checker)
-        : TOperationBase(OPERATION_TYPE_LOCK_DISK)
-        , VDiskId(vdiskId)
-        , StorageGroupChecker(checker)
-    {
-    }
-
-    void Do() override final {
-        StorageGroupChecker->LockVDisk(VDiskId);
-    }
-
-    void Undo() override final {
-        StorageGroupChecker->UnlockVDisk(VDiskId);
-    }
-
-
-};
-
 class TLogRollbackPoint : public TOperationBase {
 public:
     TLogRollbackPoint() : TOperationBase(OPERATION_TYPE_ROLLBACK_POINT)
@@ -652,10 +628,6 @@ public:
 
     void AddNodeLockOperation(ui32 nodeId, TSimpleSharedPtr<INodesChecker> nodesState) {
         Log.emplace_back(new TLockNodeOperation(nodeId, nodesState))->Do();
-    }
-
-    void AddLockVDiskOperation(const TVDiskID& vdiskId, TSimpleSharedPtr<IStorageGroupChecker> checker) {
-        Log.emplace_back(new TLockDiskOperation(vdiskId, checker))->Do();
     }
 
     void RollbackOperations() {
@@ -699,7 +671,6 @@ public:
     TOperationLogManager LogManager;
     TOperationLogManager ScheduledLogManager;
 
-    void ApplyActionToOperationLog(const NKikimrCms::TAction &action);
     void ApplyActionWithoutLog(const NKikimrCms::TAction &action);
     void ApplyNodeLimits(ui32 clusterLimit, ui32 clusterRatioLimit, ui32 tenantLimit, ui32 tenantRatioLimit);
 
@@ -724,8 +695,16 @@ public:
     }
 
     ui32 GetRingId(ui32 nodeId) {
-        Y_VERIFY(IsStateStorageReplicaNode(nodeId));
+        Y_ABORT_UNLESS(IsStateStorageReplicaNode(nodeId));
         return StateStorageNodeToRingId[nodeId];
+    }
+
+    void CheckNodeExistenceWithVerify(ui32 nodeId) const {
+      Y_ABORT_UNLESS(HasNode(nodeId), "%s",
+               (TStringBuilder()
+                << "Node " << nodeId
+                << " does not exist in cluster, but exists in configuration.")
+                   .c_str());
     }
 
     bool HasNode(ui32 nodeId) const {
@@ -741,7 +720,7 @@ public:
     }
 
     const TNodeInfo &Node(ui32 nodeId) const {
-        Y_VERIFY(HasNode(nodeId));
+        CheckNodeExistenceWithVerify(nodeId);
         return *Nodes.find(nodeId)->second;
     }
 
@@ -759,7 +738,7 @@ public:
         auto pr = HostNameToNodeId.equal_range(hostName);
         for (auto it = pr.first; it != pr.second; ++it) {
             nodeId = it->second;
-            Y_VERIFY(HasNode(nodeId));
+            CheckNodeExistenceWithVerify(nodeId);
             nodes.push_back(Nodes.find(nodeId)->second.Get());
         }
 
@@ -772,7 +751,7 @@ public:
         auto pr = TenantToNodeId.equal_range(tenant);
         for (auto it = pr.first; it != pr.second; ++it) {
             const ui32 nodeId = it->second;
-            Y_VERIFY(HasNode(nodeId));
+            CheckNodeExistenceWithVerify(nodeId);
             nodes.push_back(Nodes.find(nodeId)->second.Get());
         }
 
@@ -801,7 +780,7 @@ public:
     }
 
     const TTabletInfo &Tablet(ui64 id) const {
-        Y_VERIFY(HasTablet(id));
+        Y_ABORT_UNLESS(HasTablet(id));
         return Tablets.find(id)->second;
     }
 
@@ -827,7 +806,7 @@ public:
     }
 
     const TPDiskInfo &PDisk(TPDiskID pdId) const {
-        Y_VERIFY(HasPDisk(pdId));
+        Y_ABORT_UNLESS(HasPDisk(pdId));
         return *PDisks.find(pdId)->second;
     }
 
@@ -862,7 +841,7 @@ public:
     }
 
     const TVDiskInfo &VDisk(const TVDiskID &vdId) const {
-        Y_VERIFY(HasVDisk(vdId));
+        Y_ABORT_UNLESS(HasVDisk(vdId));
         return *VDisks.find(vdId)->second;
     }
 
@@ -884,7 +863,7 @@ public:
     }
 
     const TBSGroupInfo &BSGroup(ui32 groupId) const {
-        Y_VERIFY(HasBSGroup(groupId));
+        Y_ABORT_UNLESS(HasBSGroup(groupId));
         return BSGroups.find(groupId)->second;
     }
 
@@ -927,13 +906,16 @@ public:
 
     ui64 AddExternalLocks(const TNotificationInfo &notification, const TActorContext *ctx);
 
+    void SetHostMarkers(const TString &hostName, const THashSet<NKikimrCms::EMarker> &markers);
+    void ResetHostMarkers(const TString &hostName);
+
     void ApplyDowntimes(const TDowntimes &downtimes);
     void UpdateDowntimes(TDowntimes &downtimes, const TActorContext &ctx);
 
     ui64 AddTempLocks(const NKikimrCms::TAction &action, const TActorContext *ctx);
     ui64 ScheduleActions(const TRequestInfo &request, const TActorContext *ctx);
     void UnscheduleActions(const TString &requestId);
-    void DeactivateScheduledLocks(ui64 order);
+    void DeactivateScheduledLocks(i32 priority);
     void ReactivateScheduledLocks();
 
     void RollbackLocks(ui64 point);
@@ -961,7 +943,7 @@ public:
 
 private:
     TNodeInfo &NodeRef(ui32 nodeId) const {
-        Y_VERIFY(HasNode(nodeId));
+        CheckNodeExistenceWithVerify(nodeId);
         return *Nodes.find(nodeId)->second;
     }
 
@@ -980,7 +962,7 @@ private:
         for (auto it = range.first; it != range.second; ++it) {
             nodeId = it->second;
 
-            Y_VERIFY(HasNode(nodeId));
+            CheckNodeExistenceWithVerify(nodeId);
             auto &node = NodeRef(nodeId);
 
             if (filterByServices && !(node.Services & filterByServices)) {
@@ -994,7 +976,7 @@ private:
     }
 
     TPDiskInfo &PDiskRef(TPDiskID pdId) {
-        Y_VERIFY(HasPDisk(pdId));
+        Y_ABORT_UNLESS(HasPDisk(pdId));
         return *PDisks.find(pdId)->second;
     }
 
@@ -1004,7 +986,7 @@ private:
     }
 
     TVDiskInfo &VDiskRef(const TVDiskID &vdId) {
-        Y_VERIFY(HasVDisk(vdId));
+        Y_ABORT_UNLESS(HasVDisk(vdId));
         return *VDisks.find(vdId)->second;
     }
 
@@ -1014,7 +996,7 @@ private:
     }
 
     TBSGroupInfo &BSGroupRef(ui32 groupId) {
-        Y_VERIFY(HasBSGroup(groupId));
+        Y_ABORT_UNLESS(HasBSGroup(groupId));
         return BSGroups.find(groupId)->second;
     }
 
@@ -1022,10 +1004,10 @@ private:
         auto pr = HostNameToNodeId.equal_range(hostName);
         for (auto it = pr.first; it != pr.second; ++it) {
             const ui32 nodeId = it->second;
-            Y_VERIFY(HasNode(nodeId));
+            CheckNodeExistenceWithVerify(nodeId);
             const auto &node = Node(nodeId);
             for (const auto &id : node.PDisks) {
-                Y_VERIFY(HasPDisk(id));
+                Y_ABORT_UNLESS(HasPDisk(id));
                 if (PDisk(id).Path == path) {
                     return id;
                 }

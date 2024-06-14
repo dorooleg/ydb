@@ -1,15 +1,15 @@
 #pragma once
 #include <ydb/services/metadata/abstract/common.h>
-#include <library/cpp/actors/core/event_local.h>
+#include <ydb/library/actors/core/event_local.h>
 #include <shared_mutex>
 
 namespace NKikimr::NMetadata::NProvider {
 
 class TEvObjectsOperation: public NActors::TEventLocal<TEvObjectsOperation, EEvents::EvAlterObjects> {
 private:
-    YDB_READONLY_DEF(NModifications::IAlterCommand::TPtr, Command);
+    YDB_READONLY_DEF(NModifications::IObjectModificationCommand::TPtr, Command);
 public:
-    TEvObjectsOperation(NModifications::IAlterCommand::TPtr command)
+    TEvObjectsOperation(NModifications::IObjectModificationCommand::TPtr command)
         : Command(command) {
 
     }
@@ -21,7 +21,7 @@ private:
 public:
     TEvPrepareManager(IClassBehaviour::TPtr manager)
         : Manager(manager) {
-        Y_VERIFY(!!Manager);
+        Y_ABORT_UNLESS(!!Manager);
     }
 };
 
@@ -31,7 +31,7 @@ private:
 public:
     TEvManagerPrepared(IClassBehaviour::TPtr manager)
         : Manager(manager) {
-        Y_VERIFY(!!Manager);
+        Y_ABORT_UNLESS(!!Manager);
     }
 };
 
@@ -41,7 +41,7 @@ private:
 public:
     TEvAskSnapshot(NFetcher::ISnapshotsFetcher::TPtr fetcher)
         : Fetcher(fetcher) {
-        Y_VERIFY(!!Fetcher);
+        Y_ABORT_UNLESS(!!Fetcher);
     }
 };
 
@@ -52,7 +52,7 @@ public:
     TEvSubscribeExternal(NFetcher::ISnapshotsFetcher::TPtr fetcher)
         : Fetcher(fetcher)
     {
-        Y_VERIFY(!!Fetcher);
+        Y_ABORT_UNLESS(!!Fetcher);
     }
 };
 
@@ -62,7 +62,7 @@ private:
 public:
     TEvUnsubscribeExternal(NFetcher::ISnapshotsFetcher::TPtr fetcher)
         : Fetcher(fetcher) {
-        Y_VERIFY(!!Fetcher);
+        Y_ABORT_UNLESS(!!Fetcher);
     }
 };
 

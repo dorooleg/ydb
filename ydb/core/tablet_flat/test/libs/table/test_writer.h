@@ -1,6 +1,5 @@
 #pragma once
 
-#include "test_pretty.h"
 #include "test_part.h"
 
 #include <ydb/core/tablet_flat/test/libs/rows/cook.h>
@@ -38,7 +37,7 @@ namespace NTest {
             using NPage::TExtBlobs;
             using NPage::TBloom;
 
-            Y_VERIFY(Store, "Cannot load from an empty store");
+            Y_ABORT_UNLESS(Store, "Cannot load from an empty store");
 
             if (Store->PageCollectionPagesCount(0 /* primary room */) == 0) {
                 return nullptr;
@@ -48,7 +47,7 @@ namespace NTest {
 
             if (auto *raw = Store->GetMeta()) {
                 TMemoryInput stream(raw->data(), raw->size());
-                Y_VERIFY(root.ParseFromArcadiaStream(&stream));
+                Y_ABORT_UNLESS(root.ParseFromArcadiaStream(&stream));
             } else {
                 root.SetEpoch(0); /* for loading from abi blobs */
             }
@@ -73,6 +72,17 @@ namespace NTest {
 
             TEpoch epoch = TEpoch(root.GetEpoch());
 
+            size_t indexesRawSize = 0;
+            if (eggs.BTreeGroupIndexes) {
+                for (const auto &meta : eggs.BTreeGroupIndexes) {
+                    indexesRawSize += meta.IndexSize;
+                }
+            } else {
+                for (auto indexPage : eggs.GroupIndexes) {
+                    indexesRawSize += Store->GetPageSize(0, indexPage);
+                }
+            }
+
             return
                 new TPartStore(
                     std::move(Store),
@@ -80,13 +90,12 @@ namespace NTest {
                     {
                         epoch,
                         TPartScheme::Parse(*eggs.Scheme, eggs.Rooted),
-                        *eggs.Index,
+                        { eggs.GroupIndexes, eggs.HistoricIndexes, eggs.BTreeGroupIndexes, eggs.BTreeHistoricIndexes },
                         eggs.Blobs ? new TExtBlobs(*eggs.Blobs, { }) : nullptr,
                         eggs.ByKey ? new TBloom(*eggs.ByKey) : nullptr,
                         eggs.Large ? new TFrames(*eggs.Large) : nullptr,
                         eggs.Small ? new TFrames(*eggs.Small) : nullptr,
-                        std::move(eggs.GroupIndexes),
-                        std::move(eggs.HistoricIndexes),
+                        indexesRawSize,
                         TRowVersion(minRowVersion.GetStep(), minRowVersion.GetTxId()),
                         TRowVersion(maxRowVersion.GetStep(), maxRowVersion.GetTxId()),
                         eggs.GarbageStats ? new NPage::TGarbageStats(*eggs.GarbageStats) : nullptr,
@@ -109,26 +118,43 @@ namespace NTest {
         {
             const auto undef = Max<NPage::TPageId>();
 
-            TVector<TSharedData> groupIndexes;
+            TVector<TPageId> indexGroupsPages, indexHistoricPages;
+            if (lay.HasIndex()) {
+                indexGroupsPages.push_back(lay.GetIndex());
+            }
             for (ui32 pageId : lay.GetGroupIndexes()) {
-                groupIndexes.emplace_back(*Store->GetPage(0, pageId));
+                indexGroupsPages.push_back(pageId);
+            }
+            for (ui32 pageId : lay.GetHistoricIndexes()) {
+                indexHistoricPages.push_back(pageId);
             }
 
-            TVector<TSharedData> historicIndexes;
-            for (ui32 pageId : lay.GetHistoricIndexes()) {
-                historicIndexes.emplace_back(*Store->GetPage(0, pageId));
+            TVector<NPage::TBtreeIndexMeta> BTreeGroupIndexes, BTreeHistoricIndexes;
+            for (bool history : {false, true}) {
+                for (const auto &meta : history ? lay.GetBTreeHistoricIndexes() : lay.GetBTreeGroupIndexes()) {
+                    NPage::TBtreeIndexMeta converted{{
+                        meta.GetRootPageId(),
+                        meta.GetRowCount(),
+                        meta.GetDataSize(),
+                        meta.GetGroupDataSize(),
+                        meta.GetErasedRowCount()}, 
+                        meta.GetLevelCount(), 
+                        meta.GetIndexSize()};
+                    (history ? BTreeHistoricIndexes : BTreeGroupIndexes).push_back(converted);
+                }
             }
 
             return {
                 true /* rooted page collection */,
-                Store->GetPage(0, lay.HasIndex() ? lay.GetIndex() : undef),
+                std::move(indexGroupsPages), 
+                std::move(indexHistoricPages),
+                BTreeGroupIndexes,
+                BTreeHistoricIndexes,
                 Store->GetPage(0, lay.HasScheme() ? lay.GetScheme() : undef),
                 Store->GetPage(0, lay.HasGlobs() ? lay.GetGlobs() : undef),
                 Store->GetPage(0, lay.HasByKey() ? lay.GetByKey() : undef),
                 Store->GetPage(0, lay.HasLarge() ? lay.GetLarge() : undef),
                 Store->GetPage(0, lay.HasSmall() ? lay.GetSmall() : undef),
-                std::move(groupIndexes),
-                std::move(historicIndexes),
                 Store->GetPage(0, lay.HasGarbageStats() ? lay.GetGarbageStats() : undef),
                 Store->GetPage(0, lay.HasTxIdStats() ? lay.GetTxIdStats() : undef),
             };
@@ -153,11 +179,16 @@ namespace NTest {
 
         TPartEggs Flush(TIntrusiveConstPtr<TRowScheme> scheme, const TWriteStats &written)
         {
-            Y_VERIFY(!Store, "Writer has not been flushed");
-            Y_VERIFY(written.Parts == Parts.size());
+            Y_ABORT_UNLESS(!Store, "Writer has not been flushed");
+            Y_ABORT_UNLESS(written.Parts == Parts.size());
 
             return
                 { new TWriteStats(written), std::move(scheme), std::move(Parts) };
+        }
+
+        TStore& Back() noexcept
+        {
+            return Store ? *Store : *(Store = new TStore(Groups, NextGlobOffset));
         }
 
     private:
@@ -182,14 +213,9 @@ namespace NTest {
             return Back().WriteLarge(TSharedData::Copy(blob));
         }
 
-        TStore& Back() noexcept
-        {
-            return Store ? *Store : *(Store = new TStore(Groups, NextGlobOffset));
-        }
-
         void Finish(TString overlay) noexcept override
         {
-            Y_VERIFY(Store, "Finish called without any writes");
+            Y_ABORT_UNLESS(Store, "Finish called without any writes");
 
             Growth->Unwrap();
             Store->Finish();
@@ -260,7 +286,7 @@ namespace NTest {
             if (const auto *written = eggs.Written.Get()) {
                 mass.Model->Check({ &written->Rows, 1 });
             } else {
-                Y_FAIL("Got part eggs without TWriteStats result");
+                Y_ABORT("Got part eggs without TWriteStats result");
             }
 
             return eggs;
@@ -349,7 +375,7 @@ namespace NTest {
             }
 
             if (NextTxId != 0) {
-                Y_VERIFY(CurrentVersions == 0, "Cannot write deltas after committed versions");
+                Y_ABORT_UNLESS(CurrentVersions == 0, "Cannot write deltas after committed versions");
                 Writer->AddKeyDelta(row, NextTxId);
                 ++CurrentDeltas;
             } else {
@@ -369,6 +395,11 @@ namespace NTest {
             }
 
             return Pages.Flush(std::move(Scheme), Writer->Finish());
+        }
+
+        ui64 GetDataBytes(ui32 room) noexcept
+        {
+            return Pages.Back().GetDataBytes(room);
         }
 
     private:

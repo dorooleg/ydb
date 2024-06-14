@@ -1,14 +1,13 @@
-#include "events.h"
 #include "subscriber.h"
 #include "ut_helpers.h"
 
-#include <ydb/core/base/pathid.h>
+#include <ydb/core/scheme/scheme_pathid.h>
 #include <ydb/core/base/statestorage_impl.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/basics/helpers.h>
 
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/vector.h>
@@ -19,13 +18,13 @@ namespace NSchemeBoard {
 
 class TSubscriberTest: public NUnitTest::TTestBase {
     TVector<TActorId> ResolveReplicas() {
-        const TActorId proxy = MakeStateStorageProxyID(0);
+        const TActorId proxy = MakeStateStorageProxyID();
         const TActorId edge = Context->AllocateEdgeActor();
 
         Context->Send(proxy, edge, new TEvStateStorage::TEvListSchemeBoard());
         auto ev = Context->GrabEdgeEvent<TEvStateStorage::TEvListSchemeBoardResult>(edge);
 
-        Y_VERIFY(ev->Get()->Info);
+        Y_ABORT_UNLESS(ev->Get()->Info);
         auto allReplicas = ev->Get()->Info->SelectAllReplicas();
         return TVector<TActorId>(allReplicas.begin(), allReplicas.end());
     }
@@ -104,7 +103,7 @@ void TSubscriberTest::NotifyDelete() {
     const TActorId edge = Context->AllocateEdgeActor();
 
     auto replicas = ResolveReplicas();
-    Y_VERIFY(replicas.size() > 2);
+    Y_ABORT_UNLESS(replicas.size() > 2);
 
     for (const auto& replica : replicas) {
         Context->HandshakeReplica(replica, edge);
@@ -126,7 +125,7 @@ void TSubscriberTest::NotifyDelete() {
 void TSubscriberTest::StrongNotificationAfterCommit() {
     const TActorId edge = Context->AllocateEdgeActor();
 
-    Context->CreateSubscriber<TSchemeBoardEvents::TEvNotifyDelete>(edge, "path", 0, 1, false);
+    Context->CreateSubscriber<TSchemeBoardEvents::TEvNotifyDelete>(edge, "path", 1, false);
     {
         auto ev = Context->GrabEdgeEvent<TSchemeBoardEvents::TEvNotifyDelete>(edge);
         UNIT_ASSERT(ev->Get());
@@ -151,8 +150,8 @@ void TSubscriberTest::InvalidNotification() {
     const TActorId subscriber = Context->CreateSubscriber<TSchemeBoardEvents::TEvNotifyDelete>(edge, "path");
 
     // send notification directly to subscriber
-    auto* notify = new TSchemeBoardEvents::TEvNotifyBuilder(TPathId(1, 1));
-    notify->Record.MutableDescribeSchemeResult()->CopyFrom(GenerateDescribe("another/path", TPathId(1, 1)));
+    auto* notify = new NInternalEvents::TEvNotifyBuilder(TPathId(1, 1));
+    notify->SetPathDescription(MakeOpaquePathDescription("", GenerateDescribe("another/path", TPathId(1, 1))));
     Context->Send(subscriber, edge, notify);
 
     size_t counter = Context->CountEdgeEvents<TSchemeBoardEvents::TEvNotifyUpdate>();
@@ -162,7 +161,7 @@ void TSubscriberTest::InvalidNotification() {
 void TSubscriberTest::ReconnectOnFailure() {
     const TActorId edge = Context->AllocateEdgeActor(1);
 
-    Context->CreateSubscriber<TSchemeBoardEvents::TEvNotifyDelete>(edge, "path", 0, 1, true, 1);
+    Context->CreateSubscriber<TSchemeBoardEvents::TEvNotifyDelete>(edge, "path", 1, true, 1);
 
     Context->Disconnect(0, 1);
     Context->Connect(0, 1);
@@ -187,8 +186,8 @@ void TSubscriberTest::Sync() {
     }
 
     const TActorId subscriber = Context->CreateSubscriber<TSchemeBoardEvents::TEvNotifyUpdate>(edge, "path");
-    Context->Send(subscriber, edge, new TSchemeBoardEvents::TEvSyncRequest(), 0, 1);
-    auto ev = Context->GrabEdgeEvent<TSchemeBoardEvents::TEvSyncResponse>(edge);
+    Context->Send(subscriber, edge, new NInternalEvents::TEvSyncRequest(), 0, 1);
+    auto ev = Context->GrabEdgeEvent<NInternalEvents::TEvSyncResponse>(edge);
 
     UNIT_ASSERT(ev->Get());
     UNIT_ASSERT_VALUES_EQUAL("path", ev->Get()->Path);
@@ -204,8 +203,8 @@ void TSubscriberTest::SyncPartial() {
     for (ui32 i : xrange(replicas.size())) {
         Context->Send(replicas[i], edge, new TEvents::TEvPoisonPill());
 
-        Context->Send(subscriber, edge, new TSchemeBoardEvents::TEvSyncRequest(), 0, ++syncCookie);
-        auto ev = Context->GrabEdgeEvent<TSchemeBoardEvents::TEvSyncResponse>(edge);
+        Context->Send(subscriber, edge, new NInternalEvents::TEvSyncRequest(), 0, ++syncCookie);
+        auto ev = Context->GrabEdgeEvent<NInternalEvents::TEvSyncResponse>(edge);
 
         UNIT_ASSERT(ev->Get());
         UNIT_ASSERT_VALUES_EQUAL("path", ev->Get()->Path);
@@ -240,9 +239,9 @@ void TSubscriberTest::SyncWithOutdatedReplica() {
         UNIT_ASSERT_VALUES_EQUAL(TPathId(2, 2), ev->Get()->PathId);
     }
 
-    Context->Send(subscriber, edge, new TSchemeBoardEvents::TEvSyncRequest(), 0, 1);
+    Context->Send(subscriber, edge, new NInternalEvents::TEvSyncRequest(), 0, 1);
     {
-        auto ev = Context->GrabEdgeEvent<TSchemeBoardEvents::TEvSyncResponse>(edge);
+        auto ev = Context->GrabEdgeEvent<NInternalEvents::TEvSyncResponse>(edge);
         UNIT_ASSERT(ev->Get());
         UNIT_ASSERT_VALUES_EQUAL("path", ev->Get()->Path);
         UNIT_ASSERT(!ev->Get()->Partial);
@@ -251,13 +250,13 @@ void TSubscriberTest::SyncWithOutdatedReplica() {
 
 class TSubscriberCombinationsTest: public NUnitTest::TTestBase {
     TVector<TActorId> ResolveReplicas(TTestContext& context) {
-        const TActorId proxy = MakeStateStorageProxyID(0);
+        const TActorId proxy = MakeStateStorageProxyID();
         const TActorId edge = context.AllocateEdgeActor();
 
         context.Send(proxy, edge, new TEvStateStorage::TEvListSchemeBoard());
         auto ev = context.GrabEdgeEvent<TEvStateStorage::TEvListSchemeBoardResult>(edge);
 
-        Y_VERIFY(ev->Get()->Info);
+        Y_ABORT_UNLESS(ev->Get()->Info);
         auto allReplicas = ev->Get()->Info->SelectAllReplicas();
         return TVector<TActorId>(allReplicas.begin(), allReplicas.end());
     }

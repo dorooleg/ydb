@@ -7,7 +7,7 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_hugeblobctx.h>
 #include <ydb/core/blobstorage/vdisk/skeleton/blobstorage_takedbsnap.h>
 #include <ydb/core/util/stlog.h>
-#include <library/cpp/actors/core/invoke.h>
+#include <ydb/library/actors/core/invoke.h>
 
 namespace NKikimr {
 
@@ -111,11 +111,11 @@ namespace NKikimr {
                     const ui32 totalChunks = calcStat.GetTotalChunks();
                     const ui32 usefulChunks = calcStat.GetUsefulChunks();
                     const auto& oos = DCtx->VCtx->GetOutOfSpaceState();
-                    Y_VERIFY(usefulChunks <= totalChunks);
+                    Y_ABORT_UNLESS(usefulChunks <= totalChunks);
                     const ui32 canBeFreedChunks = totalChunks - usefulChunks;
                     if (HugeHeapDefragmentationRequired(oos, canBeFreedChunks, totalChunks)) {
                         TChunksToDefrag chunksToDefrag = calcStat.GetChunksToDefrag(DCtx->MaxChunksToDefrag);
-                        Y_VERIFY(chunksToDefrag);
+                        Y_ABORT_UNLESS(chunksToDefrag);
                         STLOG(PRI_INFO, BS_VDISK_DEFRAG, BSVDD03, VDISKP(DCtx->VCtx->VDiskLogPrefix, "scan finished"),
                             (TotalChunks, totalChunks), (UsefulChunks, usefulChunks),
                             (LocalColor, NKikimrBlobStorage::TPDiskSpaceColor_E_Name(oos.GetLocalColor())),
@@ -146,7 +146,7 @@ namespace NKikimr {
         };
 
         void RunDefragPlanner(const TActorContext &ctx) {
-            Y_VERIFY(!PlannerId);
+            Y_ABORT_UNLESS(!PlannerId);
             PlannerId = RunInBatchPool(ctx, new TDefragPlannerActor(DCtx));
         }
 
@@ -156,7 +156,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvDefragStartQuantum::TPtr ev, const TActorContext& ctx) {
-            Y_VERIFY(ev->Sender == PlannerId);
+            Y_ABORT_UNLESS(ev->Sender == PlannerId);
             PlannerId = {};
             if (ev->Get()->ChunksToDefrag) {
                 ctx.Send(new IEventHandle(DefragActorId, SelfId(), ev->ReleaseBase().Release()));
@@ -245,7 +245,8 @@ namespace NKikimr {
             InProgress = true;
             ActiveActors.Insert(ctx.Register(CreateDefragQuantumActor(DCtx,
                 GInfo->GetVDiskId(DCtx->VCtx->ShortSelfVDisk),
-                std::visit([](auto& r) { return GetChunksToDefrag(r); }, task.Request))));
+                std::visit([](auto& r) { return GetChunksToDefrag(r); }, task.Request))), __FILE__, __LINE__,
+                ctx, NKikimrServices::BLOBSTORAGE);
         }
 
         static std::optional<TChunksToDefrag> GetChunksToDefrag(TEvBlobStorage::TEvVDefrag::TPtr& /*ev*/) {
@@ -261,7 +262,7 @@ namespace NKikimr {
             if (DCtx->RunDefragBySchedule) {
                 auto scheduler = std::make_unique<TDefragLocalScheduler>(DCtx, ctx.SelfID);
                 auto aid = ctx.Register(scheduler.release());
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             }
             Become(&TThis::StateFunc);
         }
@@ -272,7 +273,7 @@ namespace NKikimr {
             Sublog.Log() << "Defrag quantum has been finished\n";
 
             auto *msg = ev->Get();
-            Y_VERIFY(msg->Stat.Eof || msg->Stat.FreedChunks.size() == DCtx->MaxChunksToDefrag);
+            Y_ABORT_UNLESS(msg->Stat.Eof || msg->Stat.FreedChunks.size() == DCtx->MaxChunksToDefrag);
 
             auto &task = WaitQueue.front();
 
@@ -340,7 +341,7 @@ namespace NKikimr {
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
             auto subrequest = ev->Get()->SubRequestId;
-            Y_VERIFY(subrequest == TDbMon::Defrag);
+            Y_ABORT_UNLESS(subrequest == TDbMon::Defrag);
             TStringStream str;
             RenderHtml(str);
             ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes(str.Str(), subrequest));

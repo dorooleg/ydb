@@ -57,6 +57,9 @@ public:
     virtual void WritePullDetails(const TExprNode& node, NYson::TYsonWriter& writer) = 0;
     virtual void WritePinDetails(const TExprNode& node, NYson::TYsonWriter& writer) = 0;
     virtual TString GetOperationDisplayName(const TExprNode& node) = 0;
+    // returns false if provider schemas aren't supported
+    virtual bool WriteSchemaHeader(NYson::TYsonWriter& writer) = 0;
+    virtual void WriteTypeDetails(NYson::TYsonWriter& writer, const TTypeAnnotationNode& type) = 0;
 };
 
 class ITrackableNodeProcessor {
@@ -75,6 +78,7 @@ public:
 };
 
 class IDqIntegration;
+class IDqOptimization;
 
 class IOptimizationContext;
 
@@ -86,7 +90,8 @@ public:
 
     enum class EResultFormat {
         Yson,
-        Custom
+        Custom,
+        Skiff
     };
 
     // settings for result data provider
@@ -126,6 +131,7 @@ public:
     //-- optimizations
     virtual TExprNode::TPtr RewriteIO(const TExprNode::TPtr& node, TExprContext& ctx) = 0;
     virtual IGraphTransformer& GetRecaptureOptProposalTransformer() = 0;
+    virtual IGraphTransformer& GetStatisticsProposalTransformer() = 0;
     virtual IGraphTransformer& GetLogicalOptProposalTransformer() = 0;
     virtual IGraphTransformer& GetPhysicalOptProposalTransformer() = 0;
     virtual IGraphTransformer& GetPhysicalFinalizingTransformer() = 0;
@@ -173,6 +179,7 @@ public:
 
     // DQ
     virtual IDqIntegration* GetDqIntegration() = 0;
+    virtual IDqOptimization* GetDqOptimization() = 0;
 };
 
 struct IPipelineConfigurator;
@@ -229,14 +236,19 @@ struct TDataProviderInfo {
 
     std::function<bool()> HasActiveProcesses;
 
+    // COMPAT(gritukan): Remove it after Arcadia migration.
     std::function<void(const TString& sessionId)> CloseSession;
-
     std::function<void(const TString& sessionId)> CleanupSession;
+
+    std::function<NThreading::TFuture<void>(const TString& sessionId)> CloseSessionAsync;
+
+    std::function<NThreading::TFuture<void>(const TString& sessionId)> CleanupSessionAsync;
 
     std::function<TString(const TString& url, const TString& alias)> TokenResolver;
 };
 
 using THiddenQueryAborter = std::function<void()>; // aborts hidden query, which is running within a separate TProgram
+class TQContext;
 using TDataProviderInitializer = std::function<TDataProviderInfo(
     const TString& userName,
     const TString& sessionId,
@@ -246,6 +258,7 @@ using TDataProviderInitializer = std::function<TDataProviderInfo(
     TIntrusivePtr<TTypeAnnotationContext> typeCtx,
     const TOperationProgressWriter& progressWriter,
     const TYqlOperationOptions& operationOptions,
-    THiddenQueryAborter hiddenAborter)>;
+    THiddenQueryAborter hiddenAborter,
+    const TQContext& qContext)>;
 
 } // namespace NYql

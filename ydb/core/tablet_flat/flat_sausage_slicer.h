@@ -27,7 +27,7 @@ namespace NPageCollection {
                     << " as single blob, block limit is " << Block << "b");
             }
 
-            Y_VERIFY(body.size() < Block, "Too large blob to be a TGlobId");
+            Y_ABORT_UNLESS(body.size() < Block, "Too large blob to be a TGlobId");
 
             if (lz4) std::exchange(body, Lz4()->Encode(body));
 
@@ -55,13 +55,13 @@ namespace NPageCollection {
                 refs.push_back({ largeGlobId.Lead, std::move(body) });
             } else {
                 ui32 off = 0;
-                for (auto blobId : largeGlobId.Blobs()) {
+                for (const auto& blobId : largeGlobId.Blobs()) {
                     const ui32 chunk = Min(Block, size - off);
-                    Y_VERIFY_DEBUG(chunk == blobId.BlobSize());
+                    Y_DEBUG_ABORT_UNLESS(chunk == blobId.BlobSize());
                     refs.push_back({ blobId, body.substr(off, chunk) });
                     off += chunk;
                 }
-                Y_VERIFY_DEBUG(off == largeGlobId.Bytes);
+                Y_DEBUG_ABORT_UNLESS(off == largeGlobId.Bytes);
             }
 
             return largeGlobId;

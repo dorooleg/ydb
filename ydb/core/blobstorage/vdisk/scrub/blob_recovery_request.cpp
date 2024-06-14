@@ -29,8 +29,7 @@ namespace NKikimr {
 
         // create timer to process deadlines if not yet created
         if (!WakeupScheduled) {
-            const TInstant now = TActivationContext::Now();
-            Schedule(msg->Deadline - now, new TEvents::TEvWakeup);
+            Schedule(msg->Deadline, new TEvents::TEvWakeup);
             WakeupScheduled = true;
         }
     }
@@ -50,14 +49,9 @@ namespace NKikimr {
         }
         InFlight.erase(InFlight.begin(), it);
 
-        TInstant deadline = TInstant::Max(); // next deadline
-        if (it != InFlight.end()) {
-            deadline = it->first;
-        }
-
         // reschedule timer
-        if (deadline != TInstant::Max()) {
-            Schedule(deadline - now, new TEvents::TEvWakeup);
+        if (it != InFlight.end()) {
+            Schedule(it->first, new TEvents::TEvWakeup);
         } else {
             WakeupScheduled = false;
         }

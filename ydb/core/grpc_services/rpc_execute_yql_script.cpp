@@ -1,6 +1,7 @@
 #include "service_yql_scripting.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
+#include "audit_dml_operations.h"
 
 #include <ydb/public/api/protos/ydb_scripting.pb.h>
 
@@ -46,6 +47,8 @@ public:
         const auto req = GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
+        AuditContextAppend(Request_.get(), *req);
+
         auto script = req->script();
 
         NYql::TIssues issues;
@@ -54,6 +57,11 @@ public:
         }
 
         ::Ydb::Operations::OperationParams operationParams;
+
+        auto settings = NKqp::NPrivateEvents::TQueryRequestSettings()
+            .SetKeepSession(false)
+            .SetUseCancelAfter(false)
+            .SetSyntax(req->syntax());
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>(
             NKikimrKqp::QUERY_ACTION_EXECUTE,
@@ -68,11 +76,10 @@ public:
             req->collect_stats(),
             nullptr, // query_cache_policy
             req->has_operation_params() ? &req->operation_params() : nullptr,
-            false, // keep session
-            false // use cancelAfter
+            settings
         );
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -102,6 +109,8 @@ public:
         } else if (kqpResponse.HasQueryPlan()) {
             queryResult->mutable_query_stats()->set_query_plan(kqpResponse.GetQueryPlan());
         }
+
+        AuditContextAppend(Request_.get(), *GetProtoRequest(), *queryResult);
 
         ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, *queryResult, ctx);
     }

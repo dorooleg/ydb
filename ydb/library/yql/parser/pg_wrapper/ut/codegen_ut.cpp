@@ -25,7 +25,10 @@ using namespace NYql;
 using namespace NYql::NCodegen;
 
 extern "C" {
+Y_PRAGMA_DIAGNOSTIC_PUSH
+Y_PRAGMA("GCC diagnostic ignored \"-Wreturn-type-c-linkage\"")
 #include <ydb/library/yql/parser/pg_wrapper/pg_kernels_fwd.inc>
+Y_PRAGMA_DIAGNOSTIC_POP
 }
 
 enum class EKernelFlavor {
@@ -64,12 +67,11 @@ Y_UNIT_TEST_SUITE(TPgCodegen) {
         }
         case EKernelFlavor::BitCode: {
             codegen = ICodegen::Make(ETarget::Native);
-            auto bitcode = NResource::Find(fixed ? "/llvm_bc/PgFuncs1" : "/llvm_bc/PgFuncs1");
+            auto bitcode = NResource::Find(fixed ? "/llvm_bc/PgFuncs1" : "/llvm_bc/PgFuncs17");
             codegen->LoadBitCode(bitcode, "Funcs");
             auto func = codegen->GetModule().getFunction(std::string("arrow_" + name));
             Y_ENSURE(func);
             codegen->AddGlobalMapping("GetPGKernelState", (const void*)&GetPGKernelState);
-            codegen->AddGlobalMapping("WithPgTry", (const void*)&WithPgTry);
             codegen->Verify();
             codegen->ExportSymbol(func);
             codegen->Compile();
@@ -134,8 +136,8 @@ Y_UNIT_TEST_SUITE(TPgCodegen) {
                             builder.Add(NUdf::TBlockItem{});
                         } else {
                             auto s = item.AsStringRef();
-                            size_t len = s.Size() - VARHDRSZ;
-                            const char* ptr = s.Data() + VARHDRSZ;
+                            size_t len = s.Size() - VARHDRSZ - sizeof(void*);
+                            const char* ptr = s.Data() + VARHDRSZ + sizeof(void*);
                             builder.Add(NUdf::TBlockItem{NUdf::TStringRef(ptr, len)});
                         }
                     }
@@ -156,23 +158,19 @@ Y_UNIT_TEST_SUITE(TPgCodegen) {
         kernelCtx.SetState(&state);
         FmgrInfo finfo;
         Zero(state.flinfo);
-        if (fixed) {
-            fmgr_info(NPg::LookupProc("date_eq", { 0, 0}).ProcId, &state.flinfo);
-        } else {
-            fmgr_info(NPg::LookupProc("textout", { 0} ).ProcId, &state.flinfo);
-        }
-
+        state.ProcDesc = fixed ? &NPg::LookupProc("date_eq", { 0, 0 }) : &NPg::LookupProc("textout", { 0 });
+        fmgr_info(state.ProcDesc->ProcId, &state.flinfo);
         state.context = nullptr;
         state.resultinfo = nullptr;
         state.fncollation = DEFAULT_COLLATION_OID;
         state.Name = name;
         if (fixed) {
-            state.IsCStringResult = false;
+            state.TypeLen = 1;
             state.IsFixedResult = true;
             state.IsFixedArg.push_back(true);
             state.IsFixedArg.push_back(true);
         } else {
-            state.IsCStringResult = true;
+            state.TypeLen = -2;
             state.IsFixedResult = false;
             state.IsFixedArg.push_back(false);
         }
@@ -206,10 +204,11 @@ Y_UNIT_TEST_SUITE(TPgCodegen) {
             arrow::BinaryBuilder builder;
             ARROW_OK(builder.Reserve(N));
             for (size_t i = 0; i < N; ++i) {
-                std::string s(VARHDRSZ + 500, 'A' + i % 26);
-                auto t = (text*)s.data();
+                std::string s(sizeof(void*) + VARHDRSZ + 500, 'A' + i % 26);
+                NUdf::ZeroMemoryContext(s.data() + sizeof(void*));
+                auto t = (text*)(s.data() + sizeof(void*));
                 SET_VARSIZE(t, VARHDRSZ + 500);
-                builder.Append(s);
+                ARROW_OK(builder.Append(s));
             }
 
             std::shared_ptr<arrow::ArrayData> out;

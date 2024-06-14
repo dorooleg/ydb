@@ -6,18 +6,19 @@
 #include <ydb/core/protos/counters_coordinator.pb.h>
 
 #include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/base/tx_processing.h>
 #include <ydb/core/control/immediate_control_board_wrapper.h>
 #include <ydb/core/tablet/tablet_counters.h>
 #include <ydb/core/tablet/tablet_exception.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/tablet_flat/flat_cxx_database.h>
+#include <ydb/core/tx/coordinator/public/events.h>
 #include <ydb/core/scheme/scheme_types_defs.h>
 #include <ydb/core/tx/tx.h>
-#include <ydb/core/util/queue_oneone_inplace.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/generic/hash_set.h>
 #include <util/stream/file.h>
@@ -38,13 +39,9 @@ struct TTransactionProposal {
     TTxId TxId; // could be zero, then transaction is not saved a-priori and must be idempotent, with body provided
     TStepId MinStep; // not plan before (tablet would be not ready), could be zero
     TStepId MaxStep; // not plan after (tablet would trash tx body).
+    ui32 Flags;
 
     struct TAffectedEntry {
-        enum {
-            AffectedRead = 1 << 0,
-            AffectedWrite = 1 << 1,
-        };
-
         TTabletId TabletId;
         ui64 AffectedFlags : 8;
         // reserved
@@ -55,13 +52,18 @@ struct TTransactionProposal {
     TInstant AcceptMoment;
     bool IgnoreLowDiskSpace;
 
-    TTransactionProposal(const TActorId &proxy, TTxId txId, TStepId minStep, TStepId maxStep, bool ignoreLowDiskSpace)
+    TTransactionProposal(const TActorId &proxy, TTxId txId, TStepId minStep, TStepId maxStep, ui32 flags, bool ignoreLowDiskSpace)
         : Proxy(proxy)
         , TxId(txId)
         , MinStep(minStep)
         , MaxStep(maxStep)
+        , Flags(flags)
         , IgnoreLowDiskSpace(ignoreLowDiskSpace)
     {}
+
+    bool HasVolatileFlag() const {
+        return (Flags & TEvTxProxy::TEvProposeTransaction::FlagVolatile) != 0;
+    }
 };
 
 struct TCoordinatorStepConfirmations {
@@ -79,15 +81,7 @@ struct TCoordinatorStepConfirmations {
         {}
     };
 
-    using TQ = TOneOneQueueInplace<TEntry *, 128>;
-
-    const TAutoPtr<TQ, TQ::TPtrCleanDestructor> Queue;
-    const TStepId Step;
-
-    TCoordinatorStepConfirmations(TStepId step)
-        : Queue(new TQ())
-        , Step(step)
-    {}
+    std::deque<TEntry> Queue;
 };
 
 struct TMediatorStep {
@@ -97,34 +91,39 @@ struct TMediatorStep {
         // todo: move to flat presentation (with buffer for all affected, instead of per-one)
         TVector<TTabletId> PushToAffected; // filtered one (only entries which belong to this mediator)
 
-        ui64 Moderator;
-
-        TTx(TTxId txId, TTabletId *affected, ui32 affectedSize, ui64 moderator)
+        TTx(TTxId txId, const TTabletId *affected, ui32 affectedSize)
             : TxId(txId)
             , PushToAffected(affected, affected + affectedSize)
-            , Moderator(moderator)
         {
-            Y_VERIFY(TxId != 0);
+            Y_ABORT_UNLESS(TxId != 0);
         }
 
         TTx(TTxId txId)
             : TxId(txId)
         {
-            Y_VERIFY(TxId != 0);
+            Y_ABORT_UNLESS(TxId != 0);
         }
     };
 
-    const TTabletId MediatorId;
-    const TStepId Step;
-    bool Confirmed;
+    TTabletId MediatorId;
+    TStepId Step;
+    bool Confirmed = false;
+    bool Volatile = false;
+
     TVector<TTx> Transactions;
+
+    // Used by mediator queue to track acks
+    size_t References = 0;
 
     TMediatorStep(TTabletId mediatorId, TStepId step)
         : MediatorId(mediatorId)
         , Step(step)
-        , Confirmed(false)
     {}
+
+    void SerializeTo(TEvTxCoordinator::TEvCoordinatorStep *msg) const;
 };
+
+using TMediatorStepList = std::list<TMediatorStep>;
 
 struct TMediatorConfirmations {
     const TTabletId MediatorId;
@@ -135,6 +134,45 @@ struct TMediatorConfirmations {
         : MediatorId(mediatorId)
     {}
 };
+
+struct TEvMediatorQueueStep : public TEventLocal<TEvMediatorQueueStep, TEvTxCoordinator::EvMediatorQueueStep> {
+    TMediatorStepList Steps;
+
+    TEvMediatorQueueStep() = default;
+
+    void SpliceStep(TMediatorStepList& list, TMediatorStepList::iterator it) {
+        Steps.splice(Steps.end(), list, it);
+    }
+};
+
+struct TEvMediatorQueueRestart : public TEventLocal<TEvMediatorQueueRestart, TEvTxCoordinator::EvMediatorQueueRestart> {
+    const ui64 MediatorId;
+    const ui64 StartFrom;
+    const ui64 GenCookie;
+
+    TEvMediatorQueueRestart(ui64 mediatorId, ui64 startFrom, ui64 genCookie)
+        : MediatorId(mediatorId)
+        , StartFrom(startFrom)
+        , GenCookie(genCookie)
+    {}
+};
+
+struct TEvMediatorQueueStop : public TEventLocal<TEvMediatorQueueStop, TEvTxCoordinator::EvMediatorQueueStop> {
+    const ui64 MediatorId;
+
+    TEvMediatorQueueStop(ui64 mediatorId)
+        : MediatorId(mediatorId)
+    {}
+};
+
+struct TEvMediatorQueueConfirmations : public TEventLocal<TEvMediatorQueueConfirmations, TEvTxCoordinator::EvMediatorQueueConfirmations> {
+    std::unique_ptr<NFlatTxCoordinator::TMediatorConfirmations> Confirmations;
+
+    TEvMediatorQueueConfirmations(std::unique_ptr<NFlatTxCoordinator::TMediatorConfirmations> &&confirmations)
+        : Confirmations(std::move(confirmations))
+    {}
+};
+
 
 IActor* CreateTxCoordinatorMediatorQueue(const TActorId &owner, ui64 coordinator, ui64 mediator, ui64 coordinatorGeneration);
 
@@ -166,8 +204,11 @@ do { \
 #define FLOG_LOG_S(actorCtxOrSystem, priority, component, stream) FLOG_LOG_S_SAMPLED_BY(actorCtxOrSystem, priority, component, 0ull, stream)
 #define FLOG_DEBUG_S(actorCtxOrSystem, component, stream)  FLOG_LOG_S(actorCtxOrSystem, NActors::NLog::PRI_DEBUG, component, stream)
 
+class TCoordinatorStateActor;
 
 class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat {
+
+    friend class TCoordinatorStateActor;
 
     struct TEvPrivate {
         enum EEv {
@@ -177,12 +218,21 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
             EvReadStepUnsubscribed,
             EvReadStepUpdated,
             EvPipeServerDisconnected,
+            EvRestoredProcessingParams,
+            EvRestoredStateMissing,
+            EvRestoredState,
             EvEnd
         };
 
         static_assert(EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE), "expect EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE)");
 
-        struct TEvPlanTick : public TEventLocal<TEvPlanTick, EvPlanTick> {};
+        struct TEvPlanTick : public TEventLocal<TEvPlanTick, EvPlanTick> {
+            const ui64 Step;
+
+            explicit TEvPlanTick(ui64 step)
+                : Step(step)
+            { }
+        };
 
         struct TEvAcquireReadStepFlush : public TEventLocal<TEvAcquireReadStepFlush, EvAcquireReadStepFlush> {};
 
@@ -234,11 +284,33 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
                 : ServerId(serverId)
             { }
         };
+
+        struct TEvRestoredProcessingParams : public TEventLocal<TEvRestoredProcessingParams, EvRestoredProcessingParams> {
+            NKikimrSubDomains::TProcessingParams Config;
+
+            explicit TEvRestoredProcessingParams(const NKikimrSubDomains::TProcessingParams& config)
+                : Config(config)
+            { }
+        };
+
+        struct TEvRestoredStateMissing : public TEventLocal<TEvRestoredStateMissing, EvRestoredStateMissing> {
+            ui64 LastBlockedStep;
+
+            explicit TEvRestoredStateMissing(ui64 lastBlockedStep)
+                : LastBlockedStep(lastBlockedStep)
+            { }
+        };
+
+        struct TEvRestoredState : public TEventLocal<TEvRestoredState, EvRestoredState> {
+            NKikimrTxCoordinator::TEvCoordinatorStateResponse Record;
+
+            explicit TEvRestoredState(NKikimrTxCoordinator::TEvCoordinatorStateResponse&& record)
+                : Record(std::move(record))
+            { }
+        };
     };
 
     struct TQueueType {
-        typedef TOneOneQueueInplace<TTransactionProposal *, 512> TQ;
-
         struct TFlowEntry {
             ui16 Weight;
             ui16 Limit;
@@ -249,35 +321,31 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
             {}
         };
 
-        struct TSlot {
-            TAutoPtr<TQ, TQ::TPtrCleanDestructor> Queue;
-            ui64 QueueSize;
+        using TQueue = std::deque<TTransactionProposal>;
 
-            TSlot()
-                : Queue(new TQ())
-                , QueueSize(0)
-            {}
+        struct TSlot : public TQueue {
+            using TQueue::TQueue;
         };
 
         typedef TMap<TStepId, TSlot> TSlotQueue;
 
         TSlotQueue Low;
         TSlot RapidSlot; // slot for entries with schedule on 'right now' moment (actually - with min-schedule time in past).
-        bool RapidFreeze;
 
-        TAutoPtr<TQ, TQ::TPtrCleanDestructor> Unsorted;
+        std::optional<TSlot> Unsorted;
 
         TSlot& LowSlot(TStepId step) {
-            TMap<TStepId, TSlot>::iterator it = Low.find(step);
-            if (it != Low.end())
-                return it->second;
-            std::pair<TMap<TStepId, TSlot>::iterator, bool> xit = Low.insert(TSlotQueue::value_type(step, TSlot()));
-            TSlot &ret = xit.first->second;
-            return ret;
+            return Low[step];
+        }
+
+        TStepId MinLowSlot() const {
+            if (!Low.empty()) {
+                return Low.begin()->first;
+            }
+            return 0;
         }
 
         TQueueType()
-            : RapidFreeze(false)
         {}
     };
 
@@ -287,7 +355,6 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
     struct TTxSchema;
     struct TTxUpgrade;
     struct TTxPlanStep;
-    struct TTxRestartMediatorQueue;
     struct TTxMediatorConfirmations;
     struct TTxConsistencyCheck;
     struct TTxMonitoring;
@@ -297,6 +364,7 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
     struct TTxUnsubscribeReadStep;
 
     class TReadStepSubscriptionManager;
+    class TRestoreProcessingParamsActor;
 
     ITransaction* CreateTxInit();
     ITransaction* CreateTxRestoreTransactions();
@@ -305,56 +373,37 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
             const NKikimrSubDomains::TProcessingParams &config);
     ITransaction* CreateTxSchema();
     ITransaction* CreateTxUpgrade();
-    ITransaction* CreateTxPlanStep(TStepId toStep, TVector<TQueueType::TSlot> &slots, bool rapid);
+    ITransaction* CreateTxPlanStep(TStepId toStep, std::deque<TQueueType::TSlot> &&slots);
     ITransaction* CreateTxRestartMediatorQueue(TTabletId mediatorId, ui64 genCookie);
-    ITransaction* CreateTxMediatorConfirmations(TAutoPtr<TMediatorConfirmations> &confirmations);
+    ITransaction* CreateTxMediatorConfirmations(std::unique_ptr<TMediatorConfirmations> &&confirmations);
     ITransaction* CreateTxConsistencyCheck();
     ITransaction* CreateTxMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev);
     ITransaction* CreateTxStopGuard();
 
     struct TConfig {
-        ui64 MediatorsVersion;
+        ui64 Version = 0;
         TMediators::TPtr Mediators;
         TVector<TTabletId> Coordinators;
 
-        ui64 PlanAhead;
-        ui64 Resolution;
-        ui64 RapidSlotFlushSize;
+        ui64 Resolution = 1000;
+        ui64 ReducedResolution = 1000;
+        ui64 RapidSlotFlushSize = 1000;
 
-        bool Synthetic;
+        bool HaveProcessingParams = false;
 
-        TConfig()
-            : MediatorsVersion(0)
-            , PlanAhead(0)
-            , Resolution(0)
-            , RapidSlotFlushSize(0)
-            , Synthetic(false)
-        {}
+        TConfig() {}
     };
 
     struct TMediator {
-        typedef TOneOneQueueInplace<TMediatorStep *, 32> TStepQueue;
-
         TActorId QueueActor;
-        ui64 GenCookie;
-        bool PushUpdates;
-
-        TAutoPtr<TStepQueue, TStepQueue::TPtrCleanDestructor> Queue;
-
-        TMediator()
-            : GenCookie(0)
-            , PushUpdates(false)
-        {}
+        TMediatorStepList Queue;
+        bool Active = false;
     };
 
     struct TTransaction {
-        TStepId PlanOnStep;
+        TStepId PlanOnStep = 0;
         THashSet<TTabletId> AffectedSet;
         THashMap<TTabletId, THashSet<TTabletId>> UnconfirmedAffectedSet;
-
-        TTransaction()
-            : PlanOnStep(0)
-        {}
     };
 
     struct TAcquireReadStepRequest {
@@ -372,7 +421,9 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
         ui64 LastSentStep = 0;
         ui64 LastAcquired = 0;
         ui64 LastEmptyStep = 0;
-        TMonotonic LastEmptyPlanAt{ };
+        ui64 LastConfirmedStep = 0;
+        ui64 LastBlockedPending = 0;
+        ui64 LastBlockedCommitted = 0;
 
         TQueueType Queue;
 
@@ -386,7 +437,7 @@ class TTxCoordinator : public TActor<TTxCoordinator>, public TTabletExecutedFlat
 
 public:
     struct Schema : NIceDb::Schema {
-        static const ui32 CurrentVersion;
+        static constexpr ui64 CurrentVersion = 1;
 
         struct Transaction : Table<0> {
             struct ID : Column<0, NScheme::NTypeIds::Uint64> {}; // PK
@@ -407,10 +458,13 @@ public:
         };
 
         struct State : Table<2> {
-            enum EKeyType {
-                KeyLastPlanned,
-                DatabaseVersion,
-                AcquireReadStepLast,
+            enum EKeyType : ui64 {
+                KeyLastPlanned = 0,
+                DatabaseVersion = 1,
+                AcquireReadStepLast = 2,
+                LastBlockedActorX1 = 3,
+                LastBlockedActorX2 = 4,
+                LastBlockedStep = 5,
             };
 
             struct StateKey : Column<0, NScheme::NTypeIds::Uint64> { using Type = EKeyType; }; // PK
@@ -431,6 +485,37 @@ public:
         };
 
         using TTables = SchemaTables<Transaction, AffectedSet, State, DomainConfiguration>;
+
+        template<class TCallback>
+        static bool LoadState(NIceDb::TNiceDb& db, State::EKeyType key, TCallback&& callback) {
+            auto rowset = db.Table<State>().Key(key).Select<State::StateValue>();
+
+            if (!rowset.IsReady()) {
+                return false;
+            }
+
+            if (rowset.IsValid()) {
+                callback(rowset.GetValue<State::StateValue>());
+            }
+
+            return true;
+        }
+
+        static bool LoadState(NIceDb::TNiceDb& db, State::EKeyType key, std::optional<ui64>& out) {
+            return LoadState(db, key, [&out](ui64 value) {
+                out.emplace(value);
+            });
+        }
+
+        static bool LoadState(NIceDb::TNiceDb& db, State::EKeyType key, ui64& out) {
+            return LoadState(db, key, [&out](ui64 value) {
+                out = value;
+            });
+        }
+
+        static void SaveState(NIceDb::TNiceDb& db, State::EKeyType key, ui64 value) {
+            db.Table<State>().Key(key).Update<State::StateValue>(value);
+        }
     };
 
 private:
@@ -460,16 +545,53 @@ private:
         i64 CurrentTxInFly;
     };
 
+    struct TLastStepSubscriber {
+        TActorId PipeServer;
+        TActorId InterconnectSession;
+        ui64 SeqNo;
+        ui64 Cookie;
+    };
+
+    struct TPipeServerData {
+        // Subscriber -> Pointer into LastStepSubscribers
+        THashMap<TActorId, TLastStepSubscriber*> LastStepSubscribers;
+    };
+
+    struct TSiblingState {
+        ui64 CoordinatorId = 0;
+
+        ui64 SeqNo = 0;
+        bool Subscribed = false;
+        bool Confirmed = false;
+
+        TMonotonic NextAttempt;
+        TDuration LastRetryDelay;
+        size_t RetryAttempts = 0;
+    };
+
     bool IcbRegistered = false;
     TControlWrapper EnableLeaderLeases;
     TControlWrapper MinLeaderLeaseDurationUs;
+    TControlWrapper VolatilePlanLeaseMs;
+    TControlWrapper PlanAheadTimeShiftMs;
 
     TVolatileState VolatileState;
     TConfig Config;
     TCoordinatorMonCounters MonCounters;
     TTabletCountersBase* TabletCounters;
     TAutoPtr<TTabletCountersBase> TabletCountersPtr;
-    THashSet<TActorId> PipeServers;
+    THashMap<TActorId, TLastStepSubscriber> LastStepSubscribers;
+    THashMap<TActorId, TPipeServerData> PipeServers;
+    THashMap<ui64, TSiblingState> Siblings;
+    size_t SiblingsConfirmed = 0;
+
+    TCoordinatorStateActor* CoordinatorStateActor = nullptr;
+    TActorId CoordinatorStateActorId;
+    TActorId RestoreStateActorId;
+    TActorId PrevStateActorId;
+
+    std::deque<ui64> PendingPlanTicks;
+    std::set<ui64> PendingSiblingSteps;
 
     typedef THashMap<TTabletId, TMediator> TMediatorsIndex;
     TMediatorsIndex Mediators;
@@ -477,7 +599,13 @@ private:
     typedef THashMap<TTxId, TTransaction> TTransactions;
     TTransactions Transactions;
 
+    // Volatile transactions are not persistent
+    // Separate hash map so we don't trip consistency checks
+    TTransactions VolatileTransactions;
+
     TActorId ReadStepSubscriptionManager;
+
+    TActorId RestoreProcessingParamsActor;
 
     bool Stopping = false;
 
@@ -488,27 +616,17 @@ private:
     TZLibCompress DebugLog;
 #endif
 
-    void Die(const TActorContext &ctx) override {
-        if (ReadStepSubscriptionManager) {
-            ctx.Send(ReadStepSubscriptionManager, new TEvents::TEvPoison);
-            ReadStepSubscriptionManager = { };
-        }
+    void Die(const TActorContext &ctx) override;
 
-        for (TMediatorsIndex::iterator it = Mediators.begin(), end = Mediators.end(); it != end; ++it) {
-            TMediator &x = it->second;
-            ctx.Send(x.QueueActor, new TEvents::TEvPoisonPill());
-        }
-        Mediators.clear();
-
-        if (MonCounters.CurrentTxInFly && MonCounters.TxInFly)
-            *MonCounters.TxInFly -= MonCounters.CurrentTxInFly;
-
-        return TActor::Die(ctx);
-    }
+    void SendViaSession(const TActorId& sessionId, const TActorId& target, IEventBase* event, ui32 flags, ui64 cookie);
 
     void IcbRegister();
     bool ReadOnlyLeaseEnabled() override;
     TDuration ReadOnlyLeaseDuration() override;
+
+    void SetCounter(NFlatTxCoordinator::ESimpleCounters counter, ui64 val) {
+        TabletCounters->Simple()[counter].Set(val);
+    }
 
     void IncCounter(NFlatTxCoordinator::ECumulativeCounters counter, ui64 num = 1) {
         TabletCounters->Cumulative()[counter].Increment(num);
@@ -548,26 +666,39 @@ private:
     void Handle(TEvTxProxy::TEvSubscribeReadStep::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvTxProxy::TEvUnsubscribeReadStep::TPtr &ev, const TActorContext &ctx);
 
+    void Handle(TEvTxProxy::TEvSubscribeLastStep::TPtr &ev);
+    void Handle(TEvTxProxy::TEvUnsubscribeLastStep::TPtr &ev);
+    void NotifyUpdatedLastStep();
+    void NotifyUpdatedLastStep(const TActorId& actorId, const TLastStepSubscriber& subscriber);
+    void SubscribeToSiblings();
+    void SubscribeToSibling(TSiblingState& state);
+    void UnsubscribeFromSiblings();
+    void Handle(TEvTxProxy::TEvUpdatedLastStep::TPtr &ev);
+    void Handle(TEvTxProxy::TEvRequirePlanSteps::TPtr &ev);
+    void Handle(TEvPipeCache::TEvDeliveryProblem::TPtr &ev);
+
     void Handle(TEvPrivate::TEvPlanTick::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvTxCoordinator::TEvMediatorQueueStop::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvTxCoordinator::TEvMediatorQueueRestart::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvTxCoordinator::TEvMediatorQueueConfirmations::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvTxCoordinator::TEvCoordinatorConfirmPlan::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvMediatorQueueStop::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvMediatorQueueRestart::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvMediatorQueueConfirmations::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvSubDomain::TEvConfigure::TPtr &ev, const TActorContext &ctx);
 
-    void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvTabletPipe::TEvServerConnected::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvTabletPipe::TEvServerDisconnected::TPtr& ev, const TActorContext& ctx);
 
+    void SendStepConfirmations(TCoordinatorStepConfirmations &confirmations, const TActorContext &ctx);
     void DoConfiguration(const TEvSubDomain::TEvConfigure &ev, const TActorContext &ctx, const TActorId &ackTo = TActorId());
 
     void Sync(ui64 mediator, const TActorContext &ctx);
     void Sync(const TActorContext &ctx);
 
-    void PlanTx(TAutoPtr<TTransactionProposal> &proposal, const TActorContext &ctx);
+    void PlanTx(TTransactionProposal &&proposal, const TActorContext &ctx);
 
-    void SchedulePlanTick(const TActorContext &ctx);
-    bool RestoreMediatorInfo(TTabletId mediatorId, TVector<TAutoPtr<TMediatorStep>> &planned, TTransactionContext &txc, /*TKeyBuilder &kb, */THashMap<TTxId,TVector<TTabletId>> &pushToAffected) const;
+    bool AllowReducedPlanResolution() const;
+    void SchedulePlanTick();
+    void SchedulePlanTickExact(ui64 next);
+    void SchedulePlanTickAligned(ui64 next);
+    ui64 AlignPlanStep(ui64 step);
 
     void TryInitMonCounters(const TActorContext &ctx);
     bool OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev, const TActorContext &ctx) override;
@@ -582,16 +713,37 @@ private:
 
     void MaybeFlushAcquireReadStep(const TActorContext &ctx);
 
+    // Attempts to restore missing processing params
+    bool IsTabletInStaticDomain(TAppData *appData);
+    void RestoreProcessingParams(const TActorContext &ctx);
+    void Handle(TEvPrivate::TEvRestoredProcessingParams::TPtr &ev, const TActorContext &ctx);
+
+    // State actor related methods
+    bool StartStateActor();
+    void ConfirmStateActorPersistent();
+    void DetachStateActor();
+
+    // Logic for restoring state from previous generation
+    class TRestoreStateActor;
+    void RestoreState(const TActorId& prevStateActorId, ui64 lastBlockedStep);
+    void Handle(TEvPrivate::TEvRestoredStateMissing::TPtr& ev);
+    void Handle(TEvPrivate::TEvRestoredState::TPtr& ev);
+
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::TX_COORDINATOR_ACTOR;
     }
 
     TTxCoordinator(TTabletStorageInfo *info, const TActorId &tablet);
+    ~TTxCoordinator();
 
     // no incomming pipes is allowed in StateInit
     STFUNC_TABLET_INIT(StateInit,
-                HFunc(TEvents::TEvPoisonPill, Handle);
+                HFunc(TEvMediatorQueueConfirmations, Handle);
+                HFunc(TEvMediatorQueueRestart, Handle);
+                HFunc(TEvMediatorQueueStop, Handle);
+                hFunc(TEvPrivate::TEvRestoredStateMissing, Handle);
+                hFunc(TEvPrivate::TEvRestoredState, Handle);
             )
 
     STFUNC_TABLET_DEF(StateSync,
@@ -601,9 +753,16 @@ public:
                 HFunc(TEvPrivate::TEvAcquireReadStepFlush, Handle);
                 HFunc(TEvTxProxy::TEvSubscribeReadStep, Handle);
                 HFunc(TEvTxProxy::TEvUnsubscribeReadStep, Handle);
-                HFunc(TEvents::TEvPoisonPill, Handle);
+                hFunc(TEvTxProxy::TEvSubscribeLastStep, Handle);
+                hFunc(TEvTxProxy::TEvUnsubscribeLastStep, Handle);
+                HFunc(TEvMediatorQueueConfirmations, Handle);
+                HFunc(TEvMediatorQueueRestart, Handle);
+                HFunc(TEvMediatorQueueStop, Handle);
                 HFunc(TEvTabletPipe::TEvServerConnected, Handle);
                 HFunc(TEvTabletPipe::TEvServerDisconnected, Handle);
+                HFunc(TEvPrivate::TEvRestoredProcessingParams, Handle);
+                hFunc(TEvPrivate::TEvRestoredStateMissing, Handle);
+                hFunc(TEvPrivate::TEvRestoredState, Handle);
             )
 
     STFUNC_TABLET_DEF(StateWork,
@@ -613,14 +772,18 @@ public:
                 HFunc(TEvPrivate::TEvAcquireReadStepFlush, Handle);
                 HFunc(TEvTxProxy::TEvSubscribeReadStep, Handle);
                 HFunc(TEvTxProxy::TEvUnsubscribeReadStep, Handle);
+                hFunc(TEvTxProxy::TEvSubscribeLastStep, Handle);
+                hFunc(TEvTxProxy::TEvUnsubscribeLastStep, Handle);
                 HFunc(TEvPrivate::TEvPlanTick, Handle);
-                HFunc(TEvTxCoordinator::TEvMediatorQueueConfirmations, Handle);
-                HFunc(TEvTxCoordinator::TEvMediatorQueueRestart, Handle);
-                HFunc(TEvTxCoordinator::TEvMediatorQueueStop, Handle);
-                HFunc(TEvTxCoordinator::TEvCoordinatorConfirmPlan, Handle);
-                HFunc(TEvents::TEvPoisonPill, Handle);
+                HFunc(TEvMediatorQueueConfirmations, Handle);
+                HFunc(TEvMediatorQueueRestart, Handle);
+                HFunc(TEvMediatorQueueStop, Handle);
                 HFunc(TEvTabletPipe::TEvServerConnected, Handle);
                 HFunc(TEvTabletPipe::TEvServerDisconnected, Handle);
+                HFunc(TEvPrivate::TEvRestoredProcessingParams, Handle);
+                hFunc(TEvTxProxy::TEvUpdatedLastStep, Handle);
+                hFunc(TEvTxProxy::TEvRequirePlanSteps, Handle);
+                hFunc(TEvPipeCache::TEvDeliveryProblem, Handle);
             )
 
    STFUNC_TABLET_IGN(StateBroken,)

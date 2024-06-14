@@ -1,9 +1,9 @@
 #include "mkql_squeeze_to_list.h"
-#include "mkql_llvm_base.h"
 
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>  // Y_IGNORE
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -16,14 +16,13 @@ public:
     class TState: public TComputationValue<TState> {
         using TBase = TComputationValue<TState>;
     public:
-        using TLLVMBase = TLLVMFieldsStructure<TBase>;
         TState(TMemoryUsageInfo* memInfo, ui64 limit)
             : TBase(memInfo), Limit(limit) {
         }
 
         NUdf::TUnboxedValuePod Pull(TComputationContext& ctx) {
             if (Accumulator.empty())
-                return ctx.HolderFactory.GetEmptyContainer();
+                return ctx.HolderFactory.GetEmptyContainerLazy();
 
             NUdf::TUnboxedValue* items = nullptr;
             const auto list = ctx.HolderFactory.CreateDirectArrayHolder(Accumulator.size(), items);
@@ -32,7 +31,7 @@ public:
             return list;
         }
 
-        bool Push(NUdf::TUnboxedValuePod value) {
+        bool Put(NUdf::TUnboxedValuePod value) {
             Accumulator.emplace_back(std::move(value));
             return Limit != 0 && Limit <= Accumulator.size();
         }
@@ -56,7 +55,7 @@ public:
         while (const auto statePtr = static_cast<TState*>(state.AsBoxed().Get())) {
             if (auto item = Flow->GetValue(ctx); item.IsYield()) {
                 return item.Release();
-            } else if (item.IsFinish() || statePtr->Push(item.Release())) {
+            } else if (item.IsFinish() || statePtr->Put(item.Release())) {
                 const auto list = statePtr->Pull(ctx);
                 state = NUdf::TUnboxedValuePod::MakeFinish();
                 return list;
@@ -66,9 +65,9 @@ public:
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    class TLLVMFieldsStructureForState: public TState::TLLVMBase {
+    class TLLVMFieldsStructureForState: public TLLVMFieldsStructure<TComputationValue<TState>> {
     private:
-        using TBase = typename TState::TLLVMBase;
+        using TBase = TLLVMFieldsStructure<TComputationValue<TState>>;
         llvm::PointerType* StructPtrType;
     protected:
         using TBase::Context;
@@ -85,10 +84,9 @@ public:
     };
 
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
         TLLVMFieldsStructureForState fieldsStruct(context);
         const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
@@ -140,7 +138,7 @@ public:
 
         block = plus;
 
-        const auto push = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Push));
+        const auto push = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Put));
 
         const auto arg = WrapArgumentForWindows(item, ctx, block);
 
@@ -154,7 +152,7 @@ public:
 
         const auto pull = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Pull));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
             const auto pullType = FunctionType::get(valueType, {stateArg->getType(), ctx.Ctx->getType()}, false);
             const auto pullPtr = CastInst::Create(Instruction::IntToPtr, pull, PointerType::getUnqual(pullType), "pull", block);
             const auto list = CallInst::Create(pullType, pullPtr, {stateArg, ctx.Ctx}, "list", block);

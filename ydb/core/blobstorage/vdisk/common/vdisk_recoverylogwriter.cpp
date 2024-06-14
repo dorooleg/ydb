@@ -73,7 +73,7 @@ LWTRACE_USING(BLOBSTORAGE_PROVIDER);
                 , LsnSegmentStart(lsnSegmentStart)
                 , Lsn(lsn)
             {
-                Y_VERIFY_DEBUG(lsn >= lsnSegmentStart);
+                Y_DEBUG_ABORT_UNLESS(lsn >= lsnSegmentStart);
             }
 
             struct TGreater {
@@ -114,7 +114,7 @@ LWTRACE_USING(BLOBSTORAGE_PROVIDER);
                     case TEvBlobStorage::EvMultiLog:
                         {
                             NPDisk::TEvMultiLog *evLogs = ev->Get<NPDisk::TEvMultiLog>();
-                            for (auto &log : evLogs->Logs) {
+                            for (auto &[log, _] : evLogs->Logs) {
                                 LWTRACK(VDiskRecoveryLogWriterVPutIsSent, log->Orbit, Owner, log->Lsn);
                             }
                             break;
@@ -130,7 +130,7 @@ LWTRACE_USING(BLOBSTORAGE_PROVIDER);
             ui64 lsn = ev->Get()->Lsn;
             LWTRACK(VDiskRecoveryLogWriterVPutIsRecieved, ev->Get()->Orbit, Owner, lsn);
             TLogSignature signature = ev->Get()->Signature.GetUnmasked();
-            Y_VERIFY(TLogSignature::First < signature && signature < TLogSignature::Max);
+            Y_ABORT_UNLESS(TLogSignature::First < signature && signature < TLogSignature::Max);
             i64 msgSize = ev->Get()->ApproximateSize();
             // count written bytes
             *LsmLogBytesWritten += msgSize;
@@ -154,15 +154,15 @@ LWTRACE_USING(BLOBSTORAGE_PROVIDER);
             NPDisk::TEvMultiLog *logs = ev->Get();
             ui64 lsnSegmentStart = logs->LsnSeg.First;
             ui64 lsn = logs->LsnSeg.Last;
-            Y_VERIFY_DEBUG_S(lsnSegmentStart == logs->Logs.front()->LsnSegmentStart && lsn == logs->Logs.back()->Lsn,
+            Y_VERIFY_DEBUG_S(lsnSegmentStart == logs->Logs.front().Event->LsnSegmentStart && lsn == logs->Logs.back().Event->Lsn,
                     "LsnSeg not match with inner logs"
                     << "LsnSeg# " << logs->LsnSeg.ToString()
-                    << "Logs.front().LsnSegmentStart# " << logs->Logs.front()->LsnSegmentStart
-                    << "Logs.back().Lsn# " << logs->Logs.back()->Lsn);
-            for (auto &log : logs->Logs) {
+                    << "Logs.front().LsnSegmentStart# " << logs->Logs.front().Event->LsnSegmentStart
+                    << "Logs.back().Lsn# " << logs->Logs.back().Event->Lsn);
+            for (auto &[log, _] : logs->Logs) {
                 LWTRACK(VDiskRecoveryLogWriterVPutIsRecieved, log->Orbit, Owner, log->Lsn);
                 TLogSignature signature = log->Signature.GetUnmasked();
-                Y_VERIFY(TLogSignature::First < signature && signature < TLogSignature::Max);
+                Y_ABORT_UNLESS(TLogSignature::First < signature && signature < TLogSignature::Max);
                 i64 msgSize = log->ApproximateSize();
                 // count written bytes
                 *LsmLogBytesWritten += msgSize;

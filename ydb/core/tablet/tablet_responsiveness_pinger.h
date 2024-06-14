@@ -1,7 +1,11 @@
 #pragma once
 #include "defs.h"
 #include "tablet_counters.h"
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+
+#include <ydb/library/services/services.pb.h>
+
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+
 
 namespace NKikimr {
 

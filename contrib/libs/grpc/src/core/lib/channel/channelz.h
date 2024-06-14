@@ -1,44 +1,50 @@
-/*
- *
- * Copyright 2018 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2018 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
-#ifndef GRPC_CORE_LIB_CHANNEL_CHANNELZ_H
-#define GRPC_CORE_LIB_CHANNEL_CHANNELZ_H
+#ifndef GRPC_SRC_CORE_LIB_CHANNEL_CHANNELZ_H
+#define GRPC_SRC_CORE_LIB_CHANNEL_CHANNELZ_H
 
 #include <grpc/support/port_platform.h>
 
+#include <stddef.h>
+
 #include <atomic>
+#include <cstdint>
+#include <map>
 #include <set>
 #include <util/generic/string.h>
 #include <util/string/cast.h>
+#include <utility>
+#include <vector>
 
-#include "y_absl/container/inlined_vector.h"
+#include "y_absl/strings/string_view.h"
 #include "y_absl/types/optional.h"
 
 #include <grpc/grpc.h>
+#include <grpc/impl/connectivity_state.h>
+#include <grpc/slice.h>
 
 #include "src/core/lib/channel/channel_trace.h"
 #include "src/core/lib/gpr/time_precise.h"
-#include "src/core/lib/gprpp/manual_constructor.h"
+#include "src/core/lib/gpr/useful.h"
 #include "src/core/lib/gprpp/ref_counted.h"
 #include "src/core/lib/gprpp/ref_counted_ptr.h"
 #include "src/core/lib/gprpp/sync.h"
-#include "src/core/lib/iomgr/error.h"
-#include "src/core/lib/iomgr/exec_ctx.h"
 #include "src/core/lib/json/json.h"
 
 // Channel arg key for channelz node.
@@ -48,14 +54,14 @@
 #define GRPC_ARG_CHANNELZ_IS_INTERNAL_CHANNEL \
   "grpc.channelz_is_internal_channel"
 
-/** This is the default value for whether or not to enable channelz. If
- * GRPC_ARG_ENABLE_CHANNELZ is set, it will override this default value. */
+/// This is the default value for whether or not to enable channelz. If
+/// GRPC_ARG_ENABLE_CHANNELZ is set, it will override this default value.
 #define GRPC_ENABLE_CHANNELZ_DEFAULT true
 
-/** This is the default value for the maximum amount of memory used by trace
- * events per channel trace node. If
- * GRPC_ARG_MAX_CHANNEL_TRACE_EVENT_MEMORY_PER_NODE is set, it will override
- * this default value. */
+/// This is the default value for the maximum amount of memory used by trace
+/// events per channel trace node. If
+/// GRPC_ARG_MAX_CHANNEL_TRACE_EVENT_MEMORY_PER_NODE is set, it will override
+/// this default value.
 #define GRPC_MAX_CHANNEL_TRACE_EVENT_MEMORY_PER_NODE_DEFAULT (1024 * 4)
 
 namespace grpc_core {
@@ -166,8 +172,7 @@ class CallCountingHelper {
   // collects the sharded data into one CounterData struct.
   void CollectData(CounterData* out);
 
-  // Really zero-sized, but 0-sized arrays are illegal on MSVC.
-  y_absl::InlinedVector<AtomicCounterData, 1> per_cpu_counter_data_storage_;
+  std::vector<AtomicCounterData> per_cpu_counter_data_storage_;
   size_t num_cores_ = 0;
 };
 
@@ -176,6 +181,10 @@ class ChannelNode : public BaseNode {
  public:
   ChannelNode(TString target, size_t channel_tracer_max_nodes,
               bool is_internal_channel);
+
+  static y_absl::string_view ChannelArgName() {
+    return GRPC_ARG_CHANNELZ_CHANNEL_NODE;
+  }
 
   // Returns the string description of the given connectivity state.
   static const char* GetChannelConnectivityStateChangeString(
@@ -296,6 +305,14 @@ class SocketNode : public BaseNode {
 
     Json RenderJson();
 
+    static y_absl::string_view ChannelArgName() {
+      return GRPC_ARG_CHANNELZ_SECURITY;
+    }
+
+    static int ChannelArgsCompare(const Security* a, const Security* b) {
+      return QsortCompare(a, b);
+    }
+
     grpc_arg MakeChannelArg() const;
 
     static RefCountedPtr<Security> GetFromChannelArgs(
@@ -355,4 +372,4 @@ class ListenSocketNode : public BaseNode {
 }  // namespace channelz
 }  // namespace grpc_core
 
-#endif /* GRPC_CORE_LIB_CHANNEL_CHANNELZ_H */
+#endif  // GRPC_SRC_CORE_LIB_CHANNEL_CHANNELZ_H

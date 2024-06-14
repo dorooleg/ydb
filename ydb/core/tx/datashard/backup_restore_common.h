@@ -6,6 +6,12 @@
 #include "datashard_pipeline.h"
 #include "execution_unit.h"
 
+#include <ydb/core/base/row_version.h>
+
+#include <util/generic/ptr.h>
+#include <util/generic/string.h>
+#include <util/generic/vector.h>
+
 namespace NKikimr {
 namespace NDataShard {
 
@@ -54,7 +60,7 @@ private:
 
     void PersistResult(TOperation::TPtr op, TTransactionContext& txc) {
         auto* schemeOp = DataShard.FindSchemaTx(op->GetTxId());
-        Y_VERIFY(schemeOp);
+        Y_ABORT_UNLESS(schemeOp);
 
         NIceDb::TNiceDb db(txc.DB);
         DataShard.PersistSchemeTxResult(db, *schemeOp);
@@ -99,7 +105,7 @@ public:
             }
 
             SetWaiting(op);
-            Y_VERIFY_DEBUG(!HasResult(op));
+            Y_DEBUG_ABORT_UNLESS(!HasResult(op));
         }
 
         if (HasResult(op)) {
@@ -110,7 +116,7 @@ public:
             if (ProcessResult(op, ctx)) {
                 PersistResult(op, txc);
             } else {
-                Y_VERIFY_DEBUG(!HasResult(op));
+                Y_DEBUG_ABORT_UNLESS(!HasResult(op));
                 op->SetWaitingForRestartFlag();
                 ctx.Schedule(TDuration::Seconds(1), new TDataShard::TEvPrivate::TEvRestartOperation(op->GetTxId()));
             }
@@ -132,6 +138,53 @@ public:
     }
 
 }; // TBackupRestoreUnitBase
+
+namespace NBackupRestore {
+
+using TVirtualTimestamp = TRowVersion;
+
+enum class EStorageType {
+    YT,
+    S3,
+};
+
+struct TLogMetadata : TSimpleRefCount<TLogMetadata> {
+    using TPtr = TIntrusivePtr<TLogMetadata>;
+
+    const TVirtualTimestamp StartVts;
+    TString ConsistencyKey;
+    EStorageType StorageType;
+    TString StoragePath;
+};
+
+struct TFullBackupMetadata : TSimpleRefCount<TFullBackupMetadata> {
+    using TPtr = TIntrusivePtr<TFullBackupMetadata>;
+
+    const TVirtualTimestamp SnapshotVts;
+    TString ConsistencyKey;
+    TLogMetadata::TPtr FollowingLog;
+    EStorageType StorageType;
+    TString StoragePath;
+};
+
+class TMetadata {
+public:
+    TMetadata() = default;
+    TMetadata(TVector<TFullBackupMetadata::TPtr>&& fullBackups, TVector<TLogMetadata::TPtr>&& logs);
+
+    void AddFullBackup(TFullBackupMetadata::TPtr fullBackup);
+    void AddLog(TLogMetadata::TPtr log);
+    void SetConsistencyKey(const TString& key);
+
+    TString Serialize() const;
+    static TMetadata Deserialize(const TString& metadata);
+private:
+    TString ConsistencyKey;
+    TMap<TVirtualTimestamp, TFullBackupMetadata::TPtr> FullBackups;
+    TMap<TVirtualTimestamp, TLogMetadata::TPtr> Logs;
+};
+
+} // NBackupRestore
 
 } // NDataShard
 } // NKikimr

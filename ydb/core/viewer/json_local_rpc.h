@@ -1,16 +1,16 @@
 #pragma once
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/mon.h>
 #include <library/cpp/protobuf/json/json2proto.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include "viewer.h"
 #include "json_pipe_req.h"
 
 #include <ydb/public/api/grpc/ydb_topic_v1.grpc.pb.h>
-#include <ydb/core/grpc_services/rpc_calls.h>
+#include <ydb/core/grpc_services/rpc_calls_topic.h>
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/status/status.h>
 
@@ -131,7 +131,7 @@ public:
                 NProtobufJson::Json2Proto(postData, request, json2ProtoConfig);
             }
             catch (const yexception& e) {
-                Send(Event->Sender, new NMon::TEvHttpInfoRes(HTTPBADREQUEST, 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+                Send(Event->Sender, new NMon::TEvHttpInfoRes(Viewer->GetHTTPBADREQUEST(Event->Get(), {}, "Bad Request"), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
                 PassAway();
             }
         } else {
@@ -150,7 +150,7 @@ public:
                             (const NThreading::TFuture<TProtoResponse>& future) {
             auto& response = future.GetValueSync();
             auto result = MakeHolder<TEvLocalRpcPrivate::TEvGrpcRequestResult<TProtoResult>>();
-            Y_VERIFY(response.operation().ready());
+            Y_ABORT_UNLESS(response.operation().ready());
             if (response.operation().status() == Ydb::StatusIds::SUCCESS) {
                 TProtoResult rs;
                 response.operation().result().UnpackTo(&rs);
@@ -195,9 +195,9 @@ public:
         TString headers = Viewer->GetHTTPOKJSON(Event->Get());
         if (DescribeResult) {
             if (!DescribeResult->Status->IsSuccess()) {
-                headers = HTTPBADREQUEST;
+                headers = Viewer->GetHTTPBADREQUEST(Event->Get(), {}, "Bad Request");
                 if (DescribeResult->Status->GetStatus() == NYdb::EStatus::UNAUTHORIZED) {
-                    headers = HTTPFORBIDDENJSON;
+                    headers = Viewer->GetHTTPFORBIDDEN(Event->Get());
                 }
             } else {
                 TProtoToJson::ProtoToJson(json, *(DescribeResult->Message), JsonSettings);

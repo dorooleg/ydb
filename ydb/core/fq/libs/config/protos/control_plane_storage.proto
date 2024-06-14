@@ -7,6 +7,7 @@ option java_package = "ru.yandex.kikimr.proto";
 import "ydb/core/fq/libs/config/protos/storage.proto";
 
 import "ydb/library/yql/dq/actors/protos/dq_status_codes.proto";
+import "ydb/public/api/protos/ydb_query.proto";
 
 ////////////////////////////////////////////////////////////
 
@@ -69,4 +70,8 @@ message TControlPlaneStorageConfig {
     string MetricsTtl = 29;
     bool UseDbMapping = 30;
     string DbReloadPeriod = 31;
+    bool DumpRawStatistics = 32;
+    bool IgnorePrivateSources = 33;
+    Ydb.Query.StatsMode StatsMode = 34;
+    repeated string AvailableStreamingConnection = 35;
 }

@@ -2,8 +2,8 @@
 #include "tablet.h"
 #include "tabletid.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 
@@ -46,7 +46,7 @@ public:
     {}
 
     void Bootstrap(const TActorContext &ctx) {
-        const TActorId stateStorageProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(TabletId));
+        const TActorId stateStorageProxyId = MakeStateStorageProxyID();
         ctx.Send(stateStorageProxyId, new TEvStateStorage::TEvLookup(TabletId, 0));
         Become(&TTabletKillRequest::StateFunc);
     }

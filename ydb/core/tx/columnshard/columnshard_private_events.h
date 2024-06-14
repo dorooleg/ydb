@@ -1,9 +1,15 @@
 #pragma once
 
-#include "blob_manager.h"
+#include "blobs_action/abstract/gc.h"
 #include "defs.h"
 
 #include <ydb/core/protos/counters_columnshard.pb.h>
+#include <ydb/core/tx/columnshard/engines/column_engine.h>
+#include <ydb/core/tx/columnshard/normalizer/abstract/abstract.h>
+#include <ydb/core/tx/columnshard/engines/writer/write_controller.h>
+#include <ydb/core/tx/columnshard/engines/writer/indexed_blob_constructor.h>
+#include <ydb/core/tx/data_events/write_data.h>
+#include <ydb/core/formats/arrow/special_keys.h>
 
 namespace NKikimr::NColumnShard {
 
@@ -19,191 +25,93 @@ struct TEvPrivate {
         EvExport,
         EvForget,
         EvGetExported,
+        EvWriteBlobsResult,
+        EvStartReadTask,
+        EvWriteDraft,
+        EvGarbageCollectionFinished,
+        EvTieringModified,
+        EvStartResourceUsageTask,
+        EvNormalizerResult,
+
+        EvWritingAddDataToBuffer,
+        EvWritingFlushBuffer,
+
+        EvExportWritingFinished,
+        EvExportWritingFailed,
+        EvExportCursorSaved,
+        EvExportSaveCursor,
+
         EvEnd
     };
 
     static_assert(EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE), "expect EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE)");
 
+    struct TEvTieringModified: public TEventLocal<TEvTieringModified, EvTieringModified> {
+    };
+
+    struct TEvWriteDraft: public TEventLocal<TEvWriteDraft, EvWriteDraft> {
+        const std::shared_ptr<IWriteController> WriteController;
+        TEvWriteDraft(std::shared_ptr<IWriteController> controller)
+            : WriteController(controller) {
+
+        }
+    };
+
+    class TEvNormalizerResult: public TEventLocal<TEvNormalizerResult, EvNormalizerResult> {
+        NOlap::INormalizerChanges::TPtr Changes;
+    public:
+        TEvNormalizerResult(NOlap::INormalizerChanges::TPtr changes)
+            : Changes(changes)
+        {}
+
+        NOlap::INormalizerChanges::TPtr GetChanges() const {
+            Y_ABORT_UNLESS(!!Changes);
+            return Changes;
+        }
+    };
+
+    struct TEvGarbageCollectionFinished: public TEventLocal<TEvGarbageCollectionFinished, EvGarbageCollectionFinished> {
+        const std::shared_ptr<NOlap::IBlobsGCAction> Action;
+        TEvGarbageCollectionFinished(const std::shared_ptr<NOlap::IBlobsGCAction>& action)
+            : Action(action) {
+
+        }
+    };
+
     /// Common event for Indexing and GranuleCompaction: write index data in TTxWriteIndex transaction.
     struct TEvWriteIndex : public TEventLocal<TEvWriteIndex, EvWriteIndex> {
-        NKikimrProto::EReplyStatus PutStatus = NKikimrProto::UNKNOWN;
-        NOlap::TVersionedIndex IndexInfo;
-        THashMap<ui64, NKikimr::NOlap::TTiering> Tiering;
+        std::shared_ptr<NOlap::TVersionedIndex> IndexInfo;
         std::shared_ptr<NOlap::TColumnEngineChanges> IndexChanges;
-        THashMap<TUnifiedBlobId, std::shared_ptr<arrow::RecordBatch>> CachedBlobs;
-        std::vector<TString> Blobs;
         bool GranuleCompaction{false};
-        TBlobBatch BlobBatch;
         TUsage ResourceUsage;
-        TVector<ui32> YellowMoveChannels;
-        TVector<ui32> YellowStopChannels;
         bool CacheData{false};
         TDuration Duration;
+        TBlobPutResult::TPtr PutResult;
 
-        TEvWriteIndex(NOlap::TVersionedIndex&& indexInfo,
+        TEvWriteIndex(const std::shared_ptr<NOlap::TVersionedIndex>& indexInfo,
             std::shared_ptr<NOlap::TColumnEngineChanges> indexChanges,
-            bool cacheData,
-            THashMap<TUnifiedBlobId, std::shared_ptr<arrow::RecordBatch>>&& cachedBlobs = {})
-            : IndexInfo(std::move(indexInfo))
+            bool cacheData)
+            : IndexInfo(indexInfo)
             , IndexChanges(indexChanges)
-            , CachedBlobs(std::move(cachedBlobs))
             , CacheData(cacheData)
-        {}
-
-        TEvWriteIndex& SetTiering(const THashMap<ui64, NKikimr::NOlap::TTiering>& tiering) {
-            Tiering = tiering;
-            return *this;
-        }
-    };
-
-    struct TEvIndexing : public TEventLocal<TEvIndexing, EvIndexing> {
-        std::unique_ptr<TEvPrivate::TEvWriteIndex> TxEvent;
-
-        explicit TEvIndexing(std::unique_ptr<TEvPrivate::TEvWriteIndex> txEvent)
-            : TxEvent(std::move(txEvent))
-        {}
-    };
-
-    struct TEvCompaction : public TEventLocal<TEvCompaction, EvIndexing> {
-        std::unique_ptr<TEvPrivate::TEvWriteIndex> TxEvent;
-        THashMap<TUnifiedBlobId, std::vector<TBlobRange>> GroupedBlobRanges;
-        THashSet<TUnifiedBlobId> Externals;
-
-        explicit TEvCompaction(std::unique_ptr<TEvPrivate::TEvWriteIndex> txEvent, IBlobExporter& blobManager)
-            : TxEvent(std::move(txEvent))
         {
-            TxEvent->GranuleCompaction = true;
-            Y_VERIFY(TxEvent->IndexChanges);
-
-            GroupedBlobRanges = NOlap::TColumnEngineChanges::GroupedBlobRanges(TxEvent->IndexChanges->SwitchedPortions);
-
-            if (blobManager.HasExternBlobs()) {
-                for (const auto& [blobId, _] : GroupedBlobRanges) {
-                    TEvictMetadata meta;
-                    if (blobManager.GetEvicted(blobId, meta).IsExternal()) {
-                        Externals.insert(blobId);
-                    }
-                }
-            }
-        }
-    };
-
-    struct TEvEviction : public TEventLocal<TEvEviction, EvEviction> {
-        std::unique_ptr<TEvPrivate::TEvWriteIndex> TxEvent;
-        THashMap<TUnifiedBlobId, std::vector<TBlobRange>> GroupedBlobRanges;
-        THashSet<TUnifiedBlobId> Externals;
-
-        explicit TEvEviction(std::unique_ptr<TEvPrivate::TEvWriteIndex> txEvent, IBlobExporter& blobManager,
-                             bool needWrites)
-            : TxEvent(std::move(txEvent))
-        {
-            Y_VERIFY(TxEvent->IndexChanges);
-
-            if (needWrites) {
-                GroupedBlobRanges =
-                    NOlap::TColumnEngineChanges::GroupedBlobRanges(TxEvent->IndexChanges->PortionsToEvict);
-
-                if (blobManager.HasExternBlobs()) {
-                    for (auto& [blobId, _] : GroupedBlobRanges) {
-                        TEvictMetadata meta;
-                        if (blobManager.GetEvicted(blobId, meta).IsExternal()) {
-                            Externals.insert(blobId);
-                        }
-                    }
-                }
-            } else {
-                TxEvent->PutStatus = NKikimrProto::OK;
-            }
+            PutResult = std::make_shared<TBlobPutResult>(NKikimrProto::UNKNOWN);
         }
 
-        bool NeedDataReadWrite() const {
-            return (TxEvent->PutStatus != NKikimrProto::OK);
-        }
-    };
-
-    struct TEvS3Settings : public TEventLocal<TEvS3Settings, EvS3Settings> {
-        NKikimrSchemeOp::TS3Settings Settings;
-
-        explicit TEvS3Settings(const NKikimrSchemeOp::TS3Settings& settings)
-            : Settings(settings)
-        {}
-    };
-
-    struct TEvExport : public TEventLocal<TEvExport, EvExport> {
-        using TBlobDataMap = THashMap<TUnifiedBlobId, TString>;
-
-        NKikimrProto::EReplyStatus Status = NKikimrProto::UNKNOWN;
-        ui64 ExportNo = 0;
-        TString TierName;
-        ui64 PathId = 0;
-        TActorId DstActor;
-        TBlobDataMap Blobs; // src: blobId -> data map; dst: exported blobIds set
-        THashMap<TUnifiedBlobId, TUnifiedBlobId> SrcToDstBlobs;
-        TMap<TString, TString> ErrorStrings;
-
-        explicit TEvExport(ui64 exportNo, const TString& tierName, ui64 pathId, TBlobDataMap&& tierBlobs)
-            : ExportNo(exportNo)
-            , TierName(tierName)
-            , PathId(pathId)
-            , Blobs(std::move(tierBlobs))
-        {
-            Y_VERIFY(ExportNo);
-            Y_VERIFY(!TierName.empty());
-            Y_VERIFY(PathId);
-            Y_VERIFY(!Blobs.empty());
+        const TBlobPutResult& GetPutResult() const {
+            Y_ABORT_UNLESS(PutResult);
+            return *PutResult;
         }
 
-        TEvExport(ui64 exportNo, const TString& tierName, ui64 pathId, TActorId dstActor, TBlobDataMap&& blobs)
-            : ExportNo(exportNo)
-            , TierName(tierName)
-            , PathId(pathId)
-            , DstActor(dstActor)
-            , Blobs(std::move(blobs))
-        {
-            Y_VERIFY(ExportNo);
-            Y_VERIFY(!TierName.empty());
-            Y_VERIFY(PathId);
-            Y_VERIFY(DstActor);
-            Y_VERIFY(!Blobs.empty());
+        NKikimrProto::EReplyStatus GetPutStatus() const {
+            Y_ABORT_UNLESS(PutResult);
+            return PutResult->GetPutStatus();
         }
 
-        void AddResult(const TUnifiedBlobId& blobId, const TString& key, const bool hasError, const TString& errStr) {
-            if (hasError) {
-                Status = NKikimrProto::ERROR;
-                Y_VERIFY(ErrorStrings.emplace(key, errStr).second, "%s", key.data());
-                Blobs.erase(blobId);
-            } else if (!ErrorStrings.contains(key)) { // (OK + !OK) == !OK
-                Y_VERIFY(Blobs.contains(blobId));
-                if (Status == NKikimrProto::UNKNOWN) {
-                    Status = NKikimrProto::OK;
-                }
-            }
+        void SetPutStatus(const NKikimrProto::EReplyStatus& status) {
+            Y_ABORT_UNLESS(PutResult);
+            PutResult->SetPutStatus(status);
         }
-
-        bool Finished() const {
-            return (Blobs.size() + ErrorStrings.size()) == SrcToDstBlobs.size();
-        }
-
-        TString SerializeErrorsToString() const {
-            TStringBuilder sb;
-            for (auto&& i : ErrorStrings) {
-                sb << i.first << "=" << i.second << ";";
-            }
-            return sb;
-        }
-    };
-
-    struct TEvForget: public TEventLocal<TEvForget, EvForget> {
-        NKikimrProto::EReplyStatus Status = NKikimrProto::UNKNOWN;
-        std::vector<NOlap::TEvictedBlob> Evicted;
-        TString ErrorStr;
-    };
-
-    struct TEvGetExported : public TEventLocal<TEvGetExported, EvGetExported> {
-        TActorId DstActor; // It's a BlobCache actor. S3 actor sends TEvReadBlobRangesResult to it as result
-        ui64 DstCookie;
-        NOlap::TEvictedBlob Evicted;
-        std::vector<NOlap::TBlobRange> BlobRanges;
     };
 
     struct TEvScanStats : public TEventLocal<TEvScanStats, EvScanStats> {
@@ -227,6 +135,31 @@ struct TEvPrivate {
         {}
 
         bool Manual;
+    };
+
+    class TEvWriteBlobsResult : public TEventLocal<TEvWriteBlobsResult, EvWriteBlobsResult> {
+    private:
+        NColumnShard::TBlobPutResult::TPtr PutResult;
+        NOlap::TWritingBuffer WritesBuffer;
+    public:
+        TEvWriteBlobsResult(const NColumnShard::TBlobPutResult::TPtr& putResult, NOlap::TWritingBuffer&& writesBuffer)
+            : PutResult(putResult)
+            , WritesBuffer(std::move(writesBuffer))
+        {
+            Y_ABORT_UNLESS(PutResult);
+        }
+
+        const NColumnShard::TBlobPutResult& GetPutResult() const {
+            return *PutResult;
+        }
+
+        const NOlap::TWritingBuffer& GetWritesBuffer() const {
+            return WritesBuffer;
+        }
+
+        NOlap::TWritingBuffer& MutableWritesBuffer() {
+            return WritesBuffer;
+        }
     };
 };
 

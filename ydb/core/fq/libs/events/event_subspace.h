@@ -1,6 +1,6 @@
 #pragma once
 
-#include <library/cpp/actors/core/events.h>
+#include <ydb/library/actors/core/events.h>
 
 namespace NFq {
 
@@ -30,6 +30,8 @@ struct TYqEventSubspace {
         QuotaService,
         RateLimiter,
         ControlPlaneConfig,
+        YdbCompute,
+        TableOverFq,
 
         SubspacesEnd,
     };

@@ -1,14 +1,12 @@
 #pragma once
 
-#include "topic_impl.h"
-#include "write_session_impl.h"
-
-#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/impl/common.h>
-#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/impl/impl_tracker.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/public/sdk/cpp/client/ydb_topic/common/callback_context.h>
+#include <ydb/public/sdk/cpp/client/ydb_topic/impl/write_session_impl.h>
+#include <ydb/public/sdk/cpp/client/ydb_topic/impl/topic_impl.h>
 
 #include <util/generic/buffer.h>
 
+#include <atomic>
 
 namespace NYdb::NTopic {
 
@@ -16,7 +14,7 @@ namespace NYdb::NTopic {
 // TWriteSession
 
 class TWriteSession : public IWriteSession,
-                      public std::enable_shared_from_this<TWriteSession> {
+                      public TContextOwner<TWriteSessionImpl> {
 private:
     friend class TSimpleBlockingWriteSession;
     friend class TTopicClient;
@@ -38,23 +36,25 @@ public:
     void WriteEncoded(TContinuationToken&& continuationToken, TStringBuf data, ECodec codec, ui32 originalSize,
                TMaybe<ui64> seqNo = Nothing(), TMaybe<TInstant> createTimestamp = Nothing()) override;
 
+    void Write(TContinuationToken&& continuationToken, TWriteMessage&& message) override;
+
+    void WriteEncoded(TContinuationToken&& continuationToken, TWriteMessage&& message) override;
 
     NThreading::TFuture<void> WaitEvent() override;
 
     // Empty maybe - block till all work is done. Otherwise block at most at closeTimeout duration.
     bool Close(TDuration closeTimeout = TDuration::Max()) override;
 
-    TWriterCounters::TPtr GetCounters() override {Y_FAIL("Unimplemented"); } //ToDo - unimplemented;
+    TWriterCounters::TPtr GetCounters() override {Y_ABORT("Unimplemented"); } //ToDo - unimplemented;
 
     ~TWriteSession(); // will not call close - destroy everything without acks
 
 private:
     void Start(const TDuration& delay);
-
-private:
-    std::shared_ptr<NPersQueue::TImplTracker> Tracker;
-    std::shared_ptr<TWriteSessionImpl> Impl;
 };
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// TSimpleBlockingWriteSession
 
 class TSimpleBlockingWriteSession : public ISimpleBlockingWriteSession {
 public:
@@ -66,6 +66,8 @@ public:
 
     bool Write(TStringBuf data, TMaybe<ui64> seqNo = Nothing(), TMaybe<TInstant> createTimestamp = Nothing(),
                const TDuration& blockTimeout = TDuration::Max()) override;
+
+    bool Write(TWriteMessage&& message, const TDuration& blockTimeout = TDuration::Max()) override;
 
     ui64 GetInitSeqNo() override;
 
@@ -83,10 +85,8 @@ private:
     void HandleReady(TWriteSessionEvent::TReadyToAcceptEvent&);
     void HandleClosed(const TSessionClosedEvent&);
 
-    TAdaptiveLock Lock;
-    std::queue<TContinuationToken> ContinueTokens;
-    bool Closed = false;
+    std::atomic_bool Closed = false;
 };
 
 
-}; // namespace NYdb::NTopic
+}  // namespace NYdb::NTopic

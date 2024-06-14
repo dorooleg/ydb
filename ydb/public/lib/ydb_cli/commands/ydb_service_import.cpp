@@ -1,7 +1,10 @@
 #include "ydb_service_import.h"
 
+#include "ydb_common.h"
+
 #include <ydb/public/lib/ydb_cli/common/normalize_path.h>
 #include <ydb/public/lib/ydb_cli/common/print_operation.h>
+#include <ydb/public/lib/ydb_cli/common/interactive.h>
 #include <ydb/public/lib/ydb_cli/import/import.h>
 #include <ydb/library/backup/util.h>
 
@@ -15,22 +18,11 @@
 #include <unistd.h>
 #endif
 
-namespace NYdb {
-namespace NConsoleClient {
-namespace {
-    bool IsStdinInteractive() {
-#if defined(_win32_)
-    errno = 0;
-    bool value = _isatty(_fileno(stdin));
-    return value || (errno == EBADF);
-#elif defined(_unix_)
-    errno = 0;
-    bool value = isatty(fileno(stdin));
-    return value || (errno == EBADF);
-#endif
-    return true;
+namespace NYdb::NDump {
+    extern const char SCHEME_FILE_NAME[];
 }
-}
+
+namespace NYdb::NConsoleClient {
 
 TCommandImport::TCommandImport()
     : TClientCommandTree("import", {}, "Import service operations")
@@ -100,6 +92,9 @@ void TCommandImportFromS3::Config(TConfig& config) {
     config.Opts->AddLongOption("retries", "Number of retries")
         .RequiredArgument("NUM").StoreResult(&NumberOfRetries).DefaultValue(NumberOfRetries);
 
+    config.Opts->AddLongOption("use-virtual-addressing", "S3 bucket virtual addressing")
+        .RequiredArgument("BOOL").StoreResult<bool>(&UseVirtualAddressing).DefaultValue("true");
+
     AddDeprecatedJsonOption(config);
     AddFormats(config, { EOutputFormat::Pretty, EOutputFormat::ProtoJsonBase64 });
     config.Opts->MutuallyExclusive("json", "format");
@@ -134,15 +129,47 @@ int TCommandImportFromS3::Run(TConfig& config) {
     settings.AccessKey(AwsAccessKey);
     settings.SecretKey(AwsSecretKey);
 
-    for (const auto& item : Items) {
-        settings.AppendItem({item.Source, item.Destination});
-    }
-
     if (Description) {
         settings.Description(Description);
     }
 
     settings.NumberOfRetries(NumberOfRetries);
+#if defined(_win32_)
+    for (const auto& item : Items) {
+        settings.AppendItem({item.Source, item.Destination});
+    }
+#else
+    InitAwsAPI();
+    try {
+        auto s3Client = CreateS3ClientWrapper(settings);
+        for (auto item : Items) {
+            std::optional<TString> token;
+            if (!item.Source.empty() && item.Source.back() != '/') {
+                item.Source += "/";
+            }
+            if (!item.Destination.empty() && item.Destination.back() == '.') {
+                item.Destination.pop_back();
+            }
+            if (item.Destination.empty() || item.Destination.back() != '/') {
+                item.Destination += "/";
+            }
+            do {
+                auto listResult = s3Client->ListObjectKeys(item.Source, token);
+                token = listResult.NextToken;
+                for (TStringBuf key : listResult.Keys) {
+                    if (key.ChopSuffix(NDump::SCHEME_FILE_NAME)) {
+                        TString destination = item.Destination + key.substr(item.Source.Size());
+                        settings.AppendItem({TString(key), std::move(destination)});
+                    }
+                }
+            } while (token);
+        }
+    } catch (...) {
+        ShutdownAwsAPI();
+        throw;
+    }
+    ShutdownAwsAPI();
+#endif
 
     TImportClient client(CreateDriver(config));
     TImportFromS3Response response = client.ImportFromS3(std::move(settings)).GetValueSync();
@@ -250,6 +277,7 @@ void TCommandImportFromCsv::Config(TConfig& config) {
 int TCommandImportFromCsv::Run(TConfig& config) {
     TImportFileSettings settings;
     settings.OperationTimeout(OperationTimeout);
+    settings.ClientTimeout(OperationTimeout + TDuration::MilliSeconds(200));
     settings.Format(InputFormat);
     settings.MaxInFlightRequests(MaxInFlightRequests);
     settings.BytesPerRequest(NYdb::SizeFromString(BytesPerRequest));
@@ -258,7 +286,9 @@ int TCommandImportFromCsv::Run(TConfig& config) {
     settings.Header(Header);
     settings.NewlineDelimited(NewlineDelimited);
     settings.HeaderRow(HeaderRow);
-    settings.NullValue(NullValue);
+    if (config.ParseResult->Has("null-value")) {
+        settings.NullValue(NullValue);
+    }
 
     if (Delimiter.size() != 1) {
         throw TMisuseException()
@@ -323,5 +353,5 @@ int TCommandImportFromParquet::Run(TConfig& config) {
 
     return EXIT_SUCCESS;
 }
-}
+
 }

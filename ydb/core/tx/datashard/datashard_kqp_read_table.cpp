@@ -4,7 +4,7 @@
 #include <ydb/core/kqp/runtime/kqp_read_table.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/tablet_flat/flat_database.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 
@@ -203,7 +203,7 @@ public:
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
         Y_UNUSED(ctx, block);
-        Y_FAIL("LLVM compilation is not implemented for OLTP-workload");
+        Y_ABORT("LLVM compilation is not implemented for OLTP-workload");
     }
 #endif
 
@@ -243,7 +243,7 @@ protected:
     TSmallVec<bool> SkipNullKeys;
     TKqpTableStats& ShardTableStats;
     TKqpTableStats& TaskTableStats;
-    using TTableIterator = std::conditional_t<IsReverse, NTable::TTableReverseIt, NTable::TTableIt>;
+    using TTableIterator = std::conditional_t<IsReverse, NTable::TTableReverseIter, NTable::TTableIter>;
     mutable TAutoPtr<TTableIterator> Iterator;
     mutable std::optional<ui64> Remains;
 };

@@ -17,11 +17,13 @@ TController::TController(const TActorId& tablet, TTabletStorageInfo* info)
 
 void TController::OnDetach(const TActorContext& ctx) {
     CLOG_T(ctx, "OnDetach");
+    Cleanup(ctx);
     Die(ctx);
 }
 
 void TController::OnTabletDead(TEvTablet::TEvTabletDead::TPtr&, const TActorContext& ctx) {
     CLOG_T(ctx, "OnTabletDead");
+    Cleanup(ctx);
     Die(ctx);
 }
 
@@ -35,20 +37,13 @@ void TController::DefaultSignalTabletActive(const TActorContext&) {
 }
 
 STFUNC(TController::StateInit) {
-    switch (ev->GetTypeRewrite()) {
-        HFunc(TEvents::TEvPoison, Handle);
-    default:
-        return StateInitImpl(ev, SelfId());
-    }
-}
-
-STFUNC(TController::StateZombie) {
     StateInitImpl(ev, SelfId());
 }
 
 STFUNC(TController::StateWork) {
     switch (ev->GetTypeRewrite()) {
         HFunc(TEvController::TEvCreateReplication, Handle);
+        HFunc(TEvController::TEvAlterReplication, Handle);
         HFunc(TEvController::TEvDropReplication, Handle);
         HFunc(TEvPrivate::TEvDropReplication, Handle);
         HFunc(TEvPrivate::TEvDiscoveryTargetsResult, Handle);
@@ -57,12 +52,34 @@ STFUNC(TController::StateWork) {
         HFunc(TEvPrivate::TEvDropStreamResult, Handle);
         HFunc(TEvPrivate::TEvCreateDstResult, Handle);
         HFunc(TEvPrivate::TEvDropDstResult, Handle);
+        HFunc(TEvPrivate::TEvResolveSecretResult, Handle);
         HFunc(TEvPrivate::TEvResolveTenantResult, Handle);
         HFunc(TEvPrivate::TEvUpdateTenantNodes, Handle);
+        HFunc(TEvPrivate::TEvRunWorkers, Handle);
         HFunc(TEvDiscovery::TEvDiscoveryData, Handle);
         HFunc(TEvDiscovery::TEvError, Handle);
-        HFunc(TEvents::TEvPoison, Handle);
+        HFunc(TEvService::TEvStatus, Handle);
+        HFunc(TEvService::TEvRunWorker, Handle);
+        HFunc(TEvInterconnect::TEvNodeDisconnected, Handle);
+    default:
+        HandleDefaultEvents(ev, SelfId());
     }
+}
+
+void TController::Cleanup(const TActorContext& ctx) {
+    for (auto& [_, replication] : Replications) {
+        replication->Shutdown(ctx);
+    }
+
+    if (auto actorId = std::exchange(DiscoveryCache, {})) {
+        Send(actorId, new TEvents::TEvPoison());
+    }
+
+    for (const auto& [nodeId, _] : Sessions) {
+        CloseSession(nodeId, ctx);
+    }
+
+    NodesManager.Shutdown(ctx);
 }
 
 void TController::SwitchToWork(const TActorContext& ctx) {
@@ -89,6 +106,11 @@ void TController::Reset() {
 void TController::Handle(TEvController::TEvCreateReplication::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
     RunTxCreateReplication(ev, ctx);
+}
+
+void TController::Handle(TEvController::TEvAlterReplication::TPtr& ev, const TActorContext& ctx) {
+    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
+    RunTxAlterReplication(ev, ctx);
 }
 
 void TController::Handle(TEvController::TEvDropReplication::TPtr& ev, const TActorContext& ctx) {
@@ -131,6 +153,11 @@ void TController::Handle(TEvPrivate::TEvDropDstResult::TPtr& ev, const TActorCon
     RunTxDropDstResult(ev, ctx);
 }
 
+void TController::Handle(TEvPrivate::TEvResolveSecretResult::TPtr& ev, const TActorContext& ctx) {
+    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
+    RunTxResolveSecretResult(ev, ctx);
+}
+
 void TController::Handle(TEvPrivate::TEvResolveTenantResult::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
 
@@ -157,7 +184,7 @@ void TController::Handle(TEvPrivate::TEvResolveTenantResult::TPtr& ev, const TAc
     } else {
         CLOG_E(ctx, "Resolve tenant error"
             << ": rid# " << rid);
-        Y_VERIFY(!tenant);
+        Y_ABORT_UNLESS(!tenant);
     }
 
     replication->SetTenant(tenant);
@@ -176,11 +203,22 @@ void TController::Handle(TEvPrivate::TEvUpdateTenantNodes::TPtr& ev, const TActo
 }
 
 void TController::Handle(TEvDiscovery::TEvDiscoveryData::TPtr& ev, const TActorContext& ctx) {
-    Y_VERIFY(ev->Get()->CachedMessageData && ev->Get()->CachedMessageData->Info);
+    Y_ABORT_UNLESS(ev->Get()->CachedMessageData);
+    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
 
-    CLOG_T(ctx, "Handle " << ev->Get()->CachedMessageData->Info->ToString());
+    auto result = NodesManager.ProcessResponse(ev, ctx);
 
-    NodesManager.ProcessResponse(ev, ctx);
+    for (auto nodeId : result.NewNodes) {
+        if (!Sessions.contains(nodeId)) {
+            CreateSession(nodeId, ctx);
+        }
+    }
+
+    for (auto nodeId : result.RemovedNodes) {
+        if (Sessions.contains(nodeId)) {
+            DeleteSession(nodeId, ctx);
+        }
+    }
 }
 
 void TController::Handle(TEvDiscovery::TEvError::TPtr& ev, const TActorContext& ctx) {
@@ -188,21 +226,218 @@ void TController::Handle(TEvDiscovery::TEvError::TPtr& ev, const TActorContext& 
     NodesManager.ProcessResponse(ev, ctx);
 }
 
-void TController::Handle(TEvents::TEvPoison::TPtr& ev, const TActorContext& ctx) {
+void TController::CreateSession(ui32 nodeId, const TActorContext& ctx) {
+    CLOG_D(ctx, "Create session"
+        << ": nodeId# " << nodeId);
+
+    Y_ABORT_UNLESS(!Sessions.contains(nodeId));
+    Sessions.emplace(nodeId, TSessionInfo());
+
+    auto ev = MakeHolder<TEvService::TEvHandshake>(TabletID(), Executor()->Generation());
+    ui32 flags = 0;
+    if (SelfId().NodeId() != nodeId) {
+        flags = IEventHandle::FlagSubscribeOnSession;
+    }
+
+    Send(MakeReplicationServiceId(nodeId), std::move(ev), flags);
+}
+
+void TController::DeleteSession(ui32 nodeId, const TActorContext& ctx) {
+    CLOG_D(ctx, "Delete session"
+        << ": nodeId# " << nodeId);
+
+    Y_ABORT_UNLESS(Sessions.contains(nodeId));
+    auto& session = Sessions[nodeId];
+
+    for (const auto& id : session.GetWorkers()) {
+        auto it = Workers.find(id);
+        if (it == Workers.end()) {
+            continue;
+        }
+
+        auto& worker = it->second;
+        worker.ClearSession();
+
+        if (worker.HasCommand()) {
+            WorkersToRun.insert(id);
+        }
+    }
+
+    Sessions.erase(nodeId);
+    CloseSession(nodeId, ctx);
+    ScheduleRunWorkers();
+}
+
+void TController::CloseSession(ui32 nodeId, const TActorContext& ctx) {
+    CLOG_T(ctx, "Close session"
+        << ": nodeId# " << nodeId);
+
+    if (SelfId().NodeId() != nodeId) {
+        Send(ctx.InterconnectProxy(nodeId), new TEvents::TEvUnsubscribe());
+    }
+}
+
+void TController::Handle(TEvService::TEvStatus::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
 
-    for (auto& [_, replication] : Replications) {
-        replication->Shutdown(ctx);
+    const auto nodeId = ev->Sender.NodeId();
+    if (!Sessions.contains(nodeId)) {
+        return;
     }
 
-    if (auto actorId = std::exchange(DiscoveryCache, {})) {
-        Send(actorId, new TEvents::TEvPoison());
+    auto& session = Sessions[nodeId];
+    session.SetReady();
+
+    for (const auto& workerIdentity : ev->Get()->Record.GetWorkers()) {
+        const auto id = TWorkerId::Parse(workerIdentity);
+
+        auto it = Workers.find(id);
+        if (it == Workers.end()) {
+            it = Workers.emplace(id, TWorkerInfo()).first;
+        }
+
+        auto& worker = it->second;
+        if (worker.HasSession() && Sessions.contains(worker.GetSession())) {
+            StopWorker(worker.GetSession(), id);
+        }
+
+        session.AttachWorker(id);
+        worker.AttachSession(nodeId);
+    }
+}
+
+void TController::StopWorker(ui32 nodeId, const TWorkerId& id) {
+    LOG_D("Stop worker"
+        << ": nodeId# " << nodeId
+        << ", workerId# " << id);
+
+    Y_ABORT_UNLESS(Sessions.contains(nodeId));
+    auto& session = Sessions[nodeId];
+
+    auto ev = MakeHolder<TEvService::TEvStopWorker>();
+    auto& record = ev->Record;
+
+    auto& controller = *record.MutableController();
+    controller.SetTabletId(TabletID());
+    controller.SetGeneration(Executor()->Generation());
+    id.Serialize(*record.MutableWorker());
+
+    Send(MakeReplicationServiceId(nodeId), std::move(ev));
+    session.DetachWorker(id);
+}
+
+void TController::Handle(TEvService::TEvRunWorker::TPtr& ev, const TActorContext& ctx) {
+    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
+
+    auto& record = ev->Get()->Record;
+    const auto id = TWorkerId::Parse(record.GetWorker());
+    auto* cmd = record.MutableCommand();
+
+    auto it = Workers.find(id);
+    if (it == Workers.end()) {
+        it = Workers.emplace(id, TWorkerInfo(cmd)).first;
     }
 
-    NodesManager.Shutdown(ctx);
+    auto& worker = it->second;
+    if (!worker.HasCommand()) {
+        worker.SetCommand(cmd);
+    }
 
-    Send(Tablet(), new TEvents::TEvPoison());
-    Become(&TThis::StateZombie);
+    if (!worker.HasSession()) {
+        WorkersToRun.insert(id);
+    }
+
+    ScheduleRunWorkers();
+}
+
+void TController::ScheduleRunWorkers() {
+    if (RunWorkersScheduled || !WorkersToRun) {
+        return;
+    }
+
+    Schedule(TDuration::MilliSeconds(100), new TEvPrivate::TEvRunWorkers());
+    RunWorkersScheduled = true;
+}
+
+void TController::Handle(TEvPrivate::TEvRunWorkers::TPtr&, const TActorContext& ctx) {
+    CLOG_D(ctx, "Run workers"
+        << ": queue# " << WorkersToRun.size());
+
+    static constexpr ui32 limit = 100;
+    ui32 i = 0;
+
+    for (auto iter = WorkersToRun.begin(); iter != WorkersToRun.end() && i < limit;) {
+        const auto id = *iter;
+
+        auto it = Workers.find(id);
+        Y_ABORT_UNLESS(it != Workers.end());
+
+        auto& worker = it->second;
+        if (worker.HasSession()) {
+            WorkersToRun.erase(iter++);
+            continue;
+        }
+
+        auto replication = Find(id.ReplicationId());
+        if (!replication) {
+            WorkersToRun.erase(iter++);
+            continue;
+        }
+
+        const auto& tenant = replication->GetTenant();
+        if (!tenant || !NodesManager.HasTenant(tenant) || !NodesManager.HasNodes(tenant)) {
+            ++iter;
+            continue;
+        }
+
+        const auto nodeId = NodesManager.GetRandomNode(tenant);
+        if (!Sessions.contains(nodeId) || !Sessions[nodeId].IsReady()) {
+            ++iter;
+            continue;
+        }
+
+        Y_ABORT_UNLESS(worker.HasCommand());
+        RunWorker(nodeId, id, *worker.GetCommand());
+        worker.AttachSession(nodeId);
+
+        WorkersToRun.erase(iter++);
+        ++i;
+    }
+
+    RunWorkersScheduled = false;
+    ScheduleRunWorkers();
+}
+
+void TController::RunWorker(ui32 nodeId, const TWorkerId& id, const NKikimrReplication::TRunWorkerCommand& cmd) {
+    LOG_D("Run worker"
+        << ": nodeId# " << nodeId
+        << ", workerId# " << id);
+
+    Y_ABORT_UNLESS(Sessions.contains(nodeId));
+    auto& session = Sessions[nodeId];
+
+    auto ev = MakeHolder<TEvService::TEvRunWorker>();
+    auto& record = ev->Record;
+
+    auto& controller = *record.MutableController();
+    controller.SetTabletId(TabletID());
+    controller.SetGeneration(Executor()->Generation());
+    id.Serialize(*record.MutableWorker());
+    record.MutableCommand()->CopyFrom(cmd);
+
+    Send(MakeReplicationServiceId(nodeId), std::move(ev));
+    session.AttachWorker(id);
+}
+
+void TController::Handle(TEvInterconnect::TEvNodeDisconnected::TPtr& ev, const TActorContext& ctx) {
+    const ui32 nodeId = ev->Get()->NodeId;
+
+    CLOG_I(ctx, "Node disconnected"
+        << ": nodeId# " << nodeId);
+
+    if (Sessions.contains(nodeId)) {
+        DeleteSession(nodeId, ctx);
+    }
 }
 
 TReplication::TPtr TController::Find(ui64 id) {

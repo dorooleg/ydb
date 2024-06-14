@@ -1,13 +1,13 @@
-#include <library/cpp/actors/interconnect/interconnect_channel.h>
-#include <library/cpp/actors/interconnect/interconnect_impl.h>
-#include <library/cpp/actors/interconnect/events_local.h>
+#include <ydb/library/actors/interconnect/interconnect_channel.h>
+#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <ydb/library/actors/interconnect/events_local.h>
 #include <ydb/core/testlib/basics/runtime.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/driver_lib/version/version.h>
-#include <library/cpp/actors/core/event_local.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/protos/services_common.pb.h>
-#include <library/cpp/actors/protos/unittests.pb.h>
+#include <ydb/library/actors/core/event_local.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/protos/services_common.pb.h>
+#include <ydb/library/actors/protos/unittests.pb.h>
 #include <library/cpp/http/io/headers.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_value.h>
@@ -276,7 +276,7 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         runtime.SetLogPriority(NActorsServices::INTERCONNECT, NActors::NLog::PRI_DEBUG);
         runtime.SetLogPriority(NActorsServices::INTERCONNECT_SESSION, NActors::NLog::PRI_DEBUG);
         SOCKET s = INVALID_SOCKET;
-        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
             if (auto *p = ev->CastAsLocal<TEvHandshakeDone>()) {
                 s = *p->Socket;
             }
@@ -358,7 +358,7 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         TTestBasicRuntime runtime(2);
         runtime.SetLogPriority(NActorsServices::INTERCONNECT, NActors::NLog::PRI_DEBUG);
         SOCKET s = INVALID_SOCKET;
-        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
             if (auto *p = ev->CastAsLocal<TEvHandshakeDone>()) {
                 s = *p->Socket;
             }
@@ -377,7 +377,7 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         runtime.Send(new IEventHandle(wall, edge, new TEvents::TEvPing), 0, true);
         runtime.GrabEdgeEvent<TEvents::TEvPong>(handle);
 
-        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev){
+        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev){
             if (s != INVALID_SOCKET && TEvents::TEvPing::EventType == ev->Type && 666ULL == ev->Cookie) {
                 ShutDown(s, SHUT_RDWR);
                 s = INVALID_SOCKET;
@@ -714,8 +714,8 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
             } else if (nodeNum == 1) {
                 current = node1.get();
             }
-            Y_VERIFY(current);
-            Y_VERIFY(TCompatibilityInfo::MakeStored(NKikimrConfig::TCompatibilityRule::Interconnect, current)
+            Y_ABORT_UNLESS(current);
+            Y_ABORT_UNLESS(CompatibilityInfo.MakeStored(NKikimrConfig::TCompatibilityRule::Interconnect, current)
                     .SerializeToString(&*common->CompatibilityInfo));
 
             common->ValidateCompatibilityInfo =
@@ -726,8 +726,8 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
                         return false;
                     }
 
-                    return TCompatibilityInfo::CheckCompatibility(current, &peerPB,
-                        (ui32)NKikimrConfig::TCompatibilityRule::Interconnect, errorReason);
+                    return CompatibilityInfo.CheckCompatibility(current, &peerPB,
+                        NKikimrConfig::TCompatibilityRule::Interconnect, errorReason);
                 };
         });
         runtime.Initialize(TAppPrepare().Unwrap());
@@ -746,8 +746,8 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         std::shared_ptr<NKikimrConfig::TCurrentCompatibilityInfo> node0 =
             std::make_shared<NKikimrConfig::TCurrentCompatibilityInfo>();
         {
-            node0->SetBuild("nbs");
-            auto* version = node0->MutableYdbVersion();
+            node0->SetApplication("nbs");
+            auto* version = node0->MutableVersion();
             version->SetYear(22);
             version->SetMajor(4);
             version->SetMinor(1);
@@ -757,21 +757,21 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         std::shared_ptr<NKikimrConfig::TCurrentCompatibilityInfo> node1 =
             std::make_shared<NKikimrConfig::TCurrentCompatibilityInfo>();
         {
-            node1->SetBuild("ydb");
-            auto* version = node1->MutableYdbVersion();
+            node1->SetApplication("ydb");
+            auto* version = node1->MutableVersion();
             version->SetYear(23);
             version->SetMajor(1);
             version->SetMinor(1);
             version->SetHotfix(0);
 
             {
-                auto* nbsRule = node1->AddCanLoadFrom();
-                nbsRule->SetBuild("nbs");
+                auto* nbsRule = node1->AddCanConnectTo();
+                nbsRule->SetApplication("nbs");
                 nbsRule->SetComponentId((ui32)NKikimrConfig::TCompatibilityRule::Interconnect);
 
-                auto* bottomLimit = nbsRule->MutableBottomLimit();
-                bottomLimit->SetYear(22);
-                bottomLimit->SetMajor(4);
+                auto* lowerLimit = nbsRule->MutableLowerLimit();
+                lowerLimit->SetYear(22);
+                lowerLimit->SetMajor(4);
 
                 nbsRule->MutableUpperLimit()->CopyFrom(*version);
 
@@ -783,24 +783,24 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         TestConnectionWithDifferentVersions(node1, node0);
     }
 
-    Y_UNIT_TEST(OldFormat) {
+    void TestOldFormat(TString oldTag, bool suppressOnNew, bool suppressOnOld) {
         std::shared_ptr<NKikimrConfig::TCurrentCompatibilityInfo> node0 =
             std::make_shared<NKikimrConfig::TCurrentCompatibilityInfo>();
         {
-            node0->SetBuild("ydb");
-            auto* version = node0->MutableYdbVersion();
+            node0->SetApplication("ydb");
+            auto* version = node0->MutableVersion();
             version->SetYear(23);
             version->SetMajor(1);
             version->SetMinor(1);
             version->SetHotfix(0);
 
             {
-                auto* rule = node0->AddCanLoadFrom();
+                auto* rule = node0->AddCanConnectTo();
                 rule->SetComponentId((ui32)NKikimrConfig::TCompatibilityRule::Interconnect);
 
-                auto* bottomLimit = rule->MutableBottomLimit();
-                bottomLimit->SetYear(22);
-                bottomLimit->SetMajor(5);
+                auto* lowerLimit = rule->MutableLowerLimit();
+                lowerLimit->SetYear(22);
+                lowerLimit->SetMajor(5);
 
                 rule->MutableUpperLimit()->CopyFrom(*version);
 
@@ -812,48 +812,75 @@ Y_UNIT_TEST_SUITE(TInterconnectTest) {
         runtime.SetUseRealInterconnect();
         runtime.SetICCommonSetupper([=](ui32 nodeNum, TIntrusivePtr<TInterconnectProxyCommon> common) {
             if (nodeNum % 2 == 0) {
-                common->CompatibilityInfo = TString();
+                if (!suppressOnNew) {
+                    common->CompatibilityInfo.emplace();
 
-                common->ValidateCompatibilityInfo =
-                    [=](const TString& peer, TString& errorReason) {
-                        NKikimrConfig::TStoredCompatibilityInfo peerPB;
-                        if (!peerPB.ParseFromString(peer)) {
-                            errorReason = "Cannot parse given CompatibilityInfo";
-                            return false;
-                        }
+                    common->ValidateCompatibilityInfo =
+                        [=](const TString& peer, TString& errorReason) {
+                            NKikimrConfig::TStoredCompatibilityInfo peerPB;
+                            if (!peerPB.ParseFromString(peer)) {
+                                errorReason = "Cannot parse given CompatibilityInfo";
+                                return false;
+                            }
 
-                        return TCompatibilityInfo::CheckCompatibility(node0.get(), &peerPB,
-                            (ui32)NKikimrConfig::TCompatibilityRule::Interconnect, errorReason);
+                            return CompatibilityInfo.CheckCompatibility(node0.get(), &peerPB,
+                                NKikimrConfig::TCompatibilityRule::Interconnect, errorReason);
+                        };
+
+                    common->ValidateCompatibilityOldFormat =
+                        [=](const TMaybe<TInterconnectProxyCommon::TVersionInfo>& peer, TString& errorReason) {
+                            if (!peer) {
+                                return true;
+                            }
+                            return CompatibilityInfo.CheckCompatibility(node0.get(), *peer,
+                                NKikimrConfig::TCompatibilityRule::Interconnect, errorReason);
+                        };
+
+                    common->VersionInfo = TInterconnectProxyCommon::TVersionInfo{
+                        .Tag = "stable-23-1",
+                        .AcceptedTags = { "stable-23-1", "stable-22-5" },
                     };
-
-                common->ValidateCompatibilityOldFormat =
-                    [=](const TMaybe<TInterconnectProxyCommon::TVersionInfo>& peer, TString& errorReason) {
-                        if (!peer) {
-                            return true;
-                        }
-                        return TCompatibilityInfo::CheckCompatibility(node0.get(), *peer,
-                            (ui32)NKikimrConfig::TCompatibilityRule::Interconnect, errorReason);
-                    };
+                }
             } else {
-                common->VersionInfo = TInterconnectProxyCommon::TVersionInfo{
-                    .Tag = "stable-22-5-6-hotfix-1",
-                    .AcceptedTags = {"stable-22-5-6-hotfix-1"}
-                };
+                if (!suppressOnOld) {
+                    common->VersionInfo = TInterconnectProxyCommon::TVersionInfo{
+                        .Tag = oldTag,
+                        .AcceptedTags = { oldTag }
+                    };
+                }
             }
         });
 
         runtime.Initialize(TAppPrepare().Unwrap());
 
-        const auto edge = runtime.AllocateEdgeActor(0);
-        runtime.Send(new IEventHandle(runtime.GetInterconnectProxy(0, 1), edge, new TEvInterconnect::TEvConnectNode), 0, true);
+        using TPair = std::pair<ui32, ui32>;
+        for (auto [node1, node2] : {TPair{0, 1}, TPair{1, 0}}) {
+            const auto edge = runtime.AllocateEdgeActor(node1);
+            runtime.Send(new IEventHandle(runtime.GetInterconnectProxy(node1, node2), edge, new TEvInterconnect::TEvConnectNode), node1, true);
 
-        TAutoPtr<IEventHandle> handle;
-        {
-            const auto event = runtime.GrabEdgeEvent<TEvInterconnect::TEvNodeConnected>(handle);
-            UNIT_ASSERT_EQUAL(event->NodeId, runtime.GetNodeId(1));
+            TAutoPtr<IEventHandle> handle;
+            {
+                const auto event = runtime.GrabEdgeEvent<TEvInterconnect::TEvNodeConnected>(handle);
+                UNIT_ASSERT_EQUAL(event->NodeId, runtime.GetNodeId(node2));
+            }
         }
     }
 
+    Y_UNIT_TEST(OldFormat) {
+        TestOldFormat("stable-22-5", false, false);
+    }
+
+    Y_UNIT_TEST(OldFormatSuppressVersionCheckOnNew) {
+        TestOldFormat("trunk", true, false);
+    }
+
+    Y_UNIT_TEST(OldFormatSuppressVersionCheckOnOld) {
+        TestOldFormat("trunk", false, true);
+    }
+
+    Y_UNIT_TEST(OldFormatSuppressVersionCheck) {
+        TestOldFormat("trunk", true, true);
+    }
 }
 
 }

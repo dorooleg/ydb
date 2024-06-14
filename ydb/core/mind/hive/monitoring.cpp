@@ -1,16 +1,37 @@
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/json/json_writer.h>
 #include <library/cpp/protobuf/json/proto2json.h>
+#include <library/cpp/digest/md5/md5.h>
 #include <util/string/vector.h>
 #include <ydb/core/tablet_flat/flat_executor_counters.h>
 #include <ydb/core/protos/counters_keyvalue.pb.h>
 #include "hive_impl.h"
-#include "hive_transactions.h"
 #include "hive_schema.h"
 #include "hive_log.h"
+#include "monitoring.h"
 
 namespace NKikimr {
 namespace NHive {
+
+TLoggedMonTransaction::TLoggedMonTransaction(const NMon::TEvRemoteHttpInfo::TPtr& ev) {
+    const auto& query = ev->Get()->ExtendedQuery;
+    if (query) {
+        NACLib::TUserToken token(query->GetUserToken());
+        User = token.GetUserSID();
+    }
+}
+
+bool TLoggedMonTransaction::Prepare(NIceDb::TNiceDb& db) {
+    Timestamp = TActivationContext::Now();
+    auto rowset = db.Table<Schema::OperationsLog>().Key(Timestamp.MilliSeconds()).Select();
+    return rowset.IsReady() && !rowset.HaveValue<Schema::OperationsLog::Operation>();
+}
+
+void TLoggedMonTransaction::WriteOperation(NIceDb::TNiceDb& db, const NJson::TJsonValue& op) {
+    TStringStream str;
+    NJson::WriteJson(&str, &op);
+    db.Table<Schema::OperationsLog>().Key(Timestamp.MilliSeconds()).Update<Schema::OperationsLog::User, Schema::OperationsLog::Operation>(User, str.Str());
+}
 
 class TTxMonEvent_DbState : public TTransactionBase<THive> {
 public:
@@ -294,7 +315,7 @@ public:
             out << "<td>" << Sprintf("%.9f", x.Weight) << "</td>";
             out << "<td>" << GetResourceValuesText(x) << "</td>";
             out << "<td>" << x.GetTabletAllowedMetricIds() << "</td>";
-            out << "<td><a href='../tablets?SsId=" << tabletId << "'><span class='glyphicon glyphicon-tasks' title='State Storage'/></a></td>";
+            out << "<td><a href='../tablets?SsId=" << tabletId.first << "'><span class='glyphicon glyphicon-tasks' title='State Storage'/></a></td>";
             out << "</tr>";
         }
         out << "</tbody></table>";
@@ -459,7 +480,15 @@ public:
         // out << "<script>$('.container').css('width', 'auto');</script>";
         out << "<table class='table table-sortable'>";
         out << "<thead>";
-        out << "<tr><th>TenantId</th><th>Name</th><th>Hive</th><th>Status</th></tr>";
+        out << "<tr>";
+        out << "<th>TenantId</th>";
+        out << "<th>Name</th>";
+        out << "<th>Hive</th>";
+        out << "<th>Status</th>";
+        out << "<th>TabletsAliveInTenantDomain</th>";
+        out << "<th>TabletsAliveInOtherDomains</th>";
+        out << "<th>TabletsTotal</th>";
+        out << "</tr>";
         out << "</thead>";
         out << "<tbody>";
         for (const auto& [domainKey, domainInfo] : Self->Domains) {
@@ -482,6 +511,18 @@ public:
                 out << "<td>-</td>";
                 out << "<td>-</td>";
             }
+            if (domainInfo.TabletsTotal > 0) {
+                out << "<td>" << std::round(domainInfo.TabletsAliveInObjectDomain * 100.0 / domainInfo.TabletsTotal) << "%"
+                    << " (" << domainInfo.TabletsAliveInObjectDomain << " of " << domainInfo.TabletsTotal << ")" << "</td>";
+
+                const ui64 tabletsAliveInOtherDomains = domainInfo.TabletsAlive - domainInfo.TabletsAliveInObjectDomain;
+                out << "<td>" << std::round(tabletsAliveInOtherDomains * 100.0 / domainInfo.TabletsTotal) << "%"
+                    << " (" << tabletsAliveInOtherDomains << " of " << domainInfo.TabletsTotal << ")" << "</td>";
+            } else {
+                out << "<td>-</td>";
+                out << "<td>-</td>";
+            }
+            out << "<td>" << domainInfo.TabletsTotal << "</td>";
             out << "</tr>";
         }
         out << "</tbody>";
@@ -651,7 +692,7 @@ public:
     }
 };
 
-class TTxMonEvent_Settings : public TTransactionBase<THive> {
+class TTxMonEvent_Settings : public TTransactionBase<THive>, public TLoggedMonTransaction {
 public:
     const TActorId Source;
     TAutoPtr<NMon::TEvRemoteHttpInfo> Event;
@@ -659,19 +700,21 @@ public:
 
     TTxMonEvent_Settings(const TActorId &source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf *hive)
         : TBase(hive)
+        , TLoggedMonTransaction(ev)
         , Source(source)
         , Event(ev->Release())
     {}
 
     TTxType GetTxType() const override { return NHive::TXTYPE_MON_SETTINGS; }
 
-    void UpdateConfig(NIceDb::TNiceDb& db, const TString& param, TSchemeIds::State compatibilityParam = TSchemeIds::State::DefaultState) {
+    void UpdateConfig(NIceDb::TNiceDb& db, const TString& param, NJson::TJsonValue& jsonLog, TSchemeIds::State compatibilityParam = TSchemeIds::State::DefaultState) {
         const auto& params(Event->Cgi());
         if (params.contains(param)) {
             const TString& value = params.Get(param);
             const google::protobuf::Reflection* reflection = Self->DatabaseConfig.GetReflection();
             const google::protobuf::FieldDescriptor* field = Self->DatabaseConfig.GetDescriptor()->FindFieldByName(param);
             if (reflection != nullptr && field != nullptr) {
+                jsonLog[param] = value;
                 if (value.empty()) {
                     reflection->ClearField(&Self->DatabaseConfig, field);
                     // compatibility
@@ -734,76 +777,74 @@ public:
         }
     }
 
-    static TTabletTypes::EType GetShortTabletType(const TString& shortType) {
-        for (TTabletTypes::EType tabletType : {
-             TTabletTypes::DataShard,
-             TTabletTypes::Coordinator,
-             TTabletTypes::Mediator,
-             TTabletTypes::SchemeShard,
-             TTabletTypes::Hive,
-             TTabletTypes::KeyValue,
-             TTabletTypes::PersQueue,
-             TTabletTypes::PersQueueReadBalancer,
-             TTabletTypes::NodeBroker,
-             TTabletTypes::TestShard,
-             TTabletTypes::BlobDepot,
-             TTabletTypes::ColumnShard}) {
-            if (shortType == LongToShortTabletName(TTabletTypes::TypeToStr(tabletType))) {
-                return tabletType;
-            }
-        }
-        return TTabletTypes::TypeInvalid;
-    }
-
     bool Execute(TTransactionContext& txc, const TActorContext&) override {
         const auto& params(Event->Cgi());
         NIceDb::TNiceDb db(txc.DB);
 
-        UpdateConfig(db, "MaxTabletsScheduled", TSchemeIds::State::MaxTabletsScheduled);
-        UpdateConfig(db, "MaxBootBatchSize", TSchemeIds::State::MaxBootBatchSize);
-        UpdateConfig(db, "DrainInflight", TSchemeIds::State::DrainInflight);
-        UpdateConfig(db, "MaxResourceCPU", TSchemeIds::State::MaxResourceCPU);
-        UpdateConfig(db, "MaxResourceMemory", TSchemeIds::State::MaxResourceMemory);
-        UpdateConfig(db, "MaxResourceNetwork", TSchemeIds::State::MaxResourceNetwork);
-        UpdateConfig(db, "MaxResourceCounter", TSchemeIds::State::MaxResourceCounter);
-        UpdateConfig(db, "MinScatterToBalance", TSchemeIds::State::MinScatterToBalance);
-        UpdateConfig(db, "MaxNodeUsageToKick", TSchemeIds::State::MaxNodeUsageToKick);
-        UpdateConfig(db, "ResourceChangeReactionPeriod", TSchemeIds::State::ResourceChangeReactionPeriod);
-        UpdateConfig(db, "TabletKickCooldownPeriod", TSchemeIds::State::TabletKickCooldownPeriod);
-        UpdateConfig(db, "SpreadNeighbours", TSchemeIds::State::SpreadNeighbours);
-        UpdateConfig(db, "DefaultUnitIOPS", TSchemeIds::State::DefaultUnitIOPS);
-        UpdateConfig(db, "DefaultUnitThroughput", TSchemeIds::State::DefaultUnitThroughput);
-        UpdateConfig(db, "DefaultUnitSize", TSchemeIds::State::DefaultUnitSize);
-        UpdateConfig(db, "StorageOvercommit", TSchemeIds::State::StorageOvercommit);
-        UpdateConfig(db, "StorageBalanceStrategy", TSchemeIds::State::StorageBalanceStrategy);
-        UpdateConfig(db, "StorageSelectStrategy", TSchemeIds::State::StorageSelectStrategy);
-        UpdateConfig(db, "StorageSafeMode", TSchemeIds::State::StorageSafeMode);
-        UpdateConfig(db, "RequestSequenceSize", TSchemeIds::State::RequestSequenceSize);
-        UpdateConfig(db, "MinRequestSequenceSize", TSchemeIds::State::MinRequestSequenceSize);
-        UpdateConfig(db, "MaxRequestSequenceSize", TSchemeIds::State::MaxRequestSequenceSize);
-        UpdateConfig(db, "MetricsWindowSize", TSchemeIds::State::MetricsWindowSize);
-        UpdateConfig(db, "ResourceOvercommitment", TSchemeIds::State::ResourceOvercommitment);
-        UpdateConfig(db, "MinPeriodBetweenBalance");
-        UpdateConfig(db, "NodeBalanceStrategy");
-        UpdateConfig(db, "TabletBalanceStrategy");
-        UpdateConfig(db, "BalancerInflight");
-        UpdateConfig(db, "MaxMovementsOnAutoBalancer");
-        UpdateConfig(db, "ContinueAutoBalancer");
-        UpdateConfig(db, "EmergencyBalancerInflight");
-        UpdateConfig(db, "MaxMovementsOnEmergencyBalancer");
-        UpdateConfig(db, "ContinueEmergencyBalancer");
-        UpdateConfig(db, "MinNodeUsageToBalance");
-        UpdateConfig(db, "MinPeriodBetweenReassign");
-        UpdateConfig(db, "NodeSelectStrategy");
-        UpdateConfig(db, "CheckMoveExpediency");
-        UpdateConfig(db, "SpaceUsagePenaltyThreshold");
-        UpdateConfig(db, "SpaceUsagePenalty");
-        UpdateConfig(db, "WarmUpBootWaitingPeriod");
-        UpdateConfig(db, "MaxWarmUpPeriod");
-        UpdateConfig(db, "WarmUpEnabled");
+        if (!Prepare(db)) {
+            return false;
+        }
+        NJson::TJsonValue jsonOperation;
+        auto& configUpdates = jsonOperation["ConfigUpdates"];
+
+        UpdateConfig(db, "MaxTabletsScheduled", configUpdates, TSchemeIds::State::MaxTabletsScheduled);
+        UpdateConfig(db, "MaxBootBatchSize", configUpdates, TSchemeIds::State::MaxBootBatchSize);
+        UpdateConfig(db, "DrainInflight", configUpdates, TSchemeIds::State::DrainInflight);
+        UpdateConfig(db, "MaxResourceCPU", configUpdates, TSchemeIds::State::MaxResourceCPU);
+        UpdateConfig(db, "MaxResourceMemory", configUpdates, TSchemeIds::State::MaxResourceMemory);
+        UpdateConfig(db, "MaxResourceNetwork", configUpdates, TSchemeIds::State::MaxResourceNetwork);
+        UpdateConfig(db, "MaxResourceCounter", configUpdates, TSchemeIds::State::MaxResourceCounter);
+        UpdateConfig(db, "MinScatterToBalance", configUpdates, TSchemeIds::State::MinScatterToBalance);
+        UpdateConfig(db, "MinCPUScatterToBalance", configUpdates);
+        UpdateConfig(db, "MinMemoryScatterToBalance", configUpdates);
+        UpdateConfig(db, "MinNetworkScatterToBalance", configUpdates);
+        UpdateConfig(db, "MinCounterScatterToBalance", configUpdates);
+        UpdateConfig(db, "MaxNodeUsageToKick", configUpdates, TSchemeIds::State::MaxNodeUsageToKick);
+        UpdateConfig(db, "ResourceChangeReactionPeriod", configUpdates, TSchemeIds::State::ResourceChangeReactionPeriod);
+        UpdateConfig(db, "TabletKickCooldownPeriod", configUpdates, TSchemeIds::State::TabletKickCooldownPeriod);
+        UpdateConfig(db, "SpreadNeighbours", configUpdates, TSchemeIds::State::SpreadNeighbours);
+        UpdateConfig(db, "DefaultUnitIOPS", configUpdates, TSchemeIds::State::DefaultUnitIOPS);
+        UpdateConfig(db, "DefaultUnitThroughput", configUpdates, TSchemeIds::State::DefaultUnitThroughput);
+        UpdateConfig(db, "DefaultUnitSize", configUpdates, TSchemeIds::State::DefaultUnitSize);
+        UpdateConfig(db, "StorageOvercommit", configUpdates, TSchemeIds::State::StorageOvercommit);
+        UpdateConfig(db, "StorageBalanceStrategy", configUpdates, TSchemeIds::State::StorageBalanceStrategy);
+        UpdateConfig(db, "StorageSelectStrategy", configUpdates, TSchemeIds::State::StorageSelectStrategy);
+        UpdateConfig(db, "StorageSafeMode", configUpdates, TSchemeIds::State::StorageSafeMode);
+        UpdateConfig(db, "RequestSequenceSize", configUpdates, TSchemeIds::State::RequestSequenceSize);
+        UpdateConfig(db, "MinRequestSequenceSize", configUpdates, TSchemeIds::State::MinRequestSequenceSize);
+        UpdateConfig(db, "MaxRequestSequenceSize", configUpdates, TSchemeIds::State::MaxRequestSequenceSize);
+        UpdateConfig(db, "MetricsWindowSize", configUpdates, TSchemeIds::State::MetricsWindowSize);
+        UpdateConfig(db, "ResourceOvercommitment", configUpdates, TSchemeIds::State::ResourceOvercommitment);
+        UpdateConfig(db, "NodeBalanceStrategy", configUpdates);
+        UpdateConfig(db, "TabletBalanceStrategy", configUpdates);
+        UpdateConfig(db, "MinPeriodBetweenBalance", configUpdates);
+        UpdateConfig(db, "BalancerInflight", configUpdates);
+        UpdateConfig(db, "MaxMovementsOnAutoBalancer", configUpdates);
+        UpdateConfig(db, "ContinueAutoBalancer", configUpdates);
+        UpdateConfig(db, "MinPeriodBetweenEmergencyBalance", configUpdates);
+        UpdateConfig(db, "EmergencyBalancerInflight", configUpdates);
+        UpdateConfig(db, "MaxMovementsOnEmergencyBalancer", configUpdates);
+        UpdateConfig(db, "ContinueEmergencyBalancer", configUpdates);
+        UpdateConfig(db, "MinNodeUsageToBalance", configUpdates);
+        UpdateConfig(db, "MinPeriodBetweenReassign", configUpdates);
+        UpdateConfig(db, "NodeSelectStrategy", configUpdates);
+        UpdateConfig(db, "CheckMoveExpediency", configUpdates);
+        UpdateConfig(db, "SpaceUsagePenaltyThreshold", configUpdates);
+        UpdateConfig(db, "SpaceUsagePenalty", configUpdates);
+        UpdateConfig(db, "WarmUpBootWaitingPeriod", configUpdates);
+        UpdateConfig(db, "MaxWarmUpPeriod", configUpdates);
+        UpdateConfig(db, "WarmUpEnabled", configUpdates);
+        UpdateConfig(db, "ObjectImbalanceToBalance", configUpdates);
+        UpdateConfig(db, "ChannelBalanceStrategy", configUpdates);
+        UpdateConfig(db, "MaxChannelHistorySize", configUpdates);
+        UpdateConfig(db, "StorageInfoRefreshFrequency", configUpdates);
+        UpdateConfig(db, "MinStorageScatterToBalance", configUpdates);
+        UpdateConfig(db, "MinGroupUsageToBalance", configUpdates);
+        UpdateConfig(db, "StorageBalancerInflight", configUpdates);
 
         if (params.contains("BalancerIgnoreTabletTypes")) {
-            TVector<TString> tabletTypeNames = SplitString(params.Get("BalancerIgnoreTabletTypes"), ";");
+            auto value = params.Get("BalancerIgnoreTabletTypes");
+            TVector<TString> tabletTypeNames = SplitString(value, ";");
             std::vector<TTabletTypes::EType> newTypeList;
             for (const auto& name : tabletTypeNames) {
                 TTabletTypes::EType type = TTabletTypes::StrToType(Strip(name));
@@ -821,8 +862,44 @@ public:
                     field->Add(i);
                 }
                 ChangeRequest = true;
+                configUpdates["BalancerIgnoreTabletTypes"] = value;
                 // Self->BalancerIgnoreTabletTypes will be replaced by Self->BuildCurrentConfig()
             }
+        }
+
+        if (params.contains("DefaultTabletLimit")) {
+            auto value = params.Get("DefaultTabletLimit");
+            auto tabletLimits = SplitString(params.Get("DefaultTabletLimit"), ";");
+            for (TStringBuf limit : tabletLimits) {
+                TStringBuf tabletType = limit.NextTok(':');
+                TTabletTypes::EType type = GetTabletTypeByShortName(TString(tabletType));
+                auto maxCount = TryFromString<ui64>(limit);
+                if (type == TTabletTypes::TypeInvalid || !maxCount) {
+                    continue;
+                }
+                ChangeRequest = true;
+                auto* protoLimit = Self->DatabaseConfig.AddDefaultTabletLimit();
+                protoLimit->SetType(type);
+                protoLimit->SetMaxCount(*maxCount);
+            }
+
+            configUpdates["DefaultTabletLimit"] = value;
+
+            // Get rid of duplicates & default values
+            google::protobuf::RepeatedPtrField<NKikimrConfig::THiveTabletLimit> cleanTabletLimits;
+            auto* dirtyTabletLimits = Self->DatabaseConfig.MutableDefaultTabletLimit();
+            std::unordered_set<TTabletTypes::EType> tabletTypes;
+            for (auto it = dirtyTabletLimits->rbegin(); it != dirtyTabletLimits->rend(); ++it) {
+                auto tabletType = it->GetType();
+                if (tabletTypes.contains(tabletType)) {
+                    continue;
+                }
+                tabletTypes.insert(tabletType);
+                if (it->GetMaxCount() != TNodeInfo::MAX_TABLET_COUNT_DEFAULT_VALUE) {
+                    cleanTabletLimits.Add(std::move(*it));
+                }
+            }
+            cleanTabletLimits.Swap(dirtyTabletLimits);
         }
 
         if (ChangeRequest) {
@@ -830,10 +907,11 @@ public:
             db.Table<Schema::State>().Key(TSchemeIds::State::DefaultState).Update<Schema::State::Config>(Self->DatabaseConfig);
         }
         if (params.contains("allowedMetrics")) {
+            auto& jsonAllowedMetrics = jsonOperation["AllowedMetricsUpdate"];
             TVector<TString> allowedMetrics = SplitString(params.Get("allowedMetrics"), ";");
             for (TStringBuf tabletAllowedMetrics : allowedMetrics) {
                 TStringBuf tabletType = tabletAllowedMetrics.NextTok(':');
-                TTabletTypes::EType type = GetShortTabletType(TString(tabletType));
+                TTabletTypes::EType type = GetTabletTypeByShortName(TString(tabletType));
                 if (type != TTabletTypes::TypeInvalid) {
                     static const TVector<i64> metricsPos = {
                         NKikimrTabletBase::TMetrics::kCPUFieldNumber,
@@ -856,12 +934,30 @@ public:
                             }
                         }
                         if (changed) {
+                            ChangeRequest = true;
+                            NJson::TJsonValue jsonUpdate;
+                            jsonUpdate["Type"] = tabletType;
+                            const auto* descriptor = NKikimrTabletBase::TMetrics::descriptor();
+                            auto& jsonMetrics = jsonUpdate["AllowedMetrics"];
+                            for (auto metricNum : metrics) {
+                                const auto* field = descriptor->FindFieldByNumber(metricNum);
+                                if (field) {
+                                    jsonMetrics.AppendValue(field->name());
+                                } else {
+                                    jsonMetrics.AppendValue(metricNum);
+                                }
+                            }
+                            jsonAllowedMetrics.AppendValue(std::move(jsonUpdate));
                             db.Table<Schema::TabletTypeMetrics>().Key(type).Update<Schema::TabletTypeMetrics::AllowedMetricIDs>(metrics);
                             Self->TabletTypeAllowedMetrics[type] = metrics;
                         }
                     }
                 }
             }
+        }
+
+        if (ChangeRequest) {
+            WriteOperation(db, jsonOperation);
         }
         return true;
     }
@@ -1044,6 +1140,10 @@ public:
         ShowConfig(out, "MaxBootBatchSize");
         ShowConfig(out, "DrainInflight");
         ShowConfig(out, "MinScatterToBalance");
+        ShowConfig(out, "MinCPUScatterToBalance");
+        ShowConfig(out, "MinMemoryScatterToBalance");
+        ShowConfig(out, "MinNetworkScatterToBalance");
+        ShowConfig(out, "MinCounterScatterToBalance");
         ShowConfig(out, "MinNodeUsageToBalance");
         ShowConfig(out, "MaxNodeUsageToKick");
         ShowConfig(out, "ResourceChangeReactionPeriod");
@@ -1069,6 +1169,7 @@ public:
         ShowConfig(out, "BalancerInflight");
         ShowConfig(out, "MaxMovementsOnAutoBalancer");
         ShowConfig(out, "ContinueAutoBalancer");
+        ShowConfig(out, "MinPeriodBetweenEmergencyBalance");
         ShowConfig(out, "EmergencyBalancerInflight");
         ShowConfig(out, "MaxMovementsOnEmergencyBalancer");
         ShowConfig(out, "ContinueEmergencyBalancer");
@@ -1078,6 +1179,13 @@ public:
         ShowConfig(out, "WarmUpBootWaitingPeriod");
         ShowConfig(out, "MaxWarmUpPeriod");
         ShowConfig(out, "WarmUpEnabled");
+        ShowConfig(out, "ObjectImbalanceToBalance");
+        ShowConfig(out, "ChannelBalanceStrategy");
+        ShowConfig(out, "MaxChannelHistorySize");
+        ShowConfig(out, "StorageInfoRefreshFrequency");
+        ShowConfig(out, "MinStorageScatterToBalance");
+        ShowConfig(out, "MinGroupUsageToBalance");
+        ShowConfig(out, "StorageBalancerInflight");
         ShowConfigForBalancerIgnoreTabletTypes(out);
 
         out << "<div class='row' style='margin-top:40px'>";
@@ -1099,7 +1207,7 @@ public:
              TTabletTypes::ColumnShard}) {
             const TVector<i64>& allowedMetrics = Self->GetTabletTypeAllowedMetricIds(tabletType);
             out << "<tr>"
-                   "<td>" << LongToShortTabletName(TTabletTypes::TypeToStr(tabletType)) << "</td>";
+                   "<td>" << GetTabletTypeShortName(tabletType) << "</td>";
             out << "<td><input id='cpu' class='form-control' type='checkbox' checked='' disabled='' style='width:20px;height:20px;margin:2px auto'</input></td>";
             out << "<td><input id='cpu' class='form-control' type='checkbox'";
             if (Find(allowedMetrics, NKikimrTabletBase::TMetrics::kCPUFieldNumber) != allowedMetrics.end()) {
@@ -1197,6 +1305,102 @@ public:
     }
 };
 
+class TTxMonEvent_TabletAvailability : public TTransactionBase<THive>, public TLoggedMonTransaction {
+public:
+    const TActorId Source;
+    TAutoPtr<NMon::TEvRemoteHttpInfo> Event;
+    bool ChangeRequest = false;
+    TNodeId NodeId;
+    TNodeInfo* Node = nullptr;
+
+    TTxMonEvent_TabletAvailability(const TActorId &source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf *hive)
+        : TBase(hive)
+        , TLoggedMonTransaction(ev)
+        , Source(source)
+        , Event(ev->Release())
+    {
+        NodeId = FromStringWithDefault<TNodeId>(Event->Cgi().Get("node"), 0);
+    }
+
+    TTxType GetTxType() const override { return NHive::TXTYPE_MON_TABLET_AVAILABILITY; }
+
+    static TTabletTypes::EType ParseTabletType(const TString& str) {
+        auto parsed = FromStringWithDefault<ui32>(str, TTabletTypes::TypeInvalid);
+        parsed = std::min<ui32>(parsed, TTabletTypes::TypeInvalid);
+        return TTabletTypes::EType(parsed);
+    }
+
+    bool Execute(TTransactionContext &txc, const TActorContext&) override {
+        NIceDb::TNiceDb db(txc.DB);
+        Node = Self->FindNode(NodeId);
+        if (Node == nullptr) {
+            return true;
+        }
+        if (!Prepare(db)) {
+            return false;
+        }
+
+        NJson::TJsonValue jsonOperation;
+        jsonOperation["NodeId"] = NodeId;
+
+        const auto& cgi = Event->Cgi();
+        auto changeType = ParseTabletType(cgi.Get("changetype"));
+        auto maxCount = TryFromString<ui64>(cgi.Get("maxcount"));
+        auto resetType = ParseTabletType(cgi.Get("resettype"));
+        if (changeType != TTabletTypes::TypeInvalid && maxCount) {
+            ChangeRequest = true;
+            NJson::TJsonValue jsonUpdate;
+            jsonUpdate["Type"] = GetTabletTypeShortName(changeType);
+            jsonUpdate["MaxCount"] = *maxCount;
+            jsonOperation["TabletAvailability"].AppendValue(std::move(jsonUpdate));
+            db.Table<Schema::TabletAvailabilityRestrictions>().Key(NodeId, changeType).Update<Schema::TabletAvailabilityRestrictions::MaxCount>(*maxCount);
+            Node->TabletAvailabilityRestrictions[changeType] = *maxCount;
+            auto it = Node->TabletAvailability.find(changeType);
+            if (it != Node->TabletAvailability.end()) {
+                it->second.UpdateRestriction(*maxCount);
+            }
+        }
+        if (resetType != TTabletTypes::TypeInvalid) {
+            ChangeRequest = true;
+            NJson::TJsonValue jsonUpdate;
+            jsonUpdate["Type"] = GetTabletTypeShortName(resetType);
+            jsonUpdate["MaxCount"] = "[default]";
+            jsonOperation["TabletAvailability"].AppendValue(std::move(jsonUpdate));
+            Node->TabletAvailabilityRestrictions.erase(resetType);
+            auto it = Node->TabletAvailability.find(resetType);
+            if (it != Node->TabletAvailability.end()) {
+                it->second.RemoveRestriction();
+                if (it->second.IsSet) {
+                    db.Table<Schema::TabletAvailabilityRestrictions>()
+                      .Key(NodeId, resetType)
+                      .Update<Schema::TabletAvailabilityRestrictions::MaxCount>(TNodeInfo::MAX_TABLET_COUNT_DEFAULT_VALUE);
+                } else {
+                    db.Table<Schema::TabletAvailabilityRestrictions>()
+                      .Key(NodeId, resetType)
+                      .Delete();
+                }
+            }
+        }
+        if (ChangeRequest) {
+            Self->ObjectDistributions.RemoveNode(*Node);
+            Self->ObjectDistributions.AddNode(*Node);
+            WriteOperation(db, jsonOperation);
+        }
+        return true;
+    }
+
+    void Complete(const TActorContext& ctx) override {
+        if (ChangeRequest) {
+            ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes("{\"status\":\"ok\"}"));
+        } else {
+            ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes("{\"status\":\"error\"}"));
+        }
+    }
+
+};
+
+
+
 class TTxMonEvent_Landing : public TTransactionBase<THive> {
 public:
     const TActorId Source;
@@ -1224,76 +1428,22 @@ public:
         Y_UNUSED(ctx);
     }
 
-    //TODO: move to hive_statics.cpp as utility function
-    static TString GetTabletType(TTabletTypes::EType type) {
-        switch(type) {
-        case TTabletTypes::SchemeShard:
-            return "SS";
-        case TTabletTypes::Hive:
-            return "H";
-        case TTabletTypes::DataShard:
-            return "DS";
-        case TTabletTypes::ColumnShard:
-            return "CS";
-        case TTabletTypes::KeyValue:
-            return "KV";
-        case TTabletTypes::PersQueue:
-            return "PQ";
-        case TTabletTypes::PersQueueReadBalancer:
-            return "PQRB";
-        case TTabletTypes::Dummy:
-            return "DY";
-        case TTabletTypes::Coordinator:
-            return "C";
-        case TTabletTypes::Mediator:
-            return "M";
-        case TTabletTypes::BlockStoreVolume:
-            return "BV";
-        case TTabletTypes::BlockStorePartition:
-        case TTabletTypes::BlockStorePartition2:
-            return "BP";
-        case TTabletTypes::Kesus:
-            return "K";
-        case TTabletTypes::SysViewProcessor:
-            return "SV";
-        case TTabletTypes::FileStore:
-            return "FS";
-        case TTabletTypes::TestShard:
-            return "TS";
-        case TTabletTypes::SequenceShard:
-            return "S";
-        case TTabletTypes::ReplicationController:
-            return "RC";
-        case TTabletTypes::BlobDepot:
-            return "BD";
-        default:
-            return Sprintf("%d", (int)type);
-        }
-    }
-
     void RenderHTMLPage(IOutputStream &out) {
-        ui64 nodes = 0;
-        ui64 tablets = 0;
         ui64 runningTablets = 0;
         ui64 aliveNodes = 0;
-        THashMap<ui32, TMap<TString, ui32>> tabletsByNodeByType;
         THashMap<TTabletTypes::EType, ui32> tabletTypesToChannels;
 
         for (const auto& pr : Self->Tablets) {
             if (pr.second.IsRunning()) {
                 ++runningTablets;
-                ++tabletsByNodeByType[pr.second.NodeId][GetTabletType(pr.second.Type)];
             }
             if (pr.second.IsLockedToActor()) {
                 ++runningTablets;
-                ++tabletsByNodeByType[pr.second.LockedToActor.NodeId()][GetTabletType(pr.second.Type)];
             }
             for (const auto& sl : pr.second.Followers) {
                 if (sl.IsRunning()){
                     ++runningTablets;
-                    ++tabletsByNodeByType[sl.NodeId][GetTabletType(pr.second.Type) + "s"];
                 }
-                ++tablets;
             }
             {
                 auto it = tabletTypesToChannels.find(pr.second.Type);
@@ -1302,19 +1452,16 @@ public:
                     tabletTypesToChannels.emplace(pr.second.Type, channels);
                 }
             }
-            ++tablets;
         }
         for (const auto& pr : Self->Nodes) {
             if (pr.second.IsAlive()) {
                 ++aliveNodes;
             }
-            if (!pr.second.IsUnknown()) {
-                ++nodes;
-            }
         }
 
         out << "<head>";
         out << "<style>";
+        out << "table.simple-table1 th { text-align: center; }";
         out << "table.simple-table1 td { padding: 1px 3px; }";
         out << "table.simple-table1 td:nth-child(1) { text-align: right; }";
         out << "table.simple-table2 th { text-align: right; }";
@@ -1325,39 +1472,77 @@ public:
         out << "table.simple-table2 td:nth-child(2) { text-align: left; }";
         out << "table.simple-table2 td:nth-child(3) { text-align: left; }";
         out << "table.simple-table2 td:nth-child(4) { text-align: left; }";
+        out << "table.simple-table3 td { padding: 1px 3px; text-align: right; }";
+        out << "table.simple-table3 th { text-align: center; }";
         out << ".table-hover tbody tr:hover > td { background-color: #9dddf2; }";
         out << ".blinking { animation:blinkingText 0.8s infinite; }";
         out << "@keyframes blinkingText { 0% { color: #000; } 49% { color: #000; } 60% { color: transparent; } 99% { color:transparent; } 100% { color: #000; } }";
+        out <<  ".box { border: 1px solid grey; border-radius: 5px; padding-left: 2px; padding-right: 2px; display: inline-block; font: 11px Arial; cursor: pointer }";
+        out << ".box-disabled { text-decoration: line-through; }";
         out << "</style>";
         out << "</head>";
         out << "<body>";
-        out << "<table class='simple-table1'>";
-
+        out << "<div style='display:flex'><div style='min-width:220px'><table class='simple-table1'>";
+        out << "<tr><th colspan='2'>Info</th></tr>";
         TSubDomainKey domainId = Self->GetMySubDomainKey();
         if (domainId) {
-            out << "<tr><td>" << "Tenant:" << "</td>";
+            out << "<tr><td><span id='alert-placeholder' class='glyphicon' style='height:14px'></span>" << "Tenant:" << "</td>";
             TDomainInfo* domainInfo = Self->FindDomain(domainId);
             if (domainInfo && domainInfo->Path) {
                 out << "<td>" << domainInfo->Path << "</td>";
             } else {
                 out << "<td>" << domainId << "</td>";
             }
-            out << "<td><span id='alert-placeholder' class='glyphicon' style='height:14px'></span></td>";
-            out << "</tr>";
+            out << "<td></tr>";
         }
 
-        /*out << "<tr><td>" << "Nodes:" << "</td><td id='aliveNodes'>" << (nodes == 0 ? 0 : aliveNodes * 100 / nodes) << "% "
-            << aliveNodes << "/" << nodes << "</td></tr>";*/
-        out << "<tr><td>" << "Tablets:" << "</td><td id='runningTablets'>" << (tablets == 0 ? 0 : runningTablets * 100 / tablets) << "% "
-            << runningTablets << "/" << tablets << "</td></tr>";
-        out << "<tr><td title='Rebalance all tablets' style='cursor:pointer' onclick='rebalanceTablets(this)'>Balancer: </td><td id='balancerProgress'>"
-            << (Self->BalancerProgress >= 0 ? Sprintf("%d%%", Self->BalancerProgress) : TString()) << "</td></tr>";
+        out << "<tr><td>" << "Nodes:" << "</td><td id='aliveNodes'>" << aliveNodes << "</td></tr>";
+        out << "<tr><td>" << "Tablets:" << "</td><td id='runningTablets'>" << runningTablets << "</td></tr>";
         out << "<tr><td>" << "Boot Queue:" << "</td><td id='bootQueue'>" << Self->BootQueue.BootQueue.size() << "</td></tr>";
         out << "<tr><td>" << "Wait Queue:" << "</td><td id='waitQueue'>" << Self->BootQueue.WaitQueue.size() << "</td></tr>";
-        out << "<tr><td>" << "Resource Total: " << "</td><td id='resourceTotal'>" << GetResourceValuesText(Self->TotalRawResourceValues) << "</td></tr>";
-        out << "<tr><td>" << "Resource StDev: " << "</td><td id='resourceVariance'>"
-            << convert(Self->GetStDevResourceValues(), [](double d) -> TString { return Sprintf("%.9f", d); }) << "</td></tr>";
-        out << "</table>";
+        out << "</table></div>";
+        out << "<div style='width:180px'><table class='simple-table1'>";
+        out << "<tr><th colspan='2'>Totals</th></tr>";
+        out << "<tr><td>Counter</td><td id='resourceTotalCounter'></td></tr>";
+        out << "<tr><td>CPU</td><td id='resourceTotalCPU'></td></tr>";
+        out << "<tr><td>Memory</td><td id='resourceTotalMemory'></td></tr>";
+        out << "<tr><td>Network</td><td id='resourceTotalNetwork'></td></tr>";
+        out << "</table></div>";
+        out << "<div style='width:220px'><table class='simple-table1'>";
+        out << "<tr><th colspan='2'>Variance</th></tr>";
+        out << "<tr><td>Counter</td><td id='resourceStdDevCounter'></td></tr>";
+        out << "<tr><td>CPU</td><td id='resourceStdDevCPU'></td></tr>";
+        out << "<tr><td>Memory</td><td id='resourceStdDevMemory'></td></tr>";
+        out << "<tr><td>Network</td><td id='resourceStdDevNetwork'></td></tr>";
+        out << "</table></div>";
+        out << "<div style='min-width:220px'><table class='simple-table1'>";
+        out << "<tr><th colspan='2'>Triggers</th></tr>";
+        out << "<tr><td>Counter</td><td id='resourceScatterCounter'></td></tr>";
+        out << "<tr><td>CPU</td><td id='resourceScatterCPU'></td></tr>";
+        out << "<tr><td>Memory</td><td id='resourceScatterMemory'></td></tr>";
+        out << "<tr><td>Network</td><td id='resourceScatterNetwork'></td></tr>";
+        out << "<tr><td>MaxUsage</td><td id='maxUsage'></td></tr>";
+        out << "<tr><td>Imbalance</td><td id='objectImbalance'></td></tr>";
+        out << "<tr><td>Storage</td><td id='storageScatter'></td></tr>";
+        out << "</table></div>";
+        out << "<div style='min-width:220px'><table class='simple-table3'>";
+        out << "<tr><th>Balancer</th><th style='min-width:50px'>Runs</th><th style='min-width:50px'>Moves</th>";
+        out << "<th style='min-width:80px'>Last run</th><th style='min-width:80px'>Last moves</th><th style='min-width:80px'>Progress</th></tr>";
+        for (EBalancerType type : {
+            EBalancerType::ScatterCounter,
+            EBalancerType::ScatterCPU,
+            EBalancerType::ScatterMemory,
+            EBalancerType::ScatterNetwork,
+            EBalancerType::Emergency,
+            EBalancerType::SpreadNeighbours,
+            EBalancerType::Scatter,
+            EBalancerType::Manual,
+            EBalancerType::Storage,
+        }) {
+            int balancer = static_cast<int>(type);
+            out << "<tr id='balancer" << balancer << "'><td>" << EBalancerTypeName(type) << "</td><td></td><td></td><td></td><td></td><td></td></tr>";
+        }
+        out << "</table></div></div>";
 
         out << "<table id='node_table' class='table simple-table2 table-hover table-condensed'>";
         out << "<thead><tr>"
@@ -1365,18 +1550,19 @@ public:
                "<th rowspan='2' style='min-width:280px'>Name</th>"
                "<th rowspan='2' style='min-width:50px'>DC</th>"
                "<th rowspan='2' style='min-width:280px'>Domain</th>"
-               "<th rowspan='2' style='min-width:120px'>Uptime</th>"
-               "<th rowspan='2'>Unknown</th>"
-               "<th rowspan='2'>Starting</th>"
-               "<th rowspan='2'>Running</th>"
-               "<th rowspan='2' style='min-width:160px'>Types</th>"
-               "<th rowspan='2' style='min-width:110px'>Usage</th>"
+               "<th rowspan='2' style='min-width:100px'>Uptime</th>"
+               "<th rowspan='2'><span class='glyphicon glyphicon-question-sign' title='Unknown state tablets' style='min-width:40px'></span></th>"
+               "<th rowspan='2'><span class='glyphicon glyphicon-time' title='Starting tablets' style='min-width:40px'></span></th>"
+               "<th rowspan='2'><span class='glyphicon glyphicon-flash' title='Running tablets' style='min-width:40px'></span></th>"
+               "<th style='min-width:240px; text-align:center'>Types</th>"
+               "<th rowspan='2'>Usage</th>"
                "<th colspan='4' style='text-align:center'>Resources</td>"
                "<th rowspan='2' style='text-align:center'>Active</th>"
                "<th rowspan='2' style='text-align:center'>Freeze</th>"
                "<th rowspan='2' style='text-align:center'>Kick</th>"
-               "<th rowspan='2' style='text-align:center'>Drain</th></tr>"
+               "<th rowspan='2' style='text-align:center'>Drain</th>"
                "<tr>"
+               "<th style='text-align:center' id='types'>" << GetTypesHtml(Self->SeenTabletTypes, Self->GetTabletLimit()) << "</th>"
                "<th style='min-width:70px'>cnt</th>"
                "<th style='min-width:100px'>cpu</th>"
                "<th style='min-width:100px'>mem</th>"
@@ -1403,6 +1589,12 @@ public:
         out << "<div class='col-sm-1 col-md-1' style='text-align:center'>";
         out << "<button type='button' class='btn btn-info' onclick='location.href=\"app?TabletID=" << Self->HiveId << "&page=MemStateDomains\";' style='width:138px'>Tenants</button>";
         out << "</div>";
+        out << "<div class='col-sm-1 col-md-1' style='text-align:center'>";
+        out << "<button type='button' class='btn btn-info' data-toggle='modal' data-target='#rebalance' style='width:138px'>Balancer</button>";
+        out << "</div>";
+        out << "<div class='col-sm-1 col-md-1' style='text-align:center'>";
+        out << "<button type='button' class='btn btn-info' onclick='location.href=\"app?TabletID=" << Self->HiveId << "&page=OperationsLog&max=100\";' style='width:138px'>Operations Log</button>";
+        out << "</div>";
         out << "</div>";
 
         out << "<div class='row' style='margin-top:10px'>";
@@ -1420,6 +1612,9 @@ public:
         out << "</div>";
         out << "<div class='col-sm-1 col-md-1' style='text-align:center'>";
         out << "<button type='button' class='btn btn-info' data-toggle='modal' data-target='#reassign-groups' style='width:138px'>Reassign Groups</button>";
+        out << "</div>";
+        out << "<div class='col-sm-1 col-md-1' style='text-align:center'>";
+        out << "<button type='button' class='btn btn-info' onclick='location.href=\"app?TabletID=" << Self->HiveId << "&page=Subactors\";' style='width:138px'>SubActors</button>";
         out << "</div>";
         out << "</div>";
 
@@ -1538,6 +1733,89 @@ public:
                </div>
                )___";
 
+        out << R"___(
+               <div class='modal fade' id='rebalance' role='dialog'>
+                   <div class='modal-dialog' style='width:60%'>
+                       <div class='modal-content'>
+                           <div class='modal-header'>
+                               <button type='button' class='close' data-dismiss='modal'>&times;</button>
+                               <h4 class='modal-title'>Balancer</h4>
+                           </div>
+                           <div class='modal-body'>
+                               <div class='row'>
+                                   <div class='col-md-12'>
+                                       <h2> Run Balancer</h2>
+                                   </div>
+                               </div>
+                               <div class='row'>
+                                   <div class='col-md-2'>
+                                       <label for='balancer_max_movements'>Max movements</label>
+                                       <div in='balancer_max_movements' class='input-group'>
+                                           <input id='balancer_max_movements' type='number' value='1000' class='form-control'>
+                                       </div>
+                                       <br>
+                                   </div>
+                               </div>
+                               <div class='row'>
+                                   <div class='col-md-2'>
+                                       <button type='submit' class='btn btn-primary' onclick='rebalanceTablets()' data-dismiss='modal' id='run-balancer'>Run</button>
+                                   </div>
+                               </div>
+                               <div class='row'>
+                                   <div class='col-md-12'>
+                                       <hr>
+                                   </div>
+                               </div>
+                               <div class='row'>
+                                   <div class='col-md-12'>
+                                       <h2> Rebalance ALL tablets FROM SCRATCH</h2>
+                                   </div>
+                               </div>
+                               <div class='row'>
+                                   <div class='col-md-8'>
+                                       <label for='tenant_name'> Please enter the tenant name to confirm you know what you are doing</label>
+                                       <div in='tenant_name' class='input-group' style='width:100%'>
+                                           <input id='tenant_name' type='text' class='form-control'>
+                                       </div>
+                                       <br>
+                                   </div>
+                              </div>
+                              <div class='row'>
+                                   <div class='col-md-2'>
+                                       <button id='button_rebalance' type='submit' class='btn btn-danger' onclick='rebalanceTabletsFromScratch();' data-dismiss='modal'>Run</button>
+                                   </div>
+                              </div>
+                              <div class='row'>
+                                   <div class='col-md-12'>
+                                       <hr>
+                                   </div>
+                              </div>
+                              <div class='row'>
+                                   <div class='col-md-12'>
+                                       <h2> Latest tablet moves</h2>
+                                   </div>
+                              </div>
+                              <div class='row'>
+                                   <div class='col-md-12'>
+                                       <table id='move_history' class='table table-stripped'>
+                                       <thead>
+                                       <th>Timestamp</th>
+                                       <th>Tablet</th>
+                                       <th>Node</th>
+                                       </thead>
+                                       <tbody>
+                                       </tbody>
+                                       </table>
+                                   </div>
+                              </div>
+                           </div>
+                           <div class='modal-footer'>
+                               <button type='button' class='btn btn-default' data-dismiss='modal'>Cancel</button>
+                           </div>
+                       </div>
+                   </div>
+               </div>
+               )___";
         out << "<script>";
         out << "var hiveId = '" << Self->HiveId << "';";
         out << "var tablets = [";
@@ -1549,342 +1827,446 @@ public:
         }
         out << "];";
         out << R"___(
-            $('.container')
-                .toggleClass('container container-fluid')
-                .css('padding-left', '1%')
-                .css('padding-right', '1%');
 
-            function initReassignGroups() {
-                var domTabletType = document.getElementById('tablet_type');
-                for (var tab = 0; tab < tablets.length; tab++) {
-                    var opt = document.createElement('option');
-                    opt.text = tablets[tab].name;
-                    opt.value = tablets[tab].type;
-                    domTabletType.add(opt);
-                }
-            }
+$('.container')
+    .toggleClass('container container-fluid')
+    .css('padding-left', '1%')
+    .css('padding-right', '1%');
 
-            )___";
+function initReassignGroups() {
+    var domTabletType = document.getElementById('tablet_type');
+    for (var tab = 0; tab < tablets.length; tab++) {
+        var opt = document.createElement('option');
+        opt.text = tablets[tab].name;
+        opt.value = tablets[tab].type;
+        domTabletType.add(opt);
+    }
+}
 
-        out << R"___(
-            initReassignGroups();
+initReassignGroups();
 
-            var tablets_found;
+var tablets_found;
+var Nodes = {};
+var should_refresh_types = false;
 
-            function queryTablets() {
-                var storage_pool = $('#tablet_storage_pool').val();
-                var storage_group = $('#tablet_storage_group').val();
-                var tablet_type = $('#tablet_type').val();
-                var channel_from = $('#tablet_from_channel').val();
-                var channel_to = $('#tablet_to_channel').val();
-                var percent = $('#tablet_percent').val();
-                var url = 'app?TabletID=' + hiveId + '&page=FindTablet';
-                if (storage_pool) {
-                    url = url + '&storagePool=' + storage_pool;
-                }
-                if (storage_group) {
-                    url = url + '&group=' + storage_group;
-                }
-                if (tablet_type) {
-                    url = url + '&type=' + tablet_type;
-                }
-                if (channel_from) {
-                    url = url + '&channelFrom=' + channel_from;
-                }
-                if (channel_to) {
-                    url = url + '&channelTo=' + channel_to;
-                }
-                if (percent) {
-                    url = url + '&percent=' + percent;
-                }
-                $.ajax({
-                    url: url,
-                    success: function(result) {
-                        tablets_found = result;
-                        $('#tablets_found_group').parent().css({visibility: 'visible'});
-                        $('#tablets_found').text(tablets_found.length);
-                        $('#button_reassign').removeClass('disabled');
-                    },
-                    error: function(jqXHR, status) {
-                        $('#status_text').text(status);
-                    }
-                });
-            }
+function queryTablets() {
+    var storage_pool = $('#tablet_storage_pool').val();
+    var storage_group = $('#tablet_storage_group').val();
+    var tablet_type = $('#tablet_type').val();
+    var channel_from = $('#tablet_from_channel').val();
+    var channel_to = $('#tablet_to_channel').val();
+    var percent = $('#tablet_percent').val();
+    var url = 'app?TabletID=' + hiveId + '&page=FindTablet';
+    if (storage_pool) {
+        url = url + '&storagePool=' + storage_pool;
+    }
+    if (storage_group) {
+        url = url + '&group=' + storage_group;
+    }
+    if (tablet_type) {
+        url = url + '&type=' + tablet_type;
+    }
+    if (channel_from) {
+        url = url + '&channelFrom=' + channel_from;
+    }
+    if (channel_to) {
+        url = url + '&channelTo=' + channel_to;
+    }
+    if (percent) {
+        url = url + '&percent=' + percent;
+    }
+    $.ajax({
+        url: url,
+        success: function(result) {
+            tablets_found = result;
+            $('#tablets_found_group').parent().css({visibility: 'visible'});
+            $('#tablets_found').text(tablets_found.length);
+            $('#button_reassign').removeClass('disabled');
+        },
+        error: function(jqXHR, status) {
+            $('#status_text').text(status);
+        }
+    });
+}
 
-            var tables_processed;
-            var current_inflight;
+var tables_processed;
+var current_inflight;
 
-            function continueReassign() {
-                var max_inflight = $('#tablet_reassign_inflight').val();
-                while (tablets_processed < tablets_found.length && current_inflight < max_inflight) {
-                    var tablet = tablets_found[tablets_processed];
-                    tablets_processed++;
-                    current_inflight++;
-                    $('#current_inflight').text(current_inflight);
-                    $.ajax({
-                        url: 'app?TabletID=' + hiveId
-                             + '&page=ReassignTablet&tablet=' + tablet.tabletId
-                             + '&channels=' + tablet.channels
-                             + '&wait=1',
-                        success: function() {
+function continueReassign() {
+    var max_inflight = $('#tablet_reassign_inflight').val();
+    while (tablets_processed < tablets_found.length && current_inflight < max_inflight) {
+        var tablet = tablets_found[tablets_processed];
+        tablets_processed++;
+        current_inflight++;
+        $('#current_inflight').text(current_inflight);
+        $.ajax({
+            url: 'app?TabletID=' + hiveId
+                + '&page=ReassignTablet&tablet=' + tablet.tabletId
+                + '&channels=' + tablet.channels
+                + '&wait=1',
+            success: function() {
 
-                        },
-                        error: function(jqXHR, status) {
-                            $('#status_text').text(status);
-                        },
-                        complete: function() {
-                            $('#tablets_processed').text(tablets_processed);
-                            var value = Number(tablets_processed * 100 / tablets_found.length).toFixed();
-                            $('#progress_bar').css('width', value + '%').attr('aria-valuenow', value).text(value + '%');
-                            current_inflight--;
-                            continueReassign();
-                        },
-                    });
-                }
-                if (tablets_processed >= tablets_found.length) {
-                    $('#button_query').removeClass('disabled');
-                    $('#button_reassign').removeClass('disabled');
-                }
-            }
-
-            function cancel() {
-                tablets_processed = tablets_found.length;
-                $('#tablets_processed_group').parent().css({visibility: 'hidden'});
-                $('#current_inflight_group').parent().css({visibility: 'hidden'});
-                $('#time_left_group').parent().css({visibility: 'hidden'});
-                $('#progress_bar_group').parent().css({visibility: 'hidden'});
-            }
-
-            function reassignGroups() {
-                $('#tablets_processed_group').parent().css({visibility: 'visible'});
-                $('#current_inflight_group').parent().css({visibility: 'visible'});
-                //$('#time_left_group').parent().css({visibility: 'visible'});
-                $('#progress_bar_group').parent().css({visibility: 'visible'});
-                $('#button_query').addClass('disabled');
-                $('#button_reassign').addClass('disabled');
-                tablets_processed = 0;
-                current_inflight = 0;
+            },
+            error: function(jqXHR, status) {
+                $('#status_text').text(status);
+            },
+            complete: function() {
+                $('#tablets_processed').text(tablets_processed);
+                var value = Number(tablets_processed * 100 / tablets_found.length).toFixed();
+                $('#progress_bar').css('width', value + '%').attr('aria-valuenow', value).text(value + '%');
+                current_inflight--;
                 continueReassign();
+            },
+        });
+    }
+    if (tablets_processed >= tablets_found.length) {
+        $('#button_query').removeClass('disabled');
+        $('#button_reassign').removeClass('disabled');
+    }
+}
+
+function cancel() {
+    tablets_processed = tablets_found.length;
+    $('#tablets_processed_group').parent().css({visibility: 'hidden'});
+    $('#current_inflight_group').parent().css({visibility: 'hidden'});
+    $('#time_left_group').parent().css({visibility: 'hidden'});
+    $('#progress_bar_group').parent().css({visibility: 'hidden'});
+}
+
+function reassignGroups() {
+    $('#tablets_processed_group').parent().css({visibility: 'visible'});
+    $('#current_inflight_group').parent().css({visibility: 'visible'});
+    //$('#time_left_group').parent().css({visibility: 'visible'});
+    $('#progress_bar_group').parent().css({visibility: 'visible'});
+    $('#button_query').addClass('disabled');
+    $('#button_reassign').addClass('disabled');
+    tablets_processed = 0;
+    current_inflight = 0;
+    continueReassign();
+}
+
+function setDown(element, nodeId, down) {
+    if (down && $(element).hasClass('glyphicon-ok')) {
+        $(element).removeClass('glyphicon-ok');
+        element.inProgress = true;
+        $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetDown&down=1', success: function(){ $(element).addClass('glyphicon-remove'); element.inProgress = false; }});
+    } else if (!down && $(element).hasClass('glyphicon-remove')) {
+        $(element).removeClass('glyphicon-remove');
+        element.inProgress = true;
+        $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetDown&down=0', success: function(){ $(element).addClass('glyphicon-ok'); element.inProgress = false; }});
+    }
+}
+
+function toggleDown(element, nodeId) {
+    setDown(element, nodeId, $(element).hasClass('glyphicon-ok'));
+}
+
+function toggleFreeze(element, nodeId) {
+    if ($(element).hasClass('glyphicon-play')) {
+        $(element).removeClass('glyphicon-play');
+        element.inProgress = true;
+        $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetFreeze&freeze=1', success: function(){ $(element).addClass('glyphicon-pause'); element.inProgress = false; }});
+    } else if ($(element).hasClass('glyphicon-pause')) {
+        $(element).removeClass('glyphicon-pause');
+        element.inProgress = true;
+        $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetFreeze&freeze=0', success: function(){ $(element).addClass('glyphicon-play'); element.inProgress = false; }});
+    }
+}
+
+function kickNode(element, nodeId) {
+    $(element).removeClass('glyphicon-transfer');
+    $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=KickNode', success: function(){ $(element).addClass('glyphicon-transfer'); }});
+}
+
+function drainNode(element, nodeId) {
+    $(element).removeClass('glyphicon-transfer');
+    $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=DrainNode', success: function(){ $(element).addClass('blinking'); Nodes[nodeId].Drain = true; }});
+}
+
+function rebalanceTablets() {
+    $('#balancerProgress').html('o.O');
+    var max_movements = $('#balancer_max_movements').val();
+    $.ajax({url:'app?TabletID=' + hiveId + '&page=Rebalance&movements=' + max_movements});
+}
+
+function rebalanceTabletsFromScratch(element) {
+    var tenant_name = $('#tenant_name').val();
+    $.ajax({url:'app?TabletID=' + hiveId + '&page=RebalanceFromScratch&tenantName=' + tenant_name});
+}
+
+function toggleAlert() {
+    $('#alert-placeholder').toggleClass('glyphicon-refresh');
+}
+
+function clearAlert() {
+    $('#alert-placeholder').removeClass('glyphicon-refresh');
+}
+
+function enableType(element, node, type) {
+    $(element).css('color', 'gray');
+    $.ajax({url:'?TabletID=' + hiveId + '&node=' + node + '&page=TabletAvailability&resettype=' + type});
+}
+
+function disableType(element, node, type) {
+    $(element).css('color', 'gray');
+    $.ajax({url:'?TabletID=' + hiveId + '&node=' + node + '&page=TabletAvailability&maxcount=0&changetype=' + type});
+}
+
+function applySetting(button, name, val) {
+    $(button).css('color', 'gray');
+    if (name == "DefaultTabletLimit") {
+        should_refresh_types = true;
+    }
+    $.ajax({
+        url: document.URL + '&page=Settings&' + name + '=' + val,
+    });
+}
+
+var Empty = true;
+
+function getBalancerString(balancer) {
+    return 'runs=' + balancer.TotalRuns + ' moves=' + balancer.TotalMovements;
+}
+
+function fillDataShort(result) {
+    try {
+        if ("TotalTablets" in result) {
+            var percent = Math.floor(result.RunningTablets * 100 / result.TotalTablets) + '%';
+            var values = result.RunningTablets + ' of ' + result.TotalTablets;
+            var warmup = result.WarmUp ? "<span class='glyphicon glyphicon-fire' style='color:red; margin-right:4px'></span>" : "";
+            $('#runningTablets').html(warmup + percent + ' (' + values + ')');
+            $('#aliveNodes').html(result.AliveNodes);
+            $('#bootQueue').html(result.BootQueueSize);
+            $('#waitQueue').html(result.WaitQueueSize);
+            $('#maxUsage').html(result.MaxUsage);
+            $('#objectImbalance').html(result.ObjectImbalance);
+            $('#storageScatter').html(result.StorageScatter);
+            if (should_refresh_types) {
+                $('#types').html(result.Types);
+                should_refresh_types = false;
             }
 
-            function setDown(element, nodeId, down) {
-                if (down && $(element).hasClass('glyphicon-ok')) {
-                    $(element).removeClass('glyphicon-ok');
-                    element.inProgress = true;
-                    $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetDown&down=1', success: function(){ $(element).addClass('glyphicon-remove'); element.inProgress = false; }});
-                } else if (!down && $(element).hasClass('glyphicon-remove')) {
-                    $(element).removeClass('glyphicon-remove');
-                    element.inProgress = true;
-                    $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetDown&down=0', success: function(){ $(element).addClass('glyphicon-ok'); element.inProgress = false; }});
+            $('#resourceTotalCounter').html(result.ResourceTotal.Counter);
+            $('#resourceTotalCPU').html(result.ResourceTotal.CPU);
+            $('#resourceTotalMemory').html(result.ResourceTotal.Memory);
+            $('#resourceTotalNetwork').html(result.ResourceTotal.Network);
+
+            $('#resourceStdDevCounter').html(result.ResourceVariance.Counter);
+            $('#resourceStdDevCPU').html(result.ResourceVariance.CPU);
+            $('#resourceStdDevMemory').html(result.ResourceVariance.Memory);
+            $('#resourceStdDevNetwork').html(result.ResourceVariance.Network);
+
+            $('#resourceScatterCounter').html(result.ScatterHtml.Counter);
+            $('#resourceScatterCPU').html(result.ScatterHtml.CPU);
+            $('#resourceScatterMemory').html(result.ScatterHtml.Memory);
+            $('#resourceScatterNetwork').html(result.ScatterHtml.Network);
+
+            for (var b = 0; b < result.Balancers.length; b++) {
+                var balancerObj = result.Balancers[b];
+                var balancerHtml = $('#balancer' + b)[0];
+                balancerHtml.cells[1].innerHTML = balancerObj.TotalRuns;
+                balancerHtml.cells[2].innerHTML = balancerObj.TotalMovements;
+                if (balancerObj.TotalRuns > 0) {
+                    balancerHtml.cells[3].innerHTML = balancerObj.LastRunTimestamp;
+                    balancerHtml.cells[4].innerHTML = balancerObj.LastRunMovements;
+                } else {
+                    balancerHtml.cells[3].innerHTML = '';
+                    balancerHtml.cells[4].innerHTML = '';
+                }
+                if (balancerObj.IsRunningNow && balancerObj.CurrentMaxMovements > 0) {
+                    balancerHtml.cells[5].innerHTML = Math.floor(balancerObj.CurrentMovements * 100 / balancerObj.CurrentMaxMovements) + '%';
+                } else {
+                    balancerHtml.cells[5].innerHTML = '';
                 }
             }
+        }
+        clearAlert();
+    }
+    catch(err) {
+        toggleAlert();
+    }
+}
 
-            function toggleDown(element, nodeId) {
-                setDown(element, nodeId, $(element).hasClass('glyphicon-ok'));
+function onFreshDataShort(result) {
+    fillDataShort(result);
+    setTimeout(function(){updateDataShort();}, 500);
+}
+
+function onFreshDataLong(result) {
+    var nlen;
+    try {
+        fillDataShort(result);
+        if ("Nodes" in result) {
+            $('#move_history > tbody > tr').remove();
+            for (var i in result.Moves) {
+                $(result.Moves[i]).appendTo('#move_history > tbody');
             }
-
-            function toggleFreeze(element, nodeId) {
-                if ($(element).hasClass('glyphicon-play')) {
-                    $(element).removeClass('glyphicon-play');
-                    element.inProgress = true;
-                    $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetFreeze&freeze=1', success: function(){ $(element).addClass('glyphicon-pause'); element.inProgress = false; }});
-                } else if ($(element).hasClass('glyphicon-pause')) {
-                    $(element).removeClass('glyphicon-pause');
-                    element.inProgress = true;
-                    $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=SetFreeze&freeze=0', success: function(){ $(element).addClass('glyphicon-play'); element.inProgress = false; }});
+            var old_nodes = {};
+            if (Empty) {
+                // initialization
+                $('#node_table > tbody > tr').remove();
+                Empty = false;
+            } else {
+                for (var id in Nodes) {
+                    old_nodes[id] = true;
                 }
             }
-
-            function kickNode(element, nodeId) {
-                $(element).removeClass('glyphicon-transfer');
-                $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=KickNode', success: function(){ $(element).addClass('glyphicon-transfer'); }});
-            }
-
-            function drainNode(element, nodeId) {
-                $(element).removeClass('glyphicon-transfer');
-                $.ajax({url:'app?TabletID=' + hiveId + '&node=' + nodeId + '&page=DrainNode', success: function(){ $(element).addClass('blinking'); }});
-            }
-
-            function rebalanceTablets(element) {
-                $('#balancerProgress').html('o.O');
-                $.ajax({url:'app?TabletID=' + hiveId + '&page=Rebalance'});
-            }
-
-            function toggleAlert() {
-                $('#alert-placeholder').toggleClass('glyphicon-refresh');
-            }
-
-            function clearAlert() {
-                $('#alert-placeholder').removeClass('glyphicon-refresh');
-            }
-            )___";
-
-        out << R"___(
-
-            var Nodes = {};
-            var Empty = true;
-
-            function onFreshData(result) {
-                var nlen;
-                try {
-                    if ("TotalTablets" in result) {
-                        $('#runningTablets').html((result.TotalTablets == 0 ? 0 : Math.floor(result.RunningTablets * 100 / result.TotalTablets)) + '% ' + result.RunningTablets + '/' + result.TotalTablets);
-                        //$('#aliveNodes').html(result.TotalNodes == 0 ? 0 : Math.floor(result.AliveNodes * 100 / result.TotalNodes) + '% ' + result.AliveNodes + '/' + result.TotalNodes);
-                        $('#resourceVariance').html(result.ResourceVariance);
-                        $('#resourceTotal').html(result.ResourceTotal);
-                        $('#bootQueue').html(result.BootQueueSize);
-                        $('#waitQueue').html(result.WaitQueueSize);
-                        if (result.BalancerProgress >= 0) {
-                            $('#balancerProgress').html(result.BalancerProgress + '%');
+            var was_append = false;
+            nlen = result.Nodes.length;
+            for (i = 0; i < nlen; i++) {
+                var node = result.Nodes[i];
+                var old_node = Nodes[node.Id];
+                var nodeElement = $('#node' + node.Id).get(0);
+                var nodeElement;
+                if (old_node) {
+                    nodeElement = old_node.NodeElement;
+                } else {
+                    nodeElement = $('<tr id="node' + node.Id + '"><td>' + node.Id + '</td>'
+                        + '<td></td>'
+                        + '<td></td>'
+                        + '<td></td>'
+                        + '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'
+                        + '<td style="text-align:center"><span title="Toggle node availability" onclick="toggleDown(this,' + node.Id + ')" style="cursor:pointer" class="active-mark glyphicon glyphicon-ok"></span></td>'
+                        + '<td style="text-align:center"><span title="Toggle node freeze" onclick="toggleFreeze(this,' + node.Id + ')" style="cursor:pointer" class="glyphicon glyphicon-play"></span></td>'
+                        + '<td style="text-align:center"><span title="Kick tablets on this node" onclick="kickNode(this,' + node.Id + ')" style="cursor:pointer" class="glyphicon glyphicon-transfer"></span></td>'
+                        + '<td style="text-align:center"><span title="Drain this node" onclick="drainNode(this,' + node.Id + ')" style="cursor:pointer" class="glyphicon glyphicon-log-out"></span></td>'
+                        + '</tr>').appendTo('#node_table > tbody').get(0);
+                    nodeElement.cells[1].innerHTML = '<a href="' + node.Host + ':8765">' + node.Name + '</a>';
+                    nodeElement.cells[2].innerHTML = node.DataCenter;
+                    was_append = true;
+                }
+                delete old_nodes[node.Id];
+                if (!old_node || old_node.Alive != node.Alive) {
+                    if (node.Alive) {
+                        nodeElement.style.color = 'initial';
+                    } else {
+                        nodeElement.style.color = '#E0E0E0';
+                    }
+                }
+                var element = $(nodeElement.cells[14].children[0]);
+                if (!element.hasOwnProperty("inProgress") || !element.inProgress) {
+                    if (!old_node || old_node.Down != node.Down) {
+                        if (node.Down) {
+                            element.removeClass('glyphicon-ok');
+                            element.addClass('glyphicon-remove');
                         } else {
-                            $('#balancerProgress').html('');
-                        }
-                        var old_nodes = {};
-                        if (Empty) {
-                            // initialization
-                            $('#node_table > tbody > tr').remove();
-                            Empty = false;
-                        } else {
-                            for (var id in Nodes) {
-                                old_nodes[id] = true;
-                            }
-                        }
-                        var was_append = false;
-                        nlen = result.Nodes.length;
-                        for (i = 0; i < nlen; i++) {
-                            var node = result.Nodes[i];
-                            var old_node = Nodes[node.Id];
-                            var nodeElement = $('#node' + node.Id).get(0);
-                            var nodeElement;
-                            if (old_node) {
-                                nodeElement = old_node.NodeElement;
-                            } else {
-                                nodeElement = $('<tr id="node' + node.Id + '"><td>' + node.Id + '</td>'
-                                    + '<td></td>'
-                                    + '<td></td>'
-                                    + '<td></td>'
-                                    + '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'
-                                    + '<td style="text-align:center"><span title="Toggle node availability" onclick="toggleDown(this,' + node.Id + ')" style="cursor:pointer" class="active-mark glyphicon glyphicon-ok"></span></td>'
-                                    + '<td style="text-align:center"><span title="Toggle node freeze" onclick="toggleFreeze(this,' + node.Id + ')" style="cursor:pointer" class="glyphicon glyphicon-play"></span></td>'
-                                    + '<td style="text-align:center"><span title="Kick tablets on this node" onclick="kickNode(this,' + node.Id + ')" style="cursor:pointer" class="glyphicon glyphicon-transfer"></span></td>'
-                                    + '<td style="text-align:center"><span title="Drain this node" onclick="drainNode(this,' + node.Id + ')" style="cursor:pointer" class="glyphicon glyphicon-log-out"></span></td>'
-                                    + '</tr>').appendTo('#node_table > tbody').get(0);
-                                nodeElement.cells[1].innerHTML = '<a href="' + node.Host + ':8765">' + node.Name + '</a>';
-                                nodeElement.cells[2].innerHTML = node.DataCenter;
-                                was_append = true;
-                            }
-                            delete old_nodes[node.Id];
-                            if (!old_node || old_node.Alive != node.Alive) {
-                                if (node.Alive) {
-                                    nodeElement.style.color = 'initial';
-                                } else {
-                                    nodeElement.style.color = '#E0E0E0';
-                                }
-                            }
-                            var element = $(nodeElement.cells[14].children[0]);
-                            if (!element.hasOwnProperty("inProgress") || !element.inProgress) {
-                                if (!old_node || old_node.Down != node.Down) {
-                                    if (node.Down) {
-                                        element.removeClass('glyphicon-ok');
-                                        element.addClass('glyphicon-remove');
-                                    } else {
-                                        element.removeClass('glyphicon-remove');
-                                        element.addClass('glyphicon-ok');
-                                    }
-                                }
-                            }
-                            element = $(nodeElement.cells[15].children[0]);
-                            if (!element.hasOwnProperty("inProgress") || !element.inProgress) {
-                                if (!old_node || old_node.Freeze != node.Freeze) {
-                                    if (node.Freeze) {
-                                        element.removeClass('glyphicon-play');
-                                        element.addClass('glyphicon-pause');
-                                    } else {
-                                        element.removeClass('glyphicon-pause');
-                                        element.addClass('glyphicon-play');
-                                    }
-                                }
-                            }
-                            element = $(nodeElement.cells[17].children[0]);
-                            if (!element.hasOwnProperty("inProgress") || !element.inProgress) {
-                                if (!old_node || old_node.Drain != node.Drain) {
-                                    if (node.Drain) {
-                                        element.addClass('blinking');
-                                    } else {
-                                        element.removeClass('blinking');
-                                    }
-                                }
-                            }
-                            if (!old_node || old_node.Name != node.Name) {
-                                nodeElement.cells[1].innerHTML = '<a href="' + node.Host + ':8765">' + node.Name + '</a>';
-                            }
-                            if (!old_node || old_node.DataCenter != node.DataCenter) {
-                                nodeElement.cells[2].innerHTML = node.DataCenter;
-                            }
-                            if (!old_node || old_node.Domain != node.Domain) {
-                                nodeElement.cells[3].innerHTML = node.Domain;
-                            }
-                            if (!old_node || old_node.Uptime != node.Uptime) {
-                                nodeElement.cells[4].innerHTML = node.Uptime;
-                            }
-                            if (!old_node || old_node.Unknown != node.Unknown) {
-                                nodeElement.cells[5].innerHTML = node.Unknown;
-                            }
-                            if (!old_node || old_node.Starting != node.Starting) {
-                                nodeElement.cells[6].innerHTML = node.Starting;
-                            }
-                            if (!old_node || old_node.Running != node.Running) {
-                                nodeElement.cells[7].innerHTML = node.Running;
-                            }
-                            if (!old_node || old_node.Types != node.Types) {
-                                nodeElement.cells[8].innerHTML = node.Types;
-                            }
-                            if (!old_node || old_node.Usage != node.Usage) {
-                                nodeElement.cells[9].innerHTML = node.Usage;
-                            }
-                            if (!old_node || old_node.ResourceValues[0] != node.ResourceValues[0]) {
-                                nodeElement.cells[10].innerHTML = node.ResourceValues[0];
-                            }
-                            if (!old_node || old_node.ResourceValues[1] != node.ResourceValues[1]) {
-                                nodeElement.cells[11].innerHTML = node.ResourceValues[1];
-                            }
-                            if (!old_node || old_node.ResourceValues[2] != node.ResourceValues[2]) {
-                                nodeElement.cells[12].innerHTML = node.ResourceValues[2];
-                            }
-                            if (!old_node || old_node.ResourceValues[3] != node.ResourceValues[3]) {
-                                nodeElement.cells[13].innerHTML = node.ResourceValues[3];
-                            }
-                            node.NodeElement = nodeElement;
-                            Nodes[node.Id] = node;
-                        }
-                        for (var id in old_nodes) {
-                            $('#node' + id).remove();
-                            delete Nodes[id];
-                        }
-                        if (was_append) {
-                            $('#node_table > tbody > tr').sort(function(a,b) {
-                                if (a.cells[3].innerHTML > b.cells[3].innerHTML)
-                                    return 1;
-                                if (a.cells[3].innerHTML < b.cells[3].innerHTML)
-                                    return -1;
-                                return parseInt(a.cells[0].innerHTML, 10) - parseInt(b.cells[0].innerHTML, 10);
-                            }).appendTo('#node_table > tbody');
+                            element.removeClass('glyphicon-remove');
+                            element.addClass('glyphicon-ok');
                         }
                     }
-                    clearAlert();
                 }
-                catch(err) {
-                    toggleAlert();
+                element = $(nodeElement.cells[15].children[0]);
+                if (!element.hasOwnProperty("inProgress") || !element.inProgress) {
+                    if (!old_node || old_node.Freeze != node.Freeze) {
+                        if (node.Freeze) {
+                            element.removeClass('glyphicon-play');
+                            element.addClass('glyphicon-pause');
+                        } else {
+                            element.removeClass('glyphicon-pause');
+                            element.addClass('glyphicon-play');
+                        }
+                    }
                 }
-                setTimeout(function(){updateData();}, 500 + nlen);
+                element = $(nodeElement.cells[17].children[0]);
+                if (!element.hasOwnProperty("inProgress") || !element.inProgress) {
+                    if (!old_node || old_node.Drain != node.Drain) {
+                        if (node.Drain) {
+                            element.addClass('blinking');
+                        } else {
+                            element.removeClass('blinking');
+                        }
+                    }
+                }
+                if (!old_node || old_node.Name != node.Name) {
+                    nodeElement.cells[1].innerHTML = '<a href="' + node.Host + ':8765">' + node.Name + '</a>';
+                }
+                if (!old_node || old_node.DataCenter != node.DataCenter) {
+                    nodeElement.cells[2].innerHTML = node.DataCenter;
+                }
+                if (!old_node || old_node.Domain != node.Domain) {
+                    nodeElement.cells[3].innerHTML = node.Domain;
+                }
+                if (!old_node || old_node.Uptime != node.Uptime) {
+                    nodeElement.cells[4].innerHTML = node.Uptime;
+                }
+                if (!old_node || old_node.Unknown != node.Unknown) {
+                    nodeElement.cells[5].innerHTML = node.Unknown;
+                }
+                if (!old_node || old_node.Starting != node.Starting) {
+                    nodeElement.cells[6].innerHTML = node.Starting;
+                }
+                if (!old_node || old_node.Running != node.Running) {
+                    nodeElement.cells[7].innerHTML = node.Running;
+                }
+                if (!old_node || old_node.Types != node.Types) {
+                    nodeElement.cells[8].innerHTML = node.Types;
+                }
+                if (!old_node || old_node.Usage != node.Usage) {
+                    nodeElement.cells[9].innerHTML = node.Usage;
+                }
+                if (!old_node || old_node.ResourceValues[0] != node.ResourceValues[0]) {
+                    nodeElement.cells[10].innerHTML = node.ResourceValues[0];
+                }
+                if (!old_node || old_node.ResourceValues[1] != node.ResourceValues[1]) {
+                    nodeElement.cells[11].innerHTML = node.ResourceValues[1];
+                }
+                if (!old_node || old_node.ResourceValues[2] != node.ResourceValues[2]) {
+                    nodeElement.cells[12].innerHTML = node.ResourceValues[2];
+                }
+                if (!old_node || old_node.ResourceValues[3] != node.ResourceValues[3]) {
+                    nodeElement.cells[13].innerHTML = node.ResourceValues[3];
+                }
+                node.NodeElement = nodeElement;
+                Nodes[node.Id] = node;
             }
+            for (var id in old_nodes) {
+                $('#node' + id).remove();
+                delete Nodes[id];
+            }
+            if (was_append) {
+                $('#node_table > tbody > tr').sort(function(a,b) {
+                    if (a.cells[3].innerHTML > b.cells[3].innerHTML)
+                        return 1;
+                    if (a.cells[3].innerHTML < b.cells[3].innerHTML)
+                        return -1;
+                    return parseInt(a.cells[0].innerHTML, 10) - parseInt(b.cells[0].innerHTML, 10);
+                }).appendTo('#node_table > tbody');
+            }
+        }
+        clearAlert();
+    }
+    catch(err) {
+        toggleAlert();
+    }
+    setTimeout(function(){updateDataLong();}, 500 + nlen * 10);
+}
 
-            function updateData() {
-                $.ajax({url:'app?TabletID=' + hiveId + '&page=LandingData',
-                    success: function(result){ onFreshData(result); },
-                    error: function(){ toggleAlert(); setTimeout(updateData, 1000); }
-                });
-            }
+var switchToLong = false;
+
+function updateDataShort() {
+    if (switchToLong) {
+        updateDataLong();
+        return;
+    }
+    $.ajax({url:'app?TabletID=' + hiveId + '&page=LandingData',
+        success: function(result){ onFreshDataShort(result); },
+        error: function(){ toggleAlert(); setTimeout(updateDataShort, 1000); }
+    });
+}
+
+function updateDataLong() {
+    $.ajax({url:'app?TabletID=' + hiveId + '&page=LandingData&nodes=1&moves=1',
+        success: function(result){ onFreshDataLong(result); },
+        error: function(){ toggleAlert(); setTimeout(updateDataLong, 1000); }
+    });
+}
+
+function updateData() {
+    switchToLong = true;
+}
+
+updateDataShort();
+
 
             )___";
         out << "</script>";
@@ -1919,31 +2301,63 @@ public:
         Y_UNUSED(ctx);
     }
 
+    struct TTabletsRunningInfo {
+        TNodeId NodeId;
+        TTabletTypes::EType TabletType;
+        ui64 LeaderCount = 0;
+        ui64 FollowerCount = 0;
+        ui64 MaxCount = 0;
+
+        TTabletsRunningInfo(TNodeId node, TTabletTypes::EType tabletType) : NodeId(node)
+                                                                          , TabletType(tabletType)
+        {
+        }
+
+        TString ToHTML() const {
+            auto totalCount = LeaderCount + FollowerCount;
+            TStringBuilder str;
+            if (MaxCount > 0) {
+                str << "<span class='box' ";
+            } else {
+                str << "<span class='box box-disabled' ";
+            }
+            if (totalCount > MaxCount) {
+                str << " style='color: red' ";
+            }
+            str << " onclick='"  << (MaxCount == 0 ? "enableType" : "disableType")
+                << "(this," << NodeId << "," << (ui32)TabletType << ")";
+            str << "'>";
+            str << GetTabletTypeShortName(TabletType);
+            str << " ";
+            str << LeaderCount;
+            if (FollowerCount > 0) {
+                str << " (" << FollowerCount << ")";
+            }
+            str << "</span>";
+            return str;
+        }
+    };
+
     void RenderJSONPage(IOutputStream &out) {
         ui64 nodes = 0;
         ui64 tablets = 0;
         ui64 runningTablets = 0;
         ui64 aliveNodes = 0;
-        THashMap<ui32, TMap<TString, ui32>> tabletsByNodeByType;
+        THashMap<ui32, TVector<TTabletsRunningInfo>> tabletsByNodeByType;
 
         for (const auto& pr : Self->Tablets) {
+            ++tablets;
             if (pr.second.IsRunning()) {
                 ++runningTablets;
-                ++tabletsByNodeByType[pr.second.NodeId][TTxMonEvent_Landing::GetTabletType(pr.second.Type)];
             }
-            if (pr.second.IsLockedToActor()) {
-                ++runningTablets;
-                ++tabletsByNodeByType[pr.second.LockedToActor.NodeId()][TTxMonEvent_Landing::GetTabletType(pr.second.Type)];
-            }
-            for (const auto& sl : pr.second.Followers) {
-                if (sl.IsRunning()) {
-                    ++runningTablets;
-                    ++tabletsByNodeByType[sl.NodeId][TTxMonEvent_Landing::GetTabletType(pr.second.Type) + "s"];
-                }
+            for (const auto& follower : pr.second.Followers) {
                 ++tablets;
+                if (follower.IsRunning()) {
+                    ++runningTablets;
+                }
             }
-            ++tablets;
         }
+
         for (const auto& pr : Self->Nodes) {
             if (pr.second.IsAlive()) {
                 ++aliveNodes;
@@ -1951,103 +2365,146 @@ public:
             if (!pr.second.IsUnknown()) {
                 ++nodes;
             }
+            auto& tabletsByType = tabletsByNodeByType[pr.first];
+            tabletsByType.reserve(Self->SeenTabletTypes.size());
+            for (auto tabletType : Self->SeenTabletTypes) {
+                tabletsByType.emplace_back(pr.first, tabletType);
+                auto& current = tabletsByType.back();
+                current.MaxCount = pr.second.GetMaxCountForTabletType(tabletType);
+                auto tabletsRunningIt = pr.second.TabletsRunningByType.find(tabletType);
+                if (tabletsRunningIt == pr.second.TabletsRunningByType.end()) {
+                    continue;
+                }
+                for (const auto* tablet : tabletsRunningIt->second) {
+                    if (tablet == nullptr) {
+                        continue;
+                    }
+                    if (tablet->IsLeader()) {
+                        ++current.LeaderCount;
+                    } else {
+                        ++current.FollowerCount;
+                    }
+                }
+            }
         }
 
         NJson::TJsonValue jsonData;
+        THive::THiveStats stats = Self->GetStats();
 
         jsonData["TotalTablets"] = tablets;
         jsonData["RunningTablets"] = runningTablets;
         jsonData["TotalNodes"] = nodes;
         jsonData["AliveNodes"] = aliveNodes;
-        jsonData["ResourceTotal"] = GetResourceValuesText(Self->TotalRawResourceValues);
-        jsonData["ResourceVariance"] = GetResourceValuesText(Self->GetStDevResourceValues());//, [](double d) -> TString { return Sprintf("%.9f", d); });
+        jsonData["ResourceTotal"] = GetResourceValuesJson(Self->TotalRawResourceValues);
+        jsonData["ResourceVariance"] = GetResourceValuesJson(Self->GetStDevResourceValues());
         jsonData["BootQueueSize"] = Self->BootQueue.BootQueue.size();
         jsonData["WaitQueueSize"] = Self->BootQueue.WaitQueue.size();
-        jsonData["BalancerProgress"] = Self->BalancerProgress;
+        jsonData["Balancers"] = Self->GetBalancerProgressJson();
+        jsonData["MaxUsage"] =  GetValueWithColoredGlyph(stats.MaxUsage, Self->GetMaxNodeUsageToKick()) ;
+        auto scatterHtml = convert(stats.ScatterByResource, Self->GetMinScatterToBalance(), GetValueWithColoredGlyph);
+        jsonData["ScatterHtml"]["Counter"] = std::get<NMetrics::EResource::Counter>(scatterHtml);
+        jsonData["ScatterHtml"]["CPU"] = std::get<NMetrics::EResource::CPU>(scatterHtml);
+        jsonData["ScatterHtml"]["Memory"] = std::get<NMetrics::EResource::Memory>(scatterHtml);
+        jsonData["ScatterHtml"]["Network"] = std::get<NMetrics::EResource::Network>(scatterHtml);
+        jsonData["ObjectImbalance"] = GetValueWithColoredGlyph(Self->ObjectDistributions.GetMaxImbalance(), Self->GetObjectImbalanceToBalance());
+        jsonData["StorageScatter"] = GetValueWithColoredGlyph(Self->StorageScatter, Self->GetMinStorageScatterToBalance());
+        jsonData["WarmUp"] = Self->WarmUp;
+        jsonData["Types"] = GetTypesHtml(Self->SeenTabletTypes, Self->GetTabletLimit());
 
-        TVector<TNodeInfo*> nodeInfos;
-        nodeInfos.reserve(Self->Nodes.size());
-        for (auto& pr : Self->Nodes) {
-            if (!pr.second.IsUnknown()) {
-                nodeInfos.push_back(&pr.second);
-            }
-        }
-        std::sort(nodeInfos.begin(), nodeInfos.end(), [](TNodeInfo* a, TNodeInfo* b) -> bool {
-            return std::make_tuple(a->ServicedDomains, a->Id) < std::make_tuple(b->ServicedDomains, b->Id);
-        });
-
-        TInstant aliveLine = TInstant::Now() - TDuration::Minutes(10);
-
-        NJson::TJsonValue& jsonNodes = jsonData["Nodes"];
-        for (TNodeInfo* nodeInfo : nodeInfos) {
-            TNodeInfo& node = *nodeInfo;
-            TNodeId id = node.Id;
-
-            if (!node.IsAlive() && TInstant::MilliSeconds(node.Statistics.GetLastAliveTimestamp()) < aliveLine) {
-                continue;
-            }
-
-            NJson::TJsonValue& jsonNode = jsonNodes.AppendValue(NJson::TJsonValue());
-            TString name = "";
-            TString host;
-            auto it = Self->NodesInfo.find(node.Id);
-            if (it != Self->NodesInfo.end()) {
-                auto &ni = it->second;
-                if (ni.Host.empty()) {
-                    name = ni.Address + ":" + ToString(ni.Port);
-                    host = ni.Address;
-                } else {
-                    name = ni.Host.substr(0, ni.Host.find('.')) + ":" + ToString(ni.Port);
-                    host = ni.Host;
+        if (Cgi.Get("nodes") == "1") {
+            TVector<TNodeInfo*> nodeInfos;
+            nodeInfos.reserve(Self->Nodes.size());
+            for (auto& pr : Self->Nodes) {
+                if (!pr.second.IsUnknown()) {
+                    nodeInfos.push_back(&pr.second);
                 }
             }
+            std::sort(nodeInfos.begin(), nodeInfos.end(), [](TNodeInfo* a, TNodeInfo* b) -> bool {
+                return std::make_tuple(a->ServicedDomains, a->Id) < std::make_tuple(b->ServicedDomains, b->Id);
+            });
 
-            jsonNode["Id"] = id;
-            jsonNode["Host"] = host;
-            jsonNode["Name"] = name;
-            if (node.LocationAcquired) {
-                jsonNode["DataCenter"] = node.Location.GetDataCenterId();
-            }
-            jsonNode["Domain"] = node.ServicedDomains.empty() ? "" : Self->GetDomainName(node.GetServicedDomain());
-            jsonNode["Alive"] = node.IsAlive();
-            jsonNode["Down"] = node.Down;
-            jsonNode["Freeze"] = node.Freeze;
-            jsonNode["Drain"] = node.IsAlive() ? node.Drain : false;
-            jsonNode["Uptime"] = node.IsAlive() ? GetDurationString(node.GetUptime()) : "";
-            jsonNode["Unknown"] = node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_UNKNOWN].size();
-            jsonNode["Starting"] = node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_STARTING].size();
-            jsonNode["Running"] = node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING].size();
-            {
-                TString types;
-                auto nodeTabletTypes = tabletsByNodeByType.find(node.Id);
-                if (nodeTabletTypes != tabletsByNodeByType.end()) {
-                    for (auto it = nodeTabletTypes->second.begin(); it != nodeTabletTypes->second.end(); ++it) {
-                        if (!types.empty()) {
-                            types += ' ';
-                        }
-                        types += Sprintf("%s:%d", it->first.c_str(), it->second);
+            TInstant aliveLine = TInstant::Now() - TDuration::Minutes(10);
+
+            NJson::TJsonValue& jsonNodes = jsonData["Nodes"];
+            for (TNodeInfo* nodeInfo : nodeInfos) {
+                TNodeInfo& node = *nodeInfo;
+                TNodeId id = node.Id;
+
+                if (!node.IsAlive() && TInstant::MilliSeconds(node.Statistics.GetLastAliveTimestamp()) < aliveLine) {
+                    continue;
+                }
+
+                NJson::TJsonValue& jsonNode = jsonNodes.AppendValue(NJson::TJsonValue());
+                TString name = "";
+                TString host;
+                auto it = Self->NodesInfo.find(node.Id);
+                if (it != Self->NodesInfo.end()) {
+                    auto &ni = it->second;
+                    if (ni.Host.empty()) {
+                        name = ni.Address + ":" + ToString(ni.Port);
+                        host = ni.Address;
+                    } else {
+                        name = ni.Host.substr(0, ni.Host.find('.')) + ":" + ToString(ni.Port);
+                        host = ni.Host;
                     }
                 }
-                jsonNode["Types"] = types;
+
+                jsonNode["Id"] = id;
+                jsonNode["Host"] = host;
+                jsonNode["Name"] = name;
+                if (node.LocationAcquired) {
+                    jsonNode["DataCenter"] = node.Location.GetDataCenterId();
+                }
+                jsonNode["Domain"] = node.ServicedDomains.empty() ? "" : Self->GetDomainName(node.GetServicedDomain());
+                jsonNode["Alive"] = node.IsAlive();
+                jsonNode["Down"] = node.Down;
+                jsonNode["Freeze"] = node.Freeze;
+                jsonNode["Drain"] = node.IsAlive() ? node.Drain : false;
+                jsonNode["Uptime"] = node.IsAlive() ? GetDurationString(node.GetUptime()) : "";
+                jsonNode["Unknown"] = node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_UNKNOWN].size();
+                jsonNode["Starting"] = node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_STARTING].size();
+                jsonNode["Running"] = node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING].size();
+                {
+                    TString types;
+                    auto nodeTabletTypes = tabletsByNodeByType.find(node.Id);
+                    if (nodeTabletTypes != tabletsByNodeByType.end()) {
+                        for (auto it = nodeTabletTypes->second.begin(); it != nodeTabletTypes->second.end(); ++it) {
+                            if (!types.empty()) {
+                                types += ' ';
+                            }
+                            types += it->ToHTML();
+                        }
+                    }
+                    jsonNode["Types"] = types;
+                }
+                double nodeUsage = node.GetNodeUsage();
+                jsonNode["Usage"] = GetConditionalRedString(Sprintf("%.3f", nodeUsage), nodeUsage >= 1);
+                jsonNode["ResourceValues"] = GetResourceValuesJson(node.ResourceValues, node.ResourceMaximumValues);
+                jsonNode["StDevResourceValues"] = GetResourceValuesText(node.GetStDevResourceValues());
             }
-            double nodeUsage = node.GetNodeUsage();
-            jsonNode["Usage"] = GetConditionalRedString(Sprintf("%.9f", nodeUsage), nodeUsage >= 1);
-            jsonNode["ResourceValues"] = GetResourceValuesJson(node.ResourceValues, node.ResourceMaximumValues);
-            jsonNode["StDevResourceValues"] = GetResourceValuesText(node.GetStDevResourceValues());
+        }
+        if (Cgi.Get("moves") == "1") {
+            NJson::TJsonValue& moves = jsonData["Moves"];
+            if (Self->TabletMoveHistory.TotalSize()) {
+                for (int i = Self->TabletMoveHistory.TotalSize() - 1; i >= (int)Self->TabletMoveHistory.FirstIndex(); --i) {
+                    moves.AppendValue(Self->TabletMoveHistory[i].ToHTML());
+                }
+            }
         }
         NJson::WriteJson(&out, &jsonData);
     }
 };
 
-class TTxMonEvent_SetDown : public TTransactionBase<THive> {
+class TTxMonEvent_SetDown : public TTransactionBase<THive>, public TLoggedMonTransaction {
 public:
     const TActorId Source;
     const TNodeId NodeId;
     const bool Down;
     TString Response;
 
-    TTxMonEvent_SetDown(const TActorId& source, TNodeId nodeId, bool down, TSelf* hive)
+    TTxMonEvent_SetDown(const TActorId& source, TNodeId nodeId, bool down, TSelf* hive, NMon::TEvRemoteHttpInfo::TPtr& ev)
         : TBase(hive)
+        , TLoggedMonTransaction(ev)
         , Source(source)
         , NodeId(nodeId)
         , Down(down)
@@ -2057,10 +2514,17 @@ public:
 
     bool Execute(TTransactionContext& txc, const TActorContext&) override {
         NIceDb::TNiceDb db(txc.DB);
+        if (!Prepare(db)) {
+            return false;
+        }
         TNodeInfo* node = Self->FindNode(NodeId);
         if (node != nullptr) {
             node->SetDown(Down);
             db.Table<Schema::Node>().Key(NodeId).Update(NIceDb::TUpdate<Schema::Node::Down>(Down));
+            NJson::TJsonValue jsonOperation;
+            jsonOperation["NodeId"] = NodeId;
+            jsonOperation["Down"] = Down;
+            WriteOperation(db, jsonOperation);
             Response = "{\"NodeId\":" + ToString(NodeId) + ',' + "\"Down\":" + (Down ? "true" : "false") + "}";
         } else {
             Response = "{\"Error\":\"Node " + ToString(NodeId) + " not found\"}";
@@ -2074,15 +2538,16 @@ public:
     }
 };
 
-class TTxMonEvent_SetFreeze : public TTransactionBase<THive> {
+class TTxMonEvent_SetFreeze : public TTransactionBase<THive>, public TLoggedMonTransaction {
 public:
     const TActorId Source;
     const TNodeId NodeId;
     const bool Freeze;
     TString Response;
 
-    TTxMonEvent_SetFreeze(const TActorId& source, TNodeId nodeId, bool freeze, TSelf* hive)
+    TTxMonEvent_SetFreeze(const TActorId& source, TNodeId nodeId, bool freeze, TSelf* hive, NMon::TEvRemoteHttpInfo::TPtr& ev)
         : TBase(hive)
+        , TLoggedMonTransaction(ev)
         , Source(source)
         , NodeId(nodeId)
         , Freeze(freeze)
@@ -2092,10 +2557,17 @@ public:
 
     bool Execute(TTransactionContext& txc, const TActorContext&) override {
         NIceDb::TNiceDb db(txc.DB);
+        if (!Prepare(db)) {
+            return false;
+        }
         TNodeInfo* node = Self->FindNode(NodeId);
         if (node != nullptr) {
             node->SetFreeze(Freeze);
             db.Table<Schema::Node>().Key(NodeId).Update(NIceDb::TUpdate<Schema::Node::Freeze>(Freeze));
+            NJson::TJsonValue jsonOperation;
+            jsonOperation["NodeId"] = NodeId;
+            jsonOperation["Freeze"] = Freeze;
+            WriteOperation(db, jsonOperation);
             Response = "{\"NodeId\":" + ToString(NodeId) + ',' + "\"Freeze\":" + (Freeze ? "true" : "false") + "}";
         } else {
             Response = "{\"Error\":\"Node " + ToString(NodeId) + " not found\"}";
@@ -2168,6 +2640,10 @@ public:
         PassAway();
     }
 
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
+    }
+
     void Handle(TEvHive::TEvDrainNodeResult::TPtr& result) {
         Send(Source, new NMon::TEvRemoteJsonInfoRes(
             TStringBuilder() << "{\"status\":\"" << NKikimrProto::EReplyStatus_Name(result->Get()->Record.GetStatus()) << "\","
@@ -2215,9 +2691,9 @@ public:
 
     void Complete(const TActorContext& ctx) override {
         if (Wait) {
-            Self->Execute(Self->CreateSwitchDrainOn(NodeId, {.Persist = true, .KeepDown = true}, WaitActorId));
+            Self->Execute(Self->CreateSwitchDrainOn(NodeId, {}, WaitActorId));
         } else {
-            Self->Execute(Self->CreateSwitchDrainOn(NodeId, {.Persist = true, .KeepDown = true}, {}));
+            Self->Execute(Self->CreateSwitchDrainOn(NodeId, {}, {}));
             ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes("{\"status\":\"SCHEDULED\"}"));
         }
     }
@@ -2238,7 +2714,75 @@ public:
     TTxType GetTxType() const override { return NHive::TXTYPE_MON_REBALANCE; }
 
     bool Execute(TTransactionContext&, const TActorContext&) override {
-        Self->StartHiveBalancer(MaxMovements);
+        Self->StartHiveBalancer({
+            .Type = EBalancerType::Manual,
+            .MaxMovements = MaxMovements
+        });
+        return true;
+    }
+
+    void Complete(const TActorContext& ctx) override {
+        ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes("{}"));
+    }
+};
+
+class TTxMonEvent_StorageRebalance : public TTransactionBase<THive> {
+public:
+    const TActorId Source;
+    TStorageBalancerSettings Settings;
+
+    TTxMonEvent_StorageRebalance(const TActorId& source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf* hive)
+        : TBase(hive)
+        , Source(source)
+    {
+        Settings.NumReassigns = FromStringWithDefault(ev->Get()->Cgi().Get("reassigns"), 1000);
+        Settings.MaxInFlight = FromStringWithDefault(ev->Get()->Cgi().Get("inflight"), 1);
+        Settings.StoragePool = ev->Get()->Cgi().Get("pool");
+    }
+
+    TTxType GetTxType() const override { return NHive::TXTYPE_MON_REBALANCE; }
+
+    bool Execute(TTransactionContext&, const TActorContext&) override {
+        Self->StartHiveStorageBalancer(Settings);
+        return true;
+    }
+
+    void Complete(const TActorContext& ctx) override {
+        ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes("{}"));
+    }
+};
+
+class TTxMonEvent_RebalanceFromScratch : public TTransactionBase<THive> {
+public:
+    const TActorId Source;
+    TString TenantName;
+
+    TTxMonEvent_RebalanceFromScratch(const TActorId& source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf* hive)
+        : TBase(hive)
+        , Source(source)
+    {
+        TenantName = ev->Get()->Cgi().Get("tenantName");
+    }
+
+    TTxType GetTxType() const override { return NHive::TXTYPE_MON_REBALANCE_FROM_SCRATCH; }
+
+    bool ValidateTenantName() {
+        auto domainId = Self->GetMySubDomainKey();
+        auto* domainInfo = Self->FindDomain(domainId);
+        if (!domainInfo || !domainInfo->Path) {
+            // In the non-normal case of not knowing our domain, allow anything
+            return true;
+        }
+        return TenantName == domainInfo->Path;
+    }
+
+    bool Execute(TTransactionContext&, const TActorContext&) override {
+        if (!ValidateTenantName()) {
+            return true;
+        }
+        for (const auto& tablet : Self->Tablets) {
+            Self->Execute(Self->CreateRestartTablet(tablet.second.GetFullTabletId()));
+        }
         return true;
     }
 
@@ -2271,6 +2815,10 @@ public:
 
     void Cleanup() override {
         PassAway();
+    }
+
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
     }
 
     void Handle(TEvPrivate::TEvRestartComplete::TPtr&) {
@@ -2447,6 +2995,10 @@ public:
         PassAway();
     }
 
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
+    }
+
     void Handle(TEvHive::TEvInitMigrationReply::TPtr& reply) {
         TStringBuilder output;
         NProtobufJson::TProto2JsonConfig config;
@@ -2524,6 +3076,10 @@ public:
         PassAway();
     }
 
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
+    }
+
     void Handle(TEvHive::TEvQueryMigrationReply::TPtr& reply) {
         TStringBuilder output;
         NProtobufJson::TProto2JsonConfig config;
@@ -2591,6 +3147,10 @@ public:
 
     void Cleanup() override {
         PassAway();
+    }
+
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
     }
 
     void Handle(TEvPrivate::TEvRestartComplete::TPtr& result) {
@@ -2681,6 +3241,10 @@ public:
         PassAway();
     }
 
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
+    }
+
     void Handle(TEvHive::TEvStopTabletResult::TPtr& result) {
         Send(Source, new NMon::TEvRemoteJsonInfoRes(TStringBuilder() << result->Get()->Record.AsJSON()));
         PassAway();
@@ -2757,6 +3321,10 @@ public:
 
     void Cleanup() override {
         PassAway();
+    }
+
+    TSubActorId GetId() const override {
+        return SelfId().LocalId();
     }
 
     void Handle(TEvHive::TEvResumeTabletResult::TPtr& result) {
@@ -2987,6 +3555,16 @@ public:
         return result;
     }
 
+    template<typename Type>
+    static NJson::TJsonValue MakeFrom(const TArrayRef<Type>& arrayRef) {
+        NJson::TJsonValue result;
+        result.SetType(NJson::JSON_ARRAY);
+        for (const auto& item : arrayRef) {
+            result.AppendValue(MakeFrom(item));
+        }
+        return result;
+    }
+
     static NJson::TJsonValue MakeFrom(const TIntrusivePtr<TTabletStorageInfo>& info) {
         NJson::TJsonValue result;
         if (info == nullptr) {
@@ -3069,8 +3647,8 @@ public:
         result["AllowLeaderPromotion"] = group.AllowLeaderPromotion;
         result["AllowClientRead"] = group.AllowClientRead;
         result["RequireAllDataCenters"] = group.RequireAllDataCenters;
-        result["AllowedNodes"] = MakeFrom(group.AllowedNodes);
-        result["AllowedDataCenters"] = MakeFrom(group.AllowedDataCenters);
+        result["AllowedNodes"] = MakeFrom(group.NodeFilter.AllowedNodes);
+        result["AllowedDataCenters"] = MakeFrom(group.NodeFilter.AllowedDataCenters);
         result["LocalNodeOnly"] = group.LocalNodeOnly;
         result["RequireDifferentNodes"] = group.RequireDifferentNodes;
         result["FollowerCountPerDataCenter"] = group.FollowerCountPerDataCenter;
@@ -3083,10 +3661,10 @@ public:
         result["Id"] = TStringBuilder() << tablet.Id;
         result["State"] = ETabletStateName(tablet.State);
         result["Type"] = TTabletTypes::EType_Name(tablet.Type);
-        result["ObjectId"] = tablet.ObjectId;
+        result["ObjectId"] = TStringBuilder() << tablet.ObjectId;
         result["ObjectDomain"] = TStringBuilder() << tablet.ObjectDomain;
-        result["AllowedNodes"] = MakeFrom(tablet.AllowedNodes);
-        result["AllowedDataCenters"] = MakeFrom(tablet.AllowedDataCenters);
+        result["AllowedNodes"] = MakeFrom(tablet.NodeFilter.AllowedNodes);
+        result["AllowedDataCenters"] = MakeFrom(tablet.NodeFilter.AllowedDataCenters);
         result["DataCenterPreference"] = MakeFrom(tablet.DataCentersPreference);
         result["TabletStorageInfo"] = MakeFrom(tablet.TabletStorageInfo);
         result["BoundChannels"] = MakeFrom(tablet.BoundChannels);
@@ -3095,7 +3673,8 @@ public:
         result["KnownGeneration"] = tablet.KnownGeneration;
         result["BootMode"] = NKikimrHive::ETabletBootMode_Name(tablet.BootMode);
         result["Owner"] = TStringBuilder() << tablet.Owner;
-        result["EffectiveAllowedDomain"] = MakeFrom(tablet.EffectiveAllowedDomains);
+        result["AllowedDomains"] = MakeFrom(tablet.NodeFilter.AllowedDomains);
+        result["EffectiveAllowedDomains"] = MakeFrom(tablet.NodeFilter.GetEffectiveAllowedDomains());
         result["StorageInfoSubscribers"] = MakeFrom(tablet.StorageInfoSubscribers);
         result["LockedToActor"] = MakeFrom(tablet.LockedToActor);
         result["LockedReconnectTimeout"] = tablet.LockedReconnectTimeout.ToString();
@@ -3132,6 +3711,46 @@ public:
     void Complete(const TActorContext& ctx) override {
         ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes(NJson::WriteJson(Result, false)));
     }
+};
+
+class TTxMonEvent_ObjectStats : public TTransactionBase<THive> {
+public:
+    NJson::TJsonValue Result;
+    const TActorId Source;
+
+    TTxMonEvent_ObjectStats(const TActorId& source, TSelf* hive)
+        : TBase(hive)
+        , Source(source)
+    {
+    }
+
+    TTxType GetTxType() const override { return NHive::TXTYPE_MON_OBJECT_STATS; }
+
+    bool Execute(TTransactionContext&, const TActorContext&) override {
+        std::map<TFullObjectId, std::vector<std::pair<ui64, ui64>>> distributionOfObjects;
+        for (const auto& node : Self->Nodes) {
+            for (const auto& obj : node.second.TabletsOfObject) {
+                distributionOfObjects[obj.first].emplace_back(node.first, obj.second.size());
+            }
+        }
+
+        Result.SetType(NJson::JSON_ARRAY);
+        for (const auto& [key, val] : distributionOfObjects) {
+            NJson::TJsonValue listItem;
+            listItem["objectId"] = TStringBuilder() << key;
+            NJson::TJsonValue& distribution = listItem["distribution"];
+            for (const auto& [node, cnt] : val) {
+                distribution[TStringBuilder() << node] = cnt;
+            }
+            Result.AppendValue(listItem);
+        }
+        return true;
+    }
+
+    void Complete(const TActorContext& ctx) override {
+        ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes(NJson::WriteJson(Result, false)));
+    }
+
 };
 
 class TTxMonEvent_ResetTablet : public TTransactionBase<THive> {
@@ -3173,11 +3792,11 @@ public:
     TIntrusivePtr<TTabletStorageInfo> Info;
     ui32 KnownGeneration = 0;
 
-    TTxMonEvent_ResetTablet(const TActorId& source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf* hive)
+    TTxMonEvent_ResetTablet(const TActorId& source, TTabletId tabletId, TSelf* hive)
         : TBase(hive)
         , Source(source)
+        , TabletId(tabletId)
     {
-        TabletId = FromStringWithDefault<TTabletId>(ev->Get()->Cgi().Get("tablet"), TabletId);
     }
 
     TTxType GetTxType() const override { return NHive::TXTYPE_MON_RESET_TABLET; }
@@ -3202,7 +3821,7 @@ public:
         } else if (Error) {
             ctx.Send(Source, new NMon::TEvRemoteJsonInfoRes(TStringBuilder() << "{\"error\":\"" << Error << "\"}"));
         } else {
-            Y_FAIL("unexpected state");
+            Y_ABORT("unexpected state");
         }
     }
 };
@@ -3527,8 +4146,8 @@ public:
     using TKindMap = THashMap<TUnitKind, ui32, TUnitKindHash>;
 
     void GetUnitKinds(const TStorageGroupInfo& group, TKindMap& kinds) {
-        for (const auto& [tablet, channel] : group.Units) {
-            const auto& boundChannels(tablet->BoundChannels[channel]);
+        for (const auto& channel : group.Units) {
+            const auto& boundChannels(*channel.ChannelInfo);
             kinds[TUnitKind{boundChannels.GetIOPS(), boundChannels.GetThroughput(), boundChannels.GetSize()}]++;
         }
     }
@@ -3564,11 +4183,11 @@ public:
                         out << "<td style='text-align:right'>" << kind.ToString() << "</td>";
                         out << "<td style='text-align:right'>" << units << "</td>";
                         out << "<td style='text-align:right'>" << Sprintf("%.2f", kind.IOPS * units) << "</td>";
-                        out << "<td style='text-align:right'>" << Sprintf("%.2f", prStorageGroup.second.MaximumIOPS) << "</td>";
+                        out << "<td style='text-align:right'>" << Sprintf("%.2f", prStorageGroup.second.MaximumResources.IOPS) << "</td>";
                         out << "<td style='text-align:right'>" << kind.Size * units << "</td>";
-                        out << "<td style='text-align:right'>" << prStorageGroup.second.MaximumSize << "</td>";
+                        out << "<td style='text-align:right'>" << prStorageGroup.second.MaximumResources.Size << "</td>";
                         out << "<td style='text-align:right'>" << kind.Throughput * units << "</td>";
-                        out << "<td style='text-align:right'>" << prStorageGroup.second.MaximumThroughput << "</td>";
+                        out << "<td style='text-align:right'>" << prStorageGroup.second.MaximumResources.Throughput << "</td>";
                         out << "<td style='text-align:right'>" << Sprintf("%.2f", prStorageGroup.second.StoragePool.GetOvercommit()) << "</td>";
                         out << "<td style='text-align:right'>" << Sprintf("%.2f", prStorageGroup.second.GetUsage()) << "</td>";
                         out << "</tr>";
@@ -3579,12 +4198,12 @@ public:
                     out << "<td>" << prStoragePool.second.Name << "</td>";
                     out << "<td style='text-align:right'>" << group.Id << "</td>";
                     out << "<td style='text-align:right'>" << group.Units.size() << "</td>";
-                    out << "<td style='text-align:right'>" << Sprintf("%.2f", group.AcquiredIOPS) << "</td>";
-                    out << "<td style='text-align:right'>" << Sprintf("%.2f", group.MaximumIOPS) << "</td>";
-                    out << "<td style='text-align:right'>" << group.AcquiredSize << "</td>";
-                    out << "<td style='text-align:right'>" << group.MaximumSize << "</td>";
-                    out << "<td style='text-align:right'>" << group.AcquiredThroughput << "</td>";
-                    out << "<td style='text-align:right'>" << group.MaximumThroughput << "</td>";
+                    out << "<td style='text-align:right'>" << Sprintf("%.2f", group.AcquiredResources.IOPS) << "</td>";
+                    out << "<td style='text-align:right'>" << Sprintf("%.2f", group.MaximumResources.IOPS) << "</td>";
+                    out << "<td style='text-align:right'>" << group.AcquiredResources.Size << "</td>";
+                    out << "<td style='text-align:right'>" << group.MaximumResources.Size << "</td>";
+                    out << "<td style='text-align:right'>" << group.AcquiredResources.Throughput << "</td>";
+                    out << "<td style='text-align:right'>" << group.MaximumResources.Throughput << "</td>";
                     out << "<td style='text-align:right'>" << group.GroupParameters.GetAllocatedSize() << "</td>";
                     out << "<td style='text-align:right'>" << group.GroupParameters.GetAvailableSize() << "</td>";
                     out << "<td style='text-align:right'>" << Sprintf("%.2f", group.StoragePool.GetOvercommit()) << "</td>";
@@ -3598,6 +4217,158 @@ public:
         out << "</div></div>";
     }
 };
+
+class TTxMonEvent_Subactors : public TTransactionBase<THive> {
+public:
+    const TActorId Source;
+    THolder<NMon::TEvRemoteHttpInfo> Event;
+    TMaybe<TSubActorId> SubActorToStop;
+
+    TTxMonEvent_Subactors(const TActorId &source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf *hive)
+        : TBase(hive)
+        , Source(source)
+        , Event(ev->Release())
+    {
+        SubActorToStop = TryFromString<TSubActorId>(Event->Cgi().Get("stop"));
+    }
+
+    TTxType GetTxType() const override { return NHive::TXTYPE_MON_SUBACTORS; }
+
+    bool Execute(TTransactionContext &txc, const TActorContext& ctx) override {
+        Y_UNUSED(txc);
+        if (SubActorToStop) {
+            Self->StopSubActor(*SubActorToStop);
+        }
+        TStringStream str;
+        RenderHTMLPage(str);
+        ctx.Send(Source, new NMon::TEvRemoteHttpInfoRes(str.Str()));
+        return true;
+    }
+
+    void Complete(const TActorContext& ctx) override {
+        Y_UNUSED(ctx);
+    }
+
+    void RenderHTMLPage(IOutputStream& out) {
+        out << "<head>";
+        out << "<style>";
+        out << "table.simple-table2 th { text-align: right; }";
+        out << "table.simple-table2 tr:nth-child(1) > th:nth-child(2) { text-align: left; }";
+        out << "table.simple-table2 tr:nth-child(1) > th:nth-child(3) { text-align: left; }";
+        out << "table.simple-table2 tr:nth-child(1) > th:nth-child(4) { text-align: left; }";
+        out << "table.simple-table2 td { text-align: right; }";
+        out << "table.simple-table2 td:nth-child(2) { text-align: left; }";
+        out << "table.simple-table2 td:nth-child(3) { text-align: left; }";
+        out << "table.simple-table2 td:nth-child(4) { text-align: left; }";
+        out << "</style>";
+        out << "</head>";
+        out << "<body>";
+        out << "<table class='table simple-table2'>";
+        out << "<thead>";
+        out << "<tr><th>Id</th><th>Description</th><th>Started at</th><th>Stop</th></tr>";
+        out << "</thead>";
+        out << "<tbody>";
+        for (const auto* subActor: Self->SubActors) {
+            out << "<tr>";
+            out << "<td>" << subActor->GetId() << "</td>";
+            out << "<td>" << subActor->GetDescription() << "</td>";
+            out << "<td>" << subActor->StartTime << "</td>";
+            out << "<td><a href = '?TabletID=" << Self->HiveId << "&page=Subactors&stop=" << subActor->GetId() << "'><span class='glyphicon glyphicon-remove-sign' title='Stop SubActor'></span></a></td>";
+            out << "</tr>";
+        }
+        out << "</tbody>";
+        out << "</table>";
+        out << "</body>";
+    }
+};
+
+class TTxMonEvent_OperationsLog : public TTransactionBase<THive> {
+public:
+    const TActorId Source;
+    THolder<NMon::TEvRemoteHttpInfo> Event;
+    ui64 MaxCount = 100;
+
+    TTxMonEvent_OperationsLog(const TActorId& source, NMon::TEvRemoteHttpInfo::TPtr& ev, TSelf* hive)
+        : TBase(hive)
+        , Source(source)
+        , Event(ev->Release())
+    {
+        MaxCount = FromStringWithDefault(Event->Cgi().Get("max"), MaxCount);
+    }
+
+    bool Execute(TTransactionContext& txc, const TActorContext& ctx) override {
+        TStringStream out;
+        out << "<head>";
+        out << "<style>";
+        out << "table.simple-table2 th { text-align: right; }";
+        out << "table.simple-table2 tr:nth-child(1) > th:nth-child(2) { text-align: left; }";
+        out << "table.simple-table2 tr:nth-child(1) > th:nth-child(3) { text-align: left; }";
+        out << "table.simple-table2 tr:nth-child(1) > th:nth-child(4) { text-align: left; }";
+        out << "table.simple-table2 td { text-align: right; }";
+        out << "table.simple-table2 td:nth-child(2) { text-align: left; }";
+        out << "table.simple-table2 td:nth-child(3) { text-align: left; }";
+        out << "table.simple-table2 td:nth-child(4) { text-align: left; }";
+        out << "</style>";
+        out << "</head>";
+        out << "<body>";
+        out << "<table class='table simple-table2'>";
+        out << "<thead>";
+        out << "<tr><th>Timestamp</th><th>User</th><th>Description</th></tr>";
+        out << "</thead>";
+        out << "<tbody>";
+
+        NIceDb::TNiceDb db(txc.DB);
+        auto operationsRowset = db.Table<Schema::OperationsLog>().All().Reverse().Select();
+        if (!operationsRowset.IsReady()) {
+            return false;
+        }
+        for (ui64 cnt = 0; !operationsRowset.EndOfSet() && cnt < MaxCount; ++cnt) {
+            TString user = operationsRowset.GetValue<Schema::OperationsLog::User>();
+            out << "<tr>";
+            out << "<td>" << TInstant::MilliSeconds(operationsRowset.GetValue<Schema::OperationsLog::Timestamp>()) << "</td>";
+            out << "<td>" << (user.empty() ? "anonymous" : user.c_str()) << "</td>";
+            out << "<td>";
+            out << operationsRowset.GetValue<Schema::OperationsLog::Operation>();
+            out << "</td>";
+            out << "</tr>";
+            if (!operationsRowset.Next()) {
+                return false;
+            }
+        }
+        out << "</tbody>";
+        out << "</table>";
+        out << "</body>";
+        ctx.Send(Source, new NMon::TEvRemoteHttpInfoRes(out.Str()));
+        return true;
+    }
+
+    void Complete(const TActorContext&) override {}
+};
+
+bool THive::IsSafeOperation(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorContext& ctx) {
+    NMon::TEvRemoteHttpInfo* httpInfo = ev->Get();
+    if (httpInfo->Method != HTTP_METHOD_POST) {
+        ctx.Send(ev->Sender, new NMon::TEvRemoteJsonInfoRes("{\"error\":\"only POST method is allowed\"}"));
+        return false;
+    }
+    if (!GetEnableDestroyOperations()) {
+        ctx.Send(ev->Sender, new NMon::TEvRemoteJsonInfoRes("{\"error\":\"destroy operations are disabled\"}"));
+        return false;
+    }
+    TCgiParameters cgi(httpInfo->Cgi());
+    TStringBuilder keyData;
+    keyData << cgi.Get("tablet") << cgi.Get("owner") << cgi.Get("owner_idx");
+    if (keyData.Empty()) {
+        ctx.Send(ev->Sender, new NMon::TEvRemoteJsonInfoRes("{\"error\":\"tablet, owner or owner_idx parameters not set\"}"));
+        return false;
+    }
+    TString key = MD5::Data(keyData);
+    if (key != cgi.Get("key")) {
+        ctx.Send(ev->Sender, new NMon::TEvRemoteJsonInfoRes("{\"error\":\"key parameter is incorrect\"}"));
+        return false;
+    }
+    return true;
+}
 
 void THive::CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorContext& ctx) {
     if (!ReadyForConnections) {
@@ -3616,11 +4387,11 @@ void THive::CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorCo
         return Execute(new TTxMonEvent_DbState(ev->Sender, this), ctx);
     if (page == "SetDown") {
         TNodeId nodeId = FromStringWithDefault<TNodeId>(cgi.Get("node"), 0);
-        return Execute(new TTxMonEvent_SetDown(ev->Sender, nodeId, FromStringWithDefault<i32>(cgi.Get("down"), 0) != 0, this), ctx);
+        return Execute(new TTxMonEvent_SetDown(ev->Sender, nodeId, FromStringWithDefault<i32>(cgi.Get("down"), 0) != 0, this, ev), ctx);
     }
     if (page == "SetFreeze") {
         TNodeId nodeId = FromStringWithDefault<TNodeId>(cgi.Get("node"), 0);
-        return Execute(new TTxMonEvent_SetFreeze(ev->Sender, nodeId, FromStringWithDefault<i32>(cgi.Get("freeze"), 0) != 0, this), ctx);
+        return Execute(new TTxMonEvent_SetFreeze(ev->Sender, nodeId, FromStringWithDefault<i32>(cgi.Get("freeze"), 0) != 0, this, ev), ctx);
     }
     if (page == "KickNode") {
         TNodeId nodeId = FromStringWithDefault<TNodeId>(cgi.Get("node"), 0);
@@ -3631,6 +4402,9 @@ void THive::CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorCo
     }
     if (page == "Rebalance") {
         return Execute(new TTxMonEvent_Rebalance(ev->Sender, ev, this), ctx);
+    }
+    if (page == "RebalanceFromScratch") {
+        return Execute(new TTxMonEvent_RebalanceFromScratch(ev->Sender, ev, this), ctx);
     }
     if (page == "LandingData") {
         return Execute(new TTxMonEvent_LandingData(ev->Sender, ev, this), ctx);
@@ -3659,8 +4433,8 @@ void THive::CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorCo
     if (page == "TabletInfo") {
         return Execute(new TTxMonEvent_TabletInfo(ev->Sender, ev, this), ctx);
     }
-    if (page == "ResetTablet") {
-        return Execute(new TTxMonEvent_ResetTablet(ev->Sender, ev, this), ctx);
+    if (page == "ObjectStats") {
+        return Execute(new TTxMonEvent_ObjectStats(ev->Sender, this), ctx);
     }
     if (page == "CreateTablet") {
         ui64 owner = FromStringWithDefault<ui64>(cgi.Get("owner"), 0);
@@ -3671,16 +4445,24 @@ void THive::CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorCo
         ctx.RegisterWithSameMailbox(new TCreateTabletActor(ev->Sender, owner, ownerIdx, type, channelsProfile, followers, this));
         return;
     }
-    if (page == "DeleteTablet") {
-        if (cgi.Has("owner") && cgi.Has("owner_idx")) {
-            ui64 owner = FromStringWithDefault<ui64>(cgi.Get("owner"), 0);
-            ui64 ownerIdx = FromStringWithDefault<ui64>(cgi.Get("owner_idx"), 0);
-            ctx.RegisterWithSameMailbox(new TDeleteTabletActor(ev->Sender, owner, ownerIdx, this));
-        } else if (cgi.Has("tablet")) {
+    if (page == "ResetTablet") {
+        if (IsSafeOperation(ev, ctx)) {
             TTabletId tabletId = FromStringWithDefault<TTabletId>(cgi.Get("tablet"), 0);
-            ctx.RegisterWithSameMailbox(new TDeleteTabletActor(ev->Sender, tabletId, this));
-        } else {
-            ctx.Send(ev->Sender, new NMon::TEvRemoteJsonInfoRes("{\"Error\": \"tablet or (owner, owner_idx) params must be specified\"}"));
+            return Execute(new TTxMonEvent_ResetTablet(ev->Sender, tabletId, this), ctx);
+        }
+    }
+    if (page == "DeleteTablet") {
+        if (IsSafeOperation(ev, ctx)) {
+            if (cgi.Has("owner") && cgi.Has("owner_idx")) {
+                ui64 owner = FromStringWithDefault<ui64>(cgi.Get("owner"), 0);
+                ui64 ownerIdx = FromStringWithDefault<ui64>(cgi.Get("owner_idx"), 0);
+                ctx.RegisterWithSameMailbox(new TDeleteTabletActor(ev->Sender, owner, ownerIdx, this));
+            } else if (cgi.Has("tablet")) {
+                TTabletId tabletId = FromStringWithDefault<TTabletId>(cgi.Get("tablet"), 0);
+                ctx.RegisterWithSameMailbox(new TDeleteTabletActor(ev->Sender, tabletId, this));
+            } else {
+                ctx.Send(ev->Sender, new NMon::TEvRemoteJsonInfoRes("{\"Error\": \"tablet or (owner, owner_idx) params must be specified\"}"));
+            }
         }
         return;
     }
@@ -3717,6 +4499,18 @@ void THive::CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorCo
     }
     if (page == "Storage") {
         return Execute(new TTxMonEvent_Storage(ev->Sender, ev, this), ctx);
+    }
+    if (page == "StorageRebalance") {
+        return Execute(new TTxMonEvent_StorageRebalance(ev->Sender, ev, this), ctx);
+    }
+    if (page == "Subactors") {
+        return Execute(new TTxMonEvent_Subactors(ev->Sender, ev, this), ctx);
+    }
+    if (page == "TabletAvailability") {
+        return Execute(new TTxMonEvent_TabletAvailability(ev->Sender, ev, this), ctx);
+    }
+    if (page == "OperationsLog") {
+        return Execute(new TTxMonEvent_OperationsLog(ev->Sender, ev, this), ctx);
     }
     return Execute(new TTxMonEvent_Landing(ev->Sender, ev, this), ctx);
 }

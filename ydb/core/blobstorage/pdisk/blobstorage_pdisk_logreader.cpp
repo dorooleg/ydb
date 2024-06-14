@@ -332,7 +332,7 @@ TLogReader::TLogReader(bool isInitial,TPDisk *pDisk, TActorSystem * const actorS
     , CurrentChunkToRead(ChunksToRead.end())
     , ParseCommits(false) // Actual only if IsInitial
 {
-    Y_VERIFY(PDisk->PDiskThread.Id() == TThread::CurrentThreadId(), "Constructor of TLogReader must be called"
+    Y_ABORT_UNLESS(PDisk->PDiskThread.Id() == TThread::CurrentThreadId(), "Constructor of TLogReader must be called"
             " from PDiskThread");
     Cypher.SetKey(PDisk->Format.LogKey);
     AtomicIncrement(PDisk->InFlightLogRead);
@@ -505,7 +505,7 @@ void TLogReader::Exec(ui64 offsetRead, TVector<ui64> &badOffsets, TActorSystem *
         {
             ui64 sizeToProcess = (ui64)format.SectorSize;
             TSectorData *data = Sector->DataByIdx(idxRead);
-            Y_VERIFY(data->IsAvailable(sizeToProcess));
+            Y_ABORT_UNLESS(data->IsAvailable(sizeToProcess));
             bool isEndOfLog = ProcessSectorSet(data);
             data->SetOffset(data->Offset + sizeToProcess);
             if (isEndOfLog) {
@@ -533,10 +533,25 @@ void TLogReader::Exec(ui64 offsetRead, TVector<ui64> &badOffsets, TActorSystem *
             break;
         }
         default:
-            Y_FAIL();
+            Y_ABORT();
             break;
         }
     }// while (true)
+}
+
+void TLogReader::NotifyError(ui64 offsetRead, TString& errorReason) {
+    TGuard<TMutex> guard(ExecMutex);
+    if (IsReplied.load()) {
+        return;
+    }
+
+    Result->ErrorReason = errorReason;
+
+    LOG_ERROR(*ActorSystem, NKikimrServices::BS_PDISK,
+        "PDiskId# %" PRIu32 " Error reading log with offset %" PRIu64,
+        (ui32)PDisk->PDiskId, offsetRead);
+
+    ReplyError();
 }
 
 TString TLogReader::SelfInfo() {
@@ -558,7 +573,7 @@ bool TLogReader::PrepareToRead() {
     TDiskFormat &format = PDisk->Format;
     if (Position == TLogPosition::Invalid()) {
         if (IsInitial) {
-            Y_FAIL();
+            Y_ABORT();
         }
         ReplyOk();
         return true;
@@ -573,7 +588,7 @@ bool TLogReader::PrepareToRead() {
             }
             if (OwnerLogStartPosition != TLogPosition{0, 0}) {
                 ui32 startChunkIdx = OwnerLogStartPosition.ChunkIdx;
-                Y_VERIFY(startChunkIdx == ChunksToRead[0].ChunkIdx);
+                Y_ABORT_UNLESS(startChunkIdx == ChunksToRead[0].ChunkIdx);
                 Position = OwnerLogStartPosition;
             } else {
                 Position = PDisk->LogPosition(ChunksToRead[0].ChunkIdx, 0, 0);
@@ -669,7 +684,7 @@ void TLogReader::ProcessLogPageTerminator(ui8 *data, ui32 sectorPayloadSize) {
     // The rest of the sector contains no data.
     auto *firstPageHeader = reinterpret_cast<TFirstLogPageHeader*>(data);
     ui32 sizeLeft = sectorPayloadSize - OffsetInSector;
-    Y_VERIFY(firstPageHeader->Size + sizeof(TFirstLogPageHeader) == sizeLeft);
+    Y_ABORT_UNLESS(firstPageHeader->Size + sizeof(TFirstLogPageHeader) == sizeLeft);
     OffsetInSector += sizeLeft;
     SetLastGoodToWritePosition = true;
 }
@@ -758,7 +773,7 @@ void TLogReader::ProcessLogPageNonceJump1(ui8 *data, const ui64 previousNonce) {
             ReplyOk();
             return;
         }
-        Y_VERIFY(previousNonce == nonceJumpLogPageHeader1->PreviousNonce,
+        Y_ABORT_UNLESS(previousNonce == nonceJumpLogPageHeader1->PreviousNonce,
                 "previousNonce# %" PRIu64 " != header->PreviousNonce# %" PRIu64
                 " OffsetInSector# %" PRIu64 " sizeof(TNonceJumpLogPageHeader1)# %" PRIu64
                 " chunkIdx# %" PRIu64 " sectorIdx# %" PRIu64, // " header->Flags# %" PRIu64,
@@ -862,7 +877,7 @@ bool TLogReader::ProcessSectorSet(TSectorData *sector) {
         ui32 maxOffsetInSector = format.SectorPayloadSize() - ui32(sizeof(TFirstLogPageHeader));
         while (OffsetInSector <= maxOffsetInSector) {
             TLogPageHeader *pageHeader = (TLogPageHeader*)(data + OffsetInSector);
-            Y_VERIFY(pageHeader->Version == PDISK_DATA_VERSION, "PDiskId# %" PRIu32
+            Y_ABORT_UNLESS(pageHeader->Version == PDISK_DATA_VERSION, "PDiskId# %" PRIu32
                 " incompatible log page header version: %" PRIu32
                 " (expected: %" PRIu32 ") at chunk %" PRIu32 " SectorSet: %" PRIu32 " Sector: %" PRIu32
                 " Offset in sector: %" PRIu32 " A: %" PRIu32 " B: %" PRIu32, (ui32)PDisk->PDiskId,
@@ -1009,7 +1024,7 @@ bool TLogReader::ProcessSectorSet(TSectorData *sector) {
                     LastRecordHeaderNonce = sectorFooter->Nonce;
                     IsLastRecordHeaderValid = true;
                     LastRecordData = TString::Uninitialized(firstPageHeader->DataSize);
-                    Y_VERIFY(firstPageHeader->Size <= LastRecordData.size());
+                    Y_ABORT_UNLESS(firstPageHeader->Size <= LastRecordData.size());
                     memcpy((void*)LastRecordData.data(), data + OffsetInSector, firstPageHeader->Size);
                     LastRecordDataWritePosition = firstPageHeader->Size;
                 } else {
@@ -1143,7 +1158,7 @@ void TLogReader::ReplyError() {
 }
 
 void TLogReader::Reply() {
-    Y_VERIFY(!IsReplied.load());
+    Y_ABORT_UNLESS(!IsReplied.load());
     if (IsInitial) {
         PDisk->ProcessChunkOwnerMap(*ChunkOwnerMap.Get());
         ChunkOwnerMap.Destroy();

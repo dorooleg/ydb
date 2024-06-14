@@ -25,8 +25,8 @@ namespace NKikimr::NUtil {
             TChunk(size_t size) noexcept
                 : Next(nullptr)
             {
-                Y_VERIFY_DEBUG((((uintptr_t)this) % PLATFORM_DATA_ALIGN) == 0);
-                Y_VERIFY_DEBUG(size >= ChunkHeaderSize());
+                Y_DEBUG_ABORT_UNLESS((((uintptr_t)this) % PLATFORM_DATA_ALIGN) == 0);
+                Y_DEBUG_ABORT_UNLESS(size >= ChunkHeaderSize());
                 Ptr = DataStart();
                 Left = size - ChunkHeaderSize();
             }
@@ -141,19 +141,19 @@ namespace NKikimr::NUtil {
         }
 
         void BeginTransaction() noexcept {
-            Y_VERIFY(!RollbackState_);
+            Y_ABORT_UNLESS(!RollbackState_);
             auto& state = RollbackState_.emplace();
             state.Chunk = Current;
             state.Ptr = Current->Ptr;
         }
 
         void CommitTransaction() noexcept {
-            Y_VERIFY(RollbackState_);
+            Y_ABORT_UNLESS(RollbackState_);
             RollbackState_.reset();
         }
 
         void RollbackTransaction() noexcept {
-            Y_VERIFY(RollbackState_);
+            Y_ABORT_UNLESS(RollbackState_);
             auto& state = *RollbackState_;
             DoRollback(state.Chunk, state.Ptr);
             RollbackState_.reset();
@@ -193,7 +193,7 @@ namespace NKikimr::NUtil {
         }
 
         TChunk* AddChunk(size_t size) {
-            Y_VERIFY(!Current->Next);
+            Y_ABORT_UNLESS(!Current->Next);
             size_t hint = Max(AlignUp<size_t>(sizeof(TChunk), PLATFORM_DATA_ALIGN) + size, Current->ChunkSize() + 1);
             TChunk* next = AllocateChunk(hint);
             Total_ += next->ChunkSize();
@@ -209,7 +209,7 @@ namespace NKikimr::NUtil {
                 Used_ += Current->Used();
                 Wasted_ += Current->Wasted();
                 Current = Current->Next;
-                Y_VERIFY_DEBUG(Current->Ptr == Current->DataStart());
+                Y_DEBUG_ABORT_UNLESS(Current->Ptr == Current->DataStart());
                 Wasted_ -= Current->ChunkSize();
                 Available_ -= Current->Left;
                 return true;
@@ -229,7 +229,7 @@ namespace NKikimr::NUtil {
                     Wasted_ -= nextWasted;
                     // Switch to the next chunk in the chain
                     chunk = chunk->Next;
-                    Y_VERIFY(chunk, "Rollback cannot find current chunk in the chain");
+                    Y_ABORT_UNLESS(chunk, "Rollback cannot find current chunk in the chain");
                     // Reset chunk and add it to stats as wasted/free space
                     nextUsed = chunk->Used();
                     nextWasted = chunk->Wasted();

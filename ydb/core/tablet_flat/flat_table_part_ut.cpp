@@ -75,14 +75,18 @@ Y_UNIT_TEST_SUITE(TLegacy) {
                 TIntrusiveConstPtr<TRowScheme> scheme,
                 std::vector<ui64>& sizes)
         {
-            TPartIndexIterator idxIter(part, scheme->Keys);
+            TDataStats stats = { };
+            TTestEnv env;
+            // TScreenedPartIndexIterator without screen previously was TPartGroupFlatIndexItererator
+            TStatsScreenedPartIterator idxIter(TPartView{part, nullptr, nullptr}, &env, scheme->Keys, nullptr, nullptr, 0, 0);
             sizes.clear();
 
+            UNIT_ASSERT_VALUES_EQUAL(idxIter.Start(), EReady::Data);
             while (idxIter.IsValid()) {
                 TDbTupleRef key = idxIter.GetCurrentKey();
-                dbgOut << DbgPrintTuple(key, typeRegistry) << " " << idxIter.GetCurrentRowId() << " " << idxIter.GetCurrentDataSize() << Endl;
-                sizes.push_back(idxIter.GetCurrentDataSize());
-                idxIter.Next();
+                dbgOut << DbgPrintTuple(key, typeRegistry) << " " << stats.RowCount << " " << stats.DataSize.Size << Endl;
+                sizes.push_back(stats.DataSize.Size);
+                UNIT_ASSERT(idxIter.Next(stats) != EReady::Page);
             }
         };
 
@@ -141,24 +145,19 @@ Y_UNIT_TEST_SUITE(TLegacy) {
 
         auto fnIterate = [&dbgOut, &typeRegistry] (TIntrusiveConstPtr<TPartStore> part, TIntrusiveConstPtr<TScreen> screen,
                             TIntrusiveConstPtr<TRowScheme> scheme, TIntrusiveConstPtr<NPage::TFrames> frames) -> std::pair<ui64, ui64> {
-            TScreenedPartIndexIterator idxIter(TPartView{part, screen, nullptr}, scheme->Keys, std::move(frames));
+            TDataStats stats = { };
+            TTestEnv env;
+            TStatsScreenedPartIterator idxIter(TPartView{part, screen, nullptr}, &env, scheme->Keys, std::move(frames), nullptr, 0, 0);
 
-            ui64 rowCount = 0;
-            ui64 size = 0;
+            UNIT_ASSERT_VALUES_EQUAL(idxIter.Start(), EReady::Data);
             while (idxIter.IsValid()) {
                 TDbTupleRef key = idxIter.GetCurrentKey();
-                rowCount += idxIter.GetRowCountDelta();
-                size += idxIter.GetDataSizeDelta();
                 dbgOut << DbgPrintTuple(key, typeRegistry)
-                     << " " << idxIter.GetRowCountDelta() << " " << idxIter.GetDataSizeDelta()
-                     << " " << rowCount << " " << size << Endl;
-                idxIter.Next();
+                     << " " << stats.RowCount << " " << stats.DataSize.Size << Endl;
+                UNIT_ASSERT(idxIter.Next(stats) != EReady::Page);
             }
 
-            rowCount += idxIter.GetRowCountDelta();
-            size += idxIter.GetDataSizeDelta();
-
-            return {rowCount, size};
+            return {stats.RowCount, stats.DataSize.Size};
         };
 
         dbgOut << "Hide all" << Endl;
@@ -305,33 +304,42 @@ Y_UNIT_TEST_SUITE(TLegacy) {
                 TScreen::THole(4200, 100000)
                 });
 
+        TDataStats stats = { };
+        TTestEnv env;
         TStatsIterator stIter(lay2.RowScheme()->Keys);
-        stIter.Add(MakeHolder<TScreenedPartIndexIterator>(TPartView{eggs2.At(0), screen2, nullptr}, lay2.RowScheme()->Keys, nullptr));
-        stIter.Add(MakeHolder<TScreenedPartIndexIterator>(TPartView{eggs1.At(0), screen1, nullptr}, lay2.RowScheme()->Keys, nullptr));
-
-        UNIT_ASSERT(stIter.IsValid());
-        UNIT_ASSERT(stIter.GetCurrentRowCount() == 0);
-        UNIT_ASSERT(stIter.GetCurrentDataSize() == 0);
-        stIter.Next();
+        {
+            auto it1 = MakeHolder<TStatsScreenedPartIterator>(TPartView{eggs2.At(0), screen2, nullptr}, &env, lay2.RowScheme()->Keys, nullptr, nullptr, 0, 0);
+            auto it2 = MakeHolder<TStatsScreenedPartIterator>(TPartView{eggs1.At(0), screen1, nullptr}, &env, lay2.RowScheme()->Keys, nullptr, nullptr, 0, 0);
+            UNIT_ASSERT_VALUES_EQUAL(it1->Start(), EReady::Data);
+            UNIT_ASSERT_VALUES_EQUAL(it2->Start(), EReady::Data);
+            stIter.Add(std::move(it1));
+            stIter.Add(std::move(it2));
+        }
 
         TSerializedCellVec prevKey;
         ui64 prevRowCount = 0;
         ui64 prevDataSize = 0;
-        while (stIter.IsValid()) {
+        while (true) {
+            auto ready = stIter.Next(stats);
+            if (ready == EReady::Gone) {
+                break;
+            }
+            UNIT_ASSERT_VALUES_EQUAL(ready, EReady::Data);
+
             TDbTupleRef key = stIter.GetCurrentKey();
+
+            dbgOut << DbgPrintTuple(key, typeRegistry)
+                   << " " << stats.RowCount << " " << stats.DataSize.Size << Endl;
+
             UNIT_ASSERT_C(CompareTypedCellVectors(key.Columns, prevKey.GetCells().data(), key.Types, key.ColumnCount, prevKey.GetCells().size()) > 0,
                           "Keys must be sorted");
 
-            UNIT_ASSERT(prevRowCount < stIter.GetCurrentRowCount());
-            UNIT_ASSERT(prevDataSize < stIter.GetCurrentDataSize());
+            UNIT_ASSERT(prevRowCount < stats.RowCount);
+            UNIT_ASSERT(prevDataSize < stats.DataSize.Size);
 
-            dbgOut << DbgPrintTuple(key, typeRegistry)
-                   << " " << stIter.GetCurrentRowCount() << " " << stIter.GetCurrentDataSize() << Endl;
-
-            prevKey = TSerializedCellVec(TSerializedCellVec::Serialize(TConstArrayRef<TCell>(key.Columns, key.ColumnCount)));
-            prevRowCount = stIter.GetCurrentRowCount();
-            prevDataSize = stIter.GetCurrentDataSize();
-            stIter.Next();
+            prevKey = TSerializedCellVec(TConstArrayRef<TCell>(key.Columns, key.ColumnCount));
+            prevRowCount = stats.RowCount;
+            prevDataSize = stats.DataSize.Size;
         }
     }
 

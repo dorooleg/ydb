@@ -19,7 +19,7 @@ public:
     }
 
     EExecutionStatus Execute(TOperation::TPtr op, TTransactionContext& txc, const TActorContext& ctx) override {
-        Y_VERIFY(op->IsSchemeTx());
+        Y_ABORT_UNLESS(op->IsSchemeTx());
 
         TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
         Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
@@ -34,10 +34,10 @@ public:
         const auto streamPathId = PathIdFromPathId(streamDesc.GetPathId());
 
         const auto pathId = PathIdFromPathId(params.GetPathId());
-        Y_VERIFY(pathId.OwnerId == DataShard.GetPathOwnerId());
+        Y_ABORT_UNLESS(pathId.OwnerId == DataShard.GetPathOwnerId());
 
         const auto version = params.GetTableSchemaVersion();
-        Y_VERIFY(version);
+        Y_ABORT_UNLESS(version);
 
         auto tableInfo = DataShard.AlterTableAddCdcStream(ctx, txc, pathId, version, streamDesc);
         DataShard.AddUserTable(pathId, tableInfo);
@@ -47,8 +47,8 @@ public:
         }
 
         if (params.HasSnapshotName()) {
-            Y_VERIFY(streamDesc.GetState() == NKikimrSchemeOp::ECdcStreamStateScan);
-            Y_VERIFY(tx->GetStep() != 0);
+            Y_ABORT_UNLESS(streamDesc.GetState() == NKikimrSchemeOp::ECdcStreamStateScan);
+            Y_ABORT_UNLESS(tx->GetStep() != 0);
 
             DataShard.GetSnapshotManager().AddSnapshot(txc.DB,
                 TSnapshotKey(pathId, tx->GetStep(), tx->GetTxId()),
@@ -56,6 +56,12 @@ public:
 
             DataShard.GetCdcStreamScanManager().Add(txc.DB,
                 pathId, streamPathId, TRowVersion(tx->GetStep(), tx->GetTxId()));
+        }
+
+        if (streamDesc.GetState() == NKikimrSchemeOp::ECdcStreamStateReady) {
+            if (const auto heartbeatInterval = TDuration::MilliSeconds(streamDesc.GetResolvedTimestampsIntervalMs())) {
+                DataShard.GetCdcStreamHeartbeatManager().AddCdcStream(txc.DB, pathId, streamPathId, heartbeatInterval);
+            }
         }
 
         AddSender.Reset(new TEvChangeExchange::TEvAddSender(
@@ -71,6 +77,7 @@ public:
     void Complete(TOperation::TPtr, const TActorContext& ctx) override {
         if (AddSender) {
             ctx.Send(DataShard.GetChangeSender(), AddSender.Release());
+            DataShard.EmitHeartbeats();
         }
     }
 };

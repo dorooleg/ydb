@@ -1,5 +1,5 @@
 // © 2019 and later: Unicode, Inc. and others.
-// License & terms of use: http://www.unicode.org/copyright.html#License
+// License & terms of use: http://www.unicode.org/copyright.html
 
 // locdistance.h
 // created: 2019may08 Markus W. Scherer
@@ -39,6 +39,10 @@ public:
         return shiftedDistance / (1 << DISTANCE_SHIFT);
     }
 
+    static int32_t getDistanceFloor(int32_t indexAndDistance) {
+        return (indexAndDistance & DISTANCE_MASK) >> DISTANCE_SHIFT;
+    }
+
     static int32_t getIndex(int32_t indexAndDistance) {
         // assert indexAndDistance >= 0;
         return indexAndDistance >> INDEX_SHIFT;
@@ -58,7 +62,7 @@ public:
                                     ULocMatchFavorSubtag favorSubtag,
                                     ULocMatchDirection direction) const;
 
-    UBool isParadigmLSR(const LSR &lsr) const;
+    bool isParadigmLSR(const LSR &lsr) const;
 
     int32_t getDefaultScriptDistance() const {
         return defaultScriptDistance;
@@ -79,18 +83,14 @@ private:
     // tic constexpr int32_t MAX_INDEX = 0x1fffff;  // avoids sign bit
     static constexpr int32_t INDEX_NEG_1 = 0xfffffc00;
 
-    static int32_t getDistanceFloor(int32_t indexAndDistance) {
-        return (indexAndDistance & DISTANCE_MASK) >> DISTANCE_SHIFT;
-    }
-
-    LocaleDistance(const LocaleDistanceData &data, const XLikelySubtags &likely);
+    LocaleDistance(const LocaleDistanceData &data, const LikelySubtags &likely);
     LocaleDistance(const LocaleDistance &other) = delete;
     LocaleDistance &operator=(const LocaleDistance &other) = delete;
 
     static void initLocaleDistance(UErrorCode &errorCode);
 
-    UBool isMatch(const LSR &desired, const LSR &supported,
-                  int32_t shiftedThreshold, ULocMatchFavorSubtag favorSubtag) const {
+    bool isMatch(const LSR &desired, const LSR &supported,
+                 int32_t shiftedThreshold, ULocMatchFavorSubtag favorSubtag) const {
         const LSR *pSupp = &supported;
         return getBestIndexAndDistance(
             desired, &pSupp, 1,
@@ -119,7 +119,7 @@ private:
         return defaultRegionDistance;
     }
 
-    const XLikelySubtags &likelySubtags;
+    const LikelySubtags &likelySubtags;
 
     // The trie maps each dlang+slang+dscript+sscript+dregion+sregion
     // (encoded in ASCII with bit 7 set on the last character of each subtag) to a distance.

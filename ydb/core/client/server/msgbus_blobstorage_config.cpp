@@ -40,6 +40,7 @@ public:
     TEvBlobStorage::TEvControllerConfigRequest *MakeReq(const TActorContext&) {
         auto ev = MakeHolder<TEvBlobStorage::TEvControllerConfigRequest>();
         auto &record = ev->Record;
+        Request.SetUserSID(GetUserSID());
         Request.Swap(record.MutableRequest());
         return ev.Release();
     }
@@ -47,8 +48,7 @@ public:
 
 IActor* CreateMessageBusBlobStorageConfig(TBusMessageContext &msg) {
     const NKikimrClient::TBlobStorageConfigRequest &record = static_cast<TBusBlobStorageConfigRequest*>(msg.GetMessage())->Record;
-    const ui32 targetDomain = record.GetDomain();
-    const ui64 tabletId = MakeBSControllerID(targetDomain);
+    const ui64 tabletId = MakeBSControllerID();
     return new TMessageBusBlobStorageConfig(msg, tabletId, record.GetRequest(), true,
         TDuration::MilliSeconds(DefaultTimeout), record.GetSecurityToken());
 }

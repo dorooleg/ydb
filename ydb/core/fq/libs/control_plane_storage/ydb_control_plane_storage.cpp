@@ -53,6 +53,7 @@ void TYdbControlPlaneStorageActor::Bootstrap() {
     CreateTenantsTable();
     CreateTenantAcksTable();
     CreateMappingsTable();
+    CreateComputeDatabasesTable();
 
     Become(&TThis::StateFunc);
 }
@@ -304,6 +305,20 @@ void TYdbControlPlaneStorageActor::CreateMappingsTable()
     RunCreateTableActor(tablePath, TTableDescription(description));
 }
 
+void TYdbControlPlaneStorageActor::CreateComputeDatabasesTable()
+{
+    auto tablePath = JoinPath(YdbConnection->TablePathPrefix, COMPUTE_DATABASES_TABLE_NAME);
+    auto description = TTableBuilder()
+        .AddNullableColumn(SCOPE_COLUMN_NAME, EPrimitiveType::String)
+        .AddNullableColumn(INTERNAL_COLUMN_NAME, EPrimitiveType::String)
+        .AddNullableColumn(CREATED_AT_COLUMN_NAME, EPrimitiveType::Timestamp)
+        .AddNullableColumn(LAST_ACCESS_AT_COLUMN_NAME, EPrimitiveType::Timestamp)
+        .SetPrimaryKeyColumns({SCOPE_COLUMN_NAME})
+        .Build();
+
+    RunCreateTableActor(tablePath, TTableDescription(description));
+}
+
 void TYdbControlPlaneStorageActor::AfterTablesCreated() {
     // Schedule(TDuration::Zero(), new NActors::TEvents::TEvWakeup());
 }
@@ -464,7 +479,11 @@ TAsyncStatus TDbRequester::Write(
                 }
                 return writeHandler(session);
             } catch (const TCodeLineException& exception) {
-                CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                if (exception.Code == TIssuesIds::INTERNAL_ERROR) {
+                    CPS_LOG_AS_E(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                } else {
+                    CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                }
                 return MakeFuture(TStatus{EStatus::GENERIC_ERROR, NYql::TIssues{MakeErrorIssue(exception.Code, exception.GetRawMessage())}});
             } catch (const std::exception& exception) {
                 CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
@@ -571,7 +590,11 @@ TAsyncStatus TDbRequester::ReadModifyWrite(
                     return status;
                 });
             } catch (const TCodeLineException& exception) {
-                CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                if (exception.Code == TIssuesIds::INTERNAL_ERROR) {
+                    CPS_LOG_AS_E(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                } else {
+                    CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                }
                 return MakeFuture(TStatus{EStatus::GENERIC_ERROR, NYql::TIssues{MakeErrorIssue(exception.Code, exception.GetRawMessage())}});
             } catch (const std::exception& exception) {
                 CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
@@ -601,7 +624,11 @@ TAsyncStatus TDbRequester::ReadModifyWrite(
                 }
                 return readModifyWriteHandler(session);
             } catch (const TCodeLineException& exception) {
-                CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                if (exception.Code == TIssuesIds::INTERNAL_ERROR) {
+                    CPS_LOG_AS_E(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                } else {
+                    CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
+                }
                 return MakeFuture(TStatus{EStatus::GENERIC_ERROR, NYql::TIssues{MakeErrorIssue(exception.Code, exception.GetRawMessage())}});
             } catch (const std::exception& exception) {
                 CPS_LOG_AS_D(*actorSystem, "Validation: " << CurrentExceptionMessage());
@@ -621,11 +648,12 @@ NActors::IActor* CreateYdbControlPlaneStorageServiceActor(
     const NConfig::TControlPlaneStorageConfig& config,
     const NYql::TS3GatewayConfig& s3Config,
     const NConfig::TCommonConfig& common,
+    const NConfig::TComputeConfig& computeConfig,
     const ::NMonitoring::TDynamicCounterPtr& counters,
     const ::NFq::TYqSharedResources::TPtr& yqSharedResources,
     const NKikimr::TYdbCredentialsProviderFactory& credentialsProviderFactory,
     const TString& tenantName) {
-    return new TYdbControlPlaneStorageActor(config, s3Config, common, counters, yqSharedResources, credentialsProviderFactory, tenantName);
+    return new TYdbControlPlaneStorageActor(config, s3Config, common, computeConfig, counters, yqSharedResources, credentialsProviderFactory, tenantName);
 }
 
 } // NFq

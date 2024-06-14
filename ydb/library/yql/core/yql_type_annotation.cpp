@@ -16,6 +16,8 @@ namespace NYql {
 
 using namespace NKikimr;
 
+const TString ModuleResolverComponent = "ModuleResolver";
+
 bool TTypeAnnotationContext::Initialize(TExprContext& ctx) {
     if (!InitializeResult) {
         InitializeResult = DoInitialize(ctx);
@@ -40,17 +42,30 @@ bool TTypeAnnotationContext::DoInitialize(TExprContext& ctx) {
     Y_ENSURE(UserDataStorage);
     UserDataStorage->FillUserDataUrls();
 
-    // Disable "in progress" constraints
-    DisableConstraintCheck.emplace(TUniqueConstraintNode::Name());
-    DisableConstraintCheck.emplace(TDistinctConstraintNode::Name());
 
     return true;
 }
 
-TString FormatColumnOrder(const TMaybe<TColumnOrder>& columnOrder) {
+void TTypeAnnotationContext::Reset() {
+    UdfImports.clear();
+    UdfModules.clear();
+    UdfTypeCache.clear();
+    NodeToOperationId.clear();
+    EvaluationInProgress = 0;
+    ExpectedTypes.clear();
+    ExpectedConstraints.clear();
+    ExpectedColumnOrders.clear();
+    StatisticsMap.clear();
+}
+
+TString FormatColumnOrder(const TMaybe<TColumnOrder>& columnOrder, TMaybe<size_t> maxColumns) {
     TStringStream ss;
     if (columnOrder) {
-        ss << "[" << JoinSeq(", ", *columnOrder) << "]";
+        if (maxColumns.Defined() && columnOrder->size() > *maxColumns) {
+            ss << "[" << JoinRange(", ", columnOrder->begin(), columnOrder->begin() + *maxColumns) << ", ... ]";
+        } else {
+            ss << "[" << JoinSeq(", ", *columnOrder) << "]";
+        }
     } else {
         ss << "default";
     }
@@ -128,7 +143,7 @@ IGraphTransformer::TStatus TTypeAnnotationContext::SetColumnOrder(const TExprNod
         return IGraphTransformer::TStatus::Error;
     }
 
-    YQL_CLOG(DEBUG, Core) << "Setting column order " << FormatColumnOrder(columnOrder) << " for " << node.Content() << "#" << node.UniqueId();
+    YQL_CLOG(DEBUG, Core) << "Setting column order " << FormatColumnOrder(columnOrder, 10) << " for " << node.Content() << "#" << node.UniqueId();
 
     ColumnOrderStorage->Set(node.UniqueId(), columnOrder);
     return IGraphTransformer::TStatus::Ok;
@@ -206,6 +221,7 @@ bool TModuleResolver::AddFromUrl(const std::string_view& file, const std::string
         }
         block.UrlToken = cred->Content;
     }
+
     UserData->AddUserDataBlock(file, block);
 
     return AddFromFile(file, ctx, syntaxVersion, packageVersion, pos);
@@ -243,24 +259,26 @@ bool TModuleResolver::AddFromFile(const std::string_view& file, TExprContext& ct
     }
 
     TString body;
-    switch (block->Type) {
-    case EUserDataType::RAW_INLINE_DATA:
-        body = block->Data;
-        break;
-    case EUserDataType::PATH:
-        body = TFileInput(block->Data).ReadAll();
-        break;
-    case EUserDataType::URL:
-        if (!UrlLoader) {
-            ctx.AddError(TIssue(pos, TStringBuilder() << "Unable to load file \"" << file
-                << "\" from url, because url loader is not available"));
-            return false;
-        }
+    if (!QContext.CanRead()) {
+        switch (block->Type) {
+        case EUserDataType::RAW_INLINE_DATA:
+            body = block->Data;
+            break;
+        case EUserDataType::PATH:
+            body = TFileInput(block->Data).ReadAll();
+            break;
+        case EUserDataType::URL:
+            if (!UrlLoader) {
+                ctx.AddError(TIssue(pos, TStringBuilder() << "Unable to load file \"" << file
+                    << "\" from url, because url loader is not available"));
+                return false;
+            }
 
-        body = UrlLoader->Load(block->Data, block->UrlToken);
-        break;
-    default:
-        throw yexception() << "Unknown block type " << block->Type;
+            body = UrlLoader->Load(block->Data, block->UrlToken);
+            break;
+        default:
+            throw yexception() << "Unknown block type " << block->Type;
+        }
     }
 
     return AddFromMemory(fullName, moduleName, isYql, body, ctx, syntaxVersion, packageVersion, pos);
@@ -294,6 +312,18 @@ bool TModuleResolver::AddFromMemory(const std::string_view& file, const TString&
 }
 
 bool TModuleResolver::AddFromMemory(const TString& fullName, const TString& moduleName, bool isYql, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos, std::vector<TString>* exports, std::vector<TString>* imports) {
+    auto query = body;
+    if (QContext.CanRead()) {
+        auto item = QContext.GetReader()->Get({ModuleResolverComponent, fullName}).GetValueSync();
+        if (!item) {
+            throw yexception() << "Missing replay data";
+        }
+
+        query = item->Value;
+    } else if (QContext.CanWrite()) {
+        QContext.GetWriter()->Put({ModuleResolverComponent, fullName}, query).GetValueSync();
+    }
+
     const auto addSubIssues = [&fullName](TIssue&& issue, const TIssues& issues) {
         std::for_each(issues.begin(), issues.end(), [&](const TIssue& i) {
             issue.AddSubIssue(MakeIntrusive<TIssue>(TPosition(i.Position.Column, i.Position.Row, fullName), i.GetMessage()));
@@ -303,7 +333,7 @@ bool TModuleResolver::AddFromMemory(const TString& fullName, const TString& modu
 
     TAstParseResult astRes;
     if (isYql) {
-        astRes = ParseAst(body, nullptr, fullName);
+        astRes = ParseAst(query, nullptr, fullName);
         if (!astRes.IsOk()) {
             ctx.AddError(addSubIssues(TIssue(pos, TStringBuilder() << "Failed to parse YQL: " << fullName), astRes.Issues));
             return false;
@@ -316,7 +346,8 @@ bool TModuleResolver::AddFromMemory(const TString& fullName, const TString& modu
         settings.Flags = SqlFlags;
         settings.SyntaxVersion = syntaxVersion;
         settings.V0Behavior = NSQLTranslation::EV0Behavior::Silent;
-        astRes = SqlToYql(body, settings);
+        settings.FileAliasPrefix = FileAliasPrefix;
+        astRes = SqlToYql(query, settings);
         if (!astRes.IsOk()) {
             ctx.AddError(addSubIssues(TIssue(pos, TStringBuilder() << "Failed to parse SQL: " << fullName), astRes.Issues));
             return false;
@@ -433,7 +464,15 @@ IModuleResolver::TPtr TModuleResolver::CreateMutableChild() const {
         throw yexception() << "Module resolver should not contain user data and URL loader";
     }
 
-    return std::make_shared<TModuleResolver>(&Modules, LibsContext.NextUniqueId, ClusterMapping, SqlFlags, OptimizeLibraries, KnownPackages, Libs);
+    return std::make_shared<TModuleResolver>(&Modules, LibsContext.NextUniqueId, ClusterMapping, SqlFlags, OptimizeLibraries, KnownPackages, Libs, FileAliasPrefix);
+}
+
+void TModuleResolver::SetFileAliasPrefix(TString&& prefix) {
+    FileAliasPrefix = std::move(prefix);
+}
+
+TString TModuleResolver::GetFileAliasPrefix() const {
+    return FileAliasPrefix;
 }
 
 TString TModuleResolver::SubstParameters(const TString& str) {

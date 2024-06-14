@@ -7,7 +7,7 @@
 #include <ydb/core/cms/console/validators/registry.h>
 #include <ydb/core/mon/mon.h>
 
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 namespace NKikimr::NConsole {
 
@@ -56,7 +56,7 @@ public:
 
     void OpenPipe(const TActorContext &ctx)
     {
-        Y_VERIFY(Subscription->Subscriber.TabletId);
+        Y_ABORT_UNLESS(Subscription->Subscriber.TabletId);
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = FastConnectRetryPolicy();
         auto pipe = NTabletPipe::CreateClient(ctx.SelfID, Subscription->Subscriber.TabletId, pipeConfig);
@@ -142,7 +142,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -282,7 +282,7 @@ public:
             IgnoreFunc(TEvInterconnect::TEvNodeConnected);
 
         default:
-            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
             break;
         }
@@ -326,7 +326,7 @@ public:
             IgnoreFunc(TEvInterconnect::TEvNodeConnected);
 
             default:
-                Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
                        ev->GetTypeRewrite(), ev->ToString().data());
                 break;
         }
@@ -838,7 +838,7 @@ void TConfigsProvider::Handle(TEvConsole::TEvConfigSubscriptionCanceled::TPtr &e
         return;
     }
 
-    Y_VERIFY(subscription->Worker);
+    Y_ABORT_UNLESS(subscription->Worker);
 
     InMemoryIndex.RemoveSubscription(subscriber);
     Send(subscription->Worker, new TEvents::TEvPoisonPill());
@@ -1001,7 +1001,7 @@ void TConfigsProvider::Handle(TEvConsole::TEvConfigNotificationResponse::TPtr &e
         LOG_DEBUG_S(ctx, NKikimrServices::CMS_CONFIGS,
                     "Config notification response cookie mismatch for"
                     << " subscription id=" << rec.GetSubscriptionId());
-        Y_VERIFY(subscription->Subscriber.ServiceId);
+        Y_ABORT_UNLESS(subscription->Subscriber.ServiceId);
         return;
     }
     // Actually it's possible cookie was changed in configs manager
@@ -1182,7 +1182,7 @@ void TConfigsProvider::Handle(TEvPrivate::TEvSetConfig::TPtr &ev, const TActorCo
 void TConfigsProvider::Handle(TEvPrivate::TEvSetConfigs::TPtr &ev, const TActorContext &ctx)
 {
     Y_UNUSED(ctx);
-    Y_VERIFY(ConfigIndex.IsEmpty());
+    Y_ABORT_UNLESS(ConfigIndex.IsEmpty());
     for (auto &pr : ev->Get()->ConfigItems)
         ConfigIndex.AddItem(pr.second);
     CheckAllSubscriptions(ctx);
@@ -1191,7 +1191,7 @@ void TConfigsProvider::Handle(TEvPrivate::TEvSetConfigs::TPtr &ev, const TActorC
 void TConfigsProvider::Handle(TEvPrivate::TEvSetSubscriptions::TPtr &ev, const TActorContext &ctx)
 {
     Y_UNUSED(ctx);
-    Y_VERIFY(SubscriptionIndex.IsEmpty());
+    Y_ABORT_UNLESS(SubscriptionIndex.IsEmpty());
     for (auto &pr : ev->Get()->Subscriptions)
         SubscriptionIndex.AddSubscription(pr.second);
     CheckAllSubscriptions(ctx);
@@ -1223,12 +1223,17 @@ void TConfigsProvider::Handle(TEvPrivate::TEvUpdateSubscriptions::TPtr &ev, cons
 
 void TConfigsProvider::Handle(TEvPrivate::TEvUpdateYamlConfig::TPtr &ev, const TActorContext &ctx) {
     YamlConfig = ev->Get()->YamlConfig;
-    VolatileYamlConfigs = ev->Get()->VolatileYamlConfigs;
+    VolatileYamlConfigs.clear();
 
     YamlConfigVersion = NYamlConfig::GetVersion(YamlConfig);
     VolatileYamlConfigHashes.clear();
-    for (auto& [id, config] : VolatileYamlConfigs) {
-        VolatileYamlConfigHashes[id] = THash<TString>()(config);
+    for (auto& [id, config] : ev->Get()->VolatileYamlConfigs) {
+        auto doc = NFyaml::TDocument::Parse(config);
+        // we strip it to provide old format for config dispatcher
+        auto node = doc.Root().Map().at("selector_config");
+        TString strippedConfig = "\n" + config.substr(node.BeginMark().InputPos, node.EndMark().InputPos - node.BeginMark().InputPos) + "\n";
+        VolatileYamlConfigs[id] = strippedConfig;
+        VolatileYamlConfigHashes[id] = THash<TString>()(strippedConfig);
     }
 
     for (auto &[_, subscription] : InMemoryIndex.GetSubscriptions()) {

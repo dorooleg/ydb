@@ -1,17 +1,16 @@
 #pragma once
 
 #include <ydb/core/base/events.h>
-#include <library/cpp/grpc/server/event_callback.h>
-#include <library/cpp/grpc/server/grpc_async_ctx_base.h>
-#include <library/cpp/grpc/server/grpc_counters.h>
-#include <library/cpp/grpc/server/grpc_request_base.h>
+#include <ydb/library/grpc/server/event_callback.h>
+#include <ydb/library/grpc/server/grpc_async_ctx_base.h>
+#include <ydb/library/grpc/server/grpc_counters.h>
+#include <ydb/library/grpc/server/grpc_request_base.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/log.h>
 
 #include <contrib/libs/grpc/include/grpcpp/support/async_stream.h>
 #include <contrib/libs/grpc/include/grpcpp/support/async_unary_call.h>
-#include <google/protobuf/text_format.h>
 
 #include <atomic>
 
@@ -112,7 +111,7 @@ public:
     virtual bool WriteAndFinish(TOut&& message, const grpc::WriteOptions& options, const grpc::Status& status) = 0;
 
 public:
-    virtual NGrpc::TAuthState& GetAuthState() const = 0;
+    virtual NYdbGrpc::TAuthState& GetAuthState() const = 0;
     virtual TString GetPeerName() const = 0;
     virtual TVector<TStringBuf> GetPeerMetaValues(TStringBuf key) const = 0;
     virtual grpc_compression_level GetCompressionLevel() const = 0;
@@ -122,7 +121,7 @@ public:
 template<class TIn, class TOut, class TServer, int LoggerServiceId>
 class TGRpcStreamingRequest final
     : public TThrRefBase
-    , private NGrpc::TBaseAsyncContext<TServer>
+    , private NYdbGrpc::TBaseAsyncContext<TServer>
 {
     using TSelf = TGRpcStreamingRequest<TIn, TOut, TServer, LoggerServiceId>;
 
@@ -155,8 +154,8 @@ public:
         TAcceptCallback acceptCallback,
         NActors::TActorSystem& actorSystem,
         const char* name,
-        NGrpc::ICounterBlockPtr counters = nullptr,
-        NGrpc::IGRpcRequestLimiterPtr limiter = nullptr)
+        NYdbGrpc::ICounterBlockPtr counters = nullptr,
+        NYdbGrpc::IGRpcRequestLimiterPtr limiter = nullptr)
     {
         TIntrusivePtr<TSelf> self(new TSelf(
             server,
@@ -180,9 +179,9 @@ private:
             TAcceptCallback acceptCallback,
             NActors::TActorSystem& as,
             const char* name,
-            NGrpc::ICounterBlockPtr counters,
-            NGrpc::IGRpcRequestLimiterPtr limiter)
-        : NGrpc::TBaseAsyncContext<TServer>(service, cq)
+            NYdbGrpc::ICounterBlockPtr counters,
+            NYdbGrpc::IGRpcRequestLimiterPtr limiter)
+        : NYdbGrpc::TBaseAsyncContext<TServer>(service, cq)
         , Server(server)
         , AcceptRequest(acceptRequest)
         , AcceptCallback(acceptCallback)
@@ -210,12 +209,12 @@ private:
         return false;
     }
 
-    void OnAccepted(NGrpc::EQueueEventStatus status) {
+    void OnAccepted(NYdbGrpc::EQueueEventStatus status) {
         MaybeClone();
 
         if (!this->Context.c_call()) {
             // Request dropped before it could start
-            Y_VERIFY(status == NGrpc::EQueueEventStatus::ERROR);
+            Y_ABORT_UNLESS(status == NYdbGrpc::EQueueEventStatus::ERROR);
             // Drop extra reference by OnDoneTag
             this->UnRef();
             // We will be freed after return
@@ -224,10 +223,10 @@ private:
 
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] stream accepted Name# %s ok# %s peer# %s",
             this, Name,
-            status == NGrpc::EQueueEventStatus::OK ? "true" : "false",
-            this->Context.peer().c_str());
+            status == NYdbGrpc::EQueueEventStatus::OK ? "true" : "false",
+            this->GetPeerName().c_str());
 
-        if (status == NGrpc::EQueueEventStatus::ERROR) {
+        if (status == NYdbGrpc::EQueueEventStatus::ERROR) {
             // Don't bother registering if accept failed
             if (Counters) {
                 Counters->CountNotOkRequest();
@@ -262,19 +261,19 @@ private:
         }
     }
 
-    void OnDone(NGrpc::EQueueEventStatus status) {
+    void OnDone(NYdbGrpc::EQueueEventStatus status) {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] stream done notification Name# %s ok# %s peer# %s",
             this, Name,
-            status == NGrpc::EQueueEventStatus::OK ? "true" : "false",
-            this->Context.peer().c_str());
+            status == NYdbGrpc::EQueueEventStatus::OK ? "true" : "false",
+            this->GetPeerName().c_str());
 
-        bool success = status == NGrpc::EQueueEventStatus::OK;
+        bool success = status == NYdbGrpc::EQueueEventStatus::OK;
 
         auto flags = Flags.load(std::memory_order_acquire);
         auto added = FlagDoneCalled | (success ? FlagDoneSuccess : 0);
         bool attached;
         do {
-            Y_VERIFY_DEBUG(!(flags & FlagDoneCalled), "OnDone called more than once");
+            Y_DEBUG_ABORT_UNLESS(!(flags & FlagDoneCalled), "OnDone called more than once");
             attached = flags & FlagAttached;
         } while (!Flags.compare_exchange_weak(flags, flags | added, std::memory_order_acq_rel));
 
@@ -286,7 +285,7 @@ private:
     void Cancel() {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] facade cancel Name# %s peer# %s",
             this, Name,
-            this->Context.peer().c_str());
+            this->GetPeerName().c_str());
 
         this->Context.TryCancel();
     }
@@ -299,7 +298,7 @@ private:
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] facade attach Name# %s actor# %s peer# %s",
             this, Name,
             actor.ToString().c_str(),
-            this->Context.peer().c_str());
+            this->GetPeerName().c_str());
 
         auto guard = SingleThreaded.Enforce();
 
@@ -309,7 +308,7 @@ private:
         auto flags = Flags.load(std::memory_order_acquire);
         auto added = FlagAttached;
         do {
-            Y_VERIFY(!(flags & FlagAttached), "Attach cannot be called more than once");
+            Y_ABORT_UNLESS(!(flags & FlagAttached), "Attach cannot be called more than once");
             Actor = actor;
             doneCalled = flags & FlagDoneCalled;
             doneSuccess = flags & FlagDoneSuccess;
@@ -323,12 +322,12 @@ private:
     bool Read() {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] facade read Name# %s peer# %s",
             this, Name,
-            this->Context.peer().c_str());
+            this->GetPeerName().c_str());
 
         auto guard = SingleThreaded.Enforce();
 
         auto flags = Flags.load(std::memory_order_acquire);
-        Y_VERIFY(flags & FlagAttached, "Read cannot be called before Attach");
+        Y_ABORT_UNLESS(flags & FlagAttached, "Read cannot be called before Attach");
 
         if (flags & FlagFinishCalled) {
             return false;
@@ -336,44 +335,32 @@ private:
 
         if (Y_LIKELY(0 == ReadQueue++)) {
             // This is the first read, start reading from the stream
-            Y_VERIFY(!ReadInProgress);
+            Y_ABORT_UNLESS(!ReadInProgress);
             ReadInProgress = MakeHolder<typename IContext::TEvReadFinished>();
             Stream.Read(&ReadInProgress->Record, OnReadDoneTag.Prepare());
         } else {
-            Y_VERIFY_DEBUG(false, "Multiple outstanding reads are unsafe in grpc streaming");
+            Y_DEBUG_ABORT("Multiple outstanding reads are unsafe in grpc streaming");
         }
 
         return true;
     }
 
-    void OnReadDone(NGrpc::EQueueEventStatus status) {
-        auto dumpResultText = [&] {
-            TString text;
-            if (status == NGrpc::EQueueEventStatus::OK) {
-                google::protobuf::TextFormat::Printer printer;
-                printer.SetSingleLineMode(true);
-                printer.PrintToString(ReadInProgress->Record, &text);
-            } else {
-                text = "<not ok>";
-            }
-            return text;
-        };
-
+    void OnReadDone(NYdbGrpc::EQueueEventStatus status) {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] read finished Name# %s ok# %s data# %s peer# %s",
             this, Name,
-            status == NGrpc::EQueueEventStatus::OK ? "true" : "false",
-            dumpResultText().c_str(),
-            this->Context.peer().c_str());
+            status == NYdbGrpc::EQueueEventStatus::OK ? "true" : "false",
+            NYdbGrpc::FormatMessage<TIn>(ReadInProgress->Record, status == NYdbGrpc::EQueueEventStatus::OK).c_str(),
+            this->GetPeerName().c_str());
 
         // Take current in-progress read first
         auto read = std::move(ReadInProgress);
-        Y_VERIFY_DEBUG(read && !ReadInProgress);
+        Y_DEBUG_ABORT_UNLESS(read && !ReadInProgress);
 
         // Decrement read counter before sending reply
         auto was = ReadQueue--;
-        Y_VERIFY_DEBUG(was > 0);
+        Y_DEBUG_ABORT_UNLESS(was > 0);
 
-        read->Success = status == NGrpc::EQueueEventStatus::OK;
+        read->Success = status == NYdbGrpc::EQueueEventStatus::OK;
         if (Counters && read->Success) {
             Counters->CountRequestBytes(read->Record.ByteSize());
         }
@@ -383,57 +370,49 @@ private:
             // This was the last read, check if write side has already finished
             auto flags = Flags.load(std::memory_order_acquire);
             while ((flags & FlagRegistered) && (flags & FlagFinishDone) && ReadQueue.load() == 0) {
-                Y_VERIFY_DEBUG(flags & FlagFinishCalled);
+                Y_DEBUG_ABORT_UNLESS(flags & FlagFinishCalled);
                 if (Flags.compare_exchange_weak(flags, flags & ~FlagRegistered, std::memory_order_acq_rel)) {
                     LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] deregistering request Name# %s peer# %s (read done)",
-                        this, Name, this->Context.peer().c_str());
+                        this, Name, this->GetPeerName().c_str());
                     Server->DeregisterRequestCtx(this);
                     break;
                 }
             }
         } else {
             // We need to perform another read (likely unsafe)
-            Y_VERIFY_DEBUG(false, "Multiple outstanding reads are unsafe in grpc streaming");
+            Y_DEBUG_ABORT("Multiple outstanding reads are unsafe in grpc streaming");
             ReadInProgress = MakeHolder<typename IContext::TEvReadFinished>();
             Stream.Read(&ReadInProgress->Record, OnReadDoneTag.Prepare());
         }
     }
 
     bool Write(TOut&& message, const grpc::WriteOptions& options = { }, const grpc::Status* status = nullptr) {
-        auto dumpMessageText = [&] {
-            TString text;
-            google::protobuf::TextFormat::Printer printer;
-            printer.SetSingleLineMode(true);
-            printer.PrintToString(message, &text);
-            return text;
-        };
-
         if (status) {
             LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] facade write Name# %s data# %s peer# %s grpc status# (%d) message# %s",
                 this, Name,
-                dumpMessageText().c_str(),
-                this->Context.peer().c_str(),
+                NYdbGrpc::FormatMessage<TOut>(message).c_str(),
+                this->GetPeerName().c_str(),
                 static_cast<int>(status->error_code()),
                 status->error_message().c_str());
         } else {
             LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] facade write Name# %s data# %s peer# %s",
                 this, Name,
-                dumpMessageText().c_str(),
-                this->Context.peer().c_str());
+                NYdbGrpc::FormatMessage<TOut>(message).c_str(),
+                this->GetPeerName().c_str());
         }
 
-        Y_VERIFY(!options.is_corked(),
+        Y_ABORT_UNLESS(!options.is_corked(),
             "WriteOptions::set_corked() is unsupported");
-        Y_VERIFY(!options.get_buffer_hint(),
+        Y_ABORT_UNLESS(!options.get_buffer_hint(),
             "WriteOptions::set_buffer_hint() is unsupported");
-        Y_VERIFY(!options.is_last_message(),
+        Y_ABORT_UNLESS(!options.is_last_message(),
             "WriteOptions::set_last_message() is unsupported");
 
         auto guard = SingleThreaded.Enforce();
 
         with_lock (WriteLock) {
             auto flags = Flags.load(std::memory_order_acquire);
-            Y_VERIFY(flags & FlagAttached, "Write cannot be called before Attach");
+            Y_ABORT_UNLESS(flags & FlagAttached, "Write cannot be called before Attach");
 
             if (flags & FlagFinishCalled) {
                 return false;
@@ -456,8 +435,8 @@ private:
                 return true;
             }
 
-            Y_VERIFY_DEBUG(!WriteQueue);
-            Y_VERIFY_DEBUG(!(flags & FlagWriteAndFinish));
+            Y_DEBUG_ABORT_UNLESS(!WriteQueue);
+            Y_DEBUG_ABORT_UNLESS(!(flags & FlagWriteAndFinish));
 
             Flags |= (FlagWriteActive | (status ? FlagWriteAndFinish : 0));
         }
@@ -470,14 +449,14 @@ private:
         return true;
     }
 
-    void OnWriteDone(NGrpc::EQueueEventStatus status) {
+    void OnWriteDone(NYdbGrpc::EQueueEventStatus status) {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] write finished Name# %s ok# %s peer# %s",
             this, Name,
-            status == NGrpc::EQueueEventStatus::OK ? "true" : "false",
-            this->Context.peer().c_str());
+            status == NYdbGrpc::EQueueEventStatus::OK ? "true" : "false",
+            this->GetPeerName().c_str());
 
         auto event = MakeHolder<typename IContext::TEvWriteFinished>();
-        event->Success = status == NGrpc::EQueueEventStatus::OK;
+        event->Success = status == NYdbGrpc::EQueueEventStatus::OK;
         ActorSystem.Send(Actor, event.Release());
 
         THolder<TWriteItem> next;
@@ -486,18 +465,18 @@ private:
 
         with_lock (WriteLock) {
             auto flags = Flags.load(std::memory_order_acquire);
-            Y_VERIFY_DEBUG(flags & FlagWriteActive);
+            Y_DEBUG_ABORT_UNLESS(flags & FlagWriteActive);
             wasWriteAndFinish = flags & FlagWriteAndFinish;
 
             if (WriteQueue) {
-                Y_VERIFY_DEBUG(!wasWriteAndFinish);
+                Y_DEBUG_ABORT_UNLESS(!wasWriteAndFinish);
                 // Take the next item from the queue
                 next = std::move(WriteQueue.front());
                 WriteQueue.pop_front();
                 if (!WriteQueue && (flags & FlagFinishCalled)) {
                     // FlagFinishCalled set during FlagWriteActive
                     // Combine the last message with Finish
-                    Y_VERIFY_DEBUG(!(flags & FlagFinishDone));
+                    Y_DEBUG_ABORT_UNLESS(!(flags & FlagFinishDone));
                     Flags |= FlagWriteAndFinish;
                     nextStatus = &*Status;
                 }
@@ -506,7 +485,7 @@ private:
                 do {
                     if (!wasWriteAndFinish && (flags & FlagFinishCalled)) {
                         // FlagFinishCalled set during FlagWriteActive
-                        Y_VERIFY_DEBUG(!(flags & FlagFinishDone));
+                        Y_DEBUG_ABORT_UNLESS(!(flags & FlagFinishDone));
                         nextStatus = &*Status;
                     }
                 } while (!Flags.compare_exchange_weak(flags, flags & ~FlagWriteActive, std::memory_order_acq_rel));
@@ -527,7 +506,7 @@ private:
     bool Finish(const grpc::Status& status) {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] facade finish Name# %s peer# %s grpc status# (%d) message# %s",
             this, Name,
-            this->Context.peer().c_str(),
+            this->GetPeerName().c_str(),
             static_cast<int>(status.error_code()),
             status.error_message().c_str());
 
@@ -548,7 +527,7 @@ private:
 
         flags = Flags.load(std::memory_order_acquire);
         do {
-            Y_VERIFY_DEBUG(!(flags & FlagFinishCalled));
+            Y_DEBUG_ABORT_UNLESS(!(flags & FlagFinishCalled));
             finish = !(flags & FlagWriteActive);
         } while (!Flags.compare_exchange_weak(flags, flags | FlagFinishCalled, std::memory_order_acq_rel));
 
@@ -559,17 +538,17 @@ private:
         return true;
     }
 
-    void OnFinishDone(NGrpc::EQueueEventStatus status) {
+    void OnFinishDone(NYdbGrpc::EQueueEventStatus status) {
         LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] stream finished Name# %s ok# %s peer# %s grpc status# (%d) message# %s",
             this, Name,
-            status == NGrpc::EQueueEventStatus::OK ? "true" : "false",
-            this->Context.peer().c_str(),
+            status == NYdbGrpc::EQueueEventStatus::OK ? "true" : "false",
+            this->GetPeerName().c_str(),
             static_cast<int>(Status->error_code()),
             Status->error_message().c_str());
 
         auto flags = (Flags |= FlagFinishDone);
-        Y_VERIFY(flags & FlagFinishCalled);
-        Y_VERIFY_DEBUG(!(flags & FlagWriteActive));
+        Y_ABORT_UNLESS(flags & FlagFinishCalled);
+        Y_DEBUG_ABORT_UNLESS(!(flags & FlagWriteActive));
 
         switch (Status->error_code()) {
             case grpc::StatusCode::UNAUTHENTICATED:
@@ -587,7 +566,7 @@ private:
         }
 
         if (flags & FlagStarted) {
-            Y_VERIFY(Status);
+            Y_ABORT_UNLESS(Status);
             if (Counters) {
                 Counters->FinishProcessing(0, 0, Status->ok(), 0, TDuration::Seconds(RequestTimer.Passed()));
             }
@@ -598,7 +577,7 @@ private:
         while ((flags & FlagRegistered) && ReadQueue.load() == 0) {
             if (Flags.compare_exchange_weak(flags, flags & ~FlagRegistered, std::memory_order_acq_rel)) {
                 LOG_DEBUG(ActorSystem, LoggerServiceId, "[%p] deregistering request Name# %s peer# %s (finish done)",
-                    this, Name, this->Context.peer().c_str());
+                    this, Name, this->GetPeerName().c_str());
                 Server->DeregisterRequestCtx(this);
                 break;
             }
@@ -662,7 +641,7 @@ private:
             return Self->Finish(status);
         }
 
-        NGrpc::TAuthState& GetAuthState() const override {
+        NYdbGrpc::TAuthState& GetAuthState() const override {
             return Self->AuthState;
         }
 
@@ -694,7 +673,7 @@ private:
                 : Owner(nullptr)
             {
                 size_t threads;
-                Y_VERIFY_DEBUG((threads = owner->Threads.fetch_add(1, std::memory_order_acquire)) == 0,
+                Y_DEBUG_ABORT_UNLESS((threads = owner->Threads.fetch_add(1, std::memory_order_acquire)) == 0,
                     "Detected usage from %" PRISZT " threads", threads + 1);
                 Owner = owner;
             }
@@ -708,7 +687,7 @@ private:
             ~TSingleThreadedGuard() {
                 if (Owner) {
                     size_t threads;
-                    Y_VERIFY_DEBUG((threads = Owner->Threads.fetch_sub(1, std::memory_order_release)) == 1,
+                    Y_DEBUG_ABORT_UNLESS((threads = Owner->Threads.fetch_sub(1, std::memory_order_release)) == 1,
                         "Detected usage from %" PRISZT " threads", threads);
                 }
             }
@@ -752,10 +731,10 @@ private:
     TAcceptCallback const AcceptCallback;
     NActors::TActorSystem& ActorSystem;
     const char* const Name;
-    NGrpc::ICounterBlockPtr const Counters;
-    NGrpc::IGRpcRequestLimiterPtr Limiter;
+    NYdbGrpc::ICounterBlockPtr const Counters;
+    NYdbGrpc::IGRpcRequestLimiterPtr Limiter;
 
-    NGrpc::TAuthState AuthState;
+    NYdbGrpc::TAuthState AuthState;
     grpc::ServerAsyncReaderWriter<TOut, TIn> Stream;
     TSingleThreaded SingleThreaded;
     THPTimer RequestTimer;
@@ -772,7 +751,7 @@ private:
 
     TMaybe<grpc::Status> Status;
 
-    using TFixedEvent = NGrpc::TQueueFixedEvent<TSelf>;
+    using TFixedEvent = NYdbGrpc::TQueueFixedEvent<TSelf>;
     TFixedEvent OnDoneTag = { this, &TSelf::OnDone };
     TFixedEvent OnAcceptedTag = { this, &TSelf::OnAccepted };
     TFixedEvent OnReadDoneTag = { this, &TSelf::OnReadDone };

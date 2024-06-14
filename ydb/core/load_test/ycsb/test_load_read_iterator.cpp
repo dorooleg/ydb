@@ -31,7 +31,7 @@ const ui64 RECONNECT_LIMIT = 10;
 
 class TReadIteratorPoints : public TActorBootstrapped<TReadIteratorPoints> {
     const std::unique_ptr<const TEvDataShard::TEvRead> BaseRequest;
-    const NKikimrTxDataShard::EScanDataFormat Format;
+    const NKikimrDataEvents::EDataFormat Format;
     const ui64 TabletId;
     const TActorId Parent;
     const TSubLoadId Id;
@@ -180,7 +180,7 @@ private:
             return StopWithError(ctx, ss.Str());
         }
 
-        if (Format != NKikimrTxDataShard::CELLVEC) {
+        if (Format != NKikimrDataEvents::FORMAT_CELLVEC) {
             return StopWithError(ctx, "Unsupported format");
         }
 
@@ -428,7 +428,7 @@ private:
         TVector<TString> to = {TString("zzz")};
         AddRangeQuery(*request, from, true, to, true);
 
-        record.SetResultFormat(::NKikimrTxDataShard::EScanDataFormat::CELLVEC);
+        record.SetResultFormat(::NKikimrDataEvents::FORMAT_CELLVEC);
 
         TSubLoadId subId(Id.Tag, SelfId(), ++LastSubTag);
         auto* actor = CreateReadIteratorScan(request.release(), TabletId, SelfId(), subId, sampleKeys);
@@ -477,7 +477,7 @@ private:
         case EState::FullScanGetKeys:
             return StopWithError(ctx, TStringBuilder() << "TEvTestLoadFinished while in " << State);
         case EState::ReadHeadPoints: {
-            Y_VERIFY(Inflight == 0);
+            Y_ABORT_UNLESS(Inflight == 0);
             LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "headread with inflight# " << Inflights[InflightIndex]
                 << " finished: " << ev->Get()->ToString());
             Errors += record.GetReport().GetOperationsError();
@@ -510,8 +510,8 @@ private:
     }
 
     void RunHeadReads(const TActorContext& ctx) {
-        Y_VERIFY(Inflight == 0);
-        Y_VERIFY(InflightIndex < Inflights.size());
+        Y_ABORT_UNLESS(Inflight == 0);
+        Y_ABORT_UNLESS(InflightIndex < Inflights.size());
 
         HeadReadsHist.Reset();
         StartTsSubTest = TInstant::Now();
@@ -533,7 +533,7 @@ private:
             record.AddColumns(id);
         }
 
-        record.SetResultFormat(::NKikimrTxDataShard::EScanDataFormat::CELLVEC);
+        record.SetResultFormat(::NKikimrDataEvents::FORMAT_CELLVEC);
 
         TSubLoadId subId(Id.Tag, SelfId(), ++LastSubTag);
         auto* readActor = new TReadIteratorPoints(

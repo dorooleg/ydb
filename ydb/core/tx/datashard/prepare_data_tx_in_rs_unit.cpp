@@ -52,7 +52,7 @@ EExecutionStatus TPrepareDataTxInRSUnit::Execute(TOperation::TPtr op,
             case ERestoreDataStatus::Restart:
                 return EExecutionStatus::Restart;
             case ERestoreDataStatus::Error:
-                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
 
@@ -60,7 +60,7 @@ EExecutionStatus TPrepareDataTxInRSUnit::Execute(TOperation::TPtr op,
     Y_VERIFY_S(engine, "missing engine for " << *op << " at " << DataShard.TabletID());
 
     // TODO: cancel tx in special execution unit.
-    if (tx->GetDataTx()->CheckCancelled())
+    if (tx->GetDataTx()->CheckCancelled(DataShard.TabletID()))
         engine->Cancel();
 
     try {

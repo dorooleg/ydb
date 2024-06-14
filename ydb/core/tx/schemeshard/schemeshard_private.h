@@ -28,6 +28,9 @@ struct TEvPrivate {
         EvConsoleConfigsTimeout,
         EvRunCdcStreamScan,
         EvPersistTopicStats,
+        EvSendBaseStatsToSA,
+        EvRunBackgroundCleaning,
+        EvRetryNodeSubscribe,
         EvEnd
     };
 
@@ -179,6 +182,16 @@ struct TEvPrivate {
         {}
     };
 
+    struct TEvSendBaseStatsToSA: public TEventLocal<TEvSendBaseStatsToSA, EvSendBaseStatsToSA> {
+    };
+
+    struct TEvRetryNodeSubscribe : public TEventLocal<TEvRetryNodeSubscribe, EvRetryNodeSubscribe> {
+        ui32 NodeId;
+
+        explicit TEvRetryNodeSubscribe(ui32 nodeId)
+            : NodeId(nodeId)
+        { }
+    };
 }; // TEvPrivate
 
 } // NSchemeShard

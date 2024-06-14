@@ -9,8 +9,8 @@
 
 #include <ydb/library/binary_json/read.h>
 #include <ydb/library/dynumber/dynumber.h>
-
-//#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/yql/parser/pg_wrapper/interface/type_desc.h>
+//#include <ydb/library/actors/interconnect/interconnect.h>
 
 //#include <util/generic/cast.h>
 
@@ -20,81 +20,142 @@ namespace NDataShard {
 using NTable::EScan;
 
 //YdbOld and Ydb.v1 have same value representation
-template<typename TOutValue>
-Y_FORCE_INLINE void AddCell(TOutValue& row, NScheme::TTypeInfo type, const TCell &cell)
+template <typename TOutValue>
+Y_FORCE_INLINE bool AddCell(TOutValue& row, NScheme::TTypeInfo type, const TCell& cell, TString& err)
 {
     auto &val = *row.add_items();
 
     if (cell.IsNull()) {
         val.set_null_flag_value(::google::protobuf::NULL_VALUE);
-        return;
+        return true;
     }
 
     switch (type.GetTypeId()) {
-    case NUdf::TDataType<bool>::Id:
-        val.set_bool_value(cell.AsValue<bool>());
+    case NUdf::TDataType<bool>::Id: {
+        bool value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_bool_value(value);
         break;
-    case NUdf::TDataType<ui8>::Id:
-        val.set_uint32_value(cell.AsValue<ui8>());
+    }
+    case NUdf::TDataType<ui8>::Id: {
+        ui8 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint32_value(value);
         break;
-    case NUdf::TDataType<i8>::Id:
-        val.set_int32_value(cell.AsValue<i8>());
+    }
+    case NUdf::TDataType<i8>::Id: {
+        i8 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_int32_value(value);
         break;
-    case NUdf::TDataType<ui16>::Id:
-        val.set_uint32_value(cell.AsValue<ui16>());
+    }
+    case NUdf::TDataType<ui16>::Id: {
+        ui16 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint32_value(value);
         break;
-    case NUdf::TDataType<i16>::Id:
-        val.set_int32_value(cell.AsValue<i16>());
+    }
+    case NUdf::TDataType<i16>::Id: {
+        i16 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_int32_value(value);
         break;
-    case NUdf::TDataType<ui32>::Id:
-        val.set_uint32_value(cell.AsValue<ui32>());
+    }
+    case NUdf::TDataType<ui32>::Id: {
+        ui32 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint32_value(value);
         break;
-    case NUdf::TDataType<i32>::Id:
-        val.set_int32_value(cell.AsValue<i32>());
+    }
+    case NUdf::TDataType<i32>::Id: {
+        i32 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_int32_value(value);
         break;
-    case NUdf::TDataType<ui64>::Id:
-        val.set_uint64_value(cell.AsValue<ui64>());
+    }
+    case NUdf::TDataType<ui64>::Id: {
+        ui64 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint64_value(value);
         break;
-    case NUdf::TDataType<i64>::Id:
-        val.set_int64_value(cell.AsValue<i64>());
+    }
+    case NUdf::TDataType<i64>::Id: {
+        i64 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_int64_value(value);
         break;
-    case NUdf::TDataType<float>::Id:
-        val.set_float_value(cell.AsValue<float>());
+    }
+    case NUdf::TDataType<float>::Id: {
+        float value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_float_value(value);
         break;
-    case NUdf::TDataType<double>::Id:
-        val.set_double_value(cell.AsValue<double>());
+    }
+    case NUdf::TDataType<double>::Id: {
+        double value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_double_value(value);
         break;
+    }
     case NUdf::TDataType<NUdf::TJson>::Id:
-    case NUdf::TDataType<NUdf::TUtf8>::Id:
+    case NUdf::TDataType<NUdf::TUtf8>::Id: {
         val.set_text_value(cell.Data(), cell.Size());
         break;
-    case NUdf::TDataType<NUdf::TYson>::Id:
+    }
+    case NUdf::TDataType<NUdf::TYson>::Id: {
         val.set_bytes_value(cell.Data(), cell.Size());
         break;
-    case NUdf::TDataType<NUdf::TDecimal>::Id:
-        {
-            Y_VERIFY_DEBUG(cell.Size() == 16);
-            struct TCellData {
-                ui64 Low;
-                ui64 High;
-            };
-            const auto data = cell.AsValue<TCellData>();
-            val.set_low_128(data.Low);
-            val.set_high_128(data.High);
-        }
+    }
+    case NUdf::TDataType<NUdf::TDecimal>::Id: {
+        struct TCellData {
+            ui64 Low;
+            ui64 High;
+        } value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_low_128(value.Low);
+        val.set_high_128(value.High);
         break;
-    case NUdf::TDataType<NUdf::TDate>::Id:
-        val.set_uint32_value(cell.AsValue<ui16>());
+    }
+    case NUdf::TDataType<NUdf::TDate>::Id: {
+        ui16 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint32_value(value);
         break;
-    case NUdf::TDataType<NUdf::TDatetime>::Id:
-        val.set_uint32_value(cell.AsValue<ui32>());
+    }
+    case NUdf::TDataType<NUdf::TDatetime>::Id: {
+        ui32 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint32_value(value);
         break;
-    case NUdf::TDataType<NUdf::TTimestamp>::Id:
-        val.set_uint64_value(cell.AsValue<ui64>());
+    }
+    case NUdf::TDataType<NUdf::TTimestamp>::Id: {
+        ui64 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_uint64_value(value);
         break;
-    case NUdf::TDataType<NUdf::TInterval>::Id:
-        val.set_int64_value(cell.AsValue<i64>());
+    }
+    case NUdf::TDataType<NUdf::TInterval>::Id: {
+        i64 value;
+        if (!cell.ToValue(value, err))
+            return false;
+        val.set_int64_value(value);
         break;
+    }
     case NUdf::TDataType<NUdf::TJsonDocument>::Id: {
         const auto json = NBinaryJson::SerializeToJson(TStringBuf(cell.Data(), cell.Size()));
         val.set_text_value(json);
@@ -102,17 +163,26 @@ Y_FORCE_INLINE void AddCell(TOutValue& row, NScheme::TTypeInfo type, const TCell
     }
     case NUdf::TDataType<NUdf::TDyNumber>::Id: {
         const auto number = NDyNumber::DyNumberToString(TStringBuf(cell.Data(), cell.Size()));
-        Y_VERIFY(number.Defined(), "Invalid DyNumber binary representation");
+        if (!number.Defined()) {
+            err = "Invalid DyNumber binary representation";
+            return false;
+        }
         val.set_text_value(*number);
         break;
     }
     case NScheme::NTypeIds::Pg: {
-        val.set_bytes_value(cell.Data(), cell.Size());
+        auto result = NPg::PgNativeTextFromNativeBinary(cell.AsBuf(), type.GetTypeDesc());
+        if (result.Error) {
+            err = Sprintf("Failed to add cell to Ydb::Value: %s", (*result.Error).c_str());
+            return false;
+        }
+        val.set_text_value(result.Str);
         break;
     }
     default:
         val.set_bytes_value(cell.Data(), cell.Size());
     }
+    return true;
 }
 
 class TRowsToResult {
@@ -134,10 +204,12 @@ public:
     ui64 GetMessageSize() const { return ResultString.size(); }
     ui64 GetMessageRows() const { return CurrentMessageRows; }
 
-    void PutRow(const NTable::TRowState& row) {
+    bool PutRow(const NTable::TRowState& row, TString& err) {
         RowOffsets.push_back(static_cast<ui32>(ResultString.size()));
-        DoPutRow(row);
+        if (!DoPutRow(row, err))
+            return false;
         ++CurrentMessageRows;
+        return true;
     }
 
     void Reserve(ui64 size)
@@ -169,7 +241,7 @@ protected:
         CurrentMessageRows = 0;
     }
 private:
-    virtual void DoPutRow(const NTable::TRowState &row) = 0;
+    virtual bool DoPutRow(const NTable::TRowState& row, TString& err) = 0;
     virtual ui32 GetResultVersion() const = 0;
 
     ui64 CurrentMessageRows;
@@ -193,17 +265,19 @@ public:
     }
 
 private:
-    void DoPutRow(const NTable::TRowState &row) override
+    bool DoPutRow(const NTable::TRowState &row, TString& err) override
     {
         auto &protoRow = *OldResultSet.add_rows();
         auto cells = *row;
 
         for (size_t col = 0; col < cells.size(); ++col) {
-            AddCell(protoRow, ColTypes[col], cells[col]);
+            if (!AddCell(protoRow, ColTypes[col], cells[col], err))
+                return false;
         }
 
         OldResultSet.SerializeToArcadiaStream(&ResultStream);
         OldResultSet.Clear();
+        return true;
     }
 
     ui32 GetResultVersion() const override { return 0; }
@@ -235,17 +309,19 @@ public:
     }
 
 private:
-    void DoPutRow(const NTable::TRowState& row) override
+    bool DoPutRow(const NTable::TRowState& row, TString& err) override
     {
         auto &protoRow = *YdbResultSet.add_rows();
         auto cells = *row;
 
         for (size_t col = 0; col < cells.size(); ++col) {
-            AddCell(protoRow, ColTypes[col], cells[col]);
+            if (!AddCell(protoRow, ColTypes[col], cells[col], err))
+                return false;
         }
 
         YdbResultSet.SerializeToArcadiaStream(&ResultStream);
         YdbResultSet.Clear();
+        return true;
     }
 
     ui32 GetResultVersion() const override { return NKikimrTxUserProxy::TReadTableTransaction::YDB_V1; }
@@ -306,6 +382,7 @@ public:
         , Driver(nullptr)
         , MessageQuota(0)
         , MessageSizeLimit(10 << 20)
+        , MessageRowsLimit(0)
         , TableInfo(tableInfo)
         , Tx(tx)
         , ScanRange(tx.GetRange())
@@ -375,7 +452,7 @@ private:
 
     void Handle(TEvTxProcessing::TEvStreamDataAck::TPtr &, const TActorContext &ctx)
     {
-        Y_VERIFY(PendingAcks);
+        Y_ABORT_UNLESS(PendingAcks);
         --PendingAcks;
 
         LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD,
@@ -403,6 +480,7 @@ private:
         auto &rec = ev->Get()->Record;
 
         MessageSizeLimit = rec.GetMessageSizeLimit();
+        MessageRowsLimit = rec.GetMessageRowsLimit();
         MessageQuota += rec.GetReservedMessages();
         RowLimit = rec.GetRowLimit();
 
@@ -428,6 +506,7 @@ private:
         response->Record.SetTxId(TxId);
         response->Record.SetMessageQuota(MessageQuota);
         response->Record.SetMessageSizeLimit(MessageSizeLimit);
+        //response->Record.SetMessageRowsLimit(MessageRowsLimit); for monitoring only
         response->Record.SetRowsLimit(RowLimit);
         response->Record.SetPendingAcks(PendingAcks);
         response->Record.SetResultSize(Writer->GetMessageSize());
@@ -527,6 +606,7 @@ private:
 
         // May collect more rows.
         if (Writer->GetMessageSize() < MessageSizeLimit
+            && (!MessageRowsLimit || MessageRowsLimit > rows)
             && (!RowLimit || RowLimit > rows)
             && !last)
             return EScan::Feed;
@@ -573,9 +653,13 @@ private:
 
     EScan Feed(TArrayRef<const TCell> key, const TRow &row) noexcept override
     {
-        Y_VERIFY_DEBUG(DebugCheckKeyInRange(key));
+        Y_DEBUG_ABORT_UNLESS(DebugCheckKeyInRange(key));
 
-        Writer->PutRow(row);
+        if (!Writer->PutRow(row, Error)) {
+            LOG_ERROR_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "Got scan fatal error: " << Error);
+            IsFatalError = true;
+            return EScan::Final;
+        }
 
         return MaybeSendResponseMessage(false, key);
     }
@@ -613,8 +697,7 @@ private:
         Driver = nullptr;
 
         Die(ctx);
-
-        return new TReadTableProd(Error, SchemaChanged);
+        return new TReadTableProd(Error, IsFatalError, SchemaChanged);
     }
 
 private:
@@ -626,7 +709,9 @@ private:
     IDriver *Driver;
     ui64 MessageQuota;
     ui64 MessageSizeLimit;
+    ui64 MessageRowsLimit;
     TString Error;
+    bool IsFatalError = false;
     THolder<TRowsToResult> Writer;
     TUserTable::TCPtr TableInfo;
     NKikimrTxDataShard::TReadTableTransaction Tx;

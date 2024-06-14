@@ -36,14 +36,25 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
     const ui64 shadowTableId = self->GetShadowTableId(fullTableId);
 
     const TUserTable& tableInfo = *self->GetUserTables().at(tableId); /// ... find
-    Y_VERIFY(tableInfo.LocalTid == localTableId);
-    Y_VERIFY(tableInfo.ShadowTid == shadowTableId);
+    Y_ABORT_UNLESS(tableInfo.LocalTid == localTableId);
+    Y_ABORT_UNLESS(tableInfo.ShadowTid == shadowTableId);
 
     // Check schemas
     if (record.GetRowScheme().KeyColumnIdsSize() != tableInfo.KeyColumnIds.size()) {
         SetError(NKikimrTxDataShard::TError::SCHEME_ERROR,
             Sprintf("Key column count mismatch: got %" PRIu64 ", expected %" PRIu64,
                 record.GetRowScheme().KeyColumnIdsSize(), tableInfo.KeyColumnIds.size()));
+        return true;
+    }
+
+    if (record.GetSchemaVersion() && tableInfo.GetTableSchemaVersion() &&
+        record.GetSchemaVersion() != tableInfo.GetTableSchemaVersion())
+    {
+        SetError(NKikimrTxDataShard::TError::SCHEME_ERROR, TStringBuilder()
+            << "Schema version mismatch"
+            << ": requested " << record.GetSchemaVersion()
+            << ", expected " << tableInfo.GetTableSchemaVersion()
+            << ". Retry request with an updated schema.");
         return true;
     }
 
@@ -54,6 +65,7 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
         }
     }
 
+    const bool upsertIfExists = record.GetUpsertIfExists();
     const bool writeToTableShadow = record.GetWriteToTableShadow();
     const bool readForTableShadow = writeToTableShadow && !shadowTableId;
     const ui32 writeTableId = writeToTableShadow && shadowTableId ? shadowTableId : localTableId;
@@ -62,7 +74,8 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
         self->SysLocksTable().HasWriteLocks(fullTableId) ||
         self->GetVolatileTxManager().GetTxMap());
 
-    TDataShardUserDb userDb(*self, txc.DB, readVersion);
+    NMiniKQL::TEngineHostCounters engineHostCounters;
+    TDataShardUserDb userDb(*self, txc.DB, globalTxId, readVersion, writeVersion, engineHostCounters, TAppData::TimeProvider->Now());
     TDataShardChangeGroupProvider groupProvider(*self, txc.DB);
 
     if (CollectChanges) {
@@ -151,6 +164,23 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
             }
         }
 
+        if (upsertIfExists) {
+            rowState.Init(tagsForSelect.size());
+            auto ready = userDb.SelectRow(fullTableId, key, tagsForSelect, rowState);
+            if (ready == NTable::EReady::Page) {
+                pageFault = true;
+            }
+
+            if (pageFault) {
+                continue;
+            }
+
+            if (rowState == NTable::ERowOp::Erase || rowState == NTable::ERowOp::Absent) {
+                // in upsert if exists mode we must be sure that we insert only existing rows.
+                continue;
+            }
+        }
+
         value.clear();
         size_t vi = 0;
         for (const auto& vt : valueCols) {
@@ -179,6 +209,8 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
         }
 
         if (!writeToTableShadow) {
+            // note, that for upsertIfExists mode we must break locks, because otherwise we can
+            // produce inconsistency.
             if (BreakLocks) {
                 if (breakWriteConflicts) {
                     if (!self->BreakWriteConflicts(txc.DB, fullTableId, keyCells.GetCells(), volatileDependencies)) {
@@ -192,7 +224,7 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
             }
 
             if (ChangeCollector) {
-                Y_VERIFY(CollectChanges);
+                Y_ABORT_UNLESS(CollectChanges);
 
                 if (!volatileDependencies.empty()) {
                     if (!globalTxId) {
@@ -222,7 +254,7 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
             self->GetConflictsCache().GetTableCache(writeTableId).AddUncommittedWrite(keyCells.GetCells(), globalTxId, txc.DB);
             if (!commitAdded) {
                 // Make sure we see our own changes on further iterations
-                userDb.AddCommitTxId(globalTxId, writeVersion);
+                userDb.AddCommitTxId(fullTableId, globalTxId, writeVersion);
                 commitAdded = true;
             }
         } else {
@@ -254,6 +286,7 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
             /* participants */ { },
             groupProvider.GetCurrentChangeGroup(),
             /* ordered */ false,
+            /* arbiter */ false,
             txc);
         // Note: transaction is already committed, no additional waiting needed
     }
@@ -267,7 +300,7 @@ bool TCommonUploadOps<TEvRequest, TEvResponse>::Execute(TDataShard* self, TTrans
 
 template <typename TEvRequest, typename TEvResponse>
 void TCommonUploadOps<TEvRequest, TEvResponse>::GetResult(TDataShard* self, TActorId& target, THolder<IEventBase>& event, ui64& cookie) {
-    Y_VERIFY(Result);
+    Y_ABORT_UNLESS(Result);
 
     if (Result->Record.GetStatus() == NKikimrTxDataShard::TError::OK) {
         self->IncCounter(COUNTER_BULK_UPSERT_SUCCESS);
@@ -287,7 +320,7 @@ const TEvRequest* TCommonUploadOps<TEvRequest, TEvResponse>::GetRequest() const 
 
 template <typename TEvRequest, typename TEvResponse>
 TEvResponse* TCommonUploadOps<TEvRequest, TEvResponse>::GetResult() {
-    Y_VERIFY(Result);
+    Y_ABORT_UNLESS(Result);
     return Result.Get();
 }
 

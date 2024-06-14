@@ -1,7 +1,7 @@
-#include "helpers.h"
-
-#include <ydb/public/api//protos/annotations/validation.pb.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/public/api/protos/annotations/validation.pb.h>
+#include <ydb/public/lib/protobuf/helpers.h>
+#include <ydb/public/lib/protobuf/scoped_file_printer.h>
 
 #include <google/protobuf/compiler/code_generator.h>
 #include <google/protobuf/compiler/plugin.h>
@@ -16,42 +16,14 @@
 #include <util/string/cast.h>
 #include <util/string/subst.h>
 
-namespace NKikimr {
-namespace NValidation {
+namespace NKikimr::NValidation {
 
 using namespace google::protobuf::compiler;
 using namespace google::protobuf;
+using namespace NKikimr::NProtobuf;
 
 using TVariables = std::map<TString, TString>;
-
-class TPrinter {
-public:
-    explicit TPrinter(OutputDirectory* output, const TString& fileName, const TString& scope)
-        : Output(output)
-        , FileName(fileName)
-        , Scope(scope)
-    {
-    }
-
-    io::Printer* operator->() {
-        if (!Printer) {
-            Stream.Reset(Output->OpenForInsert(FileName, Scope));
-            Printer.ConstructInPlace(Stream.Get(), '$');
-        }
-
-        return Printer.Get();
-    }
-
-private:
-    OutputDirectory* Output;
-    const TString FileName;
-    const TString Scope;
-
-    THolder<io::ZeroCopyOutputStream> Stream;
-    TMaybe<io::Printer> Printer;
-
-}; // TPrinter
-
+using TPrinter = NKikimr::NProtobuf::TScopedFilePrinter;
 
 bool IsScalarType(const FieldDescriptor* field) {
     switch (field->cpp_type()) {
@@ -67,12 +39,11 @@ bool IsScalarType(const FieldDescriptor* field) {
         default:
             return false;
     }
-    return false;
 }
 
 class TFieldGenerator: public TThrRefBase {
     void Required(TPrinter& printer) const {
-        Y_VERIFY(!Field->is_repeated(), "Repeated fields cannot be required or not");
+        Y_ABORT_UNLESS(!Field->is_repeated(), "Repeated fields cannot be required or not");
 
         if (Field->options().GetExtension(Ydb::required)) {
             if (Field->cpp_type() == FieldDescriptor::CPPTYPE_STRING) {
@@ -137,7 +108,7 @@ class TFieldGenerator: public TThrRefBase {
             break;
 
         default:
-            Y_FAIL("Unknown limit type");
+            Y_ABORT("Unknown limit type");
         }
 
         printer->Print(vars, "return false;\n");
@@ -171,7 +142,6 @@ class TFieldGenerator: public TThrRefBase {
         Y_FAIL_S("Invalid value: " << annValue);
     }
 
-
     void CheckValue(TPrinter& printer, const FieldDescriptor* field, TVariables vars) const {
         switch (field->cpp_type()) {
         case FieldDescriptor::CPPTYPE_INT32:
@@ -196,7 +166,7 @@ class TFieldGenerator: public TThrRefBase {
     }
 
     void Size(TPrinter& printer) const {
-        Y_VERIFY(Field->is_repeated(), "Cannot check size of non-repeated field");
+        Y_ABORT_UNLESS(Field->is_repeated(), "Cannot check size of non-repeated field");
 
         TVariables vars = Vars;
         vars["kind"] = " size";
@@ -237,7 +207,7 @@ class TFieldGenerator: public TThrRefBase {
     }
 
     void MapKey(TPrinter& printer) const {
-        Y_VERIFY(Field->is_map(), "Cannot validate map key of non-map field");
+        Y_ABORT_UNLESS(Field->is_map(), "Cannot validate map key of non-map field");
 
         printer->Print(Vars, "for (const auto& value : $field$()) {\n");
         printer->Indent();
@@ -292,7 +262,6 @@ class TFieldGenerator: public TThrRefBase {
 
     void Body(TPrinter& printer) const {
         const auto& opts = Field->options();
-
 
         if (opts.HasExtension(Ydb::required)) {
             Required(printer);
@@ -572,7 +541,7 @@ public:
             if (it == items.end()) {
                 it = items.emplace(nullptr, TItem(nullptr)).first;
             }
-            Y_VERIFY(it != items.end());
+            Y_ABORT_UNLESS(it != items.end());
             it->second.AddField(fieldGen);
         }
 
@@ -622,8 +591,7 @@ class TCodeGenerator: public CodeGenerator {
 
 }; // TCodeGenerator
 
-} // NValidation
-} // NKikimr
+}
 
 int main(int argc, char* argv[]) {
     NKikimr::NValidation::TCodeGenerator generator;

@@ -43,7 +43,7 @@ namespace NKikimr {
             {}
 
             void PickSubgroup(ui32 hash, TBlobStorageGroupInfo::TOrderNums &orderNums) override final {
-                Y_VERIFY(orderNums.empty());
+                Y_ABORT_UNLESS(orderNums.empty());
 
                 const ui32 numFailDomains = Topology->GetTotalFailDomainsNum();
                 ui32 domainIdx = hash % numFailDomains;
@@ -54,7 +54,7 @@ namespace NKikimr {
                         if (++domainIdx == numFailDomains) {
                             domainIdx = 0;
                         }
-                        Y_VERIFY_DEBUG(domain.VDisks.size() == 1);
+                        Y_DEBUG_ABORT_UNLESS(domain.VDisks.size() == 1);
                         const TBlobStorageGroupInfo::TVDiskInfo& vdisk = domain.VDisks[0];
                         orderNums.push_back(vdisk.OrderNumber);
                     }
@@ -165,16 +165,18 @@ namespace NKikimr {
             TMirror3dcMapper(const TBlobStorageGroupInfo::TTopology *topology)
                 : Topology(topology)
                 , NumFailRealms(Topology->FailRealms.size())
-                , NumFailDomainsPerFailRealm(Topology->FailRealms[0].FailDomains.size())
-                , NumVDisksPerFailDomain(Topology->FailRealms[0].FailDomains[0].VDisks.size())
+                , NumFailDomainsPerFailRealm(NumFailRealms ? Topology->FailRealms[0].FailDomains.size() : 0)
+                , NumVDisksPerFailDomain(NumFailDomainsPerFailRealm ? Topology->FailRealms[0].FailDomains[0].VDisks.size() : 0)
             {
-                Y_VERIFY(NumFailRealms >= NumFailRealmsInSubgroup &&
-                        NumFailDomainsPerFailRealm >= NumFailDomainsPerFailRealmInSubgroup,
-                        "mirror-3-dc group tolopogy is invalid: %s", topology->ToString().data());
+                if (NumFailRealms && NumFailDomainsPerFailRealm && NumVDisksPerFailDomain) {
+                    Y_ABORT_UNLESS(NumFailRealms >= NumFailRealmsInSubgroup &&
+                            NumFailDomainsPerFailRealm >= NumFailDomainsPerFailRealmInSubgroup,
+                            "mirror-3-dc group tolopogy is invalid: %s", topology->ToString().data());
+                }
             }
 
             void PickSubgroup(ui32 hash, TBlobStorageGroupInfo::TOrderNums &orderNums) override final {
-                Y_VERIFY(orderNums.empty());
+                Y_ABORT_UNLESS(orderNums.empty());
 
                 ui32 baseRealm;
                 ui32 baseDomain;

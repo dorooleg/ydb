@@ -1,7 +1,7 @@
 #include "mkql_combine.h"
-#include "mkql_llvm_base.h"
 
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_stats_registry.h>
 #include <ydb/library/yql/minikql/defs.h>
@@ -75,7 +75,6 @@ class TState: public TComputationValue<TState> {
         THashFunc, TEqualsFunc,
         TMKQLAllocator<std::pair<const NUdf::TUnboxedValuePod, NUdf::TUnboxedValuePod>>>;
 public:
-    using TLLVMBase = TLLVMFieldsStructure<TBase>;
     TState(TMemoryUsageInfo* memInfo, const THashFunc& hash, const TEqualsFunc& equal)
         : TBase(memInfo), States(0, hash, equal) {
         States.max_load_factor(1.2f);
@@ -123,9 +122,9 @@ private:
 };
 
 #ifndef MKQL_DISABLE_CODEGEN
-class TLLVMFieldsStructureState: public TState::TLLVMBase {
+class TLLVMFieldsStructureState: public TLLVMFieldsStructure<TComputationValue<TState>> {
 private:
-    using TBase = typename TState::TLLVMBase;
+    using TBase = TLLVMFieldsStructure<TComputationValue<TState>>;
     llvm::PointerType* StructPtrType;
     llvm::IntegerType* StatusType;
 protected:
@@ -245,7 +244,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.ItemNode);
         const auto codegenKeyArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.KeyNode);
@@ -257,8 +256,6 @@ public:
 
         const auto valueType = Type::getInt128Ty(context);
         const auto ptrValueType = PointerType::getUnqual(valueType);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
 
         TLLVMFieldsStructureState fieldsStruct(context);
@@ -357,10 +354,10 @@ public:
             const auto key = GetNodeValue(Nodes.KeyResultNode, ctx, block);
             codegenKeyArg->CreateSetValue(ctx, block, key);
 
-            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget() ?
+            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget() ?
                 new AllocaInst(key->getType(), 0U, "key_param", &main->back()) : key;
 
-            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget()) {
                 new StoreInst(key, keyParam, block);
             }
 
@@ -441,7 +438,7 @@ public:
     }
 
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, Value* currentPtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto statusType = Type::getInt32Ty(context);
         const auto valueType = Type::getInt128Ty(context);
@@ -555,18 +552,18 @@ private:
         return out.Str();
     }
 
-    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
         if (EqualsFunc) {
-            Equals = reinterpret_cast<TEqualsPtr>(codegen->GetPointerToFunction(EqualsFunc));
+            Equals = reinterpret_cast<TEqualsPtr>(codegen.GetPointerToFunction(EqualsFunc));
         }
         if (HashFunc) {
-            Hash = reinterpret_cast<THashPtr>(codegen->GetPointerToFunction(HashFunc));
+            Hash = reinterpret_cast<THashPtr>(codegen.GetPointerToFunction(HashFunc));
         }
     }
 
-    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
-        codegen->ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeName<false>(), IsTuple, KeyTypes));
-        codegen->ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeName<true>(), IsTuple, KeyTypes));
+    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+        codegen.ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeName<false>(), IsTuple, KeyTypes));
+        codegen.ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeName<true>(), IsTuple, KeyTypes));
     }
 #endif
 };
@@ -689,27 +686,27 @@ private:
         return out.Str();
     }
 
-    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
-        codegen->ExportSymbol(CombineFunc = GenerateCombine(codegen));
-        codegen->ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeFuncName<true>(), IsTuple, KeyTypes));
-        codegen->ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeFuncName<false>(), IsTuple, KeyTypes));
+    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+        codegen.ExportSymbol(CombineFunc = GenerateCombine(codegen));
+        codegen.ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeFuncName<true>(), IsTuple, KeyTypes));
+        codegen.ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeFuncName<false>(), IsTuple, KeyTypes));
     }
 
-    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
         if (CombineFunc) {
-            Combine = reinterpret_cast<TCombinePtr>(codegen->GetPointerToFunction(CombineFunc));
+            Combine = reinterpret_cast<TCombinePtr>(codegen.GetPointerToFunction(CombineFunc));
         }
         if (EqualsFunc) {
-            Equals = reinterpret_cast<TEqualsPtr>(codegen->GetPointerToFunction(EqualsFunc));
+            Equals = reinterpret_cast<TEqualsPtr>(codegen.GetPointerToFunction(EqualsFunc));
         }
         if (HashFunc) {
-            Hash = reinterpret_cast<THashPtr>(codegen->GetPointerToFunction(HashFunc));
+            Hash = reinterpret_cast<THashPtr>(codegen.GetPointerToFunction(HashFunc));
         }
     }
 
-    Function* GenerateCombine(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
-        auto& module = codegen->GetModule();
-        auto& context = codegen->GetContext();
+    Function* GenerateCombine(NYql::NCodegen::ICodegen& codegen) const {
+        auto& module = codegen.GetModule();
+        auto& context = codegen.GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.ItemNode);
         const auto codegenKeyArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.KeyNode);
@@ -725,8 +722,7 @@ private:
 
         const auto valueType = Type::getInt128Ty(context);
         const auto ptrValueType = PointerType::getUnqual(valueType);
-        const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(ptrValueType) : static_cast<Type*>(valueType);
+        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(ptrValueType) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
 
@@ -832,7 +828,7 @@ private:
 
             const auto used = GetMemoryUsed(MemLimit, ctx, block);
 
-            const auto stream = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            const auto stream = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
                 new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
             BranchInst::Create(loop, block);
@@ -852,10 +848,10 @@ private:
             const auto key = GetNodeValue(Nodes.KeyResultNode, ctx, block);
             codegenKeyArg->CreateSetValue(ctx, block, key);
 
-            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget() ?
+            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget() ?
                 new AllocaInst(key->getType(), 0U, "key_param", &main->back()) : key;
 
-            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget()) {
                 new StoreInst(key, keyParam, block);
             }
 
@@ -977,7 +973,7 @@ IComputationNode* WrapCombineCore(TCallable& callable, const TComputationNodeFac
     bool encoded;
     bool useIHash;
     GetDictionaryKeyTypes(keyType, keyTypes, isTuple, encoded, useIHash);
-    Y_VERIFY(!encoded, "TODO");
+    Y_ENSURE(!encoded, "TODO");
     const auto memLimit = AS_VALUE(TDataLiteral, callable.GetInput(8))->AsValue().Get<ui64>();
     const bool trackRss = EGraphPerProcess::Single == ctx.GraphPerProcess;
 

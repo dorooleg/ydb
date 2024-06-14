@@ -2,7 +2,6 @@
 
 #include "defs.h"
 #include "cms_state.h"
-#include "pdiskid.h"
 
 namespace NKikimr::NCms {
 
@@ -14,11 +13,10 @@ struct TEvSentinel {
         EvUpdateState,
         EvStateUpdated,
 
-        EvStatusChanged,
-
         EvTimeout,
-
         EvBSCPipeDisconnected,
+
+        EvUpdateHostMarkers,
 
         EvEnd,
     };
@@ -32,19 +30,21 @@ struct TEvSentinel {
     struct TEvStateUpdated: public TEventLocal<TEvStateUpdated, EvStateUpdated> {};
 
     struct TEvTimeout: public TEventLocal<TEvTimeout, EvTimeout> {};
+    struct TEvBSCPipeDisconnected: public TEventLocal<TEvBSCPipeDisconnected, EvBSCPipeDisconnected> {};
 
-    struct TEvStatusChanged: public TEventLocal<TEvStatusChanged, EvStatusChanged> {
-        TPDiskID Id;
-        bool Success;
+    struct TEvUpdateHostMarkers: public TEventLocal<TEvUpdateHostMarkers, EvUpdateHostMarkers> {
+        struct THostMarkers {
+            ui32 NodeId;
+            THashSet<NKikimrCms::EMarker> Markers;
+        };
 
-        explicit TEvStatusChanged(const TPDiskID& id, bool success)
-            : Id(id)
-            , Success(success)
+        TVector<THostMarkers> HostMarkers;
+
+        explicit TEvUpdateHostMarkers(TVector<THostMarkers>&& hostMarkers)
+            : HostMarkers(std::move(hostMarkers))
         {
         }
     };
-
-    struct TEvBSCPipeDisconnected: public TEventLocal<TEvBSCPipeDisconnected, EvBSCPipeDisconnected> {};
 
 }; // TEvSentinel
 

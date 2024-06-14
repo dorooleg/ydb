@@ -4,7 +4,7 @@
 #include <util/generic/hash_set.h>
 #include <util/generic/list.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 #include <google/protobuf/util/message_differencer.h>
 
 namespace NKikimr {
@@ -80,6 +80,8 @@ struct TCompactionPolicy : public TThrRefBase {
     ui64 ReadAheadHiThreshold;
     ui64 ReadAheadLoThreshold;
     ui32 MinDataPageSize;
+    ui32 MinBTreeIndexNodeSize;
+    ui32 MinBTreeIndexNodeKeys;
     ui32 SnapshotCompactionBrokerQueue; // TODO: remove deprecated field
     TString SnapshotResourceBrokerTask;
     ui32 BackupCompactionBrokerQueue; // TODO: remove deprecated field
@@ -110,6 +112,8 @@ struct TCompactionPolicy : public TThrRefBase {
                 && ReadAheadHiThreshold == p.ReadAheadHiThreshold
                 && ReadAheadLoThreshold == p.ReadAheadLoThreshold
                 && MinDataPageSize == p.MinDataPageSize
+                && MinBTreeIndexNodeSize == p.MinBTreeIndexNodeSize
+                && MinBTreeIndexNodeKeys == p.MinBTreeIndexNodeKeys
                 && Generations == p.Generations
                 && SnapshotCompactionBrokerQueue == p.SnapshotCompactionBrokerQueue
                 && SnapshotResourceBrokerTask == p.SnapshotResourceBrokerTask

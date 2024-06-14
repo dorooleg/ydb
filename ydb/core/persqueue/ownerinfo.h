@@ -2,7 +2,7 @@
 #include <ydb/core/keyvalue/keyvalue_events.h>
 #include <ydb/core/persqueue/events/internal.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 
 
 namespace NKikimr {
@@ -32,20 +32,20 @@ namespace NPQ {
 
         static TStringBuf GetOwnerFromOwnerCookie(const TString& owner);
         void GenerateCookie(const TString& owner, const TActorId& pipeClient, const TActorId& sender,
-                            const TString& topicName, const ui32 partition, const TActorContext& ctx);
+                            const TString& topicName, const TPartitionId& partition, const TActorContext& ctx);
 
         void AddReserveRequest(ui64 size, bool lastRequest) {
             ReservedSize += size;
             if (!lastRequest) {
                 Requests.push_back(size);
             } else {
-                Y_VERIFY(!Requests.empty());
+                Y_ABORT_UNLESS(!Requests.empty());
                 Requests.back() += size;
             }
         }
 
         ui64 DecReservedSize() {
-            //TODO: Y_VERIFY(!Requests.empty());
+            //TODO: Y_ABORT_UNLESS(!Requests.empty());
             if (Requests.empty())
                 return 0;
             ui64 size = Requests.front();

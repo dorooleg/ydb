@@ -11,17 +11,17 @@ namespace NKikimr {
 namespace NWrappers {
 namespace NTestHelpers {
 
-class TS3Mock: public THttpServer, public THttpServer::ICallBack {
+class TS3Mock: public THttpServer::ICallBack {
 public:
     struct TSettings {
-        TOptions HttpOptions;
+        THttpServer::TOptions HttpOptions;
         bool CorruptETags;
         bool RejectUploadParts;
 
         TSettings();
         explicit TSettings(ui16 port);
 
-        TSettings& WithHttpOptions(const TOptions& opts);
+        TSettings& WithHttpOptions(const THttpServer::TOptions& opts);
         TSettings& WithCorruptETags(bool value);
         TSettings& WithRejectUploadParts(bool value);
 
@@ -43,7 +43,7 @@ private:
         static bool TryParseRange(TStringBuf str, std::pair<ui32, ui32>& range);
 
         bool HttpBadRequest(const TReplyParams& params, const TString& error = {});
-        bool HttpNotFound(const TReplyParams& params);
+        bool HttpNotFound(const TReplyParams& params, const TString& errorCode = {});
         bool HttpNotImplemented(const TReplyParams& params);
         void MaybeContinue(const TReplyParams& params);
         bool HttpServeRead(const TReplyParams& params, EMethod method, const TStringBuf path);
@@ -65,7 +65,10 @@ public:
     explicit TS3Mock(THashMap<TString, TString>&& data, const TSettings& settings = {});
     explicit TS3Mock(const THashMap<TString, TString>& data, const TSettings& settings = {});
 
-    TClientRequest* CreateClient() override;
+    TClientRequest* CreateClient();
+    bool Start();
+
+    const THashMap<TString, TString>& GetData() const { return Data; }
 
 private:
     const TSettings Settings;
@@ -73,6 +76,7 @@ private:
 
     int NextUploadId = 1;
     THashMap<std::pair<TString, TString>, TVector<TString>> MultipartUploads;
+    THttpServer HttpServer;
 
 }; // TS3Mock
 

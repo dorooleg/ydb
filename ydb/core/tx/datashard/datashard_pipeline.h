@@ -3,12 +3,14 @@
 #include "datashard.h"
 #include "datashard_trans_queue.h"
 #include "datashard_active_transaction.h"
+#include "datashard_write_operation.h"
 #include "datashard_dep_tracker.h"
 #include "datashard_user_table.h"
 #include "execution_unit.h"
 #include "read_iterator.h"
 
 #include <ydb/core/tablet_flat/flat_cxx_database.h>
+#include <ydb/core/tablet_flat/flat_exec_seat.h>
 
 namespace NKikimr {
 namespace NDataShard {
@@ -53,13 +55,6 @@ public:
         bool DirtyImmediate() const { return Flags & EFlagsDirtyImmediate; }
         bool SoftUpdates() const { return Flags & (EFlagsForceOnlineRW|EFlagsDirtyOnline|EFlagsDirtyImmediate); }
 
-        void Validate() {
-            if (!LimitActiveTx)
-                LimitActiveTx = DefaultLimitActiveTx() ;
-            if (!LimitDataTxCache)
-                LimitDataTxCache = DefaultLimitDataTxCache();
-        }
-
         void Update(const NKikimrSchemeOp::TPipelineConfig& cfg) {
             if (cfg.GetEnableOutOfOrder()) {
                 Flags |= EFlagsOutOfOrder;
@@ -76,14 +71,14 @@ public:
             } else {
                 Flags &= ~(EFlagsForceOnlineRW | EFlagsDirtyOnline | EFlagsDirtyImmediate);
             }
-            if (cfg.GetNumActiveTx()) {
-                LimitActiveTx = cfg.GetNumActiveTx();
-            }
-            if (cfg.GetDataTxCacheSize()) {
+
+            // has [default = 8] in TPipelineConfig proto
+            LimitActiveTx = cfg.GetNumActiveTx();
+
+            // does not have default in TPipelineConfig proto
+            if (cfg.HasDataTxCacheSize()) {
                 LimitDataTxCache = cfg.GetDataTxCacheSize();
             }
-
-            Validate();
         }
     };
 
@@ -107,7 +102,7 @@ public:
 
     // tx propose
 
-    bool SaveForPropose(TValidatedDataTx::TPtr tx);
+    bool SaveForPropose(TValidatedTx::TPtr tx);
     void SetProposed(ui64 txId, const TActorId& actorId);
 
     void ForgetUnproposedTx(ui64 txId);
@@ -120,6 +115,7 @@ public:
     bool IsReadyOp(TOperation::TPtr op);
 
     bool LoadTxDetails(TTransactionContext &txc, const TActorContext &ctx, TActiveTransaction::TPtr tx);
+    bool LoadWriteDetails(TTransactionContext& txc, const TActorContext& ctx, TWriteOperation::TPtr tx);
 
     void DeactivateOp(TOperation::TPtr op, TTransactionContext& txc, const TActorContext &ctx);
     void RemoveTx(TStepOrder stepTxId);
@@ -127,10 +123,17 @@ public:
     void CompleteSchemaTx(NIceDb::TNiceDb& db, ui64 txId);
     void MarkOpAsUsingSnapshot(TOperation::TPtr op);
 
+    bool HasPredictedPlan() const { return !PredictedPlan.empty(); }
+    ui64 NextPredictedPlanStep() const { return PredictedPlan.begin()->Step; }
+
     bool PlanTxs(ui64 step, TVector<ui64> &txIds, TTransactionContext &txc, const TActorContext &ctx);
+    bool PlanPredictedTxs(ui64 step, TTransactionContext &txc, const TActorContext &ctx);
+    void PlanTxImpl(ui64 step, ui64 txId, TTransactionContext &txc, const TActorContext &ctx);
+    void AddPredictedPlan(ui64 step, ui64 txId, const TActorContext &ctx);
     void PreserveSchema(NIceDb::TNiceDb& db, ui64 step);
     TDuration CleanupTimeout() const;
-    ECleanupStatus Cleanup(NIceDb::TNiceDb& db, const TActorContext& ctx);
+    ECleanupStatus Cleanup(NIceDb::TNiceDb& db, const TActorContext& ctx,
+        std::vector<std::unique_ptr<IEventHandle>>& replies);
 
     // times
 
@@ -180,7 +183,7 @@ public:
     }
 
     void SetSchemaOp(TSchemaOperation * op) {
-        Y_VERIFY(!SchemaTx || SchemaTx->TxId == op->TxId);
+        Y_ABORT_UNLESS(!SchemaTx || SchemaTx->TxId == op->TxId);
         SchemaTx = op;
     }
 
@@ -191,8 +194,13 @@ public:
     void PersistTxFlags(TOperation::TPtr op, TTransactionContext &txc);
     void UpdateSchemeTxBody(ui64 txId, const TStringBuf &txBody, TTransactionContext &txc);
     void ProposeSchemeTx(const TSchemaOperation &op, TTransactionContext &txc);
-    bool CancelPropose(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 txId);
-    ECleanupStatus CleanupOutdated(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 outdatedStep);
+    bool CancelPropose(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 txId,
+        std::vector<std::unique_ptr<IEventHandle>>& replies);
+    ECleanupStatus CleanupOutdated(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 outdatedStep,
+        std::vector<std::unique_ptr<IEventHandle>>& replies);
+    bool CleanupVolatile(ui64 txId, const TActorContext& ctx,
+        std::vector<std::unique_ptr<IEventHandle>>& replies);
+    size_t CleanupWaitingVolatile(const TActorContext& ctx, std::vector<std::unique_ptr<IEventHandle>>& replies);
     ui64 PlannedTxInFly() const;
     const TSet<TStepOrder> &GetPlan() const;
     bool HasProposeDelayers() const;
@@ -254,7 +262,11 @@ public:
     TOperation::TPtr BuildOperation(TEvDataShard::TEvProposeTransaction::TPtr &ev,
                                     TInstant receivedAt, ui64 tieBreakerIndex,
                                     NTabletFlatExecutor::TTransactionContext &txc,
-                                    const TActorContext &ctx);
+                                    const TActorContext &ctx, NWilson::TSpan &&operationSpan);
+    TOperation::TPtr BuildOperation(NEvents::TDataEvents::TEvWrite::TPtr&& ev,
+                                    TInstant receivedAt, ui64 tieBreakerIndex,
+                                    NTabletFlatExecutor::TTransactionContext &txc,
+                                    NWilson::TSpan &&operationSpan);
     void BuildDataTx(TActiveTransaction *tx,
                      TTransactionContext &txc,
                      const TActorContext &ctx);
@@ -264,6 +276,14 @@ public:
             const TActorContext &ctx)
     {
         return tx->RestoreTxData(Self, txc, ctx);
+    }
+
+    ERestoreDataStatus RestoreWriteTx(
+        TWriteOperation* writeOp,
+        TTransactionContext& txc
+    )
+    {
+        return writeOp->RestoreTxData(Self, txc.DB);
     }
 
     void RegisterDistributedWrites(const TOperation::TPtr& op, NTable::TDatabase& db);
@@ -333,8 +353,10 @@ public:
     void MaybeActivateWaitingSchemeOps(const TActorContext& ctx) const;
 
     ui64 WaitingTxs() const { return WaitingDataTxOps.size(); } // note that without iterators
+    bool CheckInflightLimit() const;
     bool AddWaitingTxOp(TEvDataShard::TEvProposeTransaction::TPtr& ev, const TActorContext& ctx);
-    void ActivateWaitingTxOps(TRowVersion edge, bool prioritizedReads, const TActorContext& ctx);
+    bool AddWaitingTxOp(NEvents::TDataEvents::TEvWrite::TPtr& ev, const TActorContext& ctx);
+    void ActivateWaitingTxOps(TRowVersion edge, const TActorContext& ctx);
     void ActivateWaitingTxOps(const TActorContext& ctx);
 
     ui64 WaitingReadIterators() const { return WaitingDataReadIterators.size(); }
@@ -348,7 +370,7 @@ public:
     bool HandleWaitingReadIterator(const TReadIteratorId& readId, TEvDataShard::TEvRead* event);
 
     TRowVersion GetReadEdge() const;
-    TRowVersion GetUnreadableEdge(bool prioritizedReads) const;
+    TRowVersion GetUnreadableEdge() const;
 
     void AddCompletingOp(const TOperation::TPtr& op);
     void RemoveCompletingOp(const TOperation::TPtr& op);
@@ -469,7 +491,7 @@ private:
     TSortedOps ActivePlannedOps;
     TSortedOps::iterator ActivePlannedOpsLogicallyCompleteEnd;
     TSortedOps::iterator ActivePlannedOpsLogicallyIncompleteEnd;
-    THashMap<ui64, TValidatedDataTx::TPtr> DataTxCache;
+    THashMap<ui64, TValidatedTx::TPtr> DataTxCache;
     TMap<TStepOrder, TStackVec<THolder<IEventHandle>, 1>> DelayedAcks;
     TStepOrder LastPlannedTx;
     TStepOrder LastCompleteTx;
@@ -489,13 +511,14 @@ private:
     // Slow operation profiles.
     TList<TStoredExecutionProfile> SlowOpProfiles;
     TMap<ui64, ui32> ActiveStreamingTxs;
+    TSet<TStepOrder> PredictedPlan;
 
     typedef TList<TOperation::TPtr> TWaitingSchemeOpsOrder;
     typedef THashMap<TOperation::TPtr, TWaitingSchemeOpsOrder::iterator> TWaitingSchemeOps;
     TWaitingSchemeOpsOrder WaitingSchemeOpsOrder;
     TWaitingSchemeOps WaitingSchemeOps;
 
-    TMultiMap<TRowVersion, TEvDataShard::TEvProposeTransaction::TPtr> WaitingDataTxOps;
+    TMultiMap<TRowVersion, TAutoPtr<IEventHandle>> WaitingDataTxOps;
     TCommittingDataTxOps CommittingOps;
 
     THashMap<ui64, TOperation::TPtr> CompletingOps;

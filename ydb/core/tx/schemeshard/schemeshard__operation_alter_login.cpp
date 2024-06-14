@@ -58,7 +58,10 @@ public:
                 case NKikimrSchemeOp::TAlterLogin::kRemoveUser: {
                     const auto& removeUser = alterLogin.GetRemoveUser();
                     const TString& user = removeUser.GetUser();
-                    auto response = context.SS->LoginProvider.RemoveUser({.User = user});
+                    auto response = context.SS->LoginProvider.RemoveUser({
+                        .User = user,
+                        .MissingOk = removeUser.GetMissingOk()
+                    });
                     if (response.Error) {
                         result->SetStatus(NKikimrScheme::StatusPreconditionFailed, response.Error);
                     } else {
@@ -94,6 +97,9 @@ public:
                     } else {
                         db.Table<Schema::LoginSidMembers>().Key(addGroupMembership.GetGroup(), addGroupMembership.GetMember()).Update();
                         result->SetStatus(NKikimrScheme::StatusSuccess);
+                        if (response.Notice) {
+                            result->AddNotice(response.Notice);
+                        }
                     }
                     break;
                 }
@@ -108,13 +114,39 @@ public:
                     } else {
                         db.Table<Schema::LoginSidMembers>().Key(removeGroupMembership.GetGroup(), removeGroupMembership.GetMember()).Delete();
                         result->SetStatus(NKikimrScheme::StatusSuccess);
+                        if (response.Warning) {
+                            result->AddWarning(response.Warning);
+                        }
+                    }
+                    break;
+                }
+                case NKikimrSchemeOp::TAlterLogin::kRenameGroup: {
+                    const auto& renameGroup = alterLogin.GetRenameGroup();
+                    const TString& group = renameGroup.GetGroup();
+                    const TString& newName = renameGroup.GetNewName();
+                    auto response = context.SS->LoginProvider.RenameGroup({
+                        .Group = group,
+                        .NewName = newName
+                    });
+                    if (response.Error) {
+                        result->SetStatus(NKikimrScheme::StatusPreconditionFailed, response.Error);
+                    } else {
+                        db.Table<Schema::LoginSids>().Key(group).Delete();
+                        for (const TString& parent : response.TouchedGroups) {
+                            db.Table<Schema::LoginSidMembers>().Key(parent, group).Delete();
+                            db.Table<Schema::LoginSidMembers>().Key(parent, newName).Update();
+                        }
+                        result->SetStatus(NKikimrScheme::StatusSuccess);
                     }
                     break;
                 }
                 case NKikimrSchemeOp::TAlterLogin::kRemoveGroup: {
                     const auto& removeGroup = alterLogin.GetRemoveGroup();
                     const TString& group = removeGroup.GetGroup();
-                    auto response = context.SS->LoginProvider.RemoveGroup({.Group = group});
+                    auto response = context.SS->LoginProvider.RemoveGroup({
+                        .Group = group,
+                        .MissingOk = removeGroup.GetMissingOk()
+                    });
                     if (response.Error) {
                         result->SetStatus(NKikimrScheme::StatusPreconditionFailed, response.Error);
                     } else {
@@ -147,15 +179,15 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_FAIL("no AbortPropose for TAlterLogin");
+        Y_ABORT("no AbortPropose for TAlterLogin");
     }
 
     bool ProgressState(TOperationContext&) override {
-        Y_FAIL("no progress state for TAlterLogin");
+        Y_ABORT("no progress state for TAlterLogin");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_FAIL("no AbortUnsafe for TAlterLogin");
+        Y_ABORT("no AbortUnsafe for TAlterLogin");
     }
 };
 
@@ -168,7 +200,7 @@ ISubOperation::TPtr CreateAlterLogin(TOperationId id, const TTxTransaction& tx) 
 }
 
 ISubOperation::TPtr CreateAlterLogin(TOperationId id, TTxState::ETxState state) {
-    Y_VERIFY(state == TTxState::Invalid || state == TTxState::Propose);
+    Y_ABORT_UNLESS(state == TTxState::Invalid || state == TTxState::Propose);
     return MakeSubOperation<TAlterLogin>(id);
 }
 

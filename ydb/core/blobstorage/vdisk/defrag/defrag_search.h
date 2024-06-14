@@ -69,7 +69,6 @@ namespace NKikimr {
         TDataMerger Merger;
         TKeyLogoBlob Key;
         TMemRecLogoBlob MemRec;
-        ui32 NumMemRecsMerged;
 
     public:
         TDefragScanner(THullDsSnap&& fullSnap)
@@ -99,13 +98,11 @@ namespace NKikimr {
         void AddFromFresh(const TMemRecLogoBlob& memRec, const TRope* /*data*/, const TKeyLogoBlob& key, ui64 lsn) {
             Update(memRec, nullptr, lsn);
             MemRec.Merge(memRec, key);
-            ++NumMemRecsMerged;
         }
 
         void AddFromSegment(const TMemRecLogoBlob& memRec, const TDiskPart *outbound, const TKeyLogoBlob& key, ui64 circaLsn) {
             Update(memRec, outbound, circaLsn);
             MemRec.Merge(memRec, key);
-            ++NumMemRecsMerged;
         }
 
         static constexpr bool HaveToMergeData() { return false; }
@@ -114,18 +111,17 @@ namespace NKikimr {
         void Start(const TKeyLogoBlob& key) {
             Key = key;
             MemRec = {};
-            NumMemRecsMerged = 0;
         }
 
         void Finish() {
             if (!Merger.Empty()) {
-                Y_VERIFY(!Merger.HasSmallBlobs());
-                NGc::TKeepStatus status = Barriers->Keep(Key, MemRec, NumMemRecsMerged, AllowKeepFlags);
+                Y_ABORT_UNLESS(!Merger.HasSmallBlobs());
+                NGc::TKeepStatus status = Barriers->Keep(Key, MemRec, {}, AllowKeepFlags, true /*allowGarbageCollection*/);
                 const auto& hugeMerger = Merger.GetHugeBlobMerger();
                 const auto& local = MemRec.GetIngress().LocalParts(GType);
                 ui8 partIdx = local.FirstPosition();
                 for (const TDiskPart& part : hugeMerger.SavedData()) {
-                    Y_VERIFY(partIdx != local.GetSize());
+                    Y_ABORT_UNLESS(partIdx != local.GetSize());
                     if (part.ChunkIdx) {
                         static_cast<TDerived&>(*this).Add(part, Key.LogoBlobID(), status.KeepData);
                     }
@@ -217,7 +213,7 @@ namespace NKikimr {
                 auto it = PerChunkMap.find(part.ChunkIdx);
                 if (it == PerChunkMap.end()) {
                     const THugeSlotsMap::TSlotInfo *slotInfo = HugeBlobCtx->HugeSlotsMap->GetSlotInfo(part.Size);
-                    Y_VERIFY(slotInfo, "size# %" PRIu32, part.Size);
+                    Y_ABORT_UNLESS(slotInfo, "size# %" PRIu32, part.Size);
                     it = PerChunkMap.emplace(std::piecewise_construct, std::make_tuple(part.ChunkIdx),
                         std::make_tuple(slotInfo->SlotSize, slotInfo->NumberOfSlotsInChunk)).first;
                 }
@@ -244,7 +240,7 @@ namespace NKikimr {
                 for (const auto *kv : chunks) {
                     const auto& [chunkIdx, chunk] = *kv;
                     auto it = aggrSlots.find(chunk.SlotSize);
-                    Y_VERIFY(it != aggrSlots.end());
+                    Y_ABORT_UNLESS(it != aggrSlots.end());
                     auto& a = it->second;
 
                     // if we can put all current used slots into UsedChunks - 1, then defragment this chunk
@@ -333,7 +329,7 @@ namespace NKikimr {
             for (const auto& chunk : ChunksToDefrag.Chunks) {
                 Chunks.insert(chunk.ChunkId);
             }
-            Y_VERIFY(Chunks.size() == ChunksToDefrag.Chunks.size()); // ensure there are no duplicate numbers
+            Y_ABORT_UNLESS(Chunks.size() == ChunksToDefrag.Chunks.size()); // ensure there are no duplicate numbers
             std::sort(ChunksToDefrag.HugeBlobs.begin(), ChunksToDefrag.HugeBlobs.end());
             RecsToRewrite.reserve(ChunksToDefrag.EstimatedSlotsCount);
         }
@@ -384,7 +380,7 @@ namespace NKikimr {
                 const NMatrix::TVectorType local = memRec.GetIngress().LocalParts(GType);
                 ui8 partIdx = local.FirstPosition();
                 for (const TDiskPart *p = extr.Begin; p != extr.End; ++p, partIdx = local.NextPosition(partIdx)) {
-                    Y_VERIFY(partIdx != local.GetSize());
+                    Y_ABORT_UNLESS(partIdx != local.GetSize());
                     if (!p->ChunkIdx || !Chunks.count(p->ChunkIdx)) {
                         continue; // not from chunks of our interest
                     }
@@ -430,7 +426,7 @@ namespace NKikimr {
             Chunks.insert(part.ChunkIdx);
             if (useful) {
                 const THugeSlotsMap::TSlotInfo *slotInfo = HugeBlobCtx->HugeSlotsMap->GetSlotInfo(part.Size);
-                Y_VERIFY(slotInfo, "size# %" PRIu32, part.Size);
+                Y_ABORT_UNLESS(slotInfo, "size# %" PRIu32, part.Size);
                 ++Map[slotInfo->NumberOfSlotsInChunk];
             }
             TDefragQuantumChunkFinder::Add(part, id, useful);

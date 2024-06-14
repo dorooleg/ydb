@@ -9,14 +9,14 @@
 
 #include <ydb/public/api/grpc/draft/ydb_persqueue_v1.grpc.pb.h>
 
-#include <library/cpp/actors/http/http_proxy.h>
+#include <ydb/library/actors/http/http_proxy.h>
 
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <google/protobuf/text_format.h>
 
-#include <grpc++/client_context.h>
-#include <grpc++/create_channel.h>
+#include <grpcpp/client_context.h>
+#include <grpcpp/create_channel.h>
 
 #include <util/stream/file.h>
 #include <util/system/tempfile.h>
@@ -286,7 +286,7 @@ public:
 
     void Run() {
         Server_ = MakeHolder<TServer>(Settings_);
-        Server_->EnableGRpc(NGrpc::TServerOptions().SetHost("localhost").SetPort(GrpcPort_));
+        Server_->EnableGRpc(NYdbGrpc::TServerOptions().SetHost("localhost").SetPort(GrpcPort_));
     }
 
     NPersQueueTests::TFlatMsgBusPQClient& PQClient() {

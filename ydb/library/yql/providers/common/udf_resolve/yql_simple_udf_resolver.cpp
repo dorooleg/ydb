@@ -68,7 +68,7 @@ public:
 
             THoldingFileStorage holdingFileStorage(FileStorage_);
             auto newRegistry = FunctionRegistry_->Clone();
-            THashMap<TString, TImport*> path2import;
+            THashMap<std::pair<TString, TString>, THashSet<TString>> cachedModules;
             for (auto import: imports) {
                 if (import->Modules) {
                     bool needLibrary = false;
@@ -87,15 +87,22 @@ public:
                 }
                 const TString& customUdfPrefix = import->Block->CustomUdfPrefix;
                 try {
+                    THashSet<TString> modules;
                     if (FileStorage_) {
                         auto link = holdingFileStorage.FreezeFile(*import->Block);
                         auto path = link->GetPath().GetPath();
-                        newRegistry->LoadUdfs(
+                        auto [it, inserted] = cachedModules.emplace(std::make_pair(path, customUdfPrefix), THashSet<TString>());
+                        if (inserted) {
+                            newRegistry->LoadUdfs(
                                 path,
                                 {},
                                 NUdf::IRegistrator::TFlags::TypesOnly,
-                                customUdfPrefix);
-                        path2import[path] = import;
+                                customUdfPrefix,
+                                &modules);
+                            it->second = modules;
+                        } else {
+                            modules = it->second;
+                        }
                     } else {
                         if (import->Block->Type != EUserDataType::PATH) {
                             ctx.AddError(TIssue(import->Pos, TStringBuilder() <<
@@ -103,28 +110,27 @@ public:
                             hasErrors = true;
                             continue;
                         }
-                        newRegistry->LoadUdfs(
+                        auto [it, inserted] = cachedModules.emplace(std::make_pair(import->Block->Data, customUdfPrefix), THashSet<TString>());
+                        if (inserted) {
+                            newRegistry->LoadUdfs(
                                 import->Block->Data,
                                 {},
                                 NUdf::IRegistrator::TFlags::TypesOnly,
-                                customUdfPrefix);
-                        path2import[import->Block->Data] = import;
+                                customUdfPrefix,
+                                &modules);
+                            it->second = modules;
+                        } else {
+                            modules = it->second;
+                        }
                     }
+
+                    import->Modules->assign(modules.begin(), modules.end());
                 }
                 catch (yexception& e) {
                     ctx.AddError(TIssue(import->Pos, TStringBuilder()
                         << "Internal error of loading udf module: " << import->FileAlias
                         << ", reason: " << e.what()));
                     hasErrors = true;
-                }
-            }
-
-            if (!hasErrors) {
-                for (auto& m : newRegistry->GetAllModuleNames()) {
-                    auto path = *newRegistry->FindUdfPath(m);
-                    if (auto import = path2import.FindPtr(path)) {
-                        (*import)->Modules->push_back(m);
-                    }
                 }
             }
 
@@ -136,6 +142,10 @@ public:
     TResolveResult LoadRichMetadata(const TVector<TImport>& imports) const override {
         Y_UNUSED(imports);
         ythrow yexception() << "LoadRichMetadata is not supported in SimpleUdfResolver";
+    }
+
+    bool ContainsModule(const TStringBuf& moduleName) const override {
+        return FunctionRegistry_->IsLoadedUdfModule(moduleName);
     }
 
 private:
@@ -166,11 +176,10 @@ bool LoadFunctionsMetadata(const TVector<IUdfResolver::TFunction*>& functions,
     for (auto udfPtr : functions) {
         auto& udf = *udfPtr;
         try {
-            TProgramBuilder pgmBuilder(env, functionRegistry);
             TType* mkqlUserType = nullptr;
             if (udf.UserType) {
                 TStringStream err;
-                mkqlUserType = BuildType(*udf.UserType, pgmBuilder, err);
+                mkqlUserType = BuildType(*udf.UserType, {env}, err);//
                 if (!mkqlUserType) {
                     ctx.AddError(TIssue(udf.Pos, TStringBuilder() << "Invalid user type for function: "
                         << udf.Name << ", error: " << err.Str()));

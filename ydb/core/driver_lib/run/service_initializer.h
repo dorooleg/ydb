@@ -1,12 +1,23 @@
 #pragma once
 
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/core/base/appdata.h>
 
 #include <util/generic/list.h>
 #include <util/generic/ptr.h>
 
 namespace NKikimr {
+
+/**
+ * Storage for global objects that must survive as long as the actor system
+ */
+class IGlobalObjectStorage {
+protected:
+    ~IGlobalObjectStorage() = default;
+
+public:
+    virtual void AddGlobalObject(std::shared_ptr<void> object) = 0;
+};
 
 struct IAppDataInitializer : public virtual TThrRefBase {
     virtual void Initialize(NKikimr::TAppData* appData) = 0;

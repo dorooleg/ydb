@@ -3,13 +3,13 @@
 #include "compile_context.h"
 #include "db_key_resolver.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/executor_thread.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/executor_thread.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/domain.h>
 #include <ydb/core/kqp/provider/yql_kikimr_provider_impl.h>
-#include <ydb/core/protos/issue_id.pb.h>
+#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
 #include <ydb/public/lib/scheme_types/scheme_type_id.h>
 
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
@@ -965,7 +965,6 @@ TIntrusivePtr<NCommon::IMkqlCallableCompiler> CreateMkqlCompiler(TContext::TPtr 
             bool includeFrom = true;
             bool includeTo = true;
             auto rangeTuple = node.Child(1);
-            ui32 keyCount = 0;
             ui32 fromComponents = 0;
             ui32 toComponents = 0;
             for (auto rangeItem : rangeTuple->Children()) {
@@ -989,7 +988,6 @@ TIntrusivePtr<NCommon::IMkqlCallableCompiler> CreateMkqlCompiler(TContext::TPtr 
                     continue;
                 }
 
-                ++keyCount;
                 if (!rangeItem->Child(1)->IsCallable("Void")) {
                     ++fromComponents;
                 }
@@ -1358,13 +1356,13 @@ ConvertToMiniKQL(TExprContainer::TPtr expr,
             for (const auto& x : tablesToResolve) {
                 requests.push_back(x.second.Request);
             }
-            Y_VERIFY_DEBUG(dbSchemeResolver);
+            Y_DEBUG_ABORT_UNLESS(dbSchemeResolver);
             dbSchemeResolver->ResolveTables(requests).Subscribe(
                 [ctx, promise, expr, compiler](const TFuture<IDbSchemeResolver::TTableResults>& future) mutable {
                 try {
                     const auto& results = future.GetValue();
                     auto& tablesToResolve = ctx->GetTablesToResolve();
-                    Y_VERIFY_DEBUG(tablesToResolve.size() == results.size(), "tablesToResolve.size() != results.size()");
+                    Y_DEBUG_ABORT_UNLESS(tablesToResolve.size() == results.size(), "tablesToResolve.size() != results.size()");
                     ui32 i = 0;
                     for (auto& x : tablesToResolve) {
                         const auto& response = results[i];
@@ -1500,7 +1498,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             HFunc(IDbSchemeResolver::TEvents::TEvResolveTablesResult, Handle)
             default:
-                Y_FAIL("Unknown event");
+                Y_ABORT("Unknown event");
         }
     }
 
@@ -1511,7 +1509,7 @@ private:
         try {
             const auto& results = ev->Get()->Result;
             auto& tablesToResolve = CompileCtx->GetTablesToResolve();
-            Y_VERIFY_DEBUG(tablesToResolve.size() == results.size(), "tablesToResolve.size() != results.size()");
+            Y_DEBUG_ABORT_UNLESS(tablesToResolve.size() == results.size(), "tablesToResolve.size() != results.size()");
 
             TVector<NYql::TIssue> resolveErrors;
             ui32 i = 0;
@@ -1582,7 +1580,7 @@ private:
             return false;
         }
         Expr->Context.IssueManager.AddIssues(std::move(astRes.Issues));
-        if (!CompileExpr(*root, Expr->Root, Expr->Context, nullptr)) {
+        if (!CompileExpr(*root, Expr->Root, Expr->Context, nullptr, nullptr)) {
             errors = Expr->Context.IssueManager.GetIssues();
             return false;
         }
@@ -1590,7 +1588,7 @@ private:
         do {
             status = ExpandApply(Expr->Root, Expr->Root, Expr->Context);
         } while (status.Level == IGraphTransformer::TStatus::Repeat);
-        Y_VERIFY_DEBUG(status.Level == IGraphTransformer::TStatus::Ok ||
+        Y_DEBUG_ABORT_UNLESS(status.Level == IGraphTransformer::TStatus::Ok ||
                      status.Level == IGraphTransformer::TStatus::Error);
         if (status.Level != IGraphTransformer::TStatus::Ok) {
             errors = Expr->Context.IssueManager.GetIssues();

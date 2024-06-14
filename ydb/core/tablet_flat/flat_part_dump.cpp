@@ -1,6 +1,6 @@
 #include "flat_part_dump.h"
 #include "flat_part_iface.h"
-#include "flat_page_index.h"
+#include "flat_part_index_iter_iface.h"
 #include "flat_page_data.h"
 #include "flat_page_frames.h"
 #include "flat_page_blobs.h"
@@ -43,23 +43,34 @@ namespace {
     {
         Out << NFmt::Do(part) << " data " << part.DataSize() << "b" << Endl;
 
-        if (auto *frames = part.Small.Get()) Dump(*frames, "Small");
-        if (auto *frames = part.Large.Get()) Dump(*frames, "Large");
-        if (auto *blobs = part.Blobs.Get())  Dump(*blobs);
-        if (auto *bloom = part.ByKey.Get())  Dump(*bloom);
+        if (auto *frames = part.Small.Get()) Frames(*frames, "Small");
+        if (auto *frames = part.Large.Get()) Frames(*frames, "Large");
+        if (auto *blobs = part.Blobs.Get())  Blobs(*blobs);
+        if (auto *bloom = part.ByKey.Get())  Bloom(*bloom);
 
         Index(part, depth);
+        BTreeIndex(part);
 
         if (depth > 2) {
-            for (auto iter = part.Index->Begin(); iter; ++iter) {
+            auto index = CreateIndexIter(&part, Env, { });
+            
+            for (ssize_t i = 0; ; i++) {
+                auto ready = i == 0 ? index->Seek(0) : index->Next();
+                if (ready != EReady::Data) {
+                    if (ready == EReady::Page) {
+                        Out << " | -- the rest of the index rows aren't loaded" << Endl;
+                    }
+                    break;
+                }
+
                 Out << Endl;
 
-                DataPage(part, iter->GetPageId());
+                DataPage(part, index->GetPageId());
             }
         }
     }
 
-    void TDump::Dump(const NPage::TFrames &page, const char *tag) noexcept
+    void TDump::Frames(const NPage::TFrames &page, const char *tag) noexcept
     {
         Out
             << " + " << tag << " Label{" << page.Raw.size() << "b}"
@@ -68,7 +79,7 @@ namespace {
             << Endl;
     }
 
-    void TDump::Dump(const NPage::TExtBlobs &page) noexcept
+    void TDump::Blobs(const NPage::TExtBlobs &page) noexcept
     {
         Out
             << " + Blobs Label{" << page.Raw.size() << "b} "
@@ -77,7 +88,7 @@ namespace {
             << Endl;
     }
 
-    void TDump::Dump(const NPage::TBloom &page) noexcept
+    void TDump::Bloom(const NPage::TBloom &page) noexcept
     {
         Out
             << " + Bloom Label{" << page.Raw.size() << "b} "
@@ -88,16 +99,30 @@ namespace {
 
     void TDump::Index(const TPart &part, ui32 depth) noexcept
     {
-        Key.reserve(part.Scheme->Groups[0].KeyTypes.size());
+        if (!part.IndexPages.HasFlat()) {
+            return;
+        }
 
-        auto *label = part.Index.Label();
+        TVector<TCell> key(Reserve(part.Scheme->Groups[0].KeyTypes.size()));
 
-        const auto items = (part.Index->End() - part.Index->Begin());
+        auto indexPageId = part.IndexPages.GetFlat({});
+        auto indexPage = Env->TryGetPage(&part, indexPageId, {});
+
+        if (!indexPage) {
+            Out
+                << " + FlatIndex{unload}"
+                << Endl
+                << " |  Page     Row    Bytes  (";
+            return;
+        }
+        
+        auto index = NPage::TFlatIndex(*indexPage);
+        auto label = index.Label();
 
         Out
-            << " + Index{" << (ui16)label->Type << " rev "
-            << label->Format << ", " << label->Size << "b}"
-            << " " << items << " rec" << Endl
+            << " + FlatIndex{" << indexPageId << "}" 
+            << " Label{" << (ui16)label.Type << " rev " << label.Format << ", " << label.Size << "b}"
+            << " " << index->Count + (index.GetLastKeyRecord() ? 1 : 0) << " rec" << Endl
             << " |  Page     Row    Bytes  (";
 
         for (auto off : xrange(part.Scheme->Groups[0].KeyTypes.size())) {
@@ -108,48 +133,70 @@ namespace {
 
         Out << ")" << Endl;
 
-        ssize_t seen = 0;
-
-        for (auto iter = part.Index->Begin(); iter; ++iter) {
-            Key.clear();
-
-            if (depth < 2 && (seen += 1) > 10) {
-                Out
-                    << " | -- skipped " << (items - Min(items, seen - 1))
-                    << " entries, depth level " << depth << Endl;
-
-                break;
-            }
-
+        auto printIndexKey = [&](const NPage::TFlatIndex::TRecord* record) {
+            key.clear();
             for (const auto &info: part.Scheme->Groups[0].ColsKeyIdx)
-                Key.push_back(iter->Cell(info));
+                key.push_back(record->Cell(info));
 
             Out
-                << " | " << (Printf(Out, " %4u", iter->GetPageId()), " ")
-                << (Printf(Out, " %6lu", iter->GetRowId()), " ");
+                << " | " << (Printf(Out, " %4u", record->GetPageId()), " ")
+                << (Printf(Out, " %6lu", record->GetRowId()), " ");
 
-            if (auto *page = Env->TryGetPage(&part, iter->GetPageId())) {
+            if (auto *page = Env->TryGetPage(&part, record->GetPageId(), {})) {
                 Printf(Out, " %6zub  ", page->size());
             } else {
                 Out << "~none~  ";
             }
 
-            DumpKey(*part.Scheme);
+            Key(key, *part.Scheme);
 
             Out << Endl;
+        };
+
+        for (auto iter = index->Begin(); iter; iter++) {
+            if (depth < 2 && iter.Off() >= 10) {
+                Out
+                    << " | -- skipped " << index->Count - iter.Off()
+                    << " entries, depth level " << depth << Endl;
+
+                break;
+            }
+
+            printIndexKey(iter.GetRecord());
+        }
+
+        if (index.GetLastKeyRecord()) {
+            printIndexKey(index.GetLastKeyRecord());
+        }
+    }
+
+    void TDump::BTreeIndex(const TPart &part) noexcept
+    {
+        if (part.IndexPages.HasBTree()) {
+            auto meta = part.IndexPages.GetBTree({});
+            if (meta.LevelCount) {
+                BTreeIndexNode(part, meta);
+            } else {
+                Out
+                    << " + BTreeIndex{Empty, "
+                    << meta.ToString() << Endl;
+            }
         }
     }
 
     void TDump::DataPage(const TPart &part, ui32 page) noexcept
     {
-        // TODO: need to join with other column groups
-        auto data = NPage::TDataPage(Env->TryGetPage(&part, page));
+        TVector<TCell> key(Reserve(part.Scheme->Groups[0].KeyTypes.size()));
 
-        if (auto *label = data.Label()) {
+        // TODO: need to join with other column groups
+        auto data = NPage::TDataPage(Env->TryGetPage(&part, page, {}));
+
+        if (data) {
+            auto label = data.Label();
             Out
-                << " + Rows{" << page << "} Label{" << page << (ui16)label->Type
-                << " rev " << label->Format << ", " << label->Size << "b}"
-                << ", [" << data.BaseRow() << ", +" << data->Records << ")row"
+                << " + Rows{" << page << "} Label{" << page << (ui16)label.Type
+                << " rev " << label.Format << ", " << label.Size << "b}"
+                << ", [" << data.BaseRow() << ", +" << data->Count << ")row"
                 << Endl;
 
         } else {
@@ -159,13 +206,13 @@ namespace {
         }
 
         for (auto iter = data->Begin(); iter; ++iter) {
-            Key.clear();
+            key.clear();
             for (const auto &info: part.Scheme->Groups[0].ColsKeyData)
-                Key.push_back(iter->Cell(info));
+                key.push_back(iter->Cell(info));
 
             Out << " | ERowOp " << int(iter->GetRop()) << ": ";
 
-            DumpKey(*part.Scheme);
+            Key(key, *part.Scheme);
 
             bool first = true;
 
@@ -232,19 +279,72 @@ namespace {
         }
     }
 
-    void TDump::DumpKey(const TPartScheme &scheme) noexcept
+    void TDump::Key(TCellsRef key, const TPartScheme &scheme) noexcept
     {
         Out << "(";
 
-        for (auto off : xrange(Key.size())) {
+        for (auto off : xrange(key.size())) {
             TString str;
 
-            DbgPrintValue(str, Key[off], scheme.Groups[0].KeyTypes[off]);
+            DbgPrintValue(str, key[off], scheme.Groups[0].KeyTypes[off]);
 
             Out << (off ? ", " : "") << str;
         }
 
         Out << ")";
+    }
+
+    void TDump::BTreeIndexNode(const TPart &part, NPage::TBtreeIndexNode::TChild meta, ui32 level) noexcept
+    {
+        TVector<TCell> key(Reserve(part.Scheme->Groups[0].KeyTypes.size()));
+
+        TString intend;
+        for (size_t i = 0; i < level; i++) {
+            intend += " |";
+        }
+
+        auto dumpChild = [&] (NPage::TBtreeIndexNode::TChild child) {
+            if (part.GetPageType(child.PageId, {}) == EPage::BTreeIndex) {
+                BTreeIndexNode(part, child, level + 1);
+            } else {
+                Out << intend << " | " << child.ToString() << Endl;
+            }
+        };
+
+        auto page = Env->TryGetPage(&part, meta.PageId, {});
+        if (!page) {
+            Out << intend << " | -- the rest of the index pages aren't loaded" << Endl;
+            return;
+        }
+
+        auto node = NPage::TBtreeIndexNode(*page);
+
+        auto label = node.Label();
+
+        Out
+            << intend
+            << " + BTreeIndex{" << meta.ToString() << "}"
+            << " Label{" << (ui16)label.Type << " rev " << label.Format << ", " << label.Size << "b}"
+            << Endl;
+
+        dumpChild(node.GetChild(0));
+
+        for (NPage::TRecIdx i : xrange(node.GetKeysCount())) {
+            Out << intend << " | > ";
+
+            key.clear();
+            auto cells = node.GetKeyCellsIter(i, part.Scheme->Groups[0].ColsKeyIdx);
+            for (TPos pos : xrange(cells.Count())) {
+                Y_UNUSED(pos);
+                key.push_back(cells.Next());
+            }
+
+            Key(key, *part.Scheme);
+            Out << Endl;
+            dumpChild(node.GetChild(i + 1));
+        }
+
+        Out << Endl;
     }
 
 }

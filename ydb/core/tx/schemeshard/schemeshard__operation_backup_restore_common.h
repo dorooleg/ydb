@@ -3,6 +3,7 @@
 #include "schemeshard__operation_common.h"
 #include "schemeshard_billing_helpers.h"
 #include "schemeshard_impl.h"
+#include "schemeshard_types.h"
 
 #include <ydb/core/base/subdomain.h>
 #include <ydb/core/metering/metering.h>
@@ -20,6 +21,12 @@ class TConfigurePart: public TSubOperationState {
         return TStringBuilder()
                 << TKind::Name() << " TConfigurePart"
                 << ", opId: " << OperationId;
+    }
+
+    static TVirtualTimestamp GetSnapshotTime(const TSchemeShard* ss, const TPathId& pathId) {
+        Y_ABORT_UNLESS(ss->PathsById.contains(pathId));
+        TPathElement::TPtr path = ss->PathsById.at(pathId);
+        return TVirtualTimestamp(path->StepCreated, path->CreateTxId);
     }
 
 public:
@@ -50,12 +57,16 @@ public:
                         << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->TxInFlight.FindPtr(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TxType);
-        Y_VERIFY(txState->State == TTxState::ConfigureParts);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TxType);
+        Y_ABORT_UNLESS(txState->State == TTxState::ConfigureParts);
 
         txState->ClearShardsInProgress();
-        TKind::ProposeTx(OperationId, *txState, context);
+        if constexpr (TKind::NeedSnapshotTime()) {
+            TKind::ProposeTx(OperationId, *txState, context, GetSnapshotTime(context.SS, txState->TargetPathId));
+        } else {
+            TKind::ProposeTx(OperationId, *txState, context);
+        }
         txState->UpdateShardsInProgress(TTxState::ConfigureParts);
 
         return false;
@@ -157,12 +168,12 @@ public:
             return;
         }
 
-        Y_VERIFY(context.SS->FindTx(operationId));
+        Y_ABORT_UNLESS(context.SS->FindTx(operationId));
         TTxState& txState = *context.SS->FindTx(operationId);
 
         auto tabletId = TTabletId(evRecord.GetOrigin());
         auto shardIdx = context.SS->MustGetShardIdx(tabletId);
-        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
+        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
 
         if (!txState.SchemeChangeNotificationReceived.contains(shardIdx)) {
             return;
@@ -227,7 +238,7 @@ public:
             return false;
         }
 
-        Y_VERIFY(context.SS->FindTx(OperationId));
+        Y_ABORT_UNLESS(context.SS->FindTx(OperationId));
         TTxState& txState = *context.SS->FindTx(OperationId);
 
         if (!txState.ReadyForNotifications) {
@@ -312,9 +323,9 @@ public:
                     << " at tablet" << ssId);
 
         TTxState* txState = context.SS->TxInFlight.FindPtr(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TxType);
-        Y_VERIFY(txState->State == TTxState::Aborting);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TxType);
+        Y_ABORT_UNLESS(txState->State == TTxState::Aborting);
 
         txState->ClearShardsInProgress();
 
@@ -400,8 +411,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TxType);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TxType);
 
         TPathId pathId = txState->TargetPathId;
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
@@ -425,8 +436,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TxType);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TxType);
 
         TSet<TTabletId> shardSet;
         for (const auto& shard : txState->Shards) {
@@ -450,7 +461,7 @@ class TBackupRestoreOperationBase: public TSubOperation {
     }
 
     TTxState::ETxState NextState(TTxState::ETxState) const override {
-        Y_FAIL("unreachable");
+        Y_ABORT("unreachable");
     }
 
     TTxState::ETxState NextState(TTxState::ETxState state, TOperationContext& context) const {
@@ -464,15 +475,15 @@ class TBackupRestoreOperationBase: public TSubOperation {
             return TTxState::ProposedWaitParts;
         case TTxState::ProposedWaitParts: {
             TTxState* txState = context.SS->FindTx(OperationId);
-            Y_VERIFY(txState);
-            Y_VERIFY(txState->TxType == TxType);
+            Y_ABORT_UNLESS(txState);
+            Y_ABORT_UNLESS(txState->TxType == TxType);
 
             if (txState->Cancel) {
                 if (txState->State == TTxState::Done) {
                     return TTxState::Done;
                 }
 
-                Y_VERIFY(txState->State == TTxState::Aborting);
+                Y_ABORT_UNLESS(txState->State == TTxState::Aborting);
                 return TTxState::Aborting;
             }
             return TTxState::Done;
@@ -534,7 +545,7 @@ public:
     }
 
     void PrepareChanges(TPathElement::TPtr path, TOperationContext& context) {
-        Y_VERIFY(context.SS->Tables.contains(path->PathId));
+        Y_ABORT_UNLESS(context.SS->Tables.contains(path->PathId));
         TTableInfo::TPtr& table = context.SS->Tables.at(path->PathId);
 
         path->LastTxId = OperationId.GetTxId();
@@ -608,7 +619,7 @@ public:
                 .NotAsyncReplicaTable()
                 .NotUnderOperation()
                 .IsCommonSensePath() //forbid alter impl index tables
-                .NotChildren(); //forbid backup table with indexes
+                .CanBackupTable(); //forbid backup table with indexes
 
             if (!checks) {
                 result->SetError(checks.GetStatus(), checks.GetError());
@@ -634,7 +645,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_FAIL("no AbortPropose for TBackupRestoreOperationBase");
+        Y_ABORT("no AbortPropose for TBackupRestoreOperationBase");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {

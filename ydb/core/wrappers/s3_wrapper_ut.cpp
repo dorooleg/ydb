@@ -1,12 +1,12 @@
 #include "s3_storage_config.h"
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/basics/runtime.h>
 #include <ydb/core/wrappers/ut_helpers/s3_mock.h>
 #include <ydb/core/wrappers/s3_wrapper.h>
 
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/digest/md5/md5.h>
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -34,11 +34,11 @@ class TS3MockTest: public NUnitTest::TTestBase, private NExternalStorage::TS3Use
 
 public:
     void SetUp() override {
-        Y_VERIFY(!Port.Defined());
+        Y_ABORT_UNLESS(!Port.Defined());
         Port = PortManager.GetPort();
 
         S3Mock = MakeHolder<TS3Mock>(TS3Mock::TSettings(*Port));
-        Y_VERIFY(S3Mock->Start());
+        Y_ABORT_UNLESS(S3Mock->Start());
 
         Runtime = MakeHolder<TTestBasicRuntime>();
         Runtime->Initialize(TAppPrepare().Unwrap());
@@ -150,6 +150,21 @@ class TS3WrapperTests: public TS3MockTest {
             .WithPartNumber(partNumber);
         auto response = Send<NExternalStorage::TEvUploadPartResponse>(
             new NExternalStorage::TEvUploadPartRequest(request, std::move(body)));
+
+        UNIT_ASSERT(response->Get());
+        return response->Get()->Result;
+    }
+
+    auto UploadPartCopy(const TString& sourceBucket, const TString& copySource, const TString& key, const TString& uploadId, int partNumber, int fromBytes, int toBytes) {
+        auto request = UploadPartCopyRequest()
+            .WithBucket("")
+            .WithCopySource(TString("/") + sourceBucket + "/" + copySource)
+            .WithKey(key)
+            .WithCopySourceRange(TString("bytes=") + ToString(fromBytes) + "-" + ToString(toBytes))
+            .WithUploadId(uploadId)
+            .WithPartNumber(partNumber);
+        auto response = Send<NExternalStorage::TEvUploadPartCopyResponse>(
+            new NExternalStorage::TEvUploadPartCopyRequest(request));
 
         UNIT_ASSERT(response->Get());
         return response->Get()->Result;
@@ -269,6 +284,41 @@ public:
         UNIT_ASSERT(!result.IsSuccess());
     }
 
+    void CopyPartUpload() {
+        const TString body = "body";
+
+        {
+            auto result = PutObject("key", TString(body));
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetError().GetMessage());
+        }
+
+        TString uploadId;
+        TVector<CompletedPart> parts;
+
+        {
+            auto result = CreateMultipartUpload("key1");
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetError().GetMessage());
+            uploadId = result.GetResult().GetUploadId();
+        }
+
+        {
+            auto result = UploadPartCopy("TEST", "key", "key1", uploadId, 1, 1, 2);
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetError().GetMessage());
+            parts.push_back(CompletedPart().WithPartNumber(1).WithETag(result.GetResult().GetCopyPartResult().GetETag()));
+        }
+
+        {
+            auto result = CompleteMultipartUpload("key1", uploadId, parts);
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetError().GetMessage());
+        }
+
+        {
+            auto [result, actualBody] = GetObject("key1", 2);
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetError().GetMessage());
+            UNIT_ASSERT_VALUES_EQUAL(actualBody, body.substr(1, 2));
+        }
+    }
+
 private:
     UNIT_TEST_SUITE(TS3WrapperTests);
     UNIT_TEST(PutObject);
@@ -281,6 +331,7 @@ private:
     UNIT_TEST(UploadUnknownPart);
     UNIT_TEST(CompleteUnknownUpload);
     UNIT_TEST(AbortUnknownUpload);
+    UNIT_TEST(CopyPartUpload);
     UNIT_TEST_SUITE_END();
 
 }; // TS3WrapperTests

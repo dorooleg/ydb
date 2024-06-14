@@ -46,9 +46,9 @@ class TYqlResultPartIterator::TReaderImpl {
 public:
     using TSelf = TYqlResultPartIterator::TReaderImpl;
     using TResponse = Ydb::Scripting::ExecuteYqlPartialResponse;
-    using TStreamProcessorPtr = NGrpc::IStreamRequestReadProcessor<TResponse>::TPtr;
-    using TReadCallback = NGrpc::IStreamRequestReadProcessor<TResponse>::TReadCallback;
-    using TGRpcStatus = NGrpc::TGrpcStatus;
+    using TStreamProcessorPtr = NYdbGrpc::IStreamRequestReadProcessor<TResponse>::TPtr;
+    using TReadCallback = NYdbGrpc::IStreamRequestReadProcessor<TResponse>::TReadCallback;
+    using TGRpcStatus = NYdbGrpc::TGrpcStatus;
 
     TReaderImpl(TStreamProcessorPtr streamProcessor, const TString& endpoint)
         : StreamProcessor_(streamProcessor)
@@ -157,6 +157,7 @@ public:
         request.set_script(script);
         SetParams(params, &request);
         request.set_collect_stats(GetStatsCollectionMode(settings.CollectQueryStats_));
+        request.set_syntax(settings.Syntax_);
 
         auto promise = NewPromise<TExecuteYqlResult>();
 
@@ -202,6 +203,7 @@ public:
         request.set_script(script);
         SetParams(params, &request);
         request.set_collect_stats(GetStatsCollectionMode(settings.CollectQueryStats_));
+        request.set_syntax(settings.Syntax_);
 
         auto promise = NewPromise<std::pair<TPlainStatus, TYqlScriptProcessorPtr>>();
 

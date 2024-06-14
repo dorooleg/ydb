@@ -1,10 +1,11 @@
 #include "lease_holder.h"
 #include "node_broker.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <ydb/core/mon/mon.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/mon.h>
+#include <ydb/library/actors/util/should_continue.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipe.h>
 
@@ -71,7 +72,7 @@ private:
             IgnoreFunc(TEvNodeBroker::TEvExtendLeaseResponse);
 
         default:
-            Y_FAIL("TLeaseHolder::StateIdle unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("TLeaseHolder::StateIdle unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
         }
     }
@@ -86,7 +87,7 @@ private:
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
 
         default:
-            Y_FAIL("TLeaseHolder::StatePing unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("TLeaseHolder::StatePing unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
         }
     }
@@ -139,13 +140,9 @@ private:
 
     void Connect(const TActorContext &ctx)
     {
-        auto dinfo = AppData(ctx)->DomainsInfo;
-        auto &domain = dinfo->GetDomain(NodeIdToDomain(ctx.SelfID.NodeId(), *dinfo));
-        ui32 group = domain.DefaultStateStorageGroup;
-
         NTabletPipe::TClientConfig config;
         config.RetryPolicy = NTabletPipe::TClientRetryPolicy::WithRetries();
-        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeNodeBrokerID(group), config);
+        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeNodeBrokerID(), config);
         NodeBrokerPipe = ctx.Register(pipe);
     }
 
@@ -155,7 +152,7 @@ private:
 
         // Error means Node Broker doesn't know about this node.
         // Node is either already expired or its ID is banned.
-        Y_VERIFY(rec.GetNodeId() == ctx.SelfID.NodeId());
+        Y_ABORT_UNLESS(rec.GetNodeId() == ctx.SelfID.NodeId());
         if (rec.GetStatus().GetCode() != NKikimrNodeBroker::TStatus::OK) {
             LOG_ERROR(ctx, NKikimrServices::NODE_BROKER, "Cannot extend lease: %s",
                       rec.GetStatus().GetReason().data());
@@ -172,11 +169,11 @@ private:
             EpochEnd = TInstant::FromValue(rec.GetEpoch().GetEnd());
 
             if (Expire != TInstant::Max()) {
-                Y_VERIFY(Expire > EpochEnd);
-                Y_VERIFY(rec.GetExpire() == rec.GetEpoch().GetNextEnd());
+                Y_ABORT_UNLESS(Expire > EpochEnd);
+                Y_ABORT_UNLESS(rec.GetExpire() == rec.GetEpoch().GetNextEnd());
 
                 ui64 window = (Expire - EpochEnd).GetValue() / 2;
-                Y_VERIFY(window);
+                Y_ABORT_UNLESS(window);
 
                 NextPing = EpochEnd + TDuration::FromValue(RandomNumber<ui64>(window));
             }

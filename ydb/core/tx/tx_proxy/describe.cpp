@@ -6,11 +6,13 @@
 #include <ydb/core/scheme/scheme_types_proto.h>
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/base/appdata.h>
+#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/sys_view/common/schema.h>
+#include <ydb/core/protos/table_stats.pb.h>
 
 #include <ydb/library/aclib/aclib.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NTxProxy {
@@ -82,12 +84,12 @@ class TDescribeReq : public TActor<TDescribeReq> {
         auto schemeShardId = entry.DomainInfo->DomainKey.OwnerId;
 
         auto result = MakeHolder<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResultBuilder>(
-            path, schemeShardId, TPathId());
+            path, TPathId());
 
         auto* pathDescription = result->Record.MutablePathDescription();
         auto* self = pathDescription->MutableSelf();
 
-        Y_VERIFY(!entry.Path.empty());
+        Y_ABORT_UNLESS(!entry.Path.empty());
         self->SetName(entry.Path.back());
         self->SetPathType(NKikimrSchemeOp::EPathTypeTable);
         FillSystemViewDescr(self, schemeShardId);
@@ -111,7 +113,7 @@ class TDescribeReq : public TActor<TDescribeReq> {
             }
             col->SetId(id);
             if (column.KeyOrder >= 0) {
-                Y_VERIFY((size_t)column.KeyOrder < keyColumnIds.size());
+                Y_ABORT_UNLESS((size_t)column.KeyOrder < keyColumnIds.size());
                 keyColumnIds[column.KeyOrder] = id;
                 ++keySize;
             }
@@ -123,7 +125,7 @@ class TDescribeReq : public TActor<TDescribeReq> {
         for (size_t i = 0; i < keySize; ++i) {
             auto columnId = keyColumnIds[i];
             auto columnIt = entry.Columns.find(columnId);
-            Y_VERIFY(columnIt != entry.Columns.end());
+            Y_ABORT_UNLESS(columnIt != entry.Columns.end());
             table->AddKeyColumnIds(columnId);
             table->AddKeyColumnNames(columnIt->second.Name);
         }
@@ -150,7 +152,7 @@ class TDescribeReq : public TActor<TDescribeReq> {
         auto schemeShardId = entry.DomainInfo->DomainKey.OwnerId;
 
         auto result = MakeHolder<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResultBuilder>(
-            path, schemeShardId, TPathId());
+            path, TPathId());
 
         auto* pathDescription = result->Record.MutablePathDescription();
         auto* self = pathDescription->MutableSelf();
@@ -231,18 +233,17 @@ void TDescribeReq::Handle(TEvTxProxyReq::TEvNavigateScheme::TPtr &ev, const TAct
 
     if (record.GetDescribePath().HasPath()) {
         TDomainsInfo *domainsInfo = AppData(ctx)->DomainsInfo.Get();
-        Y_VERIFY(!domainsInfo->Domains.empty());
+        Y_ABORT_UNLESS(domainsInfo->Domain);
 
         if (record.GetDescribePath().GetPath() == "/") {
             // Special handling for enumerating roots
             TAutoPtr<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResultBuilder> result =
-                new NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResultBuilder("/", NSchemeShard::RootSchemeShardId, TPathId(NSchemeShard::RootSchemeShardId, NSchemeShard::RootPathId));
+                new NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResultBuilder("/", TPathId(NSchemeShard::RootSchemeShardId, NSchemeShard::RootPathId));
             auto descr = result->Record.MutablePathDescription();
             FillRootDescr(descr->MutableSelf(), "/", NSchemeShard::RootSchemeShardId);
-            for (const auto& domain : domainsInfo->Domains) {
-                auto entry = result->Record.MutablePathDescription()->AddChildren();
-                FillRootDescr(entry, domain.second->Name, domain.second->SchemeRoot);
-            }
+            auto entry = result->Record.MutablePathDescription()->AddChildren();
+            auto *domain = domainsInfo->GetDomain();
+            FillRootDescr(entry, domain->Name, domain->SchemeRoot);
 
             ctx.Send(Source, result.Release(), 0, SourceCookie);
             return Die(ctx);
@@ -301,7 +302,7 @@ void TDescribeReq::Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &
 
     TxProxyMon->CacheRequestLatency->Collect((ctx.Now() - WallClockStarted).MilliSeconds());
 
-    Y_VERIFY(navigate->ResultSet.size() == 1);
+    Y_ABORT_UNLESS(navigate->ResultSet.size() == 1);
     const auto& entry = navigate->ResultSet.front();
 
     LOG_LOG_S(ctx, (navigate->ErrorCount == 0 ? NActors::NLog::PRI_DEBUG : NActors::NLog::PRI_INFO),
@@ -311,19 +312,16 @@ void TDescribeReq::Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &
 
     if (navigate->ErrorCount > 0) {
         switch (entry.Status) {
+        case NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied: {
+            const ui32 access = NACLib::EAccessRights::DescribeSchema;
+            LOG_ERROR_S(ctx, NKikimrServices::TX_PROXY,
+                        "Access denied for " << (UserToken ? UserToken->GetUserSID() : "empty")
+                        << " with access " << NACLib::AccessRightsToString(access)
+                        << " to path " << JoinPath(entry.Path) << " because base path");
+            ReportError(NKikimrScheme::StatusAccessDenied, "Access denied", ctx);
+            break;
+        }
         case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown:
-            if (UserToken != nullptr && entry.SecurityObject != nullptr) {
-                ui32 access = NACLib::EAccessRights::DescribeSchema;
-                if (!entry.SecurityObject->CheckAccess(access, *UserToken)) {
-                    LOG_ERROR_S(ctx, NKikimrServices::TX_PROXY,
-                                "Access denied for " << UserToken->GetUserSID()
-                                << " with access " << NACLib::AccessRightsToString(access)
-                                << " to path " << JoinPath(entry.Path) << " because base path");
-                    ReportError(NKikimrScheme::StatusAccessDenied, "Access denied", ctx);
-                    break;
-                }
-            }
-
             ReportError(NKikimrScheme::StatusPathDoesNotExist, "Path not found", ctx);
             break;
         case NSchemeCache::TSchemeCacheNavigate::EStatus::RootUnknown:
@@ -409,8 +407,7 @@ void TDescribeReq::Handle(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult:
         const auto& pathDescription = ev->Get()->GetRecord().GetPathDescription();
         const auto& self = pathDescription.GetSelf();
 
-        TDomainsInfo *domainsInfo = AppData()->DomainsInfo.Get();
-        Y_VERIFY(!domainsInfo->Domains.empty());
+        const auto& domainsInfo = AppData()->DomainsInfo;
 
         bool needSysFolder = false;
         if (self.GetPathType() == NKikimrSchemeOp::EPathType::EPathTypeSubDomain ||
@@ -419,11 +416,8 @@ void TDescribeReq::Handle(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult:
         {
             needSysFolder = true;
         } else if (self.GetPathId() == NSchemeShard::RootPathId) {
-            for (const auto& [_, domain] : domainsInfo->Domains) {
-                if (domain->SchemeRoot == self.GetSchemeshardId()) {
-                    needSysFolder = true;
-                    break;
-                }
+            if (const auto& domain = domainsInfo->Domain; domain && domain->SchemeRoot == self.GetSchemeshardId()) {
+                needSysFolder = true;
             }
         }
 

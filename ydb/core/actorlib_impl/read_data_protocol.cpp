@@ -19,7 +19,7 @@ void TReadDataProtocolImpl::ProtocolFunc(
         break;
 
     default:
-        Y_FAIL("Unknown message type dispatched");
+        Y_ABORT("Unknown message type dispatched");
     }
 }
 
@@ -39,7 +39,7 @@ void TReadDataProtocolImpl::TryAgain(const TActorContext& ctx) noexcept {
         recvResult = Socket->Recv(Data, Len);
 
         if (recvResult > 0) {
-            Y_VERIFY(Len >= (size_t)recvResult);
+            Y_ABORT_UNLESS(Len >= (size_t)recvResult);
             Data += recvResult;
             Len -= recvResult;
             Filled += recvResult;
@@ -112,7 +112,7 @@ void TReadDataProtocolImpl::TryAgain(const TActorContext& ctx) noexcept {
     case ENOTSOCK:
     case EOPNOTSUPP:
         {
-            Y_FAIL("Very bad socket error");
+            Y_ABORT("Very bad socket error");
         }
     }
 }

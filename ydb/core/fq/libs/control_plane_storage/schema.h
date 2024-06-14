@@ -15,6 +15,7 @@ namespace NFq {
 #define TENANTS_TABLE_NAME "tenants"
 #define TENANT_ACKS_TABLE_NAME "tenant_acks"
 #define MAPPINGS_TABLE_NAME "mappings"
+#define COMPUTE_DATABASES_TABLE_NAME "compute_databases"
 
 // columns
 #define SCOPE_COLUMN_NAME "scope"
@@ -86,5 +87,8 @@ namespace NFq {
 #define COMMON_COLUMN_NAME "common"
 #define STATE_COLUMN_NAME "state"
 #define STATE_TIME_COLUMN_NAME "state_time"
+
+#define CREATED_AT_COLUMN_NAME "created_at"
+#define LAST_ACCESS_AT_COLUMN_NAME "last_access_at"
 
 } // namespace NFq

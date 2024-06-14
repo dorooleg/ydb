@@ -4,8 +4,9 @@
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/appdata.h>
 
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/random_provider/random_provider.h>
 
 #include <ydb/core/protos/bootstrapper.pb.h>
 
@@ -210,7 +211,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
     }
 
     void Boot(const TActorContext &ctx) {
-        Y_VERIFY(!LookOnActorID);
+        Y_ABORT_UNLESS(!LookOnActorID);
 
         LOG_NOTICE(ctx, NKikimrServices::BOOTSTRAPPER, "tablet: %" PRIu64 ", type: %s, boot",
                    TabletInfo->TabletID, GetTabletTypeName());
@@ -224,7 +225,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
             LookOnActorID = x->Tablet(TabletInfo.Get(), ctx.SelfID, ctx, 0, AppData(ctx)->ResourceProfiles);
         }
 
-        Y_VERIFY(LookOnActorID);
+        Y_ABORT_UNLESS(LookOnActorID);
 
         Watched.Reset(new TWatched());
 
@@ -325,14 +326,14 @@ class TBootstrapper : public TActor<TBootstrapper> {
             Round->Aliens[alienNodeIdx] = TRound::TAlien(TRound::EAlienState::Disconnected, Max<ui64>());
             return false;
         default:
-            Y_FAIL("unhandled case");
+            Y_ABORT("unhandled case");
         }
     }
 
     bool CheckBootPermitted(size_t undelivered, size_t disconnected, const TActorContext &ctx) {
         // Total number of nodes that participate in tablet booting
         size_t total = 1 + BootstrapperInfo->OtherNodes.size();
-        Y_VERIFY_DEBUG(total >= 1 + undelivered + disconnected);
+        Y_DEBUG_ABORT_UNLESS(total >= 1 + undelivered + disconnected);
 
         // Ignore nodes that don't have bootstrapper running
         total -= undelivered;
@@ -340,11 +341,11 @@ class TBootstrapper : public TActor<TBootstrapper> {
         // Number of nodes that need to be online for immediate boot (including us)
         // Clamp it to 2 other nodes on clusters with very large boot node set
         size_t quorum = Min(total / 2 + 1, (size_t) 3);
-        Y_VERIFY_DEBUG(quorum >= 1);
+        Y_DEBUG_ABORT_UNLESS(quorum >= 1);
 
         // Number of nodes currently online (including us)
         size_t online = total - disconnected;
-        Y_VERIFY_DEBUG(online >= 1);
+        Y_DEBUG_ABORT_UNLESS(online >= 1);
 
         // If there are enough nodes online, just boot immediately
         if (online >= quorum) {
@@ -439,7 +440,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
 
     void HandleFree(TEvBootstrapper::TEvWatchResult::TPtr &ev, const TActorContext &ctx) {
         const NKikimrBootstrapper::TEvWatchResult &record = ev->Get()->Record;
-        Y_VERIFY(record.GetTabletID() == TabletInfo->TabletID);
+        Y_ABORT_UNLESS(record.GetTabletID() == TabletInfo->TabletID);
 
         if (record.GetRound() != RoundCounter)
             return;
@@ -477,7 +478,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
 
     void HandleFree(TEvBootstrapper::TEvWatch::TPtr &ev, const TActorContext &ctx) {
         const NKikimrBootstrapper::TEvWatch &record = ev->Get()->Record;
-        Y_VERIFY(record.GetTabletID() == TabletInfo->TabletID);
+        Y_ABORT_UNLESS(record.GetTabletID() == TabletInfo->TabletID);
 
         ctx.Send(ev->Sender, new TEvBootstrapper::TEvWatchResult(record.GetTabletID(), NKikimrBootstrapper::TEvWatchResult::FREE, SelfSeed, record.GetRound()));
     }
@@ -501,7 +502,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
 
     void HandleOwner(TEvBootstrapper::TEvWatch::TPtr &ev, const TActorContext &ctx) {
         const NKikimrBootstrapper::TEvWatch &record = ev->Get()->Record;
-        Y_VERIFY(record.GetTabletID() == TabletInfo->TabletID);
+        Y_ABORT_UNLESS(record.GetTabletID() == TabletInfo->TabletID);
 
         // add to watchers list (if node not already there)
         Watched->AddWatcher(ev->Sender, record.GetRound());
@@ -510,7 +511,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
 
     void HandleWatch(TEvBootstrapper::TEvWatch::TPtr &ev, const TActorContext &ctx) {
         const NKikimrBootstrapper::TEvWatch &record = ev->Get()->Record;
-        Y_VERIFY(record.GetTabletID() == TabletInfo->TabletID);
+        Y_ABORT_UNLESS(record.GetTabletID() == TabletInfo->TabletID);
 
         if (Watches->CheckWatch(ev->Sender.NodeId())) {
             ctx.Send(ev->Sender, new TEvBootstrapper::TEvWatchResult(record.GetTabletID(), NKikimrBootstrapper::TEvWatchResult::UNKNOWN, 0, record.GetRound()));
@@ -534,7 +535,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
 
     void HandleStandBy(TEvBootstrapper::TEvWatch::TPtr &ev, const TActorContext &ctx) {
         const NKikimrBootstrapper::TEvWatch &record = ev->Get()->Record;
-        Y_VERIFY(record.GetTabletID() == TabletInfo->TabletID);
+        Y_ABORT_UNLESS(record.GetTabletID() == TabletInfo->TabletID);
 
         ctx.Send(ev->Sender, new TEvBootstrapper::TEvWatchResult(record.GetTabletID(), NKikimrBootstrapper::TEvWatchResult::UNKNOWN, Max<ui64>(), record.GetRound()));
     }
@@ -563,7 +564,7 @@ public:
         , RoundCounter(0xdeadbeefdeadbeefull)
         , SelfSeed(0xdeadbeefdeadbeefull)
     {
-        Y_VERIFY(TTabletTypes::TypeInvalid != TabletInfo->TabletType);
+        Y_ABORT_UNLESS(TTabletTypes::TypeInvalid != TabletInfo->TabletType);
     }
 
     TAutoPtr<IEventHandle> AfterRegister(const TActorId &selfId, const TActorId &parentId) override {

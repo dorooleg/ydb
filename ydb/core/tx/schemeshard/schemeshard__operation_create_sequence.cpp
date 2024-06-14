@@ -58,9 +58,9 @@ public:
         }
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxCreateSequence);
-        Y_VERIFY(txState->State == TTxState::ConfigureParts);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSequence);
+        Y_ABORT_UNLESS(txState->State == TTxState::ConfigureParts);
 
         auto shardIdx = context.SS->MustGetShardIdx(tabletId);
         if (!txState->ShardsInProgress.erase(shardIdx)) {
@@ -93,22 +93,22 @@ public:
                     << " at tablet " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxCreateSequence);
-        Y_VERIFY(!txState->Shards.empty());
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSequence);
+        Y_ABORT_UNLESS(!txState->Shards.empty());
 
         txState->ClearShardsInProgress();
 
         TSequenceInfo::TPtr sequenceInfo = context.SS->Sequences.at(txState->TargetPathId);
-        Y_VERIFY(sequenceInfo);
+        Y_ABORT_UNLESS(sequenceInfo);
         TSequenceInfo::TPtr alterData = sequenceInfo->AlterData;
-        Y_VERIFY(alterData);
+        Y_ABORT_UNLESS(alterData);
 
-        Y_VERIFY(txState->Shards.size() == 1);
+        Y_ABORT_UNLESS(txState->Shards.size() == 1);
         for (auto shard : txState->Shards) {
             auto shardIdx = shard.Idx;
             auto tabletId = context.SS->ShardInfos.at(shardIdx).TabletID;
-            Y_VERIFY(shard.TabletType == ETabletType::SequenceShard);
+            Y_ABORT_UNLESS(shard.TabletType == ETabletType::SequenceShard);
 
             if (tabletId == InvalidTabletId) {
                 LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -141,6 +141,10 @@ public:
             }
             if (alterData->Description.HasCycle()) {
                 event->Record.SetCycle(alterData->Description.GetCycle());
+            }
+            if (alterData->Description.HasSetVal()) {
+                event->Record.MutableSetVal()->SetNextValue(alterData->Description.GetSetVal().GetNextValue());
+                event->Record.MutableSetVal()->SetNextUsed(alterData->Description.GetSetVal().GetNextUsed());
             }
 
             LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
@@ -191,16 +195,16 @@ public:
         if (!txState) {
             return false;
         }
-        Y_VERIFY(txState->TxType == TTxState::TxCreateSequence);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSequence);
 
         TPathId pathId = txState->TargetPathId;
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
 
         Y_VERIFY_S(context.SS->Sequences.contains(pathId), "Sequence not found. PathId: " << pathId);
         TSequenceInfo::TPtr sequenceInfo = context.SS->Sequences.at(pathId);
-        Y_VERIFY(sequenceInfo);
+        Y_ABORT_UNLESS(sequenceInfo);
         TSequenceInfo::TPtr alterData = sequenceInfo->AlterData;
-        Y_VERIFY(alterData);
+        Y_ABORT_UNLESS(alterData);
 
         NIceDb::TNiceDb db(context.GetDB());
 
@@ -234,13 +238,71 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxCreateSequence);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateSequence);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
     }
 };
+
+// fill sequence description with default values
+NKikimrSchemeOp::TSequenceDescription FillSequenceDescription(const NKikimrSchemeOp::TSequenceDescription& descr) {
+    NKikimrSchemeOp::TSequenceDescription result = descr;
+
+    i64 increment = 0;
+    if (result.HasIncrement()) {
+        increment = result.GetIncrement();
+    }
+    if (increment == 0) {
+        increment = 1;
+    }
+    result.SetIncrement(increment);
+
+    i64 minValue = 1;
+    i64 maxValue = Max<i64>();
+    if (increment < 0) {
+        maxValue = -1;
+        minValue = Min<i64>();
+    }
+
+    if (result.HasMaxValue()) {
+        maxValue = result.GetMaxValue();
+    }
+
+    if (result.HasMinValue()) {
+        minValue = result.GetMinValue();
+    }
+
+    result.SetMaxValue(maxValue);
+    result.SetMinValue(minValue);
+
+    bool cycle = false;
+    if (result.HasCycle()) {
+        cycle = result.GetCycle();
+    }
+
+    result.SetCycle(cycle);
+
+    i64 startValue = minValue;
+    if (increment < 0) {
+        startValue = maxValue;
+    }
+    if (result.HasStartValue()) {
+        startValue = result.GetStartValue();
+    }
+
+    result.SetStartValue(startValue);
+
+    ui64 cache = 1;
+    if (result.HasCache()) {
+        cache = result.GetCache();
+    }
+
+    result.SetCache(cache);
+
+    return result;
+}
 
 class TCreateSequence : public TSubOperation {
     static TTxState::ETxState NextState() {
@@ -425,7 +487,7 @@ public:
 
         TSequenceInfo::TPtr sequenceInfo = new TSequenceInfo(0);
         TSequenceInfo::TPtr alterData = sequenceInfo->CreateNextVersion();
-        alterData->Description = descr;
+        alterData->Description = FillSequenceDescription(descr);
 
         if (shardsToCreate) {
             sequenceShard = context.SS->RegisterShardInfo(
@@ -456,11 +518,10 @@ public:
         context.SS->ChangeTxState(db, OperationId, txState.State);
         context.OnComplete.ActivateTx(OperationId);
 
-        context.SS->PersistPath(db, dstPath->PathId);
         if (!acl.empty()) {
             dstPath->ApplyACL(acl);
-            context.SS->PersistACL(db, dstPath.Base());
         }
+        context.SS->PersistPath(db, dstPath->PathId);
 
         context.SS->Sequences[pathId] = sequenceInfo;
         context.SS->PersistSequence(db, pathId, *sequenceInfo);
@@ -496,7 +557,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_FAIL("no AbortPropose for TCreateSequence");
+        Y_ABORT("no AbortPropose for TCreateSequence");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {

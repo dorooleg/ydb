@@ -1,9 +1,9 @@
 #pragma once
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/mon.h>
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/viewer/json/json.h>
 #include "viewer.h"
@@ -43,7 +43,7 @@ public:
         Timeout = FromStringWithDefault<ui32>(params.Get("timeout"), 10000);
         State = FromStringWithDefault<bool>(params.Get("state"), true);
         TIntrusivePtr<TDomainsInfo> domains = AppData()->DomainsInfo;
-        TIntrusivePtr<TDomainsInfo::TDomain> domain = domains->Domains.begin()->second;
+        auto *domain = domains->GetDomain();
         NKikimrViewer::TTenant& tenant = *Result.AddTenants();
         tenant.SetName("/" + domain->Name);
         if (State) {

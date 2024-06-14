@@ -4,9 +4,10 @@
 #include "db_counters.h"
 
 #include <ydb/core/base/events.h>
-#include <ydb/core/base/pathid.h>
-#include <library/cpp/actors/core/events.h>
+#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/library/actors/core/events.h>
 #include <ydb/core/protos/sys_view.pb.h>
+#include <ydb/core/protos/tablet.pb.h>
 
 namespace NKikimr {
 namespace NSysView {

@@ -23,7 +23,7 @@ struct TClickHouseConfiguration : public TClickHouseSettings, public NCommon::TS
     void Init(
         const TProtoConfig& config,
         const std::shared_ptr<NYql::IDatabaseAsyncResolver> dbResolver,
-        THashMap<std::pair<TString, NYql::DatabaseType>, NYql::TDatabaseAuth>& databaseIds)
+        THashMap<std::pair<TString, NYql::EDatabaseType>, NYql::TDatabaseAuth>& databaseIds)
     {
         TVector<TString> clusters(Reserve(config.ClusterMappingSize()));
         for (auto& cluster: config.GetClusterMapping()) {
@@ -39,7 +39,7 @@ struct TClickHouseConfiguration : public TClickHouseSettings, public NCommon::TS
             if (dbResolver) {
                 YQL_CLOG(DEBUG, ProviderClickHouse) << "Settings: clusterName = " << cluster.GetName()
                     << ", clusterDbId = "  << cluster.GetId() << ", cluster.GetCluster(): " << cluster.GetCluster() << ", HasCluster: " << (cluster.HasCluster() ? "TRUE" : "FALSE") ;
-                databaseIds[std::make_pair(cluster.GetId(), NYql::DatabaseType::ClickHouse)] =
+                databaseIds[std::make_pair(cluster.GetId(), NYql::EDatabaseType::ClickHouse)] =
                     NYql::TDatabaseAuth{cluster.GetCHToken(), /*AddBearer=*/false};
                 if (cluster.GetId()) {
                     DbId2Clusters[cluster.GetId()].emplace_back(cluster.GetName());
@@ -69,15 +69,15 @@ struct TClickHouseConfiguration : public TClickHouseSettings, public NCommon::TS
             host = cluster.GetCluster();
             while (host.EndsWith("/"))
                 host = host.substr(0u, host.length() - 1u);
-            if (host.StartsWith("http://")) {
-                scheme = HS_HTTP;
-                host = host.substr(7u);
-                port = 80;
-            } else {
+            if (host.StartsWith("https://")) {
                 scheme = HS_HTTPS;
+                host = host.substr(8u);
                 port = 443;
-                if (host.StartsWith("https://")) {
-                    host = host.substr(8u);
+            } else {
+                scheme = HS_HTTP;
+                port = 80;
+                if (host.StartsWith("http://")) {
+                    host = host.substr(7u);
                 }
             }
 

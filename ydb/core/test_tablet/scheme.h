@@ -14,12 +14,12 @@ namespace NKikimr::NTestShard {
         };
 
         using TTables = SchemaTables<State>;
-    };
 
-    inline TString HashForValue(const TString& value) {
-        uint64_t data[2];
-        data[0] = t1ha2_atonce128(&data[1], value.data(), value.size(), 1);
-        return HexEncode(data, sizeof(data));
-    }
+        struct EmptySettings {
+            static void Materialize(NIceDb::TToughDb&) {}
+        };
+
+        using TSettings = SchemaSettings<EmptySettings>;
+    };
 
 } // NKikimr::NTestShard

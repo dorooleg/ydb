@@ -46,9 +46,9 @@ class TBlobStorageGroupProxy : public TActorBootstrapped<TBlobStorageGroupProxy>
             : HandleClass(handleClass)
             , Tactic(tactic)
         {
-            Y_VERIFY(NKikimrBlobStorage::EPutHandleClass_MIN <= handleClass &&
+            Y_ABORT_UNLESS(NKikimrBlobStorage::EPutHandleClass_MIN <= handleClass &&
                     NKikimrBlobStorage::EPutHandleClass_MAX >= handleClass, "incorrect PutHandleClass");
-            Y_VERIFY(0 <= tactic && tactic < TEvBlobStorage::TEvPut::TacticCount, "incorrect PutTactic");
+            Y_ABORT_UNLESS(0 <= tactic && tactic < TEvBlobStorage::TEvPut::TacticCount, "incorrect PutTactic");
         }
     };
 
@@ -67,6 +67,7 @@ class TBlobStorageGroupProxy : public TActorBootstrapped<TBlobStorageGroupProxy>
     bool ForceWaitAllDrives;
     bool IsLimitedKeyless = false;
     bool IsFullMonitoring = false; // current state of monitoring
+    ui32 MinREALHugeBlobInBytes = 0;
 
     TActorId MonActor;
     TIntrusivePtr<TBlobStorageGroupProxyMon> Mon;

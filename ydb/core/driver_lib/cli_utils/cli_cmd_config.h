@@ -29,15 +29,8 @@ namespace NDriverClient {
                             break;
                         }
 
-                        case NMsgBusProxy::MTYPE_CLIENT_LOAD_RESPONSE: {
-                            TAutoPtr<NMsgBusProxy::TBusBsTestLoadResponse> x(new NMsgBusProxy::TBusBsTestLoadResponse);
-                            x->Record = data.template GetResult<NKikimrClient::TBsTestLoadResponse>();
-                            response = x.Release();
-                            break;
-                        }
-
                         default:
-                            Y_FAIL("unexpected reply message type");
+                            Y_ABORT("unexpected reply message type");
                     }
                 }
                 return data.GetTransportStatus();
@@ -45,7 +38,7 @@ namespace NDriverClient {
             if (const auto& conf = ClientConfig) {
                 return std::visit(std::move(visitor), *conf);
             } else {
-                Y_FAIL("Client configuration is not provided");
+                Y_ABORT("Client configuration is not provided");
             }
         }
     };

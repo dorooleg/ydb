@@ -19,22 +19,22 @@
 
 #include <ydb/core/protos/blobstorage_pdisk_config.pb.h>
 #include <ydb/core/protos/blobstorage_vdisk_config.pb.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/event_local.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/executor_pool_basic.h>
-#include <library/cpp/actors/core/executor_pool_io.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/log.h>
-#include <library/cpp/actors/core/scheduler_basic.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
-#include <library/cpp/actors/interconnect/poller_tcp.h>
-#include <library/cpp/actors/interconnect/poller_actor.h>
-#include <library/cpp/actors/interconnect/mock/ic_mock.h>
-#include <library/cpp/actors/protos/services_common.pb.h>
-#include <library/cpp/actors/util/affinity.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/event_local.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <ydb/library/actors/core/executor_pool_io.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/core/scheduler_basic.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/interconnect/poller_tcp.h>
+#include <ydb/library/actors/interconnect/poller_actor.h>
+#include <ydb/library/actors/interconnect/mock/ic_mock.h>
+#include <ydb/library/actors/protos/services_common.pb.h>
+#include <ydb/library/actors/util/affinity.h>
 #include <library/cpp/svnversion/svnversion.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
@@ -454,8 +454,8 @@ protected:
                 VERBOSE_COUT("  response[" << i <<"]: " << StatusToString(response.Status));
                 if (response.Status == NKikimrProto::OK) {
                     //TODO: Process response.Id (should be same logoblobid as in request)
-                    LastResponse.Data[i] = response.Buffer;
-                    VERBOSE_COUT(" shift: " << response.Shift << " data: " << response.Buffer.c_str());
+                    LastResponse.Data[i] = response.Buffer.ConvertToString();
+                    VERBOSE_COUT(" shift: " << response.Shift << " data: " << response.Buffer.ConvertToString());
                 }
             }
         }
@@ -530,8 +530,8 @@ protected:
                     << " Status: " << StatusToString(replyStatus));
 
                 if (replyStatus == NKikimrProto::OK) {
-                    LastResponse.Data[i] = result.GetBuffer();
-                    VERBOSE_COUT(" data: " << result.GetBuffer());
+                    LastResponse.Data[i] = ev->Get()->GetBlobData(result).ConvertToString();
+                    VERBOSE_COUT(" data: " << LastResponse.Data[i]);
                 }
             }
         }
@@ -875,7 +875,7 @@ class TTestRangeGet: public TTestBlobStorageProxy {
 
             TLogoBlobID from(1, StartIdx, 0, 0, 1, 0);
             TLogoBlobID to(1, StartIdx + RangeLength, 0, 0, 1, 0);
-            ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+            ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
         } else {
             InitExpectedValues();
             TEST_RESPONSE_FULLCHECK(MessageRangeResult, OK, (size_t)RangeSize, ExpectedValues);
@@ -2793,7 +2793,7 @@ class TTestEmptyRange : public TTestBlobStorageProxy {
                 TLogoBlobID from(1, 7/*generation*/, 0, 0, 0, 0);
                 TLogoBlobID to(1, 8/*generation*/, 0, 0, 0, 0);
                 VERBOSE_COUT(" Sending TEvRange, expecting 0");
-                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
                 break;
             }
             case 10:
@@ -2935,7 +2935,7 @@ class TTestBlobStorageProxyBasic1 : public TTestBlobStorageProxy {
                 TLogoBlobID from(1, 7/*generation*/, 0, 0, 0, 0);
                 TLogoBlobID to(1, 6/*generation*/, 0, 0, 0, 0);
                 VERBOSE_COUT(" Sending TEvRange, expecting 1");
-                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
                 break;
             }
             case 120:
@@ -2947,7 +2947,7 @@ class TTestBlobStorageProxyBasic1 : public TTestBlobStorageProxy {
                 TLogoBlobID from(1, 7/*generation*/, 0, 0, 0, 0);
                 TLogoBlobID to(1, 2/*generation*/, 0, 0, 0, 0);
                 VERBOSE_COUT(" Sending TEvRange, expecting 4");
-                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
                 break;
             }
             case 130:
@@ -2966,7 +2966,7 @@ class TTestBlobStorageProxyBasic1 : public TTestBlobStorageProxy {
                 TLogoBlobID from(1, 2/*generation*/, 0, 0, 0, 0);
                 TLogoBlobID to(1, 7/*generation*/, 0, 0, TLogoBlobID::MaxBlobSize, 0);
                 VERBOSE_COUT(" Sending TEvRange, expecting 4");
-                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
                 break;
             }
             case 140:
@@ -2985,7 +2985,7 @@ class TTestBlobStorageProxyBasic1 : public TTestBlobStorageProxy {
                 TLogoBlobID from(1, 7/*generation*/, 0, 0, 0, 0);
                 TLogoBlobID to(1, 8/*generation*/, 0, 0, TLogoBlobID::MaxBlobSize, 0);
                 VERBOSE_COUT(" Sending TEvRange, expecting 0");
-                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
                 break;
             }
             case 150:
@@ -2997,7 +2997,7 @@ class TTestBlobStorageProxyBasic1 : public TTestBlobStorageProxy {
                 TLogoBlobID from(1, 2/*generation*/, 0, 0, 0, 0);
                 TLogoBlobID to(1, 3/*generation*/, 0, 0, TLogoBlobID::MaxBlobSize, 0);
                 VERBOSE_COUT(" Sending TEvRange, expecting 1");
-                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(MakeTabletID(0, 0, 1), from, to, true, TInstant::Max()));
+                ctx.Send(Proxy, new TEvBlobStorage::TEvRange(1, from, to, true, TInstant::Max()));
                 break;
             }
             case 160:
@@ -4092,11 +4092,11 @@ public:
         }
 
         TActorSetupCmd profilerSetup(CreateProfilerActor(nullptr, "."), TMailboxType::Simple, 0);
-        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(MakeProfilerID(nodeId), profilerSetup));
+        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(MakeProfilerID(nodeId), std::move(profilerSetup)));
 
         const TActorId nameserviceId = GetNameserviceActorId();
         TActorSetupCmd nameserviceSetup(CreateNameserverTable(nameserverTable), TMailboxType::Simple, 0);
-        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(nameserviceId, nameserviceSetup));
+        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(nameserviceId, std::move(nameserviceSetup)));
 
         return setup;
     }
@@ -4106,7 +4106,7 @@ public:
 
         NActors::TActorId loggerActorId = NActors::TActorId(setup->NodeId, "logger");
         TIntrusivePtr<NActors::NLog::TSettings> logSettings(
-            new NActors::NLog::TSettings(loggerActorId, NKikimrServices::LOGGER,
+            new NActors::NLog::TSettings(loggerActorId, NActorsServices::LOGGER,
                 IsVerbose ? NLog::PRI_ERROR : NLog::PRI_CRIT,
                 IsVerbose ? NLog::PRI_ERROR : NLog::PRI_CRIT,
                 0));
@@ -4140,8 +4140,8 @@ public:
                 NActors::CreateStderrBackend(),
                 counters.GetSubgroup("counters", "utils"));
         NActors::TActorSetupCmd loggerActorCmd(loggerActor, NActors::TMailboxType::Simple, 2);
-        std::pair<NActors::TActorId, NActors::TActorSetupCmd> loggerActorPair(loggerActorId, loggerActorCmd);
-        setup->LocalServices.push_back(loggerActorPair);
+        std::pair<NActors::TActorId, NActors::TActorSetupCmd> loggerActorPair(loggerActorId, std::move(loggerActorCmd));
+        setup->LocalServices.push_back(std::move(loggerActorPair));
 
         return logSettings;
     }
@@ -4191,7 +4191,7 @@ public:
         std::unique_ptr<IActor> proxyActor{CreateBlobStorageGroupProxyConfigured(TIntrusivePtr(bsInfo), false,
             dsProxyNodeMon, TIntrusivePtr(storagePoolCounters), args.EnablePutBatching, DefaultEnableVPatch)};
         TActorSetupCmd bsproxySetup(proxyActor.release(), TMailboxType::Revolving, 3);
-        setup1->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(env->ProxyId, bsproxySetup));
+        setup1->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(env->ProxyId, std::move(bsproxySetup)));
 
         TTempDir tempDir;
         NPDisk::TKey mainKey = 123;
@@ -4227,11 +4227,11 @@ public:
                 pDiskConfig->SectorMap = SectorMapByPath[filePath];
                 pDiskConfig->EnableSectorEncryption = !pDiskConfig->SectorMap;
 
-                NPDisk::TMainKey mainKeys = { mainKey };
+                NPDisk::TMainKey mainKeys = NPDisk::TMainKey{ .Keys = { mainKey }, .IsInitialized = true };
                 TActorSetupCmd pDiskSetup(
                     CreatePDisk(pDiskConfig.Get(), mainKeys, counters),
                     TMailboxType::Revolving, 0);
-                setup2->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(pdiskId, pDiskSetup));
+                setup2->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(pdiskId, std::move(pDiskSetup)));
 
                 TVDiskConfig::TBaseInfo baseInfo(
                     env->VDiskIds[i],
@@ -4255,13 +4255,13 @@ public:
 
                 IActor* vDisk = CreateVDisk(vDiskConfig, bsInfo, counters);
                 TActorSetupCmd vDiskSetup(vDisk, TMailboxType::Revolving, 0);
-                setup2->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(env->VDisks[i], vDiskSetup));
+                setup2->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(env->VDisks[i], std::move(vDiskSetup)));
             }
         }
 
         TActorSetupCmd proxyTestSetup(new T(env->ProxyId, bsInfo.Get(), env, args.Parametrs),
                 TMailboxType::Revolving, 0);
-        setup1->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(env->ProxyTestId, proxyTestSetup));
+        setup1->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(env->ProxyTestId, std::move(proxyTestSetup)));
 
         //////////////////////////////////////////////////////////////////////////////
         GetServiceCounters(counters, "utils");
@@ -4278,7 +4278,7 @@ public:
         EnableActorCallstack();
         try {
             VERBOSE_COUT("Sending TEvBoot to testproxy");
-            actorSystem1->Send(env->ProxyTestId, new TEvTablet::TEvBoot(MakeTabletID(0, 0, 1), 0, nullptr, TActorId(),
+            actorSystem1->Send(env->ProxyTestId, new TEvTablet::TEvBoot(1, 0, nullptr, TActorId(),
                         nullptr));
             VERBOSE_COUT("Done");
 

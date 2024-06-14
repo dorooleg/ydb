@@ -8,7 +8,7 @@
 
 #include <ydb/core/ymq/base/counters.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 namespace NKikimr::NSQS {
@@ -24,7 +24,7 @@ public:
         , Request_(req)
         , Cb_(std::move(cb))
     {
-        Y_VERIFY(RequestId_);
+        Y_ABORT_UNLESS(RequestId_);
     }
 
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {

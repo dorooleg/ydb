@@ -6,7 +6,7 @@
 #include "executer_actor.h"
 #include "grouped_issues.h"
 
-#include <ydb/library/yql/providers/dq/counters/counters.h>
+#include <ydb/library/yql/providers/dq/counters/task_counters.h>
 
 #include <ydb/library/yql/providers/dq/common/yql_dq_common.h>
 
@@ -18,11 +18,11 @@
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/event_pb.h>
-#include <library/cpp/actors/core/executor_pool_basic.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/scheduler_basic.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/event_pb.h>
+#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/scheduler_basic.h>
 #include <library/cpp/threading/future/future.h>
 #include <library/cpp/protobuf/util/pb_io.h>
 
@@ -66,7 +66,11 @@ public:
         , Settings(settings)
         , ServiceCounters(serviceCounters, "task_controller")
         , PingPeriod(pingPeriod)
-        , AggrPeriod(aggrPeriod)
+        , AggrPeriod(
+            settings->AggregateStatsByStage.Get().GetOrElse(TDqSettings::TDefault::AggregateStatsByStage)
+            ? aggrPeriod
+            : TDuration::Zero()
+        )
         , Issues(CreateDefaultTimeProvider())
     {
         if (Settings) {
@@ -80,7 +84,12 @@ public:
     }
 
     ~TTaskControllerImpl() override {
-        SetTaskCountMetric(0);
+        // we want to clear Tasks instantly to use with real-time monitoring
+        // all other counters will be kept for some time to upload to Monitoring
+        // and removed together
+        auto aggrStats = AggregateQueryStatsByStage(TaskStat, Stages, CollectFull());
+        aggrStats.SetCounter(TaskStat.GetCounterName("TaskRunner", {{"Stage", "Total"}}, "Tasks"), 0);
+        ExportStats(aggrStats, 0);
     }
 
 public:
@@ -154,20 +163,21 @@ public:
             << " PingCookie: " << ev->Cookie
             << " StatusCode: " << NYql::NDqProto::StatusIds_StatusCode_Name(state.GetStatusCode());
 
-        if (state.HasStats() && TryAddStatsFromExtra(state.GetStats())) {
-            if (ServiceCounters.Counters && !AggrPeriod) {
-                ExportStats(TaskStat, taskId);
-                TrySendNonFinalStat();
-            }
-        } else if (state.HasStats() && state.GetStats().GetTasks().size()) {
-            YQL_CLOG(TRACE, ProviderDq) << " " << SelfId() << " AddStats " << taskId;
-            AddStats(state.GetStats());
-            if (ServiceCounters.Counters && !AggrPeriod) {
-                ExportStats(TaskStat, taskId);
-                TrySendNonFinalStat();
+        if (CollectBasic()) {
+            if (state.HasStats() && TryAddStatsFromExtra(state.GetStats())) {
+                if (Settings->ExportStats.Get().GetOrElse(TDqSettings::TDefault::ExportStats) && ServiceCounters.Counters && !AggrPeriod) {
+                    ExportStats(TaskStat, taskId);
+                    TrySendNonFinalStat();
+                }
+            } else if (state.HasStats() && state.GetStats().GetTasks().size()) {
+                YQL_CLOG(TRACE, ProviderDq) << " " << SelfId() << " AddStats " << taskId;
+                AddStats(state.GetStats());
+                if (Settings->ExportStats.Get().GetOrElse(TDqSettings::TDefault::ExportStats) && ServiceCounters.Counters && !AggrPeriod) {
+                    ExportStats(TaskStat, taskId);
+                    TrySendNonFinalStat();
+                }
             }
         }
-
 
         TIssues localIssues;
         // TODO: don't convert issues to string
@@ -225,8 +235,8 @@ public:
             break;
         case AGGR_TIMER_TAG:
             if (AggrPeriod) {
-                if (ServiceCounters.Counters) {
-                    ExportStats(AggregateQueryStatsByStage(TaskStat, Stages), 0);
+                if (Settings->ExportStats.Get().GetOrElse(TDqSettings::TDefault::ExportStats) && ServiceCounters.Counters) {
+                    ExportStats(AggregateQueryStatsByStage(TaskStat, Stages, CollectFull()), 0);
                 }
                 SendNonFinalStat();
                 Schedule(AggrPeriod, new TEvents::TEvWakeup(AGGR_TIMER_TAG));
@@ -260,12 +270,11 @@ private:
         YQL_CLOG(TRACE, ProviderDq) << " " << SelfId() << " ExportStats " << (taskId ? ToString(taskId) : "Summary");
         TString name;
         std::map<TString, TString> labels;
-        static const TString SourceLabel = "Source";
-        static const TString SinkLabel = "Sink";
         for (const auto& [k, v] : stat.Get()) {
             labels.clear();
             if (auto group = GroupForExport(stat, k, taskId, name, labels)) {
-                *group->GetCounter(name) = v.Count;
+                auto taskLevelCounter = labels.size() == 1 && labels.contains("Stage") && labels["Stage"] == "Total"; 
+                *group->GetCounter(name) = v.Sum;
                 if (ServiceCounters.PublicCounters && taskId == 0 && IsAggregatedStage(labels)) {
                     TString publicCounterName;
                     bool isDeriv = false;
@@ -274,14 +283,21 @@ private:
                     } else if (name == "CpuTimeUs") {
                         publicCounterName = "query.cpu_usage_us";
                         isDeriv = true;
-                    } else if (name == "Bytes") {
-                        if (labels.count(SourceLabel)) publicCounterName = "query.input_bytes";
-                        else if (labels.count(SinkLabel)) publicCounterName = "query.output_bytes";
+                    } else if (name == "IngressBytes" && taskLevelCounter) {
+                        publicCounterName = "query.input_bytes";
                         isDeriv = true;
-                    } else if (name == "RowsIn") {
-                        if (labels.count(SourceLabel)) publicCounterName = "query.source_input_records";
-                        else if (labels.count(SinkLabel)) publicCounterName = "query.sink_output_records"; // RowsIn == RowsOut for Sinks
+                    } else if (name == "EgressBytes" && taskLevelCounter) {
+                        publicCounterName = "query.output_bytes";
                         isDeriv = true;
+                    } else if (name == "IngressRows" && taskLevelCounter) {
+                        publicCounterName = "query.source_input_records";
+                        isDeriv = true;
+                    } else if (name == "EgressRows" && taskLevelCounter) {
+                        publicCounterName = "query.sink_output_records";
+                        isDeriv = true;
+                    } else if (name == "Tasks") {
+                        publicCounterName = "query.running_tasks";
+                        isDeriv = false;
                     } else if (name == "MultiHop_LateThrownEventsCount") {
                         publicCounterName = "query.late_events";
                         isDeriv = true;
@@ -291,9 +307,9 @@ private:
                         auto& counter = *ServiceCounters.PublicCounters->GetNamedCounter("name", publicCounterName, isDeriv);
                         if (name == "MultiHop_LateThrownEventsCount") {
                             // the only incremental sensor from TaskRunner
-                            counter += v.Count;
+                            counter += v.Sum;
                         } else {
-                            counter = v.Count;
+                            counter = v.Sum;
                         }
                     }
                 }
@@ -333,44 +349,51 @@ private:
         YQL_ENSURE(x.GetTasks().size() == 1);
         auto& s = x.GetTasks(0);
         ui64 taskId = s.GetTaskId();
+        ui64 stageId = Stages.Value(taskId, s.GetStageId());
 
 #define ADD_COUNTER(name) \
         if (stats.Get ## name()) { \
             TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, #name), stats.Get ## name ()); \
         }
 
-        std::map<TString, TString> labels = {
-            {"Task", ToString(taskId)}
+        std::map<TString, TString> commonLabels = {
+            {"Task", ToString(taskId)},
+            {"Stage", ToString(stageId)}
         };
+
+        auto labels = commonLabels;
 
         auto& stats = s;
         // basic stats
         ADD_COUNTER(CpuTimeUs)
         ADD_COUNTER(ComputeCpuTimeUs)
         ADD_COUNTER(SourceCpuTimeUs)
-        ADD_COUNTER(PendingInputTimeUs)
-        ADD_COUNTER(PendingOutputTimeUs)
-        ADD_COUNTER(FinishTimeUs)
+
+        ADD_COUNTER(IngressRows)
+        ADD_COUNTER(IngressBytes)
+        ADD_COUNTER(EgressRows)
+        ADD_COUNTER(EgressBytes)
         ADD_COUNTER(InputRows)
         ADD_COUNTER(InputBytes)
         ADD_COUNTER(OutputRows)
         ADD_COUNTER(OutputBytes)
+        ADD_COUNTER(ResultRows)
+        ADD_COUNTER(ResultBytes)
+
+        ADD_COUNTER(StartTimeMs)
+        ADD_COUNTER(FinishTimeMs)
+        ADD_COUNTER(WaitInputTimeUs)
+        ADD_COUNTER(WaitOutputTimeUs)
 
         // profile stats
         ADD_COUNTER(BuildCpuTimeUs)
-        ADD_COUNTER(WaitTimeUs)
-        ADD_COUNTER(WaitOutputTimeUs)
-
-        for (const auto& ingress : s.GetIngress()) {
-            TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Ingress" + ingress.GetName() + "Bytes"), ingress.GetBytes());
-        }
-
-        for (const auto& egress : s.GetEgress()) {
-            TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Egress" + egress.GetName() + "Bytes"), egress.GetBytes());
-        }
 
         if (auto v = x.GetMkqlMaxMemoryUsage()) {
             TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "MkqlMaxMemoryUsage"), v);
+        }
+
+        if (auto v = x.GetDurationUs()) {
+            TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "DurationUs"), v);
         }
 
         for (const auto& stat : s.GetMkqlStats()) {
@@ -398,86 +421,40 @@ private:
 //            TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Total"), stats.GetFinishTs() - stats.GetStartTs());
 //        }
 
-        for (const auto& stats : s.GetInputChannels()) {
-            std::map<TString, TString> labels = {
-                {"Task", ToString(taskId)},
-                {"InputChannel", ToString(stats.GetChannelId())}
-            };
+        if (Settings->EnableChannelStats.Get().GetOrElse(TDqSettings::TDefault::EnableChannelStats))
+        {
+            for (const auto& stats : s.GetInputChannels()) {
+                auto labels = commonLabels;
+                labels["InputChannel"] = ToString(stats.GetChannelId());
+                labels["SrcStageId"] = ToString(stats.GetSrcStageId());
+                TaskStat.AddAsyncStats(stats.GetPush(),  labels, "Push");
+                TaskStat.AddAsyncStats(stats.GetPop(), labels, "Pop");
+            }
 
-            ADD_COUNTER(Chunks);
-            ADD_COUNTER(Bytes);
-            ADD_COUNTER(RowsIn);
-            ADD_COUNTER(RowsOut);
-            ADD_COUNTER(MaxMemoryUsage);
-            ADD_COUNTER(DeserializationTimeUs);
-
-//            if (stats.GetFinishTs() >= stats.GetStartTs()) {
-//                TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Total"), stats.GetFinishTs() - stats.GetStartTs());
-//            }
-        }
-
-        for (const auto& stats : s.GetOutputChannels()) {
-            std::map<TString, TString> labels = {
-                {"Task", ToString(taskId)},
-                {"OutputChannel", ToString(stats.GetChannelId())}
-            };
-
-            ADD_COUNTER(Chunks)
-            ADD_COUNTER(Bytes);
-            ADD_COUNTER(RowsIn);
-            ADD_COUNTER(RowsOut);
-            ADD_COUNTER(MaxMemoryUsage);
-
-            ADD_COUNTER(SerializationTimeUs);
-            ADD_COUNTER(BlockedByCapacity);
-
-            ADD_COUNTER(SpilledBytes);
-            ADD_COUNTER(SpilledRows);
-            ADD_COUNTER(SpilledBlobs);
-
-//            if (stats.GetFinishTs() >= stats.GetStartTs()) {
-//                TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Total"), stats.GetFinishTs() - stats.GetStartTs());
-//            }
+            for (const auto& stats : s.GetOutputChannels()) {
+                auto labels = commonLabels;
+                labels["OutputChannel"] = ToString(stats.GetChannelId());
+                labels["DstStageId"] = ToString(stats.GetDstStageId());
+                TaskStat.AddAsyncStats(stats.GetPush(),  labels, "Push");
+                TaskStat.AddAsyncStats(stats.GetPop(), labels, "Pop");
+            }
         }
 
         for (const auto& stats : s.GetSources()) {
-            std::map<TString, TString> labels = {
-                {"Task", ToString(taskId)},
-                {"Source", ToString(stats.GetInputIndex())}
-            };
-
-            ADD_COUNTER(Chunks);
-            ADD_COUNTER(Bytes);
-            ADD_COUNTER(IngressBytes)
-            ADD_COUNTER(RowsIn);
-            ADD_COUNTER(RowsOut);
-            ADD_COUNTER(MaxMemoryUsage);
-
-            ADD_COUNTER(ErrorsCount);
-
-//            if (stats.GetFinishTs() >= stats.GetStartTs()) {
-//                TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Total"), stats.GetFinishTs() - stats.GetStartTs());
-//            }
+            auto labels = commonLabels;
+            labels["Source"] = stats.GetIngressName();
+            TaskStat.AddAsyncStats(stats.GetIngress(), labels, "Ingress");
+            TaskStat.AddAsyncStats(stats.GetPush(),  labels, "Push");
+            TaskStat.AddAsyncStats(stats.GetPop(), labels, "Pop");
         }
 
         for (const auto& stats : s.GetSinks()) {
-            std::map<TString, TString> labels = {
-                {"Task", ToString(taskId)},
-                {"Sink", ToString(stats.GetOutputIndex())}
-            };
-
-            ADD_COUNTER(Chunks)
-            ADD_COUNTER(Bytes);
-            ADD_COUNTER(EgressBytes)
-            ADD_COUNTER(RowsIn);
-            ADD_COUNTER(RowsOut);
-            ADD_COUNTER(MaxMemoryUsage);
-
-            ADD_COUNTER(ErrorsCount);
-
-//            if (stats.GetFinishTs() >= stats.GetStartTs()) {
-//                TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", labels, "Total"), stats.GetFinishTs() - stats.GetStartTs());
-//            }
+            auto labels = commonLabels;
+            labels["Sink"] = ToString(stats.GetOutputIndex());
+            labels["Name"] = stats.GetEgressName();
+            TaskStat.AddAsyncStats(stats.GetPush(),  labels, "Push");
+            TaskStat.AddAsyncStats(stats.GetPop(), labels, "Pop");
+            TaskStat.AddAsyncStats(stats.GetEgress(),  labels, "Egress");
         }
 
 #undef ADD_COUNTER
@@ -489,40 +466,36 @@ private:
         }
     }
 
-    void SetTaskCountMetric(ui64 count) {
-        if (!ServiceCounters.Counters) {
-            return;
-        }
-        *ServiceCounters.Counters->GetCounter("TaskCount") = count;
-
-        if (!ServiceCounters.PublicCounters) {
-            return;
-        }
-        *ServiceCounters.PublicCounters->GetNamedCounter("name", "query.running_tasks") = count;
-    }
-
 public:
     void OnReadyState(TEvReadyState::TPtr& ev) {
+
+        if (ev->Get()->Record.GetStatsMode() != NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_UNSPECIFIED) {
+            StatsMode = ev->Get()->Record.GetStatsMode();
+        }
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(TraceId);
 
         TaskStat.AddCounters(ev->Get()->Record);
 
-        const auto& tasks = ev->Get()->Record.GetTask();
+        auto& tasks = *ev->Get()->Record.MutableTask();
         const auto& actorIds = ev->Get()->Record.GetActorId();
-        Y_VERIFY(tasks.size() == actorIds.size());
-
-        SetTaskCountMetric(tasks.size());
+        Y_ABORT_UNLESS(tasks.size() == actorIds.size());
 
         for (int i = 0; i < static_cast<int>(tasks.size()); ++i) {
             auto actorId = ActorIdFromProto(actorIds[i]);
-            auto& task = tasks[i];
-            Tasks.emplace_back(NDq::TDqTaskSettings(std::move(task)), actorId);
+            const auto& task = Tasks.emplace_back(NDq::TDqTaskSettings(&tasks[i]), actorId).first;
             ActorIds.emplace(task.GetId(), actorId);
             TaskIds.emplace(actorId, task.GetId());
             Yql::DqsProto::TTaskMeta taskMeta;
             task.GetMeta().UnpackTo(&taskMeta);
             Stages.emplace(task.GetId(), taskMeta.GetStageId());
         }
+
+        for (const auto& [taskId, stageId] : Stages) {
+            TaskStat.SetCounter(TaskStat.GetCounterName("TaskRunner", 
+                {{"Task", ToString(taskId)}, {"Stage", ToString(stageId)}}, "CpuTimeUs"), 0);
+        }
+
+        ExportStats(AggregateQueryStatsByStage(TaskStat, Stages, CollectFull()), 0);
 
         YQL_CLOG(DEBUG, ProviderDq) << "Ready State: " << SelfId();
 
@@ -538,6 +511,10 @@ public:
 
     const NDq::TDqTaskSettings GetTask(size_t idx) const {
         return Tasks.at(idx).first;
+    }
+
+    int GetTasksSize() const {
+        return Tasks.size();
     }
 
 private:
@@ -614,8 +591,8 @@ public:
 
 private:
     void Finish() {
-        if (ServiceCounters.Counters && AggrPeriod) {
-            ExportStats(AggregateQueryStatsByStage(TaskStat, Stages), 0); // force metrics upload on Finish when Aggregated
+        if (Settings->ExportStats.Get().GetOrElse(TDqSettings::TDefault::ExportStats) && ServiceCounters.Counters && AggrPeriod) {
+            ExportStats(AggregateQueryStatsByStage(TaskStat, Stages, CollectFull()), 0); // force metrics upload on Finish when Aggregated
         }
         Send(ExecuterId, new TEvGraphFinished());
         Finished = true;
@@ -633,9 +610,16 @@ public:
 
 private:
     TCounters FinalStat() {
-        return AggrPeriod ? AggregateQueryStatsByStage(TaskStat, Stages) : TaskStat;
+        return AggrPeriod ? AggregateQueryStatsByStage(TaskStat, Stages, CollectFull()) : TaskStat;
     }
 
+    bool CollectBasic() {
+        return StatsMode >= NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_BASIC;
+    }
+
+    bool CollectFull() {
+        return StatsMode >= NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_FULL;
+    }
 
     bool ChannelsUpdated = false;
     TVector<std::pair<NDq::TDqTaskSettings, TActorId>> Tasks;
@@ -649,13 +633,14 @@ private:
     const TString TraceId;
     TDqConfiguration::TPtr Settings;
     bool Finished = false;
-    TCounters TaskStat;
+    TTaskCounters TaskStat;
     NYql::NCommon::TServiceCounters ServiceCounters;
     TDuration PingPeriod = TDuration::Zero();
     TDuration AggrPeriod = TDuration::Zero();
     NYql::NDq::GroupedIssues Issues;
     ui64 PingCookie = 0;
     TInstant LastStatReport;
+    NYql::NDqProto::EDqStatsMode StatsMode = NYql::NDqProto::EDqStatsMode::DQ_STATS_MODE_FULL;
 };
 
 } /* namespace NYql */

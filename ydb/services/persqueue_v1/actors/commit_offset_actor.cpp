@@ -38,7 +38,7 @@ void TCommitOffsetActor::Bootstrap(const TActorContext& ctx) {
     Become(&TThis::StateFunc);
 
     auto request = dynamic_cast<const Ydb::Topic::CommitOffsetRequest*>(GetProtoRequest());
-    Y_VERIFY(request);
+    Y_ABORT_UNLESS(request);
     ClientId = NPersQueue::ConvertNewConsumerName(request->consumer(), ctx);
     PartitionId = request->Getpartition_id();
 
@@ -94,14 +94,15 @@ void TCommitOffsetActor::Handle(TEvPQProxy::TEvAuthResultOk::TPtr& ev, const TAc
         AnswerError("empty list of topics", PersQueue::ErrorCode::UNKNOWN_TOPIC, ctx);
         return;
     }
-    Y_VERIFY(TopicAndTablets.size() == 1);
+    Y_ABORT_UNLESS(TopicAndTablets.size() == 1);
     auto& [topic, topicInitInfo] = *TopicAndTablets.begin();
 
-    if (topicInitInfo.PartitionIdToTabletId.find(PartitionId) == topicInitInfo.PartitionIdToTabletId.end()) {
+    if (topicInitInfo.Partitions.find(PartitionId) == topicInitInfo.Partitions.end()) {
         AnswerError("partition id not found in topic", PersQueue::ErrorCode::WRONG_PARTITION_NUMBER, ctx);
+        return;
     }
 
-    ui64 tabletId = topicInitInfo.PartitionIdToTabletId.at(PartitionId);
+    ui64 tabletId = topicInitInfo.Partitions.at(PartitionId).TabletId;
 
     NTabletPipe::TClientConfig clientConfig;
     clientConfig.RetryPolicy = {
@@ -120,7 +121,7 @@ void TCommitOffsetActor::Handle(TEvPQProxy::TEvAuthResultOk::TPtr& ev, const TAc
     request.MutablePartitionRequest()->SetTopic(topicInitInfo.TopicNameConverter->GetPrimaryPath());
     request.MutablePartitionRequest()->SetPartition(client_req->partition_id());
 
-    Y_VERIFY(PipeClient);
+    Y_ABORT_UNLESS(PipeClient);
 
     auto commit = request.MutablePartitionRequest()->MutableCmdSetClientOffset();
     commit->SetClientId(ClientId);
@@ -147,7 +148,7 @@ void TCommitOffsetActor::Handle(TEvPersQueue::TEvResponse::TPtr& ev, const TActo
     // Convert to correct response.
 
     const auto& partitionResult = ev->Get()->Record.GetPartitionResponse();
-    Y_VERIFY(!partitionResult.HasCmdReadResult());
+    Y_ABORT_UNLESS(!partitionResult.HasCmdReadResult());
 
     LOG_DEBUG_S(ctx, NKikimrServices::PQ_READ_PROXY, "CommitOffset, commit done.");
 

@@ -21,7 +21,7 @@
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/string/cast.h>
 
@@ -62,7 +62,7 @@ class TGetOperationRPC : public TRpcOperationRequestActor<TGetOperationRPC, TEvG
         case TOperationId::BUILD_INDEX:
             return new NSchemeShard::TEvIndexBuilder::TEvGetRequest(DatabaseName, RawOperationId_);
         default:
-            Y_FAIL("unreachable");
+            Y_ABORT("unreachable");
         }
     }
 
@@ -163,7 +163,7 @@ private:
         }
 
         IActor* pipeActor = NTabletPipe::CreateClient(ctx.SelfID, tid);
-        Y_VERIFY(pipeActor);
+        Y_ABORT_UNLESS(pipeActor);
         PipeActorId_ = ctx.ExecutorThread.RegisterActor(pipeActor);
 
         auto request = MakeHolder<NConsole::TEvConsole::TEvGetOperationRequest>();
@@ -190,7 +190,7 @@ private:
         }
 
         IActor* pipeActor = NTabletPipe::CreateClient(ctx.SelfID, schemeShardTabletId);
-        Y_VERIFY(pipeActor);
+        Y_ABORT_UNLESS(pipeActor);
         PipeActorId_ = ctx.ExecutorThread.RegisterActor(pipeActor);
 
         auto request = MakeHolder<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletion>();
@@ -243,7 +243,7 @@ private:
     void Handle(NKqp::TEvGetScriptExecutionOperationResponse::TPtr& ev, const TActorContext& ctx) {
         TEvGetOperationRequest::TResponse resp;
         auto deferred = resp.mutable_operation();
-        if (ev->Get()->Ready) {
+        if (ev->Get()->Status != Ydb::StatusIds::NOT_FOUND) {
             deferred->set_id(GetProtoRequest()->id());
         }
         deferred->set_ready(ev->Get()->Ready);
@@ -317,6 +317,11 @@ private:
 
 void DoGetOperationRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
     f.RegisterActor(new TGetOperationRPC(p.release()));
+}
+
+template<>
+IActor* TEvGetOperationRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
+    return new TGetOperationRPC(msg);
 }
 
 } // namespace NGRpcService

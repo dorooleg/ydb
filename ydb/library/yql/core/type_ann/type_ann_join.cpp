@@ -335,6 +335,10 @@ namespace NTypeAnnImpl {
             }
         }
 
+        if (!EnsureTupleOfAtoms(*input->Child(4), ctx.Expr)) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
         const TStructExprType* rightStructType = nullptr;
         const TTupleExprType* rightTupleType = nullptr;
         if (joinKind != "LeftSemi" && joinKind != "LeftOnly") {
@@ -357,8 +361,8 @@ namespace NTypeAnnImpl {
             }
         }
 
-        auto& leftRenames = *input->Child(4);
-        auto& rightRenames = *input->Child(5);
+        auto& leftRenames = *input->Child(5);
+        auto& rightRenames = *input->Child(6);
         if (!EnsureTupleOfAtoms(leftRenames, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
@@ -470,17 +474,9 @@ namespace NTypeAnnImpl {
     }
 
     IGraphTransformer::TStatus MapJoinCoreWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        if (input->ChildrenSize() == 7U) {
-            // Drop unused argument: right key.
-            auto children = input->ChildrenList();
-            auto it = children.cbegin();
-            std::advance(it, 4U);
-            children.erase(it);
-            output = ctx.Expr.ChangeChildren(*input, std::move(children));
-            return IGraphTransformer::TStatus::Repeat;
-        }
-
-        if (!EnsureArgsCount(*input, 6, ctx.Expr)) {
+        Y_UNUSED(output);
+        
+        if (!EnsureArgsCount(*input, 9, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
@@ -506,17 +502,15 @@ namespace NTypeAnnImpl {
         }
     }
 
-
-    IGraphTransformer::TStatus GraceJoinCoreWrapperImp(const TExprNode::TPtr& input, const TMultiExprType& leftTupleType, const TMultiExprType& rightTupleType, TContext& ctx) {
-
-        if (!EnsureAtom(*input->Child(2), ctx.Expr)) {
+    IGraphTransformer::TStatus GraceJoinCoreWrapperImp(const TExprNode::TPtr& input, const TMultiExprType& leftTupleType, const TMultiExprType& rightTupleType, TContext& ctx, int shift) {
+        if (!EnsureAtom(*input->Child(shift), ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
-        const auto joinKind = input->Child(2)->Content();
+        const auto joinKind = input->Child(shift);
 
-        auto& leftKeyColumns = *input->Child(3);
-        auto& rightKeyColumns = *input->Child(4);
+        auto& leftKeyColumns = *input->Child(shift + 1);
+        auto& rightKeyColumns = *input->Child(shift + 2);
 
         if (!EnsureTupleOfAtoms(leftKeyColumns, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
@@ -527,8 +521,8 @@ namespace NTypeAnnImpl {
         }
 
 
-        auto& leftRenames = *input->Child(5);
-        auto& rightRenames = *input->Child(6);
+        auto& leftRenames = *input->Child(shift + 3);
+        auto& rightRenames = *input->Child(shift + 4);
 
         if (!EnsureTupleOfAtoms(leftRenames, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
@@ -576,7 +570,7 @@ namespace NTypeAnnImpl {
             }
 
             auto columnType = GetFieldType(leftTupleType, *oldPos);
-            if ((joinKind == "Right" || joinKind == "Full" || joinKind == "Exclusion" ) && !columnType->IsOptionalOrNull()) {
+            if (joinKind->IsAtom({"Right", "Full", "Exclusion"}) && !columnType->IsOptionalOrNull()) {
                 columnType = ctx.Expr.MakeType<TOptionalExprType>(columnType);
             }
 
@@ -610,7 +604,7 @@ namespace NTypeAnnImpl {
             }
 
             auto columnType =  GetFieldType(rightTupleType, *oldPos);
-            if ((joinKind == "Left" || joinKind == "Full" || joinKind == "Exclusion" ) && !columnType->IsOptionalOrNull()) {
+            if (joinKind->IsAtom({"Left", "Full", "Exclusion"}) && !columnType->IsOptionalOrNull()) {
                 columnType = ctx.Expr.MakeType<TOptionalExprType>(columnType);
             }
 
@@ -620,7 +614,13 @@ namespace NTypeAnnImpl {
             } else {
                 resultItems[index] = columnType;
             }
+        }
 
+        for (auto i = 0U; i < input->Tail().ChildrenSize(); ++i) {
+            if (const auto& flag = *input->Tail().Child(i); !flag.IsAtom({"LeftAny", "RightAny"})) {
+                ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(flag.Pos()), TStringBuilder() << "Unsupported grace join option: " << flag.Content()));
+                return IGraphTransformer::TStatus::Error;
+            }
         }
 
         const auto resultItemType = ctx.Expr.MakeType<TMultiExprType>(resultItems);
@@ -631,11 +631,8 @@ namespace NTypeAnnImpl {
         return IGraphTransformer::TStatus::Ok;
     }
 
-
     IGraphTransformer::TStatus GraceJoinCoreWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        Y_UNUSED(output);
-
-        if (!EnsureArgsCount(*input, 7, ctx.Expr)) {
+        if (!EnsureArgsCount(*input, 10, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
@@ -657,10 +654,33 @@ namespace NTypeAnnImpl {
             return IGraphTransformer::TStatus::Error;
         }
 
-         return GraceJoinCoreWrapperImp(input, *leftItemType->Cast<TMultiExprType>(), *rightItemType->Cast<TMultiExprType>(), ctx);
+        if (const auto status = NormalizeTupleOfAtoms(input, 7U, output, ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
+            return status;
+        }
 
+        return GraceJoinCoreWrapperImp(input, *leftItemType->Cast<TMultiExprType>(), *rightItemType->Cast<TMultiExprType>(), ctx, 2);
     }
 
+    IGraphTransformer::TStatus GraceSelfJoinCoreWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
+        if (!EnsureArgsCount(*input, 9, ctx.Expr)) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        const TTypeAnnotationNode* leftItemType = nullptr;
+        if (!EnsureNewSeqType<true>(*input->Child(0), ctx.Expr, &leftItemType)) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        if ( !EnsureWideFlowType(*input->Child(0), ctx.Expr) ) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        if (const auto status = NormalizeTupleOfAtoms(input, 6U, output, ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
+            return status;
+        }
+
+        return GraceJoinCoreWrapperImp(input, *leftItemType->Cast<TMultiExprType>(), *leftItemType->Cast<TMultiExprType>(), ctx, 1);
+    }
 
     template<class TInputType>
     IGraphTransformer::TStatus CommonJoinCoreWrapperT(const TExprNode::TPtr& input, const TInputType& inputItemType, TContext& ctx) {
@@ -876,6 +896,9 @@ namespace NTypeAnnImpl {
                     return IGraphTransformer::TStatus::Error;
                 }
 
+            }
+            else if (optionName == "join_algo") {
+                // do nothing
             }
             else {
                 ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(child->Pos()), TStringBuilder() <<

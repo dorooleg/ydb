@@ -1,5 +1,5 @@
 #include <ydb/core/base/tablet.h>
-#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 #include <ydb/core/kqp/proxy_service/kqp_proxy_service.h>
 #include <ydb/core/kqp/common/kqp.h>
@@ -8,14 +8,16 @@
 #include <ydb/core/testlib/test_client.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/public/sdk/cpp/client/draft/ydb_query/client.h>
+#include <ydb/public/sdk/cpp/client/ydb_query/client.h>
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/services/ydb/ydb_common_ut.h>
 
-#include <library/cpp/actors/interconnect/interconnect_impl.h>
+#include <ydb/library/actors/interconnect/interconnect_impl.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
+
+#include <ydb/public/api/grpc/ydb_table_v1.grpc.pb.h>
 
 #include <util/generic/vector.h>
 #include <memory>
@@ -108,8 +110,8 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
 
             runtime->Send(new IEventHandle(kqpProxy, sender, ev.Release()));
             TAutoPtr<IEventHandle> handle;
-            auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvProcessResponse>(sender);
-            UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetYdbStatus(), Ydb::StatusIds::BAD_REQUEST);
+            auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvQueryResponse>(sender);
+            UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::BAD_REQUEST);
         };
 
         SendBadRequestToSession("ydb://session/1?id=ZjY5NWRlM2EtYWMyYjA5YWEtNzQ0MTVlYTMtM2Q4ZDgzOWQ=&node_id=1234&node_id=12345");
@@ -150,9 +152,9 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
 
         runtime->Send(new IEventHandle(kqpProxy, sender, ev.Release()));
         TAutoPtr<IEventHandle> handle;
-        auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvProcessResponse>(sender);
-        UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetYdbStatus(), Ydb::StatusIds::BAD_REQUEST);
-        UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetError(), "<main>: Error: SomeUniqTextForUt\n");
+        auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvQueryResponse>(sender);
+        UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::BAD_REQUEST);
+        UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetRef().GetResponse().GetQueryIssues().at(0).message(), "<main>: Error: SomeUniqTextForUt\n");
     }
 
     Y_UNIT_TEST(LoadedMetadataAfterCompilationTimeout) {
@@ -162,7 +164,7 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
         ui16 mbusport = tp.GetPort(2134);
         auto settings = Tests::TServerSettings(mbusport).SetDomainName("Root").SetUseRealThreads(false);
         // set small compilation timeout to avoid long timer creation
-        settings.AppConfig.MutableTableServiceConfig()->SetCompileTimeoutMs(400);
+        settings.AppConfig->MutableTableServiceConfig()->SetCompileTimeoutMs(400);
 
         Tests::TServer::TPtr server = new Tests::TServer(settings);
 
@@ -183,9 +185,8 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
 
         auto scheduledEvs = [&](TTestActorRuntimeBase& run, TAutoPtr<IEventHandle> &event, TDuration delay, TInstant &deadline) {
             if (event->GetTypeRewrite() == TEvents::TSystem::Wakeup) {
-                TActorId actorId = event->GetRecipientRewrite();
-                IActor *actor = runtime->FindActor(actorId);
-                if (actor && actor->GetActivityType() == NKikimrServices::TActivity::KQP_COMPILE_ACTOR) {
+                Cerr << "Captured TEvents::TSystem::Wakeup to " << runtime->FindActorName(event->GetRecipientRewrite()) << Endl;
+                if (runtime->FindActorName(event->GetRecipientRewrite()) == "KQP_COMPILE_ACTOR") {
                     Cerr << "Captured scheduled event for compile actor " << event->Recipient << Endl;
                     scheduled.push_back(event.Release());
                     return true;
@@ -195,7 +196,7 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
             return TTestActorRuntime::DefaultScheduledFilterFunc(run, event, delay, deadline);
         };
 
-        auto captureEvents =  [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvTxProxySchemeCache::TEvNavigateKeySetResult::EventType) {
                 Cerr << "Captured Event" << Endl;
                 captured.push_back(ev.Release());
@@ -287,11 +288,8 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
             runtime->Send(new IEventHandle(kqpProxy1, sender, ev.Release()));
 
             TAutoPtr<IEventHandle> handle;
-            auto reply = runtime->GrabEdgeEventsRethrow<TEvKqp::TEvQueryResponse, TEvKqp::TEvProcessResponse>(handle);
-
-            TEvKqp::TEvQueryResponse* queryResponse = std::get<TEvKqp::TEvQueryResponse*>(reply);
-            Y_VERIFY(queryResponse);
-            UNIT_ASSERT_VALUES_EQUAL(queryResponse->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::SUCCESS);
+            auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvQueryResponse>(handle);
+            UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::SUCCESS);
         }
     }
 
@@ -324,7 +322,7 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
 
         size_t capturedQueries = 0;
         size_t capturedPings = 0;
-        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             // Drop every second event for KQP_PROXY_ACTOR on second node.
             if (ev->Recipient == kqpProxy2 && ev->GetTypeRewrite() == NKqp::TEvKqp::TEvQueryRequest::EventType) {
                 ++capturedQueries;
@@ -364,18 +362,14 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
                 runtime->Send(new IEventHandle(kqpProxy1, sender, ev.Release()));
 
                 TAutoPtr<IEventHandle> handle;
-                auto reply = runtime->GrabEdgeEventsRethrow<TEvKqp::TEvQueryResponse, TEvKqp::TEvProcessResponse>(handle);
+                auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvQueryResponse>(handle);
+                auto status = reply->Record.GetRef().GetYdbStatus();
+                UNIT_ASSERT(status == Ydb::StatusIds::SUCCESS || status == Ydb::StatusIds::TIMEOUT);
 
-                TEvKqp::TEvQueryResponse* queryResponse = std::get<TEvKqp::TEvQueryResponse*>(reply);
-                if (queryResponse) {
+                if (status == Ydb::StatusIds::SUCCESS) {
                     ++SuccessStories;
-                    UNIT_ASSERT_VALUES_EQUAL(queryResponse->Record.GetRef().GetYdbStatus(), Ydb::StatusIds::SUCCESS);
-                }
-
-                TEvKqp::TEvProcessResponse* processResponse = std::get<TEvKqp::TEvProcessResponse*>(reply);
-                if (processResponse) {
+                } else if (status == Ydb::StatusIds::TIMEOUT) {
                     ++NegativeStories;
-                    UNIT_ASSERT_VALUES_EQUAL(processResponse->Record.GetYdbStatus(), Ydb::StatusIds::TIMEOUT);
                 }
             }
 
@@ -387,18 +381,13 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
                 runtime->Send(new IEventHandle(kqpProxy1, sender, ev.Release()));
 
                 TAutoPtr<IEventHandle> handle;
-                auto reply = runtime->GrabEdgeEventsRethrow<TEvKqp::TEvPingSessionResponse, TEvKqp::TEvProcessResponse>(handle);
-
-                TEvKqp::TEvPingSessionResponse* pingResponse = std::get<TEvKqp::TEvPingSessionResponse*>(reply);
-                if (pingResponse) {
+                auto reply = runtime->GrabEdgeEventRethrow<TEvKqp::TEvPingSessionResponse>(handle);
+                auto status = reply->Record.GetStatus();
+                UNIT_ASSERT(status == Ydb::StatusIds::SUCCESS || status == Ydb::StatusIds::TIMEOUT);
+                if (status == Ydb::StatusIds::SUCCESS) {
                     ++SuccessStories;
-                    UNIT_ASSERT_VALUES_EQUAL(pingResponse->Record.GetStatus(), Ydb::StatusIds::SUCCESS);
-                }
-
-                TEvKqp::TEvProcessResponse* processResponse = std::get<TEvKqp::TEvProcessResponse*>(reply);
-                if (processResponse) {
+                } else if (status == Ydb::StatusIds::TIMEOUT) {
                     ++NegativeStories;
-                    UNIT_ASSERT_VALUES_EQUAL(processResponse->Record.GetYdbStatus(), Ydb::StatusIds::TIMEOUT);
                 }
             }
         }
@@ -502,8 +491,8 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
 
     Y_UNIT_TEST(ExecuteScriptFailsWithoutFeatureFlag) {
         NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableFeatureFlags()->SetEnableScriptExecutionOperations(false);
         NYdb::TKikimrWithGrpcAndRootSchema server(appConfig);
-        appConfig.MutableFeatureFlags()->SetEnableScriptExecutionOperations(false); // default
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::KQP_PROXY, NActors::NLog::PRI_DEBUG);
 
         ui16 grpc = server.GetPort();
@@ -521,6 +510,37 @@ Y_UNIT_TEST_SUITE(KqpProxy) {
         UNIT_ASSERT_VALUES_EQUAL_C(listResult.GetStatus(), NYdb::EStatus::SUCCESS, listResult.GetIssues().ToString());
         UNIT_ASSERT_VALUES_EQUAL(listResult.GetChildren().size(), 1);
         UNIT_ASSERT_VALUES_EQUAL(listResult.GetChildren()[0].Name, ".sys");
+    }
+
+    Y_UNIT_TEST(PingNotExistedSession) {
+        NKikimrConfig::TAppConfig appConfig;
+        NYdb::TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        ui16 grpc = server.GetPort();
+        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::KQP_PROXY, NActors::NLog::PRI_DEBUG);
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+        auto clientConfig = NGRpcProxy::TGRpcClientConfig(location);
+        bool allDoneOk = false;
+
+        {
+            NYdbGrpc::TGRpcClientLow clientLow;
+            auto connection = clientLow.CreateGRpcServiceConnection<Ydb::Table::V1::TableService>(clientConfig);
+
+            Ydb::Table::KeepAliveRequest request;
+            request.set_session_id("ydb://session/3?node_id=2&id=YDB0NDRhNjItYWQwZmIzMTktMWUyOTE4ZWYtYzE0NzJjNg==");
+
+            NYdbGrpc::TResponseCallback<Ydb::Table::KeepAliveResponse> responseCb =
+                [&allDoneOk](NYdbGrpc::TGrpcStatus&& grpcStatus, Ydb::Table::KeepAliveResponse&& response) -> void {
+                    UNIT_ASSERT(grpcStatus.GRpcStatusCode == 0);
+                    UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::BAD_SESSION);
+                    allDoneOk = true;
+            };
+
+            connection->DoRequest(request, std::move(responseCb), &Ydb::Table::V1::TableService::Stub::AsyncKeepAlive);
+        }
+
+        UNIT_ASSERT(allDoneOk);
     }
 } // namspace NKqp
 } // namespace NKikimr

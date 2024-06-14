@@ -1,8 +1,8 @@
 #pragma once
 
-#include "schemeshard_ui64id.h"
-
-#include <ydb/core/base/pathid.h>
+#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/util/ui64id.h>
+#include <ydb/library/conclusion/result.h>
 
 #include <util/generic/utility.h>
 #include <util/stream/output.h>
@@ -12,12 +12,10 @@ namespace NSchemeShard {
 
 constexpr TPathId InvalidPathId = TPathId();
 
-class TTabletIdTag {};
-using TTabletId = TUi64Id<TTabletIdTag, Max<ui64>()>;
+STRONG_UI64_TYPE_DEF_DV(TTabletId, Max<ui64>(), Max<ui64>());
 constexpr TTabletId InvalidTabletId = TTabletId();
 
-class TLocalShardIdxTag {};
-using TLocalShardIdx = TUi64Id<TLocalShardIdxTag, Max<ui64>()>;
+STRONG_UI64_TYPE_DEF_DV(TLocalShardIdx, Max<ui64>(), Max<ui64>());
 constexpr TLocalShardIdx InvalidLocalShardIdx = TLocalShardIdx();
 
 class TShardIdx: public std::pair<TOwnerId, TLocalShardIdx> {
@@ -40,15 +38,17 @@ public:
     explicit operator bool() const {
         return GetOwnerId() != InvalidOwnerId && GetLocalId() != InvalidLocalShardIdx;
     }
+
+    NKikimrSchemeOp::TShardIdx SerializeToProto() const;
+
+    static TConclusion<TShardIdx> BuildFromProto(const NKikimrSchemeOp::TShardIdx& proto);
 };
 constexpr TShardIdx InvalidShardIdx = TShardIdx(InvalidOwnerId, InvalidLocalShardIdx);
 
-class TStepIdTag {};
-using TStepId = TUi64Id<TStepIdTag, 0>;
+STRONG_UI64_TYPE_DEF_DV(TStepId, 0, 0);
 constexpr TStepId InvalidStepId = TStepId();
 
-class TTxIdTag {};
-using TTxId = TUi64Id<TTxIdTag, 0>;
+STRONG_UI64_TYPE_DEF_DV(TTxId, 0, 0);
 constexpr TTxId InvalidTxId = TTxId();
 
 using TSubTxId = ui32;
@@ -109,8 +109,7 @@ constexpr TOperationId InvalidOperationId = TOperationId(InvalidTxId, InvalidSub
 NKikimrSchemeOp::TShardIdx AsProto(const TShardIdx& shardIdx);
 TShardIdx FromProto(const NKikimrSchemeOp::TShardIdx& shardIdx);
 
-class TIndexBuildIdTag {};
-using TIndexBuildId = TUi64Id<TIndexBuildIdTag, Max<ui64>()>;
+STRONG_UI64_TYPE_DEF_DV(TIndexBuildId, Max<ui64>(), Max<ui64>());
 constexpr TIndexBuildId InvalidIndexBuildId = TIndexBuildId();
 
 enum class EIndexColumnKind : ui8 {

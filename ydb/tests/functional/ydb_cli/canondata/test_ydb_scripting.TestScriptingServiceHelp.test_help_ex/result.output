@@ -11,6 +11,7 @@ Options:
   --help-ex                Print usage with examples
   --timeout ms             Operation timeout. Operation should be executed on server within this timeout. There could also be a delay up to 200ms to receive timeout error from server.
   --stats [String]         Collect statistics mode [none, basic, full]
+  --flame-graph [Path]     Path for statistics flame graph image, works only with full stats
   {-s|--script} [String]   Text of script to execute
   {-f|--file} PATH         [Required] Script file
   --explain                Explain query (default: 0)
@@ -26,6 +27,8 @@ Options:
                                Output in json format, binary strings are encoded with base64. Every row is a separate json on a separate line.
                              json-base64-array
                                Output in json format, binary strings are encoded with base64. Every resultset is a json array of rows. Every row is a separate json on a separate line.
+                             parquet
+                               Output in parquet format
                            Default: "pretty".
   {-p|--param} $name=value Query parameter[s].
                            Several parameter options can be specified.
@@ -58,6 +61,10 @@ Options:
                                Parameter names and values in json unicode format, binary string parameter values are base64-encoded
                              raw
                                Binary value with no transformations or parsing, parameter name is set by an "stdin-par" option
+                             csv
+                               Parameter names and values in csv format
+                             tsv
+                               Parameter names and values in tsv format
                            Default: "json-unicode".
                            2. Framing: defines how parameter sets are delimited on the stdin. Available options:
                              no-framing
@@ -65,6 +72,8 @@ Options:
                              newline-delimited
                                Newline character delimits parameter sets on stdin and triggers processing in accordance to "batch" option
                            Default: "no-framing".
+  --columns STR            String with column names that replaces header. It is assumed that there is no header in the file
+  --skip-rows NUM          Number of header rows to skip (not including the row of column names, if any) (default: 0)
   --stdin-par STRING       Parameter name on stdin, required/applicable when stdin-format implies values only.
   --batch STRING           Batching mode for stdin parameters processing. Available options:
                              iterative

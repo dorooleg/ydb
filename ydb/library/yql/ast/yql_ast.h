@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ydb/public/api/protos/ydb_value.pb.h"
 #include "yql_errors.h"
 
 #include <library/cpp/deprecated/enum_codegen/enum_codegen.h>
@@ -10,6 +11,7 @@
 #include <util/stream/output.h>
 #include <util/stream/str.h>
 #include <util/memory/pool.h>
+#include <util/generic/array_ref.h>
 
 namespace NYql {
 
@@ -76,41 +78,41 @@ struct TAstNode {
     }
 
     inline TStringBuf GetContent() const {
-        Y_VERIFY(IsAtom());
+        Y_ABORT_UNLESS(IsAtom());
         return TStringBuf(Data.A.Content, Data.A.Size);
     }
 
     inline void SetContent(TStringBuf newContent, TMemoryPool& pool) {
-        Y_VERIFY(IsAtom());
+        Y_ABORT_UNLESS(IsAtom());
         auto poolContent = pool.AppendString(newContent);
         Data.A.Content = poolContent.data();
         Data.A.Size = poolContent.size();
     }
 
     inline void SetLiteralContent(TStringBuf newContent) {
-        Y_VERIFY(IsAtom());
+        Y_ABORT_UNLESS(IsAtom());
         Data.A.Content = newContent.data();
         Data.A.Size = newContent.size();
     }
 
     inline ui32 GetFlags() const {
-        Y_VERIFY(IsAtom());
+        Y_ABORT_UNLESS(IsAtom());
         return Data.A.Flags;
     }
 
     inline void SetFlags(ui32 flags) {
-        Y_VERIFY(IsAtom());
+        Y_ABORT_UNLESS(IsAtom());
         Data.A.Flags = flags;
     }
 
     inline ui32 GetChildrenCount() const {
-        Y_VERIFY(IsList());
+        Y_ABORT_UNLESS(IsList());
         return ListCount;
     }
 
     inline const TAstNode* GetChild(ui32 index) const {
-        Y_VERIFY(IsList());
-        Y_VERIFY(index < ListCount);
+        Y_ABORT_UNLESS(IsList());
+        Y_ABORT_UNLESS(index < ListCount);
         if (ListCount <= SmallListCount) {
             return Data.S.Children[index];
         } else {
@@ -119,13 +121,18 @@ struct TAstNode {
     }
 
     inline TAstNode* GetChild(ui32 index) {
-        Y_VERIFY(IsList());
-        Y_VERIFY(index < ListCount);
+        Y_ABORT_UNLESS(IsList());
+        Y_ABORT_UNLESS(index < ListCount);
         if (ListCount <= SmallListCount) {
             return Data.S.Children[index];
         } else {
             return Data.L.Children[index];
         }
+    }
+    
+    inline TArrayRef<TAstNode* const> GetChildren() const {
+        Y_ABORT_UNLESS(IsList());
+        return {ListCount <= SmallListCount ? Data.S.Children : Data.L.Children, ListCount};
     }
 
     static inline TAstNode* NewAtom(TPosition position, TStringBuf content, TMemoryPool& pool, ui32 flags = TNodeFlags::Default) {
@@ -147,13 +154,13 @@ struct TAstNode {
         if (childrenCount) {
             if (childrenCount > SmallListCount) {
                 poolChildren = pool.AllocateArray<TAstNode*>(childrenCount);
-                memcpy(poolChildren, children, sizeof(TAstNode*) * childrenCount);
+                memcpy(poolChildren, children, sizeof(void*) * childrenCount);
             } else {
                 poolChildren = children;
             }
 
             for (ui32 index = 0; index < childrenCount; ++index) {
-                Y_VERIFY(poolChildren[index]);
+                Y_ABORT_UNLESS(poolChildren[index]);
             }
         }
 
@@ -234,10 +241,18 @@ private:
     } Data;
 };
 
+enum class ESyntaxType {
+    YQLv0,
+    YQLv1,
+    Pg,
+};
+
 struct TAstParseResult {
     std::unique_ptr<TMemoryPool> Pool;
     TAstNode* Root = nullptr;
     TIssues Issues;
+    TMaybe<THashMap<TString, Ydb::TypedValue>> PgAutoParamValues = Nothing();
+    ESyntaxType ActualSyntaxType = ESyntaxType::YQLv1;
 
     inline bool IsOk() const {
         return !!Root;
@@ -252,6 +267,11 @@ struct TAstParseResult {
     TAstParseResult& operator=(TAstParseResult&&);
 
     void Destroy();
+};
+
+struct TStmtParseInfo {
+    bool KeepInCache = true;
+    TMaybe<TString> CommandTagName = {};
 };
 
 struct TAstPrintFlags {

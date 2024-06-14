@@ -1,6 +1,7 @@
 #include "mkql_removemember.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
 namespace NKikimr {
@@ -25,7 +26,7 @@ public:
         NUdf::TUnboxedValue* itemsPtr = nullptr;
         const auto result = Cache.NewArray(ctx, Representations.size() - 1U, itemsPtr);
         if (Representations.size() > 1) {
-            Y_VERIFY(itemsPtr);
+            Y_ABORT_UNLESS(itemsPtr);
             if (const auto ptr = baseStruct.GetElements()) {
                 for (ui32 i = 0; i < Index; ++i) {
                     *itemsPtr++ = ptr[i];
@@ -53,7 +54,7 @@ public:
         if (Representations.size() > CodegenArraysFallbackLimit)
             return TBaseComputation::DoGenerateGetValue(ctx, block);
 
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto newSize = Representations.size() - 1U;
 

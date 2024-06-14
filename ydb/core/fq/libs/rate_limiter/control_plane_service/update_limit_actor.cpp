@@ -1,11 +1,11 @@
 #include "update_limit_actor.h"
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/fq/libs/events/events.h>
 #include <ydb/core/fq/libs/rate_limiter/utils/path.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NFq {
 namespace {

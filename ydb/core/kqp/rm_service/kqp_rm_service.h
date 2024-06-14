@@ -1,10 +1,12 @@
 #pragma once
 
 #include <ydb/core/protos/config.pb.h>
+#include <ydb/core/protos/table_service_config.pb.h>
+#include <ydb/core/kqp/common/simple/kqp_event_ids.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_pattern_cache.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 
 #include <util/datetime/base.h>
 #include <util/string/builder.h>
@@ -32,31 +34,27 @@ using TOnResourcesSnapshotCallback = std::function<void(TVector<NKikimrKqp::TKqp
 
 /// resources request
 struct TKqpResourcesRequest {
-    ui32 ExecutionUnits = 0;
     EKqpMemoryPool MemoryPool = EKqpMemoryPool::Unspecified;
     ui64 Memory = 0;
 
     TString ToString() const {
         return TStringBuilder() << "TKqpResourcesRequest{ MemoryPool: " << (ui32) MemoryPool << ", Memory: " << Memory
-           << ", ExecutionUnits: " << ExecutionUnits << " }";
+           << " }";
     }
 };
 
 /// detailed information on allocation failure
 struct TKqpNotEnoughResources {
-    std::bitset<32> State;
+    NKikimrKqp::TEvStartKqpTasksResponse::ENotStartedTaskReason Status = NKikimrKqp::TEvStartKqpTasksResponse::INTERNAL_ERROR;
+    TString FailReason;
 
-    bool NotReady() const         { return State.test(0); }
-    bool ExecutionUnits() const   { return State.test(1); }
-    bool QueryMemoryLimit() const { return State.test(2); }
-    bool ScanQueryMemory() const  { return State.test(3); }
-    bool DataQueryMemory() const  { return State.test(4); }
+    NKikimrKqp::TEvStartKqpTasksResponse::ENotStartedTaskReason GetStatus() const {
+        return Status;
+    }
 
-    void SetNotReady()         { State.set(0); }
-    void SetExecutionUnits()   { State.set(1); }
-    void SetQueryMemoryLimit() { State.set(2); }
-    void SetScanQueryMemory()  { State.set(3); }
-    void SetDataQueryMemory()  { State.set(4); }
+    TString GetFailReason() const {
+        return FailReason;
+    }
 };
 
 /// local resources snapshot
@@ -73,6 +71,9 @@ public:
     virtual bool AllocateResources(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources,
         TKqpNotEnoughResources* details = nullptr) = 0;
 
+    virtual bool AllocateExecutionUnits(ui32 cnt) = 0;
+    virtual void FreeExecutionUnits(ui32 cnt) = 0;
+
     using TResourcesAllocatedCallback = std::function<void(NActors::TActorSystem* as)>;
     using TNotEnoughtResourcesCallback = std::function<void(NActors::TActorSystem* as, const TString& reason, bool byTimeout)>;
 
@@ -84,24 +85,50 @@ public:
     virtual void FreeResources(ui64 txId) = 0;
 
     virtual void NotifyExternalResourcesAllocated(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources) = 0;
+    virtual void NotifyExternalResourcesFreed(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources) = 0;
     virtual void NotifyExternalResourcesFreed(ui64 txId, ui64 taskId) = 0;
 
     virtual void RequestClusterResourcesInfo(TOnResourcesSnapshotCallback&& callback) = 0;
 
+    virtual TVector<NKikimrKqp::TKqpNodeResources> GetClusterResources() const = 0;
     virtual TKqpLocalNodeResources GetLocalResources() const = 0;
     virtual NKikimrConfig::TTableServiceConfig::TResourceManager GetConfig() = 0;
 
     virtual std::shared_ptr<NMiniKQL::TComputationPatternLRUCache> GetPatternCache() = 0;
 
     virtual ui32 GetNodeId() {
-        return 0; 
+        return 0;
     }
 };
 
 
 NActors::IActor* CreateTakeResourcesSnapshotActor(
-    const TString& boardPath, ui32 stateStorageGroupId,
+    const TString& boardPath,
     std::function<void(TVector<NKikimrKqp::TKqpNodeResources>&&)>&& callback);
+
+
+struct TResourceSnapshotState {
+    std::shared_ptr<TVector<NKikimrKqp::TKqpNodeResources>> Snapshot;
+    TMutex Lock;
+};
+
+struct TEvKqpResourceInfoExchanger {
+    struct TEvPublishResource : public TEventLocal<TEvPublishResource,
+        TKqpResourceInfoExchangerEvents::EvPublishResource>
+    {
+        const NKikimrKqp::TKqpNodeResources Resources;
+        TEvPublishResource(NKikimrKqp::TKqpNodeResources resources) : Resources(std::move(resources)) {
+        }
+    };
+
+    struct TEvSendResources : public TEventPB<TEvSendResources, NKikimrKqp::TResourceExchangeSnapshot,
+        TKqpResourceInfoExchangerEvents::EvSendResources>
+    {};
+};
+
+NActors::IActor* CreateKqpResourceInfoExchangerActor(TIntrusivePtr<TKqpCounters> counters,
+    std::shared_ptr<TResourceSnapshotState> resourceSnapshotState,
+    const NKikimrConfig::TTableServiceConfig::TResourceManager::TInfoExchangerSettings& settings);
 
 } // namespace NRm
 
@@ -110,7 +137,7 @@ struct TKqpProxySharedResources {
 };
 
 NActors::IActor* CreateKqpResourceManagerActor(const NKikimrConfig::TTableServiceConfig::TResourceManager& config,
-    TIntrusivePtr<TKqpCounters> counters, NActors::TActorId resourceBroker = {}, 
+    TIntrusivePtr<TKqpCounters> counters, NActors::TActorId resourceBroker = {},
     std::shared_ptr<TKqpProxySharedResources> kqpProxySharedResources = nullptr);
 
 std::shared_ptr<NRm::IKqpResourceManager> GetKqpResourceManager(TMaybe<ui32> nodeId = Nothing());

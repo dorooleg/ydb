@@ -3,8 +3,9 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "service_table.h"
+#include "audit_dml_operations.h"
 
 #include <ydb/core/protos/console_config.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
@@ -54,6 +55,8 @@ public:
         SetAuthToken(ev, *Request_);
         SetDatabase(ev, *Request_);
 
+        AuditContextAppend(Request_.get(), *req);
+
         if (traceId) {
             ev->Record.SetTraceId(traceId.GetRef());
         }
@@ -62,22 +65,21 @@ public:
             ev->Record.SetRequestType(requestType.GetRef());
         }
 
-        NYql::TIssues issues;
-        if (CheckSession(req->session_id(), issues)) {
+        if (CheckSession(req->session_id(), Request_.get())) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
         }
 
-        if (!CheckQuery(req->yql_text(), issues)) {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
+        if (!CheckQuery(req->yql_text(), Request_.get())) {
+            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
         }
 
         ev->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_PREPARE);
         ev->Record.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_DML);
         ev->Record.MutableRequest()->SetQuery(req->yql_text());
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -104,6 +106,9 @@ public:
                 }
                 queryResult.mutable_parameters_types()->insert({queryParameter.GetName(), parameterType});
             }
+
+            AuditContextAppend(Request_.get(), *GetProtoRequest(), queryResult);
+
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, queryResult, ctx);
         } else {
             return OnGenericQueryResponseError(record, ctx);

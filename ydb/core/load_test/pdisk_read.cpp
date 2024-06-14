@@ -6,6 +6,7 @@
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <library/cpp/monlib/service/pages/templates.h>
+#include <library/cpp/time_provider/time_provider.h>
 #include <util/random/fast.h>
 #include <util/generic/queue.h>
 
@@ -36,7 +37,7 @@ class TPDiskReaderLoadTestActor : public TActorBootstrapped<TPDiskReaderLoadTest
         {}
 
         TDataRef operator [](ui32 index) const override {
-            Y_VERIFY(index == 0);
+            Y_ABORT_UNLESS(index == 0);
             return std::make_pair(Buffer, Len);
         }
 

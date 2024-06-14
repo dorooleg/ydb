@@ -15,10 +15,18 @@ using namespace NYql;
 
 namespace NSQLTranslationV1 {
 
+bool ValidateView(TPosition pos, TContext& ctx, TStringBuf service, TViewDescription& view) {
+    if (view.PrimaryFlag && !(service == KikimrProviderName || service == YdbProviderName)) {
+        ctx.Error(pos) << "primary view is not supported for " << service << " tables";
+        return false;
+    }
+    return true;
+}
+
 class TUniqueTableKey: public ITableKeys {
 public:
     TUniqueTableKey(TPosition pos, const TString& service, const TDeferredAtom& cluster,
-        const TDeferredAtom& name, const TString& view)
+        const TDeferredAtom& name, const TViewDescription& view)
         : ITableKeys(pos)
         , Service(service)
         , Cluster(cluster)
@@ -26,18 +34,25 @@ public:
         , View(view)
         , Full(name.GetRepr())
     {
-        if (!View.empty()) {
-            Full += ":" + View;
+        if (!View.ViewName.empty()) {
+            Full += ":" + View.ViewName;
         }
+    }
+
+    bool SetPrimaryView(TContext& ctx, TPosition pos) override {
+        Y_UNUSED(ctx);
+        Y_UNUSED(pos);
+        View = {"", true};
+        return true;
     }
 
     bool SetViewName(TContext& ctx, TPosition pos, const TString& view) override {
         Y_UNUSED(ctx);
         Y_UNUSED(pos);
         Full = Name.GetRepr();
-        View = view;
+        View = {view};
         if (!View.empty()) {
-            Full = ":" + View;
+            Full = ":" + View.ViewName;
         }
 
         return true;
@@ -48,7 +63,7 @@ public:
     }
 
     TNodePtr BuildKeys(TContext& ctx, ITableKeys::EBuildKeysMode mode) override {
-        if (View == "@") {
+        if (View == TViewDescription{"@"}) {
             auto key = Y("TempTable", Name.Build());
             return key;
         }
@@ -63,8 +78,9 @@ public:
             return nullptr;
         }
         auto key = Y("Key", Q(Y(Q(tableScheme ? "tablescheme" : "table"), Y("String", path))));
-        if (!View.empty()) {
-            key = L(key, Q(Y(Q("view"), Y("String", BuildQuotedAtom(Pos, View)))));
+        key = AddView(key, View);
+        if (!ValidateView(GetPos(), ctx, Service, View)) {
+            return nullptr;
         }
         if (mode == ITableKeys::EBuildKeysMode::INPUT &&
             IsQueryMode(ctx.Settings.Mode) &&
@@ -81,12 +97,12 @@ private:
     TString Service;
     TDeferredAtom Cluster;
     TDeferredAtom Name;
-    TString View;
+    TViewDescription View;
     TString Full;
 };
 
 TNodePtr BuildTableKey(TPosition pos, const TString& service, const TDeferredAtom& cluster,
-    const TDeferredAtom& name, const TString& view) {
+    const TDeferredAtom& name, const TViewDescription& view) {
     return new TUniqueTableKey(pos, service, cluster, name, view);
 }
 
@@ -131,6 +147,8 @@ static INode::TPtr CreateIndexType(TIndexDescription::EType type, const INode& n
             return node.Q("syncGlobal");
         case TIndexDescription::EType::GlobalAsync:
             return node.Q("asyncGlobal");
+        case TIndexDescription::EType::GlobalSyncUnique:
+            return node.Q("syncGlobalUnique");
     }
 }
 
@@ -165,8 +183,14 @@ static INode::TPtr CreateChangefeedDesc(const TChangefeedDescription& desc, cons
     if (desc.Settings.VirtualTimestamps) {
         settings = node.L(settings, node.Q(node.Y(node.Q("virtual_timestamps"), desc.Settings.VirtualTimestamps)));
     }
+    if (desc.Settings.ResolvedTimestamps) {
+        settings = node.L(settings, node.Q(node.Y(node.Q("resolved_timestamps"), desc.Settings.ResolvedTimestamps)));
+    }
     if (desc.Settings.RetentionPeriod) {
         settings = node.L(settings, node.Q(node.Y(node.Q("retention_period"), desc.Settings.RetentionPeriod)));
+    }
+    if (desc.Settings.TopicPartitions) {
+        settings = node.L(settings, node.Q(node.Y(node.Q("topic_min_active_partitions"), desc.Settings.TopicPartitions)));
     }
     if (desc.Settings.AwsRegion) {
         settings = node.L(settings, node.Q(node.Y(node.Q("aws_region"), desc.Settings.AwsRegion)));
@@ -206,7 +230,7 @@ public:
     }
 
     void ExtractTableName(TContext&ctx, TTableArg& arg) {
-        MakeTableFromExpression(ctx, arg.Expr, arg.Id);
+        MakeTableFromExpression(Pos, ctx, arg.Expr, arg.Id);
     }
 
     TNodePtr BuildKeys(TContext& ctx, ITableKeys::EBuildKeysMode mode) override {
@@ -217,7 +241,7 @@ public:
         }
 
         TCiString func(Func);
-        if (func != "object") {
+        if (func != "object" && func != "walkfolders") {
             for (auto& arg: Args) {
                 if (arg.Expr->GetLabel()) {
                     ctx.Error(Pos) << "Named arguments are not supported for table function " << to_upper(Func);
@@ -239,8 +263,9 @@ public:
                     }
 
                     key = Y("Key", Q(Y(Q("table"), Y("String", path))));
-                    if (!arg.View.empty()) {
-                        key = L(key, Q(Y(Q("view"), Y("String", BuildQuotedAtom(Pos, arg.View)))));
+                    key = AddView(key, arg.View);
+                    if (!ValidateView(GetPos(), ctx, Service, arg.View)) {
+                        return nullptr;
                     }
                 }
 
@@ -262,8 +287,9 @@ public:
                     }
 
                     key = Y("Key", Q(Y(Q("table"), Y("String", path))));
-                    if (!arg.View.empty()) {
-                        key = L(key, Q(Y(Q("view"), Y("String", BuildQuotedAtom(Pos, arg.View)))));
+                    key = AddView(key, arg.View);
+                    if (!ValidateView(GetPos(), ctx, Service, arg.View)) {
+                        return nullptr;
                     }
                 }
 
@@ -406,8 +432,10 @@ public:
                 auto key = Y("Key", Q(Y(Q("table"), Y("EvaluateExpr",
                     Y("EnsureType", Y("Coalesce", arg.Expr,
                     Y("List", type)), type)))));
-                if (!arg.View.empty()) {
-                    key = L(key, Q(Y(Q("view"), Y("String", BuildQuotedAtom(Pos, arg.View)))));
+
+                key = AddView(key, arg.View);
+                if (!ValidateView(GetPos(), ctx, Service, arg.View)) {
+                    return nullptr;
                 }
                 each = L(each, key);
             }
@@ -451,6 +479,115 @@ public:
             folder = L(folder, Args[0].Id.Build());
             folder = L(folder, Args.size() > 1 ? Args[1].Id.Build() : BuildQuotedAtom(Pos, ""));
             return folder;
+        }
+        else if (func == "walkfolders") {
+            const size_t minPositionalArgs = 1;
+            const size_t maxPositionalArgs = 2;
+
+            size_t positionalArgsCnt = 0;
+            for (const auto& arg : Args) {
+                if (!arg.Expr->GetLabel()) {
+                    positionalArgsCnt++;
+                } else {
+                    break;
+                }
+            }
+            if (positionalArgsCnt < minPositionalArgs || positionalArgsCnt > maxPositionalArgs) {
+                ctx.Error(Pos) << Func << " requires from " << minPositionalArgs
+                << " to " << maxPositionalArgs
+                << " positional arguments, but got: " << positionalArgsCnt;
+                return nullptr;
+            }
+
+            constexpr auto walkFoldersModuleName = "walk_folders_module";
+            ctx.RequiredModules.emplace(walkFoldersModuleName, "/lib/yql/walk_folders.yql");
+
+            auto& rootFolderArg = Args[0];
+            if (rootFolderArg.HasAt) {
+                ctx.Error(Pos) << "Temporary tables are not supported here";
+                return nullptr;
+            }
+            if (!rootFolderArg.View.empty()) {
+                ctx.Error(Pos) << Func << " doesn't supports views";
+                return nullptr;
+            }
+            ExtractTableName(ctx, rootFolderArg);
+
+            const auto initState =
+                positionalArgsCnt > 1
+                    ? Args[1].Expr
+                    : Y("List", Y("ListType", Y("DataType", Q("String"))));
+
+            TNodePtr rootAttributes;
+            TNodePtr preHandler;
+            TNodePtr resolveHandler;
+            TNodePtr diveHandler;
+            TNodePtr postHandler;
+            for (auto it = Args.begin() + positionalArgsCnt; it != Args.end(); ++it) {
+                auto& arg = *it;
+                const auto label = arg.Expr->GetLabel();
+                if (label == "RootAttributes") {
+                    ExtractTableName(ctx, arg);
+                    rootAttributes = arg.Id.Build();
+                }
+                else if (label == "PreHandler") {
+                    preHandler = arg.Expr;
+                }
+                else if (label == "ResolveHandler") {
+                    resolveHandler = arg.Expr;
+                }
+                else if (label == "DiveHandler") {
+                    diveHandler = arg.Expr;
+                }
+                else if (label == "PostHandler") {
+                    postHandler = arg.Expr;
+                }
+                else {
+                    ctx.Warning(Pos, DEFAULT_ERROR) << "Unsupported named argument: "
+                        << label << " in " << Func;
+                }
+            }
+            if (rootAttributes == nullptr) {
+                rootAttributes = BuildQuotedAtom(Pos, "");
+            }
+
+            if (preHandler != nullptr || postHandler != nullptr) {
+                const auto makePrePostHandlerType = BuildBind(Pos, walkFoldersModuleName, "MakePrePostHandlersType");
+                const auto prePostHandlerType = Y("EvaluateType", Y("TypeHandle", Y("Apply", makePrePostHandlerType, Y("TypeOf", initState))));
+
+                if (preHandler != nullptr) {
+                    preHandler = Y("Callable", prePostHandlerType, preHandler);
+                }
+                if (postHandler != nullptr) {
+                    postHandler = Y("Callable", prePostHandlerType, postHandler);
+                }
+            }
+            if (preHandler == nullptr) {
+                preHandler = Y("Void");
+            }
+            if (postHandler == nullptr) {
+                postHandler = Y("Void");
+            }
+
+            const auto makeResolveDiveHandlerType = BuildBind(Pos, walkFoldersModuleName, "MakeResolveDiveHandlersType");
+            const auto resolveDiveHandlerType = Y("EvaluateType", Y("TypeHandle", Y("Apply", makeResolveDiveHandlerType, Y("TypeOf", initState))));
+            if (resolveHandler == nullptr) {
+                resolveHandler = BuildBind(Pos, walkFoldersModuleName, "AnyNodeDiveHandler");
+            }
+            if (diveHandler == nullptr) {
+                diveHandler = BuildBind(Pos, walkFoldersModuleName, "AnyNodeDiveHandler");
+            }
+
+            resolveHandler = Y("Callable", resolveDiveHandlerType, resolveHandler);
+            diveHandler = Y("Callable", resolveDiveHandlerType, diveHandler);
+
+            const auto initStateType = Y("EvaluateType", Y("TypeHandle", Y("TypeOf", initState)));
+            const auto pickledInitState = Y("Pickle", initState);
+
+            const auto initPath = rootFolderArg.Id.Build();
+
+            return Y("MrWalkFolders", initPath, rootAttributes, pickledInitState, initStateType,
+                preHandler, resolveHandler, diveHandler, postHandler);
         }
         else if (func == "tables") {
             if (!Args.empty()) {
@@ -602,7 +739,7 @@ public:
     }
 
     TNodePtr DoClone() const final {
-        return new TIntoTableOptions(GetPos(), Columns, Hints);
+        return new TIntoTableOptions(GetPos(), Columns, CloneContainer(Hints));
     }
 
 private:
@@ -641,12 +778,13 @@ public:
             auto source = Y("DataSource", BuildQuotedAtom(Pos, tr.Service), Scoped->WrapCluster(tr.Cluster, ctx));
             auto options = tr.Options ? Q(tr.Options) : Q(Y());
             Add(Y("let", "x", keys->Y(TString(ReadName), "world", source, keys, fields, options)));
-            if (tr.Service != YtProviderName) {
-                if (InSubquery) {
-                    ctx.Error() << "Using of system '" << tr.Service << "' is not allowed in SUBQUERY";
-                    return false;
-                }
 
+            if (tr.Service != YtProviderName && InSubquery) {
+                ctx.Error() << "Using of system '" << tr.Service << "' is not allowed in SUBQUERY";
+                return false;
+            }
+
+            if (tr.Service != YtProviderName || ctx.Settings.SaveWorldDependencies) {
                 Add(Y("let", "world", Y(TString(LeftName), "x")));
             }
 
@@ -671,10 +809,13 @@ TNodePtr BuildInputTables(TPosition pos, const TTableList& tables, bool inSubque
 
 class TCreateTableNode final: public TAstListNode {
 public:
-    TCreateTableNode(TPosition pos, const TTableRef& tr, const TCreateTableParameters& params, TScopedStatePtr scoped)
+    TCreateTableNode(TPosition pos, const TTableRef& tr, bool existingOk, bool replaceIfExists, const TCreateTableParameters& params, TSourcePtr values, TScopedStatePtr scoped)
         : TAstListNode(pos)
         , Table(tr)
         , Params(params)
+        , ExistingOk(existingOk)
+        , ReplaceIfExists(replaceIfExists)
+        , Values(std::move(values))
         , Scoped(scoped)
     {
         scoped->UseCluster(Table.Service, Table.Cluster);
@@ -697,9 +838,11 @@ public:
                 columnsSet.insert(col.Name);
             }
 
+            const bool allowUndefinedColumns = (Values != nullptr) && columnsSet.empty();
+
             THashSet<TString> pkColumns;
             for (auto& keyColumn : Params.PkColumns) {
-                if (!columnsSet.contains(keyColumn.Name)) {
+                if (!allowUndefinedColumns && !columnsSet.contains(keyColumn.Name)) {
                     ctx.Error(keyColumn.Pos) << "Undefined column: " << keyColumn.Name;
                     return false;
                 }
@@ -709,13 +852,13 @@ public:
                 }
             }
             for (auto& keyColumn : Params.PartitionByColumns) {
-                if (!columnsSet.contains(keyColumn.Name)) {
+                if (!allowUndefinedColumns && !columnsSet.contains(keyColumn.Name)) {
                     ctx.Error(keyColumn.Pos) << "Undefined column: " << keyColumn.Name;
                     return false;
                 }
             }
             for (auto& keyColumn : Params.OrderByColumns) {
-                if (!columnsSet.contains(keyColumn.first.Name)) {
+                if (!allowUndefinedColumns && !columnsSet.contains(keyColumn.first.Name)) {
                     ctx.Error(keyColumn.first.Pos) << "Undefined column: " << keyColumn.first.Name;
                     return false;
                 }
@@ -729,14 +872,14 @@ public:
                 }
 
                 for (const auto& indexColumn : index.IndexColumns) {
-                    if (!columnsSet.contains(indexColumn.Name)) {
+                    if (!allowUndefinedColumns && !columnsSet.contains(indexColumn.Name)) {
                         ctx.Error(indexColumn.Pos) << "Undefined column: " << indexColumn.Name;
                         return false;
                     }
                 }
 
                 for (const auto& dataColumn : index.DataColumns) {
-                    if (!columnsSet.contains(dataColumn.Name)) {
+                    if (!allowUndefinedColumns && !columnsSet.contains(dataColumn.Name)) {
                         ctx.Error(dataColumn.Pos) << "Undefined column: " << dataColumn.Name;
                         return false;
                     }
@@ -760,7 +903,13 @@ public:
             opts = Table.Options;
         }
 
-        opts = L(opts, Q(Y(Q("mode"), Q("create"))));
+        if (ExistingOk) {
+          opts = L(opts, Q(Y(Q("mode"), Q("create_if_not_exists"))));
+        } else if (ReplaceIfExists) {
+          opts = L(opts, Q(Y(Q("mode"), Q("create_or_replace"))));
+        } else {
+          opts = L(opts, Q(Y(Q("mode"), Q("create"))));
+        }
 
         THashSet<TString> columnFamilyNames;
 
@@ -784,34 +933,64 @@ public:
             opts = L(opts, Q(Y(Q("columnFamilies"), Q(columnFamilies))));
         }
 
-        THashSet<TString> notNullColumnsSet;
-        auto notNullColumns = Y();
         auto columns = Y();
+        THashSet<TString> columnsWithDefaultValue;
+        auto columnsDefaultValueSettings = Y();
+
         for (auto& col : Params.Columns) {
             auto columnDesc = Y();
             columnDesc = L(columnDesc, BuildQuotedAtom(Pos, col.Name));
             auto type = col.Type;
-            if (col.Nullable) {
-                type = Y("AsOptionalType", type);
-            } else {
-                if (notNullColumnsSet.insert(col.Name).second)
-                    notNullColumns = L(notNullColumns, BuildQuotedAtom(Pos, col.Name));
-            }
-            columnDesc = L(columnDesc, type);
-            if (col.Families) {
-                auto familiesDesc = Y();
-                for (const auto& family : col.Families) {
-                    if (columnFamilyNames.find(family.Name) == columnFamilyNames.end()) {
-                        ctx.Error(family.Pos) << "Unknown family " << family.Name;
+
+            if (type) {
+                if (col.Nullable) {
+                    type = Y("AsOptionalType", type);
+                }
+
+                columnDesc = L(columnDesc, type);
+
+                auto columnConstraints = Y();
+
+                if (!col.Nullable) {
+                    columnConstraints = L(columnConstraints, Q(Y(Q("not_null"))));
+                }
+
+                if (col.Serial) {
+                    columnConstraints = L(columnConstraints, Q(Y(Q("serial"))));
+                }
+
+                if (col.DefaultExpr) {
+                    if (!col.DefaultExpr->Init(ctx, src)) {
                         return false;
                     }
-                    familiesDesc = L(familiesDesc, BuildQuotedAtom(family.Pos, family.Name));
+
+                    columnConstraints = L(columnConstraints, Q(Y(Q("default"), col.DefaultExpr)));
                 }
+
+                columnDesc = L(columnDesc, Q(Y(Q("columnConstrains"), Q(columnConstraints))));
+
+                auto familiesDesc = Y();
+
+                if (col.Families) {
+                    for (const auto& family : col.Families) {
+                        if (columnFamilyNames.find(family.Name) == columnFamilyNames.end()) {
+                            ctx.Error(family.Pos) << "Unknown family " << family.Name;
+                            return false;
+                        }
+                        familiesDesc = L(familiesDesc, BuildQuotedAtom(family.Pos, family.Name));
+                    }
+                }
+
                 columnDesc = L(columnDesc, Q(familiesDesc));
             }
+
             columns = L(columns, Q(columnDesc));
         }
         opts = L(opts, Q(Y(Q("columns"), Q(columns))));
+
+        if (!columnsWithDefaultValue.empty()) {
+            opts = L(opts, Q(Y(Q("columnsDefaultValues"), Q(columnsDefaultValueSettings))));
+        }
 
         if (Table.Service == RtmrProviderName) {
             if (!Params.PkColumns.empty() && !Params.PartitionByColumns.empty()) {
@@ -835,10 +1014,6 @@ public:
                 ctx.Error() << "PRIMARY KEY cannot be used with ORDER BY, use PARTITION BY instead";
                 return false;
             }
-        }
-
-        if (!notNullColumnsSet.empty()) {
-            opts = L(opts, Q(Y(Q("notnull"), Q(notNullColumns))));
         }
 
         if (!Params.PartitionByColumns.empty()) {
@@ -874,10 +1049,14 @@ public:
                 settings = L(settings, Q(Y(Q("data_source_path"), Params.TableSettings.DataSourcePath)));
             }
             if (Params.TableSettings.Location) {
-                settings = L(settings, Q(Y(Q("location"), Params.TableSettings.Location)));
+                Y_ENSURE(Params.TableSettings.Location.IsSet(), "Can't reset LOCATION in create mode");
+                settings = L(settings, Q(Y(Q("location"), Params.TableSettings.Location.GetValueSet())));
             }
-            for (const auto& item: Params.TableSettings.ExternalSourceParameters) {
-                settings = L(settings, Q(Y(Q(to_lower(item.first.Name)), item.second)));
+            for (const auto& resetableParam: Params.TableSettings.ExternalSourceParameters) {
+                Y_ENSURE(resetableParam, "Empty parameter");
+                Y_ENSURE(resetableParam.IsSet(), "Can't reset " << resetableParam.GetValueReset().Name << " in create mode");
+                const auto& [id, value] = resetableParam.GetValueSet();
+                settings = L(settings, Q(Y(Q(id.Name), value)));
             }
             if (Params.TableSettings.CompactionPolicy) {
                 settings = L(settings, Q(Y(Q("compactionPolicy"), Params.TableSettings.CompactionPolicy)));
@@ -923,22 +1102,27 @@ public:
             if (const auto& ttl = Params.TableSettings.TtlSettings) {
                 if (ttl.IsSet()) {
                     const auto& ttlSettings = ttl.GetValueSet();
-                    auto columnName = BuildQuotedAtom(ttlSettings.ColumnName.Pos, ttlSettings.ColumnName.Name);
-                    auto nameValueTuple = Y(
-                        Q(Y(Q("columnName"), columnName)),
-                        Q(Y(Q("expireAfter"), ttlSettings.Expr))
-                    );
-                    settings = L(settings, Q(Y(Q("setTtlSettings"), Q(nameValueTuple))));
+                    auto opts = Y();
+
+                    opts = L(opts, Q(Y(Q("columnName"), BuildQuotedAtom(ttlSettings.ColumnName.Pos, ttlSettings.ColumnName.Name))));
+                    opts = L(opts, Q(Y(Q("expireAfter"), ttlSettings.Expr)));
+
+                    if (ttlSettings.ColumnUnit) {
+                        opts = L(opts, Q(Y(Q("columnUnit"), Q(ToString(*ttlSettings.ColumnUnit)))));
+                    }
+
+                    settings = L(settings, Q(Y(Q("setTtlSettings"), Q(opts))));
                 } else {
                     YQL_ENSURE(false, "Can't reset TTL settings");
                 }
             }
-            if (const auto& tiering = Params.TableSettings.Tiering) {
-                if (tiering.IsSet()) {
-                    settings = L(settings, Q(Y(Q("setTiering"), tiering.GetValueSet())));
-                } else {
-                    YQL_ENSURE(false, "Can't reset TIERING");
-                }
+            if (Params.TableSettings.Tiering) {
+                YQL_ENSURE(Params.TableSettings.Tiering.IsSet(), "Can't reset TIERING in create mode");
+                settings = L(settings, Q(Y(Q("setTiering"), Params.TableSettings.Tiering.GetValueSet())));
+            }
+            if (Params.TableSettings.StoreExternalBlobs) {
+                const auto& ref = Params.TableSettings.StoreExternalBlobs.GetRef();
+                settings = L(settings, Q(Y(Q("storeExternalBlobs"), BuildQuotedAtom(ref.Pos, ref.Name))));
             }
             if (Params.TableSettings.StoreType) {
                 const auto& ref = Params.TableSettings.StoreType.GetRef();
@@ -962,11 +1146,44 @@ public:
                 break;
         }
 
-        Add("block", Q(Y(
+        if (Params.Temporary) {
+            opts = L(opts, Q(Y(Q("temporary"))));
+        }
+
+        TNodePtr node = nullptr;
+        if (Values) {
+            if (!Values->Init(ctx, nullptr)) {
+                return false;
+            }
+            TTableList tableList;
+            Values->GetInputTables(tableList);
+            auto valuesSource = Values.Get();
+            auto values = Values->Build(ctx);
+            if (!Values) {
+                return false;
+            }
+
+            TNodePtr inputTables(BuildInputTables(Pos, tableList, false, Scoped));
+            if (!inputTables->Init(ctx, valuesSource)) {
+                return false;
+            }
+
+            node = inputTables;
+            node = L(node, Y("let", "values", values));
+        } else {
+            node = Y(Y("let", "values", Y("Void")));
+        }
+
+        auto write = Y(
             Y("let", "sink", Y("DataSink", BuildQuotedAtom(Pos, Table.Service), Scoped->WrapCluster(Table.Cluster, ctx))),
-            Y("let", "world", Y(TString(WriteName), "world", "sink", keys, Y("Void"), Q(opts))),
+            Y("let", "world", Y(TString(WriteName), "world", "sink", keys, "values", Q(opts))),
             Y("return", ctx.PragmaAutoCommit ? Y(TString(CommitName), "world", "sink") : AstNode("world"))
-        )));
+        );
+
+        node = L(node, Y("let", "world", Y("block", Q(write))));
+        node = L(node, Y("return", "world"));
+
+        Add("block", Q(node));
 
         return TAstListNode::DoInit(ctx, src);
     }
@@ -977,12 +1194,15 @@ public:
 private:
     const TTableRef Table;
     const TCreateTableParameters Params;
+    const bool ExistingOk;
+    const bool ReplaceIfExists;
+    const TSourcePtr Values;
     TScopedStatePtr Scoped;
 };
 
-TNodePtr BuildCreateTable(TPosition pos, const TTableRef& tr, const TCreateTableParameters& params, TScopedStatePtr scoped)
+TNodePtr BuildCreateTable(TPosition pos, const TTableRef& tr, bool existingOk, bool replaceIfExists, const TCreateTableParameters& params, TSourcePtr values, TScopedStatePtr scoped)
 {
-    return new TCreateTableNode(pos, tr, params, scoped);
+    return new TCreateTableNode(pos, tr, existingOk, replaceIfExists, params, std::move(values), scoped);
 }
 
 class TAlterTableNode final: public TAstListNode {
@@ -1013,14 +1233,33 @@ public:
                 if (col.Nullable) {
                     type = Y("AsOptionalType", type);
                 }
+
                 columnDesc = L(columnDesc, type);
-                if (col.Families) {
-                    auto familiesDesc = Y();
-                    for (const auto& family : col.Families) {
-                        familiesDesc = L(familiesDesc, BuildQuotedAtom(family.Pos, family.Name));
-                    }
-                    columnDesc = L(columnDesc, Q(familiesDesc));
+                auto columnConstraints = Y();
+                if (!col.Nullable) {
+                    columnConstraints = L(columnConstraints, Q(Y(Q("not_null"))));
                 }
+
+                if (col.Serial) {
+                    columnConstraints = L(columnConstraints, Q(Y(Q("serial"))));
+                }
+
+                if (col.DefaultExpr) {
+                    if (!col.DefaultExpr->Init(ctx, src)) {
+                        return false;
+                    }
+
+                    columnConstraints = L(columnConstraints, Q(Y(Q("default"), col.DefaultExpr)));
+                }
+
+                columnDesc = L(columnDesc, Q(Y(Q("columnConstrains"), Q(columnConstraints))));
+
+                auto familiesDesc = Y();
+                for (const auto& family : col.Families) {
+                    familiesDesc = L(familiesDesc, BuildQuotedAtom(family.Pos, family.Name));
+                }
+                columnDesc = L(columnDesc, Q(familiesDesc));
+
                 columns = L(columns, Q(columnDesc));
             }
             actions = L(actions, Q(Y(Q("addColumns"), Q(columns))));
@@ -1083,6 +1322,25 @@ public:
 
         if (Params.TableSettings.IsSet()) {
             auto settings = Y();
+            if (Params.TableSettings.DataSourcePath) {
+                settings = L(settings, Q(Y(Q("data_source_path"), Params.TableSettings.DataSourcePath)));
+            }
+            if (Params.TableSettings.Location) {
+                if (Params.TableSettings.Location.IsSet()) {
+                    settings = L(settings, Q(Y(Q("location"), Params.TableSettings.Location.GetValueSet())));
+                } else {
+                    settings = L(settings, Q(Y(Q("location"))));
+                }
+            }
+            for (const auto& resetableParam: Params.TableSettings.ExternalSourceParameters) {
+                Y_ENSURE(resetableParam, "Empty parameter");
+                if (resetableParam.IsSet()) {
+                    const auto& [id, value] = resetableParam.GetValueSet();
+                    settings = L(settings, Q(Y(Q(id.Name), value)));
+                } else {
+                    settings = L(settings, Q(Y(Q(resetableParam.GetValueReset().Name))));
+                }
+            }
             if (Params.TableSettings.CompactionPolicy) {
                 settings = L(settings, Q(Y(Q("compactionPolicy"), Params.TableSettings.CompactionPolicy)));
             }
@@ -1113,12 +1371,16 @@ public:
             if (const auto& ttl = Params.TableSettings.TtlSettings) {
                 if (ttl.IsSet()) {
                     const auto& ttlSettings = ttl.GetValueSet();
-                    auto columnName = BuildQuotedAtom(ttlSettings.ColumnName.Pos, ttlSettings.ColumnName.Name);
-                    auto nameValueTuple = Y(
-                        Q(Y(Q("columnName"), columnName)),
-                        Q(Y(Q("expireAfter"), ttlSettings.Expr))
-                    );
-                    settings = L(settings, Q(Y(Q("setTtlSettings"), Q(nameValueTuple))));
+                    auto opts = Y();
+
+                    opts = L(opts, Q(Y(Q("columnName"), BuildQuotedAtom(ttlSettings.ColumnName.Pos, ttlSettings.ColumnName.Name))));
+                    opts = L(opts, Q(Y(Q("expireAfter"), ttlSettings.Expr)));
+
+                    if (ttlSettings.ColumnUnit) {
+                        opts = L(opts, Q(Y(Q("columnUnit"), Q(ToString(*ttlSettings.ColumnUnit)))));
+                    }
+
+                    settings = L(settings, Q(Y(Q("setTtlSettings"), Q(opts))));
                 } else {
                     settings = L(settings, Q(Y(Q("resetTtlSettings"), Q(Y()))));
                 }
@@ -1129,6 +1391,10 @@ public:
                 } else {
                     settings = L(settings, Q(Y(Q("resetTiering"), Q(Y()))));
                 }
+            }
+            if (Params.TableSettings.StoreExternalBlobs) {
+                const auto& ref = Params.TableSettings.StoreExternalBlobs.GetRef();
+                settings = L(settings, Q(Y(Q("storeExternalBlobs"), BuildQuotedAtom(ref.Pos, ref.Name))));
             }
             actions = L(actions, Q(Y(Q("setTableSettings"), Q(settings))));
         }
@@ -1181,8 +1447,15 @@ public:
         opts = L(opts, Q(Y(Q("mode"), Q("alter"))));
         opts = L(opts, Q(Y(Q("actions"), Q(actions))));
 
-        if (Params.TableType == ETableType::TableStore) {
-            opts = L(opts, Q(Y(Q("tableType"), Q("tableStore"))));
+        switch (Params.TableType) {
+            case ETableType::TableStore:
+                opts = L(opts, Q(Y(Q("tableType"), Q("tableStore"))));
+                break;
+            case ETableType::ExternalTable:
+                opts = L(opts, Q(Y(Q("tableType"), Q("externalTable"))));
+                break;
+            case ETableType::Table:
+                break;
         }
 
         Add("block", Q(Y(
@@ -1209,11 +1482,12 @@ TNodePtr BuildAlterTable(TPosition pos, const TTableRef& tr, const TAlterTablePa
 
 class TDropTableNode final: public TAstListNode {
 public:
-    TDropTableNode(TPosition pos, const TTableRef& tr, ETableType tableType, TScopedStatePtr scoped)
+    TDropTableNode(TPosition pos, const TTableRef& tr, bool missingOk, ETableType tableType, TScopedStatePtr scoped)
         : TAstListNode(pos)
         , Table(tr)
         , TableType(tableType)
         , Scoped(scoped)
+        , MissingOk(missingOk)
     {
         FakeSource = BuildFakeSource(pos);
         scoped->UseCluster(Table.Service, Table.Cluster);
@@ -1228,7 +1502,7 @@ public:
 
         auto opts = Y();
 
-        opts = L(opts, Q(Y(Q("mode"), Q("drop"))));
+        opts = L(opts, Q(Y(Q("mode"), Q(MissingOk ? "drop_if_exists" : "drop"))));
 
         switch (TableType) {
             case ETableType::TableStore:
@@ -1258,10 +1532,11 @@ private:
     ETableType TableType;
     TScopedStatePtr Scoped;
     TSourcePtr FakeSource;
+    const bool MissingOk;
 };
 
-TNodePtr BuildDropTable(TPosition pos, const TTableRef& tr, ETableType tableType, TScopedStatePtr scoped) {
-    return new TDropTableNode(pos, tr, tableType, scoped);
+TNodePtr BuildDropTable(TPosition pos, const TTableRef& tr, bool missingOk, ETableType tableType, TScopedStatePtr scoped) {
+    return new TDropTableNode(pos, tr, missingOk, tableType, scoped);
 }
 
 
@@ -1574,6 +1849,17 @@ public:
             return false;
         }
 
+        TVector<TNodePtr> roles;
+        if (Params && !Params->Roles.empty()) {
+            for (auto& item : Params->Roles) {
+                roles.push_back(item.Build());
+                if (!roles.back()->Init(ctx, FakeSource.Get())) {
+                    return false;
+                }
+            }
+        }
+
+
         auto options = Y(Q(Y(Q("mode"), Q(IsUser ? "createUser" : "createGroup"))));
         if (Params) {
             if (Params->IsPasswordEncrypted) {
@@ -1583,6 +1869,9 @@ public:
                 options = L(options, Q(Y(Q("password"), password)));
             } else {
                 options = L(options, Q(Y(Q("nullPassword"))));
+            }
+            if (!Params->Roles.empty()) {
+                options = L(options, Q(Y(Q("roles"), Q(new TAstListNodeImpl(Pos, std::move(roles))))));
             }
         }
 
@@ -1613,9 +1902,9 @@ TNodePtr BuildCreateUser(TPosition pos, const TString& service, const TDeferredA
     return new TCreateRole(pos, isUser, service, cluster, name, params, scoped);
 }
 
-TNodePtr BuildCreateGroup(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, TScopedStatePtr scoped) {
+TNodePtr BuildCreateGroup(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, const TMaybe<TRoleParameters>& params, TScopedStatePtr scoped) {
     bool isUser = false;
-    return new TCreateRole(pos, isUser, service, cluster, name, {}, scoped);
+    return new TCreateRole(pos, isUser, service, cluster, name, params, scoped);
 }
 
 class TAlterUser final: public TAstListNode {
@@ -1811,13 +2100,13 @@ TNodePtr BuildAlterGroup(TPosition pos, const TString& service, const TDeferredA
 
 class TDropRoles final: public TAstListNode {
 public:
-    TDropRoles(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& toDrop, bool isUser, bool force, TScopedStatePtr scoped)
+    TDropRoles(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& toDrop, bool isUser, bool missingOk, TScopedStatePtr scoped)
         : TAstListNode(pos)
         , Service(service)
         , Cluster(cluster)
         , ToDrop(toDrop)
         , IsUser(isUser)
-        , Force(force)
+        , MissingOk(missingOk)
         , Scoped(scoped)
     {
         FakeSource = BuildFakeSource(pos);
@@ -1832,11 +2121,11 @@ public:
             return false;
         }
 
-        auto options = Y(Q(Y(Q("mode"), Q(IsUser ? "dropUser" : "dropGroup"))));
-        if (Force) {
-            options = L(options, Q(Y(Q("force"))));
-        }
+        const char* mode = IsUser ?
+            (MissingOk ? "dropUserIfExists" : "dropUser") :
+            (MissingOk ? "dropGroupIfExists" : "dropGroup");
 
+        auto options = Y(Q(Y(Q("mode"), Q(mode))));
 
         auto block = Y(Y("let", "sink", Y("DataSink", BuildQuotedAtom(Pos, Service), cluster)));
         for (auto& item : ToDrop) {
@@ -1861,28 +2150,135 @@ private:
     TDeferredAtom Cluster;
     TVector<TDeferredAtom> ToDrop;
     const bool IsUser;
-    const bool Force;
+    const bool MissingOk;
     TScopedStatePtr Scoped;
     TSourcePtr FakeSource;
 };
 
-TNodePtr BuildCreateObjectOperation(TPosition pos, const TString& objectId, const TString& typeId,
+TNodePtr BuildUpsertObjectOperation(TPosition pos, const TString& objectId, const TString& typeId,
     std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context) {
-    return new TCreateObject(pos, objectId, typeId, std::move(features), context);
+    return new TUpsertObject(pos, objectId, typeId, false, false, std::move(features), std::set<TString>(), context);
+}
+TNodePtr BuildCreateObjectOperation(TPosition pos, const TString& objectId, const TString& typeId,
+    bool existingOk, bool replaceIfExists, std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context) {
+    return new TCreateObject(pos, objectId, typeId, existingOk, replaceIfExists, std::move(features), std::set<TString>(), context);
 }
 TNodePtr BuildAlterObjectOperation(TPosition pos, const TString& secretId, const TString& typeId,
-    std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context)
+    std::map<TString, TDeferredAtom>&& features, std::set<TString>&& featuresToReset, const TObjectOperatorContext& context)
 {
-    return new TAlterObject(pos, secretId, typeId, std::move(features), context);
+    return new TAlterObject(pos, secretId, typeId, false, false, std::move(features), std::move(featuresToReset), context);
 }
 TNodePtr BuildDropObjectOperation(TPosition pos, const TString& secretId, const TString& typeId,
-    std::map<TString, TDeferredAtom>&& options, const TObjectOperatorContext& context)
+    bool missingOk, std::map<TString, TDeferredAtom>&& options, const TObjectOperatorContext& context)
 {
-    return new TDropObject(pos, secretId, typeId, std::move(options), context);
+    return new TDropObject(pos, secretId, typeId, missingOk, false, std::move(options), std::set<TString>(), context);
 }
 
-TNodePtr BuildDropRoles(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& toDrop, bool isUser, bool force, TScopedStatePtr scoped) {
-    return new TDropRoles(pos, service, cluster, toDrop, isUser, force, scoped);
+TNodePtr BuildDropRoles(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& toDrop, bool isUser, bool missingOk, TScopedStatePtr scoped) {
+    return new TDropRoles(pos, service, cluster, toDrop, isUser, missingOk, scoped);
+}
+
+class TPermissionsAction final : public TAstListNode {
+public:
+    struct TPermissionParameters {
+        TString PermissionAction;
+        TVector<TDeferredAtom> Permissions;
+        TVector<TDeferredAtom> SchemaPaths;
+        TVector<TDeferredAtom> RoleNames;
+    };
+
+    TPermissionsAction(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TPermissionParameters& parameters, TScopedStatePtr scoped)
+        : TAstListNode(pos)
+        , Service(service)
+        , Cluster(cluster)
+        , Parameters(parameters)
+        , Scoped(scoped)
+    {
+        FakeSource = BuildFakeSource(pos);
+        scoped->UseCluster(service, cluster);
+    }
+
+    bool DoInit(TContext& ctx, ISource* src) override {
+        Y_UNUSED(src);
+
+        TNodePtr cluster = Scoped->WrapCluster(Cluster, ctx);
+        TNodePtr permissionAction = TDeferredAtom(Pos, Parameters.PermissionAction).Build();
+
+        if (!permissionAction->Init(ctx, FakeSource.Get()) ||
+            !cluster->Init(ctx, FakeSource.Get())) {
+            return false;
+        }
+
+        TVector<TNodePtr> paths;
+        paths.reserve(Parameters.SchemaPaths.size());
+        for (auto& item : Parameters.SchemaPaths) {
+            paths.push_back(item.Build());
+            if (!paths.back()->Init(ctx, FakeSource.Get())) {
+                return false;
+            }
+        }
+        auto options = Y(Q(Y(Q("paths"), Q(new TAstListNodeImpl(Pos, std::move(paths))))));
+
+        TVector<TNodePtr> permissions;
+        permissions.reserve(Parameters.Permissions.size());
+        for (auto& item : Parameters.Permissions) {
+            permissions.push_back(item.Build());
+            if (!permissions.back()->Init(ctx, FakeSource.Get())) {
+                return false;
+            }
+        }
+        options = L(options, Q(Y(Q("permissions"), Q(new TAstListNodeImpl(Pos, std::move(permissions))))));
+
+        TVector<TNodePtr> roles;
+        roles.reserve(Parameters.RoleNames.size());
+        for (auto& item : Parameters.RoleNames) {
+            roles.push_back(item.Build());
+            if (!roles.back()->Init(ctx, FakeSource.Get())) {
+                return false;
+            }
+        }
+        options = L(options, Q(Y(Q("roles"), Q(new TAstListNodeImpl(Pos, std::move(roles))))));
+
+        auto block = Y(Y("let", "sink", Y("DataSink", BuildQuotedAtom(Pos, Service), cluster)));
+        block = L(block, Y("let", "world", Y(TString(WriteName), "world", "sink", Y("Key", Q(Y(Q("permission"), Y("String", permissionAction)))), Y("Void"), Q(options))));
+        block = L(block, Y("return", ctx.PragmaAutoCommit ? Y(TString(CommitName), "world", "sink") : AstNode("world")));
+        Add("block", Q(block));
+
+        return TAstListNode::DoInit(ctx, FakeSource.Get());
+    }
+
+    TPtr DoClone() const final {
+        return {};
+    }
+
+private:
+    const TString Service;
+    TDeferredAtom Cluster;
+    TPermissionParameters Parameters;
+    TScopedStatePtr Scoped;
+    TSourcePtr FakeSource;
+};
+
+TNodePtr BuildGrantPermissions(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& permissions, const TVector<TDeferredAtom>& schemaPaths, const TVector<TDeferredAtom>& roleNames, TScopedStatePtr scoped) {
+    return new TPermissionsAction(pos,
+                                  service,
+                                  cluster,
+                                  {.PermissionAction = "grant",
+                                               .Permissions = permissions,
+                                               .SchemaPaths = schemaPaths,
+                                               .RoleNames = roleNames},
+                                  scoped);
+}
+
+TNodePtr BuildRevokePermissions(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& permissions, const TVector<TDeferredAtom>& schemaPaths, const TVector<TDeferredAtom>& roleNames, TScopedStatePtr scoped) {
+    return new TPermissionsAction(pos,
+                                  service,
+                                  cluster,
+                                  {.PermissionAction = "revoke",
+                                               .Permissions = permissions,
+                                               .SchemaPaths = schemaPaths,
+                                               .RoleNames = roleNames},
+                                  scoped);
 }
 
 class TAsyncReplication
@@ -1904,7 +2300,7 @@ public:
     bool DoInit(TContext& ctx, ISource* src) override {
         Scoped->UseCluster(ServiceId, Cluster);
 
-        auto keys = Y("Key", Q(Y(Q("id"), Y("String", BuildQuotedAtom(Pos, Id)))));
+        auto keys = Y("Key", Q(Y(Q("replication"), Y("String", BuildQuotedAtom(Pos, Id)))));
         auto options = FillOptions(Y(Q(Y(Q("mode"), Q(Mode)))));
 
         Add("block", Q(Y(
@@ -1932,7 +2328,7 @@ public:
             std::vector<std::pair<TString, TString>>&& targets,
             std::map<TString, TNodePtr>&& settings,
             const TObjectOperatorContext& context)
-        : TAsyncReplication(pos, id, "createAsyncReplication", context)
+        : TAsyncReplication(pos, id, "create", context)
         , Targets(std::move(targets))
         , Settings(std::move(settings))
     {
@@ -1983,27 +2379,58 @@ TNodePtr BuildCreateAsyncReplication(TPosition pos, const TString& id,
 class TDropAsyncReplication final: public TAsyncReplication {
 public:
     explicit TDropAsyncReplication(TPosition pos, const TString& id, bool cascade, const TObjectOperatorContext& context)
-        : TAsyncReplication(pos, id, "dropAsyncReplication", context)
-        , Cascade(cascade)
+        : TAsyncReplication(pos, id, cascade ? "dropCascade" : "drop", context)
     {
     }
 
 protected:
     INode::TPtr FillOptions(INode::TPtr options) const override {
-        if (Cascade) {
-            options = L(options, Q(Y(Q("cascade"))));
+        return options;
+    }
+
+}; // TDropAsyncReplication
+
+TNodePtr BuildDropAsyncReplication(TPosition pos, const TString& id, bool cascade, const TObjectOperatorContext& context) {
+    return new TDropAsyncReplication(pos, id, cascade, context);
+}
+
+class TAlterAsyncReplication final: public TAsyncReplication {
+public:
+    explicit TAlterAsyncReplication(TPosition pos, const TString& id,
+            std::map<TString, TNodePtr>&& settings,
+            const TObjectOperatorContext& context)
+        : TAsyncReplication(pos, id, "alter", context)
+        , Settings(std::move(settings))
+    {
+    }
+
+protected:
+    INode::TPtr FillOptions(INode::TPtr options) const override {
+        if (!Settings.empty()) {
+            auto settings = Y();
+            for (auto&& [k, v] : Settings) {
+                if (v) {
+                    settings = L(settings, Q(Y(BuildQuotedAtom(Pos, k), v)));
+                } else {
+                    settings = L(settings, Q(Y(BuildQuotedAtom(Pos, k))));
+                }
+            }
+            options = L(options, Q(Y(Q("settings"), Q(settings))));
         }
 
         return options;
     }
 
 private:
-    const bool Cascade;
+    std::map<TString, TNodePtr> Settings;
 
-}; // TDropAsyncReplication
+}; // TAlterAsyncReplication
 
-TNodePtr BuildDropAsyncReplication(TPosition pos, const TString& id, bool cascade, const TObjectOperatorContext& context) {
-    return new TDropAsyncReplication(pos, id, cascade, context);
+TNodePtr BuildAlterAsyncReplication(TPosition pos, const TString& id,
+        std::map<TString, TNodePtr>&& settings,
+        const TObjectOperatorContext& context)
+{
+    return new TAlterAsyncReplication(pos, id, std::move(settings), context);
 }
 
 static const TMap<EWriteColumnMode, TString> columnModeToStrMapMR {
@@ -2210,11 +2637,45 @@ public:
         bool hasError = false;
         if (TopLevel) {
             for (auto& var: ctx.Variables) {
-                if (!var.second->Init(ctx, src)) {
+                if (!var.second.second->Init(ctx, src)) {
                     hasError = true;
                     continue;
                 }
-                Add(Y("declare", var.first, var.second));
+                Add(Y(
+                    "declare", 
+                    new TAstAtomNodeImpl(var.second.first, var.first, TNodeFlags::ArbitraryContent), 
+                    var.second.second));
+            }
+
+            for (const auto& overrideLibrary: ctx.OverrideLibraries) {
+                auto node = Y(
+                    "override_library",
+                    new TAstAtomNodeImpl(
+                        std::get<TPosition>(overrideLibrary.second),
+                        overrideLibrary.first, TNodeFlags::ArbitraryContent
+                    ));
+
+                Add(node);
+            }
+
+            for (const auto& package: ctx.Packages) {
+                const auto& [url, urlPosition] = std::get<1U>(package.second);
+
+                auto node = Y(
+                    "package",
+                    new TAstAtomNodeImpl(
+                        std::get<TPosition>(package.second), package.first,
+                        TNodeFlags::ArbitraryContent
+                    ),
+                    new TAstAtomNodeImpl(urlPosition, url, TNodeFlags::ArbitraryContent));
+
+                if (const auto& tokenWithPosition = std::get<2U>(package.second)) {
+                    const auto& [token, tokenPosition] = *tokenWithPosition;
+
+                    node = L(node, new TAstAtomNodeImpl(tokenPosition, token, TNodeFlags::ArbitraryContent));
+                }
+
+                Add(node);
             }
 
             for (const auto& lib : ctx.Libraries) {
@@ -2299,6 +2760,11 @@ public:
                         BuildQuotedAtom(Pos, "DqEngine"), BuildQuotedAtom(Pos, mode))));
                 }
 
+                if (ctx.CostBasedOptimizer) {
+                    Add(Y("let", "world", Y(TString(ConfigureName), "world", configSource,
+                        BuildQuotedAtom(Pos, "CostBasedOptimizer"), BuildQuotedAtom(Pos, ctx.CostBasedOptimizer))));
+                }
+
                 if (ctx.JsonQueryReturnsJsonDocument.Defined()) {
                     TString pragmaName = "DisableJsonQueryReturnsJsonDocument";
                     if (*ctx.JsonQueryReturnsJsonDocument) {
@@ -2337,6 +2803,12 @@ public:
 
                 if (ctx.UseBlocks) {
                     Add(Y("let", "world", Y(TString(ConfigureName), "world", configSource, BuildQuotedAtom(Pos, "UseBlocks"))));
+                }
+
+                if (ctx.BlockEngineEnable) {
+                    TString mode = ctx.BlockEngineForce ? "force" : "auto";
+                    Add(Y("let", "world", Y(TString(ConfigureName), "world", configSource,
+                        BuildQuotedAtom(Pos, "BlockEngine"), BuildQuotedAtom(Pos, mode))));
                 }
             }
         }
@@ -2388,6 +2860,12 @@ public:
                 }
                 Nodes.insert(Nodes.end(), preparedNodes.begin(), preparedNodes.end());
             }
+
+            decltype(Nodes) imports;
+            for (const auto& [alias, path]: ctx.RequiredModules) {
+                imports.push_back(Y("import", alias, BuildQuotedAtom(Pos, path)));
+            }
+            Nodes.insert(Nodes.begin(), std::make_move_iterator(imports.begin()), std::make_move_iterator(imports.end()));
 
             for (const auto& symbol: ctx.Exports) {
                 Add(Y("export", symbol));
@@ -2452,7 +2930,7 @@ public:
                 Node = L(Node, Values[i].Build());
             }
         }
-        else if (Name == TStringBuf("AddFileByUrl") || Name == TStringBuf("AddFolderByUrl") || Name == TStringBuf("ImportUdfs") || Name == TStringBuf("SetPackageVersion")) {
+        else if (Name == TStringBuf("AddFileByUrl") || Name == TStringBuf("SetFileOption") || Name == TStringBuf("AddFolderByUrl") || Name == TStringBuf("ImportUdfs") || Name == TStringBuf("SetPackageVersion")) {
             Node = L(Node, BuildQuotedAtom(Pos, Name));
             for (ui32 i = 0; i < Values.size(); ++i) {
                 Node = L(Node, Values[i].Build());
@@ -2534,7 +3012,7 @@ public:
     }
 
     TPtr DoClone() const final {
-        return {};
+        return new TSqlLambda(Pos, TVector<TString>(Args), CloneContainer(ExprSeq));
     }
 
     void DoUpdateState() const override {
@@ -2589,7 +3067,7 @@ public:
     }
 
     TPtr DoClone() const final {
-        return {};
+        return new TWorldIf(GetPos(), SafeClone(Predicate), SafeClone(ThenNode), SafeClone(ElseNode), IsEvaluate);
     }
 
 private:
@@ -2606,12 +3084,13 @@ TNodePtr BuildWorldIfNode(TPosition pos, TNodePtr predicate, TNodePtr thenNode, 
 
 class TWorldFor final : public TAstListNode {
 public:
-    TWorldFor(TPosition pos, TNodePtr list, TNodePtr bodyNode, TNodePtr elseNode, bool isEvaluate)
+    TWorldFor(TPosition pos, TNodePtr list, TNodePtr bodyNode, TNodePtr elseNode, bool isEvaluate, bool isParallel)
         : TAstListNode(pos)
         , List(list)
         , BodyNode(bodyNode)
         , ElseNode(elseNode)
         , IsEvaluate(isEvaluate)
+        , IsParallel(isParallel)
     {
         FakeSource = BuildFakeSource(pos);
     }
@@ -2620,7 +3099,7 @@ public:
         if (!List->Init(ctx, FakeSource.Get())) {
             return{};
         }
-        Add(IsEvaluate ? "EvaluateFor!" : "For!");
+        Add(TStringBuilder() << (IsEvaluate ? "Evaluate": "") << (IsParallel ? "Parallel" : "") << "For!");
         Add("world");
         Add(IsEvaluate ? Y("EvaluateExpr", List) : List);
 
@@ -2640,7 +3119,7 @@ public:
     }
 
     TPtr DoClone() const final {
-        return{};
+        return new TWorldFor(GetPos(), SafeClone(List), SafeClone(BodyNode), SafeClone(ElseNode), IsEvaluate, IsParallel);
     }
 
 private:
@@ -2648,10 +3127,11 @@ private:
     TNodePtr BodyNode;
     TNodePtr ElseNode;
     bool IsEvaluate;
+    bool IsParallel;
     TSourcePtr FakeSource;
 };
 
-TNodePtr BuildWorldForNode(TPosition pos, TNodePtr list, TNodePtr bodyNode, TNodePtr elseNode, bool isEvaluate) {
-    return new TWorldFor(pos, list, bodyNode, elseNode, isEvaluate);
+TNodePtr BuildWorldForNode(TPosition pos, TNodePtr list, TNodePtr bodyNode, TNodePtr elseNode, bool isEvaluate, bool isParallel) {
+    return new TWorldFor(pos, list, bodyNode, elseNode, isEvaluate, isParallel);
 }
 } // namespace NSQLTranslationV1

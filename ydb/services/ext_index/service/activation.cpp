@@ -33,13 +33,13 @@ NKikimr::NMetadata::NRequest::TDialogYQLRequest::TRequest TActivation::BuildUpda
 
 void TActivation::OnDescriptionSuccess(NMetadata::NProvider::TTableInfo&& result, const TString& /*requestId*/) {
     if (!result->ColumnTableInfo) {
-        ExternalController->OnActivationFailed("incorrect column table info", RequestId);
+        ExternalController->OnActivationFailed(Ydb::StatusIds::INTERNAL_ERROR, "incorrect column table info", RequestId);
         SelfContainer = nullptr;
         return;
     }
     Ydb::Table::CreateTableRequest request;
     if (!Object.TryProvideTtl(result->ColumnTableInfo->Description, &request)) {
-        ExternalController->OnActivationFailed("cannot convert ttl method from column tables", RequestId);
+        ExternalController->OnActivationFailed(Ydb::StatusIds::INTERNAL_ERROR, "cannot convert ttl method from column tables", RequestId);
         SelfContainer = nullptr;
         return;
     }
@@ -61,7 +61,7 @@ void TActivation::OnDescriptionSuccess(NMetadata::NProvider::TTableInfo&& result
         column.set_name("pk_" + i.Name);
         auto primitiveType = NMetadata::NInternal::TYDBType::ConvertYQLToYDB(i.PType.GetTypeId());
         if (!primitiveType) {
-            ExternalController->OnActivationFailed("cannot convert type yql -> ydb", RequestId);
+            ExternalController->OnActivationFailed(Ydb::StatusIds::INTERNAL_ERROR, "cannot convert type yql -> ydb", RequestId);
             SelfContainer = nullptr;
             return;
         }
@@ -79,17 +79,17 @@ void TActivation::OnModificationFinished(const TString& modificationId) {
     } else if (modificationId == "access") {
         NMetadata::NRequest::TYQLRequestExecutor::Execute(BuildUpdateRequest(), NACLib::TSystemUsers::Metadata(), SelfContainer);
     } else {
-        Y_VERIFY(false);
+        Y_ABORT_UNLESS(false);
     }
 }
 
-void TActivation::OnModificationFailed(const TString& errorMessage, const TString& /*modificationId*/) {
-    ExternalController->OnActivationFailed(errorMessage, RequestId);
+void TActivation::OnModificationFailed(Ydb::StatusIds::StatusCode status, const TString& errorMessage, const TString& /*modificationId*/) {
+    ExternalController->OnActivationFailed(status, errorMessage, RequestId);
     SelfContainer = nullptr;
 }
 
 void TActivation::Start(std::shared_ptr<TActivation> selfContainer) {
-    Y_VERIFY(!!selfContainer);
+    Y_ABORT_UNLESS(!!selfContainer);
     SelfContainer = selfContainer;
     TActivationContext::ActorSystem()->Register(new NMetadata::NProvider::TSchemeDescriptionActor(SelfContainer, RequestId, Object.GetTablePath()));
 }

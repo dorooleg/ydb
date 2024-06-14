@@ -2,7 +2,6 @@
 
 #include "dsproxy.h"
 #include "dsproxy_blackboard.h"
-#include "dsproxy_cookies.h"
 #include "dsproxy_mon.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <util/generic/set.h>
@@ -31,8 +30,6 @@ class TGetImpl {
     ui32 BlockedGeneration = 0;
     ui32 VPutRequests = 0;
     ui32 VPutResponses = 0;
-    ui32 VMultiPutRequests = 0;
-    ui32 VMultiPutResponses = 0;
 
     bool IsNoData = false;
     bool IsReplied = false;
@@ -43,15 +40,14 @@ class TGetImpl {
     ui32 RequestIndex = 0;
     ui32 ResponseIndex = 0;
 
-    TStackVec<bool, MaxBatchedPutRequests * TypicalDisksInSubring> ReceivedVPutResponses;
-    TStackVec<bool, MaxBatchedPutRequests * TypicalDisksInSubring> ReceivedVMultiPutResponses;
-
     const TString RequestPrefix;
 
     const bool PhantomCheck;
     const bool Decommission;
 
     std::optional<TEvBlobStorage::TEvGet::TReaderTabletData> ReaderTabletData;
+
+    std::unordered_map<TLogoBlobID, std::tuple<bool, bool>> BlobFlags; // keep, doNotKeep per blob
 
 public:
     TGetImpl(const TIntrusivePtr<TBlobStorageGroupInfo> &info, const TIntrusivePtr<TGroupQueues> &groupQueues,
@@ -73,7 +69,7 @@ public:
         , Decommission(ev->Decommission)
         , ReaderTabletData(ev->ReaderTabletData)
     {
-        Y_VERIFY(QuerySize > 0);
+        Y_ABORT_UNLESS(QuerySize > 0);
     }
 
     std::unique_ptr<IEventBase> RestartQuery(ui32 counter) {
@@ -144,14 +140,6 @@ public:
         return VPutResponses;
     }
 
-    ui64 GetVMultiPutRequests() const {
-        return VMultiPutRequests;
-    }
-
-    ui64 GetVMultiPutResponses() const {
-        return VMultiPutResponses;
-    }
-
     ui64 GetRequestIndex() const {
         return RequestIndex;
     }
@@ -160,20 +148,19 @@ public:
         return ResponseIndex;
     }
 
-
     void GenerateInitialRequests(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets);
 
-    template <typename TVPutEvent>
     void OnVGetResult(TLogContext &logCtx, TEvBlobStorage::TEvVGetResult &ev,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets, TDeque<std::unique_ptr<TVPutEvent>> &outVPuts,
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
         const NKikimrBlobStorage::TEvVGetResult &record = ev.Record;
-        Y_VERIFY(record.HasStatus());
+        Y_ABORT_UNLESS(record.HasStatus());
         const NKikimrProto::EReplyStatus status = record.GetStatus();
-        Y_VERIFY(status != NKikimrProto::RACE && status != NKikimrProto::BLOCKED && status != NKikimrProto::DEADLINE);
+        Y_ABORT_UNLESS(status != NKikimrProto::RACE && status != NKikimrProto::BLOCKED && status != NKikimrProto::DEADLINE);
         R_LOG_DEBUG_SX(logCtx, "BPG57", "handle result# " << ev.ToString());
 
-        Y_VERIFY(record.HasVDiskID());
+        Y_ABORT_UNLESS(record.HasVDiskID());
         TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
         TVDiskIdShort shortId(vdisk);
         ui32 orderNumber = Info->GetOrderNumber(shortId);
@@ -188,24 +175,19 @@ public:
 
         BlockedGeneration = Max(BlockedGeneration, record.GetBlockedGeneration());
 
-        Y_VERIFY(record.ResultSize() > 0, "ev# %s vdisk# %s", ev.ToString().data(), vdisk.ToString().data());
+        Y_ABORT_UNLESS(record.ResultSize() > 0, "ev# %s vdisk# %s", ev.ToString().data(), vdisk.ToString().data());
         for (ui32 i = 0, e = (ui32)record.ResultSize(); i != e; ++i) {
             const NKikimrBlobStorage::TQueryResult &result = record.GetResult(i);
-            Y_VERIFY(result.HasStatus());
+            Y_ABORT_UNLESS(result.HasStatus());
             const NKikimrProto::EReplyStatus replyStatus = result.GetStatus();
-            Y_VERIFY(result.HasCookie());
-            const ui64 cookie = result.GetCookie();
-            Y_VERIFY(result.HasBlobID());
+            Y_ABORT_UNLESS(result.HasBlobID());
             const TLogoBlobID blobId = LogoBlobIDFromLogoBlobID(result.GetBlobID());
 
             if (ReportDetailedPartMap) {
-                Blackboard.ReportPartMapStatus(blobId,
-                    Blackboard.GroupDiskRequests.DiskRequestsForOrderNumber[orderNumber].GetsToSend[cookie].PartMapIndex,
-                    ResponseIndex,
-                    replyStatus);
+                Blackboard.ReportPartMapStatus(blobId, result.GetCookie(), ResponseIndex, replyStatus);
             }
 
-            TString resultBuffer = result.HasBuffer() ? result.GetBuffer() : TString();
+            TRope resultBuffer = ev.GetBlobData(result);
             ui32 resultShift = result.HasShift() ? result.GetShift() : 0;
 
             // Currently CRC can be checked only if blob part is fully read
@@ -219,10 +201,22 @@ public:
                 }
             }
 
+            if (result.HasKeep() || result.HasDoNotKeep()) {
+                auto& [a, b] = BlobFlags[blobId];
+                a |= result.GetKeep();
+                b |= result.GetDoNotKeep();
+            }
+
             if (replyStatus == NKikimrProto::OK) {
                 // TODO(cthulhu): Verify shift and response size, and cookie
                 R_LOG_DEBUG_SX(logCtx, "BPG58", "Got# OK orderNumber# " << orderNumber << " vDiskId# " << vdisk.ToString());
-                Blackboard.AddResponseData(blobId, orderNumber, resultShift, resultBuffer, result.GetKeep(), result.GetDoNotKeep());
+                resultBuffer.Compact();
+                if (resultBuffer.GetOccupiedMemorySize() > resultBuffer.size() * 2) {
+                    auto temp = TRcBuf::Uninitialized(resultBuffer.size());
+                    resultBuffer.ExtractFrontPlain(temp.GetDataMut(), temp.size());
+                    resultBuffer.Insert(resultBuffer.End(), std::move(temp));
+                }
+                Blackboard.AddResponseData(blobId, orderNumber, resultShift, std::move(resultBuffer));
             } else if (replyStatus == NKikimrProto::NODATA) {
                 R_LOG_DEBUG_SX(logCtx, "BPG59", "Got# NODATA orderNumber# " << orderNumber
                         << " vDiskId# " << vdisk.ToString());
@@ -236,9 +230,9 @@ public:
             } else if (replyStatus == NKikimrProto::NOT_YET) {
                 R_LOG_DEBUG_SX(logCtx, "BPG67", "Got# NOT_YET orderNumber# " << orderNumber
                         << " vDiskId# " << vdisk.ToString());
-                Blackboard.AddNotYetResponse(blobId, orderNumber, result.GetKeep(), result.GetDoNotKeep());
+                Blackboard.AddNotYetResponse(blobId, orderNumber);
             } else {
-                Y_VERIFY(false, "Unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(replyStatus).data());
+                Y_ABORT_UNLESS(false, "Unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(replyStatus).data());
             }
         }
 
@@ -252,17 +246,12 @@ public:
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult);
 
-    void OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVMultiPutResult &ev,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVMultiPut>> &outVMultiPuts,
-            TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult);
-
     void PrepareReply(NKikimrProto::EReplyStatus status, TString errorReason, TLogContext &logCtx,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult);
 
-    template <typename TVPutEvent>
     void AccelerateGet(TLogContext &logCtx, i32 slowDiskOrderNumber,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets, TDeque<std::unique_ptr<TVPutEvent>> &outVPuts) {
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts) {
         TAutoPtr<TEvBlobStorage::TEvGetResult> outGetResult;
         TBlackboard::EAccelerationMode prevMode = Blackboard.AccelerationMode;
         Blackboard.AccelerationMode = TBlackboard::AccelerationModeSkipMarked;
@@ -276,13 +265,13 @@ public:
         Blackboard.ChangeAll();
         Step(logCtx, outVGets, outVPuts, outGetResult);
         Blackboard.AccelerationMode = prevMode;
-        Y_VERIFY(!outGetResult, "%s Unexpected get result in AccelerateGet, outGetResult# %s, DumpFullState# %s",
+        Y_ABORT_UNLESS(!outGetResult, "%s Unexpected get result in AccelerateGet, outGetResult# %s, DumpFullState# %s",
             RequestPrefix.data(), outGetResult->Print(false).c_str(), DumpFullState().c_str());
     }
 
-    template <typename TVPutEvent>
     void AcceleratePut(TLogContext &logCtx, i32 slowDiskOrderNumber,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets, TDeque<std::unique_ptr<TVPutEvent>> &outVPuts) {
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts) {
         AccelerateGet(logCtx, slowDiskOrderNumber, outVGets, outVPuts);
     }
 
@@ -298,9 +287,9 @@ protected:
     EStrategyOutcome RunStrategies(TLogContext &logCtx);
 
     // Returns true if there are additional requests to send
-    template <typename TVPutEvent>
     bool Step(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
-            TDeque<std::unique_ptr<TVPutEvent>> &outVPuts, TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
+            TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
         switch (auto outcome = RunStrategies(logCtx)) {
             case EStrategyOutcome::IN_PROGRESS: {
                 const ui32 numRequests = outVGets.size() + outVPuts.size();
@@ -323,8 +312,6 @@ protected:
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets);
     void PrepareVPuts(TLogContext &logCtx,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts);
-    void PrepareVPuts(TLogContext &logCtx,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVMultiPut>> &outVMultiPuts);
 
     ui64 GetTimeToAccelerateNs(TLogContext &logCtx, NKikimrBlobStorage::EVDiskQueueId queueId);
 }; //TGetImpl

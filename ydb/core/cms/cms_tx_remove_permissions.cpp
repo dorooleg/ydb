@@ -6,6 +6,12 @@
 namespace NKikimr::NCms {
 
 class TCms::TTxRemovePermissions : public TTransactionBase<TCms> {
+    void RemoveRequest(NIceDb::TNiceDb &db, const TString &reqId, const TActorContext &ctx, const TString &reason) {
+        Self->State->ScheduledRequests.erase(reqId);
+        db.Table<Schema::Request>().Key(reqId).Delete();
+        Self->AuditLog(ctx, reason);
+    }
+
 public:
     TTxRemovePermissions(TCms *self, TVector<TString> &&ids, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp, bool expired)
         : TBase(self)
@@ -26,22 +32,39 @@ public:
             if (!Self->State->Permissions.contains(id))
                 continue;
 
-            auto requestId = Self->State->Permissions.find(id)->second.RequestId;
+            const auto &permission = Self->State->Permissions.find(id)->second;
+            const TString requestId = permission.RequestId;
+            const TString host = permission.Action.GetHost();
+
             Self->State->Permissions.erase(id);
             db.Table<Schema::Permission>().Key(id).Delete();
 
-            if (Expired && Self->State->ScheduledRequests.contains(requestId)) {
-                Self->State->ScheduledRequests.erase(requestId);
-                db.Table<Schema::Request>().Key(requestId).Delete();
+            auto it = Self->State->ScheduledRequests.find(requestId);
+            if (it != Self->State->ScheduledRequests.end()) {
+                if (Expired) {
+                    RemoveRequest(db, requestId, ctx, TStringBuilder() << "Remove request"
+                        << ": id# " << requestId
+                        << ", reason# " << "permission " << id << " has expired");
+                }
+                
+                if (it->second.Request.GetEvictVDisks()) {
+                    auto ret = Self->ResetHostMarkers(host, txc, ctx);
+                    std::move(ret.begin(), ret.end(), std::back_inserter(UpdateMarkers));
 
-                Self->AuditLog(ctx, TStringBuilder() << "Remove request"
-                    << ": id# " << requestId
-                    << ", reason# " << "permission " << id << " has expired");
+                    RemoveRequest(db, requestId, ctx, TStringBuilder() << "Remove request"
+                        << ": id# " << requestId
+                        << ", reason# " << "permission " << id << " was removed");
+                }
             }
 
             if (Self->State->WalleRequests.contains(requestId)) {
                 auto taskId = Self->State->WalleRequests.find(requestId)->second;
                 Self->State->WalleTasks.find(taskId)->second.Permissions.erase(id);
+            }
+
+            if (Self->State->MaintenanceRequests.contains(requestId)) {
+                auto taskId = Self->State->MaintenanceRequests.find(requestId)->second;
+                Self->State->MaintenanceTasks.find(taskId)->second.Permissions.erase(id);
             }
 
             Self->AuditLog(ctx, TStringBuilder() << "Remove permission"
@@ -56,11 +79,12 @@ public:
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemovePermissions Complete");
 
         if (Response) {
-            Y_VERIFY(Request);
+            Y_ABORT_UNLESS(Request);
             Self->Reply(Request.Get(), Response, ctx);
         }
 
-        Self->RemoveEmptyWalleTasks(ctx);
+        Self->RemoveEmptyTasks(ctx);
+        Self->SentinelUpdateHostMarkers(std::move(UpdateMarkers), ctx);
     }
 
 private:
@@ -68,6 +92,7 @@ private:
     TAutoPtr<IEventHandle> Response;
     TVector<TString> Ids;
     bool Expired;
+    TVector<TEvSentinel::TEvUpdateHostMarkers::THostMarkers> UpdateMarkers;
 };
 
 ITransaction *TCms::CreateTxRemovePermissions(TVector<TString> ids, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp,

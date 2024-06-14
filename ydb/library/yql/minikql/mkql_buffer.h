@@ -2,6 +2,8 @@
 
 #include "defs.h"
 
+#include <ydb/library/actors/util/rope.h>
+
 #include <util/generic/noncopyable.h>
 #include <util/stream/output.h>
 #include <util/system/yassert.h>
@@ -14,10 +16,11 @@ class TPagedBuffer;
 
 class TBufferPage : private TNonCopyable {
     friend class TPagedBuffer;
-    static const size_t PageAllocSize = 128 * 1024;
     static const size_t PageCapacity;
 
 public:
+    static const size_t PageAllocSize = 128 * 1024;
+
     TBufferPage() = default;
     ~TBufferPage() = default;
 
@@ -53,38 +56,32 @@ private:
     static void Free(TBufferPage* page);
 
     static inline const TBufferPage* GetPage(const char* data) {
-        Y_VERIFY_DEBUG(data);
+        Y_DEBUG_ABORT_UNLESS(data);
         return reinterpret_cast<const TBufferPage*>(data - sizeof(TBufferPage));
     }
 
     static inline TBufferPage* GetPage(char* data) {
-        Y_VERIFY_DEBUG(data);
+        Y_DEBUG_ABORT_UNLESS(data);
         return reinterpret_cast<TBufferPage*>(data - sizeof(TBufferPage));
     }
 };
 
-class TPagedBuffer : private TMoveOnly {
-public:
+class TPagedBuffer : private TNonCopyable {
+  public:
+    using TPtr = std::shared_ptr<TPagedBuffer>;
+    using TConstPtr = std::shared_ptr<const TPagedBuffer>;
+
     TPagedBuffer() = default;
-    TPagedBuffer(TPagedBuffer&& other)
-        : Head_(other.Head_)
-        , Tail_(other.Tail_)
-        , TailSize_(other.TailSize_)
-        , HeadReserve_(other.HeadReserve_)
-        , ClosedPagesSize_(other.ClosedPagesSize_)
-    {
-        other.Reset();
-    }
 
     ~TPagedBuffer() {
-        Deallocate();
-    }
-
-    TPagedBuffer& operator=(TPagedBuffer&& other) noexcept {
-        Deallocate();
-        std::memcpy(this, &other, sizeof(TPagedBuffer));
-        other.Reset();
-        return *this;
+        if (Head_) {
+            TBufferPage* curr = TBufferPage::GetPage(Head_);
+            while (curr) {
+                auto drop = curr;
+                curr = curr->Next_;
+                TBufferPage::Free(drop);
+            }
+        }
     }
 
     template<typename TFunc>
@@ -122,7 +119,7 @@ public:
     inline size_t Size() const {
         //                      + (Tail_ ? TailSize_ : 0);
         size_t sizeWithReserve = ClosedPagesSize_ + ((-size_t(Tail_ != nullptr)) & TailSize_);
-        Y_VERIFY_DEBUG(sizeWithReserve >= HeadReserve_);
+        Y_DEBUG_ABORT_UNLESS(sizeWithReserve >= HeadReserve_);
         return sizeWithReserve - HeadReserve_;
     }
 
@@ -151,9 +148,9 @@ public:
     }
 
     inline void ReserveHeader(size_t len) {
-        Y_VERIFY_DEBUG(len > 0);
-        Y_VERIFY_DEBUG(Head_ == Tail_);
-        Y_VERIFY_DEBUG(HeadReserve_ == 0);
+        Y_DEBUG_ABORT_UNLESS(len > 0);
+        Y_DEBUG_ABORT_UNLESS(Head_ == Tail_);
+        Y_DEBUG_ABORT_UNLESS(HeadReserve_ == 0);
         Advance(len);
         HeadReserve_ = len;
     }
@@ -162,14 +159,14 @@ public:
         if (len > HeadReserve_) {
             return nullptr;
         }
-        Y_VERIFY_DEBUG(Head_);
+        Y_DEBUG_ABORT_UNLESS(Head_);
         HeadReserve_ -= len;
         return Head_ + HeadReserve_;
     }
 
     // buffer-style operations with last page
     inline char* Pos() const {
-        Y_VERIFY_DEBUG(Tail_);
+        Y_DEBUG_ABORT_UNLESS(Tail_);
         return Tail_ + TailSize_;
     }
 
@@ -181,7 +178,7 @@ public:
     }
 
     inline void EraseBack(size_t len) {
-        Y_VERIFY_DEBUG(Tail_ && TailSize_ >= len);
+        Y_DEBUG_ABORT_UNLESS(Tail_ && TailSize_ >= len);
         TailSize_ -= len;
     }
 
@@ -206,7 +203,7 @@ public:
             if (TailSize_ == TBufferPage::PageCapacity) {
                 AppendPage();
             }
-            Y_VERIFY_DEBUG(TailSize_ < TBufferPage::PageCapacity);
+            Y_DEBUG_ABORT_UNLESS(TailSize_ < TBufferPage::PageCapacity);
 
             size_t avail = TBufferPage::PageCapacity - TailSize_;
             size_t chunk = std::min(avail, size);
@@ -217,25 +214,9 @@ public:
         }
     }
 
+    static TRope AsRope(const TConstPtr& buf);
 private:
     void AppendPage();
-
-    inline void Reset() noexcept {
-        Head_ = Tail_ = nullptr;
-        TailSize_ = TBufferPage::PageCapacity;
-        ClosedPagesSize_ = HeadReserve_ = 0;
-    }
-
-    void Deallocate() noexcept {
-        if (Head_) {
-            TBufferPage *curr = TBufferPage::GetPage(Head_);
-            while (curr) {
-                auto drop = curr;
-                curr = curr->Next_;
-                TBufferPage::Free(drop);
-            }
-        }
-    }
 
     char* Head_ = nullptr;
     char* Tail_ = nullptr;

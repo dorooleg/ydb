@@ -3,6 +3,8 @@
 #include "schemeshard_impl.h"
 
 #include <util/generic/xrange.h>
+#include <ydb/public/api/protos/ydb_export.pb.h>
+#include <ydb/public/api/protos/ydb_import.pb.h>
 
 namespace NKikimr {
 namespace NSchemeShard {
@@ -37,7 +39,7 @@ namespace {
     void FillItemProgress(TSchemeShard* ss, const TExportInfo::TPtr exportInfo, ui32 itemIdx,
             Ydb::Export::ExportItemProgress& itemProgress) {
 
-        Y_VERIFY(itemIdx < exportInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
         const auto& item = exportInfo->Items.at(itemIdx);
 
         const auto opId = TOperationId(item.WaitTxId, FirstSubTxId);
@@ -121,12 +123,12 @@ void TSchemeShard::FromXxportInfo(NKikimrExport::TExport& exprt, const TExportIn
 
     switch (exportInfo->Kind) {
     case TExportInfo::EKind::YT:
-        Y_VERIFY(exprt.MutableExportToYtSettings()->ParseFromString(exportInfo->Settings));
+        Y_ABORT_UNLESS(exprt.MutableExportToYtSettings()->ParseFromString(exportInfo->Settings));
         exprt.MutableExportToYtSettings()->clear_token();
         break;
 
     case TExportInfo::EKind::S3:
-        Y_VERIFY(exprt.MutableExportToS3Settings()->ParseFromString(exportInfo->Settings));
+        Y_ABORT_UNLESS(exprt.MutableExportToS3Settings()->ParseFromString(exportInfo->Settings));
         exprt.MutableExportToS3Settings()->clear_access_key();
         exprt.MutableExportToS3Settings()->clear_secret_key();
         break;
@@ -185,7 +187,7 @@ void TSchemeShard::PersistExportState(NIceDb::TNiceDb& db, const TExportInfo::TP
 }
 
 void TSchemeShard::PersistExportItemState(NIceDb::TNiceDb& db, const TExportInfo::TPtr exportInfo, ui32 itemIdx) {
-    Y_VERIFY(itemIdx < exportInfo->Items.size());
+    Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
     const auto& item = exportInfo->Items.at(itemIdx);
 
     db.Table<Schema::ExportItems>().Key(exportInfo->Id, itemIdx).Update(

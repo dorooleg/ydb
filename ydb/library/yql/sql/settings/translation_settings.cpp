@@ -42,19 +42,21 @@ namespace NSQLTranslation {
 
     TTranslationSettings::TTranslationSettings()
         : ModuleMapping({{"core", "/lib/yql/core.yql"}})
+        , BindingsMode(EBindingsMode::ENABLED)
         , Mode(ESqlMode::QUERY)
         , MaxErrors(SQL_MAX_PARSER_ERRORS)
         , EndOfQueryCommit(true)
         , EnableGenericUdfs(true)
-        , SyntaxVersion(0)
+        , SyntaxVersion(1)
         , AnsiLexer(false)
         , PgParser(false)
         , InferSyntaxVersion(false)
-        , V0Behavior(EV0Behavior::Silent)
+        , V0Behavior(EV0Behavior::Disable)
         , V0ForceDisable(InTestEnvironment())
         , WarnOnV0(true)
         , V0WarnAsError(ISqlFeaturePolicy::MakeAlwaysDisallow())
         , DqDefaultAuto(ISqlFeaturePolicy::MakeAlwaysDisallow())
+        , BlockDefaultAuto(ISqlFeaturePolicy::MakeAlwaysDisallow())
         , AssumeYdbOnClusterWithSlash(false)
     {}
 

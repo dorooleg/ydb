@@ -5,9 +5,11 @@
 
 #include <ydb/library/yql/public/udf/udf_type_ops.h>
 #include <ydb/library/yql/public/udf/arrow/block_item_comparator.h>
+#include <ydb/library/yql/public/udf/arrow/block_item_hasher.h>
 
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_impl.h>
+#include <ydb/library/yql/minikql/mkql_runtime_version.h>
 #include <ydb/library/yql/minikql/mkql_node_printer.h>
 #include <ydb/library/yql/parser/pg_catalog/catalog.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/compare.h>
@@ -31,7 +33,7 @@ class TPgTypeIndex {
 public:
     TPgTypeIndex() {
         NYql::NPg::EnumTypes([&](ui32 typeId, const NYql::NPg::TTypeDesc& t) {
-            Y_VERIFY(typeId < Types.size());
+            Y_ABORT_UNLESS(typeId < Types.size());
             auto& e = Types[typeId];
             e.Name = t.Name;
             e.TypeId = t.TypeId;
@@ -52,46 +54,6 @@ public:
         }
         return &e;
     }
-};
-
-class TCallablePayload : public NUdf::ICallablePayload {
-public:
-    TCallablePayload(NMiniKQL::TNode* node)
-    {
-        auto structObj = AS_VALUE(NMiniKQL::TStructLiteral, NMiniKQL::TRuntimeNode(node, true));
-        auto argsIndex = structObj->GetType()->GetMemberIndex("Args");
-        auto payloadIndex = structObj->GetType()->GetMemberIndex("Payload");
-        Payload_ = AS_VALUE(NMiniKQL::TDataLiteral, structObj->GetValue(payloadIndex))->AsValue().AsStringRef();
-        auto args = structObj->GetValue(argsIndex);
-        auto argsList = AS_VALUE(NMiniKQL::TListLiteral, args);
-        auto itemType = AS_TYPE(NMiniKQL::TStructType, AS_TYPE(NMiniKQL::TListType, args)->GetItemType());
-        auto nameIndex = itemType->GetMemberIndex("Name");
-        auto flagsIndex = itemType->GetMemberIndex("Flags");
-        ArgsNames_.reserve(argsList->GetItemsCount());
-        ArgsFlags_.reserve(argsList->GetItemsCount());
-        for (ui32 i = 0; i < argsList->GetItemsCount(); ++i) {
-            auto arg = AS_VALUE(NMiniKQL::TStructLiteral, argsList->GetItems()[i]);
-            ArgsNames_.push_back(AS_VALUE(NMiniKQL::TDataLiteral, arg->GetValue(nameIndex))->AsValue().AsStringRef());
-            ArgsFlags_.push_back(AS_VALUE(NMiniKQL::TDataLiteral, arg->GetValue(flagsIndex))->AsValue().Get<ui64>());
-        }
-    }
-
-    NUdf::TStringRef GetPayload() const override {
-        return Payload_;
-    }
-
-    NUdf::TStringRef GetArgumentName(ui32 index) const override {
-        return ArgsNames_[index];
-    }
-
-    ui64 GetArgumentFlags(ui32 index) const override {
-        return ArgsFlags_[index];
-    }
-
-private:
-    NUdf::TStringRef Payload_;
-    TVector<NUdf::TStringRef> ArgsNames_;
-    TVector<ui64> ArgsFlags_;
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -222,8 +184,8 @@ public:
 
     NUdf::IDictTypeBuilder& Key(NUdf::TDataTypeId typeId) override {
         auto slot = NUdf::FindDataSlot(typeId);
-        Y_VERIFY(slot, "unknown type: %d", (int)typeId);
-        Y_VERIFY(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
+        Y_ABORT_UNLESS(slot, "unknown type: %d", (int)typeId);
+        Y_ABORT_UNLESS(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
         KeyType_ = NMiniKQL::TDataType::Create(typeId, Parent_.Env());
         return *this;
     }
@@ -270,8 +232,8 @@ private:
         auto t = AS_TYPE(NMiniKQL::TDataType, const_cast<NMiniKQL::TType*>(KeyType_));
         auto keySchemeType = t->GetSchemeType();
         auto slot = NUdf::FindDataSlot(keySchemeType);
-        Y_VERIFY(slot, "unknown type: %d", (int)keySchemeType);
-        Y_VERIFY(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
+        Y_ABORT_UNLESS(slot, "unknown type: %d", (int)keySchemeType);
+        Y_ABORT_UNLESS(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
     }
 
 private:
@@ -293,8 +255,8 @@ public:
 
     NUdf::ISetTypeBuilder& Key(NUdf::TDataTypeId typeId) override {
         auto slot = NUdf::FindDataSlot(typeId);
-        Y_VERIFY(slot, "unknown type: %d", (int)typeId);
-        Y_VERIFY(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
+        Y_ABORT_UNLESS(slot, "unknown type: %d", (int)typeId);
+        Y_ABORT_UNLESS(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
         KeyType_ = NMiniKQL::TDataType::Create(typeId, Parent_.Env());
         return *this;
     }
@@ -316,7 +278,7 @@ public:
     NUdf::TType* Build() const override {
         return NMiniKQL::TDictType::Create(
             const_cast<NMiniKQL::TType*>(KeyType_),
-            Parent_.Env().GetVoid()->GetType(), Parent_.Env());
+            Parent_.Env().GetVoidLazy()->GetType(), Parent_.Env());
     }
 
 private:
@@ -324,8 +286,8 @@ private:
         auto t = AS_TYPE(NMiniKQL::TDataType, const_cast<NMiniKQL::TType*>(KeyType_));
         auto keySchemeType = t->GetSchemeType();
         auto slot = NUdf::FindDataSlot(keySchemeType);
-        Y_VERIFY(slot, "unknown type: %d", (int)keySchemeType);
-        Y_VERIFY(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
+        Y_ABORT_UNLESS(slot, "unknown type: %d", (int)keySchemeType);
+        Y_ABORT_UNLESS(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare, "key type is not comparable");
     }
 
 private:
@@ -408,7 +370,7 @@ public:
         const NUdf::TStringRef& name,
         ui32* index) override
     {
-        StructBuilder_.Add(name, Parent_.Env().GetVoid()->GetType(), index);
+        StructBuilder_.Add(name, Parent_.Env().GetVoidLazy()->GetType(), index);
         return *this;
     }
 
@@ -565,7 +527,7 @@ public:
     }
 
     NUdf::TType* Build() const override {
-        Y_VERIFY(ReturnType_, "callable returns type is not configured");
+        Y_ABORT_UNLESS(ReturnType_, "callable returns type is not configured");
 
         NMiniKQL::TNode* payload = nullptr;
 
@@ -671,6 +633,8 @@ public:
     {}
 
     ui64 Hash(NUdf::TUnboxedValuePod value) const override {
+        // keep hash computation in sync with
+        // ydb/library/yql/public/udf/arrow/block_item_hasher.h: TBlockItemHasherBase::Hash()
         if (!value) {
             return 0;
         }
@@ -753,6 +717,8 @@ private:
 class TVectorHash : public NUdf::IHash {
 public:
     ui64 Hash(NUdf::TUnboxedValuePod value) const override {
+        // keep hash computation in sync with
+        // ydb/library/yql/public/udf/arrow/block_item_hasher.h: TTupleBlockItemHasher::DoHash()
         ui64 result = 0ULL;
         auto elements = value.GetElements();
         if (elements) {
@@ -1367,7 +1333,7 @@ public:
             }
 
             auto cmpKeys = CompareKey_->Compare(
-                static_cast<const NUdf::TUnboxedValuePod&>(lhsCurr->first), 
+                static_cast<const NUdf::TUnboxedValuePod&>(lhsCurr->first),
                 static_cast<const NUdf::TUnboxedValuePod&>(rhsCurr->first)
             );
 
@@ -1376,7 +1342,7 @@ public:
             }
 
             auto cmpPayloads = ComparePayload_->Compare(
-                static_cast<const NUdf::TUnboxedValuePod&>(lhsCurr->second), 
+                static_cast<const NUdf::TUnboxedValuePod&>(lhsCurr->second),
                 static_cast<const NUdf::TUnboxedValuePod&>(rhsCurr->second)
             );
 
@@ -1460,10 +1426,14 @@ bool ConvertArrowType(NUdf::EDataSlot slot, std::shared_ptr<arrow::DataType>& ty
         type = arrow::uint32();
         return true;
     case NUdf::EDataSlot::Int32:
+    case NUdf::EDataSlot::Date32:
         type = arrow::int32();
         return true;
     case NUdf::EDataSlot::Int64:
     case NUdf::EDataSlot::Interval:
+    case NUdf::EDataSlot::Interval64:
+    case NUdf::EDataSlot::Timestamp64:
+    case NUdf::EDataSlot::Datetime64:
         type = arrow::int64();
         return true;
     case NUdf::EDataSlot::Uint64:
@@ -1477,9 +1447,12 @@ bool ConvertArrowType(NUdf::EDataSlot slot, std::shared_ptr<arrow::DataType>& ty
         type = arrow::float64();
         return true;
     case NUdf::EDataSlot::String:
+    case NUdf::EDataSlot::Yson:
+    case NUdf::EDataSlot::JsonDocument:
         type = arrow::binary();
         return true;
     case NUdf::EDataSlot::Utf8:
+    case NUdf::EDataSlot::Json:
         type = arrow::utf8();
         return true;
     default:
@@ -1501,6 +1474,11 @@ bool ConvertArrowType(TType* itemType, std::shared_ptr<arrow::DataType>& type) {
             currentType = AS_TYPE(TOptionalType, currentType)->GetItemType();
         } while (currentType->IsOptional());
 
+        if (currentType->IsPg()) {
+            previousType = currentType;
+            ++nestLevel;
+        }
+
         // previousType is always Optional
         std::shared_ptr<arrow::DataType> innerArrowType;
         if (!ConvertArrowType(previousType, innerArrowType)) {
@@ -1515,6 +1493,23 @@ bool ConvertArrowType(TType* itemType, std::shared_ptr<arrow::DataType>& type) {
         }
 
         type = innerArrowType;
+        return true;
+    }
+
+    if (unpacked->IsStruct()) {
+        auto structType = AS_TYPE(TStructType, unpacked);
+        std::vector<std::shared_ptr<arrow::Field>> members;
+        for (ui32 i = 0; i < structType->GetMembersCount(); i++) {
+            std::shared_ptr<arrow::DataType> childType;
+            const TString memberName(structType->GetMemberName(i));
+            auto memberType = structType->GetMemberType(i);
+            if (!ConvertArrowType(memberType, childType)) {
+                return false;
+            }
+            members.emplace_back(std::make_shared<arrow::Field>(memberName, childType, memberType->IsOptional()));
+        }
+
+        type = std::make_shared<arrow::StructType>(members);
         return true;
     }
 
@@ -1544,6 +1539,11 @@ bool ConvertArrowType(TType* itemType, std::shared_ptr<arrow::DataType>& type) {
             type = arrow::binary();
         }
 
+        return true;
+    }
+
+    if (unpacked->IsResource()) {
+        type = arrow::fixed_size_binary(sizeof(NYql::NUdf::TUnboxedValuePod));
         return true;
     }
 
@@ -1578,8 +1578,8 @@ TFunctionTypeInfoBuilder::TFunctionTypeInfoBuilder(
         const NUdf::ISecureParamsProvider* provider)
     : Env_(env)
     , ReturnType_(nullptr)
-    , RunConfigType_(Env_.GetTypeOfVoid())
-    , UserType_(Env_.GetTypeOfVoid())
+    , RunConfigType_(Env_.GetTypeOfVoidLazy())
+    , UserType_(Env_.GetTypeOfVoidLazy())
     , TypeInfoHelper_(typeInfoHelper)
     , ModuleName_(moduleName)
     , CountersProvider_(countersProvider)
@@ -1607,15 +1607,15 @@ NUdf::IFunctionTypeInfoBuilder7& TFunctionTypeInfoBuilder::IRImplementationImpl(
 }
 
 NUdf::TType* TFunctionTypeInfoBuilder::Null() const {
-    return Env_.GetTypeOfNull();
+    return Env_.GetTypeOfNullLazy();
 }
 
 NUdf::TType* TFunctionTypeInfoBuilder::EmptyList() const {
-    return Env_.GetTypeOfEmptyList();
+    return Env_.GetTypeOfEmptyListLazy();
 }
 
 NUdf::TType* TFunctionTypeInfoBuilder::EmptyDict() const {
-    return Env_.GetTypeOfEmptyDict();
+    return Env_.GetTypeOfEmptyDictLazy();
 }
 
 void TFunctionTypeInfoBuilder::Unused1()
@@ -1648,12 +1648,12 @@ void TFunctionTypeInfoBuilder::Unused2() {
 void TFunctionTypeInfoBuilder::Unused3() {
 }
 
-NUdf::IFunctionTypeInfoBuilder15& TFunctionTypeInfoBuilder::SupportsBlocks() {
+NUdf::IFunctionTypeInfoBuilder15& TFunctionTypeInfoBuilder::SupportsBlocksImpl() {
     SupportsBlocks_ = true;
     return *this;
 }
 
-NUdf::IFunctionTypeInfoBuilder15& TFunctionTypeInfoBuilder::IsStrict() {
+NUdf::IFunctionTypeInfoBuilder15& TFunctionTypeInfoBuilder::IsStrictImpl() {
     IsStrict_ = true;
     return *this;
 }
@@ -1833,7 +1833,7 @@ NUdf::ICallableTypeBuilder::TPtr TFunctionTypeInfoBuilder::Callable(
 
 NUdf::TType* TFunctionTypeInfoBuilder::Void() const
 {
-    return Env_.GetTypeOfVoid();
+    return Env_.GetTypeOfVoidLazy();
 }
 
 NUdf::TType* TFunctionTypeInfoBuilder::Resource(const NUdf::TStringRef& tag) const {
@@ -1927,7 +1927,7 @@ NUdf::ETypeKind TTypeInfoHelper::GetTypeKind(const NUdf::TType* type) const {
     case NMiniKQL::TType::EKind::Pg: return NUdf::ETypeKind::Pg;
     case NMiniKQL::TType::EKind::Block: return NUdf::ETypeKind::Block;
     default:
-        Y_VERIFY_DEBUG(false, "Wrong MQKL type kind %s", mkqlType->GetKindAsStr().data());
+        Y_DEBUG_ABORT_UNLESS(false, "Wrong MQKL type kind %s", mkqlType->GetKindAsStr().data());
         return NUdf::ETypeKind::Unknown;
     }
 }
@@ -1938,7 +1938,7 @@ void TTypeInfoHelper::VisitType(const NUdf::TType* type, NUdf::ITypeVisitor* vis
         return;
     }
 
-    Y_VERIFY_DEBUG(visitor->IsCompatibleTo(NUdf::MakeAbiCompatibilityVersion(1, 0)));
+    Y_DEBUG_ABORT_UNLESS(visitor->IsCompatibleTo(NUdf::MakeAbiCompatibilityVersion(1, 0)));
     auto mkqlType = static_cast<const NMiniKQL::TType*>(type);
 
 #define MKQL_HANDLE_UDF_TYPE(TypeKind) \
@@ -1963,7 +1963,7 @@ case NMiniKQL::TType::EKind::TypeKind: { \
         MKQL_HANDLE_UDF_TYPE(Pg)
         MKQL_HANDLE_UDF_TYPE(Block)
     default:
-        Y_VERIFY_DEBUG(false, "Wrong MQKL type kind %s", mkqlType->GetKindAsStr().data());
+        Y_DEBUG_ABORT_UNLESS(false, "Wrong MQKL type kind %s", mkqlType->GetKindAsStr().data());
     }
 
 #undef MKQL_HANDLE_UDF_TYPE
@@ -2200,8 +2200,9 @@ NUdf::IHash::TPtr MakeHashImpl(const NMiniKQL::TType* type) {
             if (!slot) {
                 throw TTypeNotSupported() << "Invalid data slot";
             }
-            if (!(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanHash)) {
-                throw TTypeNotSupported() << "Data type is not hashable";
+            const auto& info = NUdf::GetDataTypeInfo(*slot);
+            if (!(info.Features & NUdf::CanHash)) {
+                throw TTypeNotSupported() << "Type " << info.Name << " is not hashable";
             }
             switch (*slot) {
                 UDF_TYPE_ID_MAP(MAKE_HASH)
@@ -2233,7 +2234,8 @@ NUdf::IHash::TPtr MakeHashImpl(const NMiniKQL::TType* type) {
             return MakeHashImpl(taggedType->GetBaseType());
         }
         default:
-            throw TTypeNotSupported() << "Data, Pg, Optional, Tuple, Struct, List, Variant or Dict is expected for hashing";
+            throw TTypeNotSupported() << "Data, Pg, Optional, Tuple, Struct, List, Variant or Dict is expected for hashing, "
+            << "but got: " << PrintNode(type);
     }
 }
 
@@ -2249,8 +2251,9 @@ NUdf::ICompare::TPtr MakeCompareImpl(const NMiniKQL::TType* type) {
             if (!slot) {
                 throw TTypeNotSupported() << "Invalid data slot";
             }
-            if (!(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanCompare)) {
-                throw TTypeNotSupported() << "Data type is not comparable";
+            const auto& info = NUdf::GetDataTypeInfo(*slot);
+            if (!(info.Features & NUdf::CanCompare)) {
+                throw TTypeNotSupported() << "Type " << info.Name << " is not comparable";
             }
             switch (*slot) {
                 UDF_TYPE_ID_MAP(MAKE_COMPARE)
@@ -2275,7 +2278,7 @@ NUdf::ICompare::TPtr MakeCompareImpl(const NMiniKQL::TType* type) {
         case NMiniKQL::TType::EKind::List:
             return new TCompare<NMiniKQL::TType::EKind::List>(type);
         case NMiniKQL::TType::EKind::Dict:
-            return new TCompare<NMiniKQL::TType::EKind::Dict>(type);            
+            return new TCompare<NMiniKQL::TType::EKind::Dict>(type);
         case NMiniKQL::TType::EKind::Pg:
             return MakePgCompare((const TPgType*)type);
         case NMiniKQL::TType::EKind::Tagged: {
@@ -2283,7 +2286,7 @@ NUdf::ICompare::TPtr MakeCompareImpl(const NMiniKQL::TType* type) {
             return MakeCompareImpl(taggedType->GetBaseType());
         }
         default:
-            throw TTypeNotSupported() << "Data, Pg, Optional, Variant, Tuple, Struct, List or Dict are expected for comparing,"
+            throw TTypeNotSupported() << "Data, Pg, Optional, Variant, Tuple, Struct, List or Dict are expected for comparing, "
             << "but got: " << PrintNode(type);
     }
 }
@@ -2300,8 +2303,9 @@ NUdf::IEquate::TPtr MakeEquateImpl(const NMiniKQL::TType* type) {
             if (!slot) {
                 throw TTypeNotSupported() << "Invalid data slot";
             }
-            if (!(NUdf::GetDataTypeInfo(*slot).Features & NUdf::CanEquate)) {
-                throw TTypeNotSupported() << "Data type is not equatable";
+            const auto& info = NUdf::GetDataTypeInfo(*slot);
+            if (!(info.Features & NUdf::CanEquate)) {
+                throw TTypeNotSupported() << "Type " << info.Name << " is not equatable";
             }
             switch (*slot) {
                 UDF_TYPE_ID_MAP(MAKE_EQUATE)
@@ -2333,7 +2337,8 @@ NUdf::IEquate::TPtr MakeEquateImpl(const NMiniKQL::TType* type) {
             return MakeEquateImpl(taggedType->GetBaseType());
         }
         default:
-            throw TTypeNotSupported() << "Data, Pg, Optional, Tuple, Struct, List, Variant or Dict is expected for equating";
+            throw TTypeNotSupported() << "Data, Pg, Optional, Tuple, Struct, List, Variant or Dict is expected for equating, "
+            << "but got: " << PrintNode(type);
     }
 }
 
@@ -2341,6 +2346,15 @@ size_t CalcMaxBlockItemSize(const TType* type) {
     // we do not count block bitmap size
     if (type->IsOptional()) {
         return CalcMaxBlockItemSize(AS_TYPE(TOptionalType, type)->GetItemType());
+    }
+
+    if (type->IsStruct()) {
+        auto structType = AS_TYPE(TStructType, type);
+        size_t result = 0;
+        for (ui32 i = 0; i < structType->GetMembersCount(); i++) {
+            result = std::max(result, CalcMaxBlockItemSize(structType->GetMemberType(i)));
+        }
+        return result;
     }
 
     if (type->IsTuple()) {
@@ -2362,6 +2376,10 @@ size_t CalcMaxBlockItemSize(const TType* type) {
         }
     }
 
+    if (type->IsResource()) {
+        return sizeof(NYql::NUdf::TUnboxedValue);
+    }
+
     if (type->IsData()) {
         auto slot = *AS_TYPE(TDataType, type)->GetDataSlot();
         switch (slot) {
@@ -2378,6 +2396,10 @@ size_t CalcMaxBlockItemSize(const TType* type) {
         case NUdf::EDataSlot::Interval:
         case NUdf::EDataSlot::Uint64:
         case NUdf::EDataSlot::Timestamp:
+        case NUdf::EDataSlot::Date32:
+        case NUdf::EDataSlot::Datetime64:
+        case NUdf::EDataSlot::Timestamp64:
+        case NUdf::EDataSlot::Interval64:
         case NUdf::EDataSlot::Float:
         case NUdf::EDataSlot::Double: {
             size_t sz = GetDataTypeInfo(slot).FixedSize;
@@ -2385,17 +2407,20 @@ size_t CalcMaxBlockItemSize(const TType* type) {
             return sz;
         }
         case NUdf::EDataSlot::String:
+        case NUdf::EDataSlot::Yson:
+        case NUdf::EDataSlot::JsonDocument:
             // size of offset part
             return sizeof(arrow::BinaryType::offset_type);
         case NUdf::EDataSlot::Utf8:
+        case NUdf::EDataSlot::Json:
             // size of offset part
             return sizeof(arrow::StringType::offset_type);
         default:
-            MKQL_ENSURE(false, "Unsupported data slot");
+            MKQL_ENSURE(false, "Unsupported data slot: " << slot);
         }
     }
 
-    MKQL_ENSURE(false, "Unsupported type");
+    MKQL_ENSURE(false, "Unsupported type: " << *type);
 }
 
 struct TComparatorTraits {
@@ -2404,7 +2429,7 @@ struct TComparatorTraits {
     using TTuple = NUdf::TTupleBlockItemComparator<Nullable>;
     template <typename T, bool Nullable>
     using TFixedSize = NUdf::TFixedSizeBlockItemComparator<T, Nullable>;
-    template <typename TStringType, bool Nullable>
+    template <typename TStringType, bool Nullable, NUdf::EDataSlot TOriginal = NUdf::EDataSlot::String>
     using TStrings = NUdf::TStringBlockItemComparator<TStringType, Nullable>;
     using TExtOptional = NUdf::TExternalOptionalBlockItemComparator;
 
@@ -2412,10 +2437,159 @@ struct TComparatorTraits {
         Y_UNUSED(pgBuilder);
         return std::unique_ptr<TResult>(MakePgItemComparator(desc.TypeId).Release());
     }
+
+    static std::unique_ptr<TResult> MakeResource(bool isOptional) {
+        Y_UNUSED(isOptional);
+        ythrow yexception() << "Comparator not implemented for block resources: ";
+    }
+};
+
+struct THasherTraits {
+    using TResult = NUdf::IBlockItemHasher;
+    template <bool Nullable>
+    using TTuple = NUdf::TTupleBlockItemHasher<Nullable>;
+    template <typename T, bool Nullable>
+    using TFixedSize = NUdf::TFixedSizeBlockItemHasher<T, Nullable>;
+    template <typename TStringType, bool Nullable, NUdf::EDataSlot TOriginal = NUdf::EDataSlot::String>
+    using TStrings = NUdf::TStringBlockItemHasher<TStringType, Nullable>;
+    using TExtOptional = NUdf::TExternalOptionalBlockItemHasher;
+
+    static std::unique_ptr<TResult> MakePg(const NUdf::TPgTypeDescription& desc, const NUdf::IPgBuilder* pgBuilder) {
+        Y_UNUSED(pgBuilder);
+        return std::unique_ptr<TResult>(MakePgItemHasher(desc.TypeId).Release());
+    }
+
+    static std::unique_ptr<TResult> MakeResource(bool isOptional) {
+        Y_UNUSED(isOptional);
+        ythrow yexception() << "Hasher not implemented for block resources";
+    }
 };
 
 NUdf::IBlockItemComparator::TPtr TBlockTypeHelper::MakeComparator(NUdf::TType* type) const {
     return NUdf::MakeBlockReaderImpl<TComparatorTraits>(TTypeInfoHelper(), type, nullptr).release();
+}
+
+NUdf::IBlockItemHasher::TPtr TBlockTypeHelper::MakeHasher(NUdf::TType* type) const {
+    return NUdf::MakeBlockReaderImpl<THasherTraits>(TTypeInfoHelper(), type, nullptr).release();
+}
+
+TType* TTypeBuilder::NewVoidType() const {
+    return TRuntimeNode(Env.GetVoidLazy(), true).GetStaticType();
+}
+
+TType* TTypeBuilder::NewNullType() const {
+    if (!UseNullType || RuntimeVersion < 11) {
+        TCallableBuilder callableBuilder(Env, "Null", NewOptionalType(NewVoidType()));
+        return TRuntimeNode(callableBuilder.Build(), false).GetStaticType();
+    } else {
+        return TRuntimeNode(Env.GetNullLazy(), true).GetStaticType();
+    }
+}
+
+TType* TTypeBuilder::NewEmptyStructType() const {
+    return Env.GetEmptyStructLazy()->GetGenericType();
+}
+
+TType* TTypeBuilder::NewStructType(TType* baseStructType, const std::string_view& memberName, TType* memberType) const {
+    MKQL_ENSURE(baseStructType->IsStruct(), "Expected struct type");
+
+    const auto& detailedBaseStructType = static_cast<const TStructType&>(*baseStructType);
+    TStructTypeBuilder builder(Env);
+    builder.Reserve(detailedBaseStructType.GetMembersCount() + 1);
+    for (ui32 i = 0, e = detailedBaseStructType.GetMembersCount(); i < e; ++i) {
+        builder.Add(detailedBaseStructType.GetMemberName(i), detailedBaseStructType.GetMemberType(i));
+    }
+
+    builder.Add(memberName, memberType);
+    return builder.Build();
+}
+
+TType* TTypeBuilder::NewStructType(const TArrayRef<const std::pair<std::string_view, TType*>>& memberTypes) const {
+    TStructTypeBuilder builder(Env);
+    builder.Reserve(memberTypes.size());
+    for (auto& x : memberTypes) {
+        builder.Add(x.first, x.second);
+    }
+
+    return builder.Build();
+}
+
+TType* TTypeBuilder::NewArrayType(const TArrayRef<const std::pair<std::string_view, TType*>>& memberTypes) const {
+    return NewStructType(memberTypes);
+}
+
+TType* TTypeBuilder::NewDataType(NUdf::TDataTypeId schemeType, bool optional) const {
+    return optional ? NewOptionalType(TDataType::Create(schemeType, Env)) : TDataType::Create(schemeType, Env);
+}
+
+TType* TTypeBuilder::NewPgType(ui32 typeId) const {
+    return TPgType::Create(typeId, Env);
+}
+
+TType* TTypeBuilder::NewDecimalType(ui8 precision, ui8 scale) const {
+    return TDataDecimalType::Create(precision, scale, Env);
+}
+
+TType* TTypeBuilder::NewOptionalType(TType* itemType) const {
+    return TOptionalType::Create(itemType, Env);
+}
+
+TType* TTypeBuilder::NewListType(TType* itemType) const {
+    return TListType::Create(itemType, Env);
+}
+
+TType* TTypeBuilder::NewStreamType(TType* itemType) const {
+    return TStreamType::Create(itemType, Env);
+}
+
+TType* TTypeBuilder::NewFlowType(TType* itemType) const {
+    return TFlowType::Create(itemType, Env);
+}
+
+TType* TTypeBuilder::NewBlockType(TType* itemType, TBlockType::EShape shape) const {
+    return TBlockType::Create(itemType, shape, Env);
+}
+
+TType* TTypeBuilder::NewTaggedType(TType* baseType, const std::string_view& tag) const {
+    return TTaggedType::Create(baseType, tag, Env);
+}
+
+TType* TTypeBuilder::NewDictType(TType* keyType, TType* payloadType, bool multi) const {
+    return TDictType::Create(keyType, multi ? NewListType(payloadType) : payloadType, Env);
+}
+
+TType* TTypeBuilder::NewEmptyTupleType() const {
+    return Env.GetEmptyTupleLazy()->GetGenericType();
+}
+
+TType* TTypeBuilder::NewTupleType(const TArrayRef<TType* const>& elements) const {
+    return TTupleType::Create(elements.size(), elements.data(), Env);
+}
+
+TType* TTypeBuilder::NewArrayType(const TArrayRef<TType* const>& elements) const {
+    return NewTupleType(elements);
+}
+
+TType* TTypeBuilder::NewEmptyMultiType() const {
+    if (RuntimeVersion > 35) {
+        return TMultiType::Create(0, nullptr, Env);
+    }
+    return Env.GetEmptyTupleLazy()->GetGenericType();
+}
+
+TType* TTypeBuilder::NewMultiType(const TArrayRef<TType* const>& elements) const {
+    if (RuntimeVersion > 35) {
+        return TMultiType::Create(elements.size(), elements.data(), Env);
+    }
+    return TTupleType::Create(elements.size(), elements.data(), Env);
+}
+
+TType* TTypeBuilder::NewResourceType(const std::string_view& tag) const {
+    return TResourceType::Create(tag, Env);
+}
+
+TType* TTypeBuilder::NewVariantType(TType* underlyingType) const {
+    return TVariantType::Create(underlyingType, Env);
 }
 
 } // namespace NMiniKQL

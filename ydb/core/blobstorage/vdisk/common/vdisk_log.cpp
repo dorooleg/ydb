@@ -1,6 +1,6 @@
 #include "vdisk_log.h"
 #include "vdisk_context.h"
-#include <library/cpp/actors/protos/services_common.pb.h>
+#include <ydb/library/actors/protos/services_common.pb.h>
 
 namespace  NKikimr {
 
@@ -35,7 +35,7 @@ namespace  NKikimr {
     // TFakeLoggerCtx -- fake implementation of ILoggerCtx
     ////////////////////////////////////////////////////////////////////////////
     TFakeLoggerCtx::TFakeLoggerCtx()
-        : Settings({}, NKikimrServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_DEBUG, 0)
+        : Settings({}, NActorsServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_DEBUG, 0)
     {
         Settings.Append(
             NActorsServices::EServiceCommon_MIN,

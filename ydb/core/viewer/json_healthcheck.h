@@ -1,10 +1,9 @@
 #pragma once
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/core/mon.h>
-#include <ydb/core/blobstorage/base/blobstorage_events.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/core/mon.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include "viewer.h"
 #include <ydb/core/viewer/json/json.h>
 #include <ydb/core/health_check/health_check.h>
@@ -25,6 +24,7 @@ enum HealthCheckResponseFormat {
 };
 
 class TJsonHealthCheck : public TActorBootstrapped<TJsonHealthCheck> {
+    IViewer* Viewer;
     static const bool WithRetry = false;
     NMon::TEvHttpInfo::TPtr Event;
     TJsonSettings JsonSettings;
@@ -37,8 +37,9 @@ public:
         return NKikimrServices::TActivity::VIEWER_HANDLER;
     }
 
-    TJsonHealthCheck(IViewer*, NMon::TEvHttpInfo::TPtr& ev)
-        : Event(ev)
+    TJsonHealthCheck(IViewer* viewer, NMon::TEvHttpInfo::TPtr& ev)
+        : Viewer(viewer)
+        , Event(ev)
     {}
 
     void Bootstrap(const TActorContext& ctx) {
@@ -72,19 +73,20 @@ public:
         request->Database = Database = params.Get("tenant");
         request->Request.set_return_verbose_status(FromStringWithDefault<bool>(params.Get("verbose"), false));
         request->Request.set_maximum_level(FromStringWithDefault<ui32>(params.Get("max_level"), 0));
+        request->Request.set_merge_records(FromStringWithDefault<bool>(params.Get("merge_records"), false));
         SetDuration(TDuration::MilliSeconds(Timeout), *request->Request.mutable_operation_params()->mutable_operation_timeout());
         if (params.Has("min_status")) {
             Ydb::Monitoring::StatusFlag::Status minStatus;
             if (Ydb::Monitoring::StatusFlag_Status_Parse(params.Get("min_status"), &minStatus)) {
                 request->Request.set_minimum_status(minStatus);
             } else {
-                Send(Event->Sender, new NMon::TEvHttpInfoRes(HTTPBADREQUEST, 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+                Send(Event->Sender, new NMon::TEvHttpInfoRes(Viewer->GetHTTPBADREQUEST(Event->Get()), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
                 return PassAway();
             }
         }
         Send(NHealthCheck::MakeHealthCheckID(), request.Release());
         Timeout += Timeout * 20 / 100; // we prefer to wait for more (+20%) verbose timeout status from HC
-        ctx.Schedule(TDuration::Seconds(10), new TEvents::TEvWakeup());
+        ctx.Schedule(TDuration::Seconds(Timeout), new TEvents::TEvWakeup());
         Become(&TThis::StateRequestedInfo);
     }
 
@@ -104,7 +106,7 @@ public:
         THashMap<TMetricRecord, ui32> recordCounters;
         for (auto& log : ev->Get()->Result.issue_log()) {
             TMetricRecord record {
-                .Database = log.location().database().name(), 
+                .Database = log.location().database().name(),
                 .Message = log.message(),
                 .Status = descriptor->FindValueByNumber(log.status())->name(),
                 .Type = log.type()
@@ -124,7 +126,7 @@ public:
     void HandleJSON(NHealthCheck::TEvSelfCheckResult::TPtr& ev, const TActorContext &ctx) {
         TStringStream json;
         TProtoToJson::ProtoToJson(json, ev->Get()->Result, JsonSettings);
-        ctx.Send(Event->Sender, new NMon::TEvHttpInfoRes(HTTPOKJSON + json.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+        ctx.Send(Event->Sender, new NMon::TEvHttpInfoRes(Viewer->GetHTTPOKJSON(Event->Get()) + json.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         Die(ctx);
     }
 
@@ -134,9 +136,9 @@ public:
         TStringStream ss;
         IMetricEncoderPtr encoder = EncoderPrometheus(&ss);
         IMetricEncoder* e = encoder.Get();
-        
+
         TIntrusivePtr<TDomainsInfo> domains = AppData()->DomainsInfo;
-        TIntrusivePtr<TDomainsInfo::TDomain> domain = domains->Domains.begin()->second;
+        auto *domain = domains->GetDomain();
         auto filterDatabase = Database ? Database : "/" + domain->Name;
         e->OnStreamBegin();
         if (recordCounters->size() > 0) {
@@ -144,7 +146,8 @@ public:
                 e->OnMetricBegin(EMetricType::IGAUGE);
                 {
                     e->OnLabelsBegin();
-                    e->OnLabel("sensor", "HC_" + domain->Name);
+                    e->OnLabel("sensor", "ydb_healthcheck");
+                    e->OnLabel("DOMAIN", domain->Name);
                     e->OnLabel("DATABASE", recordCounter.first.Database ? recordCounter.first.Database : filterDatabase);
                     e->OnLabel("MESSAGE", recordCounter.first.Message);
                     e->OnLabel("STATUS", recordCounter.first.Status);
@@ -154,26 +157,25 @@ public:
                 e->OnInt64(TInstant::Zero(), recordCounter.second);
                 e->OnMetricEnd();
             }
-        } else {
-            const auto *descriptor = Ydb::Monitoring::SelfCheck_Result_descriptor();
-            auto result = descriptor->FindValueByNumber(ev->Get()->Result.self_check_result())->name();
-            e->OnMetricBegin(EMetricType::IGAUGE);
-            {
-                e->OnLabelsBegin();
-                e->OnLabel("sensor", "HC_" + domain->Name);
-                e->OnLabel("DATABASE", filterDatabase);
-                e->OnLabel("MESSAGE", result);
-                e->OnLabel("STATUS", result);
-                e->OnLabel("TYPE", "ALL");
-                e->OnLabelsEnd();
-            }
-            e->OnInt64(TInstant::Zero(), 1);
-            e->OnMetricEnd();
         }
-
+        const auto *descriptor = Ydb::Monitoring::SelfCheck_Result_descriptor();
+        auto result = descriptor->FindValueByNumber(ev->Get()->Result.self_check_result())->name();
+        e->OnMetricBegin(EMetricType::IGAUGE);
+        {
+            e->OnLabelsBegin();
+            e->OnLabel("sensor", "ydb_healthcheck");
+            e->OnLabel("DOMAIN", domain->Name);
+            e->OnLabel("DATABASE", filterDatabase);
+            e->OnLabel("MESSAGE", result);
+            e->OnLabel("STATUS", result);
+            e->OnLabel("TYPE", "ALL");
+            e->OnLabelsEnd();
+        }
+        e->OnInt64(TInstant::Zero(), 1);
+        e->OnMetricEnd();
         e->OnStreamEnd();
 
-        ctx.Send(Event->Sender, new NMon::TEvHttpInfoRes(HTTPOKTEXT + ss.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+        ctx.Send(Event->Sender, new NMon::TEvHttpInfoRes(Viewer->GetHTTPOKTEXT(Event->Get()) + ss.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         Die(ctx);
     }
 
@@ -186,7 +188,7 @@ public:
     }
 
     void HandleTimeout(const TActorContext &ctx) {
-        Send(Event->Sender, new NMon::TEvHttpInfoRes(HTTPGATEWAYTIMEOUT, 0, NMon::IEvHttpInfoRes::EContentType::Custom));
+        Send(Event->Sender, new NMon::TEvHttpInfoRes(Viewer->GetHTTPGATEWAYTIMEOUT(Event->Get()), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
         Die(ctx);
     }
 };
@@ -208,6 +210,7 @@ struct TJsonRequestParameters<TJsonHealthCheck> {
                       {"name":"timeout","in":"query","description":"timeout in ms","required":false,"type":"integer"},
                       {"name":"tenant","in":"query","description":"path to database","required":false,"type":"string"},
                       {"name":"verbose","in":"query","description":"return verbose status","required":false,"type":"boolean"},
+                      {"name":"merge_records","in":"query","description":"merge records","required":false,"type":"boolean"},
                       {"name":"max_level","in":"query","description":"max depth of issues to return","required":false,"type":"integer"},
                       {"name":"min_status","in":"query","description":"min status of issues to return","required":false,"type":"string"},
                       {"name":"format","in":"query","description":"format of reply","required":false,"type":"string"}])___";

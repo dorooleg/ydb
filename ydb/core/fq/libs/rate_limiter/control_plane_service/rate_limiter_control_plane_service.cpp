@@ -1,7 +1,7 @@
 #include "rate_limiter_control_plane_service.h"
 #include "update_limit_actor.h"
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/fq/libs/events/events.h>
 #include <ydb/core/fq/libs/quota_manager/events/events.h>
 #include <ydb/core/fq/libs/rate_limiter/events/control_plane_events.h>
@@ -10,9 +10,9 @@
 #include <ydb/core/fq/libs/ydb/util.h>
 #include <ydb/core/fq/libs/ydb/ydb.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
 
 #include <deque>
 #include <variant>
@@ -91,7 +91,7 @@ struct TRateLimiterRequestsQueue {
     template <class TEventPtr>
     void OnResponse(TEventPtr& ev) {
         const auto it = Inflight.find(ev->Cookie);
-        Y_VERIFY(it != Inflight.end());
+        Y_ABORT_UNLESS(it != Inflight.end());
         ProcessResponse(it->second, ev);
         Inflight.erase(it);
         ProcessRequests();
@@ -275,7 +275,7 @@ public:
     }
 
     void Bootstrap() {
-        Y_VERIFY(Config.GetControlPlaneEnabled());
+        Y_ABORT_UNLESS(Config.GetControlPlaneEnabled());
         if (!Config.GetEnabled()) {
             Become(&TRateLimiterControlPlaneService::RateLimiterOffStateFunc);
             return;
@@ -294,7 +294,7 @@ public:
 
         YdbConnection = NewYdbConnection(Config.GetDatabase(), CredProviderFactory, YqSharedResources->CoreYdbDriver);
 
-        Y_VERIFY(Config.LimitersSize() > 0);
+        Y_ABORT_UNLESS(Config.LimitersSize() > 0);
         RateLimiters.reserve(Config.LimitersSize());
         for (ui64 index = 0; index < Config.LimitersSize(); ++index) {
             const auto& limiterConfig = Config.GetLimiters(index);
@@ -307,7 +307,7 @@ public:
     }
 
     void TryStartWorking() {
-        Y_VERIFY(CreatingCoordinationNodes >= 0);
+        Y_ABORT_UNLESS(CreatingCoordinationNodes >= 0);
         if (CreatingCoordinationNodes > 0) {
             return;
         }

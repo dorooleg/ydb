@@ -51,7 +51,7 @@ TString TOverlay::Encode() const noexcept
     NProto::TOverlay plain;
 
     if (Screen) {
-        Y_VERIFY(Screen->Size() > 0,
+        Y_ABORT_UNLESS(Screen->Size() > 0,
             "Cannot serialize a screen with 0 holes");
 
         Screen->Validate();
@@ -63,7 +63,7 @@ TString TOverlay::Encode() const noexcept
     }
 
     if (Slices) {
-        Y_VERIFY(Slices->size() > 0,
+        Y_ABORT_UNLESS(Slices->size() > 0,
             "Cannot serialize a run with 0 slices");
 
         Slices->Validate();
@@ -143,22 +143,22 @@ void TOverlay::Validate() const noexcept
 
     while (screen) {
         if (!slices) {
-            Y_FAIL("Found screen hole [%lu,%lu) that has no matching slices", screen->Begin, screen->End);
+            Y_ABORT("Found screen hole [%lu,%lu) that has no matching slices", screen->Begin, screen->End);
         }
 
         if (screen->End == Max<TRowId>()) {
             if (slices.HasNext()) {
                 auto mid = *slices;
                 ++slices;
-                Y_FAIL("Found screen hole [%lu,+inf) that does not match slices [%lu,%lu) and [%lu,%lu)",
+                Y_ABORT("Found screen hole [%lu,+inf) that does not match slices [%lu,%lu) and [%lu,%lu)",
                     screen->Begin, mid.Begin, mid.End, slices->Begin, slices->End);
             }
             if (screen->Begin != slices->Begin) {
-                Y_FAIL("Found screen hole [%lu,+inf) that does not match slice [%lu,%lu)",
+                Y_ABORT("Found screen hole [%lu,+inf) that does not match slice [%lu,%lu)",
                     screen->Begin, slices->Begin, slices->End);
             }
         } else if (!(*screen == *slices)) {
-            Y_FAIL("Found screen hole [%lu,%lu) that does not match slice [%lu,%lu)",
+            Y_ABORT("Found screen hole [%lu,%lu) that does not match slice [%lu,%lu)",
                 screen->Begin, screen->End, slices->Begin, slices->End);
         }
 
@@ -167,7 +167,7 @@ void TOverlay::Validate() const noexcept
     }
 
     if (slices) {
-        Y_FAIL("Found slice [%lu,%lu) that has no matching screen holes", slices->Begin, slices->End);
+        Y_ABORT("Found slice [%lu,%lu) that has no matching screen holes", slices->Begin, slices->End);
     }
 }
 
@@ -203,7 +203,7 @@ TString TOverlay::EncodeRemoveSlices(const TIntrusiveConstPtr<TSlices>& slices) 
 {
     NProto::TOverlayDelta plain;
 
-    Y_VERIFY(slices, "Cannot encode an empty remove slices");
+    Y_ABORT_UNLESS(slices, "Cannot encode an empty remove slices");
 
     SlicesToProto(*slices, plain.MutableRemovedSlices());
 
@@ -216,7 +216,7 @@ TString TOverlay::EncodeChangeSlices(TConstArrayRef<TSlice> slices) noexcept
 {
     NProto::TOverlayDelta plain;
 
-    Y_VERIFY(slices, "Cannot encode an empty change slices");
+    Y_ABORT_UNLESS(slices, "Cannot encode an empty change slices");
 
     SlicesToProto(slices, plain.MutableChangedSlices());
 

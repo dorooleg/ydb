@@ -8,7 +8,7 @@
 
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/location.h>
-#include <ydb/core/base/pathid.h>
+#include <ydb/core/scheme/scheme_pathid.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 #include <ydb/core/mind/tenant_slot_broker.h>
@@ -20,8 +20,9 @@
 #include <ydb/public/lib/operation_id/operation_id.h>
 
 #include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
+#include <ydb/core/protos/blobstorage_config.pb.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/generic/set.h>
 
@@ -527,6 +528,8 @@ public:
         bool IsExternalSubdomain;
         bool IsExternalHive;
         bool IsExternalSysViewProcessor;
+        bool IsExternalStatisticsAggregator;
+        bool IsExternalBackupController;
         bool AreResourcesShared;
         THashSet<TTenant::TPtr> HostedTenants;
 
@@ -963,7 +966,7 @@ public:
             HFuncTraced(TEvTenantSlotBroker::TEvTenantState, Handle);
 
         default:
-            Y_FAIL("TTenantsManager::StateWork unexpected event type: %" PRIx32 " event: %s",
+            Y_ABORT("TTenantsManager::StateWork unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(), ev->ToString().data());
         }
     }

@@ -4,8 +4,9 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo_sets.h>
 
+#include <library/cpp/random_provider/random_provider.h>
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/mon.h>
 
 using namespace NKikimrServices;
 
@@ -96,7 +97,7 @@ namespace NKikimr {
             , AnubisId(anubisId)
             , CurRunnerState(curRunnerState)
         {
-            Y_VERIFY(Ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_ABORT_UNLESS(Ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
         }
     };
 
@@ -197,7 +198,7 @@ namespace NKikimr {
             QuorumTracker.Clear();
             AnubisId = ctx.Register(CreateAnubis(AnubisCtx->HullCtx, GInfo, ctx.SelfID, AnubisCtx->SkeletonId,
                 AnubisCtx->ReplInterconnectChannel, AnubisCtx->AnubisOsirisMaxInFly));
-            ActiveActors.Insert(AnubisId);
+            ActiveActors.Insert(AnubisId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
         }
 
         // This handler is called when TAnubisRunnerHttpInfoActor is finished
@@ -220,7 +221,7 @@ namespace NKikimr {
                 ctx.Send(AnubisId, new TEvents::TEvPoisonPill());
                 AnubisId = TActorId();
                 RunAnubis(ctx);
-                Y_VERIFY(AnubisId != TActorId());
+                Y_ABORT_UNLESS(AnubisId != TActorId());
             }
         }
 
@@ -254,13 +255,13 @@ namespace NKikimr {
         // Handle TEvHttpInfo
         ////////////////////////////////////////////////////////////////////////
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_VERIFY(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
             // save current local state
             TString s = QuorumTracker.ToString();
             // create an actor to handle request
             auto actor = std::make_unique<TAnubisRunnerHttpInfoActor>(ev, ctx.SelfID, AnubisId, s);
             auto aid = ctx.Register(actor.release());
-            ActiveActors.Insert(aid);
+            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
         }
 
     public:

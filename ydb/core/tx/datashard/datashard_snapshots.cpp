@@ -2,6 +2,8 @@
 
 #include "datashard_impl.h"
 
+#include <ydb/core/protos/datashard_config.pb.h>
+
 #include <util/stream/output.h>
 
 namespace NKikimr {
@@ -15,13 +17,31 @@ void TSnapshotManager::Reset() {
     IncompleteEdge = TRowVersion::Min();
     CompleteEdge = TRowVersion::Min();
     LowWatermark = TRowVersion::Min();
+    ImmediateWriteEdge = TRowVersion::Min();
+    ImmediateWriteEdgeReplied = TRowVersion::Min();
+    UnprotectedReadEdge = TRowVersion::Min();
 
     CommittedCompleteEdge = TRowVersion::Min();
+    FollowerReadEdge = TRowVersion::Min();
+    FollowerReadEdgeRepeatable = false;
 
     Snapshots.clear();
 }
 
 bool TSnapshotManager::Reload(NIceDb::TNiceDb& db) {
+    bool ready = true;
+
+    ready &= ReloadSys(db);
+    ready &= ReloadSnapshots(db);
+
+    if (ready) {
+        Self->SetCounter(COUNTER_MVCC_ENABLED, IsMvccEnabled() ? 1 : 0);
+    }
+
+    return ready;
+}
+
+bool TSnapshotManager::ReloadSys(NIceDb::TNiceDb& db) {
     using Schema = TDataShard::Schema;
 
     bool ready = true;
@@ -31,63 +51,33 @@ bool TSnapshotManager::Reload(NIceDb::TNiceDb& db) {
     TRowVersion incompleteEdge = TRowVersion::Min();
     TRowVersion lowWatermark = TRowVersion::Min();
     TRowVersion immediateWriteEdge = TRowVersion::Min();
+    TRowVersion followerReadEdge = TRowVersion::Min();
 
     ui32 mvccState = 0;
     ui64 keepSnapshotTimeout = 0;
     ui64 unprotectedReads = 0;
-
-    TSnapshotMap snapshots;
+    ui64 followerReadEdgeRepeatable = 0;
 
     ready &= Self->SysGetUi64(db, Schema::Sys_MinWriteVersionStep, minWriteVersion.Step);
     ready &= Self->SysGetUi64(db, Schema::Sys_MinWriteVersionTxId, minWriteVersion.TxId);
 
-    if (!Self->IsFollower()) {
-        // We don't currently support mvcc on the follower
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_State, mvccState);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_KeepSnapshotTimeout, keepSnapshotTimeout);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_UnprotectedReads, unprotectedReads);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_CompleteEdgeStep, completeEdge.Step);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_CompleteEdgeTxId, completeEdge.TxId);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_IncompleteEdgeStep, incompleteEdge.Step);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_IncompleteEdgeTxId, incompleteEdge.TxId);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_LowWatermarkStep, lowWatermark.Step);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_LowWatermarkTxId, lowWatermark.TxId);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_ImmediateWriteEdgeStep, immediateWriteEdge.Step);
-        ready &= Self->SysGetUi64(db, Schema::SysMvcc_ImmediateWriteEdgeTxId, immediateWriteEdge.TxId);
-    }
-
-    {
-        auto rowset = db.Table<Schema::Snapshots>().Range().Select();
-        if (rowset.IsReady()) {
-            while (!rowset.EndOfSet()) {
-                ui64 oid = rowset.GetValue<Schema::Snapshots::Oid>();
-                ui64 tid = rowset.GetValue<Schema::Snapshots::Tid>();
-                ui64 step = rowset.GetValue<Schema::Snapshots::Step>();
-                ui64 txId = rowset.GetValue<Schema::Snapshots::TxId>();
-                TString name = rowset.GetValue<Schema::Snapshots::Name>();
-                ui64 flags = rowset.GetValue<Schema::Snapshots::Flags>();
-                ui64 timeout_ms = rowset.GetValue<Schema::Snapshots::TimeoutMs>();
-
-                TSnapshotKey key(oid, tid, step, txId);
-
-                auto res = snapshots.emplace(
-                    std::piecewise_construct,
-                    std::forward_as_tuple(key),
-                    std::forward_as_tuple(key, std::move(name), flags, TDuration::MilliSeconds(timeout_ms)));
-                Y_VERIFY_S(res.second, "Unexpected duplicate snapshot: " << key);
-
-                if (!rowset.Next()) {
-                    ready = false;
-                    break;
-                }
-            }
-        } else {
-            ready = false;
-        }
-    }
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_State, mvccState);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_KeepSnapshotTimeout, keepSnapshotTimeout);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_UnprotectedReads, unprotectedReads);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_CompleteEdgeStep, completeEdge.Step);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_CompleteEdgeTxId, completeEdge.TxId);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_IncompleteEdgeStep, incompleteEdge.Step);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_IncompleteEdgeTxId, incompleteEdge.TxId);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_LowWatermarkStep, lowWatermark.Step);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_LowWatermarkTxId, lowWatermark.TxId);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_ImmediateWriteEdgeStep, immediateWriteEdge.Step);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_ImmediateWriteEdgeTxId, immediateWriteEdge.TxId);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_FollowerReadEdgeStep, followerReadEdge.Step);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_FollowerReadEdgeTxId, followerReadEdge.TxId);
+    ready &= Self->SysGetUi64(db, Schema::SysMvcc_FollowerReadEdgeRepeatable, followerReadEdgeRepeatable);
 
     if (ready) {
-        // We have a consistent view of snapshots table, apply
+        // We have a consistent view of settings, apply
         MinWriteVersion = minWriteVersion;
         MvccState = static_cast<EMvccState>(mvccState);
         KeepSnapshotTimeout = keepSnapshotTimeout;
@@ -105,14 +95,46 @@ bool TSnapshotManager::Reload(NIceDb::TNiceDb& db) {
             ImmediateWriteEdgeReplied.TxId = Max<ui64>();
         }
         CommittedCompleteEdge = completeEdge;
-        Snapshots = std::move(snapshots);
-    }
-
-    if (ready) {
-        Self->SetCounter(COUNTER_MVCC_ENABLED, IsMvccEnabled() ? 1 : 0);
+        FollowerReadEdge = followerReadEdge;
+        FollowerReadEdgeRepeatable = (followerReadEdgeRepeatable != 0);
     }
 
     return ready;
+}
+
+bool TSnapshotManager::ReloadSnapshots(NIceDb::TNiceDb& db) {
+    using Schema = TDataShard::Schema;
+
+    TSnapshotMap snapshots;
+
+    auto rowset = db.Table<Schema::Snapshots>().Range().Select();
+    if (!rowset.IsReady()) {
+        return false;
+    }
+    while (!rowset.EndOfSet()) {
+        ui64 oid = rowset.GetValue<Schema::Snapshots::Oid>();
+        ui64 tid = rowset.GetValue<Schema::Snapshots::Tid>();
+        ui64 step = rowset.GetValue<Schema::Snapshots::Step>();
+        ui64 txId = rowset.GetValue<Schema::Snapshots::TxId>();
+        TString name = rowset.GetValue<Schema::Snapshots::Name>();
+        ui64 flags = rowset.GetValue<Schema::Snapshots::Flags>();
+        ui64 timeout_ms = rowset.GetValue<Schema::Snapshots::TimeoutMs>();
+
+        TSnapshotKey key(oid, tid, step, txId);
+
+        auto res = snapshots.emplace(
+            std::piecewise_construct,
+            std::forward_as_tuple(key),
+            std::forward_as_tuple(key, std::move(name), flags, TDuration::MilliSeconds(timeout_ms)));
+        Y_VERIFY_S(res.second, "Unexpected duplicate snapshot: " << key);
+
+        if (!rowset.Next()) {
+            return false;
+        }
+    }
+
+    Snapshots = std::move(snapshots);
+    return true;
 }
 
 void TSnapshotManager::InitExpireQueue(TInstant now) {
@@ -299,6 +321,33 @@ void TSnapshotManager::SetPerformedUnprotectedReads(bool performedUnprotectedRea
     });
 }
 
+std::pair<TRowVersion, bool> TSnapshotManager::GetFollowerReadEdge() const {
+    return { FollowerReadEdge, FollowerReadEdgeRepeatable };
+}
+
+bool TSnapshotManager::PromoteFollowerReadEdge(const TRowVersion& version, bool repeatable, TTransactionContext& txc) {
+    using Schema = TDataShard::Schema;
+
+    if (IsMvccEnabled()) {
+        if (FollowerReadEdge < version) {
+            NIceDb::TNiceDb db(txc.DB);
+            Self->PersistSys(db, Schema::SysMvcc_FollowerReadEdgeStep, version.Step);
+            Self->PersistSys(db, Schema::SysMvcc_FollowerReadEdgeTxId, version.TxId);
+            Self->PersistSys(db, Schema::SysMvcc_FollowerReadEdgeRepeatable, ui64(repeatable ? 1 : 0));
+            FollowerReadEdge = version;
+            FollowerReadEdgeRepeatable = repeatable;
+            return true;
+        } else if (FollowerReadEdge == version && repeatable && !FollowerReadEdgeRepeatable) {
+            NIceDb::TNiceDb db(txc.DB);
+            Self->PersistSys(db, Schema::SysMvcc_FollowerReadEdgeRepeatable, ui64(repeatable ? 1 : 0));
+            FollowerReadEdgeRepeatable = repeatable;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void TSnapshotManager::SetKeepSnapshotTimeout(NIceDb::TNiceDb& db, ui64 keepSnapshotTimeout) {
     using Schema = TDataShard::Schema;
 
@@ -357,7 +406,7 @@ TDuration TSnapshotManager::GetCleanupSnapshotPeriod() const {
 }
 
 bool TSnapshotManager::ChangeMvccState(ui64 step, ui64 txId, TTransactionContext& txc, EMvccState state) {
-    Y_VERIFY(state != EMvccState::MvccUnspecified);
+    Y_ABORT_UNLESS(state != EMvccState::MvccUnspecified);
 
     if (MvccState == state)
         return false;
@@ -417,7 +466,7 @@ bool TSnapshotManager::ChangeMvccState(ui64 step, ui64 txId, TTransactionContext
         }
 
         default:
-            Y_FAIL("Unexpected mvcc state# %d", (ui32)state);
+            Y_ABORT("Unexpected mvcc state# %d", (ui32)state);
     }
 
     txc.DB.OnPersistent([this, edge = CompleteEdge] {
@@ -470,7 +519,7 @@ bool TSnapshotManager::ReleaseReference(const TSnapshotKey& key, NTable::TDataba
     auto refIt = References.find(key);
 
     if (Y_UNLIKELY(refIt == References.end() || refIt->second <= 0)) {
-        Y_VERIFY_DEBUG(false, "ReleaseReference underflow, check acquire/release pairs");
+        Y_DEBUG_ABORT("ReleaseReference underflow, check acquire/release pairs");
         return false;
     }
 
@@ -483,7 +532,7 @@ bool TSnapshotManager::ReleaseReference(const TSnapshotKey& key, NTable::TDataba
 
     auto it = Snapshots.find(key);
     if (it == Snapshots.end()) {
-        Y_VERIFY_DEBUG(false, "ReleaseReference on an already deleted snapshot");
+        Y_DEBUG_ABORT("ReleaseReference on an already deleted snapshot");
         return false;
     }
 
@@ -522,7 +571,7 @@ bool TSnapshotManager::AddSnapshot(NTable::TDatabase& db, const TSnapshotKey& ke
     const TRowVersion newVersion(key.Step, key.TxId);
 
     // N.B. no colocated tables support for now
-    Y_VERIFY(Self->GetUserTables().size() == 1, "Multiple co-located tables not supported");
+    Y_ABORT_UNLESS(Self->GetUserTables().size() == 1, "Multiple co-located tables not supported");
 
     Y_VERIFY_S(oldVersion <= newVersion,
         "DataShard " << Self->TabletID()
@@ -696,6 +745,7 @@ bool TSnapshotManager::RemoveExpiredSnapshots(TInstant now, TTransactionContext&
 
     if (CompleteEdge.Step < ImmediateWriteEdgeReplied.Step) {
         PromoteCompleteEdge(ImmediateWriteEdgeReplied.Step, txc);
+        Self->PromoteFollowerReadEdge(txc);
     }
 
     // Calculate the maximum version where we may have written something
@@ -705,7 +755,16 @@ bool TSnapshotManager::RemoveExpiredSnapshots(TInstant now, TTransactionContext&
         maxWriteVersion = ImmediateWriteEdge;
     }
 
-    removed |= AdvanceWatermark(txc.DB, Min(proposed, leastPlanned, leastAcquired, maxWriteVersion));
+    // Make sure we don't leave followers without any repeatable read version
+    TRowVersion maxRepeatableRead = TRowVersion::Max();
+    if (Self->HasFollowers()) {
+        maxRepeatableRead = FollowerReadEdge;
+        if (maxRepeatableRead && !FollowerReadEdgeRepeatable) {
+            maxRepeatableRead = maxRepeatableRead.Prev();
+        }
+    }
+
+    removed |= AdvanceWatermark(txc.DB, Min(proposed, leastPlanned, leastAcquired, maxWriteVersion, maxRepeatableRead));
     LastAdvanceWatermark = NActors::TActivationContext::Monotonic();
 
     return removed;
@@ -828,7 +887,7 @@ void TSnapshotManager::RenameSnapshots(NTable::TDatabase& db, const TPathId& pre
         TSnapshotKey oldKey = it->first;
         TSnapshotKey newKey(newTableKey.OwnerId, newTableKey.PathId, oldKey.Step, oldKey.TxId);
 
-        Y_VERIFY_DEBUG(!References.contains(oldKey), "Unexpected reference to snapshot during rename");
+        Y_DEBUG_ABORT_UNLESS(!References.contains(oldKey), "Unexpected reference to snapshot during rename");
 
         PersistAddSnapshot(nicedb, newKey, it->second.Name, it->second.Flags, it->second.Timeout);
 

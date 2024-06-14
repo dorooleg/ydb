@@ -2,7 +2,7 @@
 
 #include "defs.h"
 #include "datashard.h"
-#include "datashard_locks.h"
+#include <ydb/core/tx/locks/locks.h>
 #include "datashard_outreadset.h"
 #include "datashard_snapshots.h"
 #include "execution_unit_kind.h"
@@ -27,6 +27,12 @@ namespace NDataShard {
 using NTabletFlatExecutor::TTableSnapshotContext;
 
 class TDataShard;
+
+enum class ERestoreDataStatus {
+    Ok,
+    Restart,
+    Error,
+};
 
 enum class ETxOrder {
     Unknown,
@@ -68,7 +74,7 @@ struct TStepOrder {
     }
 
     ETxOrder CheckOrder(const TStepOrder& stepTxId) const {
-        Y_VERIFY(*this != stepTxId); // avoid self checks
+        Y_ABORT_UNLESS(*this != stepTxId); // avoid self checks
         if (!Step && !stepTxId.Step) // immediate vs immediate
             return ETxOrder::Any;
         if (!Step || !stepTxId.Step) // planned vs immediate
@@ -77,6 +83,10 @@ struct TStepOrder {
     }
 
     std::pair<ui64, ui64> ToPair() const { return std::pair<ui64, ui64>(Step, TxId); }
+
+    TRowVersion ToRowVersion() const {
+        return TRowVersion(Step, TxId);
+    }
 
     TString ToString() const {
         return TStringBuilder() << Step << ':' << TxId;
@@ -107,6 +117,7 @@ enum class EOperationKind : ui32 {
     // Values [100, inf) are used for internal kinds.
     DirectTx = 101,
     ReadTx = 102,
+    WriteTx = 103,
 };
 
 class TBasicOpInfo {
@@ -161,6 +172,7 @@ public:
 
     bool IsDataTx() const { return Kind == EOperationKind::DataTx; }
     bool IsReadTx() const { return Kind == EOperationKind::ReadTx; }
+    bool IsWriteTx() const { return Kind == EOperationKind::WriteTx; }
     bool IsDirectTx() const { return Kind == EOperationKind::DirectTx; }
     bool IsSchemeTx() const { return Kind == EOperationKind::SchemeTx; }
     bool IsReadTable() const { return Kind == EOperationKind::ReadTable; }
@@ -249,7 +261,7 @@ public:
     bool HasReadOnlyFlag() const { return HasFlag(TTxFlags::ReadOnly); }
     void SetReadOnlyFlag(bool val = true)
     {
-        Y_VERIFY(!val || !IsGlobalWriter());
+        Y_ABORT_UNLESS(!val || !IsGlobalWriter());
         SetFlag(TTxFlags::ReadOnly, val);
     }
     void ResetReadOnlyFlag() { ResetFlag(TTxFlags::ReadOnly); }
@@ -274,7 +286,7 @@ public:
 
     bool HasGlobalWriterFlag() const { return HasFlag(TTxFlags::GlobalWriter); }
     void SetGlobalWriterFlag(bool val = true) {
-        Y_VERIFY(!val || !IsReadOnly());
+        Y_ABORT_UNLESS(!val || !IsReadOnly());
         SetFlag(TTxFlags::GlobalWriter, val);
     }
     void ResetGlobalWriterFlag() { ResetFlag(TTxFlags::GlobalWriter); }
@@ -367,6 +379,8 @@ public:
 
     ui64 GetStep() const { return Step; }
     void SetStep(ui64 step) { Step = step; }
+    ui64 GetPredictedStep() const { return PredictedStep; }
+    void SetPredictedStep(ui64 step) { PredictedStep = step; }
 
     TStepOrder GetStepOrder() const { return TStepOrder(GetStep(), GetTxId()); }
 
@@ -392,13 +406,19 @@ public:
         ResetFlag(TTxFlags::AcquiredSnapshotReference);
     }
 
-    bool IsMvccSnapshotRead() { return !MvccSnapshot.IsMax(); }
+    bool IsMvccSnapshotRead() const { return !MvccSnapshot.IsMax(); }
     const TRowVersion& GetMvccSnapshot() const { return MvccSnapshot; }
-    bool IsMvccSnapshotRepeatable() const { return MvccSnapshotRepeatable; }
+    bool IsMvccSnapshotRepeatable() const { return MvccSnapshotRepeatable_; }
     void SetMvccSnapshot(const TRowVersion& snapshot, bool isRepeatable = true) {
         MvccSnapshot = snapshot;
-        MvccSnapshotRepeatable = isRepeatable;
+        MvccSnapshotRepeatable_ = isRepeatable;
     }
+
+    bool IsProposeResultSentEarly() const { return ProposeResultSentEarly_; }
+    void SetProposeResultSentEarly(bool value = true) { ProposeResultSentEarly_ = value; }
+
+    bool GetPerformedUserReads() const { return PerformedUserReads_; }
+    void SetPerformedUserReads(bool value = true) { PerformedUserReads_ = value; }
 
     ///////////////////////////////////
     //     DEBUG AND MONITORING      //
@@ -411,6 +431,7 @@ protected:
     ui64 Flags;
     ui64 GlobalTxId;
     ui64 Step;
+    ui64 PredictedStep = 0;
     TInstant ReceivedAt;
 
     ui64 MinStep;
@@ -420,7 +441,12 @@ protected:
 
     TSnapshotKey AcquiredSnapshotKey;
     TRowVersion MvccSnapshot = TRowVersion::Max();
-    bool MvccSnapshotRepeatable = false;
+
+private:
+    // Runtime flags
+    ui8 MvccSnapshotRepeatable_ : 1 = 0;
+    ui8 ProposeResultSentEarly_ : 1 = 0;
+    ui8 PerformedUserReads_ : 1 = 0;
 };
 
 struct TRSData {
@@ -494,6 +520,33 @@ struct TExecutionProfile {
     TInstant CompletedAt;
     TInstant StartUnitAt;
     THashMap<EExecutionUnitKind, TUnitProfile> UnitProfiles;
+};
+
+class TValidatedDataTx;
+class TValidatedWriteTx;
+
+class TValidatedTx {
+public:
+    using TPtr = std::shared_ptr<TValidatedTx>;
+
+    virtual ~TValidatedTx() = default;
+
+    enum class EType { 
+        DataTx,
+        WriteTx 
+    };
+
+public:
+    virtual EType GetType() const = 0;
+    virtual ui64 GetTxId() const = 0;
+    virtual ui64 GetMemoryConsumption() const = 0;
+
+    bool IsProposed() const {
+        return GetSource() != TActorId();
+    }
+
+    YDB_ACCESSOR_DEF(TActorId, Source);
+    YDB_ACCESSOR_DEF(ui64, TxCacheUsage);
 };
 
 struct TOperationAllListTag {};
@@ -670,6 +723,7 @@ public:
     const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetSpecialDependencies() const { return SpecialDependencies; }
     const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetPlannedConflicts() const { return PlannedConflicts; }
     const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetImmediateConflicts() const { return ImmediateConflicts; }
+    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetRepeatableReadConflicts() const { return RepeatableReadConflicts; }
     const absl::flat_hash_set<ui64> &GetVolatileDependencies() const { return VolatileDependencies; }
     bool HasVolatileDependencies() const { return !VolatileDependencies.empty(); }
     bool GetVolatileDependenciesAborted() const { return VolatileDependenciesAborted; }
@@ -686,6 +740,10 @@ public:
     void ClearImmediateConflicts();
     void ClearSpecialDependents();
     void ClearSpecialDependencies();
+
+    void AddRepeatableReadConflict(const TOperation::TPtr &op);
+    void PromoteRepeatableReadConflicts();
+    void ClearRepeatableReadConflicts();
 
     void AddVolatileDependency(ui64 txId);
     void RemoveVolatileDependency(ui64 txId, bool success);
@@ -770,7 +828,7 @@ public:
 
     void AddExecutionTime(TDuration val)
     {
-        Y_VERIFY_DEBUG(!IsExecutionPlanFinished());
+        Y_DEBUG_ABORT_UNLESS(!IsExecutionPlanFinished());
         auto &profile = ExecutionProfile.UnitProfiles[ExecutionPlan[CurrentUnit]];
         profile.ExecuteTime += val;
         ++profile.ExecuteCount;
@@ -799,6 +857,31 @@ public:
     void SetFinishProposeTs(TMonotonic now) noexcept { FinishProposeTs = now; }
     void SetFinishProposeTs() noexcept;
 
+    NWilson::TTraceId GetTraceId() const noexcept {
+        return OperationSpan.GetTraceId();
+    }
+
+    /**
+     * Called when datashard is going to stop soon
+     *
+     * Operation may override this method to support sending notifications or
+     * results signalling that the operation will never complete. When result
+     * is sent operation is supposed to set its ResultSentFlag.
+     *
+     * When this method returns true the operation will be added to the
+     * pipeline as a candidate for execution.
+     */
+    virtual bool OnStopping(TDataShard& self, const TActorContext& ctx);
+
+    /**
+     * Called when operation is aborted on cleanup
+     *
+     * Distributed transaction is cleaned up when deadline is reached, and
+     * it hasn't been planned yet. Additionally volatile transactions are
+     * cleaned when shard is waiting for transaction queue to drain, and
+     * the given operation wasn't planned yet.
+     */
+    virtual void OnCleanup(TDataShard& self, std::vector<std::unique_ptr<IEventHandle>>& replies);
 
 protected:
     TOperation()
@@ -861,6 +944,7 @@ private:
     absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> SpecialDependencies;
     absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> PlannedConflicts;
     absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> ImmediateConflicts;
+    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> RepeatableReadConflicts;
     absl::flat_hash_set<ui64> VolatileDependencies;
     bool VolatileDependenciesAborted = false;
     TVector<EExecutionUnitKind> ExecutionPlan;
@@ -878,6 +962,8 @@ public:
 public:
     // Orbit used for tracking operation progress
     NLWTrace::TOrbit Orbit;
+    
+    NWilson::TSpan OperationSpan;
 };
 
 inline IOutputStream &operator <<(IOutputStream &out,

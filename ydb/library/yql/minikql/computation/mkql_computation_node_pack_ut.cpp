@@ -1,10 +1,13 @@
 #include "mkql_computation_node_pack.h"
 #include "mkql_computation_node_holders.h"
+#include "mkql_block_builder.h"
+#include "mkql_block_reader.h"
 #include <ydb/library/yql/minikql/mkql_function_registry.h>
 #include <ydb/library/yql/minikql/mkql_node.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
+#include <ydb/library/yql/public/udf/arrow/util.h>
 
 #include <library/cpp/random_provider/random_provider.h>
 #include <ydb/library/yql/minikql/aligned_page_pool.h>
@@ -25,7 +28,7 @@ namespace NMiniKQL {
 
 #ifdef WITH_VALGRIND
 constexpr static size_t PERFORMANCE_COUNT = 0x1000;
-#elifdef NDEBUG
+#elif defined(NDEBUG)
 constexpr static size_t PERFORMANCE_COUNT = NSan::PlainOrUnderSanitizer(0x4000000, 0x1000);
 #else
 constexpr static size_t PERFORMANCE_COUNT = NSan::PlainOrUnderSanitizer(0x1000000, 0x1000);
@@ -44,6 +47,8 @@ struct TPackerTraits<Fast, true> {
     using TPackerType = TValuePackerTransport<Fast>;
 };
 
+using NDetails::TChunkedInputBuffer;
+
 template<bool Fast, bool Transport>
 class TMiniKQLComputationNodePackTest: public TTestBase {
     using TValuePackerType = typename TPackerTraits<Fast, Transport>::TPackerType;
@@ -56,6 +61,7 @@ protected:
         , PgmBuilder(Env, *FunctionRegistry)
         , MemInfo("Memory")
         , HolderFactory(Alloc.Ref(), MemInfo, FunctionRegistry.Get())
+        , ArrowPool_(arrow::default_memory_pool())
     {
     }
 
@@ -307,12 +313,25 @@ protected:
         TestVariantTypeImpl(PgmBuilder.NewVariantType(tupleType));
     }
 
-    void ValidateEmbeddedLength(const TStringBuf& buf, const TString& info) {
+    void ValidateEmbeddedLength(TRope buf, const TString& info) {
+        size_t size = buf.GetSize();
+        TChunkedInputBuffer chunked(std::move(buf));
+        return ValidateEmbeddedLength(chunked, size, info);
+    }
+
+    void ValidateEmbeddedLength(TStringBuf buf, const TString& info) {
+        TChunkedInputBuffer chunked(buf);
+        return ValidateEmbeddedLength(chunked, buf.size(), info);
+    }
+
+    void ValidateEmbeddedLength(TChunkedInputBuffer& buf, size_t totalSize, const TString& info) {
         if constexpr (!Fast) {
-            if (buf.size() > 8) {
-                UNIT_ASSERT_VALUES_EQUAL_C(*(const ui32*)buf.data() + 4, buf.size(), info);
+            if (totalSize > 8) {
+                ui32 len = NDetails::GetRawData<ui32>(buf);
+                UNIT_ASSERT_VALUES_EQUAL_C(len + 4, totalSize, info);
             } else {
-                UNIT_ASSERT_VALUES_EQUAL_C(((ui32(*buf.data()) & 0x0f) >> 1) + 1, buf.size(), info);
+                ui32 len = NDetails::GetRawData<ui8>(buf);
+                UNIT_ASSERT_VALUES_EQUAL_C(((len & 0x0f) >> 1) + 1, totalSize, info);
             }
         }
     }
@@ -329,16 +348,17 @@ protected:
     NUdf::TUnboxedValue TestPackUnpack(TValuePackerType& packer, const NUdf::TUnboxedValuePod& uValue,
         const TString& additionalMsg, const std::optional<ui32>& expectedLength = {})
     {
-        const auto& packedValue = packer.Pack(uValue);
-        if (expectedLength) {
-            UNIT_ASSERT_VALUES_EQUAL_C(packedValue.Size(), *expectedLength, additionalMsg);
-        }
+        auto packedValue = packer.Pack(uValue);
         if constexpr (Transport) {
-            TString str;
-            packedValue.CopyTo(str);
-            ValidateEmbeddedLength(str, additionalMsg);
-            return packer.Unpack(str, HolderFactory);
+            if (expectedLength) {
+                UNIT_ASSERT_VALUES_EQUAL_C(packedValue.size(), *expectedLength, additionalMsg);
+            }
+            ValidateEmbeddedLength(packedValue, additionalMsg);
+            return packer.Unpack(std::move(packedValue), HolderFactory);
         } else {
+            if (expectedLength) {
+                UNIT_ASSERT_VALUES_EQUAL_C(packedValue.Size(), *expectedLength, additionalMsg);
+            }
             ValidateEmbeddedLength(packedValue, additionalMsg);
             return packer.Unpack(packedValue, HolderFactory);
         }
@@ -472,7 +492,7 @@ protected:
         }
     }
 
-    void TestTuplePackPerformance() {
+    NUdf::TUnboxedValue MakeTupleValue(TType*& tupleType, bool forPerf = false) {
         std::vector<TType*> tupleElemenTypes;
         tupleElemenTypes.push_back(PgmBuilder.NewDataType(NUdf::TDataType<NUdf::TUtf8>::Id));
         tupleElemenTypes.push_back(PgmBuilder.NewOptionalType(tupleElemenTypes[0]));
@@ -480,7 +500,17 @@ protected:
         tupleElemenTypes.push_back(PgmBuilder.NewDataType(NUdf::TDataType<ui64>::Id));
         tupleElemenTypes.push_back(PgmBuilder.NewOptionalType(tupleElemenTypes[3]));
         tupleElemenTypes.push_back(PgmBuilder.NewOptionalType(tupleElemenTypes[3]));
-        TType* tupleType = PgmBuilder.NewTupleType(tupleElemenTypes);
+        if (!forPerf) {
+            tupleElemenTypes.push_back(PgmBuilder.NewDecimalType(16, 8));
+            tupleElemenTypes.push_back(PgmBuilder.NewOptionalType(PgmBuilder.NewDecimalType(22, 3)));
+            tupleElemenTypes.push_back(PgmBuilder.NewOptionalType(PgmBuilder.NewDecimalType(35, 2)));
+            tupleElemenTypes.push_back(PgmBuilder.NewOptionalType(PgmBuilder.NewDecimalType(29, 0)));
+        }
+        tupleType = PgmBuilder.NewTupleType(tupleElemenTypes);
+
+        auto inf = NYql::NDecimal::FromString("inf", 16, 8);
+        auto dec1 = NYql::NDecimal::FromString("12345.673", 22, 3);
+        auto dec2 = NYql::NDecimal::FromString("-9781555555.99", 35, 2);
 
         TUnboxedValueVector tupleElemens;
         tupleElemens.push_back(MakeString("01234567890123456789"));
@@ -489,8 +519,39 @@ protected:
         tupleElemens.push_back(NUdf::TUnboxedValuePod(ui64(12345)));
         tupleElemens.push_back(NUdf::TUnboxedValuePod());
         tupleElemens.push_back(NUdf::TUnboxedValuePod(ui64(12345)));
+        if (!forPerf) {
+            tupleElemens.push_back(NUdf::TUnboxedValuePod(inf));
+            tupleElemens.push_back(NUdf::TUnboxedValuePod(dec1));
+            tupleElemens.push_back(NUdf::TUnboxedValuePod(dec2));
+            tupleElemens.push_back(NUdf::TUnboxedValuePod());
+        }
 
-        const NUdf::TUnboxedValue value = HolderFactory.VectorAsArray(tupleElemens);
+        return HolderFactory.VectorAsArray(tupleElemens);
+    }
+
+    void ValidateTupleValue(const NUdf::TUnboxedValue& value, bool forPerf = false) {
+        using NYql::NUdf::TStringValue;
+        UNIT_ASSERT(value.IsBoxed());
+
+        auto e0 = value.GetElement(0);
+        auto e1 = value.GetElement(1);
+        UNIT_ASSERT_VALUES_EQUAL(std::string_view(e0.AsStringRef()), "01234567890123456789");
+        UNIT_ASSERT_VALUES_EQUAL(std::string_view(e1.AsStringRef()), "01234567890");
+        UNIT_ASSERT(!value.GetElement(2).HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(value.GetElement(3).Get<ui64>(), 12345);
+        UNIT_ASSERT(!value.GetElement(4).HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(value.GetElement(5).Get<ui64>(), 12345);
+        if (!forPerf) {
+            UNIT_ASSERT_VALUES_EQUAL(std::string_view(NYql::NDecimal::ToString(value.GetElement(6).GetInt128(), 16, 8)), "inf");
+            UNIT_ASSERT_VALUES_EQUAL(std::string_view(NYql::NDecimal::ToString(value.GetElement(7).GetInt128(), 22, 3)), "12345.673");
+            UNIT_ASSERT_VALUES_EQUAL(std::string_view(NYql::NDecimal::ToString(value.GetElement(8).GetInt128(), 35, 2)), "-9781555555.99");
+            UNIT_ASSERT(!value.GetElement(9).HasValue());
+        }
+    }
+
+    void TestTuplePackPerformance() {
+        TType* tupleType;
+        const auto value = MakeTupleValue(tupleType, true);
         TestPackPerformance(tupleType, value);
     }
 
@@ -520,6 +581,38 @@ protected:
         TestPackPerformance(type, v);
     }
 
+    void TestRopeSplit() {
+        if constexpr (Transport) {
+            TType* tupleType;
+            const auto value = MakeTupleValue(tupleType);
+
+            TValuePackerType packer(false, tupleType);
+
+            auto buffer = packer.Pack(value);
+
+            TString packed = buffer.ConvertToString();
+
+            if constexpr (Fast) {
+                UNIT_ASSERT_VALUES_EQUAL(packed.size(), 73);
+            } else {
+                UNIT_ASSERT_VALUES_EQUAL(packed.size(), 54);
+            }
+
+            for (size_t chunk = 1; chunk < packed.size(); ++chunk) {
+                TString first = packed.substr(0, chunk);
+                TString second = packed.substr(chunk);
+
+                TRope result(std::move(first));
+                result.Insert(result.End(), TRope(std::move(second)));
+
+                UNIT_ASSERT_VALUES_EQUAL(result.size(), packed.size());
+                UNIT_ASSERT(!result.IsContiguous());
+
+                ValidateTupleValue(packer.Unpack(std::move(result), HolderFactory));
+            }
+        }
+    }
+
     void TestIncrementalPacking() {
         if constexpr (Transport) {
             auto itemType = PgmBuilder.NewDataType(NUdf::TDataType<char *>::Id);
@@ -527,37 +620,197 @@ protected:
             TValuePackerType packer(false, itemType);
             TValuePackerType listPacker(false, listType);
 
-            TStringBuf str = "01234567890ABCDEF";
+            TStringBuf str = "01234567890ABCDEFG";
 
-            size_t count = 50000;
+            size_t count = 500000;
 
             for (size_t i = 0; i < count; ++i) {
                 NUdf::TUnboxedValue item(MakeString(str));
                 packer.AddItem(item);
             }
 
-            TString serializedStr;
-            packer.Finish().CopyTo(serializedStr);
+            auto serialized = packer.Finish();
 
-            auto listObj = listPacker.Unpack(serializedStr, HolderFactory);
+            auto listObj = listPacker.Unpack(TRope(serialized), HolderFactory);
             UNIT_ASSERT_VALUES_EQUAL(listObj.GetListLength(), count);
-            ui32 i = 0;
             const auto iter = listObj.GetListIterator();
-            for (NUdf::TUnboxedValue uVal; iter.Next(uVal); ++i) {
+            for (NUdf::TUnboxedValue uVal; iter.Next(uVal);) {
                 UNIT_ASSERT(uVal);
                 UNIT_ASSERT_VALUES_EQUAL(std::string_view(uVal.AsStringRef()), str);
             }
 
-            TUnboxedValueVector items;
-            packer.UnpackBatch(serializedStr, HolderFactory, items);
-            UNIT_ASSERT_VALUES_EQUAL(items.size(), count);
-            for (auto& uVal : items) {
-                UNIT_ASSERT(uVal);
-                UNIT_ASSERT_VALUES_EQUAL(std::string_view(uVal.AsStringRef()), str);
+            TUnboxedValueBatch items;
+            packer.UnpackBatch(std::move(serialized), HolderFactory, items);
+            UNIT_ASSERT_VALUES_EQUAL(items.RowCount(), count);
+            items.ForEachRow([&](const NUdf::TUnboxedValue& value) {
+                UNIT_ASSERT(value);
+                UNIT_ASSERT_VALUES_EQUAL(std::string_view(value.AsStringRef()), str);
+            });
+        }
+    }
+
+    void DoTestBlockPacking(ui64 offset, ui64 len, bool legacyStruct) {
+        if constexpr (Transport) {
+            auto strType = PgmBuilder.NewDataType(NUdf::TDataType<char*>::Id);
+            auto ui32Type = PgmBuilder.NewDataType(NUdf::TDataType<ui32>::Id);
+            auto ui64Type = PgmBuilder.NewDataType(NUdf::TDataType<ui64>::Id);
+            auto optStrType = PgmBuilder.NewOptionalType(strType);
+            auto optUi32Type = PgmBuilder.NewOptionalType(ui32Type);
+
+            auto tupleOptUi32StrType = PgmBuilder.NewTupleType({ optUi32Type, strType });
+            auto optTupleOptUi32StrType = PgmBuilder.NewOptionalType(tupleOptUi32StrType);
+
+            auto blockUi32Type = PgmBuilder.NewBlockType(ui32Type, TBlockType::EShape::Many);
+            auto blockOptStrType = PgmBuilder.NewBlockType(optStrType, TBlockType::EShape::Many);
+            auto scalarOptStrType = PgmBuilder.NewBlockType(optStrType, TBlockType::EShape::Scalar);
+            auto blockOptTupleOptUi32StrType = PgmBuilder.NewBlockType(optTupleOptUi32StrType, TBlockType::EShape::Many);
+            auto scalarUi64Type = PgmBuilder.NewBlockType(ui64Type, TBlockType::EShape::Scalar);
+
+            auto rowType =
+                legacyStruct
+                    ? PgmBuilder.NewStructType({
+                          {"A", blockUi32Type},
+                          {"B", blockOptStrType},
+                          {"_yql_block_length", scalarUi64Type},
+                          {"a", scalarOptStrType},
+                          {"b", blockOptTupleOptUi32StrType},
+                      })
+                    : PgmBuilder.NewMultiType(
+                          {blockUi32Type, blockOptStrType, scalarOptStrType,
+                           blockOptTupleOptUi32StrType, scalarUi64Type});
+
+            ui64 blockLen = 1000;
+            UNIT_ASSERT_LE(offset + len, blockLen);
+
+            auto builder1 = MakeArrayBuilder(TTypeInfoHelper(), ui32Type, *ArrowPool_, CalcBlockLen(CalcMaxBlockItemSize(ui32Type)), nullptr);
+            auto builder2 = MakeArrayBuilder(TTypeInfoHelper(), optStrType, *ArrowPool_, CalcBlockLen(CalcMaxBlockItemSize(optStrType)), nullptr);
+            auto builder3 = MakeArrayBuilder(TTypeInfoHelper(), optTupleOptUi32StrType, *ArrowPool_, CalcBlockLen(CalcMaxBlockItemSize(optTupleOptUi32StrType)), nullptr);
+
+            for (ui32 i = 0; i < blockLen; ++i) {
+                TBlockItem b1(i);
+                builder1->Add(b1);
+
+                TString a = "a string " + ToString(i);
+                TBlockItem b2 = (i % 2) ? TBlockItem(a) : TBlockItem();
+                builder2->Add(b2);
+
+                TBlockItem b3items[] = { (i % 2) ? TBlockItem(i) : TBlockItem(), TBlockItem(a) };
+                TBlockItem b3 = (i % 7) ? TBlockItem(b3items) : TBlockItem();
+                builder3->Add(b3);
+            }
+
+            std::string_view testScalarString = "foobar";
+            auto strbuf = std::make_shared<arrow::Buffer>((const ui8*)testScalarString.data(), testScalarString.size());
+
+            TVector<arrow::Datum> datums;
+            if (legacyStruct) {
+                datums.emplace_back(builder1->Build(true));
+                datums.emplace_back(builder2->Build(true));
+                datums.emplace_back(arrow::Datum(std::make_shared<arrow::UInt64Scalar>(blockLen)));
+                datums.emplace_back(arrow::Datum(std::make_shared<arrow::BinaryScalar>(strbuf)));
+                datums.emplace_back(builder3->Build(true));
+            } else {
+                datums.emplace_back(builder1->Build(true));
+                datums.emplace_back(builder2->Build(true));
+                datums.emplace_back(arrow::Datum(std::make_shared<arrow::BinaryScalar>(strbuf)));
+                datums.emplace_back(builder3->Build(true));
+                datums.emplace_back(arrow::Datum(std::make_shared<arrow::UInt64Scalar>(blockLen)));
+            }
+
+            if (offset != 0 || len != blockLen) {
+                for (auto& datum : datums) {
+                    if (datum.is_array()) {
+                        datum = NYql::NUdf::DeepSlice(datum.array(), offset, len);
+                    }
+                }
+            }
+            TUnboxedValueVector columns;
+            for (auto& datum : datums) {
+                columns.emplace_back(HolderFactory.CreateArrowBlock(std::move(datum)));
+            }
+
+            TValuePackerType packer(false, rowType, ArrowPool_);
+            if (legacyStruct) {
+                TUnboxedValueVector columnsCopy = columns;
+                NUdf::TUnboxedValue row = HolderFactory.VectorAsArray(columnsCopy);
+                packer.AddItem(row);
+            } else {
+                packer.AddWideItem(columns.data(), columns.size());
+            }
+            TRope packed = packer.Finish();
+
+            TUnboxedValueBatch unpacked(rowType);
+            packer.UnpackBatch(std::move(packed), HolderFactory, unpacked);
+
+            UNIT_ASSERT_VALUES_EQUAL(unpacked.RowCount(), 1);
+
+            TUnboxedValueVector unpackedColumns;
+            if (legacyStruct) {
+                auto elements = unpacked.Head()->GetElements();
+                unpackedColumns.insert(unpackedColumns.end(), elements, elements + columns.size());
+            } else {
+                unpacked.ForEachRowWide([&](const NYql::NUdf::TUnboxedValue* values, ui32 count) {
+                    unpackedColumns.insert(unpackedColumns.end(), values, values + count);
+                });
+            }
+
+            UNIT_ASSERT_VALUES_EQUAL(unpackedColumns.size(), columns.size());
+            if (legacyStruct) {
+                UNIT_ASSERT_VALUES_EQUAL(TArrowBlock::From(unpackedColumns[2]).GetDatum().scalar_as<arrow::UInt64Scalar>().value, blockLen);
+                UNIT_ASSERT_VALUES_EQUAL(TArrowBlock::From(unpackedColumns[3]).GetDatum().scalar_as<arrow::BinaryScalar>().value->ToString(), testScalarString);
+            } else {
+                UNIT_ASSERT_VALUES_EQUAL(TArrowBlock::From(unpackedColumns.back()).GetDatum().scalar_as<arrow::UInt64Scalar>().value, blockLen);
+                UNIT_ASSERT_VALUES_EQUAL(TArrowBlock::From(unpackedColumns[2]).GetDatum().scalar_as<arrow::BinaryScalar>().value->ToString(), testScalarString);
+            }
+
+
+            auto reader1 = MakeBlockReader(TTypeInfoHelper(), ui32Type);
+            auto reader2 = MakeBlockReader(TTypeInfoHelper(), optStrType);
+            auto reader3 = MakeBlockReader(TTypeInfoHelper(), optTupleOptUi32StrType);
+
+            for (ui32 i = offset; i < len; ++i) {
+                TBlockItem b1 = reader1->GetItem(*TArrowBlock::From(unpackedColumns[0]).GetDatum().array(), i - offset);
+                UNIT_ASSERT_VALUES_EQUAL(b1.As<ui32>(), i);
+
+                TString a = "a string " + ToString(i);
+                TBlockItem b2 = reader2->GetItem(*TArrowBlock::From(unpackedColumns[1]).GetDatum().array(), i - offset);
+                if (i % 2) {
+                    UNIT_ASSERT_VALUES_EQUAL(std::string_view(b2.AsStringRef()), a);
+                } else {
+                    UNIT_ASSERT(!b2);
+                }
+
+                TBlockItem b3 = reader3->GetItem(*TArrowBlock::From(unpackedColumns[legacyStruct ? 4 : 3]).GetDatum().array(), i - offset);
+                if (i % 7) {
+                    auto elements = b3.GetElements();
+                    if (i % 2) {
+                        UNIT_ASSERT_VALUES_EQUAL(elements[0].As<ui32>(), i);
+                    } else {
+                        UNIT_ASSERT(!elements[0]);
+                    }
+                    UNIT_ASSERT_VALUES_EQUAL(std::string_view(elements[1].AsStringRef()), a);
+                } else {
+                    UNIT_ASSERT(!b3);
+                }
             }
         }
     }
 
+    void TestBlockPacking() {
+        DoTestBlockPacking(0, 1000, false);
+    }
+
+    void TestBlockPackingSliced() {
+        DoTestBlockPacking(19, 623, false);
+    }
+
+    void TestLegacyBlockPacking() {
+        DoTestBlockPacking(0, 1000, true);
+    }
+
+    void TestLegacyBlockPackingSliced() {
+        DoTestBlockPacking(19, 623, true);
+    }
 private:
     TIntrusivePtr<NMiniKQL::IFunctionRegistry> FunctionRegistry;
     TIntrusivePtr<IRandomProvider> RandomProvider;
@@ -566,6 +819,7 @@ private:
     TProgramBuilder PgmBuilder;
     TMemoryUsageInfo MemInfo;
     THolderFactory HolderFactory;
+    arrow::MemoryPool* const ArrowPool_;
 };
 
 class TMiniKQLComputationNodeGenericPackTest: public TMiniKQLComputationNodePackTest<false, false> {
@@ -631,7 +885,12 @@ class TMiniKQLComputationNodeTransportPackTest: public TMiniKQLComputationNodePa
         UNIT_TEST(TestShortStringPackPerformance);
         UNIT_TEST(TestPairPackPerformance);
         UNIT_TEST(TestTuplePackPerformance);
+        UNIT_TEST(TestRopeSplit);
         UNIT_TEST(TestIncrementalPacking);
+        UNIT_TEST(TestBlockPacking);
+        UNIT_TEST(TestBlockPackingSliced);
+        UNIT_TEST(TestLegacyBlockPacking);
+        UNIT_TEST(TestLegacyBlockPackingSliced);
     UNIT_TEST_SUITE_END();
 };
 
@@ -654,7 +913,12 @@ class TMiniKQLComputationNodeTransportFastPackTest: public TMiniKQLComputationNo
         UNIT_TEST(TestShortStringPackPerformance);
         UNIT_TEST(TestPairPackPerformance);
         UNIT_TEST(TestTuplePackPerformance);
+        UNIT_TEST(TestRopeSplit);
         UNIT_TEST(TestIncrementalPacking);
+        UNIT_TEST(TestBlockPacking);
+        UNIT_TEST(TestBlockPackingSliced);
+        UNIT_TEST(TestLegacyBlockPacking);
+        UNIT_TEST(TestLegacyBlockPackingSliced);
     UNIT_TEST_SUITE_END();
 };
 

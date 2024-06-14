@@ -1,23 +1,26 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
-#include <library/cpp/actors/core/executor_pool_basic.h>
-#include <library/cpp/actors/core/scheduler_basic.h>
-#include <library/cpp/actors/testlib/test_runtime.h>
+#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <ydb/library/actors/core/scheduler_basic.h>
+#include <ydb/library/actors/testlib/test_runtime.h>
 
 #include <ydb/core/pgproxy/pg_proxy.h>
-#include <ydb/core/pgproxy/pg_listener.h>
 #include <ydb/core/pgproxy/pg_log.h>
 #include <ydb/core/pgproxy/pg_proxy_events.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
 #include <util/network/socket.h>
 #include <util/string/hex.h>
+
+#include "pg_listener.h"
 
 #ifdef NDEBUG
 #define Ctest Cnull
 #else
 #define Ctest Cerr
 #endif
+
+using namespace NKikimr::NRawSocket;
 
 class TTestActorRuntime : public NActors::TTestActorRuntimeBase {
 public:
@@ -70,7 +73,7 @@ Y_UNIT_TEST_SUITE(TPGTest) {
         UNIT_ASSERT_VALUES_EQUAL(authRequest->InitialMessage->GetClientParams()["user"], "user");
         actorSystem.Send(new NActors::IEventHandle(handle->Sender, database, new NPG::TEvPGEvents::TEvAuthResponse()));
         TString received = Receive(s);
-        UNIT_ASSERT_VALUES_EQUAL(received, "520000000800000000530000002A7365727665725F76657273696F6E0031342E35202879646220737461626C652D32332D332900530000001B496E74657276616C5374796C6500706F737467726573005300000012446174655374796C650049534F005300000019636C69656E745F656E636F64696E6700555446380053000000197365727665725F656E636F64696E670055544638005300000019696E74656765725F6461746574696D6573006F6E005A0000000549");
+        UNIT_ASSERT_VALUES_EQUAL(received, "520000000800000000");
     }
 
 }

@@ -36,7 +36,7 @@ TJsonWriterConfig MakeJsonConfig() {
     config.FormatOutput = false;
     config.SortKeys = false;
     config.ValidateUtf8 = false;
-    config.DontEscapeStrings = true;
+    config.DontEscapeStrings = false;
     config.WriteNanAsString = true;
 
     return config;
@@ -211,6 +211,10 @@ void WriteValueToJson(TJsonWriter& writer, const NKikimr::NUdf::TUnboxedValuePod
             case NUdf::TDataType<NUdf::TTzDate>::Id:
             case NUdf::TDataType<NUdf::TTzDatetime>::Id:
             case NUdf::TDataType<NUdf::TTzTimestamp>::Id:
+            case NUdf::TDataType<NUdf::TDate32>::Id:
+            case NUdf::TDataType<NUdf::TDatetime64>::Id:
+            case NUdf::TDataType<NUdf::TTimestamp64>::Id:
+            case NUdf::TDataType<NUdf::TInterval64>::Id:
             case NUdf::TDataType<NUdf::TJsonDocument>::Id: {
                 const NUdf::TUnboxedValue out(ValueToString(*dataType->GetDataSlot(), value));
                 writer.Write(out.AsStringRef());
@@ -325,7 +329,7 @@ NKikimr::NUdf::TUnboxedValue ReadJsonValue(TJsonValue& json, NKikimr::NMiniKQL::
     case TType::EKind::EmptyDict:
         YQL_ENSURE(json.IsArray(), "Unexpected json type (expected array, but got " << jsonType << ")");
         YQL_ENSURE(json.GetArray().size() == 0, "Expected empty array, but got array with " << json.GetArray().size() << " elements");
-        return holderFactory.GetEmptyContainer();
+        return holderFactory.GetEmptyContainerLazy();
     case TType::EKind::Tuple:
     {
         YQL_ENSURE(json.IsArray(), "Unexpected json type (expected array, but got " << jsonType << ")");
@@ -514,7 +518,11 @@ NKikimr::NUdf::TUnboxedValue ReadJsonValue(TJsonValue& json, NKikimr::NMiniKQL::
             case NUdf::TDataType<NUdf::TInterval>::Id:
             case NUdf::TDataType<NUdf::TTzDate>::Id:
             case NUdf::TDataType<NUdf::TTzDatetime>::Id:
-            case NUdf::TDataType<NUdf::TTzTimestamp>::Id: {
+            case NUdf::TDataType<NUdf::TTzTimestamp>::Id:
+            case NUdf::TDataType<NUdf::TDate32>::Id:
+            case NUdf::TDataType<NUdf::TDatetime64>::Id:
+            case NUdf::TDataType<NUdf::TTimestamp64>::Id:
+            case NUdf::TDataType<NUdf::TInterval64>::Id: {
                 YQL_ENSURE(json.IsString(), "Unexpected json type (expected string, but got " << jsonType << ")");
                 YQL_ENSURE(IsValidStringValue(*dataType->GetDataSlot(), json.GetString()), "Invalid date format (expected ISO-8601)");
                 return ValueFromString(*dataType->GetDataSlot(), json.GetString());

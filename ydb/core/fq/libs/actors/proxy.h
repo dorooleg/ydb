@@ -1,8 +1,8 @@
 #pragma once
-#include "run_actor_params.h"
 
 #include <ydb/core/mon/mon.h>
 
+#include <ydb/core/fq/libs/compute/common/run_actor_params.h>
 #include <ydb/core/fq/libs/config/protos/pinger.pb.h>
 #include <ydb/core/fq/libs/events/events.h>
 #include <ydb/core/fq/libs/private_client/private_client.h>
@@ -19,7 +19,7 @@
 
 #include <ydb/public/lib/fq/scope.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actorsystem.h>
 #include <library/cpp/random_provider/random_provider.h>
 #include <library/cpp/time_provider/time_provider.h>
 
@@ -47,6 +47,7 @@ NActors::IActor* CreatePendingFetcher(
     const ::NYql::NCommon::TServiceCounters& serviceCounters,
     NYql::ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory,
     NYql::IHTTPGateway::TPtr s3Gateway,
+    NYql::NConnector::IClient::TPtr clientConnector,
     ::NPq::NConfigurationManager::IConnections::TPtr pqCmConnections,
     const ::NMonitoring::TDynamicCounterPtr& clientCounters,
     const TString& tenantName,
@@ -74,18 +75,6 @@ NActors::IActor* CreateResultWriter(
     const TString& traceId,
     const TInstant& deadline,
     ui64 resultBytesLimit);
-
-NActors::IActor* CreatePingerActor(
-    const TString& tenantName,
-    const NYdb::NFq::TScope& scope,
-    const TString& userId,
-    const TString& id,
-    const TString& owner,
-    const NActors::TActorId parent,
-    const NConfig::TPingerConfig& config,
-    TInstant deadline,
-    const ::NYql::NCommon::TServiceCounters& queryCounters,
-    TInstant createdAt);
 
 NActors::IActor* CreateRateLimiterResourceCreator(
     const NActors::TActorId& parent,

@@ -20,6 +20,7 @@ using namespace NYql::NNodes;
 bool UseSource(const TKqpOptimizeContext& kqpCtx, const NYql::TKikimrTableDescription& tableDesc) {
     bool useSource = kqpCtx.Config->EnableKqpScanQuerySourceRead && kqpCtx.IsScanQuery();
     useSource = useSource || (kqpCtx.Config->EnableKqpDataQuerySourceRead && kqpCtx.IsDataQuery());
+    useSource = useSource || kqpCtx.IsGenericQuery();
     useSource = useSource &&
         tableDesc.Metadata->Kind != EKikimrTableKind::SysView &&
         tableDesc.Metadata->Kind != EKikimrTableKind::Olap;
@@ -39,7 +40,6 @@ TExprBase KqpRewriteReadTable(TExprBase node, TExprContext& ctx, const TKqpOptim
     };
     TMaybe<TMatchedRead> matched;
 
-    TMaybeNode<TKqpReadTable> mayberead;
     VisitExpr(stage.Program().Body().Ptr(), [&](const TExprNode::TPtr& node) {
             TExprBase expr(node);
             if (auto cast = expr.Maybe<TKqpReadTable>()) {
@@ -81,6 +81,7 @@ TExprBase KqpRewriteReadTable(TExprBase node, TExprContext& ctx, const TKqpOptim
     auto settings = TKqpReadTableSettings::Parse(matched->Settings);
     auto selectColumns = matched->Columns;
     TVector<TCoAtom> skipNullColumns;
+    TExprNode::TPtr limit;
     if (settings.SkipNullKeys) {
         THashSet<TString> seenColumns;
         TVector<TCoAtom> columns;
@@ -99,10 +100,13 @@ TExprBase KqpRewriteReadTable(TExprBase node, TExprContext& ctx, const TKqpOptim
                 columns.push_back(atom);
             }
         }
-        
+
         matched->Columns = Build<TCoAtomList>(ctx, matched->Columns.Pos()).Add(columns).Done();
 
         settings.SkipNullKeys.clear();
+        limit = settings.ItemsLimit;
+        settings.ItemsLimit = nullptr;
+
         matched->Settings = settings.BuildNode(ctx, matched->Settings.Pos());
     }
 
@@ -125,24 +129,36 @@ TExprBase KqpRewriteReadTable(TExprBase node, TExprContext& ctx, const TKqpOptim
 
     TCoArgument arg{ctx.NewArgument(stage.Pos(), TStringBuilder() << "_kqp_source_arg")};
     args.insert(args.begin(), arg);
+
+    TExprNode::TPtr replaceExpr =
+        Build<TCoToFlow>(ctx, matched->Expr.Pos())
+            .Input(arg)
+        .Done()
+            .Ptr();
+
     if (skipNullColumns) {
-        argReplaces[matched->Expr.Raw()] = 
+        replaceExpr =
             Build<TCoExtractMembers>(ctx, node.Pos())
                 .Members(selectColumns)
                 .Input<TCoSkipNullMembers>()
-                    .Input<TCoToFlow>().Input(arg).Build()
+                    .Input(replaceExpr)
                     .Members().Add(skipNullColumns).Build()
                 .Build()
             .Done().Ptr();
-    } else {
-        argReplaces[matched->Expr.Raw()] = 
-            Build<TCoToFlow>(ctx, matched->Expr.Pos())
-                .Input(arg)
-            .Done()
-                .Ptr();
     }
 
-    auto source = 
+    if (limit) {
+        limit = ctx.ReplaceNodes(std::move(limit), argReplaces);
+        replaceExpr =
+            Build<TCoTake>(ctx, node.Pos())
+                .Input(replaceExpr)
+                .Count(limit)
+            .Done().Ptr();
+    }
+
+    argReplaces[matched->Expr.Raw()] = replaceExpr;
+
+    auto source =
         Build<TDqSource>(ctx, matched->Expr.Pos())
             .Settings<TKqpReadRangesSourceSettings>()
                 .Table(matched->Table)

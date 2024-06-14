@@ -44,7 +44,7 @@ items:
     - name: Scan queries
       href: commands/scan-query.md
   - name: Importing and exporting data
-    include: { mode: link, path: export_import/toc_p.yaml }
+    include: { mode: link, path: export-import/toc_p.yaml }
   - name: Working with topics
     items:
     - name: Commands for topics
@@ -79,6 +79,8 @@ items:
       href: table-query-execute.md
     - name: Running parameterized queries
       href: parameterized-queries-cli.md
+    - name: Interactive query execution mode
+      href: interactive-cli.md
 #  - name: Utilities
 #    items:
     # - name: Backup
@@ -103,6 +105,8 @@ items:
       href: commands/discovery-list.md
     - name: Authentication
       href: commands/discovery-whoami.md
+    - name: Displaying connection parameters
+      href: commands/config-info.md
     - name: Getting the YDB CLI version
       href: version.md
   - name: Load testing
@@ -117,3 +121,7 @@ items:
       href: workload-kv.md
     - name: Topic load
       href: workload-topic.md
+    - name: Transfer load
+      href: workload-transfer.md
+    - name: TPC-H load
+      href: workload-tpch.md

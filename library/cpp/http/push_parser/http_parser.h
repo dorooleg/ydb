@@ -36,6 +36,18 @@ public:
         GzipAllowMultipleStreams_ = allow;
     }
 
+    inline void DisableDecodeContent() noexcept {
+        DecodeContent_ = false;
+    }
+
+    /*
+     * Disable message-body parsing.
+     * Useful for parse HEAD method responses
+     */
+    inline void BodyNotExpected() {
+        BodyNotExpected_ = true;
+    }
+
     /// @return true on end parsing (GetExtraDataSize() return amount not used bytes)
     /// throw exception on bad http format (unsupported encoding, etc)
     /// sz == 0 signaling end of input stream
@@ -50,6 +62,7 @@ public:
     const char* Data() const noexcept {
         return Data_;
     }
+
     size_t GetExtraDataSize() const noexcept {
         return ExtraDataSize_;
     }
@@ -132,6 +145,8 @@ private:
     TMessageType MessageType_ = Response;
     bool CollectHeaders_ = true;
     bool GzipAllowMultipleStreams_ = true;
+    bool DecodeContent_ = true;
+    bool BodyNotExpected_ = false;
 
     // parsed data
     const char* Data_ = nullptr;

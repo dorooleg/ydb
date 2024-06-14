@@ -1,5 +1,5 @@
 #include "defs.h"
-#include "datashard_ut_common.h"
+#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
 #include "datashard_ut_common_kqp.h"
 
 #include <ydb/core/testlib/test_client.h>
@@ -48,7 +48,10 @@ struct IsReadSet {
     {
         if (ev.GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             auto &rec = ev.Get<TEvTxProcessing::TEvReadSet>()->Record;
-            if (rec.GetTabletSource() == Source && rec.GetTabletDest() == Dest) {
+            bool isExpectation = (
+                (rec.GetFlags() & NKikimrTx::TEvReadSet::FLAG_EXPECT_READSET) &&
+                (rec.GetFlags() & NKikimrTx::TEvReadSet::FLAG_NO_DATA));
+            if (rec.GetTabletSource() == Source && rec.GetTabletDest() == Dest && !isExpectation) {
                 return true;
             }
         }
@@ -64,7 +67,9 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
         TPortManager pm;
         TServerSettings serverSettings(pm.GetPort(2134));
         serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false);
+            .SetUseRealThreads(false)
+            // Volatile transactions avoid storing readsets in InReadSets table
+            .SetEnableDataShardVolatileTransactions(false);
 
         Tests::TServer::TPtr server = new TServer(serverSettings);
         auto &runtime = *server->GetRuntime();
@@ -109,8 +114,7 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
 
         // Run multishard tx but drop RS to pause it on the first shard.
         {
-            auto captureRS = [shard=shards[1]](TTestActorRuntimeBase&,
-                                            TAutoPtr<IEventHandle> &event) -> auto {
+            auto captureRS = [shard=shards[1]](TAutoPtr<IEventHandle> &event) -> auto {
                 if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
                     auto &rec = event->Get<TEvTxProcessing::TEvReadSet>()->Record;
                     if (rec.GetTabletSource() == shard)
@@ -221,8 +225,7 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
         // Run multishard tx but drop all RS acks to the table-1.
         // Tx should still finish successfully.
         {
-            auto captureRS = [shard=shards1[0]](TTestActorRuntimeBase&,
-                                                TAutoPtr<IEventHandle> &event) -> auto {
+            auto captureRS = [shard=shards1[0]](TAutoPtr<IEventHandle> &event) -> auto {
                 if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSetAck) {
                     auto &rec = event->Get<TEvTxProcessing::TEvReadSetAck>()->Record;
                     if (rec.GetTabletSource() == shard) {
@@ -252,7 +255,13 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
         TPortManager pm;
         TServerSettings serverSettings(pm.GetPort(2134));
         serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false);
+            .SetUseRealThreads(false)
+            // This test expects rs acks to be delayed during one of restarts,
+            // which doesn't happen with volatile transactions. With volatile
+            // transactions both upserts have already executed, one of them is
+            // just waiting for confirmation before making changes visible.
+            // Since acks are not delayed they are just gone when dropped.
+            .SetEnableDataShardVolatileTransactions(false);
 
         Tests::TServer::TPtr server = new TServer(serverSettings);
         auto &runtime = *server->GetRuntime();
@@ -277,11 +286,13 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
 
         // We want to intercept all RS from table-1 and all RS acks
         // from table-3.
-        auto captureRS = [shard1,shard3](TTestActorRuntimeBase&,
-                                         TAutoPtr<IEventHandle> &event) -> auto {
+        auto captureRS = [shard1,shard3](TAutoPtr<IEventHandle> &event) -> auto {
             if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
                 auto &rec = event->Get<TEvTxProcessing::TEvReadSet>()->Record;
-                if (rec.GetTabletSource() == shard1) {
+                bool isExpectation = (
+                    (rec.GetFlags() & NKikimrTx::TEvReadSet::FLAG_EXPECT_READSET) &&
+                    (rec.GetFlags() & NKikimrTx::TEvReadSet::FLAG_NO_DATA));
+                if (rec.GetTabletSource() == shard1 && !isExpectation) {
                     return TTestActorRuntime::EEventAction::DROP;
                 }
             } else if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSetAck) {
@@ -358,12 +369,15 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }");
 
         size_t readSets = 0;
-        auto observeReadSets = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) -> auto {
+        auto observeReadSets = [&](TAutoPtr<IEventHandle> &ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
+                    if (msg->Record.GetFlags() & NKikimrTx::TEvReadSet::FLAG_NO_DATA) {
+                        break;
+                    }
                     NKikimrTx::TReadSetData genericData;
-                    Y_VERIFY(genericData.ParseFromString(msg->Record.GetReadSet()));
+                    Y_ABORT_UNLESS(genericData.ParseFromString(msg->Record.GetReadSet()));
                     Cerr << "... generic readset: " << genericData.DebugString() << Endl;
                     UNIT_ASSERT(genericData.HasDecision());
                     UNIT_ASSERT(genericData.GetDecision() == NKikimrTx::TReadSetData::DECISION_COMMIT);
@@ -418,12 +432,19 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
         ExecSQL(server, sender, "UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 2)");
 
         size_t readSets = 0;
-        auto observeReadSets = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) -> auto {
+        auto observeReadSets = [&](TAutoPtr<IEventHandle> &ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
+                    if (msg->Record.GetFlags() & NKikimrTx::TEvReadSet::FLAG_NO_DATA) {
+                        if (!(msg->Record.GetFlags() & NKikimrTx::TEvReadSet::FLAG_EXPECT_READSET)) {
+                            Cerr << "... nodata readset" << Endl;
+                            ++readSets;
+                        }
+                        break;
+                    }
                     NKikimrTx::TReadSetData genericData;
-                    Y_VERIFY(genericData.ParseFromString(msg->Record.GetReadSet()));
+                    Y_ABORT_UNLESS(genericData.ParseFromString(msg->Record.GetReadSet()));
                     Cerr << "... generic readset: " << genericData.DebugString() << Endl;
                     UNIT_ASSERT(genericData.HasDecision());
                     UNIT_ASSERT(genericData.GetDecision() == NKikimrTx::TReadSetData::DECISION_ABORT);

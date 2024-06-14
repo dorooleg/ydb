@@ -5,15 +5,42 @@
 #include <arrow/compute/exec_internal.h>
 #include <arrow/array/builder_primitive.h>
 
+#include <ydb/library/yql/public/udf/udf_helpers.h>
+#include <ydb/library/yql/public/udf/arrow/udf_arrow_helpers.h>
+
+BEGIN_SIMPLE_ARROW_UDF(TInc, i32(i32)) {
+    Y_UNUSED(valueBuilder);
+    const i32 arg = args[0].Get<i32>();
+    return NYql::NUdf::TUnboxedValuePod(arg + 1);
+}
+
+struct TIncKernelExec : public NYql::NUdf::TUnaryKernelExec<TIncKernelExec> {
+    template <typename TSink>
+    static void Process(NYql::NUdf::TBlockItem arg, const TSink& sink) {
+        sink(NYql::NUdf::TBlockItem(arg.As<i32>() + 1));
+    }
+};
+
+END_SIMPLE_ARROW_UDF(TInc, TIncKernelExec::Do);
+
+SIMPLE_MODULE(TBlockUTModule,
+    TInc
+)
+
 namespace NKikimr {
 namespace NMiniKQL {
 
 namespace {
     arrow::Datum ExecuteOneKernel(const IArrowKernelComputationNode* kernelNode,
         const std::vector<arrow::Datum>& argDatums, arrow::compute::ExecContext& execContext) {
-        const auto& kernel = kernelNode->GetArrowKernel();        
+        const auto& kernel = kernelNode->GetArrowKernel();
         arrow::compute::KernelContext kernelContext(&execContext);
         std::unique_ptr<arrow::compute::KernelState> state;
+        if (kernel.init) {
+            state = ARROW_RESULT(kernel.init(&kernelContext, { &kernel, kernelNode->GetArgsDesc(), nullptr }));
+            kernelContext.SetState(state.get());
+        }
+
         auto executor = arrow::compute::detail::KernelExecutor::MakeScalar();
         ARROW_OK(executor->Init(&kernelContext, { &kernel, kernelNode->GetArgsDesc(), nullptr }));
         auto listener = std::make_shared<arrow::compute::detail::DatumAccumulator>();
@@ -31,13 +58,13 @@ namespace {
 
             arrow::Datum output = ExecuteOneKernel(topology->Items[i].Node.get(), argDatums, execContext);
             datums[i + topology->InputArgsCount] = output;
-        }        
+        }
     }
 }
 
 Y_UNIT_TEST_SUITE(TMiniKQLBlocksTest) {
-Y_UNIT_TEST(TestEmpty) {
-    TSetup<false> setup;
+Y_UNIT_TEST_LLVM(TestEmpty) {
+    TSetup<LLVM> setup;
     auto& pb = *setup.PgmBuilder;
 
     const auto type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
@@ -52,14 +79,15 @@ Y_UNIT_TEST(TestEmpty) {
     UNIT_ASSERT(!iterator.Next(item));
 }
 
-Y_UNIT_TEST(TestSimple) {
+Y_UNIT_TEST_LLVM(TestSimple) {
     static const size_t dataCount = 1000;
-    TSetup<false> setup;
+    TSetup<LLVM> setup;
     auto& pb = *setup.PgmBuilder;
 
-    auto data = TVector<TRuntimeNode>(Reserve(dataCount));
-    for (size_t i = 0; i < dataCount; ++i) {
-        data.push_back(pb.NewDataLiteral<ui64>(i));
+    TRuntimeNode::TList data;
+    data.reserve(dataCount);
+    for (ui64 i = 0ULL; i < dataCount; ++i) {
+        data.push_back(pb.NewDataLiteral(i));
     }
     const auto type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
     const auto list = pb.NewList(type, data);
@@ -77,11 +105,12 @@ Y_UNIT_TEST(TestSimple) {
     }
     NUdf::TUnboxedValue item;
     UNIT_ASSERT(!iterator.Next(item));
+    UNIT_ASSERT(!iterator.Next(item));
 }
 
-Y_UNIT_TEST(TestWideToBlocks) {
-    TSetup<false> setup;
-    auto& pb = *setup.PgmBuilder;
+Y_UNIT_TEST_LLVM(TestWideToBlocks) {
+    TSetup<LLVM> setup;
+    TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
     const auto tupleType = pb.NewTupleType({ui64Type, ui64Type});
@@ -115,12 +144,16 @@ Y_UNIT_TEST(TestWideToBlocks) {
 
     UNIT_ASSERT(iterator.Next(item));
     UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 30);
+
+    UNIT_ASSERT(!iterator.Next(item));
+    UNIT_ASSERT(!iterator.Next(item));
 }
 
 namespace {
+template<bool LLVM>
 void TestChunked(bool withBlockExpand) {
-    TSetup<false> setup;
-    auto& pb = *setup.PgmBuilder;
+    TSetup<LLVM> setup;
+    TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto ui64Type   = pb.NewDataType(NUdf::TDataType<ui64>::Id);
     const auto boolType   = pb.NewDataType(NUdf::TDataType<bool>::Id);
@@ -129,7 +162,7 @@ void TestChunked(bool withBlockExpand) {
 
     const auto tupleType = pb.NewTupleType({ui64Type, boolType, stringType, utf8Type});
 
-    TVector<TRuntimeNode> items;
+    TRuntimeNode::TList items;
     const size_t bigStrSize = 1024 * 1024 + 100;
     const size_t smallStrSize = 256 * 1024;
     for (size_t i = 0; i < 20; ++i) {
@@ -207,12 +240,12 @@ void TestChunked(bool withBlockExpand) {
 
 } // namespace
 
-Y_UNIT_TEST(TestBlockExpandChunked) {
-    TestChunked(true);
+Y_UNIT_TEST_LLVM(TestBlockExpandChunked) {
+    TestChunked<LLVM>(true);
 }
 
-Y_UNIT_TEST(TestWideFromBlocksForChunked) {
-    TestChunked(false);
+Y_UNIT_TEST_LLVM(TestWideFromBlocksForChunked) {
+    TestChunked<LLVM>(false);
 }
 
 Y_UNIT_TEST(TestScalar) {
@@ -230,8 +263,44 @@ Y_UNIT_TEST(TestScalar) {
     UNIT_ASSERT_VALUES_EQUAL(TArrowBlock::From(value).GetDatum().scalar_as<arrow::UInt64Scalar>().value, testValue);
 }
 
-Y_UNIT_TEST(TestBlockFunc) {
-    TSetup<false> setup;
+Y_UNIT_TEST_LLVM(TestReplicateScalar) {
+    const ui64 count = 1000;
+    const ui32 value = 42;
+
+    TSetup<LLVM> setup;
+    TProgramBuilder& pb = *setup.PgmBuilder;
+
+    const auto valueType = pb.NewDataType(NUdf::TDataType<ui32>::Id);
+
+    const auto scalarValue = pb.AsScalar(pb.NewDataLiteral<ui32>(value));
+    const auto scalarCount = pb.AsScalar(pb.NewDataLiteral<ui64>(count));
+
+    const auto replicated = pb.ReplicateScalar(scalarValue, scalarCount);
+
+    const auto replicatedType = pb.NewBlockType(valueType, TBlockType::EShape::Many);
+
+    const auto listOfReplicated = pb.NewList(replicatedType, { replicated });
+
+    const auto flowOfReplicated = pb.ToFlow(listOfReplicated);
+
+    const auto flowAfterBlocks = pb.FromBlocks(flowOfReplicated);
+    const auto pgmReturn = pb.ForwardList(flowAfterBlocks);
+
+    const auto graph = setup.BuildGraph(pgmReturn);
+    const auto iterator = graph->GetValue().GetListIterator();
+
+    for (size_t i = 0; i < count; ++i) {
+        NUdf::TUnboxedValue item;
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.Get<ui32>(), value);
+    }
+
+    NUdf::TUnboxedValue item;
+    UNIT_ASSERT(!iterator.Next(item));
+}
+
+Y_UNIT_TEST_LLVM(TestBlockFunc) {
+    TSetup<LLVM> setup;
     TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
@@ -273,8 +342,8 @@ Y_UNIT_TEST(TestBlockFunc) {
     UNIT_ASSERT(!iterator.Next(item));
 }
 
-Y_UNIT_TEST(TestBlockFuncWithNullables) {
-    TSetup<false> setup;
+Y_UNIT_TEST_LLVM(TestBlockFuncWithNullables) {
+    TSetup<LLVM> setup;
     TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto optionalUi64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id, true);
@@ -329,11 +398,13 @@ Y_UNIT_TEST(TestBlockFuncWithNullables) {
 
     UNIT_ASSERT(iterator.Next(item));
     UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 30);
+
+    UNIT_ASSERT(!iterator.Next(item));
     UNIT_ASSERT(!iterator.Next(item));
 }
 
-Y_UNIT_TEST(TestBlockFuncWithNullableScalar) {
-    TSetup<false> setup;
+Y_UNIT_TEST_LLVM(TestBlockFuncWithNullableScalar) {
+    TSetup<LLVM> setup;
     TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto optionalUi64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id, true);
@@ -372,6 +443,7 @@ Y_UNIT_TEST(TestBlockFuncWithNullableScalar) {
         UNIT_ASSERT(!item);
 
         UNIT_ASSERT(!iterator.Next(item));
+        UNIT_ASSERT(!iterator.Next(item));
     }
 
     {
@@ -390,6 +462,7 @@ Y_UNIT_TEST(TestBlockFuncWithNullableScalar) {
         UNIT_ASSERT(iterator.Next(item));
         UNIT_ASSERT(!item);
 
+        UNIT_ASSERT(!iterator.Next(item));
         UNIT_ASSERT(!iterator.Next(item));
     }
 
@@ -410,11 +483,12 @@ Y_UNIT_TEST(TestBlockFuncWithNullableScalar) {
         UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 130);
 
         UNIT_ASSERT(!iterator.Next(item));
+        UNIT_ASSERT(!iterator.Next(item));
     }
 }
 
-Y_UNIT_TEST(TestBlockFuncWithScalar) {
-    TSetup<false> setup;
+Y_UNIT_TEST_LLVM(TestBlockFuncWithScalar) {
+    TSetup<LLVM> setup;
     TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
@@ -446,13 +520,51 @@ Y_UNIT_TEST(TestBlockFuncWithScalar) {
 
     UNIT_ASSERT(iterator.Next(item));
     UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 1130);
+
     UNIT_ASSERT(!iterator.Next(item));
     UNIT_ASSERT(!iterator.Next(item));
 }
 
-Y_UNIT_TEST(TestWideFromBlocks) {
-    TSetup<false> setup;
-    auto& pb = *setup.PgmBuilder;
+Y_UNIT_TEST_LLVM(TestWideFromBlocks) {
+    TSetup<LLVM> setup;
+    TProgramBuilder& pb = *setup.PgmBuilder;
+
+    const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
+
+    const auto data1 = pb.NewDataLiteral<ui64>(10);
+    const auto data2 = pb.NewDataLiteral<ui64>(20);
+    const auto data3 = pb.NewDataLiteral<ui64>(30);
+
+    const auto list = pb.NewList(ui64Type, {data1, data2, data3});
+    const auto flow = pb.ToFlow(list);
+
+    const auto blocksFlow = pb.ToBlocks(flow);
+    const auto wideFlow = pb.ExpandMap(blocksFlow, [&](TRuntimeNode item) -> TRuntimeNode::TList { return {item, pb.AsScalar(pb.NewDataLiteral<ui64>(3ULL))}; });
+    const auto wideFlow2 = pb.WideFromBlocks(wideFlow);
+    const auto narrowFlow = pb.NarrowMap(wideFlow2, [&](TRuntimeNode::TList items) -> TRuntimeNode { return items.front(); });
+
+    const auto pgmReturn = pb.Collect(narrowFlow);
+
+    const auto graph = setup.BuildGraph(pgmReturn);
+    const auto iterator = graph->GetValue().GetListIterator();
+
+    NUdf::TUnboxedValue item;
+    UNIT_ASSERT(iterator.Next(item));
+    UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 10);
+
+    UNIT_ASSERT(iterator.Next(item));
+    UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 20);
+
+    UNIT_ASSERT(iterator.Next(item));
+    UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 30);
+
+    UNIT_ASSERT(!iterator.Next(item));
+    UNIT_ASSERT(!iterator.Next(item));
+}
+
+Y_UNIT_TEST_LLVM(TestWideToAndFromBlocks) {
+    TSetup<LLVM> setup;
+    TProgramBuilder& pb = *setup.PgmBuilder;
 
     const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
     const auto tupleType = pb.NewTupleType({ui64Type, ui64Type});
@@ -487,6 +599,9 @@ Y_UNIT_TEST(TestWideFromBlocks) {
 
     UNIT_ASSERT(iterator.Next(item));
     UNIT_ASSERT_VALUES_EQUAL(item.Get<ui64>(), 30);
+
+    UNIT_ASSERT(!iterator.Next(item));
+    UNIT_ASSERT(!iterator.Next(item));
 }
 }
 
@@ -585,6 +700,106 @@ Y_UNIT_TEST(WithScalars) {
         for (size_t i = 0; i < blockSize; ++i) {
             builder1.UnsafeAppend(i);
             builder2.UnsafeAppend(3 * i);
+        }
+
+        std::shared_ptr<arrow::ArrayData> data1;
+        ARROW_OK(builder1.FinishInternal(&data1));
+        std::shared_ptr<arrow::ArrayData> data2;
+        ARROW_OK(builder2.FinishInternal(&data2));
+        datums[0] = data1;
+        datums[1] = data2;
+    }
+
+    ExecuteAllKernels(datums, topology, execContext);
+
+    auto res = datums.back().array()->GetValues<ui64>(1);
+    for (size_t i = 0; i < blockSize; ++i) {
+        auto expected = 3 * i;
+        UNIT_ASSERT_VALUES_EQUAL(res[i], expected);
+    }
+}
+
+Y_UNIT_TEST(Udf) {
+    TVector<TUdfModuleInfo> modules;
+    modules.emplace_back(TUdfModuleInfo{"", "BlockUT", new TBlockUTModule()});
+    TSetup<false> setup(GetTestFactory(), std::move(modules));
+
+    auto& pb = *setup.PgmBuilder;
+
+    const auto i32Type = pb.NewDataType(NUdf::TDataType<i32>::Id);
+    const auto i32BlocksType = pb.NewBlockType(i32Type, TBlockType::EShape::Many);
+    const auto arg1 = pb.Arg(i32BlocksType);
+    const auto userType = pb.NewTupleType({
+        pb.NewTupleType({i32BlocksType}),
+        pb.NewEmptyStructType(),
+        pb.NewEmptyTupleType()});
+    const auto udf = pb.Udf("BlockUT.Inc_BlocksImpl", pb.NewVoid(), userType);
+    const auto apply = pb.Apply(udf, {arg1});
+
+    const auto graph = setup.BuildGraph(apply, {arg1.GetNode() });
+    const auto topology = graph->GetKernelsTopology();
+    UNIT_ASSERT(topology);
+    UNIT_ASSERT_VALUES_EQUAL(topology->InputArgsCount, 1);
+    UNIT_ASSERT_VALUES_EQUAL(topology->Items.size(), 1);
+    UNIT_ASSERT_VALUES_EQUAL(topology->Items[0].Node->GetKernelName(), "Apply");
+    const std::vector<ui32> expectedInputs1{0};
+    UNIT_ASSERT_VALUES_EQUAL(topology->Items[0].Inputs, expectedInputs1);
+
+    arrow::compute::ExecContext execContext;
+    const size_t blockSize = 10000;
+    std::vector<arrow::Datum> datums(topology->InputArgsCount + topology->Items.size());
+    {
+        arrow::Int32Builder builder1(execContext.memory_pool());
+        ARROW_OK(builder1.Reserve(blockSize));
+        for (size_t i = 0; i < blockSize; ++i) {
+            builder1.UnsafeAppend(i);
+        }
+
+        std::shared_ptr<arrow::ArrayData> data1;
+        ARROW_OK(builder1.FinishInternal(&data1));
+        datums[0] = data1;
+    }
+
+    ExecuteAllKernels(datums, topology, execContext);
+
+    auto res = datums.back().array()->GetValues<i32>(1);
+    for (size_t i = 0; i < blockSize; ++i) {
+        auto expected = i + 1;
+        UNIT_ASSERT_VALUES_EQUAL(res[i], expected);
+    }
+}
+
+Y_UNIT_TEST(ScalarApply) {
+    TSetup<false> setup;
+    auto& pb = *setup.PgmBuilder;
+
+    const auto ui64Type = pb.NewDataType(NUdf::TDataType<ui64>::Id);
+    const auto ui64BlocksType = pb.NewBlockType(ui64Type, TBlockType::EShape::Many);
+    const auto arg1 = pb.Arg(ui64BlocksType);
+    const auto arg2 = pb.Arg(ui64BlocksType);
+    const auto scalarApply = pb.ScalarApply({arg1,arg2}, [&](auto args){
+        return pb.Add(args[0], args[1]);
+    });
+
+    const auto graph = setup.BuildGraph(scalarApply, {arg1.GetNode(), arg2.GetNode()});
+    const auto topology = graph->GetKernelsTopology();
+    UNIT_ASSERT(topology);
+    UNIT_ASSERT_VALUES_EQUAL(topology->InputArgsCount, 2);
+    UNIT_ASSERT_VALUES_EQUAL(topology->Items.size(), 1);
+    UNIT_ASSERT_VALUES_EQUAL(topology->Items[0].Node->GetKernelName(), "ScalarApply");
+    const std::vector<ui32> expectedInputs1{{0, 1}};
+    UNIT_ASSERT_VALUES_EQUAL(topology->Items[0].Inputs, expectedInputs1);
+
+    arrow::compute::ExecContext execContext;
+    const size_t blockSize = 100000;
+    std::vector<arrow::Datum> datums(topology->InputArgsCount + topology->Items.size());
+    {
+        arrow::UInt64Builder builder1(execContext.memory_pool()), builder2(execContext.memory_pool());
+        ARROW_OK(builder1.Reserve(blockSize));
+        ARROW_OK(builder2.Reserve(blockSize));
+        for (size_t i = 0; i < blockSize; ++i) {
+            builder1.UnsafeAppend(i);
+            builder2.UnsafeAppend(2 * i);
         }
 
         std::shared_ptr<arrow::ArrayData> data1;

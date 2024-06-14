@@ -4,6 +4,7 @@
 #include <library/cpp/threading/future/future.h>
 #include <util/thread/pool.h>
 #include <ydb/library/yql/providers/common/http_gateway/yql_http_gateway.h>
+#include <ydb/library/yql/providers/s3/credentials/credentials.h>
 
 #include <contrib/libs/re2/re2/re2.h>
 
@@ -137,11 +138,19 @@ public:
     std::vector<TDirectoryListEntry> Directories;
 };
 
-using TListResult = std::variant<TListEntries, TIssues>;
+enum class EListError {
+    GENERAL,
+    LIMIT_EXCEEDED
+};
+struct TListError {
+    EListError Type;
+    TIssues Issues;
+};
+using TListResult = std::variant<TListEntries, TListError>;
 
 struct TListingRequest {
     TString Url;
-    TString Token;
+    TS3Credentials::TAuthInfo AuthInfo;
     TString Pattern;
     ES3PatternType PatternType = ES3PatternType::Wildcard;
     TString Prefix;

@@ -11,8 +11,6 @@ TTopicWorkloadWriterWorker::TTopicWorkloadWriterWorker(
     , StatsCollector(params.StatsCollector)
 
 {
-    Closed = std::make_shared<std::atomic<bool>>(false);
-    GenerateMessages();
     CreateWorker();
 }
 
@@ -20,15 +18,6 @@ TTopicWorkloadWriterWorker::~TTopicWorkloadWriterWorker()
 {
     if (WriteSession)
         WriteSession->Close();
-}
-
-void TTopicWorkloadWriterWorker::CreateWorker() {
-    WRITE_LOG(Params.Log, ELogPriority::TLOG_INFO, TStringBuilder() << "Create writer worker for ProducerId " << Params.ProducerId << " PartitionId " << Params.PartitionId);
-
-    if (WriteSession)
-        WriteSession->Close();
-
-    CreateTopicWorker();
 }
 
 void TTopicWorkloadWriterWorker::Close() {
@@ -39,18 +28,20 @@ void TTopicWorkloadWriterWorker::Close() {
 
 const size_t GENERATED_MESSAGES_COUNT = 32;
 
-void TTopicWorkloadWriterWorker::GenerateMessages() {
-    TStringBuilder res;
+std::vector<TString> TTopicWorkloadWriterWorker::GenerateMessages(size_t messageSize) {
+    std::vector<TString> generatedMessages;
     for (size_t i = 0; i < GENERATED_MESSAGES_COUNT; i++) {
-        res.clear();
-        while (res.Size() < Params.MessageSize)
-            res << RandomNumber<ui64>(UINT64_MAX);
-        GeneratedMessages.push_back(res);
+        TStringBuilder stringBuilder;
+        while (stringBuilder.Size() < messageSize)
+            stringBuilder << RandomNumber<ui64>(UINT64_MAX);
+        stringBuilder.resize(messageSize);
+        generatedMessages.push_back(std::move(stringBuilder));
     }
+    return generatedMessages;
 }
 
 TString TTopicWorkloadWriterWorker::GetGeneratedMessage() const {
-    return GeneratedMessages[MessageId % GENERATED_MESSAGES_COUNT];
+    return Params.GeneratedMessages[MessageId % GENERATED_MESSAGES_COUNT];
 }
 
 TInstant TTopicWorkloadWriterWorker::GetCreateTimestamp() const {
@@ -89,7 +80,9 @@ bool TTopicWorkloadWriterWorker::WaitForInitSeqNo()
 }
 
 void TTopicWorkloadWriterWorker::Process() {
-    const TInstant endTime = TInstant::Now() + TDuration::Seconds(Params.Seconds);
+    Sleep(TDuration::Seconds((float)Params.WarmupSec * Params.WriterIdx / Params.ProducerThreadCount));
+    
+    const TInstant endTime = TInstant::Now() + TDuration::Seconds(Params.TotalSec);
 
     StartTimestamp = Now();
     WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "StartTimestamp " << StartTimestamp);
@@ -109,7 +102,7 @@ void TTopicWorkloadWriterWorker::Process() {
         } else
             WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "No WaitEvent");
 
-        while (true) {
+        while (!*Params.ErrorFlag) {
             auto events = WriteSession->GetEvents(false);
             WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "Got " << events.size() << " events.");
 
@@ -118,25 +111,39 @@ void TTopicWorkloadWriterWorker::Process() {
 
             now = Now();
 
-            ui64 bytesMustBeWritten = Params.ByteRate == 0 ? UINT64_MAX : (now - StartTimestamp).SecondsFloat() * Params.ByteRate / Params.ProducerThreadCount;
+            bool writingAllowed = ContinuationToken.Defined();
+            WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "ContinuationToken.Defined() " << ContinuationToken.Defined());
 
-            WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "BytesWritten " << BytesWritten << " bytesMustBeWritten " << bytesMustBeWritten << " ContinuationToken.Defined() " << ContinuationToken.Defined());
+            if (Params.ByteRate != 0)
+            {
+                ui64 bytesMustBeWritten = (now - StartTimestamp).SecondsFloat() * Params.ByteRate / Params.ProducerThreadCount;
+                writingAllowed &= BytesWritten < bytesMustBeWritten;
+                WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "BytesWritten " << BytesWritten << " bytesMustBeWritten " << bytesMustBeWritten << " writingAllowed " << writingAllowed);
+            }
+            else 
+            {
+                writingAllowed &= InflightMessages.size() <= 1_MB / Params.MessageSize;
+                WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "Inflight size " << InflightMessages.size() << " writingAllowed " << writingAllowed);
+            }
 
-            if (BytesWritten < bytesMustBeWritten && ContinuationToken.Defined()) {
+            if (writingAllowed) 
+            {
                 TString data = GetGeneratedMessage();
-                size_t messageSize = data.size();
 
                 TMaybe<TInstant> createTimestamp = Params.ByteRate == 0 ? TMaybe<TInstant>(Nothing()) : GetCreateTimestamp();
 
-                InflightMessages[MessageId] = {messageSize, createTimestamp.GetOrElse(now)};
+                InflightMessages[MessageId] = createTimestamp.GetOrElse(now);
 
-                BytesWritten += messageSize;
+                BytesWritten += Params.MessageSize;
 
-                WriteSession->Write(std::move(ContinuationToken.GetRef()), data, MessageId++, createTimestamp);
+                WriteSession->Write(std::move(ContinuationToken.GetRef()), data, MessageId, createTimestamp);
+
+                WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "Written message " << MessageId << " CreateTimestamp " << createTimestamp << " delta from now " << (Params.ByteRate == 0 ? TDuration() : now - *createTimestamp.Get()));
                 ContinuationToken.Clear();
-
-                WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "Written message " << MessageId << " CreateTimestamp " << createTimestamp << " delta from now " << now - *createTimestamp.Get());
+                MessageId++;
             }
+            else 
+                Sleep(TDuration::MilliSeconds(1));
 
             if (events.empty())
                 break;
@@ -162,6 +169,7 @@ bool TTopicWorkloadWriterWorker::ProcessEvent(
 bool TTopicWorkloadWriterWorker::ProcessAckEvent(
     const NYdb::NTopic::TWriteSessionEvent::TAcksEvent& event) {
     bool hasProgress = false;
+    auto now = Now();
     //! Acks just confirm that message was received and saved by server
     //! successfully. Here we just count acked messages to check, that everything
     //! written is confirmed.
@@ -177,11 +185,10 @@ bool TTopicWorkloadWriterWorker::ProcessAckEvent(
             return false;
         }
 
-        auto inflightTime = (Now() - inflightMessageIter->second.MessageTime);
-        ui64 messageSize = inflightMessageIter->second.MessageSize;
+        auto inflightTime = (now - inflightMessageIter->second);
         InflightMessages.erase(inflightMessageIter);
 
-        StatsCollector->AddWriterEvent(Params.WriterIdx, {messageSize, inflightTime.MilliSeconds(), InflightMessages.size()});
+        StatsCollector->AddWriterEvent(Params.WriterIdx, {Params.MessageSize, inflightTime.MilliSeconds(), InflightMessages.size()});
 
         hasProgress = true;
 
@@ -205,24 +212,24 @@ bool TTopicWorkloadWriterWorker::ProcessReadyToAcceptEvent(
 
 bool TTopicWorkloadWriterWorker::ProcessSessionClosedEvent(
     const NYdb::NTopic::TSessionClosedEvent& event) {
-    WRITE_LOG(Params.Log, ELogPriority::TLOG_INFO, TStringBuilder() << "Got close event: " << event.DebugString());
+    WRITE_LOG(Params.Log, ELogPriority::TLOG_EMERG, TStringBuilder() << "Got close event: " << event.DebugString());
     //! Session is closed, stop any work with it.
-    Y_FAIL("session closed");
+    *Params.ErrorFlag = 1;
     return false;
 }
 
-void TTopicWorkloadWriterWorker::CreateTopicWorker() {
-    WRITE_LOG(Params.Log, ELogPriority::TLOG_INFO, "Creating writer worker...");
-    Y_VERIFY(Params.Driver);
+void TTopicWorkloadWriterWorker::CreateWorker() {
+    WRITE_LOG(Params.Log, ELogPriority::TLOG_INFO, TStringBuilder() << "Create writer worker for ProducerId " << Params.ProducerId << " PartitionId " << Params.PartitionId);
     NYdb::NTopic::TWriteSessionSettings settings;
     settings.Codec((NYdb::NTopic::ECodec)Params.Codec);
-    settings.Path(TOPIC);
+    settings.Path(Params.TopicName);
     settings.ProducerId(Params.ProducerId);
     settings.PartitionId(Params.PartitionId);
-    WriteSession = NYdb::NTopic::TTopicClient(*Params.Driver).CreateWriteSession(settings);
+    settings.DirectWriteToPartition(Params.Direct);
+    WriteSession = NYdb::NTopic::TTopicClient(Params.Driver).CreateWriteSession(settings);
 }
 
-void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams&& params) {
+void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams& params) {
     TTopicWorkloadWriterWorker writer(std::move(params));
 
     (*params.StartedCount)++;

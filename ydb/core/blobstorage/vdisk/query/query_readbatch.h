@@ -4,6 +4,7 @@
 #include <ydb/core/blobstorage/vdisk/common/disk_part.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdiskctx.h>
 #include <ydb/core/blobstorage/vdisk/hulldb/base/blobstorage_blob.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <util/generic/deque.h>
 
@@ -150,12 +151,12 @@ namespace NKikimr {
             }
 
             bool ShouldUpdateWithDisk() const {
-                Y_VERIFY_DEBUG(Type == ET_CLEAN || Type == ET_SETDISK || Type == ET_SETMEM);
+                Y_DEBUG_ABORT_UNLESS(Type == ET_CLEAN || Type == ET_SETDISK || Type == ET_SETMEM);
                 return Type == ET_CLEAN || Type == ET_SETDISK;
             }
 
             bool ShouldUpdateWithMem() const {
-                Y_VERIFY_DEBUG(Type == ET_CLEAN || Type == ET_SETDISK || Type == ET_SETMEM);
+                Y_DEBUG_ABORT_UNLESS(Type == ET_CLEAN || Type == ET_SETDISK || Type == ET_SETMEM);
                 return Type == ET_CLEAN || Type == ET_SETDISK;
             }
 
@@ -173,22 +174,20 @@ namespace NKikimr {
 
             template<typename TProcessor>
             void GetData(const TGlueReads &glueReads, TProcessor&& processor) const {
-                Y_VERIFY_DEBUG(Type == ET_SETDISK || Type == ET_SETMEM);
+                Y_DEBUG_ABORT_UNLESS(Type == ET_SETDISK || Type == ET_SETMEM);
 
                 if (Type == ET_SETMEM) {
                     processor(MemData);
                 } else {
-                    Y_VERIFY_DEBUG(GlueReqIdx != (ui32)-1);
+                    Y_DEBUG_ABORT_UNLESS(GlueReqIdx != (ui32)-1);
                     const TGlueRead &glue = glueReads[GlueReqIdx];
 
-                    Y_VERIFY_DEBUG(glue.Part.ChunkIdx == ActualRead.ChunkIdx &&
+                    Y_DEBUG_ABORT_UNLESS(glue.Part.ChunkIdx == ActualRead.ChunkIdx &&
                                  glue.Part.Offset <= ActualRead.Offset &&
                                  (ActualRead.Offset + ActualRead.Size) <= (glue.Part.Offset + glue.Part.Size));
 
                     if (glue.Success && glue.Data.IsReadable(ActualRead.Offset - glue.Part.Offset, ActualRead.Size)) {
-                        const char *ptr = glue.Data.DataPtr<const char>(ActualRead.Offset - glue.Part.Offset, ActualRead.Size);
-                        const size_t size = ActualRead.Size;
-                        processor(ptr, size);
+                        processor(glue.Data.Substr(ActualRead.Offset - glue.Part.Offset, ActualRead.Size));
                     } else {
                         processor(TReadError());
                     }
@@ -196,7 +195,7 @@ namespace NKikimr {
             }
 
             static bool DiskPartLess(const TDataItem *x, const TDataItem *y) {
-                Y_VERIFY_DEBUG(x->ActualRead.Size && y->ActualRead.Size); // compare items with non-null Part only
+                Y_DEBUG_ABORT_UNLESS(x->ActualRead.Size && y->ActualRead.Size); // compare items with non-null Part only
                 return x->ActualRead < y->ActualRead;
             }
         };
@@ -292,7 +291,7 @@ namespace NKikimr {
             : Ctx(ctx)
             , Result(std::make_shared<TReadBatcherResult>())
         {
-            Y_VERIFY_DEBUG(Ctx->VCtx->Top->GType.TotalPartCount() <= MaxTotalPartCount);
+            Y_DEBUG_ABORT_UNLESS(Ctx->VCtx->Top->GType.TotalPartCount() <= MaxTotalPartCount);
             TmpItems.resize(Ctx->VCtx->Top->GType.TotalPartCount());
         }
 

@@ -39,7 +39,7 @@ namespace NBoot {
             auto *load = step->ConsumeAs<TLoadBlobs>(Pending);
 
             if (load->Cookie < Skip || load->Cookie - Skip >= Queue.size())
-                Y_FAIL("Got TLoadBlobs result cookie out of queue range");
+                Y_ABORT("Got TLoadBlobs result cookie out of queue range");
 
             Queue.at(load->Cookie - Skip).Body = load->Plain();
 
@@ -55,7 +55,7 @@ namespace NBoot {
                 ++Skip, Queue.pop_front();
             }
 
-            Y_VERIFY(Queue || !Pending, "TAlter boot actor has lost entries");
+            Y_ABORT_UNLESS(Queue || !Pending, "TAlter boot actor has lost entries");
 
             if (!Queue) {
                 Env->Finish(this);
@@ -64,24 +64,31 @@ namespace NBoot {
 
         void Apply(const NPageCollection::TLargeGlobId &largeGlobId, TArrayRef<const char> body) noexcept
         {
+            bool rewrite = false;
             if (body) {
                 TProtoBox<NTable::TSchemeChanges> alter(body);
 
                 NTable::TSchemeModifier apply(*Back->Scheme);
 
                 auto changed = apply.Apply(alter);
+                rewrite = alter.GetRewrite();
 
                 if (auto logl = Env->Logger()->Log(ELnLev::Debug)) {
                     logl
                         << NFmt::Do(*Back) << " alter log "
                         << NFmt::TStamp(NTable::TTxStamp(largeGlobId.Lead).Raw)
                         << ", " << (changed ? "update" : "noop")
-                        << " affects " << NFmt::Arr(apply.Affects);
+                        << " affects " << NFmt::Arr(apply.Affects)
+                        << ", is " << (rewrite ? "" : "not a ") << "rewrite";
                 }
             }
 
-            if (auto *logic = Logic->Result().Alter.Get())
+            if (auto *logic = Logic->Result().Alter.Get()) {
+                if (rewrite) {
+                    logic->Clear();
+                }
                 logic->RestoreLog(largeGlobId);
+            }
         }
 
     private:

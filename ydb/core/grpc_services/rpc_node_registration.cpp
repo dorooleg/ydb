@@ -1,11 +1,13 @@
 #include "service_discovery.h"
 
 #include <ydb/core/grpc_services/base/base.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/core/base/feature_flags.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 #include <ydb/core/grpc_services/auth_processor/dynamic_node_auth_processor.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/appdata.h>
+#include <ydb/core/base/nameservice.h>
 #include <ydb/core/mind/node_broker.h>
 #include <ydb/core/protos/node_broker.pb.h>
 #include <ydb/public/api/protos/ydb_discovery.pb.h>
@@ -42,37 +44,24 @@ public:
 
     void Bootstrap(const TActorContext& ctx) {
         auto req = dynamic_cast<TEvNodeRegistrationRequest*>(Request.get());
-        Y_VERIFY(req, "Unexpected request type for TNodeRegistrationRPC");
+        Y_ABORT_UNLESS(req, "Unexpected request type for TNodeRegistrationRPC");
         const TNodeAuthorizationResult nodeAuthorizationResult = IsNodeAuthorized(req->FindClientCert());
         if (!nodeAuthorizationResult.IsAuthorized) {
             SendReplyAndDie(ctx);
         }
 
         auto dinfo = AppData(ctx)->DomainsInfo;
-        ui32 group;
         auto request = TEvNodeRegistrationRequest::GetProtoRequest(Request);
         const TString& domainPath = request->domain_path();
-        if (!domainPath.Empty()) {
-            auto *domain = dinfo->GetDomainByName(domainPath);
-            if (!domain) {
-                auto error = Sprintf("Unknown domain %s", domainPath.data());
-                ReplyWithErrorAndDie(error, ctx);
-                return;
-            }
-            group = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
-        } else {
-            if (dinfo->Domains.size() > 1) {
-                auto error = "Ambiguous domain (specify DomainPath in request)";
-                ReplyWithErrorAndDie(error, ctx);
-                return;
-            }
-            auto domain = dinfo->Domains.begin()->second;
-            group = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
+        if (domainPath && dinfo->GetDomain()->Name != domainPath) {
+            auto error = Sprintf("Unknown domain %s", domainPath.data());
+            ReplyWithErrorAndDie(error, ctx);
+            return;
         }
 
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = {.RetryLimitCount = 10};
-        auto pipe = NTabletPipe::CreateClient(SelfId(), MakeNodeBrokerID(group), pipeConfig);
+        auto pipe = NTabletPipe::CreateClient(SelfId(), MakeNodeBrokerID(), pipeConfig);
         NodeBrokerPipe = ctx.RegisterWithSameMailbox(pipe);
 
         TAutoPtr<TEvNodeBroker::TEvRegistrationRequest> nodeBrokerRequest
@@ -104,6 +93,9 @@ public:
 
         auto request = TEvNodeRegistrationRequest::GetProtoRequest(Request);
         Result.set_node_id(rec.GetNode().GetNodeId());
+        if (rec.GetNode().HasName()) {
+            Result.set_node_name(rec.GetNode().GetName());
+        }
         Result.set_expire(rec.GetNode().GetExpire());
         Result.set_domain_path(request->domain_path());
         CopyNodeInfo(Result.add_nodes(), rec.GetNode());

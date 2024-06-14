@@ -6,7 +6,7 @@
 #include "util_basics.h"
 #include "util_deref.h"
 
-#include <library/cpp/actors/util/shared_data.h>
+#include <ydb/library/actors/util/shared_data.h>
 
 #include <library/cpp/blockcodecs/codecs.h>
 #include <util/generic/buffer.h>
@@ -115,12 +115,12 @@ namespace NPage {
             // right after column entries. Up to caller to decide what kind of data is there
 
             TRowVersion GetMaxVersion(const TPartScheme::TGroupInfo& group) const noexcept {
-                Y_VERIFY_DEBUG(IsErased());
+                Y_DEBUG_ABORT_UNLESS(IsErased());
                 return GetTail<TVersion>(group)->Get();
             }
 
             TRowVersion GetMinVersion(const TPartScheme::TGroupInfo& group) const noexcept {
-                Y_VERIFY_DEBUG(IsVersioned());
+                Y_DEBUG_ABORT_UNLESS(IsVersioned());
                 auto* v = GetTail<TVersion>(group);
                 if (IsErased()) {
                     ++v;
@@ -129,7 +129,7 @@ namespace NPage {
             }
 
             ui64 GetDeltaTxId(const TPartScheme::TGroupInfo& group) const noexcept {
-                Y_VERIFY_DEBUG(IsDelta());
+                Y_DEBUG_ABORT_UNLESS(IsDelta());
                 return GetTail<TDelta>(group)->GetTxId();
             }
 
@@ -175,14 +175,14 @@ namespace NPage {
             Set(raw);
         }
 
-        const auto* Label() const noexcept
+        NPage::TLabel Label() const noexcept
         {
-            return TDeref<const NPage::TLabel>::At(Raw.data());
+            return ReadUnaligned<NPage::TLabel>(Decoded.data());
         }
 
         explicit operator bool() const noexcept
         {
-            return bool(Raw);
+            return bool(Decoded);
         }
 
         const TBlock* operator->() const noexcept
@@ -192,51 +192,61 @@ namespace NPage {
 
         TRowId BaseRow() const noexcept
         {
-            return Raw ? BaseRow_ : Max<TRowId>();
+            return BaseRow_;
         }
 
         TDataPage& Set(const TSharedData *raw = nullptr) noexcept
         {
             Page = { };
 
-            if (Raw = raw ? *raw : TSharedData{ }) {
-                const void* base = Raw.data();
-                auto got = NPage::TLabelWrapper().Read(Raw, EPage::DataPage);
+            if (raw) {
+                const void* base = raw->data();
+                auto data = NPage::TLabelWrapper().Read(*raw, EPage::DataPage);
 
-                Y_VERIFY(got.Version == 1, "Unknown EPage::DataPage version");
+                Y_ABORT_UNLESS(data.Version == 1, "Unknown EPage::DataPage version");
 
-                if (got.Codec != ECodec::Plain) {
+                if (data.Codec != ECodec::Plain) {
                     /* Compressed, should convert to regular page */
 
-                    Y_VERIFY(got == ECodec::LZ4, "Only LZ4 encoding allowed");
+                    Y_ABORT_UNLESS(data == ECodec::LZ4, "Only LZ4 encoding allowed");
 
                     Codec = Codec ? Codec : NBlockCodecs::Codec("lz4fast");
-                    auto size = Codec->DecompressedLength(got.Page);
+                    auto size = Codec->DecompressedLength(data.Page);
 
                     // We expect original page had the same label size as a compressed page
-                    size_t labelSize = reinterpret_cast<const char*>(got.Page.data()) - reinterpret_cast<const char*>(base);
+                    size_t labelSize = reinterpret_cast<const char*>(data.Page.data()) - reinterpret_cast<const char*>(base);
 
-                    Decoded.Resize(labelSize + size);
+                    Decoded = TSharedData::Uninitialized(labelSize + size);
 
-                    size = Codec->Decompress(got.Page, Decoded.Begin() + labelSize);
+                    size = Codec->Decompress(data.Page, Decoded.mutable_begin() + labelSize);
 
-                    Decoded.Resize(labelSize + size);
-                    ::memset(Decoded.Begin(), 0, labelSize);
+                    Decoded.TrimBack(labelSize + size);
+                    ::memcpy(Decoded.mutable_begin(), base, labelSize);
 
-                    base = Decoded.Begin();
-                    got.Page = { Decoded.Begin() + labelSize, Decoded.End() };
+                    base = Decoded.begin();
+                    data.Page = { Decoded.begin() + labelSize, Decoded.end() };
+                } else {
+                    Decoded = *raw;
                 }
 
-                auto *hdr = TDeref<TRecordsHeader>::At(got.Page.data(), 0);
-                auto skip = got.Page.size() - hdr->Records * sizeof(TPgSize);
+                auto *recordsHeader = TDeref<TRecordsHeader>::At(data.Page.data(), 0);
+                auto count = recordsHeader->Count;
 
-                BaseRow_ = TDeref<const TExtra>::At(hdr + 1, 0)->BaseRow;
+                BaseRow_ = TDeref<const TExtra>::At(recordsHeader + 1, 0)->BaseRow;
                 Page.Base = base;
-                Page.Array = TDeref<const TRecordsEntry>::At(hdr, skip);
-                Page.Records = hdr->Records;
+                auto offsetsOffset = data.Page.size() - count * sizeof(TPgSize);
+                Page.Offsets = TDeref<const TRecordsEntry>::At(recordsHeader, offsetsOffset);
+                Page.Count = count;
+            } else {
+                Decoded = {};
+                BaseRow_ = Max<TRowId>();
             }
 
             return *this;
+        }
+
+        const TSharedData& GetData() const noexcept {
+            return Decoded;
         }
 
         TIter LookupKey(TCells key, const TPartScheme::TGroupInfo &group,
@@ -320,8 +330,7 @@ namespace NPage {
     private:
         using ICodec = NBlockCodecs::ICodec;
 
-        TBuffer Decoded;
-        TSharedData Raw;
+        TSharedData Decoded;
         TBlock Page;
         TRowId BaseRow_ = Max<TRowId>();
         const ICodec *Codec = nullptr;

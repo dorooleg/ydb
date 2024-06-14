@@ -7,7 +7,7 @@
 
 #include <ydb/core/tx/datashard/datashard.h>
 
-#include <library/cpp/actors/core/actorid.h>
+#include <ydb/library/actors/core/actorid.h>
 #include <util/generic/hash.h>
 #include <util/generic/hash_set.h>
 
@@ -19,7 +19,7 @@ struct TNotifications {
     THashSet<TActorId> Actors;
 
     void Add(const TActorId& actor, TTxId txId) {
-        Y_VERIFY(!TxId || TxId == txId);
+        Y_ABORT_UNLESS(!TxId || TxId == txId);
         TxId = txId;
         Actors.insert(actor);
     }
@@ -110,7 +110,7 @@ struct TTxState {
         item(TxDropSequence, 64) \
         item(TxCreateReplication, 65) \
         item(TxAlterReplication, 66) \
-        item(TxDropReplication, 67) \
+        item(TxDropReplicationCascade, 67) \
         item(TxCreateBlobDepot, 68) \
         item(TxAlterBlobDepot, 69) \
         item(TxDropBlobDepot, 70) \
@@ -126,6 +126,11 @@ struct TTxState {
         item(TxCreateExternalDataSource, 80) \
         item(TxDropExternalDataSource, 81) \
         item(TxAlterExternalDataSource, 82) \
+        item(TxCreateView, 83) \
+        item(TxAlterView, 84) \
+        item(TxDropView, 85) \
+        item(TxCopySequence, 86) \
+        item(TxDropReplication, 87) \
 
     // TX_STATE_TYPE_ENUM
 
@@ -189,6 +194,9 @@ struct TTxState {
         item(DeletePrivateShards, 135, "") \
         item(WaitShadowPathPublication, 136, "") \
         item(DeletePathBarrier, 137, "") \
+        item(SyncHive, 138, "") \
+        item(CopyTableBarrier, 139, "") \
+        item(ProposedCopySequence, 140, "") \
         item(Done, 240, "") \
         item(Aborted, 250, "")
 
@@ -255,6 +263,8 @@ struct TTxState {
 
     // persist - TxShards:
     TVector<TShardOperation> Shards; // shards + operations on them
+    bool NeedUpdateObject = false;
+    bool NeedSyncHive = false;
     // not persist:
     THashSet<TShardIdx> ShardsInProgress; // indexes of datashards or pqs that operation waits for
     THashMap<TShardIdx, std::pair<TActorId, ui32>> SchemeChangeNotificationReceived;
@@ -335,6 +345,8 @@ struct TTxState {
         case TxCreateBlobDepot:
         case TxCreateExternalTable:
         case TxCreateExternalDataSource:
+        case TxCreateView:
+        case TxCopySequence:
             return true;
         case TxInitializeBuildIndex: //this is more like alter
         case TxCreateCdcStreamAtTable:
@@ -363,10 +375,12 @@ struct TTxState {
         case TxDropCdcStreamAtTableDropSnapshot:
         case TxDropSequence:
         case TxDropReplication:
+        case TxDropReplicationCascade:
         case TxDropBlobDepot:
         case TxUpdateMainTableOnIndexMove:
         case TxDropExternalTable:
         case TxDropExternalDataSource:
+        case TxDropView:
             return false;
         case TxAlterPQGroup:
         case TxAlterTable:
@@ -397,12 +411,13 @@ struct TTxState {
         case TxAlterBlobDepot:
         case TxAlterExternalTable:
         case TxAlterExternalDataSource:
+        case TxAlterView:
             return false;
         case TxMoveTable:
         case TxMoveTableIndex:
             return true;
         case TxInvalid:
-            Y_VERIFY_DEBUG("UNREACHABLE");
+            Y_DEBUG_ABORT_UNLESS("UNREACHABLE");
             Y_UNREACHABLE();
         }
     }
@@ -425,9 +440,11 @@ struct TTxState {
         case TxDropCdcStream:
         case TxDropSequence:
         case TxDropReplication:
+        case TxDropReplicationCascade:
         case TxDropBlobDepot:
         case TxDropExternalTable:
         case TxDropExternalDataSource:
+        case TxDropView:
             return true;
         case TxMkDir:
         case TxCreateTable:
@@ -461,6 +478,8 @@ struct TTxState {
         case TxUpdateMainTableOnIndexMove:
         case TxCreateExternalTable:
         case TxCreateExternalDataSource:
+        case TxCreateView:
+        case TxCopySequence:
             return false;
         case TxAlterPQGroup:
         case TxAlterTable:
@@ -491,12 +510,13 @@ struct TTxState {
         case TxAlterBlobDepot:
         case TxAlterExternalTable:
         case TxAlterExternalDataSource:
+        case TxAlterView:
             return false;
         case TxMoveTable:
         case TxMoveTableIndex:
             return false;
         case TxInvalid:
-            Y_VERIFY_DEBUG("UNREACHABLE");
+            Y_DEBUG_ABORT_UNLESS("UNREACHABLE");
             Y_UNREACHABLE();
         }
     }
@@ -519,6 +539,7 @@ struct TTxState {
         case TxDropCdcStream:
         case TxDropSequence:
         case TxDropReplication:
+        case TxDropReplicationCascade:
         case TxDropBlobDepot:
             return true;
         case TxDropTableIndex:
@@ -526,6 +547,7 @@ struct TTxState {
         case TxFinalizeBuildIndex:
         case TxDropExternalTable:
         case TxDropExternalDataSource:
+        case TxDropView:
             return false;
         case TxMkDir:
         case TxCreateTable:
@@ -546,6 +568,7 @@ struct TTxState {
         case TxCreateCdcStreamAtTable:
         case TxCreateCdcStreamAtTableWithInitialScan:
         case TxCreateSequence:
+        case TxCopySequence:
         case TxCreateReplication:
         case TxCreateBlobDepot:
         case TxInitializeBuildIndex:
@@ -557,6 +580,7 @@ struct TTxState {
         case TxUpdateMainTableOnIndexMove:
         case TxCreateExternalTable:
         case TxCreateExternalDataSource:
+        case TxCreateView:
             return false;
         case TxAlterPQGroup:
         case TxAlterTable:
@@ -588,9 +612,10 @@ struct TTxState {
         case TxAlterBlobDepot:
         case TxAlterExternalTable:
         case TxAlterExternalDataSource:
+        case TxAlterView:
             return false;
         case TxInvalid:
-            Y_VERIFY_DEBUG("UNREACHABLE");
+            Y_DEBUG_ABORT_UNLESS("UNREACHABLE");
             Y_UNREACHABLE();
         }
     }
@@ -675,6 +700,7 @@ struct TTxState {
             case NKikimrSchemeOp::ESchemeOpCreateReplication: return TxCreateReplication;
             case NKikimrSchemeOp::ESchemeOpAlterReplication: return TxAlterReplication;
             case NKikimrSchemeOp::ESchemeOpDropReplication: return TxDropReplication;
+            case NKikimrSchemeOp::ESchemeOpDropReplicationCascade: return TxDropReplicationCascade;
             case NKikimrSchemeOp::ESchemeOpCreateBlobDepot: return TxCreateBlobDepot;
             case NKikimrSchemeOp::ESchemeOpAlterBlobDepot: return TxAlterBlobDepot;
             case NKikimrSchemeOp::ESchemeOpDropBlobDepot: return TxDropBlobDepot;
@@ -685,6 +711,9 @@ struct TTxState {
             case NKikimrSchemeOp::ESchemeOpAlterExternalTable: return TxAlterExternalTable;
             case NKikimrSchemeOp::ESchemeOpCreateExternalDataSource: return TxCreateExternalDataSource;
             case NKikimrSchemeOp::ESchemeOpAlterExternalDataSource: return TxAlterExternalDataSource;
+            case NKikimrSchemeOp::ESchemeOpCreateView: return TxCreateView;
+            case NKikimrSchemeOp::ESchemeOpAlterView: return TxAlterView;
+            case NKikimrSchemeOp::ESchemeOpDropView: return TxDropView;
             default: return TxInvalid;
         }
     }

@@ -5,17 +5,20 @@
 #include <ydb/core/tx/tx_processing.h>
 
 #include <ydb/core/actorlib_impl/long_timer.h>
+#include <ydb/core/protos/stream.pb.h>
 #include <ydb/core/base/path.h>
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/scheme/scheme_borders.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
 #include <ydb/core/engine/mkql_proto.h>
 
+#include <ydb/library/yql/core/issue/yql_issue.h>
+#include <ydb/library/yql/core/issue/protos/issue_id.pb.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue_manager.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/stream/trace.h>
 
@@ -90,11 +93,13 @@ namespace {
     bool ParseRangeKey(
             const NKikimrMiniKQL::TParams& proto,
             TConstArrayRef<NScheme::TTypeInfo> keyTypes,
+            const TVector<bool>& notNullTypes,
             TSerializedCellVec& buf,
             EParseRangeKeyExp exp,
             TVector<TString>& unresolvedKeys)
     {
         TVector<TCell> key;
+        TVector<TString> memoryOwner;
         if (proto.HasValue()) {
             if (!proto.HasType()) {
                 unresolvedKeys.push_back("No type was specified in the range key tuple");
@@ -104,7 +109,7 @@ namespace {
             auto& value = proto.GetValue();
             auto& type = proto.GetType();
             TString errStr;
-            bool res = NMiniKQL::CellsFromTuple(&type, value, keyTypes, true, key, errStr);
+            bool res = NMiniKQL::CellsFromTuple(&type, value, keyTypes, notNullTypes, true, key, errStr, memoryOwner);
             if (!res) {
                 unresolvedKeys.push_back("Failed to parse range key tuple: " + errStr);
                 return false;
@@ -119,7 +124,7 @@ namespace {
                 break;
         }
 
-        buf.Parse(TSerializedCellVec::Serialize(key));
+        buf = TSerializedCellVec(key);
         return true;
     }
 
@@ -131,7 +136,7 @@ namespace {
                 continue;
             }
 
-            Y_VERIFY(entry.DomainInfo);
+            Y_ABORT_UNLESS(entry.DomainInfo);
 
             if (!domainInfo) {
                 domainInfo = entry.DomainInfo;
@@ -280,6 +285,7 @@ private:
         ui64 Reserved = 0;
         ui64 Allocated = 0;
         ui64 MessageSize = 0;
+        ui64 MessageRows = 0;
     };
 
 public:
@@ -370,8 +376,8 @@ private:
     void Die(const TActorContext& ctx) override {
         if (TxId == 0) {
             // We are not fully initialized yet
-            Y_VERIFY(!ResolveInProgress);
-            Y_VERIFY(!ShardMap);
+            Y_ABORT_UNLESS(!ResolveInProgress);
+            Y_ABORT_UNLESS(!ShardMap);
             return TBase::Die(ctx);
         }
 
@@ -514,7 +520,7 @@ private:
         auto& res = resp->ResultSet[0];
         TableId = res.TableId;
         DomainInfo = res.DomainInfo;
-        Y_VERIFY(DomainInfo, "Missing DomainInfo in TEvNavigateKeySetResult");
+        Y_ABORT_UNLESS(DomainInfo, "Missing DomainInfo in TEvNavigateKeySetResult");
 
         if (TableId.IsSystemView() ||
             TSysTables::IsSystemTable(TableId))
@@ -529,16 +535,20 @@ private:
         }
 
         TVector<NScheme::TTypeInfo> keyTypes(res.Columns.size());
+        TVector<bool> notNullKeys(res.Columns.size());
         TVector<TKeyDesc::TColumnOp> columns(res.Columns.size());
         {
             size_t no = 0;
             size_t keys = 0;
+
+            const auto& notNullColumns = res.NotNullColumns;
 
             for (auto &entry : res.Columns) {
                 auto& col = entry.second;
 
                 if (col.KeyOrder != -1) {
                     keyTypes[col.KeyOrder] = col.PType;
+                    notNullKeys[col.KeyOrder] = notNullColumns.contains(col.Name);
                     ++keys;
                 }
 
@@ -559,6 +569,7 @@ private:
             }
 
             keyTypes.resize(keys);
+            notNullKeys.resize(keys);
         }
 
         if (!colNameToPos.empty()) {
@@ -590,9 +601,9 @@ private:
                 ? (toInclusive ? EParseRangeKeyExp::NONE : EParseRangeKeyExp::TO_NULL)
                 : EParseRangeKeyExp::NONE);
 
-        if (!ParseRangeKey(Settings.KeyRange.GetFrom(), keyTypes,
+        if (!ParseRangeKey(Settings.KeyRange.GetFrom(), keyTypes, notNullKeys,
                         KeyFromValues, fromExpand, UnresolvedKeys) ||
-            !ParseRangeKey(Settings.KeyRange.GetTo(), keyTypes,
+            !ParseRangeKey(Settings.KeyRange.GetTo(), keyTypes, notNullKeys,
                         KeyToValues, toExpand, UnresolvedKeys))
         {
             TxProxyMon->ResolveKeySetWrongRequest->Inc();
@@ -641,7 +652,7 @@ private:
     }
 
     void SendResolveKeySet(const TActorContext& ctx) {
-        Y_VERIFY(!ResolveInProgress, "Only one resolve request may be active at a time");
+        Y_ABORT_UNLESS(!ResolveInProgress, "Only one resolve request may be active at a time");
 
         auto request = MakeHolder<NSchemeCache::TSchemeCacheRequest>();
         request->DomainOwnerId = DomainInfo->ExtractSchemeShard();
@@ -657,7 +668,7 @@ private:
     }
 
     void HandleResolve(TEvTxProxySchemeCache::TEvResolveKeySetResult::TPtr& ev, const TActorContext& ctx) {
-        Y_VERIFY(ResolveInProgress, "Received TEvResolveKeySetResult without an active request");
+        Y_ABORT_UNLESS(ResolveInProgress, "Received TEvResolveKeySetResult without an active request");
         ResolveInProgress = false;
 
         WallClockResolved = Now();
@@ -774,7 +785,7 @@ private:
                 std::piecewise_construct,
                 std::forward_as_tuple(shardId),
                 std::forward_as_tuple(shardId));
-            Y_VERIFY_DEBUG(inserted, "Duplicate shard %" PRIu64 " after keys resolve", shardId);
+            Y_DEBUG_ABORT_UNLESS(inserted, "Duplicate shard %" PRIu64 " after keys resolve", shardId);
 
             auto& state = it->second;
             auto& range = state.Ranges.emplace_back();
@@ -849,6 +860,16 @@ private:
         state.AffectedFlags |= AffectedRead;
         state.State = EShardState::SnapshotProposeSent;
         ++TabletsToPrepare;
+    }
+
+    void RaiseShardOverloaded(const NKikimrTxDataShard::TEvProposeTransactionResult& record, ui64 shardId) {
+        auto issue = NYql::YqlIssue({}, NYql::TIssuesIds::KIKIMR_OVERLOADED, TStringBuilder()
+            << "Shard " << shardId << " is overloaded");
+        for (const auto& err : record.GetError()) {
+            issue.AddSubIssue(new NYql::TIssue(TStringBuilder()
+                << "[" << err.GetKind() << "] " << err.GetReason()));
+        }
+        IssueManager.RaiseIssue(std::move(issue));
     }
 
     void HandlePrepare(TEvDataShard::TEvProposeTransactionResult::TPtr& ev, const TActorContext& ctx) {
@@ -971,6 +992,7 @@ private:
                 TxProxyMon->TxResultShardOverloaded->Inc();
                 status = TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyShardOverloaded;
                 code = NKikimrIssues::TStatusIds::OVERLOADED;
+                RaiseShardOverloaded(record, shardId);
                 break;
             case NKikimrTxDataShard::TEvProposeTransactionResult::EXEC_ERROR:
                 TxProxyMon->TxResultExecError->Inc();
@@ -1068,7 +1090,7 @@ private:
 
     void ExtractDatashardErrors(const NKikimrTxDataShard::TEvProposeTransactionResult& record) {
         for (const auto &er : record.GetError()) {
-            DatashardErrors << "[" << NKikimrTxDataShard::TError_EKind_Name(er.GetKind()) << "] " << er.GetReason() << Endl;
+            DatashardErrors << "[" << er.GetKind() << "] " << er.GetReason() << Endl;
         }
 
         ComplainingDatashards.push_back(record.GetOrigin());
@@ -1150,7 +1172,7 @@ private:
         Y_UNUSED(shardId);
 
         ++TabletPrepareErrors;
-        Y_VERIFY_DEBUG(TabletsToPrepare > 0);
+        Y_DEBUG_ABORT_UNLESS(TabletsToPrepare > 0);
         if (!--TabletsToPrepare) {
             TxProxyMon->MarkShardError->Inc();
             TXLOG_E("Gathered all snapshot propose results, TabletPrepareErrors# " << TabletPrepareErrors);
@@ -1194,7 +1216,7 @@ private:
             ReportStatus(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyPrepared, NKikimrIssues::TStatusIds::TRANSIENT, false, ctx);
         }
 
-        Y_VERIFY(SelectedCoordinator, "Unexpected null SelectedCoordinator");
+        Y_ABORT_UNLESS(SelectedCoordinator, "Unexpected null SelectedCoordinator");
 
         auto req = MakeHolder<TEvTxProxy::TEvProposeTransaction>(
             SelectedCoordinator, TxId, 0, AggrMinStep, AggrMaxStep);
@@ -1296,7 +1318,7 @@ private:
                 "Received TEvProposeTransactionResult from unexpected shardId# " << shardId);
         auto& state = it->second;
 
-        Y_VERIFY_DEBUG(state.State == EShardState::SnapshotPlanned);
+        Y_DEBUG_ABORT_UNLESS(state.State == EShardState::SnapshotPlanned);
 
         if (msg->GetTxId() != TxId) {
             TXLOG_E("Unexpected TEvProposeTransactionResult (snapshot tx) TxId# " << msg->GetTxId() << " expected " << TxId);
@@ -1365,7 +1387,7 @@ private:
     void HandleReadTable(TEvTxUserProxy::TEvAllocateTxIdResult::TPtr& ev, const TActorContext& ctx) {
         TXLOG_D("Allocated a new ReadTxId# " << ev->Get()->TxId);
 
-        Y_VERIFY(AllocatingReadTxId);
+        Y_ABORT_UNLESS(AllocatingReadTxId);
         CurrentReadTxId = ev->Get()->TxId;
         AllocatingReadTxId = false;
 
@@ -1375,7 +1397,7 @@ private:
             if (state.State == EShardState::ReadTableNeedTxId) {
                 SendReadTablePropose(state, ctx);
                 // Sanity check, this new tx id must have never been used by this shard before
-                Y_VERIFY(state.State == EShardState::ReadTableProposeSent);
+                Y_ABORT_UNLESS(state.State == EShardState::ReadTableProposeSent);
             }
         }
     }
@@ -1390,7 +1412,7 @@ private:
 
         if (state.ReadTxId && state.ReadTxId == CurrentReadTxId) {
             // CurrentReadTxId cannot be reused, must allocate a new one
-            Y_VERIFY(!AllocatingReadTxId);
+            Y_ABORT_UNLESS(!AllocatingReadTxId);
             CurrentReadTxId = 0;
         }
 
@@ -1526,10 +1548,10 @@ private:
 
         // In ordered mode we always read from the first shard in the list
         if (Settings.Ordered) {
-            Y_VERIFY(ShardList, "Unexpected empty shard list");
+            Y_ABORT_UNLESS(ShardList, "Unexpected empty shard list");
             auto& state = *ShardList.front();
 
-            Y_VERIFY(state.State != EShardState::Finished && state.State != EShardState::Error,
+            Y_ABORT_UNLESS(state.State != EShardState::Finished && state.State != EShardState::Error,
                 "Unexpected state in shard list");
 
             if (state.State == EShardState::ReadTableClearancePending) {
@@ -1542,11 +1564,11 @@ private:
         size_t limit = cfg.GetMaxStreamingShards();
         while (StreamingShards.size() < limit && ClearancePendingShards) {
             auto first = ClearancePendingShards.begin();
-            Y_VERIFY(first != ClearancePendingShards.end());
+            Y_ABORT_UNLESS(first != ClearancePendingShards.end());
 
             const ui64 shardId = *first;
             auto it = ShardMap.find(shardId);
-            Y_VERIFY(it != ShardMap.end());
+            Y_ABORT_UNLESS(it != ShardMap.end());
             auto& state = it->second;
 
             StartStreaming(state, ctx);
@@ -1554,11 +1576,11 @@ private:
     }
 
     void StartStreaming(TShardState& state, const TActorContext& ctx) {
-        Y_VERIFY(state.State == EShardState::ReadTableClearancePending);
+        Y_ABORT_UNLESS(state.State == EShardState::ReadTableClearancePending);
 
         ui64 shardId = state.ShardId;
-        Y_VERIFY(ClearancePendingShards.contains(shardId));
-        Y_VERIFY(!StreamingShards.contains(shardId));
+        Y_ABORT_UNLESS(ClearancePendingShards.contains(shardId));
+        Y_ABORT_UNLESS(!StreamingShards.contains(shardId));
 
         auto response = MakeHolder<TEvTxProcessing::TEvStreamClearanceResponse>();
         response->Record.SetTxId(state.ReadTxId);
@@ -1600,7 +1622,7 @@ private:
                 TXLOG_T("Ignore propose result from ShardId# " << shardId << " TxId# " << msg->GetTxId()
                         << " in State# " << state.State << " ReadTxId# " << state.ReadTxId);
                 // Pretend we don't exist if sender tracks delivery
-                ctx.Send(IEventHandle::ForwardOnNondelivery(ev, TEvents::TEvUndelivered::ReasonActorUnknown));
+                ctx.Send(IEventHandle::ForwardOnNondelivery(std::move(ev), TEvents::TEvUndelivered::ReasonActorUnknown));
                 return;
         }
 
@@ -1697,10 +1719,11 @@ private:
 
         TxProxyMon->ReportStatusStreamData->Inc();
         ctx.Send(Settings.Owner, x.Release(), 0, Settings.Cookie);
+
         SentResultSet = true;
 
         if (state.QuotaReserved > 0) {
-            Y_VERIFY(Quota.Reserved > 0 && Quota.Allocated > 0);
+            Y_ABORT_UNLESS(Quota.Reserved > 0 && Quota.Allocated > 0);
             --Quota.Reserved;
             --Quota.Allocated;
             --state.QuotaReserved;
@@ -1750,7 +1773,7 @@ private:
                     }
                 }
                 bool ok = res.SerializeToString(&data);
-                Y_VERIFY(ok, "Unexpected failure to serialize Ydb::ResultSet");
+                Y_ABORT_UNLESS(ok, "Unexpected failure to serialize Ydb::ResultSet");
                 apiVersion = NKikimrTxUserProxy::TReadTableTransaction::YDB_V1;
                 break;
             }
@@ -1797,7 +1820,7 @@ private:
             // We no longer need this shard, remove it
             // N.B. it's technically quadratic, but there are usually not many shards
             auto shardPos = std::exchange(state.ShardPosition, ShardList.end());
-            Y_VERIFY(shardPos != ShardList.end());
+            Y_ABORT_UNLESS(shardPos != ShardList.end());
             ShardList.erase(shardPos);
 
             if (ShardList.empty()) {
@@ -1936,6 +1959,7 @@ private:
 
                 status = TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ProxyShardOverloaded;
                 code = NKikimrIssues::TStatusIds::OVERLOADED;
+                RaiseShardOverloaded(record, state.ShardId);
                 break;
 
             case NKikimrTxDataShard::TEvProposeTransactionResult::EXEC_ERROR:
@@ -1992,7 +2016,7 @@ private:
         if (state.State != EShardState::ReadTableStreaming || state.ReadTxId != record.GetTxId()) {
             // Ignore outdated messages and pretend we don't exist
             TXLOG_T("Ignoring outdated TEvStreamQuotaRequest from ShardId# " << shardId);
-            ctx.Send(IEventHandle::ForwardOnNondelivery(ev, TEvents::TEvUndelivered::ReasonActorUnknown));
+            ctx.Send(IEventHandle::ForwardOnNondelivery(std::move(ev), TEvents::TEvUndelivered::ReasonActorUnknown));
             return;
         }
 
@@ -2019,9 +2043,11 @@ private:
 
         Quota.Allocated += record.GetReservedMessages();
         Quota.MessageSize = record.GetMessageSizeLimit();
+        Quota.MessageRows = record.GetMessageRowsLimit();
 
         TXLOG_D("Updated quotas, allocated = " << Quota.Allocated
                 << ", message size = " << Quota.MessageSize
+                << ", message rows = " << Quota.MessageRows
                 << ", available = " << (Quota.Allocated - Quota.Reserved));
 
         ProcessQuotaRequests(ctx);
@@ -2041,7 +2067,7 @@ private:
         if (state.State != EShardState::ReadTableStreaming || state.ReadTxId != record.GetTxId()) {
             // Ignore outdated messages and pretend we don't exist
             TXLOG_T("Ignoring outdated TEvStreamQuotaRelease from ShardId# " << shardId);
-            ctx.Send(IEventHandle::ForwardOnNondelivery(ev, TEvents::TEvUndelivered::ReasonActorUnknown));
+            ctx.Send(IEventHandle::ForwardOnNondelivery(std::move(ev), TEvents::TEvUndelivered::ReasonActorUnknown));
             return;
         }
 
@@ -2074,10 +2100,10 @@ private:
             // Select some shard that requested a quota
             // TODO: prioritize it in some way (e.g. for maximum spread)
             auto quotaIt = QuotaNeeded.begin();
-            Y_VERIFY(quotaIt != QuotaNeeded.end());
+            Y_ABORT_UNLESS(quotaIt != QuotaNeeded.end());
             const ui64 shardId = *quotaIt;
             auto it = ShardMap.find(shardId);
-            Y_VERIFY(it != ShardMap.end());
+            Y_ABORT_UNLESS(it != ShardMap.end());
             auto& state = it->second;
 
             Y_VERIFY_S(state.State == EShardState::ReadTableStreaming && state.QuotaRequests > 0,
@@ -2090,6 +2116,7 @@ private:
             response->Record.SetTxId(state.ReadTxId);
             response->Record.SetReservedMessages(available);
             response->Record.SetMessageSizeLimit(Quota.MessageSize);
+            response->Record.SetMessageRowsLimit(Quota.MessageRows);
             if (RemainingRows != Max<ui64>()) {
                 response->Record.SetRowLimit(RemainingRows);
             }
@@ -2110,7 +2137,7 @@ private:
         // Currently reserved quota becomes available to other shards
         auto released = std::exchange(state.QuotaReserved, 0);
         if (released > 0) {
-            Y_VERIFY(Quota.Reserved >= released);
+            Y_ABORT_UNLESS(Quota.Reserved >= released);
             Quota.Reserved -= released;
             TXLOG_D("Released quota " << released << " reserved messages from ShardId# " << shardId);
         }
@@ -2121,6 +2148,7 @@ private:
             response->Record.SetTxId(state.ReadTxId);
             response->Record.SetReservedMessages(0);
             response->Record.SetMessageSizeLimit(Quota.MessageSize);
+            response->Record.SetMessageRowsLimit(Quota.MessageRows);
             ctx.Send(state.QuotaActor, response.Release());
         }
 
@@ -2217,7 +2245,7 @@ private:
     bool ScheduleShardRetry(TShardState& state, const TActorContext& ctx) {
         const ui64 shardId = state.ShardId;
 
-        Y_VERIFY(state.State != EShardState::ReadTableNeedRetry);
+        Y_ABORT_UNLESS(state.State != EShardState::ReadTableNeedRetry);
         state.State = EShardState::ReadTableNeedRetry;
         state.RetrySeqNo++;
 
@@ -2268,7 +2296,7 @@ private:
         const auto* msg = ev->Get();
         const ui64 shardId = msg->ShardId;
         auto it = ShardMap.find(shardId);
-        Y_VERIFY(it != ShardMap.end());
+        Y_ABORT_UNLESS(it != ShardMap.end());
         auto& state = it->second;
 
         if (state.RetrySeqNo != msg->SeqNo || state.State != EShardState::ReadTableNeedRetry) {
@@ -2324,7 +2352,7 @@ private:
         const auto* msg = ev->Get();
         const ui64 shardId = msg->ShardId;
         auto it = ShardMap.find(shardId);
-        Y_VERIFY(it != ShardMap.end());
+        Y_ABORT_UNLESS(it != ShardMap.end());
         auto& state = it->second;
 
         if (state.RefreshSeqNo != msg->SeqNo || (
@@ -2392,7 +2420,7 @@ private:
                             std::piecewise_construct,
                             std::forward_as_tuple(nextId),
                             std::forward_as_tuple(nextId));
-                        Y_VERIFY(inserted);
+                        Y_ABORT_UNLESS(inserted);
                         nextIt = newIt;
                     }
                     auto& nextState = nextIt->second;
@@ -2418,10 +2446,10 @@ private:
     }
 
     void HandleResolveShards(const TActorContext& ctx) {
-        Y_VERIFY(ResolveShardsScheduled);
+        Y_ABORT_UNLESS(ResolveShardsScheduled);
         ResolveShardsScheduled = false;
 
-        Y_VERIFY(!ResolveInProgress);
+        Y_ABORT_UNLESS(!ResolveInProgress);
 
         auto updatedKeyDesc = MakeHolder<TKeyDesc>(
                 TableId, KeyDesc->Range, TKeyDesc::ERowOperation::Read,
@@ -2438,7 +2466,7 @@ private:
     }
 
     void HandleReadTable(TEvTxProxySchemeCache::TEvResolveKeySetResult::TPtr& ev, const TActorContext& ctx) {
-        Y_VERIFY(ResolveInProgress, "Received TEvResolveKeySetResult without an active request");
+        Y_ABORT_UNLESS(ResolveInProgress, "Received TEvResolveKeySetResult without an active request");
         ResolveInProgress = false;
 
         TXLOG_D("Received TEvResolveKeySetResult update for table '" << Settings.TablePath << "'");
@@ -2487,7 +2515,7 @@ private:
             return ReplyAndDie(TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::WrongRequest, NKikimrIssues::TStatusIds::BAD_REQUEST, ctx);
         }
 
-        Y_VERIFY(ShardList, "Unexpected empty shard list");
+        Y_ABORT_UNLESS(ShardList, "Unexpected empty shard list");
 
         // WARNING: we must work correctly even when ResolveKeySet flip-flops
         // between resolved partitions in some very unfortunate edge cases.
@@ -2505,7 +2533,7 @@ private:
             }
         };
 
-        Y_VERIFY(!ShardList, "Unexpected non-empty shard list");
+        Y_ABORT_UNLESS(!ShardList, "Unexpected non-empty shard list");
 
         THashSet<TShardState*> removed;
 
@@ -2576,7 +2604,7 @@ private:
 
             if (oldShard == &state) {
                 TXLOG_T("Moving existing shard ShardId# " << state.ShardId << " to new shard list");
-                Y_VERIFY(!state.Ranges.empty(), "Re-adding an empty shard!");
+                Y_ABORT_UNLESS(!state.Ranges.empty(), "Re-adding an empty shard!");
                 // Move this shard to new shard list without range changes
                 state.ShardPosition = ShardList.insert(ShardList.end(), &state);
                 // If shard is currently in a finished state, it means some
@@ -2705,13 +2733,13 @@ private:
             HFunc(TEvTxProxySchemeCache::TEvResolveKeySetResult, HandleZombieDie);
             default:
                 // For all other events we play dead as if we didn't exist
-                Send(IEventHandle::ForwardOnNondelivery(ev, TEvents::TEvUndelivered::ReasonActorUnknown));
+                Send(IEventHandle::ForwardOnNondelivery(std::move(ev), TEvents::TEvUndelivered::ReasonActorUnknown));
                 break;
         }
     }
 
     void HandleZombieDie(TEvTxProxySchemeCache::TEvResolveKeySetResult::TPtr&, const TActorContext& ctx) {
-        Y_VERIFY(ResolveInProgress, "Received TEvResolveKeySetResult without an active request");
+        Y_ABORT_UNLESS(ResolveInProgress, "Received TEvResolveKeySetResult without an active request");
         ResolveInProgress = false;
 
         // It is finally safe to die

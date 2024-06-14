@@ -1,7 +1,7 @@
 #include "backup_restore_traits.h"
 
 #include <ydb/core/protos/flat_scheme_op.pb.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 
 #include <util/generic/hash.h>
 #include <util/string/cast.h>
@@ -29,7 +29,7 @@ bool TryCodecFromTask(const NKikimrSchemeOp::TBackupTask& task, ECompressionCode
 
 ECompressionCodec CodecFromTask(const NKikimrSchemeOp::TBackupTask& task) {
     ECompressionCodec codec;
-    Y_VERIFY(TryCodecFromTask(task, codec));
+    Y_ABORT_UNLESS(TryCodecFromTask(task, codec));
     return codec;
 }
 

@@ -4,6 +4,7 @@
 #include "blobstorage_hullcompactworker.h"
 #include <ydb/core/blobstorage/vdisk/hullop/blobstorage_hullload.h>
 #include <ydb/core/blobstorage/vdisk/huge/blobstorage_hullhuge.h>
+#include <library/cpp/random_provider/random_provider.h>
 
 #include <util/generic/queue.h>
 
@@ -118,10 +119,7 @@ namespace NKikimr {
             BarriersSnap.Destroy();
 
             // build handoff map (use LevelSnap by ref)
-            auto hProxyAid = Hmp->BuildMap(ctx, LevelSnap, It, ctx.SelfID);
-            if (hProxyAid) {
-                ActiveActors.Insert(hProxyAid);
-            }
+            Hmp->BuildMap(LevelSnap, It);
 
             // build gc map (use LevelSnap by ref)
             Gcmp->BuildMap(ctx, brs, LevelSnap, It);
@@ -142,7 +140,7 @@ namespace NKikimr {
             // there are events, we send them to yard; worker internally controls all in flight limits and does not
             // generate more events than allowed; this function returns boolean status indicating whether compaction job
             // is finished or not
-            const bool done = Worker.MainCycle(MsgsForYard, ctx);
+            const bool done = Worker.MainCycle(MsgsForYard);
             // check if there are messages we have for yard
             for (std::unique_ptr<IEventBase>& msg : MsgsForYard) {
                 ctx.Send(PDiskCtx->PDiskId, msg.release());
@@ -151,7 +149,7 @@ namespace NKikimr {
             MsgsForYard.clear();
             // when done, continue with other state
             if (done) {
-                SwitchToWaitForHandoff(ctx);
+                Finalize(ctx);
             }
         }
 
@@ -169,6 +167,7 @@ namespace NKikimr {
         // the same logic for every yard response: apply response and restart main cycle
         void HandleYardResponse(NPDisk::TEvChunkReadResult::TPtr& ev, const TActorContext &ctx) {
             --PendingResponses;
+            HullCtx->VCtx->CostTracker->CountPDiskResponse();
             if (ev->Get()->Status != NKikimrProto::CORRUPTED) {
                 CHECK_PDISK_RESPONSE(HullCtx->VCtx, ev, ctx);
             }
@@ -201,6 +200,7 @@ namespace NKikimr {
 
         void HandleYardResponse(NPDisk::TEvChunkWriteResult::TPtr& ev, const TActorContext &ctx) {
             --PendingResponses;
+            HullCtx->VCtx->CostTracker->CountPDiskResponse();
             CHECK_PDISK_RESPONSE(HullCtx->VCtx, ev, ctx);
             if (FinalizeIfAborting(ctx)) {
                 return;
@@ -234,26 +234,6 @@ namespace NKikimr {
         ///////////////////////// WORK: END /////////////////////////////////////////////////
 
 
-        ///////////////////////// WAITFORHANDOFF: BEGIN /////////////////////////////////////
-        STRICT_STFUNC(WaitForHandoffFunc,
-            HFunc(TEvHandoffSyncLogFinished, WaitForHandoffHandle)
-            HFunc(TEvents::TEvPoisonPill, HandlePoison)
-        )
-
-        void SwitchToWaitForHandoff(const TActorContext &ctx) {
-            Hmp->Finish(ctx);
-            TThis::Become(&TThis::WaitForHandoffFunc);
-        }
-
-        void WaitForHandoffHandle(TEvHandoffSyncLogFinished::TPtr &ev, const TActorContext &ctx) {
-            if (ev->Get()->FromProxy) {
-                ActiveActors.Erase(ev->Sender);
-            }
-            Finalize(ctx); // SWITCH TO FINALIZE PHASE (write/load/commit)
-        }
-        ///////////////////////// WAITFORHANDOFF: END ///////////////////////////////////////
-
-
         ///////////////////////// FINALIZE: BEGIN ///////////////////////////////////////////
         void Finalize(const TActorContext &ctx) {
             if (const auto& segs = Worker.GetLevelSegments(); segs && !IsAborting) {
@@ -284,7 +264,7 @@ namespace NKikimr {
             // chunks to commit
             msg->CommitChunks = IsAborting ? TVector<ui32>() : Worker.GetCommitChunks();
 
-            Y_VERIFY(emptyWrite == msg->CommitChunks.empty()); // both empty or not
+            Y_ABORT_UNLESS(emptyWrite == msg->CommitChunks.empty()); // both empty or not
 
             msg->SegVec = IsAborting ? nullptr : std::move(Result);
             msg->FreshSegment = IsAborting ? nullptr : FreshSegment;
@@ -329,7 +309,8 @@ namespace NKikimr {
                         ui64 firstLsn,
                         ui64 lastLsn,
                         TDuration restoreDeadline,
-                        std::optional<TKey> partitionKey)
+                        std::optional<TKey> partitionKey,
+                        bool allowGarbageCollection)
             : TActorBootstrapped<TThis>()
             , HullCtx(std::move(hullCtx))
             , PDiskCtx(rtCtx->PDiskCtx)
@@ -338,9 +319,8 @@ namespace NKikimr {
             , FreshSegmentSnap(std::move(freshSegmentSnap))
             , BarriersSnap(std::move(barriersSnap))
             , LevelSnap(std::move(levelSnap))
-            , Hmp(CreateHandoffMap<TKey, TMemRec>(HullCtx, rtCtx->HandoffDelegate, rtCtx->RunHandoff,
-                    rtCtx->SkeletonId))
-            , Gcmp(CreateGcMap<TKey, TMemRec>(HullCtx, mergeElementsApproximation))
+            , Hmp(CreateHandoffMap<TKey, TMemRec>(HullCtx, rtCtx->RunHandoff, rtCtx->SkeletonId))
+            , Gcmp(CreateGcMap<TKey, TMemRec>(HullCtx, mergeElementsApproximation, allowGarbageCollection))
             , It(it)
             , Worker(HullCtx, PDiskCtx, rtCtx->LevelIndex, it, (bool)FreshSegment, firstLsn, lastLsn, restoreDeadline,
                     partitionKey)

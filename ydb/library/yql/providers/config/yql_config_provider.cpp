@@ -18,6 +18,9 @@
 #include <library/cpp/json/json_reader.h>
 
 #include <util/string/cast.h>
+#include <util/generic/hash.h>
+#include <util/generic/utility.h>
+#include <util/string/builder.h>
 
 #include <vector>
 
@@ -143,20 +146,46 @@ namespace {
         }
 
         bool Initialize(TExprContext& ctx) override {
+            std::unordered_set<std::string_view> groups;
+            if (Types.Credentials != nullptr) {
+                groups.insert(Types.Credentials->GetGroups().begin(), Types.Credentials->GetGroups().end());
+            }
+            auto filter = [this, groups = std::move(groups)](const TCoreAttr& attr) {
+                if (!attr.HasActivation() || !Username) {
+                    return true;
+                }
+                if (NConfig::Allow(attr.GetActivation(), Username, groups)) {
+                    Statistics.Entries.emplace_back(TStringBuilder() << "Activation:" << attr.GetName(), 0, 0, 0, 0, 1);
+                    return true;
+                }
+                return false;
+            };
             if (CoreConfig) {
                 TPosition pos;
                 for (auto& flag: CoreConfig->GetFlags()) {
-                    if (!flag.HasActivation() || !Username || NConfig::Allow(flag.GetActivation(), Username)) {
+                    if (filter(flag)) {
                         TVector<TStringBuf> args;
                         for (auto& arg: flag.GetArgs()) {
                             args.push_back(arg);
                         }
-                        if (!ApplyFlag(pos, flag.GetName(), args, ctx)) {
+                        if (!ApplyFlag(pos, flag.GetName(), args, ctx, 0)) {
                             return false;
                         }
                     }
                 }
             }
+            return true;
+        }
+
+        bool CollectStatistics(NYson::TYsonWriter& writer, bool totalOnly) override {
+            if (Statistics.Entries.empty()) {
+                return false;
+            }
+
+            THashMap<ui32, TOperationStatistics> tmp;
+            tmp.emplace(Max<ui32>(), Statistics);
+            NCommon::WriteStatistics(writer, totalOnly, tmp);
+
             return true;
         }
 
@@ -222,11 +251,16 @@ namespace {
                         }
 
                         TStringBuf command = node->Child(2)->Content();
+                        if (command.length() && '_' == command[0]) {
+                            ctx.AddError(TIssue(ctx.GetPosition(node->Child(2)->Pos()), "Flags started with underscore are not allowed"));
+                            return {};
+                        }
+
                         TVector<TStringBuf> args;
                         for (size_t i = 3; i < node->ChildrenSize(); ++i) {
                             if (node->Child(i)->IsCallable("EvaluateAtom")) {
                                 hasPendingEvaluations = true;
-                                return res;
+                                break;
                             }
                             if (!EnsureAtom(*node->Child(i), ctx)) {
                                 return {};
@@ -234,7 +268,15 @@ namespace {
                             args.push_back(node->Child(i)->Content());
                         }
 
-                        if (!ApplyFlag(ctx.GetPosition(node->Child(2)->Pos()), command, args, ctx)) {
+                        if (hasPendingEvaluations) {
+                            if (!ValidateEvaluation(command, *node, ctx)) {
+                                return {};
+                            }
+
+                            return res;
+                        }
+
+                        if (!ApplyFlag(ctx.GetPosition(node->Child(2)->Pos()), command, args, ctx, node->UniqueId())) {
                             return {};
                         }
 
@@ -426,7 +468,30 @@ namespace {
             return true;
         }
 
-        bool ApplyFlag(const TPosition& pos, const TStringBuf name, const TVector<TStringBuf>& args, TExprContext& ctx) {
+        bool ValidateEvaluation(const TStringBuf name, const TExprNode& node, TExprContext& ctx) {
+            if (name == "AddFileByUrl" || name == "AddFolderByUrl") {
+                if (node.ChildrenSize() < 4) {
+                    ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder() << "Expected at least 4 arguments, but got " << node.ChildrenSize()));
+                    return false;
+                }
+
+                if (node.Child(3)->IsCallable("EvaluateAtom")) {
+                    return true;
+                }
+
+                if (!PendingEvaluationFiles.insert({TString(node.Child(3)->Content()), node.UniqueId()}).second) {
+                    ctx.AddError(TIssue(ctx.GetPosition(node.Pos()), TStringBuilder() << "Detected evaluation cycle for file: " << node.Child(3)->Content()));
+                    return false;
+                }
+
+                return true;
+            } else {
+                return true;
+            }
+        }
+
+        bool ApplyFlag(const TPosition& pos, const TStringBuf name, const TVector<TStringBuf>& args, TExprContext& ctx,
+            ui64 nodeUniqueId) {
             if (!IsSettingAllowed(pos, name, ctx)) {
                 return false;
             }
@@ -440,11 +505,15 @@ namespace {
                     return false;
                 }
             } else if (name == "AddFileByUrl") {
-                if (!AddFileByUrl(pos, args, ctx)) {
+                if (!AddFileByUrl(pos, args, ctx, nodeUniqueId)) {
+                    return false;
+                }
+            } else if (name == "SetFileOption") {
+                if (!SetFileOption(pos, args, ctx)) {
                     return false;
                 }
             } else if (name == "AddFolderByUrl") {
-                if (!AddFolderByUrl(pos, args, ctx)) {
+                if (!AddFolderByUrl(pos, args, ctx, nodeUniqueId)) {
                     return false;
                 }
             } else if (name == "SetPackageVersion") {
@@ -477,12 +546,7 @@ namespace {
                     ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
                     return false;
                 }
-                if (!Types.UseBlocks) {
-                    Types.OptLLVM = args.empty() ? TString() : TString(args[0]);
-                } else {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "UseBlocks isn't compatible with LLVM"));
-                    return false;
-                }
+                Types.OptLLVM = args.empty() ? TString() : TString(args[0]);
             }
             else if (name == "NodesAllocationLimit") {
                 if (args.size() != 1) {
@@ -589,6 +653,16 @@ namespace {
                     return false;
                 }
                 if (!TryFromString(args[0], Types.EvaluateForLimit)) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "EvaluateParallelForLimit") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected 1 argument, but got " << args.size()));
+                    return false;
+                }
+                if (!TryFromString(args[0], Types.EvaluateParallelForLimit)) {
                     ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
                     return false;
                 }
@@ -769,9 +843,119 @@ namespace {
                 }
 
                 Types.UseBlocks = (name == "UseBlocks");
-                if (Types.UseBlocks) {
-                    Types.OptLLVM = "OFF";
+            }
+            else if (name == "PgEmitAggApply" || name == "DisablePgEmitAggApply") {
+                if (args.size() != 0) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected no arguments, but got " << args.size()));
+                    return false;
                 }
+
+                Types.PgEmitAggApply = (name == "PgEmitAggApply");
+            }
+            else if (name == "CostBasedOptimizer") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
+                    return false;
+                }
+
+                if (!TryFromString(args[0], Types.CostBasedOptimizer)) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected `disable|pg|native', but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "_EnableMatchRecognize" || name == "DisableMatchRecognize") {
+                if (args.size() != 0) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected no arguments, but got " << args.size()));
+                    return false;
+                }
+                Types.MatchRecognize = name == "_EnableMatchRecognize";
+            }
+            else if (name == "TimeOrderRecoverDelay") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected one argument, but got " << args.size()));
+                    return false;
+                }
+                if (!TryFromString(args[0], Types.TimeOrderRecoverDelay)) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
+                    return false;
+                }
+                if (Types.TimeOrderRecoverDelay >= 0) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected negative value, but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "TimeOrderRecoverAhead") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected one argument, but got " << args.size()));
+                    return false;
+                }
+                if (!TryFromString(args[0], Types.TimeOrderRecoverAhead)) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
+                    return false;
+                }
+                if (Types.TimeOrderRecoverAhead <= 0) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected positive value, but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "TimeOrderRecoverRowLimit") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected one argument, but got " << args.size()));
+                    return false;
+                }
+                if (!TryFromString(args[0], Types.TimeOrderRecoverRowLimit)) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
+                    return false;
+                }
+                if (Types.TimeOrderRecoverRowLimit == 0) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected positive value, but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "MatchRecognizeStream") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
+                    return false;
+                }
+                const auto& arg = args[0];
+                if (arg == "disable") {
+                    Types.MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Disable;
+                } else if (arg == "auto") {
+                    Types.MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Auto;
+                } else if (arg == "force") {
+                    Types.MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Force;
+                } else {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected `disable|auto|force', but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "BlockEngine") {
+                if (args.size() != 1) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
+                    return false;
+                }
+
+                auto arg = TString{args[0]};
+                if (!TryFromString(arg, Types.BlockEngineMode)) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected `disable|auto|force', but got: " << args[0]));
+                    return false;
+                }
+            }
+            else if (name == "OptimizerFlags") {
+                for (auto& arg : args) {
+                    if (arg.empty()) {
+                        ctx.AddError(TIssue(pos, "Empty flags are not supported"));
+                        return false;
+                    }
+                    Types.OptimizerFlags.insert(to_lower(ToString(arg)));
+                }
+            }
+            else if (name == "_EnableStreamLookupJoin" || name == "DisableStreamLookupJoin") {
+                if (args.size() != 0) {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected no arguments, but got " << args.size()));
+                    return false;
+                }
+                Types.StreamLookupJoin = name == "_EnableStreamLookupJoin";
             }
             else {
                 ctx.AddError(TIssue(pos, TStringBuilder() << "Unsupported command: " << name));
@@ -849,12 +1033,13 @@ namespace {
             return true;
         }
 
-        bool AddFileByUrl(const TPosition& pos, const TVector<TStringBuf>& args, TExprContext& ctx) {
+        bool AddFileByUrl(const TPosition& pos, const TVector<TStringBuf>& args, TExprContext& ctx, ui64 nodeUniqueId) {
             if (args.size() < 2 || args.size() > 3) {
                 ctx.AddError(TIssue(pos, TStringBuilder() << "Expected 2 or 3 arguments, but got " << args.size()));
                 return false;
             }
 
+            PendingEvaluationFiles.erase({TString(args[0]),nodeUniqueId});
             TStringBuf token = args.size() == 3 ? args[2] : TStringBuf();
             if (token) {
                 if (auto cred = Types.Credentials->FindCredential(token)) {
@@ -866,6 +1051,25 @@ namespace {
             }
 
             return AddFileByUrlImpl(args[0], args[1], token, pos, ctx);
+        }
+
+        bool SetFileOptionImpl(const TStringBuf alias, const TString& key, const TString& value, const TPosition& pos, TExprContext& ctx) {
+            const auto dataKey = TUserDataStorage::ComposeUserDataKey(alias);
+            const auto dataBlock = Types.UserDataStorage->FindUserDataBlock(dataKey);
+            if (!dataBlock) {
+                ctx.AddError(TIssue(pos, TStringBuilder() << "No such file '" << alias << "'"));
+                return false;
+            }
+            dataBlock->Options[key] = value;
+            return true;
+        }
+
+        bool SetFileOption(const TPosition& pos, const TVector<TStringBuf>& args, TExprContext& ctx) {
+            if (args.size() != 3) {
+                ctx.AddError(TIssue(pos, TStringBuilder() << "Expected 3 arguments, but got " << args.size()));
+                return false;
+            }
+            return SetFileOptionImpl(args[0], ToString(args[1]), ToString(args[2]), pos, ctx);
         }
 
         bool SetPackageVersion(const TPosition& pos, const TVector<TStringBuf>& args, TExprContext& ctx) {
@@ -949,12 +1153,13 @@ namespace {
             return url;
         }
 
-        bool AddFolderByUrl(const TPosition& pos, const TVector<TStringBuf>& args, TExprContext& ctx) {
+        bool AddFolderByUrl(const TPosition& pos, const TVector<TStringBuf>& args, TExprContext& ctx, ui64 nodeUniqueId) {
             if (args.size() < 2 || args.size() > 3) {
                 ctx.AddError(TIssue(pos, TStringBuilder() << "Expected 2 or 3 arguments, but got " << args.size()));
                 return false;
             }
 
+            PendingEvaluationFiles.erase({TString(args[0]),nodeUniqueId});
             TStringBuf token = args.size() == 3 ? args[2] : TStringBuf();
             if (token) {
                 if (auto cred = Types.Credentials->FindCredential(token)) {
@@ -1050,6 +1255,8 @@ namespace {
         const TYqlCoreConfig* CoreConfig;
         TString Username;
         const TAllowSettingPolicy Policy;
+        TOperationStatistics Statistics;
+        THashSet<std::pair<TString, ui64>> PendingEvaluationFiles;
     };
 }
 

@@ -5,7 +5,7 @@
 #include <util/system/hp_timer.h>
 #include <util/generic/string.h>
 #include <library/cpp/lwtrace/shuttle.h>
-#include <library/cpp/actors/wilson/wilson_span.h>
+#include <ydb/library/actors/wilson/wilson_span.h>
 
 namespace NKikimr::NPDisk {
 
@@ -23,7 +23,7 @@ protected:
     TVector<ui64> BadOffsets;
 
 public:
-    void SetResult(const EIoResult  result) {
+    void SetResult(const EIoResult result) {
         Result = result;
         if (FlushAction) {
             FlushAction->SetResult(result);

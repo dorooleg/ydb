@@ -7,11 +7,13 @@
 #include <ydb/core/fq/libs/db_id_async_resolver_impl/db_async_resolver_impl.h>
 #include <ydb/core/fq/libs/shared_resources/shared_resources.h>
 #include <ydb/core/fq/libs/signer/signer.h>
+#include <ydb/library/yql/minikql/mkql_function_registry.h>
+#include <ydb/library/yql/providers/common/http_gateway/yql_http_gateway.h>
 #include <ydb/library/yql/providers/common/token_accessor/client/factory.h>
 #include <ydb/library/yql/providers/pq/cm_client/client.h>
 #include <ydb/public/api/protos/draft/fq.pb.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 
@@ -46,7 +48,7 @@ NActors::IActor* CreateTestConnectionActor(
         const NConfig::TControlPlaneStorageConfig& controlPlaneStorageConfig,
         const NYql::TS3GatewayConfig& s3Config,
         const NConfig::TCommonConfig& commonConfig,
-        const NConfig::TTokenAccessorConfig& tokenAccessorConfig,
+        const ::NFq::TSigner::TPtr& signer,
         const NFq::TYqSharedResources::TPtr& sharedResources,
         const NYql::ISecuredServiceAccountCredentialsFactory::TPtr& credentialsFactory,
         const NPq::NConfigurationManager::IConnections::TPtr& cmConnections,

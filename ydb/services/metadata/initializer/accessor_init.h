@@ -1,59 +1,51 @@
 #pragma once
 #include "common.h"
-#include "controller.h"
-#include "events.h"
 #include "snapshot.h"
 
 #include <ydb/services/metadata/abstract/common.h>
 #include <ydb/services/metadata/abstract/initialization.h>
 #include <ydb/services/metadata/ds_table/config.h>
+#include <ydb/services/metadata/ds_table/registration.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/event_local.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/event_local.h>
 #include <library/cpp/threading/future/core/future.h>
-#include <library/cpp/actors/core/av_bootstrapped.h>
+#include <ydb/library/actors/core/av_bootstrapped.h>
 
 namespace NKikimr::NMetadata::NInitializer {
 
-class TDSAccessorInitialized: public NActors::TActorBootstrapped<TDSAccessorInitialized> {
+class TDSAccessorInitialized: public IInitializerInput,
+    public NModifications::IAlterController,
+    public NMetadata::NInitializer::IModifierExternalController
+{
 private:
-    TDeque<ITableModifier::TPtr> Modifiers;
+    mutable TDeque<ITableModifier::TPtr> Modifiers;
     const NRequest::TConfig Config;
     IInitializationBehaviour::TPtr InitializationBehaviour;
     IInitializerOutput::TPtr ExternalController;
-    TInitializerInput::TPtr InternalController;
-    std::shared_ptr<TSnapshot> InitializationSnapshot;
+    const std::shared_ptr<NProvider::TInitializationSnapshotOwner> InitializationSnapshotOwner;
     const TString ComponentId;
-    void Handle(TEvInitializerPreparationStart::TPtr& ev);
-    void Handle(TEvInitializerPreparationFinished::TPtr& ev);
-    void Handle(TEvInitializerPreparationProblem::TPtr& ev);
-    void Handle(NRequest::TEvRequestFinished::TPtr& ev);
-    void Handle(NModifications::TEvModificationFinished::TPtr& ev);
-    void Handle(NModifications::TEvModificationProblem::TPtr& ev);
-    void DoNextModifier();
-public:
-    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
-        return NKikimrServices::TActivity::METADATA_INITIALIZER;
-    }
+    std::shared_ptr<TDSAccessorInitialized> SelfPtr;
 
-    void Bootstrap();
+    void DoNextModifier(const bool doPop);
+    virtual void OnPreparationFinished(const TVector<ITableModifier::TPtr>& modifiers) override;
+    virtual void OnPreparationProblem(const TString& errorMessage) const override;
+    virtual void OnAlteringProblem(const TString& errorMessage) override;
+    virtual void OnAlteringFinished() override;
+
+    virtual void OnModificationFinished(const TString& modificationId) override;
+    virtual void OnModificationFailed(Ydb::StatusIds::StatusCode status, const TString& errorMessage, const TString& modificationId) override;
+
     TDSAccessorInitialized(const NRequest::TConfig& config,
         const TString& componentId,
         IInitializationBehaviour::TPtr initializationBehaviour,
-        IInitializerOutput::TPtr controller, std::shared_ptr<TSnapshot> initializationSnapshot);
+        IInitializerOutput::TPtr controller, const std::shared_ptr<NProvider::TInitializationSnapshotOwner>& snapshotOwner);
+public:
+    static void Execute(const NRequest::TConfig& config,
+        const TString& componentId,
+        IInitializationBehaviour::TPtr initializationBehaviour,
+        IInitializerOutput::TPtr controller, const std::shared_ptr<NProvider::TInitializationSnapshotOwner>& initializationSnapshotOwner);
 
-    STATEFN(StateMain) {
-        switch (ev->GetTypeRewrite()) {
-            hFunc(NRequest::TEvRequestFinished, Handle);
-            hFunc(TEvInitializerPreparationStart, Handle);
-            hFunc(TEvInitializerPreparationFinished, Handle);
-            hFunc(TEvInitializerPreparationProblem, Handle);
-            hFunc(NModifications::TEvModificationFinished, Handle);
-            hFunc(NModifications::TEvModificationProblem, Handle);
-            default:
-                break;
-        }
-    }
 };
 
 }

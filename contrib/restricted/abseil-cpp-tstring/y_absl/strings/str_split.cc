@@ -15,16 +15,13 @@
 #include "y_absl/strings/str_split.h"
 
 #include <algorithm>
-#include <cassert>
-#include <cstdint>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <iterator>
-#include <limits>
-#include <memory>
 
+#include "y_absl/base/config.h"
 #include "y_absl/base/internal/raw_logging.h"
-#include "y_absl/strings/ascii.h"
+#include "y_absl/strings/string_view.h"
 
 namespace y_absl {
 Y_ABSL_NAMESPACE_BEGIN
@@ -60,19 +57,23 @@ y_absl::string_view GenericFind(y_absl::string_view text,
 // Finds using y_absl::string_view::find(), therefore the length of the found
 // delimiter is delimiter.length().
 struct LiteralPolicy {
-  size_t Find(y_absl::string_view text, y_absl::string_view delimiter, size_t pos) {
+  static size_t Find(y_absl::string_view text, y_absl::string_view delimiter,
+                     size_t pos) {
     return text.find(delimiter, pos);
   }
-  size_t Length(y_absl::string_view delimiter) { return delimiter.length(); }
+  static size_t Length(y_absl::string_view delimiter) {
+    return delimiter.length();
+  }
 };
 
 // Finds using y_absl::string_view::find_first_of(), therefore the length of the
 // found delimiter is 1.
 struct AnyOfPolicy {
-  size_t Find(y_absl::string_view text, y_absl::string_view delimiter, size_t pos) {
+  static size_t Find(y_absl::string_view text, y_absl::string_view delimiter,
+                     size_t pos) {
     return text.find_first_of(delimiter, pos);
   }
-  size_t Length(y_absl::string_view /* delimiter */) { return 1; }
+  static size_t Length(y_absl::string_view /* delimiter */) { return 1; }
 };
 
 }  // namespace
@@ -93,6 +94,11 @@ y_absl::string_view ByString::Find(y_absl::string_view text, size_t pos) const {
     return text.substr(found_pos, 1);
   }
   return GenericFind(text, delimiter_, pos, LiteralPolicy());
+}
+
+y_absl::string_view ByAsciiWhitespace::Find(y_absl::string_view text,
+                                          size_t pos) const {
+  return GenericFind(text, " \t\v\f\r\n", pos, AnyOfPolicy());
 }
 
 //
@@ -123,8 +129,7 @@ ByLength::ByLength(ptrdiff_t length) : length_(length) {
   Y_ABSL_RAW_CHECK(length > 0, "");
 }
 
-y_absl::string_view ByLength::Find(y_absl::string_view text,
-                                      size_t pos) const {
+y_absl::string_view ByLength::Find(y_absl::string_view text, size_t pos) const {
   pos = std::min(pos, text.size());  // truncate `pos`
   y_absl::string_view substr = text.substr(pos);
   // If the string is shorter than the chunk size we say we

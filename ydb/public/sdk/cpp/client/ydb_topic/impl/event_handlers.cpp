@@ -1,4 +1,4 @@
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/public/sdk/cpp/client/ydb_topic/include/read_session.h>
 
 #include <library/cpp/containers/disjoint_interval_tree/disjoint_interval_tree.h>
 
@@ -58,7 +58,7 @@ public:
 
     void OnCreatePartitionStream(TReadSessionEvent::TStartPartitionSessionEvent& event) {
         with_lock (Lock) {
-            Y_VERIFY(PartitionStreamToUncommittedOffsets[event.GetPartitionSession()->GetPartitionSessionId()].Empty());
+            Y_ABORT_UNLESS(PartitionStreamToUncommittedOffsets[event.GetPartitionSession()->GetPartitionSessionId()].Empty());
         }
         event.Confirm();
     }
@@ -66,7 +66,7 @@ public:
     void OnDestroyPartitionStream(TReadSessionEvent::TStopPartitionSessionEvent& event) {
         with_lock (Lock) {
             const ui64 partitionStreamId = event.GetPartitionSession()->GetPartitionSessionId();
-            Y_VERIFY(UnconfirmedDestroys.find(partitionStreamId) == UnconfirmedDestroys.end());
+            Y_ABORT_UNLESS(UnconfirmedDestroys.find(partitionStreamId) == UnconfirmedDestroys.end());
             if (PartitionStreamToUncommittedOffsets[partitionStreamId].Empty()) {
                 PartitionStreamToUncommittedOffsets.erase(partitionStreamId);
                 event.Confirm();
@@ -74,6 +74,9 @@ public:
                 UnconfirmedDestroys.emplace(partitionStreamId, std::move(event));
             }
         }
+    }
+
+    void OnEndPartitionStream(TReadSessionEvent::TEndPartitionSessionEvent&) {
     }
 
     void OnPartitionStreamClosed(TReadSessionEvent::TPartitionSessionClosedEvent& event) {
@@ -110,6 +113,9 @@ TReadSessionSettings::TEventHandlers& TReadSessionSettings::TEventHandlers::Simp
         StopPartitionSessionHandler([handlers](TReadSessionEvent::TStopPartitionSessionEvent& event) {
             handlers->OnDestroyPartitionStream(event);
         });
+        EndPartitionSessionHandler([handlers](TReadSessionEvent::TEndPartitionSessionEvent& event) {
+            handlers->OnEndPartitionStream(event);
+        });
         CommitOffsetAcknowledgementHandler([handlers](TReadSessionEvent::TCommitOffsetAcknowledgementEvent& event) {
             handlers->OnCommitAcknowledgement(event);
         });
@@ -133,10 +139,12 @@ TReadSessionSettings::TEventHandlers& TReadSessionSettings::TEventHandlers::Simp
         StopPartitionSessionHandler([](TReadSessionEvent::TStopPartitionSessionEvent& event) {
             event.Confirm();
         });
+        EndPartitionSessionHandler([](TReadSessionEvent::TEndPartitionSessionEvent&) {
+        });
         CommitOffsetAcknowledgementHandler([](TReadSessionEvent::TCommitOffsetAcknowledgementEvent&){});
         PartitionSessionClosedHandler([](TReadSessionEvent::TPartitionSessionClosedEvent&){});
     }
     return *this;
 }
 
-}
+}  // namespace NYdb::NTopic

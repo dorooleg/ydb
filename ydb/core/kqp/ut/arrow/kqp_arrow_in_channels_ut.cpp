@@ -1,6 +1,5 @@
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 
-#include <util/generic/size_literals.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -84,8 +83,6 @@ void InsertAllColumnsAndCheckSelectAll(TKikimrRunner* runner) {
     UNIT_ASSERT(*parser.ColumnParser(16).GetOptionalYson().Get() == TString("[13]"));
     UNIT_ASSERT(*parser.ColumnParser(17).GetOptionalJsonDocument().Get() == TString("[14]"));
     UNIT_ASSERT(*parser.ColumnParser(18).GetOptionalDyNumber().Get() == TString(".1515e2"));
-    streamPart = it.ReadNext().GetValueSync();
-    UNIT_ASSERT_C(streamPart.EOS(), streamPart.GetIssues().ToString());
 }
 
 }

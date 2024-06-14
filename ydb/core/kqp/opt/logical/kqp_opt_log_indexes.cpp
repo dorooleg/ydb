@@ -3,6 +3,9 @@
 #include <ydb/core/kqp/provider/yql_kikimr_provider_impl.h>
 
 #include <ydb/library/yql/dq/opt/dq_opt_phy.h>
+#include <ydb/library/yql/core/yql_opt_utils.h>
+
+#include <util/generic/hash.h>
 
 namespace NKikimr::NKqp::NOpt {
 
@@ -13,48 +16,50 @@ using namespace NYql::NNodes;
 namespace {
 
 TCoAtomList BuildKeyColumnsList(const TKikimrTableDescription& table, TPositionHandle pos, TExprContext& ctx) {
-    TVector<TExprBase> columnsToSelect;
-    columnsToSelect.reserve(table.Metadata->KeyColumnNames.size());
-    for (auto key : table.Metadata->KeyColumnNames) {
-        auto value = table.Metadata->Columns.at(key);
+    TSet<TString> columnsToSelect(table.Metadata->KeyColumnNames.begin(), table.Metadata->KeyColumnNames.end());
+    TVector<TExprBase> columnsList;
+    columnsList.reserve(columnsToSelect.size());
+    for (auto column : columnsToSelect) {
         auto atom = Build<TCoAtom>(ctx, pos)
-            .Value(value.Name)
+            .Value(column)
             .Done();
 
-        columnsToSelect.push_back(atom);
+        columnsList.emplace_back(std::move(atom));
     }
 
     return Build<TCoAtomList>(ctx, pos)
-        .Add(columnsToSelect)
+        .Add(columnsList)
         .Done();
 }
 
 TCoAtomList MergeColumns(const NNodes::TCoAtomList& col1, const TVector<TString>& col2, TExprContext& ctx) {
-    TVector<TCoAtom> columns;
-    THashSet<TString> uniqColumns;
-    columns.reserve(col1.Size() + col2.size());
-
+    TMap<TString, TCoAtom> columns;
     for (const auto& c : col1) {
-        YQL_ENSURE(uniqColumns.emplace(c.StringValue()).second);
-        columns.push_back(c);
+        YQL_ENSURE(columns.insert({c.StringValue(), c}).second);
     }
 
     for (const auto& c : col2) {
-        if (uniqColumns.emplace(c).second) {
+        if (!columns.contains(c)) {
             auto atom = Build<TCoAtom>(ctx, col1.Pos())
                 .Value(c)
                 .Done();
-            columns.push_back(atom);
+            columns.insert({c, std::move(atom)});
         }
     }
 
+    TVector<TCoAtom> columnsList;
+    columnsList.reserve(columns.size());
+    for (auto [_, column] : columns) {
+        columnsList.emplace_back(std::move(column));
+    }
+
     return Build<TCoAtomList>(ctx, col1.Pos())
-        .Add(columns)
+        .Add(columnsList)
         .Done();
 }
 
-bool IsKeySelectorPkPrefix(NNodes::TCoLambda keySelector, const TKikimrTableDescription& tableDesc, TVector<TString>* columns) {
-    auto checkKey = [keySelector, &tableDesc, columns] (const TExprBase& key, ui32 index) {
+bool IsKeySelectorPkPrefix(NNodes::TCoLambda keySelector, const TKikimrTableDescription& tableDesc) {
+    auto checkKey = [keySelector, &tableDesc] (const TExprBase& key, ui32 index) {
         if (!key.Maybe<TCoMember>()) {
             return false;
         }
@@ -68,10 +73,6 @@ bool IsKeySelectorPkPrefix(NNodes::TCoLambda keySelector, const TKikimrTableDesc
         auto columnIndex = tableDesc.GetKeyColumnIndex(column);
         if (!columnIndex || *columnIndex != index) {
             return false;
-        }
-
-        if (columns) {
-            columns->emplace_back(std::move(column));
         }
 
         return true;
@@ -94,8 +95,48 @@ bool IsKeySelectorPkPrefix(NNodes::TCoLambda keySelector, const TKikimrTableDesc
     return true;
 }
 
-bool CanPushTopSort(const TCoTopBase& node, const TKikimrTableDescription& tableDesc, TVector<TString>* columns) {
-    return IsKeySelectorPkPrefix(node.KeySelectorLambda(), tableDesc, columns);
+bool IsTableExistsKeySelector(NNodes::TCoLambda keySelector, const TKikimrTableDescription& tableDesc, TVector<TString>* columns) {
+    auto checkKey = [keySelector, &tableDesc, columns] (const TExprBase& key) {
+        if (!key.Maybe<TCoMember>()) {
+            return false;
+        }
+
+        auto member = key.Cast<TCoMember>();
+        if (member.Struct().Raw() != keySelector.Args().Arg(0).Raw()) {
+            return false;
+        }
+
+        auto column = member.Name().StringValue();
+        if (!tableDesc.Metadata->Columns.contains(column)) {
+            return false;
+        }
+
+        if (columns) {
+            columns->emplace_back(std::move(column));
+        }
+
+        return true;
+    };
+
+    auto lambdaBody = keySelector.Body();
+    if (auto maybeTuple = lambdaBody.Maybe<TExprList>()) {
+        auto tuple = maybeTuple.Cast();
+        for (size_t i = 0; i < tuple.Size(); ++i) {
+            if (!checkKey(tuple.Item(i))) {
+                return false;
+            }
+        }
+    } else {
+        if (!checkKey(lambdaBody)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool CanPushTopSort(const TCoTopBase& node, const TKikimrTableDescription& indexDesc, TVector<TString>* columns) {
+    return IsTableExistsKeySelector(node.KeySelectorLambda(), indexDesc, columns);
 }
 
 struct TReadMatch {
@@ -250,19 +291,21 @@ TExprBase DoRewriteIndexRead(const TReadMatch& read, TExprContext& ctx,
         TVector<TExprBase> structMembers;
         structMembers.reserve(keyColumnsList.Size());
 
-        for (const auto& c : keyColumnsList) {
+        for (const auto& keyColumn : keyColumnsList) {
             auto member = Build<TCoNameValueTuple>(ctx, read.Pos())
-                .Name().Build(c.Value())
+                .Name().Build(keyColumn.Value())
                 .Value<TCoMember>()
                     .Struct(arg)
-                    .Name().Build(c.Value())
+                    .Name().Build(keyColumn.Value())
                     .Build()
                 .Done();
 
             structMembers.push_back(member);
         }
 
-        readIndexTable= Build<TCoMap>(ctx, read.Pos())
+        // We need to save order for TopSort, otherwise TopSort will be replaced by Top during optimization (https://st.yandex-team.ru/YQL-15415)
+        readIndexTable = Build<TCoMapBase>(ctx, read.Pos())
+            .CallableName(readIndexTable.Maybe<TCoTopSort>() ? TCoOrderedMap::CallableName() : TCoMap::CallableName())
             .Input(readIndexTable)
             .Lambda()
                 .Args({arg})
@@ -278,6 +321,7 @@ TExprBase DoRewriteIndexRead(const TReadMatch& read, TExprContext& ctx,
             .Table(read.Table())
             .LookupKeys(readIndexTable.Ptr())
             .Columns(read.Columns())
+            .LookupStrategy().Build(TKqpStreamLookupStrategyName)
             .Done();
     } else {
         return Build<TKqlLookupTable>(ctx, read.Pos())
@@ -303,7 +347,8 @@ TExprBase KqpRewriteIndexRead(const TExprBase& node, TExprContext& ctx, const TK
 }
 
 TExprBase KqpRewriteLookupIndex(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
-    if (!kqpCtx.IsDataQuery()) {
+    if (kqpCtx.IsScanQuery()) {
+        // TODO: Enable index lookup for scan queries as we now support stream lookups.
         return node;
     }
 
@@ -316,6 +361,15 @@ TExprBase KqpRewriteLookupIndex(const TExprBase& node, TExprContext& ctx, const 
         const bool needDataRead = CheckIndexCovering(lookupIndex, indexMeta);
 
         if (!needDataRead) {
+            if (kqpCtx.Config->EnableKqpDataQueryStreamLookup) {
+                return Build<TKqlStreamLookupTable>(ctx, node.Pos())
+                    .Table(BuildTableMeta(*indexMeta, node.Pos(), ctx))
+                    .LookupKeys(lookupIndex.LookupKeys())
+                    .Columns(lookupIndex.Columns())
+                    .LookupStrategy().Build(TKqpStreamLookupStrategyName)
+                    .Done();
+            }
+
             return Build<TKqlLookupTable>(ctx, node.Pos())
                 .Table(BuildTableMeta(*indexMeta, node.Pos(), ctx))
                 .LookupKeys(lookupIndex.LookupKeys())
@@ -324,6 +378,22 @@ TExprBase KqpRewriteLookupIndex(const TExprBase& node, TExprContext& ctx, const 
         }
 
         auto keyColumnsList = BuildKeyColumnsList(tableDesc, node.Pos(), ctx);
+
+        if (kqpCtx.Config->EnableKqpDataQueryStreamLookup) {
+            TExprBase lookupIndexTable = Build<TKqlStreamLookupTable>(ctx, node.Pos())
+                .Table(BuildTableMeta(*indexMeta, node.Pos(), ctx))
+                .LookupKeys(lookupIndex.LookupKeys())
+                .Columns(keyColumnsList)
+                .LookupStrategy().Build(TKqpStreamLookupStrategyName)
+                .Done();
+
+            return Build<TKqlStreamLookupTable>(ctx, node.Pos())
+                .Table(lookupIndex.Table())
+                .LookupKeys(lookupIndexTable.Ptr())
+                .Columns(lookupIndex.Columns())
+                .LookupStrategy().Build(TKqpStreamLookupStrategyName)
+                .Done();
+        }
 
         TExprBase lookupIndexTable = Build<TKqlLookupTable>(ctx, node.Pos())
             .Table(BuildTableMeta(*indexMeta, node.Pos(), ctx))
@@ -358,6 +428,7 @@ TExprBase KqpRewriteStreamLookupIndex(const TExprBase& node, TExprContext& ctx, 
                 .Table(BuildTableMeta(*indexMeta, node.Pos(), ctx))
                 .LookupKeys(streamLookupIndex.LookupKeys())
                 .Columns(streamLookupIndex.Columns())
+                .LookupStrategy().Build(TKqpStreamLookupStrategyName)
                 .Done();
         }
 
@@ -367,87 +438,280 @@ TExprBase KqpRewriteStreamLookupIndex(const TExprBase& node, TExprContext& ctx, 
             .Table(BuildTableMeta(*indexMeta, node.Pos(), ctx))
             .LookupKeys(streamLookupIndex.LookupKeys())
             .Columns(keyColumnsList)
+            .LookupStrategy().Build(TKqpStreamLookupStrategyName)
             .Done();
 
         return Build<TKqlStreamLookupTable>(ctx, node.Pos())
             .Table(streamLookupIndex.Table())
             .LookupKeys(lookupIndexTable.Ptr())
             .Columns(streamLookupIndex.Columns())
+            .LookupStrategy().Build(TKqpStreamLookupStrategyName)
             .Done();
     }
 
     return node;
 }
 
+/// Can push flat map node to read from table using only columns available in table description
+bool CanPushFlatMap(const TCoFlatMapBase& flatMap, const TKikimrTableDescription& tableDesc, const TParentsMap& parentsMap, TVector<TString> & extraColumns) {
+    auto flatMapLambda = flatMap.Lambda();
+    if (!IsFilterFlatMap(flatMapLambda)) {
+        return false;
+    }
+
+    const auto & flatMapLambdaArgument = flatMapLambda.Args().Arg(0).Ref();
+    auto flatMapLambdaConditional = flatMapLambda.Body().Cast<TCoConditionalValueBase>();
+
+    TSet<TString> lambdaSubset;
+    if (!HaveFieldsSubset(flatMapLambdaConditional.Predicate().Ptr(), flatMapLambdaArgument, lambdaSubset, parentsMap)) {
+        return false;
+    }
+
+    for (auto & lambdaColumn : lambdaSubset) {
+        auto columnIndex = tableDesc.GetKeyColumnIndex(lambdaColumn);
+        if (!columnIndex) {
+            return false;
+        }
+    }
+
+    extraColumns.insert(extraColumns.end(), lambdaSubset.begin(), lambdaSubset.end());
+    return true;
+}
+
+// Check that the key selector doesn't include any columns from the applyColumns or other
+// complex expressions
+bool KeySelectorAllMembers(const TCoLambda& lambda, const TSet<TString> & applyColumns) {
+    if (auto body = lambda.Body().Maybe<TCoMember>()) {
+        auto attrRef = body.Cast().Name().StringValue();
+        if (applyColumns.contains(attrRef)){
+            return false;
+        }
+    }
+    else if (auto body = lambda.Body().Maybe<TExprList>()) {
+        for (auto item : body.Cast()) {
+            if (auto member = item.Maybe<TCoMember>()) {
+                auto attrRef = member.Cast().Name().StringValue();
+                if (applyColumns.contains(attrRef)) {
+                    return false;
+                }
+            }
+            else {
+                return false;
+            }
+        }
+    }
+    else {
+        return false;
+    }
+    return true;
+}
+
+// Construct a new lambda with renamed attributes based on the mapping
+// If we see a complex expression in the key selector, we just pass it on into
+// the new lambda
+TCoLambda RenameKeySelector(const TCoLambda& lambda, TExprContext& ctx, const THashMap<TString,TString>& map) {
+    // If its single member lambda body
+    if (lambda.Body().Maybe<TCoMember>()) {
+        auto attrRef = lambda.Body().Cast<TCoMember>().Name().StringValue();
+        auto mapped = map.Value(attrRef,attrRef);
+
+        return Build<TCoLambda>(ctx, lambda.Pos())
+                .Args({"argument"})
+                .Body<TCoMember>()
+                    .Struct("argument")
+                    .Name().Build(mapped)
+                    .Build()
+                .Done();
+    }
+    // Else its a list of members lambda body
+    else {
+        TCoArgument arg = Build<TCoArgument>(ctx, lambda.Pos())
+            .Name("Arg")
+            .Done();
+
+        TVector<TExprBase> members;
+
+        for (auto item : lambda.Body().Cast<TExprList>()) {
+            auto attrRef = item.Cast<TCoMember>().Name().StringValue();
+            auto mapped = map.Value(attrRef,attrRef);
+
+            auto member = Build<TCoMember>(ctx, lambda.Pos())
+                .Struct(arg)
+                .Name().Build(mapped)
+                .Done();
+            members.push_back(member);
+        }
+
+        return Build<TCoLambda>(ctx, lambda.Pos())
+                .Args({arg})
+                .Body<TExprList>()
+                    .Add(members)
+                    .Build()
+                .Done();
+    }
+}
+
+
+// If we have a top-sort over flatmap, we can push it throught is, so that the
+// RewriteTopSortOverIndexRead rule can fire next. If the flatmap renames some of the sort
+// attributes, we need to use the original names in the top-sort. When pushing TopSort below
+// FlatMap, we change FlatMap to OrderedFlatMap to preserve the order of its input.
+TExprBase KqpRewriteTopSortOverFlatMap(const TExprBase& node, TExprContext& ctx) {
+
+    // Check that we have a top-sort and a flat-map directly below it
+    if(!node.Maybe<TCoTopBase>()) {
+        return node;
+    }
+
+    const auto topBase = node.Maybe<TCoTopBase>().Cast();
+
+    if (!topBase.Input().Maybe<TCoFlatMap>()) {
+        return node;
+    }
+
+    auto flatMap = topBase.Input().Maybe<TCoFlatMap>().Cast();
+
+    // Check that the flat-map is a rename or apply and compute the mapping
+    // Also compute the apply mapping, if we have a key selector that mentions
+    // apply columns, we cannot push the TopSort
+    TExprNode::TPtr structNode;
+    THashMap<TString, TString> renameMap;
+    TSet<TString> applyColumns;
+    if (!IsRenameOrApplyFlatMapWithMapping(flatMap, structNode, renameMap, applyColumns)) {
+        return node;
+    }
+
+    // Check that the key selector doesn't contain apply columns or expressions
+    if (!KeySelectorAllMembers(topBase.KeySelectorLambda(), applyColumns)) {
+        return node;
+    }
+
+    // Rename the attributes in sort key selector of the sort
+    TCoLambda newKeySelector = RenameKeySelector(topBase.KeySelectorLambda(), ctx, renameMap);
+
+    // Swap top sort and rename operators
+    auto flatMapInput = Build<TCoTopBase>(ctx, node.Pos())
+        .CallableName(node.Ref().Content())
+        .Input(flatMap.Input())
+        .KeySelectorLambda(newKeySelector)
+        .SortDirections(topBase.SortDirections())
+        .Count(topBase.Count())
+        .Done();
+
+    return Build<TCoOrderedFlatMap>(ctx, node.Pos())
+        .Input(flatMapInput)
+        .Lambda(ctx.DeepCopyLambda(flatMap.Lambda().Ref()))
+        .Done();
+}
+
 // The index and main table have same number of rows, so we can push a copy of TCoTopSort or TCoTake
 // through TKqlLookupTable.
 // The simplest way is to match TopSort or Take over TKqlReadTableIndex.
-TExprBase KqpRewriteTopSortOverIndexRead(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
+// Additionally if there is TopSort or Take over filter, and filter depends only on columns available in index,
+// we also push copy of filter through TKqlLookupTable.
+TExprBase KqpRewriteTopSortOverIndexRead(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx,
+                                        const TParentsMap& parentsMap) {
     if (!node.Maybe<TCoTopBase>()) {
         return node;
     }
 
     const auto topBase = node.Maybe<TCoTopBase>().Cast();
 
-    if (auto readTableIndex = TReadMatch::Match(topBase.Input())) {
+    auto maybeFlatMap = topBase.Input().Maybe<TCoFlatMap>();
+    TExprBase input = maybeFlatMap ? maybeFlatMap.Cast().Input() : topBase.Input();
 
-        const auto& tableDesc = GetTableData(*kqpCtx.Tables, kqpCtx.Cluster, readTableIndex.Table().Path());
-        const auto& [indexMeta, _ ] = tableDesc.Metadata->GetIndexMetadata(TString(readTableIndex.Index().Value()));
-        const auto& indexDesc = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, indexMeta->Name);
+    auto readTableIndex = TReadMatch::Match(input);
+    if (!readTableIndex)
+        return node;
 
-        TVector<TString> sortByColumns;
+    const auto& tableDesc = GetTableData(*kqpCtx.Tables, kqpCtx.Cluster, readTableIndex.Table().Path());
+    const auto& [indexMeta, _ ] = tableDesc.Metadata->GetIndexMetadata(TString(readTableIndex.Index().Value()));
+    const auto& indexDesc = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, indexMeta->Name);
 
-        if (!CanPushTopSort(topBase, indexDesc, &sortByColumns)) {
-            return node;
+    TVector<TString> extraColumns;
+
+    if (maybeFlatMap && !CanPushFlatMap(maybeFlatMap.Cast(), indexDesc, parentsMap, extraColumns))
+        return node;
+
+    if (!CanPushTopSort(topBase, indexDesc, &extraColumns)) {
+        return node;
+    }
+
+    bool needSort = node.Maybe<TCoTopSort>() && !IsKeySelectorPkPrefix(topBase.KeySelectorLambda(), indexDesc);
+
+    auto filter = [&](const TExprBase& in) mutable {
+        auto sortInput = in;
+
+        if (maybeFlatMap)
+        {
+            sortInput = Build<TCoFlatMap>(ctx, node.Pos())
+                .Input(in)
+                .Lambda(ctx.DeepCopyLambda(maybeFlatMap.Lambda().Ref()))
+                .Done();
         }
 
-        auto filter = [&ctx, &node, &topBase](const TExprBase& in) mutable {
-            auto newTop = Build<TCoTopBase>(ctx, node.Pos())
-                .CallableName(node.Ref().Content())
-                .Input(in)
-                .KeySelectorLambda(ctx.DeepCopyLambda(topBase.KeySelectorLambda().Ref()))
-                .SortDirections(topBase.SortDirections())
-                .Count(topBase.Count())
-                .Done();
-            return TExprBase(newTop);
-        };
-
-        auto lookup = DoRewriteIndexRead(readTableIndex, ctx, tableDesc, indexMeta,
-            kqpCtx.IsScanQuery(), sortByColumns, filter);
-
-        return Build<TCoTopBase>(ctx, node.Pos())
-            .CallableName(node.Ref().Content())
-            .Input(lookup)
+        auto newTop = Build<TCoTopBase>(ctx, node.Pos())
+            .CallableName(needSort ? TCoTopSort::CallableName() : TCoTop::CallableName())
+            .Input(sortInput)
             .KeySelectorLambda(ctx.DeepCopyLambda(topBase.KeySelectorLambda().Ref()))
             .SortDirections(topBase.SortDirections())
             .Count(topBase.Count())
             .Done();
-    }
 
-    return node;
+        return TExprBase(newTop);
+    };
+
+    auto lookup = DoRewriteIndexRead(readTableIndex, ctx, tableDesc, indexMeta,
+        kqpCtx.IsScanQuery(), extraColumns, filter);
+
+    return Build<TCoTopBase>(ctx, node.Pos())
+        .CallableName(node.Ref().Content())
+        .Input(lookup)
+        .KeySelectorLambda(ctx.DeepCopyLambda(topBase.KeySelectorLambda().Ref()))
+        .SortDirections(topBase.SortDirections())
+        .Count(topBase.Count())
+        .Done();
 }
 
-TExprBase KqpRewriteTakeOverIndexRead(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
+TExprBase KqpRewriteTakeOverIndexRead(const TExprBase& node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx,
+                                    const TParentsMap& parentsMap) {
     if (!node.Maybe<TCoTake>()) {
         return node;
     }
 
     auto take = node.Maybe<TCoTake>().Cast();
 
-    if (auto readTableIndex = TReadMatch::Match(take.Input())) {
+    auto maybeFlatMap = take.Input().Maybe<TCoFlatMap>();
+    TExprBase input = maybeFlatMap ? maybeFlatMap.Cast().Input() : take.Input();
 
-        const auto& tableDesc = GetTableData(*kqpCtx.Tables, kqpCtx.Cluster, readTableIndex.Table().Path());
-        const auto& [indexMeta, _ ] = tableDesc.Metadata->GetIndexMetadata(TString(readTableIndex.Index().Value()));
+    auto readTableIndex = TReadMatch::Match(input);
+    if (!readTableIndex)
+        return node;
 
-        auto filter = [&ctx, &node](const TExprBase& in) mutable {
-            // Change input for TCoTake. New input is result of TKqlReadTable.
-            return TExprBase(ctx.ChangeChild(*node.Ptr(), 0, in.Ptr()));
-        };
+    const auto& tableDesc = GetTableData(*kqpCtx.Tables, kqpCtx.Cluster, readTableIndex.Table().Path());
+    const auto& [indexMeta, _ ] = tableDesc.Metadata->GetIndexMetadata(TString(readTableIndex.Index().Value()));
+    const auto& indexDesc = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, indexMeta->Name);
 
-        return DoRewriteIndexRead(readTableIndex, ctx, tableDesc, indexMeta, kqpCtx.IsScanQuery(), {}, filter);
-    }
+    TVector<TString> extraColumns;
+    if (maybeFlatMap && !CanPushFlatMap(maybeFlatMap.Cast(), indexDesc, parentsMap, extraColumns))
+        return node;
 
-    return node;
+    auto filter = [&](const TExprBase& in) mutable {
+        auto takeChild = in;
+
+        if (maybeFlatMap)
+        {
+            takeChild = Build<TCoFlatMap>(ctx, node.Pos())
+                .Input(in)
+                .Lambda(ctx.DeepCopyLambda(maybeFlatMap.Lambda().Ref()))
+                .Done();
+        }
+
+        // Change input for TCoTake. New input is result of TKqlReadTable.
+        return TExprBase(ctx.ChangeChild(*node.Ptr(), 0, takeChild.Ptr()));
+    };
+
+    return DoRewriteIndexRead(readTableIndex, ctx, tableDesc, indexMeta, kqpCtx.IsScanQuery(), extraColumns, filter);
 }
 
 } // namespace NKikimr::NKqp::NOpt

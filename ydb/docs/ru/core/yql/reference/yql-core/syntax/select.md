@@ -26,11 +26,17 @@
 
 {% include [x](_includes/select/distinct.md) %}
 
+{% include [x](_includes/select/unique_distinct_hints.md) %}
+
 {% include [x](_includes/select/execution.md) %}
 
 {% include [x](_includes/select/column_order.md) %}
 
+{% include [x](_includes/select/combining_queries.md) %}
+
 {% include [x](_includes/select/union_all.md) %}
+
+{% include [x](_includes/select/union.md) %}
 
 {% include [x](_includes/select/commit.md) %}
 
@@ -38,7 +44,13 @@
 
   {% include [x](_includes/select/functional_tables.md) %}
 
+{% endif %}
+
+{% if feature_map_reduce %}
+
   {% include [x](_includes/select/folder.md) %}
+
+  {% include [x](_includes/select/walk_folders.md) %}
 
 {% endif %}
 

@@ -2,114 +2,44 @@
 
 namespace NFq {
 
-namespace {
-
-NYql::TIssues ValidateProjectionType(const NYdb::TType& columnType, const TString& columnName, const std::vector<NYdb::TType>& availableTypes) {
-    return FindIf(availableTypes, [&columnType](const auto& availableType) { return NYdb::TypesEqual(availableType, columnType); }) == availableTypes.end()
-        ? NYql::TIssues{MakeErrorIssue(TIssuesIds::BAD_REQUEST, TStringBuilder{} << "Column \"" << columnName << "\" from projection does not support " << columnType.ToString() << " type")}
-        : NYql::TIssues{};
-}
-
-NYql::TIssues ValidateIntegerProjectionType(const NYdb::TType& columnType, const TString& columnName) {
-    static const std::vector<NYdb::TType> availableTypes {
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::String)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Int32)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Uint32)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Int64)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Uint64)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Utf8)
-            .Build()
-    };
-    return ValidateProjectionType(columnType, columnName, availableTypes);
-}
-
-NYql::TIssues ValidateEnumProjectionType(const NYdb::TType& columnType, const TString& columnName) {
-    static const std::vector<NYdb::TType> availableTypes {
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::String)
-            .Build()
-    };
-    return ValidateProjectionType(columnType, columnName, availableTypes);
-}
-
-NYql::TIssues ValidateCommonProjectionType(const NYdb::TType& columnType, const TString& columnName) {
-    static const std::vector<NYdb::TType> availableTypes {
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::String)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Int64)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Utf8)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Int32)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Uint32)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Uint64)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Date)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Datetime)
-            .Build()
-    };
-    return ValidateProjectionType(columnType, columnName, availableTypes);
-}
-
-NYql::TIssues ValidateDateProjectionType(const NYdb::TType& columnType, const TString& columnName) {
-    static const std::vector<NYdb::TType> availableTypes {
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::String)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Utf8)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Uint32)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Date)
-            .Build(),
-        NYdb::TTypeBuilder{}
-            .Primitive(NYdb::EPrimitiveType::Datetime)
-            .Build()
-    };
-    return ValidateProjectionType(columnType, columnName, availableTypes);
-}
-
-TMap<TString, NYql::NUdf::EDataSlot> GetDataSlotColumns(const FederatedQuery::Schema& schema) {
-    TMap<TString, NYql::NUdf::EDataSlot> dataSlotColumns;
-    for (const auto& column: schema.column()) {
-        if (column.has_type()) {
-            const auto& type = column.type();
-            if (type.has_type_id()) {
-                dataSlotColumns[column.name()] = NYql::NUdf::GetDataSlot(type.type_id());
-            }
-        }
+template <typename TConnection>
+void ValidateGenericConnectionSetting(
+    const TConnection& connection, 
+    const TString& dataSourceKind,
+    bool disableCurrentIam,
+    bool passwordRequired,
+    NYql::TIssues& issues
+) {
+    if (!connection.has_auth() || connection.auth().identity_case() == FederatedQuery::IamAuth::IDENTITY_NOT_SET) {
+        auto msg = TStringBuilder() << "content.setting." << dataSourceKind << "_cluster.auth is not specified";
+        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, msg));
     }
-    return dataSlotColumns;
+
+    if (connection.auth().identity_case() == FederatedQuery::IamAuth::kCurrentIam && disableCurrentIam) {
+        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "current iam authorization is disabled"));
+    }
+
+    if (!connection.database_id() && !(connection.host() && connection.port())) {
+        auto msg = TStringBuilder() << "content.setting.clickhouse_cluster.{database_id or host,port} field is not specified";
+        issues.AddIssue( MakeErrorIssue(TIssuesIds::BAD_REQUEST,msg));
+    }
+
+    if (!connection.login()) {
+        auto msg = TStringBuilder() << "content.setting." << dataSourceKind << "_cluster.login is not specified";
+        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, msg));
+    }
+
+    if (!connection.password() && passwordRequired) {
+        auto msg = TStringBuilder() << "content.setting." << dataSourceKind << "_cluster.password is not specified";
+        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, msg));
+    }
 }
 
-}
-
-NYql::TIssues ValidateConnectionSetting(const FederatedQuery::ConnectionSetting& setting, const TSet<FederatedQuery::ConnectionSetting::ConnectionCase>& availableConnections, bool disableCurrentIam,  bool clickHousePasswordRequire) {
+NYql::TIssues ValidateConnectionSetting(
+    const FederatedQuery::ConnectionSetting &setting,
+    const TSet<FederatedQuery::ConnectionSetting::ConnectionCase> &availableConnections,
+    bool disableCurrentIam,
+    bool passwordRequired) {
     NYql::TIssues issues;
     if (!availableConnections.contains(setting.connection_case())) {
         issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "connection of the specified type is disabled"));
@@ -132,26 +62,11 @@ NYql::TIssues ValidateConnectionSetting(const FederatedQuery::ConnectionSetting&
         break;
     }
     case FederatedQuery::ConnectionSetting::kClickhouseCluster: {
-        const FederatedQuery::ClickHouseCluster ch = setting.clickhouse_cluster();
-        if (!ch.has_auth() || ch.auth().identity_case() == FederatedQuery::IamAuth::IDENTITY_NOT_SET) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "content.setting.clickhouse_cluster.auth field is not specified"));
-        }
-
-        if (ch.auth().identity_case() == FederatedQuery::IamAuth::kCurrentIam && disableCurrentIam) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "current iam authorization is disabled"));
-        }
-
-        if (!ch.database_id() && !(ch.host() && ch.port())) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "content.setting.clickhouse_cluster.{database_id or host,port} field is not specified"));
-        }
-
-        if (!ch.login()) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "content.setting.clickhouse_cluster.login field is not specified"));
-        }
-
-        if (!ch.password() && clickHousePasswordRequire) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "content.setting.clickhouse_cluster.password field is not specified"));
-        }
+        ValidateGenericConnectionSetting(setting.clickhouse_cluster(), "clickhouse", disableCurrentIam, passwordRequired, issues);
+        break;
+    }
+    case FederatedQuery::ConnectionSetting::kPostgresqlCluster: {
+        ValidateGenericConnectionSetting(setting.postgresql_cluster(), "postgresql", disableCurrentIam, passwordRequired, issues);
         break;
     }
     case FederatedQuery::ConnectionSetting::kObjectStorage: {
@@ -212,139 +127,48 @@ NYql::TIssues ValidateConnectionSetting(const FederatedQuery::ConnectionSetting&
     return issues;
 }
 
-NYql::TIssues ValidateDateFormatSetting(const google::protobuf::Map<TString, TString>& formatSetting, bool matchAllSettings) {
+NYql::TIssues ValidateEntityName(const TString& name) {
     NYql::TIssues issues;
-    TSet<TString> conflictingKeys;
-    for (const auto& [key, value]: formatSetting) {
-        if (key == "data.datetime.format_name"sv) {
-            if (!IsValidDateTimeFormatName(value)) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "unknown value for data.datetime.format_name " + value));
-            }
-            if (conflictingKeys.contains("data.datetime.format")) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "Don't use data.datetime.format_name and data.datetime.format together"));
-            }
-            conflictingKeys.insert("data.datetime.format_name");
-            continue;
-        }
 
-        if (key == "data.datetime.format"sv) {
-            if (conflictingKeys.contains("data.datetime.format_name")) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "Don't use data.datetime.format_name and data.datetime.format together"));
-            }
-            conflictingKeys.insert("data.datetime.format");
-            continue;
-        }
-
-        if (key == "data.timestamp.format_name"sv) {
-            if (!IsValidTimestampFormatName(value)) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "unknown value for data.timestamp.format_name " + value));
-            }
-            if (conflictingKeys.contains("data.timestamp.format")) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "Don't use data.timestamp.format_name and data.timestamp.format together"));
-            }
-            conflictingKeys.insert("data.timestamp.format_name");
-            continue;
-        }
-
-        if (key == "data.timestamp.format"sv) {
-            if (conflictingKeys.contains("data.timestamp.format_name")) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "Don't use data.timestamp.format_name and data.timestamp.format together"));
-            }
-            conflictingKeys.insert("data.timestamp.format");
-            continue;
-        }
-
-        if (matchAllSettings) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "unknown format setting " + key));
-        }
+    if (!name) {
+        issues.AddIssue(
+            MakeErrorIssue(TIssuesIds::BAD_REQUEST, "name field is not specified"));
     }
-    return issues;
-}
 
-
-NYql::TIssues ValidateFormatSetting(const TString& format, const google::protobuf::Map<TString, TString>& formatSetting) {
-    NYql::TIssues issues;
-    TSet<TString> conflictingKeys;
-    issues.AddIssues(ValidateDateFormatSetting(formatSetting));
-    for (const auto& [key, value]: formatSetting) {
-        if (key == "file_pattern"sv) {
-            continue;
-        }
-
-        if (key == "data.interval.unit"sv) {
-            if (!IsValidIntervalUnit(value)) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "unknown value for data.interval.unit " + value));
-            }
-            continue;
-        }
-
-        if (IsIn({ "data.datetime.format_name"sv, "data.datetime.format"sv, "data.timestamp.format_name"sv, "data.timestamp.format"sv}, key)) {
-            continue;
-        }
-
-        if (key == "csv_delimiter"sv) {
-            if (format != "csv_with_names"sv) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "csv_delimiter should be used only with format csv_with_names"));
-            }
-            if (value.size() != 1) {
-                issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "csv_delimiter should contain only one character"));
-            }
-            continue;
-        }
-
-        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, "unknown format setting " + key));
+    if (name.Size() > 255) {
+        issues.AddIssue(
+            MakeErrorIssue(TIssuesIds::BAD_REQUEST,
+                           TStringBuilder{}
+                               << "Incorrect connection name: " << name
+                               << ". Name length must not exceed 255 symbols. Current length is "
+                               << name.Size() << " symbol(s)"));
     }
-    return issues;
-}
 
-NYql::TIssues ValidateProjectionColumns(const FederatedQuery::Schema& schema, const TVector<TString>& partitionedBy) {
-    NYql::TIssues issues;
-    TMap<TString, Ydb::Type> types;
-    for (const auto& column: schema.column()) {
-        types[column.name()] = column.type();
+    if (name != to_lower(name)) {
+        issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST,
+                                       TStringBuilder{}
+                                           << "Incorrect binding name: " << name
+                                           << ". Please use only lower case"));
     }
-    for (const auto& parititonedColumn: partitionedBy) {
-        auto it = types.find(parititonedColumn);
-        if (it == types.end()) {
-            issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, TStringBuilder{} << "Column " << parititonedColumn << " from partitioned_by does not exist in the scheme. Please add such a column to your scheme"));
-            continue;
-        }
-        NYdb::TType columnType{it->second};
-        issues.AddIssues(ValidateCommonProjectionType(columnType, parititonedColumn));
-    }
-    return issues;
-}
 
-NYql::TIssues ValidateProjection(const FederatedQuery::Schema& schema, const TString& projection, const TVector<TString>& partitionedBy, size_t pathsLimit) {
-    auto generator = NYql::NPathGenerator::CreatePathGenerator(
-        projection,
-        partitionedBy,
-        GetDataSlotColumns(schema),
-        pathsLimit); // an exception is thrown if an error occurs
-    TMap<TString, NYql::NPathGenerator::IPathGenerator::EType> projectionColumns;
-    for (const auto& column: generator->GetConfig().Rules) {
-        projectionColumns[column.Name] = column.Type;
+    if (AllOf(name, [](auto& ch) { return ch == '.'; })) {
+        issues.AddIssue(
+            MakeErrorIssue(TIssuesIds::BAD_REQUEST,
+                           TStringBuilder{}
+                               << "Incorrect connection name: " << name
+                               << ". Name is not allowed path part contains only dots"));
     }
-    NYql::TIssues issues;
-    for (const auto& column: schema.column()) {
-        auto it = projectionColumns.find(column.name());
-        if (it != projectionColumns.end()) {
-            switch (it->second) {
-                case NYql::NPathGenerator::IPathGenerator::EType::INTEGER:
-                    issues.AddIssues(ValidateIntegerProjectionType(NYdb::TType{column.type()}, column.name()));
-                    break;
-                case NYql::NPathGenerator::IPathGenerator::EType::ENUM:
-                    issues.AddIssues(ValidateEnumProjectionType(NYdb::TType{column.type()}, column.name()));
-                    break;
-                case NYql::NPathGenerator::IPathGenerator::EType::DATE:
-                    issues.AddIssues(ValidateDateProjectionType(NYdb::TType{column.type()}, column.name()));
-                    break;
-                case NYql::NPathGenerator::IPathGenerator::EType::UNDEFINED:
-                    issues.AddIssue(MakeErrorIssue(TIssuesIds::BAD_REQUEST, TStringBuilder{} << "Column \"" << column.name() << "\" from projection has undefined generator type"));
-                    break;
-            }
-        }
+
+    static const std::regex allowListRegexp(
+        "(?:[a-z0-9]|!|\\\\|#|\\$|%|&|\\(|\\)|\\*|\\+|,|-|\\.|:|;|<|=|>|\\?|@|\\[|\\]|\\^|_|\\{|\\||\\}|~)+");
+    if (!std::regex_match(name.c_str(), allowListRegexp)) {
+        issues.AddIssue(MakeErrorIssue(
+            TIssuesIds::BAD_REQUEST,
+            TStringBuilder{}
+                << "Incorrect connection name: " << name
+                << ". Please make sure that name consists of following symbols: ['a'-'z'], ['0'-'9'], '!', '\\', '#', '$', '%'. '&', '(', ')', '*', '+', ',', '-', '.', ':', ';', '<', '=', '>', '?', '@', '[', ']', '^', '_', '{', '|', '}', '~'"));
     }
+
     return issues;
 }
 

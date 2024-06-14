@@ -1,16 +1,18 @@
 #pragma once
 
 #include "node_broker.h"
+#include "slot_indexes_pool.h"
 
 #include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/base/subdomain.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/cms/console/tx_processor.h>
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 #include <util/generic/bitmap.h>
 
@@ -24,6 +26,18 @@ using NTabletFlatExecutor::TTransactionContext;
 using NConsole::TEvConsole;
 using NConsole::ITxExecutor;
 using NConsole::TTxProcessor;
+
+class INodeBrokerHooks {
+protected:
+    ~INodeBrokerHooks() = default;
+
+public:
+    virtual void OnActivateExecutor(ui64 tabletId);
+
+public:
+    static INodeBrokerHooks* Get();
+    static void Set(INodeBrokerHooks* hooks);
+};
 
 class TNodeBroker : public TActor<TNodeBroker>
                   , public TTabletExecutedFlat
@@ -102,6 +116,8 @@ private:
         ui32 Lease;
         TInstant Expire;
         bool AuthorizedByCertificate = false;
+        std::optional<ui32> SlotIndex;
+        TSubDomainKey ServicedSubDomain;
     };
 
     // State changes to apply while moving to the next epoch.
@@ -122,7 +138,9 @@ private:
     ITransaction *CreateTxExtendLease(TEvNodeBroker::TEvExtendLeaseRequest::TPtr &ev);
     ITransaction *CreateTxInitScheme();
     ITransaction *CreateTxLoadState();
-    ITransaction *CreateTxRegisterNode(TEvNodeBroker::TEvRegistrationRequest::TPtr &ev, const NActors::TScopeId& scopeId);
+    ITransaction *CreateTxRegisterNode(TEvNodeBroker::TEvRegistrationRequest::TPtr &ev,
+                                       const NActors::TScopeId& scopeId,
+                                       const TSubDomainKey& servicedSubDomain);
     ITransaction *CreateTxUpdateConfig(TEvConsole::TEvConfigNotificationRequest::TPtr &ev);
     ITransaction *CreateTxUpdateConfig(TEvNodeBroker::TEvSetConfigRequest::TPtr &ev);
     ITransaction *CreateTxUpdateConfigSubscription(TEvConsole::TEvReplaceConfigSubscriptionsResponse::TPtr &ev);
@@ -132,7 +150,7 @@ private:
     void OnDetach(const TActorContext &ctx) override;
     void OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev,
                       const TActorContext &ctx) override;
-    void Enqueue(TAutoPtr<IEventHandle> &ev) override;
+    void DefaultSignalTabletActive(const TActorContext &ctx) override;
     bool OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
                              const TActorContext &ctx) override;
     void Cleanup(const TActorContext &ctx);
@@ -166,11 +184,11 @@ private:
         switch (ev->GetTypeRewrite()) {
             HFuncTraced(TEvConsole::TEvConfigNotificationRequest, Handle);
             HFuncTraced(TEvConsole::TEvReplaceConfigSubscriptionsResponse, Handle);
-            HFuncTraced(TEvents::TEvPoisonPill, Handle);
             HFuncTraced(TEvNodeBroker::TEvListNodes, Handle);
             HFuncTraced(TEvNodeBroker::TEvResolveNode, Handle);
             HFuncTraced(TEvNodeBroker::TEvRegistrationRequest, Handle);
             HFuncTraced(TEvNodeBroker::TEvExtendLeaseRequest, Handle);
+            HFuncTraced(TEvNodeBroker::TEvCompactTables, Handle);
             HFuncTraced(TEvNodeBroker::TEvGetConfigRequest, Handle);
             HFuncTraced(TEvNodeBroker::TEvSetConfigRequest, Handle);
             HFuncTraced(TEvPrivate::TEvUpdateEpoch, Handle);
@@ -181,7 +199,7 @@ private:
 
         default:
             if (!HandleDefaultEvents(ev, SelfId())) {
-                Y_FAIL("TNodeBroker::StateWork unexpected event type: %" PRIx32 " event: %s from %s",
+                Y_ABORT("TNodeBroker::StateWork unexpected event type: %" PRIx32 " event: %s from %s",
                        ev->GetTypeRewrite(), ev->ToString().data(),
                        ev->Sender.ToString().data());
             }
@@ -190,24 +208,13 @@ private:
 
     void ClearState();
 
-    ui32 NodeIdStep() const {
-        return SingleDomainAlloc ? 1 : (1 << DOMAIN_BITS);
-    }
-
-    ui32 NodeIdDomain(ui32 nodeId) const {
-        return SingleDomainAlloc ? DomainId : (nodeId & DOMAIN_MASK);
-    }
-
-    ui32 RewriteNodeId(ui32 nodeId) const {
-        return SingleDomainAlloc ? nodeId : ((nodeId & ~DOMAIN_MASK) | DomainId);
-    }
-
     // Internal state modifiers. Don't affect DB.
     void AddNode(const TNodeInfo &info);
     void RemoveNode(ui32 nodeId);
     void ExtendLease(TNodeInfo &node);
     void FixNodeId(TNodeInfo &node);
     void RecomputeFreeIds();
+    void RecomputeSlotIndexesPools();
     bool IsBannedId(ui32 id) const;
 
     void AddDelayedListNodesRequest(ui64 epoch,
@@ -216,8 +223,9 @@ private:
     void ProcessDelayedListNodesRequests();
 
     void ScheduleEpochUpdate(const TActorContext &ctx);
-    void ProcessEnqueuedEvents(const TActorContext &ctx);
     void FillNodeInfo(const TNodeInfo &node,
+                      NKikimrNodeBroker::TNodeInfo &info) const;
+    void FillNodeName(const std::optional<ui32> &slotIndex,
                       NKikimrNodeBroker::TNodeInfo &info) const;
 
     void ComputeNextEpochDiff(TStateDiff &diff);
@@ -269,8 +277,6 @@ private:
                 const TActorContext &ctx);
     void Handle(TEvConsole::TEvReplaceConfigSubscriptionsResponse::TPtr &ev,
                 const TActorContext &ctx);
-    void Handle(TEvents::TEvPoisonPill::TPtr &ev,
-                const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvListNodes::TPtr &ev,
                 const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvResolveNode::TPtr &ev,
@@ -279,6 +285,8 @@ private:
                 const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvExtendLeaseRequest::TPtr &ev,
                 const TActorContext &ctx);
+    void Handle(TEvNodeBroker::TEvCompactTables::TPtr &ev,
+                const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvGetConfigRequest::TPtr &ev,
                 const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvSetConfigRequest::TPtr &ev,
@@ -286,8 +294,6 @@ private:
     void Handle(TEvPrivate::TEvUpdateEpoch::TPtr &ev,
                 const TActorContext &ctx);
 
-    // ID of domain node broker is responsible for.
-    ui32 DomainId;
     // All registered dynamic nodes.
     THashMap<ui32, TNodeInfo> Nodes;
     THashMap<ui32, TNodeInfo> ExpiredNodes;
@@ -295,26 +301,27 @@ private:
     THashMap<std::tuple<TString, TString, ui16>, ui32> Hosts;
     // Bitmap with free Node IDs (with no lower 5 bits).
     TDynBitMap FreeIds;
+    // Maps tenant to its slot indexes pool.
+    std::unordered_map<TSubDomainKey, TSlotIndexesPool, THash<TSubDomainKey>> SlotIndexesPools;
+    bool EnableDynamicNodeNameGeneration = false;
     // Epoch info.
     TEpochInfo Epoch;
     // Current config.
     NKikimrNodeBroker::TConfig Config;
     ui64 MaxStaticId;
+    ui64 MinDynamicId;
     ui64 MaxDynamicId;
     TDuration EpochDuration;
     TVector<std::pair<ui32, ui32>> BannedIds;
     ui64 ConfigSubscriptionId;
+    TString NodeNamePrefix;
 
     // Events collected during initialization phase.
-    TVector<TAutoPtr<IEventHandle>> EnqueuedEvents;
     TMultiMap<ui64, TEvNodeBroker::TEvListNodes::TPtr> DelayedListNodesRequests;
     // Transactions queue.
     TTxProcessor::TPtr TxProcessor;
     TSchedulerCookieHolder EpochTimerCookieHolder;
     TString EpochCache;
-
-    bool SingleDomain = false;
-    bool SingleDomainAlloc = false;
 
 public:
     TNodeBroker(const TActorId &tablet, TTabletStorageInfo *info)
@@ -322,6 +329,7 @@ public:
         , TTabletExecutedFlat(info, tablet, new NMiniKQL::TMiniKQLFactory)
         , EpochDuration(TDuration::Hours(1))
         , ConfigSubscriptionId(0)
+        , NodeNamePrefix("slot-")
         , TxProcessor(new TTxProcessor(*this, "root", NKikimrServices::NODE_BROKER))
     {
     }

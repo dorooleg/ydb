@@ -7,8 +7,9 @@
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo_iter.h>
 #include <ydb/core/protos/node_whiteboard.pb.h>
-#include <library/cpp/actors/interconnect/events_local.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/core/protos/blobstorage_disk.pb.h>
+#include <ydb/library/actors/interconnect/events_local.h>
+#include <ydb/library/actors/core/interconnect.h>
 #include <ydb/core/base/tracing.h>
 
 namespace NKikimr {
@@ -58,6 +59,7 @@ struct TEvWhiteboard{
         EvPDiskStateDelete,
         EvVDiskStateGenerationChange,
         EvVDiskDropDonors,
+        EvClockSkewUpdate,
         EvEnd
     };
 
@@ -303,10 +305,14 @@ struct TEvWhiteboard{
             Record.SetGroupID(groupInfo->GroupID);
             Record.SetGroupGeneration(groupInfo->GroupGeneration);
             Record.SetErasureSpecies(groupInfo->Type.ErasureSpeciesName(groupInfo->Type.GetErasure()));
-            for (ui32 i = 0; i < groupInfo->GetTotalVDisksNum(); ++i) {
-                VDiskIDFromVDiskID(groupInfo->GetVDiskId(i), Record.AddVDiskIds());
-                const TActorId& actorId = groupInfo->GetActorId(i);
-                Record.AddVDiskNodeIds(actorId.NodeId());
+            if (ui32 numVDisks = groupInfo->GetTotalVDisksNum()) {
+                for (ui32 i = 0; i < numVDisks; ++i) {
+                    VDiskIDFromVDiskID(groupInfo->GetVDiskId(i), Record.AddVDiskIds());
+                    const TActorId& actorId = groupInfo->GetActorId(i);
+                    Record.AddVDiskNodeIds(actorId.NodeId());
+                }
+            } else {
+                Record.SetNoVDisksInGroup(true);
             }
             Record.SetStoragePoolName(groupInfo->GetStoragePoolName());
             if (groupInfo->GetEncryptionMode() != TBlobStorageGroupInfo::EEM_NONE) {
@@ -379,6 +385,20 @@ struct TEvWhiteboard{
         }
     };
 
+    static TEvSystemStateUpdate *CreateSharedCacheStatsUpdateRequest(ui64 memUsedBytes, ui64 memLimitBytes) {
+        TEvSystemStateUpdate *request = new TEvSystemStateUpdate();
+        auto *pb = request->Record.MutableSharedCacheStats();
+        pb->SetUsedBytes(memUsedBytes);
+        pb->SetLimitBytes(memLimitBytes);
+        return request;
+    }
+
+    static TEvSystemStateUpdate *CreateTotalSessionsUpdateRequest(ui32 totalSessions) {
+        TEvSystemStateUpdate *request = new TEvSystemStateUpdate();
+        request->Record.SetTotalSessions(totalSessions);
+        return request;
+    }
+
     struct TEvSystemStateAddEndpoint : TEventLocal<TEvSystemStateAddEndpoint, EvSystemStateAddEndpoint> {
         TString Name;
         TString Address;
@@ -416,6 +436,15 @@ struct TEvWhiteboard{
     struct TEvSystemStateRequest : public TEventPB<TEvSystemStateRequest, NKikimrWhiteboard::TEvSystemStateRequest, EvSystemStateRequest> {};
 
     struct TEvSystemStateResponse : public TEventPB<TEvSystemStateResponse, NKikimrWhiteboard::TEvSystemStateResponse, EvSystemStateResponse> {};
+
+    struct TEvClockSkewUpdate : TEventPB<TEvClockSkewUpdate, NKikimrWhiteboard::TNodeClockSkew, EvClockSkewUpdate> {
+        TEvClockSkewUpdate() = default;
+
+        TEvClockSkewUpdate(const ui32 peerNodeId, i64 clockSkewUs) {
+            Record.SetPeerNodeId(peerNodeId);
+            Record.SetClockSkewUs(clockSkewUs);
+        }
+    };
 
     struct TEvNodeStateUpdate : TEventPB<TEvNodeStateUpdate, NKikimrWhiteboard::TNodeStateInfo, EvNodeStateUpdate> {
         TEvNodeStateUpdate() = default;

@@ -3,6 +3,7 @@
 
 #include <ydb/library/yql/core/facade/yql_facade.h>
 #include <ydb/library/yql/providers/common/db_id_async_resolver/db_async_resolver.h>
+#include <ydb/library/yql/providers/common/db_id_async_resolver/mdb_endpoint_generator.h>
 #include <ydb/library/yql/providers/dq/provider/yql_dq_gateway.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
@@ -10,7 +11,7 @@
 #include <ydb/core/fq/libs/protos/fq_private.pb.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 
-#include <library/cpp/actors/core/events.h>
+#include <ydb/library/actors/core/events.h>
 
 #include <util/digest/multi.h>
 
@@ -105,29 +106,29 @@ struct TEvents {
     };
 
     struct TEvEndpointResponse : NActors::TEventLocal<TEvEndpointResponse, TEventIds::EvEndpointResponse> {
-        NYql::TDbResolverResponse DbResolverResponse;
-        explicit TEvEndpointResponse(NYql::TDbResolverResponse&& response) noexcept : DbResolverResponse(std::move(response)) {}
+        NYql::TDatabaseResolverResponse DbResolverResponse;
+        explicit TEvEndpointResponse(NYql::TDatabaseResolverResponse&& response) noexcept : DbResolverResponse(std::move(response)) {}
     };
 
 
     struct TEvEndpointRequest : NActors::TEventLocal<TEvEndpointRequest, TEventIds::EvEndpointRequest> {
-        THashMap<std::pair<TString, NYql::DatabaseType>, NYql::TDatabaseAuth> DatabaseIds; // DbId, DatabaseType => database auth
+        const NYql::IDatabaseAsyncResolver::TDatabaseAuthMap DatabaseIds; 
         TString YdbMvpEndpoint;
         TString MdbGateway;
         TString TraceId;
-        bool MdbTransformHost;
+        const NYql::IMdbEndpointGenerator::TPtr MdbEndpointGenerator;
 
         TEvEndpointRequest(
-            const THashMap<std::pair<TString, NYql::DatabaseType>, NYql::TDatabaseAuth>& databaseIds,
+            const NYql::IDatabaseAsyncResolver::TDatabaseAuthMap& databaseIds,
             const TString& ydbMvpEndpoint,
             const TString& mdbGateway,
             const TString& traceId,
-            bool mdbTransformHost)
+            const NYql::IMdbEndpointGenerator::TPtr& mdbEndpointGenerator)
             : DatabaseIds(databaseIds)
             , YdbMvpEndpoint(ydbMvpEndpoint)
             , MdbGateway(mdbGateway)
             , TraceId(traceId)
-            , MdbTransformHost(mdbTransformHost)
+            , MdbEndpointGenerator(mdbEndpointGenerator)
         { }
     };
 
@@ -243,11 +244,13 @@ struct TEvents {
     struct TEvEffectApplicationResult : public NActors::TEventLocal<TEvEffectApplicationResult, TEventIds::EvEffectApplicationResult> {
         explicit TEvEffectApplicationResult(const NYql::TIssues& issues, bool fataError = false)
             : Issues(issues), FatalError(fataError) {
-        } 
+        }
         NYql::TIssues Issues;
         const bool FatalError;
     };
 };
+
+NActors::TActorId MakeYqPrivateProxyId();
 
 } // namespace NFq
 

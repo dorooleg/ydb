@@ -14,7 +14,7 @@
 #include <ydb/core/audit/audit_log.h>
 #include <ydb/core/base/path.h>
 #include <ydb/core/base/ticket_parser.h>
-#include <ydb/core/base/quoter.h>
+#include <ydb/core/quoter/public/quoter.h>
 #include <ydb/core/protos/msgbus.pb.h>
 #include <ydb/core/ymq/base/action.h>
 #include <ydb/core/ymq/base/acl.h>
@@ -22,8 +22,8 @@
 #include <ydb/core/ymq/base/query_id.h>
 #include <ydb/core/ymq/base/security.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <util/folder/path.h>
 #include <util/generic/guid.h>
@@ -45,7 +45,7 @@ public:
         , Shards_(1)
         , SourceSqsRequest_(sourceSqsRequest)
     {
-        Y_VERIFY(RequestId_);
+        Y_ABORT_UNLESS(RequestId_);
     }
 
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -115,7 +115,7 @@ public:
             FillAuthInformation(request);                                       \
             response->SetRequestId(RequestId_);
             
-        SQS_SWITCH_REQUEST_CUSTOM(SourceSqsRequest_, ENUMERATE_ALL_ACTIONS, Y_VERIFY(false));
+        SQS_SWITCH_REQUEST_CUSTOM(SourceSqsRequest_, ENUMERATE_ALL_ACTIONS, Y_ABORT_UNLESS(false));
         #undef SQS_REQUEST_CASE 
 
         RLOG_SQS_DEBUG("Request started. Actor: " << this->SelfId()); // log new request id
@@ -166,12 +166,12 @@ protected:
     }
 
     virtual bool IsFifoQueue() const {
-        Y_VERIFY(IsFifo_);
+        Y_ABORT_UNLESS(IsFifo_);
         return *IsFifo_;
     }
 
     virtual bool TablesFormat() const {
-        Y_VERIFY(TablesFormat_);
+        Y_ABORT_UNLESS(TablesFormat_);
         return *TablesFormat_;
     }
 
@@ -249,31 +249,46 @@ protected:
 
     void SendReplyAndDie() {
         RLOG_SQS_TRACE("SendReplyAndDie from action actor " << Response_);
-        auto actionCountersCouple = GetActionCounters();
         auto* detailedCounters = UserCounters_ ? UserCounters_->GetDetailedCounters() : nullptr;
         const size_t errors = ErrorsCount(Response_, detailedCounters ? &detailedCounters->APIStatuses : nullptr);
-        if (actionCountersCouple.SqsCounters) {
-            if (errors) {
-                ADD_COUNTER(actionCountersCouple.SqsCounters, Errors, errors);
-            } else {
-                INC_COUNTER(actionCountersCouple.SqsCounters, Success);
-            }
-        }
-        if (actionCountersCouple.YmqCounters) {
-            if (errors) {
-                ADD_COUNTER(actionCountersCouple.YmqCounters, Errors, errors);
-            } else {
-                INC_COUNTER(actionCountersCouple.YmqCounters, Success);
-            }
-        }
+
         FinishTs_ = TActivationContext::Now();
+
+        const TDuration duration = GetRequestDuration();
         const TDuration workingDuration = GetRequestWorkingDuration();
-        RLOG_SQS_DEBUG("Request " << Action_ << " working duration: " << workingDuration.MilliSeconds() << "ms");
-        if (actionCountersCouple.Defined()) {
-            const TDuration duration = GetRequestDuration();
-            COLLECT_HISTOGRAM_COUNTER_COUPLE(actionCountersCouple, Duration, duration.MilliSeconds());
-            COLLECT_HISTOGRAM_COUNTER_COUPLE(actionCountersCouple, WorkingDuration, workingDuration.MilliSeconds());
+        if (QueueLeader_ && (IsActionForQueue(Action_) || IsActionForQueueYMQ(Action_))) {
+            auto counterChangedEvent = MakeHolder<TSqsEvents::TEvActionCounterChanged>();
+            counterChangedEvent->Record.set_action(Action_);
+            counterChangedEvent->Record.set_durationms(duration.MilliSeconds());
+            counterChangedEvent->Record.set_workingdurationms(workingDuration.MilliSeconds());
+            counterChangedEvent->Record.set_errorscount(errors);
+            this->Send(QueueLeader_, counterChangedEvent.Release());
+        } else if (UserCounters_ && UserCounters_->NeedToShowDetailedCounters()) {
+            TCountersCouple<TActionCounters*> userCounters{nullptr, nullptr};
+            if (IsActionForUser(Action_)) {
+                userCounters.SqsCounters = &UserCounters_->SqsActionCounters[Action_];
+                if (errors) {
+                    ADD_COUNTER(userCounters.SqsCounters, Errors, errors);
+                } else {
+                    INC_COUNTER(userCounters.SqsCounters, Success);
+                }
+            }
+            if (IsActionForUserYMQ(Action_)) {
+                userCounters.YmqCounters = &UserCounters_->YmqActionCounters[Action_];
+                if (errors) {
+                    ADD_COUNTER(userCounters.YmqCounters, Errors, errors);
+                } else {
+                    INC_COUNTER(userCounters.YmqCounters, Success);
+                }
+            }
+
+            if (userCounters.Defined()) {
+                COLLECT_HISTOGRAM_COUNTER_COUPLE(userCounters, Duration, duration.MilliSeconds());
+                RLOG_SQS_DEBUG("Request " << Action_ << " working duration: " << workingDuration.MilliSeconds() << "ms");
+                COLLECT_HISTOGRAM_COUNTER_COUPLE(userCounters, WorkingDuration, workingDuration.MilliSeconds());
+            }
         }
+
         if (IsRequestSlow()) {
             PrintSlowRequestWarning();
         }
@@ -422,7 +437,7 @@ protected:
         if (sanitizedPath.SkipPrefix(TStringBuf(Cfg().GetRoot()))) { // always skip SQS root prefix
             return TString(sanitizedPath);
         } else {
-            Y_VERIFY(false); // should never be applied in any other way
+            Y_ABORT_UNLESS(false); // should never be applied in any other way
         }
 
         return {};
@@ -595,8 +610,6 @@ private:
         QueueLeader_ = ev->Get()->QueueLeader;
         QuoterResources_ = std::move(ev->Get()->QuoterResources);
 
-        Y_VERIFY(SchemeCache_);
-
         RLOG_SQS_TRACE("Got configuration. Root url: " << RootUrl_
                         << ", Shards: " << Shards_
                         << ", Fail: " << ev->Get()->Fail);
@@ -611,7 +624,7 @@ private:
 
         const bool needQueueAttributes = TDerived::NeedQueueAttributes();
         if (needQueueAttributes) {
-            Y_VERIFY(ev->Get()->Fail || !ev->Get()->QueueExists || QueueAttributes_.Defined());
+            Y_ABORT_UNLESS(ev->Get()->Fail || !ev->Get()->QueueExists || QueueAttributes_.Defined());
 
             if (QueueAttributes_.Defined()) {
                 RLOG_SQS_TRACE("Got configuration. Attributes: " << *QueueAttributes_);
@@ -624,11 +637,20 @@ private:
             return;
         }
 
-        if (TDerived::NeedExistingQueue() && !ev->Get()->QueueExists) {
-            MakeError(MutableErrorDesc(), NErrors::NON_EXISTENT_QUEUE);
-            SendReplyAndDie();
-            return;
+        if (TDerived::NeedExistingQueue()) {
+            if (ev->Get()->Throttled) {
+                MakeError(MutableErrorDesc(), NErrors::THROTTLING_EXCEPTION, "Too many requests for nonexistent queue.");
+                SendReplyAndDie();
+                return;
+            }
+            if (!ev->Get()->QueueExists) {
+                MakeError(MutableErrorDesc(), NErrors::NON_EXISTENT_QUEUE);
+                SendReplyAndDie();
+                return;
+            }
         }
+
+        Y_ABORT_UNLESS(SchemeCache_);
 
         bool isACLProtectedAccount = Cfg().GetForceAccessControl();
         if (!IsCloud() && (SecurityToken_ || (Cfg().GetForceAccessControl() && (isACLProtectedAccount = IsACLProtectedAccount(UserName_))))) {
@@ -662,7 +684,7 @@ private:
         TEvTxProxySchemeCache::TEvNavigateKeySetResult* msg = ev->Get();
         const NSchemeCache::TSchemeCacheNavigate* navigate = msg->Request.Get();
 
-        Y_VERIFY(navigate->ResultSet.size() == 1);
+        Y_ABORT_UNLESS(navigate->ResultSet.size() == 1);
 
         if (navigate->ErrorCount > 0) {
             const NSchemeCache::TSchemeCacheNavigate::EStatus status = navigate->ResultSet.front().Status;
@@ -692,7 +714,7 @@ private:
             return;
         } else {
             UserToken_ = ev->Get()->Token;
-            Y_VERIFY(UserToken_);
+            Y_ABORT_UNLESS(UserToken_);
         }
 
         OnAuthCheckMessage();

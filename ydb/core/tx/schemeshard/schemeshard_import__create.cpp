@@ -53,12 +53,19 @@ struct TSchemeShard::TImport::TTxCreate: public TSchemeShard::TXxport::TTxBase {
         }
 
         const TString& uid = GetUid(request.GetRequest().GetOperationParams().labels());
-        if (uid && Self->ImportsByUid.contains(uid)) {
-            return Reply(
-                std::move(response),
-                Ydb::StatusIds::ALREADY_EXISTS,
-                TStringBuilder() << "Import with uid '" << uid << "' already exists"
-            );
+        if (uid) {
+            if (auto it = Self->ImportsByUid.find(uid); it != Self->ImportsByUid.end()) {
+                if (IsSameDomain(it->second, request.GetDatabaseName())) {
+                    Self->FromXxportInfo(*response->Record.MutableResponse()->MutableEntry(), it->second);
+                    return Reply(std::move(response));
+                } else {
+                    return Reply(
+                        std::move(response),
+                        Ydb::StatusIds::ALREADY_EXISTS,
+                        TStringBuilder() << "Import with uid '" << uid << "' already exists"
+                    );
+                }
+            }
         }
 
         const TPath domainPath = TPath::Resolve(request.GetDatabaseName(), Self);
@@ -108,10 +115,10 @@ struct TSchemeShard::TImport::TTxCreate: public TSchemeShard::TXxport::TTxBase {
             break;
 
         default:
-            Y_VERIFY_DEBUG(false, "Unknown import kind");
+            Y_DEBUG_ABORT("Unknown import kind");
         }
 
-        Y_VERIFY(importInfo != nullptr);
+        Y_ABORT_UNLESS(importInfo != nullptr);
 
         NIceDb::TNiceDb db(txc.DB);
         Self->PersistCreateImport(db, importInfo);
@@ -172,17 +179,22 @@ private:
 
     template <typename TSettings>
     bool FillItems(TImportInfo::TPtr importInfo, const TSettings& settings, TString& explain) {
+        THashSet<TString> dstPaths;
+
         importInfo->Items.reserve(settings.items().size());
         for (ui32 itemIdx : xrange(settings.items().size())) {
-            const auto& item = settings.items(itemIdx);
-            const TPath path = TPath::Resolve(item.destination_path(), Self);
+            const auto& dstPath = settings.items(itemIdx).destination_path();
+            if (!dstPaths.insert(dstPath).second) {
+                explain = TStringBuilder() << "Duplicate destination_path: " << dstPath;
+                return false;
+            }
+
+            const TPath path = TPath::Resolve(dstPath, Self);
             {
                 TPath::TChecker checks = path.Check();
                 checks
                     .IsAtLocalSchemeShard()
-                    .IsValidLeafName()
-                    .DepthLimit()
-                    .PathsLimit();
+                    .HasResolvedPrefix();
 
                 if (path.IsResolved()) {
                     checks
@@ -194,8 +206,15 @@ private:
                         .NotResolved();
                 }
 
-                if (path.Parent().IsResolved()) {
-                    checks.DirChildrenLimit();
+                if (checks) {
+                    checks
+                        .IsValidLeafName()
+                        .DepthLimit()
+                        .PathsLimit();
+
+                    if (path.Parent().IsResolved()) {
+                        checks.DirChildrenLimit();
+                    }
                 }
 
                 if (!checks) {
@@ -204,7 +223,7 @@ private:
                 }
             }
 
-            importInfo->Items.emplace_back(item.destination_path());
+            importInfo->Items.emplace_back(dstPath);
         }
 
         return true;
@@ -224,7 +243,7 @@ struct TSchemeShard::TImport::TTxProgress: public TSchemeShard::TXxport::TTxBase
     TEvTxAllocatorClient::TEvAllocateResult::TPtr AllocateResult = nullptr;
     TEvSchemeShard::TEvModifySchemeTransactionResult::TPtr ModifyResult = nullptr;
     TEvIndexBuilder::TEvCreateResponse::TPtr CreateIndexResult = nullptr;
-    TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr NotifyResult = nullptr;
+    TTxId CompletedTxId = InvalidTxId;
 
     explicit TTxProgress(TSelf* self, ui64 id, const TMaybe<ui32>& itemIdx)
         : TXxport::TTxBase(self)
@@ -257,9 +276,9 @@ struct TSchemeShard::TImport::TTxProgress: public TSchemeShard::TXxport::TTxBase
     {
     }
 
-    explicit TTxProgress(TSelf* self, TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr& ev)
+    explicit TTxProgress(TSelf* self, TTxId completedTxId)
         : TXxport::TTxBase(self)
-        , NotifyResult(ev)
+        , CompletedTxId(completedTxId)
     {
     }
 
@@ -278,7 +297,7 @@ struct TSchemeShard::TImport::TTxProgress: public TSchemeShard::TXxport::TTxBase
             OnModifyResult(txc, ctx);
         } else if (CreateIndexResult) {
             OnCreateIndexResult(txc, ctx);
-        } else if (NotifyResult) {
+        } else if (CompletedTxId) {
             OnNotifyResult(txc, ctx);
         } else {
             Resume(txc, ctx);
@@ -293,7 +312,7 @@ struct TSchemeShard::TImport::TTxProgress: public TSchemeShard::TXxport::TTxBase
 
 private:
     void GetScheme(TImportInfo::TPtr importInfo, ui32 itemIdx, const TActorContext& ctx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
         LOG_I("TImport::TTxProgress: Get scheme"
@@ -304,7 +323,7 @@ private:
     }
 
     void CreateTable(TImportInfo::TPtr importInfo, ui32 itemIdx, TTxId txId) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::Proposed;
@@ -314,16 +333,16 @@ private:
             << ", item# " << item.ToString(itemIdx)
             << ", txId# " << txId);
 
-        Y_VERIFY(item.WaitTxId == InvalidTxId);
+        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
 
         auto propose = CreateTablePropose(Self, txId, importInfo, itemIdx);
-        Y_VERIFY(propose);
+        Y_ABORT_UNLESS(propose);
 
         Send(Self->SelfId(), std::move(propose));
     }
 
     void TransferData(TImportInfo::TPtr importInfo, ui32 itemIdx, TTxId txId) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::Proposed;
@@ -333,12 +352,12 @@ private:
             << ", item# " << item.ToString(itemIdx)
             << ", txId# " << txId);
 
-        Y_VERIFY(item.WaitTxId == InvalidTxId);
+        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
         Send(Self->SelfId(), RestorePropose(Self, txId, importInfo, itemIdx));
     }
 
     bool CancelTransferring(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
         if (item.WaitTxId == InvalidTxId) {
@@ -360,7 +379,7 @@ private:
     }
 
     void BuildIndex(TImportInfo::TPtr importInfo, ui32 itemIdx, TTxId txId) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::Proposed;
@@ -370,12 +389,12 @@ private:
             << ", item# " << item.ToString(itemIdx)
             << ", txId# " << txId);
 
-        Y_VERIFY(item.WaitTxId == InvalidTxId);
+        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
         Send(Self->SelfId(), BuildIndexPropose(Self, txId, importInfo, itemIdx, MakeIndexBuildUid(importInfo, itemIdx)));
     }
 
     bool CancelIndexBuilding(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
         if (item.WaitTxId == InvalidTxId) {
@@ -397,7 +416,7 @@ private:
     }
 
     void AllocateTxId(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::AllocateTxId;
@@ -406,12 +425,12 @@ private:
             << ": info# " << importInfo->ToString()
             << ", item# " << item.ToString(itemIdx));
 
-        Y_VERIFY(item.WaitTxId == InvalidTxId);
+        Y_ABORT_UNLESS(item.WaitTxId == InvalidTxId);
         Send(Self->TxAllocatorClient, new TEvTxAllocatorClient::TEvAllocate(), 0, importInfo->Id);
     }
 
     void SubscribeTx(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         item.SubState = ESubState::Subscribed;
@@ -420,16 +439,16 @@ private:
             << ": info# " << importInfo->ToString()
             << ", item# " << item.ToString(itemIdx));
 
-        Y_VERIFY(item.WaitTxId != InvalidTxId);
+        Y_ABORT_UNLESS(item.WaitTxId != InvalidTxId);
         Send(Self->SelfId(), new TEvSchemeShard::TEvNotifyTxCompletion(ui64(item.WaitTxId)));
     }
 
     TTxId GetActiveRestoreTxId(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
-        Y_VERIFY(item.State == EState::Transferring);
-        Y_VERIFY(item.DstPathId);
+        Y_ABORT_UNLESS(item.State == EState::Transferring);
+        Y_ABORT_UNLESS(item.DstPathId);
 
         if (!Self->PathsById.contains(item.DstPathId)) {
             return InvalidTxId;
@@ -444,10 +463,10 @@ private:
     }
 
     TTxId GetActiveBuildIndexId(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
-        Y_VERIFY(item.State == EState::BuildIndexes);
+        Y_ABORT_UNLESS(item.State == EState::BuildIndexes);
 
         const auto uid = MakeIndexBuildUid(importInfo, itemIdx);
         if (!Self->IndexBuildsByUid.contains(uid)) {
@@ -458,14 +477,14 @@ private:
     }
 
     static TString MakeIndexBuildUid(TImportInfo::TPtr importInfo, ui32 itemIdx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
         return TStringBuilder() << importInfo->Id << "-" << itemIdx << "-" << item.NextIndexIdx;
     }
 
     void Cancel(TImportInfo::TPtr importInfo, ui32 itemIdx, TStringBuf marker) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         const auto& item = importInfo->Items.at(itemIdx);
 
         LOG_N("TImport::TTxProgress: " << marker << ", cancelling"
@@ -495,10 +514,10 @@ private:
     }
 
     TMaybe<TString> GetIssues(const TPathId& dstPathId, TTxId restoreTxId) {
-        Y_VERIFY(Self->Tables.contains(dstPathId));
+        Y_ABORT_UNLESS(Self->Tables.contains(dstPathId));
         TTableInfo::TPtr table = Self->Tables.at(dstPathId);
 
-        Y_VERIFY(table->RestoreHistory.contains(restoreTxId));
+        Y_ABORT_UNLESS(table->RestoreHistory.contains(restoreTxId));
         const auto& result = table->RestoreHistory.at(restoreTxId);
 
         if (result.TotalShardCount == result.SuccessShardCount) {
@@ -530,7 +549,7 @@ private:
     }
 
     TMaybe<TString> GetIssues(TIndexBuildId indexBuildId) {
-        Y_VERIFY(Self->IndexBuilds.contains(indexBuildId));
+        Y_ABORT_UNLESS(Self->IndexBuilds.contains(indexBuildId));
         TIndexBuildInfo::TPtr indexInfo = Self->IndexBuilds.at(indexBuildId);
 
         if (indexInfo->IsDone()) {
@@ -551,7 +570,7 @@ private:
     }
 
     void Resume(TTransactionContext& txc, const TActorContext& ctx) {
-        Y_VERIFY(Self->Imports.contains(Id));
+        Y_ABORT_UNLESS(Self->Imports.contains(Id));
         TImportInfo::TPtr importInfo = Self->Imports.at(Id);
 
         LOG_D("TImport::TTxProgress: Resume"
@@ -568,7 +587,7 @@ private:
     }
 
     void Resume(TImportInfo::TPtr importInfo, ui32 itemIdx, TTransactionContext& txc, const TActorContext& ctx) {
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         LOG_D("TImport::TTxProgress: Resume"
@@ -650,7 +669,7 @@ private:
     }
 
     void OnSchemeResult(TTransactionContext& txc, const TActorContext&) {
-        Y_VERIFY(SchemeResult);
+        Y_ABORT_UNLESS(SchemeResult);
 
         const auto& msg = *SchemeResult->Get();
 
@@ -697,7 +716,7 @@ private:
     }
 
     void OnAllocateResult(TTransactionContext&, const TActorContext&) {
-        Y_VERIFY(AllocateResult);
+        Y_ABORT_UNLESS(AllocateResult);
 
         const auto txId = TTxId(AllocateResult->Get()->TxIds.front());
         const ui64 id = AllocateResult->Cookie;
@@ -758,12 +777,12 @@ private:
             return;
         }
 
-        Y_VERIFY(!Self->TxIdToImport.contains(txId));
+        Y_ABORT_UNLESS(!Self->TxIdToImport.contains(txId));
         Self->TxIdToImport[txId] = {importInfo->Id, *itemIdx};
     }
 
     void OnModifyResult(TTransactionContext& txc, const TActorContext&) {
-        Y_VERIFY(ModifyResult);
+        Y_ABORT_UNLESS(ModifyResult);
         const auto& record = ModifyResult->Get()->Record;
 
         LOG_D("TImport::TTxProgress: OnModifyResult"
@@ -790,7 +809,7 @@ private:
         TImportInfo::TPtr importInfo = Self->Imports.at(id);
         NIceDb::TNiceDb db(txc.DB);
 
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         if (record.GetStatus() != NKikimrScheme::StatusAccepted) {
@@ -831,7 +850,10 @@ private:
         }
 
         if (item.State == EState::CreateTable) {
-            item.DstPathId = Self->MakeLocalId(TLocalPathId(record.GetPathId()));
+            auto createPath = TPath::Resolve(item.DstPathName, Self);
+            Y_ABORT_UNLESS(createPath);
+
+            item.DstPathId = createPath.Base()->PathId;
             Self->PersistImportItemDstPathId(db, importInfo, itemIdx);
         }
 
@@ -839,7 +861,7 @@ private:
     }
 
     void OnCreateIndexResult(TTransactionContext& txc, const TActorContext&) {
-        Y_VERIFY(CreateIndexResult);
+        Y_ABORT_UNLESS(CreateIndexResult);
         const auto& record = CreateIndexResult->Get()->Record;
 
         LOG_D("TImport::TTxProgress: OnCreateIndexResult"
@@ -866,7 +888,7 @@ private:
         TImportInfo::TPtr importInfo = Self->Imports.at(id);
         NIceDb::TNiceDb db(txc.DB);
 
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         if (record.GetStatus() != Ydb::StatusIds::SUCCESS) {
@@ -908,13 +930,11 @@ private:
     }
 
     void OnNotifyResult(TTransactionContext& txc, const TActorContext&) {
-        Y_VERIFY(NotifyResult);
-        const auto& record = NotifyResult->Get()->Record;
-
+        Y_ABORT_UNLESS(CompletedTxId);
         LOG_D("TImport::TTxProgress: OnNotifyResult"
-            << ": txId# " << record.GetTxId());
+            << ": txId# " << CompletedTxId);
 
-        const auto txId = TTxId(record.GetTxId());
+        const auto txId = CompletedTxId;
         if (!Self->TxIdToImport.contains(txId)) {
             LOG_E("TImport::TTxProgress: OnNotifyResult received unknown txId"
                 << ": txId# " << txId);
@@ -933,7 +953,7 @@ private:
         TImportInfo::TPtr importInfo = Self->Imports.at(id);
         NIceDb::TNiceDb db(txc.DB);
 
-        Y_VERIFY(itemIdx < importInfo->Items.size());
+        Y_ABORT_UNLESS(itemIdx < importInfo->Items.size());
         auto& item = importInfo->Items.at(itemIdx);
 
         item.WaitTxId = InvalidTxId;
@@ -1018,8 +1038,8 @@ ITransaction* TSchemeShard::CreateTxProgressImport(TEvIndexBuilder::TEvCreateRes
     return new TImport::TTxProgress(this, ev);
 }
 
-ITransaction* TSchemeShard::CreateTxProgressImport(TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr& ev) {
-    return new TImport::TTxProgress(this, ev);
+ITransaction* TSchemeShard::CreateTxProgressImport(TTxId completedTxId) {
+    return new TImport::TTxProgress(this, completedTxId);
 }
 
 } // NSchemeShard

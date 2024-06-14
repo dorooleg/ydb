@@ -22,13 +22,16 @@ TDataProviderInitializer GetPqDataProviderInitializer(
                TIntrusivePtr<TTypeAnnotationContext> typeCtx,
                const TOperationProgressWriter& progressWriter,
                const TYqlOperationOptions& operationOptions,
-               THiddenQueryAborter)
+               THiddenQueryAborter hiddenAborter,
+               const TQContext& qContext)
         {
             Y_UNUSED(userName);
             Y_UNUSED(functionRegistry);
             Y_UNUSED(randomProvider);
             Y_UNUSED(progressWriter);
             Y_UNUSED(operationOptions);
+            Y_UNUSED(hiddenAborter);
+            Y_UNUSED(qContext);
 
             auto state = MakeIntrusive<TPqState>(sessionId);
             state->SupportRtmrMode = supportRtmrMode;
@@ -58,8 +61,8 @@ TDataProviderInitializer GetPqDataProviderInitializer(
                 return gateway->OpenSession(sessionId, username);
             };
 
-            info.CloseSession = [gateway](const TString& sessionId) {
-                gateway->CloseSession(sessionId);
+            info.CloseSessionAsync = [gateway](const TString& sessionId) {
+                return gateway->CloseSession(sessionId);
             };
 
             return info;

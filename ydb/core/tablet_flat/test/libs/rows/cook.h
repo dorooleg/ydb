@@ -15,7 +15,7 @@ namespace NTest {
 
         ~TCookRow()
         {
-            Y_VERIFY(!*row, "Cooked row hasn't been grabbed to TRow");
+            Y_ABORT_UNLESS(!*row, "Cooked row hasn't been grabbed to TRow");
         }
 
         template<typename TVal>
@@ -47,7 +47,7 @@ namespace NTest {
         TSchemedCookRow& To(TPos to) noexcept
         {
             if (to < On || to >= Scheme.Cols.size()) {
-                Y_FAIL("TSchemedCookRow row builder skip position is out of range");
+                Y_ABORT("TSchemedCookRow row builder skip position is out of range");
             }
 
             On = to;
@@ -58,7 +58,7 @@ namespace NTest {
         inline TSchemedCookRow& Col(const TVal &val, TArgs&&...args)
         {
             if (On >= Scheme.Cols.size()) {
-                Y_FAIL("NO more columns left in row scheme");
+                Y_ABORT("NO more columns left in row scheme");
             } else {
                 Row.Do(Scheme.Cols[On++].Tag, val);
 

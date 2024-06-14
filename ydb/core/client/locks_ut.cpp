@@ -2,7 +2,7 @@
 #include <ydb/core/engine/mkql_engine_flat_impl.h>
 #include <ydb/core/testlib/test_client.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/core/tx/datashard/datashard_locks.h>
+#include <ydb/core/tx/locks/locks.h>
 #include <ydb/public/lib/deprecated/kicli/kicli.h>
 
 #include <library/cpp/testing/unittest/tests_data.h>
@@ -43,7 +43,7 @@ public:
         TAutoPtr<NBus::TBusMessage> reply;
         NBus::EMessageStatus msgStatus = SendWhenReady(request, reply);
         UNIT_ASSERT_VALUES_EQUAL(msgStatus, NBus::MESSAGE_OK);
-        Cout << PrintResult<NMsgBusProxy::TBusResponse>(reply.Get()) << Endl;
+        Cout << PrintToString<NMsgBusProxy::TBusResponse>(reply.Get()) << Endl;
         return dynamic_cast<NMsgBusProxy::TBusResponse*>(reply.Release());
     }
 

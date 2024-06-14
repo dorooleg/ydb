@@ -4,7 +4,7 @@
 #include "runtime.h"
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/hive.h>
-#include <ydb/core/base/quoter.h>
+#include <ydb/core/quoter/public/quoter.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/base/tablet_pipe.h>
@@ -28,6 +28,7 @@
 #include <ydb/core/tx/scheme_board/cache.h>
 #include <ydb/core/tx/columnshard/blob_cache.h>
 #include <ydb/core/sys_view/service/sysview_service.h>
+#include <ydb/core/statistics/stat_service.h>
 
 #include <util/system/env.h>
 
@@ -66,7 +67,7 @@ namespace NPDisk {
             TActorSetupCmd(tabletResolver, TMailboxType::Revolving, 0), nodeIndex);
     }
 
-    void SetupTabletPipePeNodeCaches(TTestActorRuntime& runtime, ui32 nodeIndex)
+    void SetupTabletPipePeNodeCaches(TTestActorRuntime& runtime, ui32 nodeIndex, bool forceFollowers)
     {
         TIntrusivePtr<TPipePeNodeCacheConfig> leaderPipeConfig = new TPipePeNodeCacheConfig();
         leaderPipeConfig->PipeRefreshTime = TDuration::Zero();
@@ -76,6 +77,7 @@ namespace NPDisk {
         followerPipeConfig->PipeRefreshTime = TDuration::Seconds(30);
         followerPipeConfig->PipeConfig.AllowFollower = true;
         followerPipeConfig->PipeConfig.RetryPolicy = {.RetryLimitCount = 3};
+        followerPipeConfig->PipeConfig.ForceFollower = forceFollowers;
 
         runtime.AddLocalService(MakePipePeNodeCacheID(false),
             TActorSetupCmd(CreatePipePeNodeCache(leaderPipeConfig), TMailboxType::Revolving, 0), nodeIndex);
@@ -128,14 +130,15 @@ namespace NPDisk {
 
     void SetupSharedPageCache(TTestActorRuntime& runtime, ui32 nodeIndex, NFake::TCaches caches)
     {
-        auto pageCollectionCacheConfig = MakeIntrusive<TSharedPageCacheConfig>();
+        auto pageCollectionCacheConfig = MakeHolder<TSharedPageCacheConfig>();
         pageCollectionCacheConfig->CacheConfig = new TCacheCacheConfig(caches.Shared, nullptr, nullptr, nullptr);
         pageCollectionCacheConfig->TotalAsyncQueueInFlyLimit = caches.AsyncQueue;
         pageCollectionCacheConfig->TotalScanQueueInFlyLimit = caches.ScanQueue;
+        pageCollectionCacheConfig->Counters = MakeIntrusive<TSharedPageCacheCounters>(runtime.GetDynamicCounters(nodeIndex));
 
         runtime.AddLocalService(MakeSharedPageCacheId(0),
             TActorSetupCmd(
-                CreateSharedPageCache(pageCollectionCacheConfig.Get()),
+                CreateSharedPageCache(std::move(pageCollectionCacheConfig), runtime.GetMemObserver(nodeIndex)),
                 TMailboxType::ReadAsFilled,
                 0),
             nodeIndex);
@@ -152,10 +155,9 @@ namespace NPDisk {
     }
 
     template<size_t N>
-    static TIntrusivePtr<TStateStorageInfo> GenerateStateStorageInfo(const TActorId (&replicas)[N], ui64 stateStorageGroup)
+    static TIntrusivePtr<TStateStorageInfo> GenerateStateStorageInfo(const TActorId (&replicas)[N])
     {
         auto info = MakeIntrusive<TStateStorageInfo>();
-        info->StateStorageGroup = stateStorageGroup;
         info->NToSelect = N;
         info->Rings.resize(N);
         for (size_t i = 0; i < N; ++i) {
@@ -167,11 +169,10 @@ namespace NPDisk {
 
     static TIntrusivePtr<TStateStorageInfo> GenerateStateStorageInfo(const TVector<TActorId> &replicas, ui32 NToSelect, ui32 nrings, ui32 ringSize)
     {   
-        Y_VERIFY(replicas.size() >= nrings * ringSize);
-        Y_VERIFY(NToSelect <= nrings);
+        Y_ABORT_UNLESS(replicas.size() >= nrings * ringSize);
+        Y_ABORT_UNLESS(NToSelect <= nrings);
 
         auto info = MakeIntrusive<TStateStorageInfo>();
-        info->StateStorageGroup = 0;
         info->NToSelect = NToSelect;
         info->Rings.resize(nrings);
             
@@ -187,11 +188,10 @@ namespace NPDisk {
 
     static TActorId MakeBoardReplicaID(
         const ui32 node,
-        const ui64 stateStorageGroup,
         const ui32 replicaIndex
     ) {
         char x[12] = { 's', 's', 'b' };
-        x[3] = (char)stateStorageGroup;
+        x[3] = (char)1;
         memcpy(x + 5, &replicaIndex, sizeof(ui32));
         return TActorId(node, TStringBuf(x, 12));
     }
@@ -200,25 +200,24 @@ namespace NPDisk {
         TTestActorRuntime &runtime,
         ui32 NToSelect, 
         ui32 nrings, 
-        ui32 ringSize,
-        ui64 stateStorageGroup)
+        ui32 ringSize)
     {   
         TVector<TActorId> ssreplicas;
         for (size_t i = 0; i < nrings * ringSize; ++i) {
-            ssreplicas.push_back(MakeStateStorageReplicaID(runtime.GetNodeId(i), stateStorageGroup, i));
+            ssreplicas.push_back(MakeStateStorageReplicaID(runtime.GetNodeId(i), i));
         }
 
         TVector<TActorId> breplicas;
         for (size_t i = 0; i < nrings * ringSize; ++i) {
-            breplicas.push_back(MakeBoardReplicaID(runtime.GetNodeId(i), stateStorageGroup, i));
+            breplicas.push_back(MakeBoardReplicaID(runtime.GetNodeId(i), i));
         }
 
         TVector<TActorId> sbreplicas;
         for (size_t i = 0; i < nrings * ringSize; ++i) {
-            sbreplicas.push_back(MakeSchemeBoardReplicaID(runtime.GetNodeId(i), stateStorageGroup, i));
+            sbreplicas.push_back(MakeSchemeBoardReplicaID(runtime.GetNodeId(i), i));
         }
 
-        const TActorId ssproxy = MakeStateStorageProxyID(stateStorageGroup);
+        const TActorId ssproxy = MakeStateStorageProxyID();
 
         auto ssInfo = GenerateStateStorageInfo(ssreplicas, NToSelect, nrings, ringSize);
         auto sbInfo = GenerateStateStorageInfo(sbreplicas, NToSelect, nrings, ringSize);
@@ -241,31 +240,31 @@ namespace NPDisk {
     }
 
     
-    void SetupStateStorage(TTestActorRuntime& runtime, ui32 nodeIndex, ui64 stateStorageGroup, bool firstNode)
+    void SetupStateStorage(TTestActorRuntime& runtime, ui32 nodeIndex, bool firstNode)
     {
         const TActorId ssreplicas[3] = {
-            MakeStateStorageReplicaID(runtime.GetNodeId(0), stateStorageGroup, 0),
-            MakeStateStorageReplicaID(runtime.GetNodeId(0), stateStorageGroup, 1),
-            MakeStateStorageReplicaID(runtime.GetNodeId(0), stateStorageGroup, 2),
+            MakeStateStorageReplicaID(runtime.GetNodeId(0), 0),
+            MakeStateStorageReplicaID(runtime.GetNodeId(0), 1),
+            MakeStateStorageReplicaID(runtime.GetNodeId(0), 2),
         };
 
         const TActorId breplicas[3] = {
-            MakeBoardReplicaID(runtime.GetNodeId(0), stateStorageGroup, 0),
-            MakeBoardReplicaID(runtime.GetNodeId(0), stateStorageGroup, 1),
-            MakeBoardReplicaID(runtime.GetNodeId(0), stateStorageGroup, 2),
+            MakeBoardReplicaID(runtime.GetNodeId(0), 0),
+            MakeBoardReplicaID(runtime.GetNodeId(0), 1),
+            MakeBoardReplicaID(runtime.GetNodeId(0), 2),
         };
 
         const TActorId sbreplicas[3] = {
-            MakeSchemeBoardReplicaID(runtime.GetNodeId(0), stateStorageGroup, 0),
-            MakeSchemeBoardReplicaID(runtime.GetNodeId(0), stateStorageGroup, 1),
-            MakeSchemeBoardReplicaID(runtime.GetNodeId(0), stateStorageGroup, 2),
+            MakeSchemeBoardReplicaID(runtime.GetNodeId(0), 0),
+            MakeSchemeBoardReplicaID(runtime.GetNodeId(0), 1),
+            MakeSchemeBoardReplicaID(runtime.GetNodeId(0), 2),
         };
 
-        const TActorId ssproxy = MakeStateStorageProxyID(stateStorageGroup);
+        const TActorId ssproxy = MakeStateStorageProxyID();
 
-        auto ssInfo = GenerateStateStorageInfo(ssreplicas, stateStorageGroup);
-        auto sbInfo = GenerateStateStorageInfo(sbreplicas, stateStorageGroup);
-        auto bInfo = GenerateStateStorageInfo(breplicas, stateStorageGroup);
+        auto ssInfo = GenerateStateStorageInfo(ssreplicas);
+        auto sbInfo = GenerateStateStorageInfo(sbreplicas);
+        auto bInfo = GenerateStateStorageInfo(breplicas);
 
         if (!firstNode || nodeIndex == 0) {
             for (ui32 i = 0; i < 3; ++i) {
@@ -282,17 +281,9 @@ namespace NPDisk {
             TActorSetupCmd(CreateStateStorageProxy(ssInfo.Get(), bInfo.Get(), sbInfo.Get()), TMailboxType::Revolving, 0), nodeIndex);
     }
 
-    static void SetupStateStorageGroups(TTestActorRuntime& runtime, ui32 nodeIndex, TAppPrepare& app)
+    static void SetupStateStorageGroups(TTestActorRuntime& runtime, ui32 nodeIndex)
     {
-        TSet<ui32> stateStorageGroups;
-        for (auto it = app.Domains->Domains.begin(); it != app.Domains->Domains.end(); ++it) {
-            ui32 stateStorageGroup = it->second->DefaultStateStorageGroup;
-            if (stateStorageGroups.find(stateStorageGroup) == stateStorageGroups.end()) {
-                stateStorageGroups.insert(stateStorageGroup);
-
-                SetupStateStorage(runtime, nodeIndex, stateStorageGroup, true);
-            }
-        }
+        SetupStateStorage(runtime, nodeIndex, true);
     }
 
     void SetupQuoterService(TTestActorRuntime& runtime, ui32 nodeIndex)
@@ -309,8 +300,15 @@ namespace NPDisk {
                 nodeIndex);
     }
 
+    void SetupStatService(TTestActorRuntime& runtime, ui32 nodeIndex)
+    {
+        runtime.AddLocalService(NStat::MakeStatServiceID(runtime.GetNodeId(nodeIndex)),
+                TActorSetupCmd(NStat::CreateStatService().Release(), TMailboxType::HTSwap, 0),
+                nodeIndex);
+    }
+
     void SetupBasicServices(TTestActorRuntime& runtime, TAppPrepare& app, bool mock,
-                            NFake::INode* factory, NFake::TStorage storage, NFake::TCaches caches)
+                            NFake::INode* factory, NFake::TStorage storage, NFake::TCaches caches, bool forceFollowers)
     {
         runtime.SetDispatchTimeout(storage.UseDisk ? DISK_DISPATCH_TIMEOUT : DEFAULT_DISPATCH_TIMEOUT);
 
@@ -318,17 +316,17 @@ namespace NPDisk {
 
         {
             NKikimrBlobStorage::TNodeWardenServiceSet bsConfig;
-            Y_VERIFY(google::protobuf::TextFormat::ParseFromString(disk.MakeTextConf(*app.Domains), &bsConfig));
+            Y_ABORT_UNLESS(google::protobuf::TextFormat::ParseFromString(disk.MakeTextConf(*app.Domains), &bsConfig));
             app.SetBSConf(std::move(bsConfig));
         }
 
-        if (app.Domains->Domains.empty()) {
+        if (!app.Domains->Domain) {
             app.AddDomain(TDomainsInfo::TDomain::ConstructEmptyDomain("dc-1").Release());
-            app.AddHive(0, 0);
+            app.AddHive(0);
         }
 
         for (ui32 nodeIndex = 0; nodeIndex < runtime.GetNodeCount(); ++nodeIndex) {
-            SetupStateStorageGroups(runtime, nodeIndex, app);
+            SetupStateStorageGroups(runtime, nodeIndex);
             NKikimrProto::TKeyConfig keyConfig;
             if (const auto it = app.Keys.find(nodeIndex); it != app.Keys.end()) {
                 keyConfig = it->second;
@@ -336,12 +334,13 @@ namespace NPDisk {
             SetupBSNodeWarden(runtime, nodeIndex, disk.MakeWardenConf(*app.Domains, keyConfig));
 
             SetupTabletResolver(runtime, nodeIndex);
-            SetupTabletPipePeNodeCaches(runtime, nodeIndex);
+            SetupTabletPipePeNodeCaches(runtime, nodeIndex, forceFollowers);
             SetupResourceBroker(runtime, nodeIndex);
             SetupSharedPageCache(runtime, nodeIndex, caches);
             SetupBlobCache(runtime, nodeIndex);
             SetupSysViewService(runtime, nodeIndex);
             SetupQuoterService(runtime, nodeIndex);
+            SetupStatService(runtime, nodeIndex);
 
             if (factory)
                 factory->Birth(nodeIndex);
@@ -354,13 +353,13 @@ namespace NPDisk {
             auto blobStorageActorId = runtime.GetLocalServiceId(
                 MakeBlobStorageNodeWardenID(runtime.GetNodeId(nodeIndex)),
                 nodeIndex);
-            Y_VERIFY(blobStorageActorId, "Missing node warden on node %" PRIu32, nodeIndex);
+            Y_ABORT_UNLESS(blobStorageActorId, "Missing node warden on node %" PRIu32, nodeIndex);
             runtime.EnableScheduleForActor(blobStorageActorId);
 
             // SysView Service uses Scheduler to send counters
             auto sysViewServiceId = runtime.GetLocalServiceId(
                 NSysView::MakeSysViewServiceID(runtime.GetNodeId(nodeIndex)), nodeIndex);
-            Y_VERIFY(sysViewServiceId, "Missing SysView Service on node %" PRIu32, nodeIndex);
+            Y_ABORT_UNLESS(sysViewServiceId, "Missing SysView Service on node %" PRIu32, nodeIndex);
             runtime.EnableScheduleForActor(sysViewServiceId);
         }
 

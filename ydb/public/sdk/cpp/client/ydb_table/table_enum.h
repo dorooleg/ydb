@@ -20,11 +20,14 @@ enum class EBuildIndexState {
     Done = 4,
     Cancellation = 5,
     Cancelled = 6,
+    Rejection = 7,
+    Rejected = 8,
 };
 
 enum class EIndexType {
     GlobalSync,
     GlobalAsync,
+    GlobalUnique,
 
     Unknown = std::numeric_limits<int>::max()
 };
@@ -42,6 +45,7 @@ enum class EChangefeedMode {
 enum class EChangefeedFormat {
     Json /* "JSON" */,
     DynamoDBStreamsJson /* "DYNAMODB_STREAMS_JSON" */,
+    DebeziumJson /* "DEBEZIUM_JSON" */,
 
     Unknown = std::numeric_limits<int>::max()
 };

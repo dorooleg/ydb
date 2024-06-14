@@ -13,27 +13,12 @@
                         "Type",
                         "Value"
                     ],
-                    "lookup_by": [
-                        "Name (Anna)"
-                    ],
+                    "limit": "1001",
                     "scan_by": [
-                        "Type (-\u221e, +\u221e)"
+                        "Name [Anna, Anna]",
+                        "Name [Dmitry, Dmitry]"
                     ],
-                    "type": "Lookup"
-                },
-                {
-                    "columns": [
-                        "Name",
-                        "Type",
-                        "Value"
-                    ],
-                    "lookup_by": [
-                        "Name (Dmitry)"
-                    ],
-                    "scan_by": [
-                        "Type (-\u221e, +\u221e)"
-                    ],
-                    "type": "Lookup"
+                    "type": "Scan"
                 }
             ]
         }

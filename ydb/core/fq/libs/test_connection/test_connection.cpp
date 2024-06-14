@@ -9,11 +9,12 @@
 #include <ydb/core/fq/libs/common/util.h>
 #include <ydb/core/fq/libs/config/yq_issue.h>
 #include <ydb/core/fq/libs/db_id_async_resolver_impl/db_async_resolver_impl.h>
+#include <ydb/core/fq/libs/db_id_async_resolver_impl/mdb_endpoint_generator.h>
 #include <ydb/core/fq/libs/control_plane_storage/config.h>
 
 #include <ydb/library/security/util.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -106,6 +107,7 @@ class TTestConnectionActor : public NActors::TActorBootstrapped<TTestConnectionA
     TActorId DatabaseResolverActor;
     std::shared_ptr<NYql::IDatabaseAsyncResolver> DbResolver;
     NYql::IHTTPGateway::TPtr HttpGateway;
+    NYql::IMdbEndpointGenerator::TPtr MdbEndpointGenerator;
 
 public:
     TTestConnectionActor(
@@ -113,7 +115,7 @@ public:
         const NConfig::TControlPlaneStorageConfig& controlPlaneStorageConfig,
         const NYql::TS3GatewayConfig& s3Config,
         const NConfig::TCommonConfig& commonConfig,
-        const NConfig::TTokenAccessorConfig& tokenAccessorConfig,
+        const ::NFq::TSigner::TPtr& signer,
         const NFq::TYqSharedResources::TPtr& sharedResources,
         const NYql::ISecuredServiceAccountCredentialsFactory::TPtr& credentialsFactory,
         const NPq::NConfigurationManager::IConnections::TPtr& cmConnections,
@@ -121,19 +123,17 @@ public:
         const NYql::IHTTPGateway::TPtr& httpGateway,
         const ::NMonitoring::TDynamicCounterPtr& counters)
         : Config(config)
-        , ControlPlaneStorageConfig(controlPlaneStorageConfig, s3Config, commonConfig)
+        , ControlPlaneStorageConfig(controlPlaneStorageConfig, s3Config, commonConfig, {})
         , CommonConfig(commonConfig)
         , SharedResouces(sharedResources)
         , CredentialsFactory(credentialsFactory)
         , CmConnections(cmConnections)
         , FunctionRegistry(functionRegistry)
         , Counters(counters)
+        , Signer(signer)
         , HttpGateway(httpGateway)
-    {
-        if (tokenAccessorConfig.GetHmacSecretFile()) {
-            Signer = ::NFq::CreateSignerFromFile(tokenAccessorConfig.GetHmacSecretFile());
-        }
-    }
+        , MdbEndpointGenerator(NFq::MakeMdbEndpointGeneratorGeneric(commonConfig.GetMdbTransformHost()))
+    {}
 
     static constexpr char ActorName[] = "YQ_TEST_CONNECTION";
 
@@ -146,7 +146,8 @@ public:
         DbResolver = std::make_shared<NFq::TDatabaseAsyncResolverImpl>(
                         NActors::TActivationContext::ActorSystem(), DatabaseResolverActor,
                         CommonConfig.GetYdbMvpCloudEndpoint(), CommonConfig.GetMdbGateway(),
-                        CommonConfig.GetMdbTransformHost());
+                        MdbEndpointGenerator
+                        );
 
         Become(&TTestConnectionActor::StateFunc);
     }
@@ -233,7 +234,7 @@ NActors::IActor* CreateTestConnectionActor(
         const NConfig::TControlPlaneStorageConfig& controlPlaneStorageConfig,
         const NYql::TS3GatewayConfig& s3Config,
         const NConfig::TCommonConfig& commonConfig,
-        const NConfig::TTokenAccessorConfig& tokenAccessorConfig,
+        const ::NFq::TSigner::TPtr& signer,
         const NFq::TYqSharedResources::TPtr& sharedResources,
         const NYql::ISecuredServiceAccountCredentialsFactory::TPtr& credentialsFactory,
         const NPq::NConfigurationManager::IConnections::TPtr& cmConnections,
@@ -242,7 +243,7 @@ NActors::IActor* CreateTestConnectionActor(
         const ::NMonitoring::TDynamicCounterPtr& counters) {
     return new TTestConnectionActor(config, controlPlaneStorageConfig,
                                     s3Config, commonConfig,
-                                    tokenAccessorConfig, sharedResources,
+                                    signer, sharedResources,
                                     credentialsFactory, cmConnections,
                                     functionRegistry, httpGateway, counters);
 }

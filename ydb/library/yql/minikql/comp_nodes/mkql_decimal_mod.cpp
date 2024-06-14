@@ -1,6 +1,6 @@
 #include "mkql_decimal_div.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
-#include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins_decimal.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins_decimal.h> // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/public/decimal/yql_decimal.h>
 
@@ -34,7 +34,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valType = Type::getInt128Ty(context);
 
@@ -52,7 +52,6 @@ public:
                 BinaryOperator::CreateAnd(left, right, "test", block):
                 IsLeftOptional ? left : right;
 
-            const auto check = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, test, zero, "check", block);
             result->addIncoming(zero, block);
             BranchInst::Create(done, good, IsEmpty(test, block), block);
 
@@ -146,7 +145,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto divider = NDecimal::GenConstant(Divider, context);
@@ -278,7 +277,7 @@ IComputationNode* WrapDecimalMod(TCallable& callable, const TComputationNodeFact
         INTEGRAL_VALUE_TYPES(MAKE_PRIMITIVE_TYPE_MOD)
 #undef MAKE_PRIMITIVE_TYPE_MOD
         default:
-            Y_FAIL("Unupported type.");
+            Y_ABORT("Unupported type.");
     }
 }
 

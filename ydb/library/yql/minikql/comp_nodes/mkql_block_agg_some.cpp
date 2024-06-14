@@ -3,8 +3,8 @@
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
-#include <ydb/library/yql/minikql/comp_nodes/mkql_block_builder.h>
-#include <ydb/library/yql/minikql/comp_nodes/mkql_block_reader.h>
+#include <ydb/library/yql/minikql/computation/mkql_block_reader.h>
+#include <ydb/library/yql/minikql/computation/mkql_block_builder.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -94,7 +94,7 @@ public:
         } else {
             const auto& array = datum.array();
             auto len = array->length;
-            
+
             const ui8* filterBitmap = nullptr;
             if (filtered) {
                 const auto& filterDatum = TArrowBlock::From(columns[*FilterColumn_]).GetDatum();
@@ -103,7 +103,7 @@ public:
                 filterBitmap = filterArray->template GetValues<uint8_t>(1);
             }
 
-            for (size_t i = 0; i < len; ++i) {
+            for (auto i = 0; i < len; ++i) {
                 TBlockItem curr = Reader_->GetItem(*array, i);
                 if (curr && (!filterBitmap || filterBitmap[i])) {
                     typedState = Converter_->MakeValue(curr, Ctx_.HolderFactory);
@@ -138,9 +138,9 @@ public:
     {
     }
 
-    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TGenericState();
-        UpdateKey(state, columns, row);
+        UpdateKey(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -149,7 +149,8 @@ public:
         *typedState = TGenericState();
     }
 
-    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TGenericState*>(state);
         if (*typedState) {
             return;
@@ -184,9 +185,9 @@ public:
     {
     }
 
-    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TGenericState();
-        UpdateState(state, columns, row);
+        UpdateState(state, batchNum, columns, row);
     }
 
     void DestroyState(void* state) noexcept final {
@@ -195,7 +196,8 @@ public:
         *typedState = TGenericState();
     }
 
-    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        Y_UNUSED(batchNum);
         auto typedState = static_cast<TGenericState*>(state);
         if (*typedState) {
             return;
@@ -240,10 +242,8 @@ private:
 
 template <typename TTag>
 std::unique_ptr<typename TTag::TPreparedAggregator> PrepareSome(TTupleType* tupleType, std::optional<ui32> filterColumn, ui32 argColumn) {
-    auto blockType = AS_TYPE(TBlockType, tupleType->GetElementType(argColumn));
-    const bool isScalar = blockType->GetShape() == TBlockType::EShape::Scalar;
-    auto argType = blockType->GetItemType();    
-
+    const auto blockType = AS_TYPE(TBlockType, tupleType->GetElementType(argColumn));
+    const auto argType = blockType->GetItemType();
     return std::make_unique<TPreparedSomeBlockGenericAggregator<TTag>>(argType, filterColumn, argColumn);
 }
 

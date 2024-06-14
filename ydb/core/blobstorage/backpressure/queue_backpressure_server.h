@@ -123,7 +123,7 @@ namespace NKikimr {
                 }
 
                 void UpdateCountdown(ui64 costChange) {
-                    Y_VERIFY_DEBUG(costChange);
+                    Y_DEBUG_ABORT_UNLESS(costChange);
                     if (CostChangeUntilFrozenCountdown > 0) {
                         if (CostChangeUntilFrozenCountdown >= costChange) {
                             CostChangeUntilFrozenCountdown -= costChange;
@@ -168,9 +168,9 @@ namespace NKikimr {
 
                 void Push(bool checkMsgId, const TMessageId &msgId, ui64 cost, TWindowStatus *opStatus,
                         TInstant now) {
-                    Y_VERIFY_DEBUG(LowWatermark != 0);
-                    Y_VERIFY_DEBUG(LowWatermark <= HighWatermark);
-                    Y_VERIFY_DEBUG(cost > 0);
+                    Y_DEBUG_ABORT_UNLESS(LowWatermark != 0);
+                    Y_DEBUG_ABORT_UNLESS(LowWatermark <= HighWatermark);
+                    Y_DEBUG_ABORT_UNLESS(cost > 0);
 
                     if ((msgId.MsgId == ExpectedMsgId.MsgId && msgId.SequenceId >= ExpectedMsgId.SequenceId) || !checkMsgId) {
                         // accept if msgId is correct
@@ -196,10 +196,8 @@ namespace NKikimr {
                     }
                 }
 
-                TWindowStatus *Processed(bool checkMsgId, const TMessageId &msgId, ui64 cost, TWindowStatus *opStatus) {
-                    Y_UNUSED(checkMsgId);
-                    Y_UNUSED(msgId);
-                    Y_VERIFY(Cost >= cost);
+                TWindowStatus *Processed(bool /*checkMsgId*/, const TMessageId& /*msgId*/, ui64 cost, TWindowStatus *opStatus) {
+                    Y_ABORT_UNLESS(Cost >= cost);
                     Cost -= cost;
                     --InFlight;
                     SetStatus(opStatus, NKikimrBlobStorage::TWindowFeedback::Processed, true);
@@ -219,7 +217,7 @@ namespace NKikimr {
                         // ... check difference between LastMaxWindowSize and LowWatermark
                         ui64 diff = (LowWatermark >= LastMaxWindowSize) ?
                             (LowWatermark - LastMaxWindowSize) : (LastMaxWindowSize - LowWatermark);
-                        Y_VERIFY(LowWatermark != 0);
+                        Y_ABORT_UNLESS(LowWatermark != 0);
                         notify = (diff * 100u / LowWatermark >= PercentThreshold);
                     }
 
@@ -243,7 +241,7 @@ namespace NKikimr {
                 }
 
                 void Fade(EWindowState state, ui64 costChange, TInstant now) {
-                    Y_VERIFY(state == GetState(now));
+                    Y_ABORT_UNLESS(state == GetState(now));
 
                     // TODO: we can implement more gracefull fading, take into account that beside this fading
                     //       we recalculate windows on regular basis
@@ -252,7 +250,7 @@ namespace NKikimr {
                         case EWindowState::Fading:
                         case EWindowState::Frozen:
                             break;
-                        default: Y_FAIL("Unexpected case");
+                        default: Y_ABORT("Unexpected case");
                     }
                     UpdateCountdown(costChange);
                 }
@@ -328,7 +326,7 @@ namespace NKikimr {
                         }
                         case EWindowState::Fading: {
                             // until frozen we use this window for recalculation
-                            Y_VERIFY(wPtr->GetCost() == 0);
+                            Y_ABORT_UNLESS(wPtr->GetCost() == 0);
                             ActiveWindowsCache.push_back(wPtr);
                             totalCost += wPtr->GetCost();
                             wPtr->Fade(windowState, actualCostChange, now);
@@ -336,19 +334,19 @@ namespace NKikimr {
                             break;
                         }
                         case EWindowState::Frozen: {
-                            Y_VERIFY(wPtr->GetCost() == 0);
+                            Y_ABORT_UNLESS(wPtr->GetCost() == 0);
                             wPtr->Fade(windowState, actualCostChange, now);
                             ++it;
                             break;
                         }
                         case EWindowState::Dead: {
-                            Y_VERIFY(wPtr->GetCost() == 0);
+                            Y_ABORT_UNLESS(wPtr->GetCost() == 0);
                             TIterator prev = it++;
                             AllWindows.erase(prev);
                             break;
                         }
                         default:
-                            Y_FAIL("Unexpected case");
+                            Y_ABORT("Unexpected case");
                     }
                 }
 
@@ -414,7 +412,7 @@ namespace NKikimr {
             }
 
             TFeedback Push(const TClientId& clientId, const TActorId& actorId, const TMessageId &msgId, ui64 cost, TInstant now) {
-                Y_VERIFY(actorId);
+                Y_ABORT_UNLESS(actorId);
                 ClearRecalculateCache();
 
                 // find or create window
@@ -430,7 +428,7 @@ namespace NKikimr {
                                                   WindowTimeout, now));
                     auto res = AllWindows.emplace(actorId, window);
                     it = res.first;
-                    Y_VERIFY(res.second);
+                    Y_ABORT_UNLESS(res.second);
                     newWindow = true;
                 }
                 TWindow &window = *(it->second);
@@ -447,7 +445,7 @@ namespace NKikimr {
 
                 // find window
                 auto it = AllWindows.find(actorId);
-                Y_VERIFY(it != AllWindows.end());
+                Y_ABORT_UNLESS(it != AllWindows.end());
 
                 TWindow &window = *(it->second);
                 // perform action

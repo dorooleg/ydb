@@ -2,7 +2,7 @@
 #include <ydb/core/base/tablet_pipecache.h>
 
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -54,9 +54,13 @@ Y_UNIT_TEST_SUITE(TPipeCacheTest) {
             return Die(ctx);
         }
 
+        void DefaultSignalTabletActive(const TActorContext&) override {
+            // must be empty
+        }
+
         void OnActivateExecutor(const TActorContext& ctx) override {
-            Y_UNUSED(ctx);
             Become(&TThis::StateWork);
+            SignalTabletActive(ctx);
         }
     };
 
@@ -77,7 +81,7 @@ Y_UNIT_TEST_SUITE(TPipeCacheTest) {
         }
 
         size_t observedConnects = 0;
-        auto observerFunc = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
             if (ev->Type == TEvTabletPipe::EvConnect) {
                 ++observedConnects;
             }

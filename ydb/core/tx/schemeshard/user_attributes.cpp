@@ -51,9 +51,12 @@ inline bool IsValidPathName_WeakCheck(const TString& name) {
                 HANDLE_ATTR(VOLUME_SPACE_LIMIT_SSD);
                 HANDLE_ATTR(VOLUME_SPACE_LIMIT_SSD_NONREPL);
                 HANDLE_ATTR(VOLUME_SPACE_LIMIT_SSD_SYSTEM);
+                HANDLE_ATTR(FILESTORE_SPACE_LIMIT_SSD);
+                HANDLE_ATTR(FILESTORE_SPACE_LIMIT_HDD);
                 HANDLE_ATTR(EXTRA_PATH_SYMBOLS_ALLOWED);
                 HANDLE_ATTR(DOCUMENT_API_VERSION);
                 HANDLE_ATTR(ASYNC_REPLICATION);
+                HANDLE_ATTR(ASYNC_REPLICA);
 
             #undef HANDLE_ATTR
             return EAttribute::UNKNOWN;
@@ -124,6 +127,8 @@ inline bool IsValidPathName_WeakCheck(const TString& name) {
             case EAttribute::VOLUME_SPACE_LIMIT_SSD:
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_NONREPL:
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_SYSTEM:
+            case EAttribute::FILESTORE_SPACE_LIMIT_SSD:
+            case EAttribute::FILESTORE_SPACE_LIMIT_HDD:
                 return CheckValueUint64(name, value, errStr);
             case EAttribute::EXTRA_PATH_SYMBOLS_ALLOWED:
                 return CheckValueStringWeak(name, value, errStr);
@@ -139,6 +144,9 @@ inline bool IsValidPathName_WeakCheck(const TString& name) {
                     return false;
                 }
                 return CheckValueJson(name, value, errStr);
+            case EAttribute::ASYNC_REPLICA:
+                errStr = Sprintf("UserAttributes: attribute '%s' cannot be set", name.c_str());
+                return false;
         }
 
         Y_UNREACHABLE();
@@ -161,6 +169,8 @@ inline bool IsValidPathName_WeakCheck(const TString& name) {
             case EAttribute::VOLUME_SPACE_LIMIT_SSD:
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_NONREPL:
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_SYSTEM:
+            case EAttribute::FILESTORE_SPACE_LIMIT_SSD:
+            case EAttribute::FILESTORE_SPACE_LIMIT_HDD:
             case EAttribute::EXTRA_PATH_SYMBOLS_ALLOWED:
                 return true;
             case EAttribute::DOCUMENT_API_VERSION:
@@ -175,6 +185,9 @@ inline bool IsValidPathName_WeakCheck(const TString& name) {
                     return false;
                 }
                 return true;
+            case EAttribute::ASYNC_REPLICA:
+                errStr = Sprintf("UserAttributes: attribute '%s' cannot be set", name.c_str());
+                return false;
         }
 
         Y_UNREACHABLE();

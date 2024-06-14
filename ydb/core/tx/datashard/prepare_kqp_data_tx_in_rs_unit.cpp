@@ -41,11 +41,11 @@ EExecutionStatus TPrepareKqpDataTxInRSUnit::Execute(TOperation::TPtr op, TTransa
             case ERestoreDataStatus::Restart:
                 return EExecutionStatus::Restart;
             case ERestoreDataStatus::Error:
-                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
 
-    if (tx->GetDataTx()->CheckCancelled()) {
+    if (tx->GetDataTx()->CheckCancelled(DataShard.TabletID())) {
         tx->ReleaseTxData(txc, ctx);
         BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::CANCELLED)
             ->AddError(NKikimrTxDataShard::TError::EXECUTION_CANCELLED, "Tx was cancelled");
@@ -57,7 +57,7 @@ EExecutionStatus TPrepareKqpDataTxInRSUnit::Execute(TOperation::TPtr op, TTransa
 
     try {
         KqpPrepareInReadsets(op->InReadSets(), tx->GetDataTx()->GetKqpLocks(),
-            tx->GetDataTx()->GetKqpTasksRunner(), DataShard.TabletID());
+            &tx->GetDataTx()->GetKqpTasksRunner(), DataShard.TabletID());
     } catch (const yexception& e) {
         LOG_CRIT_S(ctx, NKikimrServices::TX_DATASHARD, "Exception while preparing in-readsets for KQP transaction "
             << *op << " at " << DataShard.TabletID() << ": " << CurrentExceptionMessage());

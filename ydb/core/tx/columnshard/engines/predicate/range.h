@@ -16,6 +16,10 @@ private:
 
 public:
 
+    bool IsEmpty() const {
+        return PredicateFrom.IsEmpty() && PredicateTo.IsEmpty();
+    }
+
     const TPredicateContainer& GetPredicateFrom() const {
         return PredicateFrom;
     }
@@ -34,9 +38,10 @@ public:
 
     static std::optional<TPKRangeFilter> Build(TPredicateContainer&& from, TPredicateContainer&& to);
 
-    NArrow::TColumnFilter BuildFilter(std::shared_ptr<arrow::RecordBatch> data) const;
+    NArrow::TColumnFilter BuildFilter(const arrow::Datum& data) const;
 
     bool IsPortionInUsage(const TPortionInfo& info, const TIndexInfo& indexInfo) const;
+    bool IsPortionInPartialUsage(const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& end, const TIndexInfo& indexInfo) const;
 
     std::set<ui32> GetColumnIds(const TIndexInfo& indexInfo) const;
     TString DebugString() const;

@@ -1,12 +1,12 @@
 #include "mediator_impl.h"
 
-#include <library/cpp/actors/core/log.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/tx/coordinator/coordinator.h>
 #include <ydb/core/tx/tx_processing.h>
 #include <ydb/core/tx/time_cast/time_cast.h>
@@ -120,7 +120,7 @@ class TTxMediatorTabletQueue : public TActor<TTxMediatorTabletQueue> {
             evx.Record.SetTimeBarrier(CommitedStep);
             TAllocChunkSerializer serializer;
             const bool success = evx.SerializeToArcadiaStream(&serializer);
-            Y_VERIFY(success);
+            Y_ABORT_UNLESS(success);
             TIntrusivePtr<TEventSerializedData> data = serializer.Release(evx.CreateSerializationInfo());
 
             // todo: we must throttle delivery
@@ -147,7 +147,7 @@ class TTxMediatorTabletQueue : public TActor<TTxMediatorTabletQueue> {
             StepCommitQueue->Push(ActiveStep);
         }
 
-        Y_VERIFY(ActiveStep->Step == step);
+        Y_ABORT_UNLESS(ActiveStep->Step == step);
         ++ActiveStep->RefCounter;
 
         TTabletEntry::TStep *tabletStep = new TTabletEntry::TStep(ActiveStep);
@@ -190,7 +190,7 @@ class TTxMediatorTabletQueue : public TActor<TTxMediatorTabletQueue> {
             << " Mediator# " << Mediator << " HANDLE " << msg->ToString());
 
         TTabletEntry &tabletEntry = PerTabletPlanQueue[tablet];
-        Y_VERIFY(tabletEntry.State == TTabletEntry::StateConnect);
+        Y_ABORT_UNLESS(tabletEntry.State == TTabletEntry::StateConnect);
 
         if (!Pipes->OnConnect(ev)) {
             if (msg->Dead) {
@@ -228,7 +228,7 @@ class TTxMediatorTabletQueue : public TActor<TTxMediatorTabletQueue> {
         Pipes->OnDisconnect(ev);
 
         TTabletEntry &tabletEntry = PerTabletPlanQueue[tablet];
-        Y_VERIFY(tabletEntry.State == TTabletEntry::StateConnected);
+        Y_ABORT_UNLESS(tabletEntry.State == TTabletEntry::StateConnected);
 
         // if connect to tablet lost and tablet is in no use - just forget connection
         if (tabletEntry.Queue->Head() == nullptr) {
@@ -388,12 +388,12 @@ void TTxMediatorTabletQueue::TTabletEntry::MergeOutOfOrder(TStep *sx) {
     const auto ox = OutOfOrder.find(step);
     if (ox != OutOfOrder.end()) {
         const TVector<TTx> &o = ox->second;
-        Y_VERIFY_DEBUG(
+        Y_DEBUG_ABORT_UNLESS(
             IsSorted(sx->Transactions.begin(), sx->Transactions.end(), TTx::TCmpOrderId()),
             "%s",
             yvector2str(sx->Transactions).c_str()
         );
-        Y_VERIFY_DEBUG(IsSorted(o.begin(), o.end(), TTx::TCmpOrderId()), "%s", yvector2str(o).c_str());
+        Y_DEBUG_ABORT_UNLESS(IsSorted(o.begin(), o.end(), TTx::TCmpOrderId()), "%s", yvector2str(o).c_str());
         //
         // ok, now merge sorted arrays replacing ack-to
         TVector<TTx>::iterator planIt = sx->Transactions.begin();
@@ -408,7 +408,7 @@ void TTxMediatorTabletQueue::TTabletEntry::MergeOutOfOrder(TStep *sx) {
                 ++oooIt;
                 ++planIt;
             } else {
-                Y_FAIL("Inconsistency: Plan TxId %" PRIu64 " > OutOfOrder TxId %" PRIu64, planIt->TxId, oooIt->TxId);
+                Y_ABORT("Inconsistency: Plan TxId %" PRIu64 " > OutOfOrder TxId %" PRIu64, planIt->TxId, oooIt->TxId);
             }
         }
         OutOfOrder.erase(ox);
@@ -422,8 +422,8 @@ void TTxMediatorTabletQueue::TTabletEntry::MergeToOutOfOrder(TStepId step, TVect
     } else {
         TVector<TTx> old;
         old.swap(current);
-        Y_VERIFY_DEBUG(IsSorted(old.begin(), old.end(), TTx::TCmpOrderId()), "%s", yvector2str(old).c_str());
-        Y_VERIFY_DEBUG(IsSorted(update.begin(), update.end(), TTx::TCmpOrderId()), "%s", yvector2str(update).c_str());
+        Y_DEBUG_ABORT_UNLESS(IsSorted(old.begin(), old.end(), TTx::TCmpOrderId()), "%s", yvector2str(old).c_str());
+        Y_DEBUG_ABORT_UNLESS(IsSorted(update.begin(), update.end(), TTx::TCmpOrderId()), "%s", yvector2str(update).c_str());
         //
         // now merge old with update
         TVector<TTx>::const_iterator oldIt = old.begin();
@@ -448,7 +448,7 @@ void TTxMediatorTabletQueue::TTabletEntry::MergeToOutOfOrder(TStepId step, TVect
         // append tail
         current.insert(current.end(), oldIt, oldEnd);
         current.insert(current.end(), updIt, updEnd);
-        Y_VERIFY_DEBUG(IsSorted(current.begin(), current.end(), TTx::TCmpOrderId()), "%s", yvector2str(current).c_str());
+        Y_DEBUG_ABORT_UNLESS(IsSorted(current.begin(), current.end(), TTx::TCmpOrderId()), "%s", yvector2str(current).c_str());
         //
     }
 }

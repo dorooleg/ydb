@@ -1,4 +1,5 @@
 #include "node.h"
+#include "source.h"
 #include "context.h"
 
 #include <ydb/library/yql/ast/yql_type_string.h>
@@ -26,6 +27,11 @@ namespace {
             }
         }
         return false;
+    }
+
+    bool ShouldEmitAggApply(const TContext& ctx) {
+        const bool blockEngineEnabled = ctx.BlockEngineEnable || ctx.BlockEngineForce;
+        return ctx.EmitAggApply.GetOrElse(blockEngineEnabled);
     }
 }
 
@@ -57,7 +63,7 @@ public:
 
 protected:
     bool InitAggr(TContext& ctx, bool isFactory, ISource* src, TAstListNode& node, const TVector<TNodePtr>& exprs) override {
-        if (!ctx.EmitAggApply) {
+        if (!ShouldEmitAggApply(ctx)) {
             AggApplyName = "";
         }
 
@@ -367,7 +373,7 @@ private:
         ui32 adjustArgsCount = isFactory ? 0 : 2;
         if (exprs.size() != adjustArgsCount) {
             ctx.Error(Pos) << "Aggregation function " << (isFactory ? "factory " : "") << Name << " requires " <<
-                adjustArgsCount << "arguments, given: " << exprs.size();
+                adjustArgsCount << " arguments, given: " << exprs.size();
             return false;
         }
 
@@ -714,9 +720,9 @@ private:
 
     void Join(IAggregation* aggr) final {
         const auto percentile = dynamic_cast<TPercentileFactory*>(aggr);
-        Y_VERIFY(percentile);
-        Y_VERIFY(*Column == *percentile->Column);
-        Y_VERIFY(AggMode == percentile->AggMode);
+        YQL_ENSURE(percentile);
+        YQL_ENSURE(Column && percentile->Column && *Column == *percentile->Column);
+        YQL_ENSURE(AggMode == percentile->AggMode);
         Percentiles.insert(percentile->Percentiles.cbegin(), percentile->Percentiles.cend());
         percentile->Percentiles.clear();
     }
@@ -731,10 +737,6 @@ private:
 
         if (!isFactory) {
             Column = exprs.front()->GetColumnName();
-            if (!Column) {
-                ctx.Error(Pos) << Name << " may only be used with column reference as first argument.";
-                return false;
-            }
         }
 
         if (!TAggregationFactory::InitAggr(ctx, isFactory, src, node, isFactory ? TVector<TNodePtr>() : TVector<TNodePtr>(1, exprs.front())))
@@ -1370,7 +1372,7 @@ public:
         Y_UNUSED(many);
         Y_UNUSED(ctx);
         Y_UNUSED(allowAggApply);
-        if (ctx.EmitAggApply && allowAggApply && AggMode != EAggregateMode::OverWindow) {
+        if (ShouldEmitAggApply(ctx) && allowAggApply && AggMode != EAggregateMode::OverWindow) {
             return Y("AggApply",
                 Q("pg_" + to_lower(PgFunc)), Y("ListItemType", type), Lambda);
         }

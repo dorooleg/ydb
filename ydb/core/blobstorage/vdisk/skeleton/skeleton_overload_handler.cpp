@@ -3,8 +3,8 @@
 #include <ydb/core/blobstorage/vdisk/hulldb/base/blobstorage_hullsatisfactionrank.h>
 #include <ydb/core/blobstorage/vdisk/hullop/blobstorage_hull.h>
 #include <ydb/core/util/queue_inplace.h>
-#include <ydb/core/base/wilson.h>
-#include <library/cpp/actors/wilson/wilson_span.h>
+#include <ydb/library/wilson_ids/wilson.h>
+#include <ydb/library/actors/wilson/wilson_span.h>
 
 namespace NKikimr {
 
@@ -57,6 +57,12 @@ namespace NKikimr {
             , AnubisOsirisPutHandler(std::move(aoput))
         {}
 
+        ~TEmergencyQueue() {
+            while (Queue.Head()) {
+                Queue.Pop();
+            }
+        }
+
         void Push(TEvBlobStorage::TEvVMovedPatch::TPtr ev) {
             ++Mon.EmergencyMovedPatchQueueItems();
             Mon.EmergencyMovedPatchQueueBytes() += ev->Get()->Record.ByteSize();
@@ -99,7 +105,7 @@ namespace NKikimr {
 
         void Process(const TActorContext &ctx) {
             auto item = Queue.Head();
-            Y_VERIFY(item);
+            Y_ABORT_UNLESS(item);
             TAutoPtr<IEventHandle> ev = item->Ev.release();
             item->Span.EndOk();
             Queue.Pop();
@@ -147,7 +153,7 @@ namespace NKikimr {
                     break;
                 }
                 default:
-                    Y_FAIL("unexpected event type in emergency queue(%" PRIu64 ")", (ui64)ev->GetTypeRewrite());
+                    Y_ABORT("unexpected event type in emergency queue(%" PRIu64 ")", (ui64)ev->GetTypeRewrite());
             }
         }
     };
@@ -225,7 +231,7 @@ namespace NKikimr {
     }
 
     ui32 TOverloadHandler::GetIntegralRankPercent() const {
-        Y_VERIFY_DEBUG(DynamicPDiskWeightsManager);
+        Y_DEBUG_ABORT_UNLESS(DynamicPDiskWeightsManager);
         ui32 integralRankPercent = ((DynamicPDiskWeightsManager->GetFreshRank()
                     + DynamicPDiskWeightsManager->GetLevelRank()) * 100u).ToUi64();
         return integralRankPercent;

@@ -7,6 +7,10 @@
 #include <util/generic/hash.h>
 #include <util/generic/ptr.h>
 
+namespace NKikimrConfig{
+    class TMonitoringConfig;
+}
+
 namespace NKikimr {
 
 struct TEvTenantPool {
@@ -82,10 +86,9 @@ public:
 
 IActor* CreateTenantPool(TTenantPoolConfig::TPtr config);
 
-inline TActorId MakeTenantPoolID(ui32 node = 0, ui32 domain = 0) {
-    Y_VERIFY(domain < 32);
+inline TActorId MakeTenantPoolID(ui32 node = 0) {
     char x[12] = { 't', 'e', 'n', 'a', 'n', 't', 'p', 'o', 'o', 'l' };
-    x[10] = static_cast<char>(domain);
+    x[10] = static_cast<char>(1);
     return TActorId(node, TStringBuf(x, 12));
 }
 

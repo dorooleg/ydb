@@ -10,7 +10,7 @@
 #include <ydb/core/persqueue/cluster_tracker.h>
 #include <ydb/core/util/address_classifier.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 
 #include <algorithm>
 
@@ -57,7 +57,7 @@ private:
         if (Cfg().HasCloudNetData()) {
             CloudNetworksClassifier = NAddressClassifier::BuildLabeledAddressClassifierFromNetData(Cfg().GetCloudNetData());
 
-            Y_VERIFY(CloudNetworksClassifier); // the config is expected to be correct if specified
+            Y_ABORT_UNLESS(CloudNetworksClassifier); // the config is expected to be correct if specified
         }
     }
 
@@ -66,6 +66,7 @@ private:
     }
 
     void SubscribeToClusterTracker() {
+        LOG_DEBUG_S(Ctx(), NKikimrServices::PERSQUEUE_CLUSTER_TRACKER, "TClusterDiscoveryServiceActor: send TEvClusterTracker::TEvSubscribe");
         Send(NPQ::NClusterTracker::MakeClusterTrackerID(), new NPQ::NClusterTracker::TEvClusterTracker::TEvSubscribe);
     }
 
@@ -245,7 +246,7 @@ private:
     // Monitoring features
 
     void StartPeriodicalMonitoring() {
-        Y_VERIFY(Cfg().GetTimedCountersUpdateIntervalSeconds());
+        Y_ABORT_UNLESS(Cfg().GetTimedCountersUpdateIntervalSeconds());
 
         Send(Ctx().SelfID, new TEvents::TEvWakeup);
     }

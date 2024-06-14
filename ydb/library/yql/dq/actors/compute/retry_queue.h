@@ -2,10 +2,10 @@
 #include <ydb/library/yql/dq/actors/protos/dq_events.pb.h>
 #include <ydb/library/yql/dq/common/dq_common.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/event_local.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/event_local.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 #include <util/generic/yexception.h>
 #include <util/system/types.h>
@@ -120,10 +120,16 @@ public:
         }
         return false;
     }
+    
+    bool RemoveConfirmedEvents() {
+        RemoveConfirmedEvents(MyConfirmedSeqNo);
+        return !Events.empty();
+    }
 
     void OnNewRecipientId(const NActors::TActorId& recipientId, bool unsubscribe = true);
     void HandleNodeConnected(ui32 nodeId);
     void HandleNodeDisconnected(ui32 nodeId);
+    bool HandleUndelivered(NActors::TEvents::TEvUndelivered::TPtr& ev);
     void Retry();
     void Unsubscribe();
 
@@ -160,7 +166,7 @@ private:
             THolder<T> ev = MakeHolder<T>();
             ev->Record = Event->Record;
             ev->Record.MutableTransportMeta()->SetConfirmedSeqNo(confirmedSeqNo);
-            return MakeHolder<NActors::IEventHandle>(Recipient, Sender, ev.Release(), 0, Cookie);
+            return MakeHolder<NActors::IEventHandle>(Recipient, Sender, ev.Release(), NActors::IEventHandle::FlagTrackDelivery, Cookie);
         }
 
     private:

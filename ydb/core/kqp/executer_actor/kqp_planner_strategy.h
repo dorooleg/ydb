@@ -1,9 +1,9 @@
 #pragma once
 
-#include <ydb/core/protos/kqp.pb.h>
 #include <ydb/core/kqp/rm_service/kqp_resource_estimation.h>
+#include <ydb/core/protos/kqp.pb.h>
 
-#include <library/cpp/actors/core/actorid.h>
+#include <ydb/library/actors/core/actorid.h>
 
 namespace NKikimr::NKqp {
 
@@ -31,5 +31,7 @@ protected:
 };
 
 THolder<IKqpPlannerStrategy> CreateKqpGreedyPlanner();
+
+THolder<IKqpPlannerStrategy> CreateKqpMockEmptyPlanner();
 
 } // namespace NKikimr::NKqp

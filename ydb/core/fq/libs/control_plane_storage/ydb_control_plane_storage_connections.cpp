@@ -10,6 +10,26 @@
 
 namespace NFq {
 
+namespace {
+
+void PrepareSensitiveFields(::FederatedQuery::Connection& connection, bool extractSensitiveFields) {
+    if (extractSensitiveFields) {
+        return;
+    }
+
+    auto& setting = *connection.mutable_content()->mutable_setting();
+    if (setting.has_clickhouse_cluster()) {
+        auto& ch = *setting.mutable_clickhouse_cluster();
+        ch.set_password("");
+    }
+    if (setting.has_postgresql_cluster()) {
+        auto& pg = *setting.mutable_postgresql_cluster();
+        pg.set_password("");
+    }
+}
+
+}
+
 void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvCreateConnectionRequest::TPtr& ev)
 {
     TInstant startTime = TInstant::Now();
@@ -84,13 +104,22 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvCreateConne
         "    ($scope, $connection_id, $user, $visibility, $name, $connection_type, $connection, $revision, $internal);"
     );
 
-    auto validatorName = CreateUniqueNameValidator(
+    auto connectionNameUniqueValidator = CreateUniqueNameValidator(
         CONNECTIONS_TABLE_NAME,
         content.acl().visibility(),
         scope,
         content.name(),
         user,
         "Connection with the same name already exists. Please choose another name",
+        YdbConnection->TablePathPrefix);
+
+    auto bindingNameUniqueValidator = CreateUniqueNameValidator(
+        BINDINGS_TABLE_NAME,
+        content.acl().visibility(),
+        scope,
+        content.name(),
+        user,
+        "Binding with the same name already exists. Please choose another name",
         YdbConnection->TablePathPrefix);
 
     auto validatorCountConnections = CreateCountEntitiesValidator(
@@ -102,9 +131,10 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvCreateConne
 
     TVector<TValidationQuery> validators;
     if (idempotencyKey) {
-        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix));
+        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix, requestCounters.Common->ParseProtobufError));
     }
-    validators.push_back(validatorName);
+    validators.push_back(connectionNameUniqueValidator);
+    validators.push_back(bindingNameUniqueValidator);
     validators.push_back(validatorCountConnections);
 
     if (content.acl().visibility() == FederatedQuery::Acl::PRIVATE) {
@@ -149,6 +179,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListConnect
     requestCounters.IncInFly();
     requestCounters.Common->RequestBytes->Add(event.GetByteSize());
     const FederatedQuery::ListConnectionsRequest& request = event.Request;
+    bool extractSensitiveFields = event.ExtractSensitiveFields;
 
     const TString user = event.User;
     const TString pageToken = request.page_token();
@@ -185,7 +216,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListConnect
     queryBuilder.AddUint64("limit", limit + 1);
 
     queryBuilder.AddText(
-        "SELECT `" CONNECTION_ID_COLUMN_NAME "`, `" CONNECTION_COLUMN_NAME "` FROM `" CONNECTIONS_TABLE_NAME "`\n"
+        "SELECT `" SCOPE_COLUMN_NAME "`, `" CONNECTION_ID_COLUMN_NAME "`, `" CONNECTION_COLUMN_NAME "` FROM `" CONNECTIONS_TABLE_NAME "`\n"
         "WHERE `" SCOPE_COLUMN_NAME "` = $scope AND `" CONNECTION_ID_COLUMN_NAME "` >= $last_connection\n"
     );
 
@@ -194,7 +225,11 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListConnect
         TVector<TString> filters;
         if (request.filter().name()) {
             queryBuilder.AddString("filter_name", request.filter().name());
-            filters.push_back("`" NAME_COLUMN_NAME "` LIKE '%' || $filter_name || '%'");
+            if (event.IsExactNameMatch) {
+                filters.push_back("`" NAME_COLUMN_NAME "` = $filter_name");
+            } else {
+                filters.push_back("FIND(`" NAME_COLUMN_NAME "`, $filter_name) IS NOT NULL");
+            }
         }
 
         if (request.filter().created_by_me()) {
@@ -222,14 +257,14 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListConnect
     }
 
     queryBuilder.AddText(
-        "ORDER BY `" CONNECTION_ID_COLUMN_NAME "`\n"
+        "ORDER BY `" SCOPE_COLUMN_NAME "`, `" CONNECTION_ID_COLUMN_NAME "`\n"
         "LIMIT $limit;"
     );
 
     const auto query = queryBuilder.Build();
     auto debugInfo = Config->Proto.GetEnableDebugMode() ? std::make_shared<TDebugInfo>() : TDebugInfoPtr{};
     auto [result, resultSets] = Read(query.Sql, query.Params, requestCounters, debugInfo);
-    auto prepare = [resultSets=resultSets, limit] {
+    auto prepare = [resultSets=resultSets, limit, extractSensitiveFields, commonCounters=requestCounters.Common] {
         if (resultSets->size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 1 but equal " << resultSets->size() << ". Please contact internal support";
         }
@@ -239,13 +274,10 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvListConnect
         while (parser.TryNextRow()) {
             auto& connection = *result.add_connection();
             if (!connection.ParseFromString(*parser.ColumnParser(CONNECTION_COLUMN_NAME).GetOptionalString())) {
+                commonCounters->ParseProtobufError->Inc();
                 ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for connection. Please contact internal support";
             }
-            auto& setting = *connection.mutable_content()->mutable_setting();
-            if (setting.has_clickhouse_cluster()) {
-                auto& ch = *setting.mutable_clickhouse_cluster();
-                ch.set_password("");
-            }
+            PrepareSensitiveFields(connection, extractSensitiveFields);
         }
 
         if (result.connection_size() == limit + 1) {
@@ -285,6 +317,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDescribeCon
     const TString user = event.User;
     const TString connectionId = request.connection_id();
     const TString token = event.Token;
+    const bool extractSensitiveFields = event.ExtractSensitiveFields;
     TPermissions permissions = Config->Proto.GetEnablePermissions()
                     ? event.Permissions
                     : TPermissions{TPermissions::VIEW_PUBLIC};
@@ -323,7 +356,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDescribeCon
     const auto query = queryBuilder.Build();
     auto debugInfo = Config->Proto.GetEnableDebugMode() ? std::make_shared<TDebugInfo>() : TDebugInfoPtr{};
     auto [result, resultSets] = Read(query.Sql, query.Params, requestCounters, debugInfo);
-    auto prepare = [=, resultSets=resultSets] {
+    auto prepare = [=, resultSets=resultSets, commonCounters=requestCounters.Common] {
         if (resultSets->size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 1 but equal " << resultSets->size() << ". Please contact internal support";
         }
@@ -335,6 +368,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDescribeCon
         }
 
         if (!result.mutable_connection()->ParseFromString(*parser.ColumnParser(CONNECTION_COLUMN_NAME).GetOptionalString())) {
+            commonCounters->ParseProtobufError->Inc();
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for connection. Please contact internal support";
         }
 
@@ -343,11 +377,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDescribeCon
             ythrow TCodeLineException(TIssuesIds::ACCESS_DENIED) << "Connection does not exist or permission denied. Please check the id connection or your access rights";
         }
 
-        auto& setting = *result.mutable_connection()->mutable_content()->mutable_setting();
-        if (setting.has_clickhouse_cluster()) {
-            auto& ch = *setting.mutable_clickhouse_cluster();
-            ch.set_password("");
-        }
+        PrepareSensitiveFields(*result.mutable_connection(), extractSensitiveFields);
         return result;
     };
 
@@ -417,7 +447,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyConne
     );
 
     std::shared_ptr<std::pair<FederatedQuery::ModifyConnectionResult, TAuditDetails<FederatedQuery::Connection>>> response = std::make_shared<std::pair<FederatedQuery::ModifyConnectionResult, TAuditDetails<FederatedQuery::Connection>>>();
-    auto prepareParams = [=, config=Config](const TVector<TResultSet>& resultSets) {
+    auto prepareParams = [=, config=Config, commonCounters=requestCounters.Common](const TVector<TResultSet>& resultSets) {
         if (resultSets.size() != 1) {
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Result set size is not equal to 1 but equal " << resultSets.size() << ". Please contact internal support";
         }
@@ -429,6 +459,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyConne
 
         FederatedQuery::Connection connection;
         if (!connection.ParseFromString(*parser.ColumnParser(CONNECTION_COLUMN_NAME).GetOptionalString())) {
+            commonCounters->ParseProtobufError->Inc();
             ythrow TCodeLineException(TIssuesIds::INTERNAL_ERROR) << "Error parsing proto message for connection. Please contact internal support";
         }
 
@@ -449,14 +480,21 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyConne
             ythrow TCodeLineException(TIssuesIds::BAD_REQUEST) << "Changing visibility from SCOPE to PRIVATE is forbidden. Please create a new connection with visibility PRIVATE";
         }
 
-        TString clickHousePassword;
+        // FIXME: this code needs better generalization
         if (request.content().setting().has_clickhouse_cluster()) {
-            clickHousePassword = request.content().setting().clickhouse_cluster().password();
+            auto clickHousePassword = request.content().setting().clickhouse_cluster().password();
             if (!clickHousePassword) {
                 clickHousePassword = content.setting().clickhouse_cluster().password();
             }
             content = request.content();
             content.mutable_setting()->mutable_clickhouse_cluster()->set_password(clickHousePassword);
+        } else if (request.content().setting().has_postgresql_cluster()) {
+            auto postgreSQLPassword = request.content().setting().postgresql_cluster().password();
+            if (!postgreSQLPassword) {
+                postgreSQLPassword = content.setting().postgresql_cluster().password();
+            }
+            content = request.content();
+            content.mutable_setting()->mutable_postgresql_cluster()->set_password(postgreSQLPassword);
         } else {
             content = request.content();
         }
@@ -484,7 +522,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyConne
 
     TVector<TValidationQuery> validators;
     if (idempotencyKey) {
-        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix));
+        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix, requestCounters.Common->ParseProtobufError));
     }
 
     auto accessValidator = CreateManageAccessValidator(
@@ -511,7 +549,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyConne
     }
 
     {
-        auto modifyUniqueNameValidator = CreateModifyUniqueNameValidator(
+        auto connectionNameUniqueValidator = CreateModifyUniqueNameValidator(
             CONNECTIONS_TABLE_NAME,
             CONNECTION_ID_COLUMN_NAME,
             request.content().acl().visibility(),
@@ -521,7 +559,18 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyConne
             connectionId,
             "Connection with the same name already exists. Please choose another name",
             YdbConnection->TablePathPrefix);
-        validators.push_back(modifyUniqueNameValidator);
+        validators.push_back(connectionNameUniqueValidator);
+    }
+    {
+        auto bindingNameUniqueValidator = CreateUniqueNameValidator(
+            BINDINGS_TABLE_NAME,
+            request.content().acl().visibility(),
+            scope,
+            request.content().name(),
+            user,
+            "Binding with the same name already exists. Please choose another name",
+            YdbConnection->TablePathPrefix);
+        validators.push_back(bindingNameUniqueValidator);
     }
 
     const auto readQuery = readQueryBuilder.Build();
@@ -600,7 +649,7 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDeleteConne
 
     TVector<TValidationQuery> validators;
     if (idempotencyKey) {
-        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix));
+        validators.push_back(CreateIdempotencyKeyValidator(scope, idempotencyKey, response, YdbConnection->TablePathPrefix, requestCounters.Common->ParseProtobufError));
     }
 
     auto accessValidator = CreateManageAccessValidator(
@@ -641,7 +690,8 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvDeleteConne
         CONNECTION_ID_COLUMN_NAME,
         CONNECTIONS_TABLE_NAME,
         response,
-        YdbConnection->TablePathPrefix));
+        YdbConnection->TablePathPrefix,
+        requestCounters.Common->ParseProtobufError));
 
     const auto query = queryBuilder.Build();
     auto debugInfo = Config->Proto.GetEnableDebugMode() ? std::make_shared<TDebugInfo>() : TDebugInfoPtr{};

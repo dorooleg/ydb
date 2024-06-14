@@ -27,31 +27,31 @@ public:
 
 void TBehaviourRegistrator::Handle(TEvTableDescriptionSuccess::TPtr& ev) {
     const TString& initId = Behaviour->GetTypeId();
-    Y_VERIFY(initId == ev->Get()->GetRequestId());
+    Y_ABORT_UNLESS(initId == ev->Get()->GetRequestId());
     auto it = RegistrationData->InRegistration.find(initId);
-    Y_VERIFY(it != RegistrationData->InRegistration.end());
+    Y_ABORT_UNLESS(it != RegistrationData->InRegistration.end());
     it->second->GetOperationsManager()->SetActualSchema(ev->Get()->GetSchema());
     RegistrationData->InitializationFinished(initId);
 }
 
 void TBehaviourRegistrator::Handle(TEvTableDescriptionFailed::TPtr& ev) {
     const TString& initId = Behaviour->GetTypeId();
-    Y_VERIFY(initId == ev->Get()->GetRequestId());
+    Y_ABORT_UNLESS(initId == ev->Get()->GetRequestId());
     ALS_INFO(NKikimrServices::METADATA_PROVIDER) << "metadata service cannot receive table description for " << initId << Endl;
     Schedule(TDuration::Seconds(1), new TEvStartRegistration());
 }
 
 void TBehaviourRegistrator::Handle(TEvStartRegistration::TPtr& /*ev*/) {
-    Register(new NInitializer::TDSAccessorInitialized(ReqConfig,
-        Behaviour->GetTypeId(), Behaviour->GetInitializer(), InternalController, RegistrationData->GetInitializationSnapshot()));
+    NInitializer::TDSAccessorInitialized::Execute(ReqConfig,
+        Behaviour->GetTypeId(), Behaviour->GetInitializer(), InternalController, RegistrationData->GetSnapshotOwner());
 }
 
 void TBehaviourRegistrator::Handle(NInitializer::TEvInitializationFinished::TPtr& ev) {
     const TString& initId = Behaviour->GetTypeId();
-    Y_VERIFY(initId == ev->Get()->GetInitializationId());
+    Y_ABORT_UNLESS(initId == ev->Get()->GetInitializationId());
 
     auto it = RegistrationData->InRegistration.find(initId);
-    Y_VERIFY(it != RegistrationData->InRegistration.end());
+    Y_ABORT_UNLESS(it != RegistrationData->InRegistration.end());
     if (it->second->GetOperationsManager()) {
         Register(new TSchemeDescriptionActor(InternalController, initId, it->second->GetStorageTablePath()));
     } else {

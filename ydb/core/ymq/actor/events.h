@@ -14,10 +14,13 @@
 #include <ydb/core/ymq/base/processed_request_attributes.h>
 #include <ydb/core/ymq/base/query_id.h>
 #include <ydb/core/ymq/base/queue_path.h>
+#include <ydb/core/ymq/proto/events.pb.h>
 #include <ydb/core/ymq/proto/records.pb.h>
+#include <ydb/core/protos/http_config.pb.h>
+#include <ydb/public/api/protos/ydb_issue_message.pb.h>
 
-#include <library/cpp/actors/core/event_pb.h>
-#include <library/cpp/actors/core/event_local.h>
+#include <ydb/library/actors/core/event_pb.h>
+#include <ydb/library/actors/core/event_local.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 #include <util/generic/hash.h>
@@ -131,6 +134,12 @@ struct TSqsEvents {
         EvNodeTrackerSubscriptionStatus,
 
         EvForceReloadState,
+        EvReloadStateRequest,
+        EvReloadStateResponse,
+        EvLeaderStarted,
+
+        EvActionCounterChanged,
+        EvLocalCounterChanged,
 
         EvEnd,
     };
@@ -191,6 +200,9 @@ struct TSqsEvents {
         bool UserExists = false;
         bool QueueExists = false;
 
+        // Event processing was throttled
+        bool Throttled = false;
+
         // Queue info
         ui32 TablesFormat = 0;
         ui64 QueueVersion = 0;
@@ -244,7 +256,7 @@ struct TSqsEvents {
             , Shard(shard)
             , QueryIdx(idx)
         {
-            Y_VERIFY(QueryIdx < EQueryId::QUERY_VECTOR_SIZE);
+            Y_ABORT_UNLESS(QueryIdx < EQueryId::QUERY_VECTOR_SIZE);
         }
     };
 
@@ -390,6 +402,27 @@ struct TSqsEvents {
         }
     };
 
+    struct TEvActionCounterChanged: public NActors::TEventPB<TEvActionCounterChanged, NKikimrClient::TSqsActionCounterChanged, EvActionCounterChanged> {
+        using TEventPB::TEventPB;
+    };
+
+    struct TEvLocalCounterChanged: public NActors::TEventLocal<TEvLocalCounterChanged, EvLocalCounterChanged> {
+        enum class ECounterType{
+            ReceiveMessageImmediateDuration,
+            ReceiveMessageEmptyCount,
+            MessagesPurged,
+            ClientMessageProcessingDuration,
+        };
+
+        ECounterType CounterType;
+        ui32 Value;
+        TEvLocalCounterChanged(ECounterType counterType, ui32 value)
+            : CounterType(counterType)
+            , Value(value)
+        {
+        }
+    };
+
     // Request that is sent from proxy to sqs service actor on other (leader) node
     struct TEvSqsRequest : public NActors::TEventPB<TEvSqsRequest, NKikimrClient::TSqsRequest, EvSqsRequest> {
         using TEventPB::TEventPB;
@@ -437,6 +470,7 @@ struct TSqsEvents {
             SessionError,
             QueueDoesNotExist,
             UserDoesNotExist,
+            Throttled,
         };
 
         NKikimrClient::TSqsResponse Record;
@@ -477,6 +511,7 @@ struct TSqsEvents {
             NoQueue,
             FailedToConnectToLeader,
             Error,
+            Throttled,
         };
 
         TString RequestId;
@@ -523,13 +558,16 @@ struct TSqsEvents {
     struct TEvQueueId : public NActors::TEventLocal<TEvQueueId, EvQueueId> {
         bool Exists = false;
         bool Failed = false;
+        // Event processing was throttled
+        bool Throttled = false;
         TString QueueId; // resource id in case of Yandex.Cloud mode and queue name in case of Yandex
         ui64 Version = 0; // last queue version registered in service actor
         ui64 ShardsCount = 0; // number of queue shards
         ui32 TablesFormat = 0;
 
-        TEvQueueId(const bool failed = false)
+        TEvQueueId(const bool failed = false, const bool throttled = false)
             : Failed(failed)
+            , Throttled(throttled)
         {
         }
 
@@ -559,11 +597,15 @@ struct TSqsEvents {
     struct TEvQueueFolderIdAndCustomName : public NActors::TEventLocal<TEvQueueFolderIdAndCustomName, EvQueueFolderIdAndCustomName> {
         bool Exists = false;
         bool Failed = false;
+        // Event processing was throttled
+        bool Throttled = false;
+
         TString QueueFolderId;
         TString QueueCustomName;
 
-        TEvQueueFolderIdAndCustomName(bool failed = false)
+        TEvQueueFolderIdAndCustomName(bool failed = false, bool throttled = false)
             : Failed(failed)
+            , Throttled(throttled)
         {
         }
 
@@ -944,6 +986,27 @@ struct TSqsEvents {
             : NextTryAfter(nextTryAfter)
         {}
         TDuration NextTryAfter;
+    };
+    
+    struct TEvReloadStateRequest : public NActors::TEventPB<TEvReloadStateRequest, TReloadStateRequest, EvReloadStateRequest> {
+        TEvReloadStateRequest() = default;
+        
+        TEvReloadStateRequest(const TString& user, const TString& queue) {
+            Record.MutableTarget()->SetUserName(user);
+            Record.MutableTarget()->SetQueueName(queue);
+        }
+    };
+
+    struct TEvReloadStateResponse : public NActors::TEventPB<TEvReloadStateResponse, TReloadStateResponse, EvReloadStateResponse> {
+        TEvReloadStateResponse() = default;
+        TEvReloadStateResponse(const TString& user, const TString& queue, TInstant reloadedAt) {
+            Record.MutableWho()->SetUserName(user);
+            Record.MutableWho()->SetQueueName(queue);
+            Record.SetReloadedAtMs(reloadedAt.MilliSeconds());
+        }
+    };
+
+    struct TEvLeaderStarted : public NActors::TEventLocal<TEvLeaderStarted, EvLeaderStarted> {
     };
 };
 

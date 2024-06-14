@@ -1,10 +1,12 @@
 #include "msgbus_servicereq.h"
 #include "grpc_server.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 #include <ydb/core/base/appdata.h>
+#include <ydb/core/base/nameservice.h>
+#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/mind/node_broker.h>
 #include <ydb/core/kqp/common/kqp.h>
@@ -49,31 +51,16 @@ public:
             SendReplyAndDie(ctx);
         }
 
-        auto dinfo = AppData(ctx)->DomainsInfo;
-        ui32 group;
-
-        if (Request.GetDomainPath()) {
-            auto *domain = dinfo->GetDomainByName(Request.GetDomainPath());
-            if (!domain) {
-                auto error = Sprintf("Unknown domain %s", Request.GetDomainPath().data());
-                ReplyWithErrorAndDie(error, ctx);
-                return;
-            }
-            group = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
-        } else {
-            if (dinfo->Domains.size() > 1) {
-                auto error = "Ambiguous domain (specify DomainPath in request)";
-                ReplyWithErrorAndDie(error, ctx);
-                return;
-            }
-
-            auto domain = dinfo->Domains.begin()->second;
-            group = dinfo->GetDefaultStateStorageGroup(domain->DomainUid);
+        if (Request.GetDomainPath() && (!AppData()->DomainsInfo->Domain || AppData()->DomainsInfo->GetDomain()->Name !=
+                Request.GetDomainPath())) {
+            auto error = Sprintf("Unknown domain %s", Request.GetDomainPath().data());
+            ReplyWithErrorAndDie(error, ctx);
+            return;
         }
 
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = {.RetryLimitCount = 10};
-        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeNodeBrokerID(group), pipeConfig);
+        auto pipe = NTabletPipe::CreateClient(ctx.SelfID, MakeNodeBrokerID(), pipeConfig);
         NodeBrokerPipe = ctx.RegisterWithSameMailbox(pipe);
 
         TAutoPtr<TEvNodeBroker::TEvRegistrationRequest> request

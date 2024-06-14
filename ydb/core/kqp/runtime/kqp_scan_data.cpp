@@ -3,12 +3,17 @@
 #include <ydb/core/engine/minikql/minikql_engine_host.h>
 #include <ydb/core/protos/tx_datashard.pb.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
+#include <ydb/core/formats/arrow/common/accessor.h>
+#include <ydb/core/formats/arrow/size_calcer.h>
 
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/pack.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/type_desc.h>
 #include <ydb/library/yql/public/udf/arrow/util.h>
 #include <ydb/library/yql/utils/yql_panic.h>
+
+#include <contrib/libs/apache/arrow/cpp/src/arrow/compute/cast.h>
+#include <contrib/libs/apache/arrow/cpp/src/arrow/compute/api_scalar.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -45,6 +50,10 @@ TBytesStatistics GetUnboxedValueSize(const NUdf::TUnboxedValue& value, const NSc
         case NTypeIds::Datetime:
         case NTypeIds::Timestamp:
         case NTypeIds::Interval:
+        case NTypeIds::Date32:
+        case NTypeIds::Datetime64:
+        case NTypeIds::Timestamp64:
+        case NTypeIds::Interval64:
         case NTypeIds::ActorId:
         case NTypeIds::StepOrderId:
         {
@@ -62,6 +71,7 @@ TBytesStatistics GetUnboxedValueSize(const NUdf::TUnboxedValue& value, const NSc
         case NTypeIds::Yson:
         case NTypeIds::JsonDocument:
         case NTypeIds::DyNumber:
+        case NTypeIds::Uuid:
         case NTypeIds::PairUi64Ui64:
         {
             if (value.IsEmbedded()) {
@@ -209,11 +219,11 @@ template <class TArrayTypeExt, class TValueType = typename TArrayTypeExt::value_
 class TElementAccessor {
 public:
     using TArrayType = TArrayTypeExt;
-    static NYql::NUdf::TUnboxedValue ExtractValue(TArrayType& array, const ui32 rowIndex) {
+    static NYql::NUdf::TUnboxedValue ExtractValue(const TArrayType& array, const ui32 rowIndex) {
         return NUdf::TUnboxedValuePod(static_cast<TValueType>(array.Value(rowIndex)));
     }
 
-    static void Validate(TArrayType& /*array*/) {
+    static void Validate(const TArrayType& /*array*/) {
 
     }
 
@@ -226,13 +236,13 @@ template <>
 class TElementAccessor<arrow::Decimal128Array, NYql::NDecimal::TInt128> {
 public:
     using TArrayType = arrow::Decimal128Array;
-    static void Validate(arrow::Decimal128Array& array) {
+    static void Validate(const arrow::Decimal128Array& array) {
         const auto& type = arrow::internal::checked_cast<const arrow::Decimal128Type&>(*array.type());
         YQL_ENSURE(type.precision() == NScheme::DECIMAL_PRECISION, "Unsupported Decimal precision.");
         YQL_ENSURE(type.scale() == NScheme::DECIMAL_SCALE, "Unsupported Decimal scale.");
     }
 
-    static NYql::NUdf::TUnboxedValue ExtractValue(arrow::Decimal128Array& array, const ui32 rowIndex) {
+    static NYql::NUdf::TUnboxedValue ExtractValue(const arrow::Decimal128Array& array, const ui32 rowIndex) {
         auto data = array.GetView(rowIndex);
         YQL_ENSURE(data.size() == sizeof(NYql::NDecimal::TInt128), "Wrong data size");
         NYql::NDecimal::TInt128 val;
@@ -248,10 +258,10 @@ template <>
 class TElementAccessor<arrow::BinaryArray, NUdf::TStringRef> {
 public:
     using TArrayType = arrow::BinaryArray;
-    static void Validate(arrow::BinaryArray& /*array*/) {
+    static void Validate(const arrow::BinaryArray& /*array*/) {
     }
 
-    static NYql::NUdf::TUnboxedValue ExtractValue(arrow::BinaryArray& array, const ui32 rowIndex) {
+    static NYql::NUdf::TUnboxedValue ExtractValue(const arrow::BinaryArray& array, const ui32 rowIndex) {
         auto data = array.GetView(rowIndex);
         return MakeString(NUdf::TStringRef(data.data(), data.size()));
     }
@@ -264,10 +274,10 @@ template <>
 class TElementAccessor<arrow::FixedSizeBinaryArray, NUdf::TStringRef> {
 public:
     using TArrayType = arrow::FixedSizeBinaryArray;
-    static void Validate(arrow::FixedSizeBinaryArray& /*array*/) {
+    static void Validate(const arrow::FixedSizeBinaryArray& /*array*/) {
     }
 
-    static NYql::NUdf::TUnboxedValue ExtractValue(arrow::FixedSizeBinaryArray& array, const ui32 rowIndex) {
+    static NYql::NUdf::TUnboxedValue ExtractValue(const arrow::FixedSizeBinaryArray& array, const ui32 rowIndex) {
         auto data = array.GetView(rowIndex);
         return MakeString(NUdf::TStringRef(data.data(), data.size() - 1));
     }
@@ -280,18 +290,56 @@ public:
 
 template <class TElementAccessor, class TAccessor>
 TBytesStatistics WriteColumnValuesFromArrowSpecImpl(TAccessor editAccessor,
-    const arrow::RecordBatch& batch, const ui32 columnIndex, arrow::Array* arrayExt, NScheme::TTypeInfo columnType) {
-    auto& array = *reinterpret_cast<typename TElementAccessor::TArrayType*>(arrayExt);
-    TElementAccessor::Validate(array);
+    const TBatchDataAccessor& batch, const ui32 columnIndex, const std::shared_ptr<arrow::ChunkedArray>& chunkedArrayExt, NScheme::TTypeInfo columnType) {
     auto statAccumulator = TElementAccessor::BuildStatAccumulator(columnType);
-    for (i64 rowIndex = 0; rowIndex < batch.num_rows(); ++rowIndex) {
-        auto& rowItem = editAccessor(rowIndex, columnIndex);
-        if (array.IsNull(rowIndex)) {
+
+    auto trivialChunkedArray = std::make_shared<NArrow::NAccessor::TTrivialChunkedArray>(chunkedArrayExt);
+    NArrow::NAccessor::IChunkedArray::TReader reader(trivialChunkedArray);
+
+    std::optional<ui32> chunkIdx;
+    std::optional<ui32> currentIdxFrom;
+    std::optional<NArrow::NAccessor::IChunkedArray::TAddress> address;
+    const typename TElementAccessor::TArrayType* currentArray = nullptr;
+    const auto applyToIndex = [&](const ui32 rowIndexFrom, const ui32 rowIndexTo) {
+        if (!currentIdxFrom) {
+            address = reader.GetReadChunk(rowIndexFrom);
+            AFL_ENSURE(rowIndexFrom == 0)("real", rowIndexFrom);
+        } else {
+            AFL_ENSURE(rowIndexFrom == *currentIdxFrom + 1)("next", rowIndexFrom)("current", *currentIdxFrom);
+            if (!address->NextPosition()) {
+                address = reader.GetReadChunk(rowIndexFrom);
+            }
+        }
+        currentIdxFrom = rowIndexFrom;
+
+        if (!chunkIdx || *chunkIdx != address->GetChunkIdx()) {
+            currentArray = static_cast<const typename TElementAccessor::TArrayType*>(address->GetArray().get());
+            TElementAccessor::Validate(*currentArray);
+            chunkIdx = address->GetChunkIdx();
+        }
+
+        auto& rowItem = editAccessor(rowIndexTo, columnIndex);
+        if (currentArray->IsNull(address->GetPosition())) {
             statAccumulator.AddNull();
             rowItem = NUdf::TUnboxedValue();
         } else {
-            rowItem = TElementAccessor::ExtractValue(array, rowIndex);
+            rowItem = TElementAccessor::ExtractValue(*currentArray, address->GetPosition());
             statAccumulator.AddValue(rowItem);
+        }
+    };
+
+    if (batch.HasDataIndexes()) {
+        ui32 idx = 0;
+        std::map<ui64, ui64> remapIndexes;
+        for (const i64 rowIndex : batch.GetDataIndexes()) {
+            YQL_ENSURE(remapIndexes.emplace(rowIndex, idx++).second);
+        }
+        for (auto&& i : remapIndexes) {
+            applyToIndex(i.first, i.second);
+        }
+    } else {
+        for (i64 rowIndex = 0; rowIndex < batch.GetRecordsCount(); ++rowIndex) {
+            applyToIndex(rowIndex, rowIndex);
         }
     }
     return statAccumulator.Finish();
@@ -300,9 +348,8 @@ TBytesStatistics WriteColumnValuesFromArrowSpecImpl(TAccessor editAccessor,
 
 template <class TAccessor>
 TBytesStatistics WriteColumnValuesFromArrowImpl(TAccessor editAccessor,
-    const arrow::RecordBatch& batch, i64 columnIndex, NScheme::TTypeInfo columnType) {
-    std::shared_ptr<arrow::Array> columnSharedPtr = batch.column(columnIndex);
-    arrow::Array* columnPtr = columnSharedPtr.get();
+    const TBatchDataAccessor& batch, i64 columnIndex, NScheme::TTypeInfo columnType) {
+    const std::shared_ptr<arrow::ChunkedArray> columnPtr = batch.GetBatch()->column(columnIndex);
     namespace NTypeIds = NScheme::NTypeIds;
     switch (columnType.GetTypeId()) {
         case NTypeIds::Bool:
@@ -317,11 +364,15 @@ TBytesStatistics WriteColumnValuesFromArrowImpl(TAccessor editAccessor,
         {
             return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::Int16Array>>(editAccessor, batch, columnIndex, columnPtr, columnType);
         }
+        case NTypeIds::Date32:
         case NTypeIds::Int32:
         {
             return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::Int32Array>>(editAccessor, batch, columnIndex, columnPtr, columnType);
         }
         case NTypeIds::Int64:
+        case NTypeIds::Timestamp64:
+        case NTypeIds::Interval64:
+        case NTypeIds::Datetime64:
         {
             return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::Int64Array, i64>>(editAccessor, batch, columnIndex, columnPtr, columnType);
         }
@@ -386,16 +437,29 @@ TBytesStatistics WriteColumnValuesFromArrowImpl(TAccessor editAccessor,
             return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::FixedSizeBinaryArray, NUdf::TStringRef>>(editAccessor, batch, columnIndex, columnPtr, columnType);
         }
         case NTypeIds::Pg:
+            switch (NPg::PgTypeIdFromTypeDesc(columnType.GetTypeDesc())) {
+                case INT2OID:
+                    return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::Int16Array>>(editAccessor, batch, columnIndex, columnPtr, columnType);
+                case INT4OID:
+                    return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::Int32Array>>(editAccessor, batch, columnIndex, columnPtr, columnType);
+                case INT8OID:
+                    return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::Int64Array, i64>>(editAccessor, batch, columnIndex, columnPtr, columnType);
+                case FLOAT4OID:
+                    return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::FloatArray>>(editAccessor, batch, columnIndex, columnPtr, columnType);
+                case FLOAT8OID:
+                    return WriteColumnValuesFromArrowSpecImpl<TElementAccessor<arrow::DoubleArray>>(editAccessor, batch, columnIndex, columnPtr, columnType);
+                default:
+                    break;
+            }
             // TODO: support pg types
             YQL_ENSURE(false, "Unsupported pg type at column " << columnIndex);
-
         default:
             YQL_ENSURE(false, "Unsupported type: " << NScheme::TypeName(columnType.GetTypeId()) << " at column " << columnIndex);
     }
 }
 
 TBytesStatistics WriteColumnValuesFromArrow(NUdf::TUnboxedValue* editAccessors,
-    const arrow::RecordBatch& batch, i64 columnIndex, const ui32 columnsCount, NScheme::TTypeInfo columnType)
+    const TBatchDataAccessor& batch, i64 columnIndex, const ui32 columnsCount, NScheme::TTypeInfo columnType)
 {
     const auto accessor = [editAccessors, columnsCount](const ui32 rowIndex, const ui32 colIndex) -> NUdf::TUnboxedValue& {
         return editAccessors[rowIndex * columnsCount + colIndex];
@@ -404,7 +468,7 @@ TBytesStatistics WriteColumnValuesFromArrow(NUdf::TUnboxedValue* editAccessors,
 }
 
 TBytesStatistics WriteColumnValuesFromArrow(const TVector<NUdf::TUnboxedValue*>& editAccessors,
-    const arrow::RecordBatch& batch, i64 columnIndex, NScheme::TTypeInfo columnType)
+    const TBatchDataAccessor& batch, i64 columnIndex, NScheme::TTypeInfo columnType)
 {
     const auto accessor = [&editAccessors](const ui32 rowIndex, const ui32 colIndex) -> NUdf::TUnboxedValue& {
         return editAccessors[rowIndex][colIndex];
@@ -413,7 +477,7 @@ TBytesStatistics WriteColumnValuesFromArrow(const TVector<NUdf::TUnboxedValue*>&
 }
 
 TBytesStatistics WriteColumnValuesFromArrow(const TVector<NUdf::TUnboxedValue*>& editAccessors,
-    const arrow::RecordBatch& batch, i64 columnIndex, i64 resultColumnIndex, NScheme::TTypeInfo columnType)
+    const TBatchDataAccessor& batch, i64 columnIndex, i64 resultColumnIndex, NScheme::TTypeInfo columnType)
 {
     const auto accessor = [=, &editAccessors](const ui32 rowIndex, const ui32 colIndex) -> NUdf::TUnboxedValue& {
         YQL_ENSURE(colIndex == columnIndex);
@@ -435,11 +499,12 @@ ui32 TKqpScanComputeContext::TScanData::TRowBatchReader::FillDataValues(NUdf::TU
     YQL_ENSURE(!RowBatches.empty());
     auto& batch = RowBatches.front();
     const ui32 resultColumnsCount = batch.FillUnboxedCells(result);
+
+    StoredBytes -= batch.BytesForRecordEstimation();
     if (batch.IsFinished()) {
         RowBatches.pop();
     }
 
-    StoredBytes -= batch.BytesForRecordEstimation();
     YQL_ENSURE(RowBatches.empty() == (StoredBytes < 1), "StoredBytes miscalculated!");
     return resultColumnsCount;
 }
@@ -448,9 +513,9 @@ ui32 TKqpScanComputeContext::TScanData::TBlockBatchReader::FillDataValues(NUdf::
     YQL_ENSURE(!BlockBatches.empty());
     auto& batch = BlockBatches.front();
     const ui32 resultColumnsCount = batch.FillBlockValues(result);
-    BlockBatches.pop();
 
     StoredBytes -= batch.BytesForRecordEstimation();
+    BlockBatches.pop();
     YQL_ENSURE(BlockBatches.empty() == (StoredBytes < 1), "StoredBytes miscalculated!");
     return resultColumnsCount;
 }
@@ -490,7 +555,7 @@ TBytesStatistics TKqpScanComputeContext::TScanData::TRowBatchReader::AddData(con
     TBytesStatistics stats;
     TUnboxedValueVector cells;
     if (TotalColumnsCount == 0u) {
-        cells.resize(batch.size(), holderFactory.GetEmptyContainer());
+        cells.resize(batch.size(), holderFactory.GetEmptyContainerLazy());
         stats.AddStatistics({ sizeof(ui64) * batch.size(), sizeof(ui64) * batch.size() });
     } else {
         cells.resize(batch.size() * TotalColumnsCount);
@@ -518,7 +583,7 @@ TBytesStatistics TKqpScanComputeContext::TScanData::TRowBatchReader::AddData(con
 TBytesStatistics TKqpScanComputeContext::TScanData::TBlockBatchReader::AddData(const TVector<TOwnedCellVec>& /*batch*/,
     TMaybe<ui64> /*shardId*/, const THolderFactory& /*holderFactory*/)
 {
-    Y_VERIFY(false, "Batch of TOwnedCellVec should never be called for BlockBatchReader!");
+    Y_ABORT_UNLESS(false, "Batch of TOwnedCellVec should never be called for BlockBatchReader!");
     return TBytesStatistics();
 }
 
@@ -536,17 +601,17 @@ ui64 TKqpScanComputeContext::TScanData::AddData(const TVector<TOwnedCellVec>& ba
     return stats.AllocatedBytes;
 }
 
-TBytesStatistics TKqpScanComputeContext::TScanData::TRowBatchReader::AddData(const arrow::RecordBatch& batch, TMaybe<ui64> shardId,
+TBytesStatistics TKqpScanComputeContext::TScanData::TRowBatchReader::AddData(const TBatchDataAccessor& batch, TMaybe<ui64> shardId,
     const THolderFactory& holderFactory)
 {
     TBytesStatistics stats;
     TUnboxedValueVector cells;
 
     if (TotalColumnsCount == 0u) {
-        cells.resize(batch.num_rows(), holderFactory.GetEmptyContainer());
-        stats.AddStatistics({ sizeof(ui64) * batch.num_rows(), sizeof(ui64) * batch.num_rows() });
+        cells.resize(batch.GetRecordsCount(), holderFactory.GetEmptyContainerLazy());
+        stats.AddStatistics({ sizeof(ui64) * batch.GetRecordsCount(), sizeof(ui64) * batch.GetRecordsCount() });
     } else {
-        cells.resize(batch.num_rows() * TotalColumnsCount);
+        cells.resize(batch.GetRecordsCount() * TotalColumnsCount);
 
         for (size_t columnIndex = 0; columnIndex < ResultColumns.size(); ++columnIndex) {
             stats.AddStatistics(
@@ -555,16 +620,16 @@ TBytesStatistics TKqpScanComputeContext::TScanData::TRowBatchReader::AddData(con
         }
 
         if (!SystemColumns.empty()) {
-            for (i64 rowIndex = 0; rowIndex < batch.num_rows(); ++rowIndex) {
+            for (i64 rowIndex = 0; rowIndex < batch.GetRecordsCount(); ++rowIndex) {
                 FillSystemColumns(&cells[rowIndex * TotalColumnsCount + ResultColumns.size()], shardId, SystemColumns);
             }
 
-            stats.AllocatedBytes += batch.num_rows() * SystemColumns.size() * sizeof(NUdf::TUnboxedValue);
+            stats.AllocatedBytes += batch.GetRecordsCount() * SystemColumns.size() * sizeof(NUdf::TUnboxedValue);
         }
     }
 
     if (cells.size()) {
-        RowBatches.emplace(TRowBatch(TotalColumnsCount, batch.num_rows(), std::move(cells), stats.AllocatedBytes));
+        RowBatches.emplace(TRowBatch(TotalColumnsCount, batch.GetRecordsCount(), std::move(cells), stats.AllocatedBytes));
     }
 
     StoredBytes += stats.AllocatedBytes;
@@ -572,49 +637,75 @@ TBytesStatistics TKqpScanComputeContext::TScanData::TRowBatchReader::AddData(con
     return stats;
 }
 
-TBytesStatistics TKqpScanComputeContext::TScanData::TBlockBatchReader::AddData(const arrow::RecordBatch& batch, TMaybe<ui64> /*shardId*/,
+std::shared_ptr<arrow::Array> AdoptArrowTypeToYQL(const std::shared_ptr<arrow::Array>& original) {
+    if (original->type_id() == arrow::Type::TIMESTAMP) {
+        auto timestamps = std::static_pointer_cast<arrow::TimestampArray>(original);
+        auto ui64Data = std::make_shared<arrow::ArrayData>(arrow::TypeTraits<arrow::UInt64Type>::type_singleton(), original->length(), timestamps->data()->buffers);
+        auto ui64Array = std::make_shared<arrow::UInt64Array>(ui64Data);
+        auto timestampType = std::static_pointer_cast<arrow::TimestampType>(original->type());
+
+        static arrow::Datum const1M(std::make_shared<arrow::UInt64Scalar>(1000000));
+        static arrow::Datum const1K(std::make_shared<arrow::UInt64Scalar>(1000));
+
+        switch (timestampType->unit()) {
+        case arrow::TimeUnit::SECOND:
+            return NArrow::TStatusValidator::GetValid(arrow::compute::Multiply(ui64Array, const1M)).make_array();
+        case arrow::TimeUnit::MILLI:
+            return NArrow::TStatusValidator::GetValid(arrow::compute::Multiply(ui64Array, const1K)).make_array();
+        case arrow::TimeUnit::MICRO:
+            return ui64Array;
+        case arrow::TimeUnit::NANO:
+            return NArrow::TStatusValidator::GetValid(arrow::compute::Divide(ui64Array, const1K)).make_array();
+        }
+    } else {
+        return original;
+    }
+}
+
+TBytesStatistics TKqpScanComputeContext::TScanData::TBlockBatchReader::AddData(const TBatchDataAccessor& dataAccessor, TMaybe<ui64> /*shardId*/,
     const THolderFactory& holderFactory)
 {
     TBytesStatistics stats;
     auto totalColsCount = TotalColumnsCount + 1;
-    TUnboxedValueVector batchValues;
-    batchValues.resize(totalColsCount);
+    auto batches = NArrow::SliceToRecordBatches(dataAccessor.GetFiltered());
+    for (auto&& filtered : batches) {
+        TUnboxedValueVector batchValues;
+        batchValues.resize(totalColsCount);
+        for (int i = 0; i < filtered->num_columns(); ++i) {
+            batchValues[i] = holderFactory.CreateArrowBlock(arrow::Datum(AdoptArrowTypeToYQL(filtered->column(i))));
+        }
+        const ui64 batchByteSize = NArrow::GetBatchDataSize(filtered);
+        stats.AddStatistics({batchByteSize, batchByteSize});
 
-    for (int i = 0; i < batch.num_columns(); ++i) {
-        batchValues[i] = holderFactory.CreateArrowBlock(arrow::Datum(batch.column_data(i)));
+        // !!! TODO !!!
+        // if (!SystemColumns.empty()) {
+        //     for (i64 rowIndex = 0; rowIndex < batch.num_rows(); ++rowIndex) {
+        //         FillSystemColumns(&cells[rowIndex * ColumnsCount() + ResultColumns.size()], shardId, SystemColumns);
+        //     }
+
+        //     stats.AllocatedBytes += batch.num_rows() * SystemColumns.size() * sizeof(NUdf::TUnboxedValue);
+        // }
+
+        batchValues[totalColsCount - 1] = holderFactory.CreateArrowBlock(arrow::Datum(std::make_shared<arrow::UInt64Scalar>(filtered->num_rows())));
+        stats.AddStatistics({sizeof(ui64) * filtered->num_rows(), sizeof(ui64) * filtered->num_rows()});
+
+        BlockBatches.emplace(TBlockBatch(totalColsCount, filtered->num_rows(), std::move(batchValues), stats.AllocatedBytes));
+        StoredBytes += stats.AllocatedBytes;
     }
-    ui64 batchByteSize = NYql::NUdf::GetSizeOfArrowBatchInBytes(batch);
-    stats.AddStatistics({batchByteSize, batchByteSize});
-
-    // !!! TODO !!!
-    // if (!SystemColumns.empty()) {
-    //     for (i64 rowIndex = 0; rowIndex < batch.num_rows(); ++rowIndex) {
-    //         FillSystemColumns(&cells[rowIndex * ColumnsCount() + ResultColumns.size()], shardId, SystemColumns);
-    //     }
-
-    //     stats.AllocatedBytes += batch.num_rows() * SystemColumns.size() * sizeof(NUdf::TUnboxedValue);
-    // }
-
-    batchValues[totalColsCount - 1] = holderFactory.CreateArrowBlock(arrow::Datum(std::make_shared<arrow::UInt64Scalar>(batch.num_rows())));
-    stats.AddStatistics({ sizeof(ui64) * batch.num_rows(), sizeof(ui64) * batch.num_rows() });
-
-    BlockBatches.emplace(TBlockBatch(totalColsCount, batch.num_rows(), std::move(batchValues), stats.AllocatedBytes));
-    StoredBytes += stats.AllocatedBytes;
-
     return stats;
 }
 
-ui64 TKqpScanComputeContext::TScanData::AddData(const arrow::RecordBatch& batch, TMaybe<ui64> shardId,
+ui64 TKqpScanComputeContext::TScanData::AddData(const TBatchDataAccessor& batch, TMaybe<ui64> shardId,
     const THolderFactory& holderFactory)
 {
     // RecordBatch hasn't empty method so check the number of rows
-    if (Finished || batch.num_rows() == 0) {
+    if (Finished || batch.GetRecordsCount() == 0) {
         return 0;
     }
 
     TBytesStatistics stats = BatchReader->AddData(batch, shardId, holderFactory);
     if (BasicStats) {
-        BasicStats->Rows += batch.num_rows();
+        BasicStats->Rows += batch.GetRecordsCount();
         BasicStats->Bytes += stats.DataBytes;
     }
 
@@ -667,7 +758,7 @@ public:
             return NUdf::EFetchStatus::Yield;
         }
 
-        Y_VERIFY(false);
+        Y_ABORT_UNLESS(false);
 //        result = std::move(ScanData.BuildNextDirectArrayHolder());
         return NUdf::EFetchStatus::Ok;
     }

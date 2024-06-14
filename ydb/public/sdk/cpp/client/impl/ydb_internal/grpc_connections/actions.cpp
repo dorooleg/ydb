@@ -39,26 +39,28 @@ TDeferredAction::TDeferredAction(const TStringType& operationId,
 }
 
 void TDeferredAction::OnAlarm() {
-    Y_VERIFY(Connection_);
+    Y_ABORT_UNLESS(Connection_);
 
     Ydb::Operations::GetOperationRequest getOperationRequest;
     getOperationRequest.set_id(OperationId_);
 
+    TRpcRequestSettings settings;
+    settings.PreferredEndpoint = TEndpointKey(Endpoint_, 0);
+    
     Connection_->RunDeferred<Ydb::Operation::V1::OperationService, Ydb::Operations::GetOperationRequest, Ydb::Operations::GetOperationResponse>(
         std::move(getOperationRequest),
         std::move(UserResponseCb_),
         &Ydb::Operation::V1::OperationService::Stub::AsyncGetOperation,
         DbDriverState_,
         NextDelay_,
-        {},
+        settings,
         true,
-        TEndpointKey(Endpoint_, 0),
         std::move(Context_));
-}
+    }
 
 void TDeferredAction::OnError() {
-    Y_VERIFY(Connection_);
-    NGrpc::TGrpcStatus status = {"Deferred timer interrupted", -1, true};
+    Y_ABORT_UNLESS(Connection_);
+    NYdbGrpc::TGrpcStatus status = {"Deferred timer interrupted", -1, true};
     DbDriverState_->StatCollector.IncDiscoveryFailDueTransportError();
 
     auto resp = new TGRpcErrorResponse<Ydb::Operations::Operation>(
@@ -73,7 +75,7 @@ void TDeferredAction::OnError() {
 TPeriodicAction::TPeriodicAction(
     TPeriodicCb&& userCb,
     TGRpcConnectionsImpl* connection,
-    std::shared_ptr<NGrpc::IQueueClientContext> context,
+    std::shared_ptr<NYdbGrpc::IQueueClientContext> context,
     TDuration period)
     : TAlarmActionBase(std::move(userCb), connection, std::move(context))
     , Period_(period)

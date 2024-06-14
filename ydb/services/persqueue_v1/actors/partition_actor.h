@@ -3,14 +3,15 @@
 #include "events.h"
 #include "partition_id.h"
 
-#include <library/cpp/actors/core/actorid.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actorid.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/containers/disjoint_interval_tree/disjoint_interval_tree.h>
 
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/persqueue/events/global.h>
+#include <ydb/core/util/ulid.h>
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
 #include <ydb/library/persqueue/topic_parser/topic_parser.h>
 
@@ -71,8 +72,8 @@ public:
      TPartitionActor(const TActorId& parentId, const TString& clientId, const TString& clientPath, const ui64 cookie,
                      const TString& session, const TPartitionId& partition, ui32 generation, ui32 step,
                      const ui64 tabletID, const TTopicCounters& counters, const bool commitsDisabled,
-                     const TString& clientDC, bool rangesMode, const NPersQueue::TTopicConverterPtr& topic,
-                     bool useMigrationProtocol = true);
+                     const TString& clientDC, bool rangesMode, const NPersQueue::TTopicConverterPtr& topic, bool directRead,
+                     bool useMigrationProtocol);
     ~TPartitionActor();
 
     void Bootstrap(const NActors::TActorContext& ctx);
@@ -90,10 +91,10 @@ private:
             HFunc(TEvPQProxy::TEvRead, Handle)
             HFunc(TEvPQProxy::TEvCommitCookie, Handle)
             HFunc(TEvPQProxy::TEvCommitRange, Handle)
-            HFunc(TEvPQProxy::TEvReleasePartition, Handle)
             HFunc(TEvPQProxy::TEvLockPartition, Handle)
             HFunc(TEvPQProxy::TEvGetStatus, Handle)
             HFunc(TEvPQProxy::TEvRestartPipe, Handle)
+            HFunc(TEvPQProxy::TEvDirectReadAck, Handle)
 
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
@@ -105,9 +106,10 @@ private:
     }
 
 
-    void Handle(TEvPQProxy::TEvReleasePartition::TPtr& ev, const NActors::TActorContext& ctx);
     void Handle(TEvPQProxy::TEvLockPartition::TPtr& ev, const NActors::TActorContext& ctx);
     void Handle(TEvPQProxy::TEvGetStatus::TPtr& ev, const NActors::TActorContext& ctx);
+
+    void Handle(TEvPQProxy::TEvDirectReadAck::TPtr& ev, const NActors::TActorContext& ctx);
 
     void Handle(TEvPQProxy::TEvDeadlineExceeded::TPtr& ev, const NActors::TActorContext& ctx);
 
@@ -124,7 +126,6 @@ private:
     void HandlePoison(NActors::TEvents::TEvPoisonPill::TPtr& ev, const NActors::TActorContext& ctx);
     void HandleWakeup(const NActors::TActorContext& ctx);
 
-    void CheckRelease(const NActors::TActorContext& ctx);
     void InitLockPartition(const NActors::TActorContext& ctx);
     void InitStartReading(const NActors::TActorContext& ctx);
 
@@ -132,6 +133,9 @@ private:
     void WaitDataInPartition(const NActors::TActorContext& ctx);
     void SendCommit(const ui64 readId, const ui64 offset, const TActorContext& ctx);
     void MakeCommit(const TActorContext& ctx);
+    void SendPublishDirectRead(const ui64 directReadId, const TActorContext& ctx);
+    void SendForgetDirectRead(const ui64 directReadId, const TActorContext& ctx);
+    void SendPartitionReady(const TActorContext& ctx);
 
 
 private:
@@ -150,7 +154,7 @@ private:
 
     ui64 ReadOffset;
     ui64 ClientReadOffset;
-    ui64 ClientCommitOffset;
+    TMaybe<ui64> ClientCommitOffset;
     bool ClientVerifyReadOffset;
     ui64 CommittedOffset;
     ui64 WriteTimestampEstimateMs;
@@ -170,6 +174,9 @@ private:
     bool FirstInit;
     TActorId PipeClient;
     ui32 PipeGeneration;
+    ui64 TabletGeneration;
+    ui64 NodeId;
+
     bool RequestInfly;
     NKikimrClient::TPersQueueRequest CurrentRequest;
 
@@ -177,9 +184,6 @@ private:
     ui64 SizeLag;
 
     TString ReadGuid; // empty if not reading
-
-    bool NeedRelease;
-    bool Released;
 
     std::set<ui64> WaitDataInfly;
     ui64 WaitDataCookie;
@@ -200,7 +204,15 @@ private:
     ui64 CommitCookie;
     NPersQueue::TTopicConverterPtr Topic;
 
+    bool DirectRead = false;
+
+    ui64 DirectReadId = 1;
+    std::map<ui64, NKikimrClient::TPersQueuePartitionResponse::TCmdPrepareDirectReadResult> DirectReads;
+
     bool UseMigrationProtocol;
+
+    bool FirstRead;
+    bool ReadingFinishedSent;
 };
 
 

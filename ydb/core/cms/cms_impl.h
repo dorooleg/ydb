@@ -4,6 +4,7 @@
 #include "cms.h"
 #include "config.h"
 #include "logger.h"
+#include "sentinel.h"
 #include "services.h"
 #include "walle.h"
 
@@ -16,8 +17,8 @@
 #include <ydb/core/tablet/tablet_counters_protobuf.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/queue.h>
@@ -78,6 +79,11 @@ public:
 
     void PersistNodeTenants(TTransactionContext &txc, const TActorContext &ctx);
 
+    using THostMarkers = TEvSentinel::TEvUpdateHostMarkers::THostMarkers;
+    TVector<THostMarkers> SetHostMarker(const TString &host, NKikimrCms::EMarker marker, TTransactionContext &txc, const TActorContext &ctx);
+    TVector<THostMarkers> ResetHostMarkers(const TString &host, TTransactionContext &txc, const TActorContext &ctx);
+    void SentinelUpdateHostMarkers(TVector<THostMarkers> &&updateMarkers, const TActorContext &ctx);
+
     static void AddHostState(const TClusterInfoPtr &clusterInfo, const TNodeInfo &node, NKikimrCms::TClusterStateResponse &resp, TInstant timestamp);
 
 private:
@@ -94,7 +100,7 @@ private:
     class TTxRemoveExpiredNotifications;
     class TTxRemoveRequest;
     class TTxRemovePermissions;
-    class TTxRemoveWalleTask;
+    template <typename TTable> class TTxRemoveTask;
     class TTxStorePermissions;
     class TTxStoreWalleTask;
     class TTxUpdateConfig;
@@ -105,14 +111,12 @@ private:
         NKikimrCms::ETenantPolicy TenantPolicy;
         NKikimrCms::EAvailabilityMode AvailabilityMode;
         bool PartialPermissionAllowed;
-        ui64 Order;
 
         TActionOptions(TDuration dur)
             : PermissionDuration(dur)
             , TenantPolicy(NKikimrCms::DEFAULT)
             , AvailabilityMode(NKikimrCms::MODE_MAX_AVAILABILITY)
             , PartialPermissionAllowed(false)
-            , Order(0)
         {}
     };
 
@@ -137,9 +141,11 @@ private:
     ITransaction *CreateTxRemoveRequest(const TString &id, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp);
     ITransaction *CreateTxRemovePermissions(TVector<TString> ids, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp, bool expired = false);
     ITransaction *CreateTxRemoveWalleTask(const TString &id);
+    ITransaction *CreateTxRemoveMaintenanceTask(const TString &id);
     ITransaction *CreateTxStorePermissions(THolder<IEventBase> req, TAutoPtr<IEventHandle> resp,
-                                           const TString &owner, TAutoPtr<TRequestInfo> scheduled);
-    ITransaction *CreateTxStoreWalleTask(const TWalleTaskInfo &task, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp);
+                                           const TString &owner, TAutoPtr<TRequestInfo> scheduled,
+                                           const TMaybe<TString> &maintenanceTaskId = {});
+    ITransaction *CreateTxStoreWalleTask(const TTaskInfo &task, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp);
     ITransaction *CreateTxUpdateConfig(TEvCms::TEvSetConfigRequest::TPtr &ev);
     ITransaction *CreateTxUpdateConfig(TEvConsole::TEvConfigNotificationRequest::TPtr &ev);
     ITransaction *CreateTxUpdateDowntimes();
@@ -240,6 +246,15 @@ private:
             HFunc(TEvCms::TEvWalleRemoveTaskRequest, Handle);
             HFunc(TEvCms::TEvStoreWalleTask, Handle);
             HFunc(TEvCms::TEvRemoveWalleTask, Handle);
+            // public api begin
+            HFunc(TEvCms::TEvListClusterNodesRequest, Handle);
+            HFunc(TEvCms::TEvCreateMaintenanceTaskRequest, Handle);
+            HFunc(TEvCms::TEvRefreshMaintenanceTaskRequest, Handle);
+            HFunc(TEvCms::TEvGetMaintenanceTaskRequest, Handle);
+            HFunc(TEvCms::TEvListMaintenanceTasksRequest, Handle);
+            HFunc(TEvCms::TEvDropMaintenanceTaskRequest, Handle);
+            HFunc(TEvCms::TEvCompleteActionRequest, Handle);
+            // public api end
             HFunc(TEvCms::TEvGetConfigRequest, Handle);
             HFunc(TEvCms::TEvSetConfigRequest, Handle);
             HFunc(TEvCms::TEvResetMarkerRequest, Handle);
@@ -249,7 +264,6 @@ private:
             FFunc(TEvCms::EvGetClusterInfoRequest, EnqueueRequest);
             HFunc(TEvConsole::TEvConfigNotificationRequest, Handle);
             HFunc(TEvConsole::TEvReplaceConfigSubscriptionsResponse, Handle);
-            HFunc(TEvents::TEvPoisonPill, Handle);
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
             IgnoreFunc(TEvTabletPipe::TEvServerConnected);
@@ -265,6 +279,7 @@ private:
         }
     }
 
+    void DefaultSignalTabletActive(const TActorContext &ctx) override;
     void OnActivateExecutor(const TActorContext &ctx) override;
     void OnDetach(const TActorContext &ctx) override;
     void OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev, const TActorContext &ctx) override;
@@ -277,7 +292,6 @@ private:
     bool CheckPermissionRequest(const NKikimrCms::TPermissionRequest &request,
         NKikimrCms::TPermissionResponse &response,
         NKikimrCms::TPermissionRequest &scheduled,
-        const ui64 requestOrder,
         const TActorContext &ctx);
     bool IsActionHostValid(const NKikimrCms::TAction &action, TErrorInfo &error) const;
     bool ParseServices(const NKikimrCms::TAction &action, TServices &services, TErrorInfo &error) const;
@@ -286,8 +300,12 @@ private:
         NKikimrCms::TStatus::ECode &code,
         TString &error,
         const TActorContext &ctx);
-    bool CheckAction(const NKikimrCms::TAction &action, const TActionOptions &options,
-        TErrorInfo &error, const TActorContext &ctx) const;
+    bool CheckEvictVDisks(const NKikimrCms::TAction &action,
+        TErrorInfo &error) const;
+    bool CheckAction(const NKikimrCms::TAction &action,
+        const TActionOptions &opts,
+        TErrorInfo &error,
+        const TActorContext &ctx) const;
     bool CheckActionShutdownNode(const NKikimrCms::TAction &action,
         const TActionOptions &options,
         const TNodeInfo &node,
@@ -339,7 +357,8 @@ private:
     void ScheduleLogCleanup(const TActorContext &ctx);
     void DoPermissionsCleanup(const TActorContext &ctx);
     void CleanupWalleTasks(const TActorContext &ctx);
-    void RemoveEmptyWalleTasks(const TActorContext &ctx);
+    TVector<TString> FindEmptyTasks(const THashMap<TString, TTaskInfo> &tasks, const TActorContext &ctx);
+    void RemoveEmptyTasks(const TActorContext &ctx);
     void StartCollecting();
     bool CheckNotificationDeadline(const NKikimrCms::TAction &action, TInstant time,
         TErrorInfo &error, const TActorContext &ctx) const;
@@ -395,6 +414,15 @@ private:
     void Handle(TEvCms::TEvWalleRemoveTaskRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvCms::TEvStoreWalleTask::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvCms::TEvRemoveWalleTask::TPtr &ev, const TActorContext &ctx);
+    // public api begin
+    void Handle(TEvCms::TEvListClusterNodesRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvCms::TEvCreateMaintenanceTaskRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvCms::TEvRefreshMaintenanceTaskRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvCms::TEvGetMaintenanceTaskRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvCms::TEvListMaintenanceTasksRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvCms::TEvDropMaintenanceTaskRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvCms::TEvCompleteActionRequest::TPtr &ev, const TActorContext &ctx);
+    // public api end
     void Handle(TEvCms::TEvGetConfigRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvCms::TEvSetConfigRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvCms::TEvResetMarkerRequest::TPtr &ev, const TActorContext &ctx);
@@ -404,9 +432,10 @@ private:
     void Handle(TEvCms::TEvGetClusterInfoRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvConsole::TEvConfigNotificationRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvConsole::TEvReplaceConfigSubscriptionsResponse::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr &ev, const TActorContext &ctx);
+
+    bool OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev, const TActorContext& ctx) override;
 
 private:
     TStack<TInstant> ScheduledCleanups;
@@ -434,6 +463,12 @@ private:
     TTabletCountersBase *TabletCounters;
 
     TInstant InfoCollectorStartTime;
+
+    bool EnableCMSRequestPriorities = false;
+
+private:
+    TString GenerateStat();
+    void GenerateNodeState(IOutputStream&);
 
 public:
     TCms(const TActorId &tablet, TTabletStorageInfo *info)

@@ -2,7 +2,7 @@
 #include "guid_proxywrite.h"
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
-#include <library/cpp/actors/helpers/activeactors.h>
+#include <ydb/core/util/activeactors.h>
 
 namespace NKikimr {
 
@@ -34,7 +34,7 @@ namespace NKikimr {
                                                                    ctx.SelfID,
                                                                    State,
                                                                    Guid));
-            ActiveActors.Insert(WriterId);
+            ActiveActors.Insert(WriterId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             TThis::Become(&TThis::StateFuncWrite);
         }
 
@@ -54,7 +54,7 @@ namespace NKikimr {
             ActiveActors.Erase(ev->Sender);
             WriterId = TActorId();
             auto *msg = ev->Get();
-            Y_VERIFY(msg->State == State &&
+            Y_ABORT_UNLESS(msg->State == State &&
                      msg->Guid == Guid &&
                      TVDiskIdShort(msg->VDiskId) == TVDiskIdShort(TargetVDiskId));
             // wait for WaitPeriod

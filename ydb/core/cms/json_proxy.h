@@ -9,13 +9,16 @@
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/mon/mon.h>
 #include <ydb/core/tx/datashard/datashard.h>
+#include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/mon.h>
 #include <library/cpp/protobuf/json/json2proto.h>
 #include <library/cpp/protobuf/json/proto2json.h>
+
+#include <library/cpp/json/json_writer.h>
 
 #include <iostream>
 
@@ -43,12 +46,6 @@ public:
     void Bootstrap(const TActorContext &ctx) {
         LOG_DEBUG_S(ctx, NKikimrServices::CMS,
                     "TJsonProxyBase::Bootstrap url=" << RequestEvent->Get()->Request.GetPathInfo());
-
-        auto dinfo = AppData(ctx)->DomainsInfo;
-        if (dinfo->Domains.size() != 1) {
-            ReplyWithErrorAndDie(TString("HTTP/1.1 501 Not Implemented\r\n\r\nMultiple domains are not supported."), ctx);
-            return;
-        }
 
         TAutoPtr<TRequestEvent> request = PrepareRequest(ctx);
         if (!request) {
@@ -87,6 +84,9 @@ protected:
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TResponseEvent, Handle);
+            HFunc(NConsole::TEvConsole::TEvUnauthorized, HandleError);
+            HFunc(NConsole::TEvConsole::TEvDisabled, HandleError);
+            HFunc(NConsole::TEvConsole::TEvGenericError, HandleError);
             CFunc(TEvents::TSystem::Wakeup, Timeout);
             CFunc(TEvTabletPipe::TEvClientDestroyed::EventType, Disconnect);
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
@@ -127,6 +127,36 @@ protected:
 
     void Handle(typename TResponseEvent::TPtr &ev, const TActorContext &ctx) {
         ReplyAndDie(ev->Get()->Record, ctx);
+    }
+
+    void HandleError(NConsole::TEvConsole::TEvUnauthorized::TPtr &, const TActorContext &ctx) {
+        ReplyAndDieImpl(TString(NMonitoring::HTTPUNAUTHORIZED), ctx);
+    }
+
+    void HandleError(NConsole::TEvConsole::TEvDisabled::TPtr &, const TActorContext &ctx) {
+        ReplyAndDieImpl(TString("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: Close\r\n\r\n{\"code\":400, \"message\":\"Feature is disabled\"}\r\n"), ctx);
+    }
+
+    void HandleError(NConsole::TEvConsole::TEvGenericError::TPtr &ev, const TActorContext &ctx) {
+        TStringStream issues;
+        for (auto& issue : ev->Get()->Record.GetIssues()) {
+            issues << issue.ShortDebugString() + ", ";
+        }
+
+        TString res;
+        TStringOutput ss(res);
+
+        NJson::TJsonWriter writer(&ss, true);
+
+        writer.OpenMap();
+        writer.Write("code", (ui64)ev->Get()->Record.GetYdbStatus());
+        writer.Write("issues", issues.Str());
+        writer.CloseMap();
+
+        writer.Flush();
+        ss.Flush();
+
+        ReplyAndDieImpl(TString("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: Close\r\n\r\n") + res + "\r\n", ctx);
     }
 
     void SetTempError(NKikimrCms::TStatus &status, const TString &error) {
@@ -212,10 +242,8 @@ public:
     {
     }
 
-    ui64 GetTabletId(const TActorContext &ctx) const override {
-        auto dinfo = AppData(ctx)->DomainsInfo;
-        ui32 domain = dinfo->Domains.begin()->first;
-        return useConsole ? MakeConsoleID(domain) : MakeCmsID(domain);
+    ui64 GetTabletId(const TActorContext& /*ctx*/) const override {
+        return useConsole ? MakeConsoleID() : MakeCmsID();
     }
 
     TString GetTabletName() const override {

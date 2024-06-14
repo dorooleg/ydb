@@ -1,6 +1,7 @@
 #include "mkql_source.h"
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
 namespace NKikimr {
@@ -51,7 +52,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*&) const {
-        return {ConstantInt::get(Type::getInt32Ty(ctx.Codegen->GetContext()), static_cast<i32>(EFetchResult::One)), {}};
+        return {ConstantInt::get(Type::getInt32Ty(ctx.Codegen.GetContext()), static_cast<i32>(EFetchResult::One)), {}};
     }
 #endif
 private:
@@ -72,7 +73,7 @@ IComputationNode* WrapSourceOf(TCallable& callable, const TComputationNodeFactor
     THROW yexception() << "Expected flow or stream.";
 }
 
-IComputationNode* WrapSource(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
+IComputationNode* WrapSource(TCallable& callable, const TComputationNodeFactoryContext&) {
     MKQL_ENSURE(!callable.GetInputsCount(), "Expected no args.");
     MKQL_ENSURE(!GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType())), "Expected zero width of output flow.");
     return new TSourceWrapper;

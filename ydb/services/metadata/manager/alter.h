@@ -5,12 +5,12 @@
 #include "restore.h"
 #include "modification.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NMetadata::NModifications {
 
 template <class TObject>
-class TAlterActor: public TModificationActor<TObject> {
+class TUpdateObjectActor: public TModificationActor<TObject> {
 private:
     using TBase = TModificationActor<TObject>;
 protected:
@@ -28,14 +28,34 @@ public:
 };
 
 template <class TObject>
-class TCreateActor: public TModificationActor<TObject> {
+class TUpsertObjectActor: public TModificationActor<TObject> {
 private:
     using TBase = TModificationActor<TObject>;
 protected:
     virtual bool ProcessPreparedObjects(NInternal::TTableRecords&& records) const override {
-        TBase::Register(new TInsertObjectsActor<TObject>(std::move(records), TBase::UserToken,
+        TBase::Register(new TUpsertObjectsActor<TObject>(std::move(records), TBase::UserToken,
             TBase::InternalController, TBase::SessionId, TBase::TransactionId,
             TBase::Context.GetExternalData().GetUserToken()));
+        return true;
+    }
+
+    virtual TString GetModificationType() const override {
+        return "UPSERT";
+    }
+public:
+    using TBase::TBase;
+};
+
+template <class TObject>
+class TCreateObjectActor: public TModificationActor<TObject> {
+private:
+    using TBase = TModificationActor<TObject>;
+    bool ExistingOk = false;
+protected:
+    virtual bool ProcessPreparedObjects(NInternal::TTableRecords&& records) const override {
+        TBase::Register(new TInsertObjectsActor<TObject>(std::move(records), TBase::UserToken,
+            TBase::InternalController, TBase::SessionId, TBase::TransactionId,
+            TBase::Context.GetExternalData().GetUserToken(), ExistingOk));
         return true;
     }
 
@@ -44,10 +64,14 @@ protected:
     }
 public:
     using TBase::TBase;
+
+    void SetExistingOk(bool existingOk) {
+        ExistingOk = existingOk;
+    }
 };
 
 template <class TObject>
-class TDropActor: public TModificationActor<TObject> {
+class TDeleteObjectActor: public TModificationActor<TObject> {
 private:
     using TBase = TModificationActor<TObject>;
 protected:
@@ -91,42 +115,75 @@ public:
 };
 
 template <class TObject>
-class TCreateCommand: public IAlterCommand {
+class TUpsertObjectCommand: public IObjectModificationCommand {
 private:
-    using TBase = IAlterCommand;
+    using TBase = IObjectModificationCommand;
 protected:
     virtual void DoExecute() const override {
         typename IObjectOperationsManager<TObject>::TPtr manager = TBase::GetOperationsManagerFor<TObject>();
-        TActivationContext::AsActorContext().Register(new TCreateActor<TObject>(GetRecords(), GetController(), manager, GetContext()));
+        TActivationContext::AsActorContext().Register(new TUpsertObjectActor<TObject>(GetRecords(), GetController(), manager, GetContext()));
     }
 public:
     using TBase::TBase;
 };
 
 template <class TObject>
-class TAlterCommand: public IAlterCommand {
+class TCreateObjectCommand: public IObjectModificationCommand {
 private:
-    using TBase = IAlterCommand;
+    using TBase = IObjectModificationCommand;
+    bool ExistingOk = false;
 protected:
     virtual void DoExecute() const override {
         typename IObjectOperationsManager<TObject>::TPtr manager = TBase::GetOperationsManagerFor<TObject>();
-        TActivationContext::AsActorContext().Register(new TAlterActor<TObject>(GetRecords(), GetController(), manager, GetContext()));
+        auto* actor = new TCreateObjectActor<TObject>(GetRecords(), GetController(), manager, GetContext());
+        actor->SetExistingOk(ExistingOk);
+        TActivationContext::AsActorContext().Register(actor);
+    }
+public:
+    TCreateObjectCommand(const NInternal::TTableRecord& record,
+        IClassBehaviour::TPtr behaviour,
+        NModifications::IAlterController::TPtr controller,
+        const IOperationsManager::TInternalModificationContext& context,
+        bool existingOk)
+        : TBase(record, behaviour, controller, context)
+        , ExistingOk(existingOk)
+    {
+    }
+};
+
+template <class TObject>
+class TUpdateObjectCommand: public IObjectModificationCommand {
+private:
+    using TBase = IObjectModificationCommand;
+protected:
+    virtual void DoExecute() const override {
+        typename IObjectOperationsManager<TObject>::TPtr manager = TBase::GetOperationsManagerFor<TObject>();
+        TActivationContext::AsActorContext().Register(new TUpdateObjectActor<TObject>(GetRecords(), GetController(), manager, GetContext()));
     }
 public:
     using TBase::TBase;
 };
 
 template <class TObject>
-class TDropCommand: public IAlterCommand {
+class TDeleteObjectCommand: public IObjectModificationCommand {
 private:
-    using TBase = IAlterCommand;
+    using TBase = IObjectModificationCommand;
+    bool MissingOk = false;
 protected:
     virtual void DoExecute() const override {
         typename IObjectOperationsManager<TObject>::TPtr manager = TBase::GetOperationsManagerFor<TObject>();
-        TActivationContext::AsActorContext().Register(new TDropActor<TObject>(GetRecords(), GetController(), manager, GetContext()));
+        TActivationContext::AsActorContext().Register(new TDeleteObjectActor<TObject>(GetRecords(), GetController(), manager, GetContext()));
     }
 public:
-    using TBase::TBase;
+    TDeleteObjectCommand(const NInternal::TTableRecord& record,
+        IClassBehaviour::TPtr behaviour,
+        NModifications::IAlterController::TPtr controller,
+        const IOperationsManager::TInternalModificationContext& context,
+        bool missingOk)
+        : TBase(record, behaviour, controller, context)
+        , MissingOk(missingOk)
+    {
+    }
 };
 
 }

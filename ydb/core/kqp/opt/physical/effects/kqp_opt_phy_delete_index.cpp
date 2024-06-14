@@ -66,8 +66,14 @@ TExprBase KqpBuildDeleteIndexStages(TExprBase node, TExprContext& ctx, const TKq
 
     const auto indexes = BuildSecondaryIndexVector(table, del.Pos(), ctx);
     YQL_ENSURE(indexes);
+    THashSet<TString> keyColumns;
+    for (const auto& pair : indexes) {
+        for (const auto& col : pair.second->KeyColumns) {
+            keyColumns.emplace(col);
+        }
+    }
 
-    auto lookupDict = PrecomputeTableLookupDict(lookupKeys, table, {}, indexes, del.Pos(), ctx);
+    auto lookupDict = PrecomputeTableLookupDict(lookupKeys, table, {}, keyColumns, del.Pos(), ctx);
     if (!lookupDict) {
         return node;
     }
@@ -75,6 +81,7 @@ TExprBase KqpBuildDeleteIndexStages(TExprBase node, TExprContext& ctx, const TKq
     auto tableDelete = Build<TKqlDeleteRows>(ctx, del.Pos())
         .Table(del.Table())
         .Input(lookupKeys)
+        .ReturningColumns(del.ReturningColumns())
         .Done();
 
     TVector<TExprBase> effects;
@@ -96,6 +103,7 @@ TExprBase KqpBuildDeleteIndexStages(TExprBase node, TExprContext& ctx, const TKq
         auto indexDelete = Build<TKqlDeleteRows>(ctx, del.Pos())
             .Table(tableNode)
             .Input(deleteIndexKeys)
+            .ReturningColumns<TCoAtomList>().Build()
             .Done();
 
         effects.emplace_back(std::move(indexDelete));

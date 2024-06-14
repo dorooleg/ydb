@@ -8,6 +8,8 @@
 
 namespace NKikimr::NArrow {
 
+class TGeneralContainer;
+
 enum class ECompareType {
     LESS = 1,
     LESS_OR_EQUAL,
@@ -18,10 +20,11 @@ enum class ECompareType {
 class TColumnFilter {
 private:
     bool DefaultFilterValue = true;
-    bool CurrentValue = true;
+    bool LastValue = true;
     ui32 Count = 0;
     std::vector<ui32> Filter;
     mutable std::optional<std::vector<bool>> FilterPlain;
+    mutable std::optional<ui32> FilteredCount;
     TColumnFilter(const bool defaultFilterValue)
         : DefaultFilterValue(defaultFilterValue)
     {
@@ -33,87 +36,94 @@ private:
             return DefaultFilterValue;
         }
         if (reverse) {
-            return CurrentValue;
+            return LastValue;
         } else {
             if (Filter.size() % 2 == 0) {
-                return !CurrentValue;
+                return !LastValue;
             } else {
-                return CurrentValue;
+                return LastValue;
             }
         }
     }
 
     static ui32 CrossSize(const ui32 s1, const ui32 f1, const ui32 s2, const ui32 f2);
     class TMergerImpl;
-    void Add(const bool value, const ui32 count = 1);
     void Reset(const ui32 count);
+    void ResetCaches() const {
+        FilterPlain.reset();
+        FilteredCount.reset();
+    }
 public:
+    void Append(const TColumnFilter& filter);
+    void Add(const bool value, const ui32 count = 1);
+    std::optional<ui32> GetFilteredCount() const;
+    const std::vector<bool>& BuildSimpleFilter() const;
+    std::shared_ptr<arrow::BooleanArray> BuildArrowFilter(const ui32 expectedSize, const std::optional<ui32> startPos = {}, const std::optional<ui32> count = {}) const;
+
+    ui64 GetDataSize() const {
+        return Filter.capacity() * sizeof(ui32) + Count * sizeof(bool);
+    }
+
+    static ui64 GetPredictedMemorySize(const ui32 recordsCount) {
+        return 2 /* capacity */ * recordsCount * (sizeof(ui32) + sizeof(bool));
+    }
 
     class TIterator {
     private:
-        ui32 InternalPosition = 0;
-        ui32 CurrentRemainVolume = 0;
-        const std::vector<ui32>& Filter;
+        i64 InternalPosition = 0;
+        i64 CurrentRemainVolume = 0;
+        const std::vector<ui32>* FilterPointer = nullptr;
         i32 Position = 0;
         bool CurrentValue;
         const i32 FinishPosition;
         const i32 DeltaPosition;
     public:
+        TString DebugString() const;
+
         TIterator(const bool reverse, const std::vector<ui32>& filter, const bool startValue)
-            : Filter(filter)
+            : FilterPointer(&filter)
             , CurrentValue(startValue)
-            , FinishPosition(reverse ? -1 : Filter.size())
+            , FinishPosition(reverse ? -1 : FilterPointer->size())
             , DeltaPosition(reverse ? -1 : 1)
         {
-            if (!Filter.size()) {
+            if (!FilterPointer->size()) {
                 Position = FinishPosition;
             } else {
                 if (reverse) {
-                    Position = Filter.size() - 1;
+                    Position = FilterPointer->size() - 1;
                 }
-                CurrentRemainVolume = Filter[Position];
+                CurrentRemainVolume = (*FilterPointer)[Position];
+            }
+        }
+
+        TIterator(const bool reverse, const ui32 size, const bool startValue)
+            : CurrentValue(startValue)
+            , FinishPosition(reverse ? -1 : 1)
+            , DeltaPosition(reverse ? -1 : 1) {
+            if (!size) {
+                Position = FinishPosition;
+            } else {
+                if (reverse) {
+                    Position = 0;
+                }
+                CurrentRemainVolume = size;
             }
         }
 
         bool GetCurrentAcceptance() const {
-            Y_VERIFY_DEBUG(CurrentRemainVolume);
+            Y_ABORT_UNLESS(CurrentRemainVolume);
             return CurrentValue;
         }
 
         bool IsBatchForSkip(const ui32 size) const {
-            Y_VERIFY_DEBUG(CurrentRemainVolume);
+            Y_ABORT_UNLESS(CurrentRemainVolume);
             return !CurrentValue && CurrentRemainVolume >= size;
         }
 
-        bool Next(const ui32 size) {
-            Y_VERIFY(size);
-            if (CurrentRemainVolume > size) {
-                InternalPosition += size;
-                CurrentRemainVolume -= size;
-                return true;
-            }
-            ui32 sizeRemain = size;
-            while (Position != FinishPosition) {
-                const ui32 currentVolume = Filter[Position];
-                if (currentVolume - InternalPosition > sizeRemain) {
-                    InternalPosition = sizeRemain;
-                    CurrentRemainVolume = currentVolume - InternalPosition - sizeRemain;
-                    return true;
-                } else {
-                    sizeRemain -= currentVolume - InternalPosition;
-                    InternalPosition = 0;
-                    CurrentValue = !CurrentValue;
-                    Position += DeltaPosition;
-                }
-            }
-            CurrentRemainVolume = 0;
-            return false;
-        }
+        bool Next(const ui32 size);
     };
 
-    TIterator GetIterator(const bool reverse) const {
-        return TIterator(reverse, Filter, GetStartValue(reverse));
-    }
+    TIterator GetIterator(const bool reverse, const ui32 expectedSize) const;
 
     bool empty() const {
         return Filter.empty();
@@ -132,8 +142,8 @@ public:
             return;
         }
         bool currentValue = getter[0];
-        ui32 sameValueCount = 0;
-        for (ui32 i = 0; i < count; ++i) {
+        ui32 sameValueCount = 1;
+        for (ui32 i = 1; i < count; ++i) {
             if (getter[i] != currentValue) {
                 Add(currentValue, sameValueCount);
                 sameValueCount = 0;
@@ -148,32 +158,30 @@ public:
         return Count;
     }
 
-    const std::vector<bool>& BuildSimpleFilter(const ui32 expectedSize) const;
-
-    TColumnFilter() = default;
-
-    std::shared_ptr<arrow::BooleanArray> BuildArrowFilter(const ui32 expectedSize) const;
-
     bool IsTotalAllowFilter() const;
-
     bool IsTotalDenyFilter() const;
-
-    static TColumnFilter BuildStopFilter() {
-        return TColumnFilter(false);
+    bool IsEmpty() const {
+        return Filter.empty();
     }
 
     static TColumnFilter BuildAllowFilter() {
         return TColumnFilter(true);
     }
 
+    static TColumnFilter BuildDenyFilter() {
+        return TColumnFilter(false);
+    }
+
     TColumnFilter And(const TColumnFilter& extFilter) const Y_WARN_UNUSED_RESULT;
     TColumnFilter Or(const TColumnFilter& extFilter) const Y_WARN_UNUSED_RESULT;
 
     // It makes a filter using composite predicate
-    static TColumnFilter MakePredicateFilter(const arrow::Datum& datum, const arrow::Datum& border,
-        ECompareType compareType);
+    static TColumnFilter MakePredicateFilter(const arrow::Datum& datum, const arrow::Datum& border, ECompareType compareType);
 
-    bool Apply(std::shared_ptr<arrow::RecordBatch>& batch);
+    bool Apply(std::shared_ptr<TGeneralContainer>& batch, const std::optional<ui32> startPos = {}, const std::optional<ui32> count = {}) const;
+    bool Apply(std::shared_ptr<arrow::Table>& batch, const std::optional<ui32> startPos = {}, const std::optional<ui32> count = {}) const;
+    bool Apply(std::shared_ptr<arrow::RecordBatch>& batch, const std::optional<ui32> startPos = {}, const std::optional<ui32> count = {}) const;
+    void Apply(const ui32 expectedRecordsCount, std::vector<arrow::Datum*>& datums) const;
 
     // Combines filters by 'and' operator (extFilter count is true positions count in self, thought extFitler patch exactly that positions)
     TColumnFilter CombineSequentialAnd(const TColumnFilter& extFilter) const Y_WARN_UNUSED_RESULT;

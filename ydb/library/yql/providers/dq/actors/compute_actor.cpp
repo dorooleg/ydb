@@ -19,10 +19,11 @@ IActor* CreateComputeActor(
     NDq::IMemoryQuotaManager::TPtr memoryQuotaManager,
     const TActorId& executerId,
     const TString& operationId,
-    NYql::NDqProto::TDqTask&& task,
+    NYql::NDqProto::TDqTask* task,
     const TString& computeActorType,
     const NDq::NTaskRunnerActor::ITaskRunnerActorFactory::TPtr& taskRunnerActorFactory,
-    ::NMonitoring::TDynamicCounterPtr taskCounters)
+    ::NMonitoring::TDynamicCounterPtr taskCounters,
+    NDqProto::EDqStatsMode statsMode)
 {
     auto memoryLimits = NDq::TComputeMemoryLimits();
     memoryLimits.ChannelBufferSize = 1000000;
@@ -38,34 +39,34 @@ IActor* CreateComputeActor(
     auto computeRuntimeSettings = NDq::TComputeRuntimeSettings();
     computeRuntimeSettings.ExtraMemoryAllocationPool = 3;
     computeRuntimeSettings.FailOnUndelivery = false;
-    computeRuntimeSettings.StatsMode = NDqProto::DQ_STATS_MODE_PROFILE;
+    computeRuntimeSettings.StatsMode = (statsMode != NDqProto::DQ_STATS_MODE_UNSPECIFIED) ? statsMode : NDqProto::DQ_STATS_MODE_FULL;
+    computeRuntimeSettings.AsyncInputPushLimit = 64_MB;
 
     // clear fake actorids
-    for (auto& input : *task.MutableInputs()) {
+    for (auto& input : *task->MutableInputs()) {
         for (auto& channel : *input.MutableChannels()) {
             channel.MutableSrcEndpoint()->ClearActorId();
             channel.MutableDstEndpoint()->ClearActorId();
         }
     }
-    for (auto& output : *task.MutableOutputs()) {
+    for (auto& output : *task->MutableOutputs()) {
         for (auto& channel : *output.MutableChannels()) {
             channel.MutableSrcEndpoint()->ClearActorId();
             channel.MutableDstEndpoint()->ClearActorId();
         }
     }
 
-    auto taskRunnerFactory = [=](const NDq::TDqTaskSettings& task, const NDq::TLogFunc& logger) {
+    auto taskRunnerFactory = [factory = options.Factory](NKikimr::NMiniKQL::TScopedAlloc& alloc, const NDq::TDqTaskSettings& task, NDqProto::EDqStatsMode statsMode, const NDq::TLogFunc& logger) {
         Y_UNUSED(logger);
-        return options.Factory->Get(task, {});
+        return factory->Get(alloc, task, statsMode, {});
     };
 
     if (computeActorType.empty() || computeActorType == "old" || computeActorType == "sync") {
         return NYql::NDq::CreateDqComputeActor(
             executerId,
             operationId,
-            std::move(task),
+            task,
             options.AsyncIoFactory,
-            options.FunctionRegistry,
             computeRuntimeSettings,
             memoryLimits,
             taskRunnerFactory,
@@ -74,9 +75,8 @@ IActor* CreateComputeActor(
         return NYql::NDq::CreateDqAsyncComputeActor(
             executerId,
             operationId,
-            std::move(task),
+            task,
             options.AsyncIoFactory,
-            options.FunctionRegistry,
             computeRuntimeSettings,
             memoryLimits,
             taskRunnerActorFactory,

@@ -12,6 +12,11 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
+                                "Inputs": [
+                                    {
+                                        "ExternalPlanNodeId": 2
+                                    }
+                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -27,18 +32,24 @@
                                         "Node Type": "TopSort-TableRangeScan",
                                         "Operators": [
                                             {
+                                                "Inputs": [
+                                                    {
+                                                        "InternalOperatorId": 1
+                                                    }
+                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
                                                 "TopSortBy": ""
                                             },
                                             {
+                                                "Inputs": [],
                                                 "Name": "TableRangeScan",
                                                 "ReadColumns": [
                                                     "string4",
                                                     "unique1"
                                                 ],
                                                 "ReadRange": [
-                                                    "unique1 (-\u221e, 20)",
+                                                    "unique1 (null, 20)",
                                                     "unique2 (-\u221e, +\u221e)"
                                                 ],
                                                 "Table": "postgres_select.test_plan/onek"
@@ -75,7 +86,7 @@
                         "unique1"
                     ],
                     "scan_by": [
-                        "unique1 (-\u221e, 20)",
+                        "unique1 (null, 20)",
                         "unique2 (-\u221e, +\u221e)"
                     ],
                     "type": "Scan"

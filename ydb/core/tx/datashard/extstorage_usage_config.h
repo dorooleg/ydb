@@ -6,6 +6,7 @@
 
 #include <ydb/core/base/events.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
+#include <ydb/public/api/protos/ydb_export.pb.h>
 
 #include <contrib/libs/aws-sdk-cpp/aws-cpp-sdk-s3/include/aws/s3/model/StorageClass.h>
 #include <util/string/printf.h>
@@ -40,6 +41,10 @@ public:
     inline const TString& GetObjectKeyPattern() const { return ObjectKeyPattern; }
 
     Aws::S3::Model::StorageClass GetStorageClass() const;
+
+    inline TString GetMetadataKey() const {
+        return NBackupRestoreTraits::MetadataKey(ObjectKeyPattern);
+    }
 
     inline TString GetSchemeKey() const {
         return NBackupRestoreTraits::SchemeKey(ObjectKeyPattern);

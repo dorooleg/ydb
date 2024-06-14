@@ -2,10 +2,10 @@
 #include "defs.h"
 #include "tablet_impl.h"
 #include "tablet_setup.h"
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/interconnect.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <util/generic/intrlist.h>
 #include <util/generic/set.h>
 
@@ -49,7 +49,7 @@ class TTablet : public TActor<TTablet> {
         }
 
         void MergeSignature(ui64 *sig, ui32 sigsz) {
-            Y_VERIFY(sigsz == SignatureSz);
+            Y_ABORT_UNLESS(sigsz == SignatureSz);
             for (ui32 i = 0; i != sigsz; ++i)
                 if (const ui64 x = sig[i])
                     Signature[i] = x;
@@ -251,7 +251,6 @@ class TTablet : public TActor<TTablet> {
     TString BlobStorageErrorReason;
     bool BlobStorageErrorReported = false;
 
-    ui64 StateStorageGroup() const;
     ui64 TabletID() const;
 
     void ReportTabletStateChange(ETabletState state);
@@ -538,7 +537,7 @@ class TTablet : public TActor<TTablet> {
         switch (ev->GetTypeRewrite()) {
             cFunc(TEvents::TEvBootstrap::EventType, Bootstrap);
         default:
-            Y_FAIL();
+            Y_ABORT();
         }
     }
 
@@ -546,7 +545,7 @@ class TTablet : public TActor<TTablet> {
         switch (ev->GetTypeRewrite()) {
             cFunc(TEvents::TEvBootstrap::EventType, BootstrapFollower);
         default:
-            Y_FAIL();
+            Y_ABORT();
         }
     }
 

@@ -4,9 +4,8 @@
 #include "flat_sausage_packet.h"
 #include "flat_sausage_writer.h"
 #include "flat_sausage_solid.h"
-#include "flat_part_iface.h"
 #include "flat_part_loader.h"
-#include "util_basics.h"
+#include "flat_writer_banks.h"
 
 namespace NKikimr {
 namespace NTabletFlatExecutor {
@@ -19,10 +18,11 @@ namespace NWriter {
         using TPageId = NTable::NPage::TPageId;
         using TCache = TPrivatePageCache::TInfo;
 
-        TBlocks(ICone *cone, ui8 channel, ECache cache, ui32 block)
+        TBlocks(ICone *cone, ui8 channel, ECache cache, ui32 block, bool stickyFlatIndex)
             : Cone(cone)
             , Channel(channel)
             , Cache(cache)
+            , StickyFlatIndex(stickyFlatIndex)
             , Writer(Cone->CookieRange(1), Channel, block)
         {
 
@@ -30,7 +30,7 @@ namespace NWriter {
 
         ~TBlocks()
         {
-            Y_VERIFY(!Writer.Grab(), "Block writer still has some blobs");
+            Y_ABORT_UNLESS(!Writer.Grab(), "Block writer still has some blobs");
         }
 
         explicit operator bool() const noexcept
@@ -49,8 +49,8 @@ namespace NWriter {
                 pageCollection = MakePageCollection(std::move(meta));
             }
 
-            Y_VERIFY(!Writer, "Block writer is not empty after Finish");
-            Y_VERIFY(!Regular && !Sticky, "Unexpected non-empty page lists");
+            Y_ABORT_UNLESS(!Writer, "Block writer is not empty after Finish");
+            Y_ABORT_UNLESS(!Regular && !Sticky, "Unexpected non-empty page lists");
 
             return pageCollection;
         }
@@ -62,9 +62,11 @@ namespace NWriter {
             for (auto &glob : Writer.Grab())
                 Cone->Put(std::move(glob));
 
-            if (NTable::TLoader::NeedIn(type)) {
+            if (NTable::TLoader::NeedIn(type) || StickyFlatIndex && type == EPage::FlatIndex) {
+                // Note: we mark flat index pages sticky after we load them
                 Sticky.emplace_back(pageId, std::move(raw));
-            } else if (bool(Cache) && type == EPage::DataPage) {
+            } else if (bool(Cache) && type == EPage::DataPage || type == EPage::BTreeIndex) {
+                // Note: we save b-tree index pages to shared cache regardless of a cache mode  
                 Regular.emplace_back(pageId, std::move(raw));
             }
 
@@ -105,6 +107,7 @@ namespace NWriter {
         ICone * const Cone = nullptr;
         const ui8 Channel = Max<ui8>();
         const ECache Cache = ECache::None;
+        const bool StickyFlatIndex;
 
         NPageCollection::TWriter Writer;
         TVector<NPageCollection::TLoadedPage> Regular;

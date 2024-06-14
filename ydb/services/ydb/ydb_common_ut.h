@@ -59,7 +59,10 @@ public:
     {
         ui16 port = PortManager.GetPort(2134);
         ui16 grpc = PortManager.GetPort(2135);
-        ServerSettings = new TServerSettings(port);
+
+        NKikimrProto::TAuthConfig authConfig = appConfig.GetAuthConfig();
+        authConfig.SetUseBuiltinDomain(true);
+        ServerSettings = new TServerSettings(port, authConfig);
         ServerSettings->SetGrpcPort(grpc);
         ServerSettings->SetLogBackend(logBackend);
         ServerSettings->SetDomainName("Root");
@@ -77,8 +80,7 @@ public:
             ServerSettings->AddStoragePoolType("hdd1");
             ServerSettings->AddStoragePoolType("hdd2");
         }
-        ServerSettings->SetAppConfig(appConfig);
-        ServerSettings->AuthConfig = appConfig.GetAuthConfig();
+        ServerSettings->AppConfig->MergeFrom(appConfig);
         ServerSettings->FeatureFlags = appConfig.GetFeatureFlags();
         ServerSettings->SetKqpSettings(kqpSettings);
         ServerSettings->SetEnableDataColumnForIndexTable(true);
@@ -114,13 +116,13 @@ public:
             Server_->GetRuntime()->SetLogPriority(NKikimrServices::YQ_CONTROL_PLANE_PROXY, NActors::NLog::PRI_DEBUG);
         }
 
-        NGrpc::TServerOptions grpcOption;
+        NYdbGrpc::TServerOptions grpcOption;
         if (TestSettings::AUTH) {
             grpcOption.SetUseAuth(true);
         }
         grpcOption.SetPort(grpc);
         if (TestSettings::SSL) {
-            NGrpc::TSslData sslData;
+            NYdbGrpc::TSslData sslData;
             sslData.Cert = TestSettings::GetServerCrt();
             sslData.Key = TestSettings::GetServerKey();
             sslData.Root =TestSettings::GetCaCrt();
@@ -131,7 +133,7 @@ public:
         Server_->EnableGRpc(grpcOption);
 
         TClient annoyingClient(*ServerSettings);
-        if (ServerSettings->AppConfig.GetDomainsConfig().GetSecurityConfig().GetEnforceUserTokenRequirement()) {
+        if (ServerSettings->AppConfig->GetDomainsConfig().GetSecurityConfig().GetEnforceUserTokenRequirement()) {
             annoyingClient.SetSecurityToken("root@builtin");
         }
         annoyingClient.InitRootScheme("Root");
@@ -178,10 +180,10 @@ struct TTestOlap {
     {
         return std::make_shared<arrow::Schema>(
             std::vector<std::shared_ptr<arrow::Field>>{
-                arrow::field("timestamp", tsType),
+                arrow::field("timestamp", tsType, false),
                 arrow::field("resource_type", arrow::utf8()),
                 arrow::field("resource_id", arrow::utf8()),
-                arrow::field("uid", arrow::utf8()),
+                arrow::field("uid", arrow::utf8(), false),
                 arrow::field("level", arrow::int32()),
                 arrow::field("message", arrow::utf8()),
                 arrow::field("json_payload", arrow::binary()),
@@ -223,10 +225,10 @@ struct TTestOlap {
             SchemaPresets {
                 Name: "default"
                 Schema {
-                    Columns { Name: "timestamp" Type: "Timestamp" }
+                    Columns { Name: "timestamp" Type: "Timestamp" NotNull : true }
                     Columns { Name: "resource_type" Type: "Utf8" }
                     Columns { Name: "resource_id" Type: "Utf8" }
-                    Columns { Name: "uid" Type: "Utf8" }
+                    Columns { Name: "uid" Type: "Utf8" NotNull : true }
                     Columns { Name: "level" Type: "Int32" }
                     Columns { Name: "message" Type: "Utf8" }
                     Columns { Name: "json_payload" Type: "JsonDocument" }
@@ -276,21 +278,21 @@ struct TTestOlap {
 
                 std::string ts = std::string("1970-01-01T00:00:00.") + std::string(us.data(), us.size());
 
-                Y_VERIFY(NArrow::Append<arrow::BinaryType>(*builders[0], ts));
-                Y_VERIFY(NArrow::Append<arrow::BinaryType>(*builders[7], ts));
-                Y_VERIFY(NArrow::Append<arrow::BinaryType>(*builders[8], ts));
+                Y_ABORT_UNLESS(NArrow::Append<arrow::BinaryType>(*builders[0], ts));
+                Y_ABORT_UNLESS(NArrow::Append<arrow::BinaryType>(*builders[7], ts));
+                Y_ABORT_UNLESS(NArrow::Append<arrow::BinaryType>(*builders[8], ts));
             } else {
-                Y_VERIFY(NArrow::Append<arrow::TimestampType>(*builders[0], i));
-                Y_VERIFY(NArrow::Append<arrow::TimestampType>(*builders[7], i));
-                Y_VERIFY(NArrow::Append<arrow::TimestampType>(*builders[8], i));
+                Y_ABORT_UNLESS(NArrow::Append<arrow::TimestampType>(*builders[0], i));
+                Y_ABORT_UNLESS(NArrow::Append<arrow::TimestampType>(*builders[7], i));
+                Y_ABORT_UNLESS(NArrow::Append<arrow::TimestampType>(*builders[8], i));
             }
-            Y_VERIFY(NArrow::Append<arrow::StringType>(*builders[1], s));
-            Y_VERIFY(NArrow::Append<arrow::StringType>(*builders[2], s));
-            Y_VERIFY(NArrow::Append<arrow::StringType>(*builders[3], s));
-            Y_VERIFY(NArrow::Append<arrow::Int32Type>(*builders[4], i));
-            Y_VERIFY(NArrow::Append<arrow::StringType>(*builders[5], s + "str"));
-            Y_VERIFY(NArrow::Append<arrow::BinaryType>(*builders[6], "{ \"value\": " + s + " }"));
-            Y_VERIFY(NArrow::Append<arrow::StringType>(*builders[9], s + "str"));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::StringType>(*builders[1], s));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::StringType>(*builders[2], s));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::StringType>(*builders[3], s));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::Int32Type>(*builders[4], i));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::StringType>(*builders[5], s + "str"));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::BinaryType>(*builders[6], "{ \"value\": " + s + " }"));
+            Y_ABORT_UNLESS(NArrow::Append<arrow::StringType>(*builders[9], s + "str"));
         }
 
         return arrow::RecordBatch::Make(schema, rowsCount, NArrow::Finish(std::move(builders)));
@@ -298,17 +300,17 @@ struct TTestOlap {
 
     static TString ToCSV(const std::shared_ptr<arrow::RecordBatch>& batch, bool withHeader = false) {
         auto res1 = arrow::io::BufferOutputStream::Create();
-        Y_VERIFY(res1.ok());
+        Y_ABORT_UNLESS(res1.ok());
         std::shared_ptr<arrow::io::BufferOutputStream> outStream = *res1;
 
         arrow::csv::WriteOptions options = arrow::csv::WriteOptions::Defaults();
         options.include_header = withHeader;
 
         auto status = arrow::csv::WriteCSV(*batch, options, outStream.get());
-        Y_VERIFY(status.ok(), "%s", status.ToString().c_str());
+        Y_ABORT_UNLESS(status.ok(), "%s", status.ToString().c_str());
 
         auto res2 = outStream->Finish();
-        Y_VERIFY(res2.ok());
+        Y_ABORT_UNLESS(res2.ok());
 
         std::shared_ptr<arrow::Buffer> buffer = *res2;
         TString out((const char*)buffer->data(), buffer->size());

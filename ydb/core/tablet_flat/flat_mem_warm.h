@@ -13,7 +13,7 @@
 #include <ydb/core/scheme/scheme_tablecell.h>
 #include <ydb/core/scheme/scheme_type_id.h>
 #include <ydb/core/util/btree_cow.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 
 #include <library/cpp/containers/absl_flat_hash/flat_hash_map.h>
 #include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
@@ -90,7 +90,7 @@ namespace NMem {
         explicit TTreeAllocatorState(size_t pageSize)
             : PageSize(pageSize)
         {
-            Y_VERIFY(PageSize >= sizeof(TFreeItem));
+            Y_ABORT_UNLESS(PageSize >= sizeof(TFreeItem));
         }
 
         ~TTreeAllocatorState() noexcept {
@@ -171,14 +171,14 @@ namespace NMem {
 
 } // namespace NMem
 
-    class TMemIt;
+    class TMemIter;
 
     struct TMemTableSnapshot;
 
     struct TMemTableRollbackState;
 
     class TMemTable : public TThrRefBase {
-        friend class TMemIt;
+        friend class TMemIter;
 
     public:
         struct TTxIdStat {
@@ -205,11 +205,11 @@ namespace NMem {
         void Update(ERowOp rop, TRawVals key_, TOpsRef ops, TArrayRef<const TMemGlob> pages, TRowVersion rowVersion,
                     NTable::ITransactionMapSimplePtr committed)
         {
-            Y_VERIFY_DEBUG(
+            Y_DEBUG_ABORT_UNLESS(
                 rop == ERowOp::Upsert || rop == ERowOp::Erase || rop == ERowOp::Reset,
                 "Unexpected row operation");
 
-            Y_VERIFY(ops.size() < Max<ui16>(), "Too large update ops array");
+            Y_ABORT_UNLESS(ops.size() < Max<ui16>(), "Too large update ops array");
 
             // Filter legacy empty values and re-order them in tag order
             ScratchUpdateTags.clear();
@@ -299,8 +299,8 @@ namespace NMem {
                         rop = ERowOp::Reset;
                     }
 
-                    ScratchMergeTagsLast.swap(ScratchMergeTags);
-                    ScratchMergeTagsLast.clear();
+                    ScratchMergeTags.swap(ScratchMergeTagsLast);
+                    ScratchMergeTags.clear();
 
                     auto have = ScratchUpdateTags.begin();
                     auto haveLast = ScratchMergeTagsLast.begin();
@@ -333,7 +333,7 @@ namespace NMem {
             }
 
             const size_t mergedSize = ScratchUpdateTags.size() + ScratchMergeTags.size();
-            Y_VERIFY(mergedSize < Max<ui16>(), "Merged row update is too large");
+            Y_ABORT_UNLESS(mergedSize < Max<ui16>(), "Merged row update is too large");
 
             auto *update = NewUpdate(mergedSize);
 
@@ -363,7 +363,7 @@ namespace NMem {
                 } else if (TCellOp::HaveNoPayload(ops[it].NormalizedCellOp())) {
                     /* Payloadless ECellOp types may have zero type value */
                 } else if (info->TypeInfo.GetTypeId() != ops[it].Value.Type()) {
-                    Y_FAIL("Got an unexpected column type %" PRIu16 " in cell update for tag %" PRIu32 " (expected %" PRIu16 ")",
+                    Y_ABORT("Got an unexpected column type %" PRIu16 " in cell update for tag %" PRIu32 " (expected %" PRIu16 ")",
                         ops[it].Value.Type(), ops[it].Tag, info->TypeInfo.GetTypeId());
                 }
 
@@ -380,7 +380,7 @@ namespace NMem {
                     cell = TCell::Make<ui64>(ref);
 
                 } else if (ops[it].Op != ELargeObj::Inline) {
-                    Y_FAIL("Got an unexpected ELargeObj reference in update ops");
+                    Y_ABORT("Got an unexpected ELargeObj reference in update ops");
                 } else if (!cell.IsInline()) {
                     cell = Clone(cell.Data(), cell.Size());
                 }

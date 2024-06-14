@@ -81,6 +81,11 @@ bool ReadFromFileIfExists(TString& filePath, const TString& fileName, TString& o
     return false;
 }
 
+bool ReadFromFileIfExists(const TString& filePath, const TString& fileName, TString& output, bool allowEmpty) {
+    TString fpCopy = filePath;
+    return ReadFromFileIfExists(fpCopy, fileName, output, allowEmpty);
+}
+
 TString ReadFromFile(TString& filePath, const TString& fileName, bool allowEmpty) {
     TString content;
     if (ReadFromFileIfExists(filePath, fileName, content, allowEmpty)) {
@@ -90,15 +95,9 @@ TString ReadFromFile(TString& filePath, const TString& fileName, bool allowEmpty
     }
 }
 
-size_t TermWidth() {
-#ifdef _unix_
-    struct winsize ws;
-    if (!ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)) {
-        return ws.ws_col;
-    }
-#endif
-
-    return Max<size_t>();
+TString ReadFromFile(const TString& filePath, const TString& fileName, bool allowEmpty) {
+    TString fpCopy = filePath;
+    return ReadFromFile(fpCopy, fileName, allowEmpty);
 }
 
 TString InputPassword() {

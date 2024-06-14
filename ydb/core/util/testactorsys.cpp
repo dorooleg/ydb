@@ -4,9 +4,54 @@
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/base/tablet_resolver.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/time_provider/time_provider.h>
+#include <ydb/core/control/immediate_control_board_impl.h>
+#include <ydb/core/grpc_services/grpc_helper.h>
+#include <ydb/core/base/feature_flags.h>
+#include <ydb/core/base/nameservice.h>
+#include <ydb/core/base/channel_profiles.h>
+#include <ydb/core/base/domain.h>
+
+#include <util/generic/singleton.h>
 
 namespace NKikimr {
+
+class TActorNameTracker {
+public:
+    static TActorNameTracker& GetInstance() {
+        auto* instance = Singleton<TActorNameTracker>();
+        return *instance;
+    }
+
+    void Register(const TActorId& actorId, const TString& name) {
+        TGuard<TMutex> guard{Mutex};
+        NameByActorIdString[actorId] = name + actorId.ToString();
+    }
+
+    TString GetName(const TActorId& actorId) const {
+        TGuard<TMutex> guard{Mutex};
+        auto it = NameByActorIdString.find(actorId);
+        if (it == NameByActorIdString.end()) {
+            return "[unknown_actor]" + actorId.ToString();
+        }
+
+        return it->second;
+    }
+
+private:
+    THashMap<TActorId, TString> NameByActorIdString;
+    TMutex Mutex;
+
+};
+
+void RegisterActorName(const TActorId& actorId, const TString& name) {
+    TActorNameTracker::GetInstance().Register(actorId, name);
+}
+
+TString GetRegisteredActorName(const TActorId& actorId) {
+    return TActorNameTracker::GetInstance().GetName(actorId);
+}
 
 class TTestExecutorPool : public IExecutorPool {
     TTestActorSystem *Context;
@@ -20,11 +65,11 @@ public:
     {}
 
     ui32 GetReadyActivation(TWorkerContext& /*wctx*/, ui64 /*revolvingCounter*/) override {
-        Y_FAIL();
+        Y_ABORT();
     }
 
     void ReclaimMailbox(TMailboxType::EType /*mailboxType*/, ui32 /*hint*/, NActors::TWorkerId /*workerId*/, ui64 /*revolvingCounter*/) override {
-        Y_FAIL();
+        Y_ABORT();
     }
 
     TMailboxHeader *ResolveMailbox(ui32 hint) override {
@@ -61,15 +106,15 @@ public:
     }
 
     void ScheduleActivation(ui32 /*activation*/) override {
-        Y_FAIL();
+        Y_ABORT();
     }
 
     void SpecificScheduleActivation(ui32 /*activation*/) override {
-        Y_FAIL();
+        Y_ABORT();
     }
 
     void ScheduleActivationEx(ui32 /*activation*/, ui64 /*revolvingCounter*/) override {
-        Y_FAIL();
+        Y_ABORT();
     }
 
     TActorId Register(IActor* actor, TMailboxType::EType /*mailboxType*/, ui64 /*revolvingCounter*/, const TActorId& parentId) override {
@@ -97,13 +142,13 @@ public:
     }
 
     TAffinity* Affinity() const override {
-        Y_FAIL();
+        Y_ABORT();
     }
 };
 
-static TActorId MakeBoardReplicaID(ui32 node, ui64 stateStorageGroup, ui32 replicaIndex) {
+static TActorId MakeBoardReplicaID(ui32 node, ui32 replicaIndex) {
     char x[12] = {'s', 's', 'b'};
-    x[3] = (char)stateStorageGroup;
+    x[3] = (char)1;
     memcpy(x + 5, &replicaIndex, sizeof(ui32));
     return TActorId(node, TStringBuf(x, 12));
 }
@@ -180,23 +225,19 @@ void TTestActorSystem::SetupTabletRuntime(const std::function<TNodeLocation(ui32
 }
 
 void TTestActorSystem::SetupStateStorage(ui32 nodeId, ui32 stateStorageNodeId) {
-    auto *appData = GetAppData();
-    for (const auto& [id, domain] : appData->DomainsInfo->Domains) {
-        const ui64 stateStorageGroup = domain->DefaultStateStorageGroup;
+    if (const auto& domain = GetDomainsInfo()->Domain) {
         ui32 numReplicas = 3;
 
         auto process = [&](auto&& generateId, auto&& createReplica) {
             auto info = MakeIntrusive<TStateStorageInfo>();
-            info->StateStorageGroup = stateStorageGroup;
             info->NToSelect = numReplicas;
             info->Rings.resize(numReplicas);
             for (ui32 i = 0; i < numReplicas; ++i) {
-                info->Rings[i].Replicas.push_back(generateId(stateStorageNodeId, stateStorageGroup, i));
+                info->Rings[i].Replicas.push_back(generateId(stateStorageNodeId, i));
             }
             if (nodeId == stateStorageNodeId) {
                 for (ui32 i = 0; i < numReplicas; ++i) {
-                    RegisterService(generateId(stateStorageNodeId, stateStorageGroup, i),
-                        Register(createReplica(info.Get(), i), nodeId));
+                    RegisterService(generateId(stateStorageNodeId, i), Register(createReplica(info.Get(), i), nodeId));
                 }
             }
             return info;
@@ -206,8 +247,7 @@ void TTestActorSystem::SetupStateStorage(ui32 nodeId, ui32 stateStorageNodeId) {
         auto b = process(MakeBoardReplicaID, CreateStateStorageBoardReplica);
         auto sb = process(MakeSchemeBoardReplicaID, CreateSchemeBoardReplica);
 
-        RegisterService(MakeStateStorageProxyID(stateStorageGroup),
-            Register(CreateStateStorageProxy(ss.Get(), b.Get(), sb.Get()), nodeId));
+        RegisterService(MakeStateStorageProxyID(), Register(CreateStateStorageProxy(ss.Get(), b.Get(), sb.Get()), nodeId));
     }
 }
 
@@ -237,5 +277,7 @@ TIntrusivePtr<IMonotonicTimeProvider> TTestActorSystem::CreateMonotonicTimeProvi
     };
     return MakeIntrusive<TTestActorMonotonicTimeProvider>();
 }
+
+const ui32 TTestActorSystem::SYSTEM_POOL_ID = 0;
 
 }

@@ -12,7 +12,7 @@ THolder<TEvHive::TEvCreateTablet> CreateEvCreateTablet(TPathElement::TPtr target
         shard.TabletType == ETabletType::BlockStorePartition2)
     {
         auto it = context.SS->BlockStoreVolumes.FindPtr(targetPath->PathId);
-        Y_VERIFY(it, "Missing BlockStoreVolume while creating BlockStorePartition tablet");
+        Y_ABORT_UNLESS(it, "Missing BlockStoreVolume while creating BlockStorePartition tablet");
         auto volume = *it;
         /*const auto* volumeConfig = &volume->VolumeConfig;
         if (volume->AlterData) {
@@ -34,7 +34,7 @@ THolder<TEvHive::TEvCreateTablet> CreateEvCreateTablet(TPathElement::TPtr target
         objectDomain->SetPathId(domainId.LocalPathId);
     }
 
-    Y_VERIFY(context.SS->SubDomains.contains(domainId));
+    Y_ABORT_UNLESS(context.SS->SubDomains.contains(domainId));
     TSubDomainInfo::TPtr subDomain = context.SS->SubDomains.at(domainId);
 
     TPathId resourcesDomainId;
@@ -43,7 +43,7 @@ THolder<TEvHive::TEvCreateTablet> CreateEvCreateTablet(TPathElement::TPtr target
     } else if (subDomain->GetAlter() && subDomain->GetAlter()->GetResourcesDomainId()) {
         resourcesDomainId = subDomain->GetAlter()->GetResourcesDomainId();
     } else {
-        Y_FAIL("Cannot retrieve resources domain id");
+        Y_ABORT("Cannot retrieve resources domain id");
     }
 
     auto allowedDomain = ev->Record.AddAllowedDomains();
@@ -202,11 +202,11 @@ bool NTableState::CollectSchemaChanged(
 
     auto datashardId = TTabletId(evRecord.GetOrigin());
 
-    Y_VERIFY(context.SS->FindTx(operationId));
+    Y_ABORT_UNLESS(context.SS->FindTx(operationId));
     TTxState& txState = *context.SS->FindTx(operationId);
 
     auto shardIdx = context.SS->MustGetShardIdx(datashardId);
-    Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
+    Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
 
     // Save this notification if was received earlier than the Tx switched to ProposedWaitParts state
     ui32 generation = evRecord.GetGeneration();
@@ -228,16 +228,16 @@ bool NTableState::CollectSchemaChanged(
 
     if (evRecord.HasOpResult()) {
         // TODO: remove TxBackup handling
-        Y_VERIFY_DEBUG(txState.TxType == TTxState::TxBackup || txState.TxType == TTxState::TxRestore);
+        Y_DEBUG_ABORT_UNLESS(txState.TxType == TTxState::TxBackup || txState.TxType == TTxState::TxRestore);
     }
 
     if (!txState.ReadyForNotifications) {
         return false;
     }
     if (txState.TxType == TTxState::TxBackup || txState.TxType == TTxState::TxRestore) {
-        Y_VERIFY(txState.State == TTxState::ProposedWaitParts || txState.State == TTxState::Aborting);
+        Y_ABORT_UNLESS(txState.State == TTxState::ProposedWaitParts || txState.State == TTxState::Aborting);
     } else {
-        Y_VERIFY(txState.State == TTxState::ProposedWaitParts);
+        Y_ABORT_UNLESS(txState.State == TTxState::ProposedWaitParts);
     }
 
     txState.ShardsInProgress.erase(shardIdx);
@@ -291,7 +291,7 @@ void NTableState::AckAllSchemaChanges(const TOperationId &operationId, TTxState 
 }
 
 bool NTableState::CheckPartitioningChangedForTableModification(TTxState &txState, TOperationContext &context) {
-    Y_VERIFY(context.SS->Tables.contains(txState.TargetPathId));
+    Y_ABORT_UNLESS(context.SS->Tables.contains(txState.TargetPathId));
     TTableInfo::TPtr table = context.SS->Tables.at(txState.TargetPathId);
 
     THashSet<TShardIdx> shardIdxsLeft;
@@ -310,7 +310,7 @@ bool NTableState::CheckPartitioningChangedForTableModification(TTxState &txState
 }
 
 void NTableState::UpdatePartitioningForTableModification(TOperationId operationId, TTxState &txState, TOperationContext &context) {
-    Y_VERIFY(!txState.TxShardsListFinalized, "Rebuilding the list of shards must not happen twice");
+    Y_ABORT_UNLESS(!txState.TxShardsListFinalized, "Rebuilding the list of shards must not happen twice");
 
     NIceDb::TNiceDb db(context.GetDB());
 
@@ -325,9 +325,9 @@ void NTableState::UpdatePartitioningForTableModification(TOperationId operationI
         context.SS->PersistRemoveTxShard(db, operationId, shard.Idx);
     }
     txState.Shards.clear();
-    Y_VERIFY(txState.ShardsInProgress.empty());
+    Y_ABORT_UNLESS(txState.ShardsInProgress.empty());
 
-    Y_VERIFY(context.SS->Tables.contains(txState.TargetPathId));
+    Y_ABORT_UNLESS(context.SS->Tables.contains(txState.TargetPathId));
     TTableInfo::TPtr table = context.SS->Tables.at(txState.TargetPathId);
     TTxState::ETxState commonShardOp = TTxState::CreateParts;
 
@@ -362,7 +362,7 @@ void NTableState::UpdatePartitioningForTableModification(TOperationId operationI
     } else if (txState.TxType == TTxState::TxDropCdcStreamAtTableDropSnapshot) {
         commonShardOp = TTxState::ConfigureParts;
     } else {
-        Y_FAIL("UNREACHABLE");
+        Y_ABORT("UNREACHABLE");
     }
 
     TBindingsRoomsChanges bindingChanges;
@@ -382,14 +382,14 @@ void NTableState::UpdatePartitioningForTableModification(TOperationId operationI
                 bindingChanges,
                 errStr);
         if (!isOk) {
-            Y_FAIL("Unexpected failure to rebind column families to storage pools: %s", errStr.c_str());
+            Y_ABORT("Unexpected failure to rebind column families to storage pools: %s", errStr.c_str());
         }
     }
 
     // Fill new list of tx shards
     for (auto& shard : table->GetPartitions()) {
         auto shardIdx = shard.ShardIdx;
-        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
+        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
         auto& shardInfo = context.SS->ShardInfos.at(shardIdx);
 
         auto shardOp = commonShardOp;
@@ -427,8 +427,8 @@ void NTableState::UpdatePartitioningForTableModification(TOperationId operationI
 }
 
 bool NTableState::SourceTablePartitioningChangedForCopyTable(const TTxState &txState, TOperationContext &context) {
-    Y_VERIFY(txState.SourcePathId != InvalidPathId);
-    Y_VERIFY(txState.TargetPathId != InvalidPathId);
+    Y_ABORT_UNLESS(txState.SourcePathId != InvalidPathId);
+    Y_ABORT_UNLESS(txState.TargetPathId != InvalidPathId);
     const TTableInfo::TPtr srcTableInfo = *context.SS->Tables.FindPtr(txState.SourcePathId);
 
     THashSet<TShardIdx> srcShardIdxsLeft;
@@ -441,7 +441,7 @@ bool NTableState::SourceTablePartitioningChangedForCopyTable(const TTxState &txS
         if (shard.Operation == TTxState::CreateParts)
             continue;
 
-        Y_VERIFY(shard.Operation == TTxState::ConfigureParts);
+        Y_ABORT_UNLESS(shard.Operation == TTxState::ConfigureParts);
         // Is this shard still present in src table partitioning?
         if (srcShardIdxsLeft.erase(shard.Idx) == 0)
             return true;
@@ -452,12 +452,12 @@ bool NTableState::SourceTablePartitioningChangedForCopyTable(const TTxState &txS
 }
 
 void NTableState::UpdatePartitioningForCopyTable(TOperationId operationId, TTxState &txState, TOperationContext &context) {
-    Y_VERIFY(!txState.TxShardsListFinalized, "CopyTable can adjust partitioning only once");
+    Y_ABORT_UNLESS(!txState.TxShardsListFinalized, "CopyTable can adjust partitioning only once");
 
     // Source table must not be altered or drop while we are performing copying. So we put it into a special state.
-    Y_VERIFY(context.SS->PathsById.contains(txState.SourcePathId));
-    Y_VERIFY(context.SS->PathsById.at(txState.SourcePathId)->PathState == TPathElement::EPathState::EPathStateCopying);
-    Y_VERIFY(context.SS->PathsById.contains(txState.TargetPathId));
+    Y_ABORT_UNLESS(context.SS->PathsById.contains(txState.SourcePathId));
+    Y_ABORT_UNLESS(context.SS->PathsById.at(txState.SourcePathId)->PathState == TPathElement::EPathState::EPathStateCopying);
+    Y_ABORT_UNLESS(context.SS->PathsById.contains(txState.TargetPathId));
     auto dstPath = context.SS->PathsById.at(txState.TargetPathId);
     auto domainInfo = context.SS->SubDomains.at(dstPath->DomainPathId);
 
@@ -473,8 +473,8 @@ void NTableState::UpdatePartitioningForCopyTable(TOperationId operationId, TTxSt
     for (const auto& shard : txState.Shards) {
         context.SS->PersistRemoveTxShard(db, operationId, shard.Idx);
         if (shard.Operation == TTxState::CreateParts) {
-            Y_VERIFY(context.SS->ShardInfos.contains(shard.Idx));
-            Y_VERIFY(context.SS->ShardInfos[shard.Idx].TabletID == InvalidTabletId, "Dst shard must not exist yet");
+            Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shard.Idx));
+            Y_ABORT_UNLESS(context.SS->ShardInfos[shard.Idx].TabletID == InvalidTabletId, "Dst shard must not exist yet");
             auto pathId = context.SS->ShardInfos[shard.Idx].PathId;
             dstTableInfo->PerShardPartitionConfig.erase(shard.Idx);
             context.SS->PersistShardDeleted(db, shard.Idx, context.SS->ShardInfos[shard.Idx].BindedChannels);
@@ -500,7 +500,7 @@ void NTableState::UpdatePartitioningForCopyTable(TOperationId operationId, TTxSt
         bool isOk = context.SS->GetBindingsRooms(dstPath->DomainPathId, dstTableInfo->PartitionConfig(), storageRooms, familyRooms, channelsBinding, errStr);
         if (!isOk) {
             errStr = TString("database must have required storage pools to create tablet with storage config, details: ") + errStr;
-            Y_FAIL("%s", errStr.c_str());
+            Y_ABORT("%s", errStr.c_str());
         }
 
         storePerShardConfig = true;
@@ -517,7 +517,7 @@ void NTableState::UpdatePartitioningForCopyTable(TOperationId operationId, TTxSt
         bool isOk = context.SS->GetChannelsBindings(dstPath->DomainPathId, dstTableInfo, channelsBinding, errStr);
         if (!isOk) {
             errStr = TString("database must have required storage pools to create tablet with channel profile, details: ") + errStr;
-            Y_FAIL("%s", errStr.c_str());
+            Y_ABORT("%s", errStr.c_str());
         }
     }
 
@@ -539,7 +539,7 @@ void NTableState::UpdatePartitioningForCopyTable(TOperationId operationId, TTxSt
     context.SS->PersistUpdateNextShardIdx(db);
     // Persist new shards info
     for (const auto& shard : dstTableInfo->GetPartitions()) {
-        Y_VERIFY(context.SS->ShardInfos.contains(shard.ShardIdx), "shard info is set before");
+        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shard.ShardIdx), "shard info is set before");
         const auto tabletType = context.SS->ShardInfos[shard.ShardIdx].TabletType;
         context.SS->PersistShardMapping(db, shard.ShardIdx, InvalidTabletId, txState.TargetPathId, operationId.GetTxId(), tabletType);
         context.SS->PersistChannelsBinding(db, shard.ShardIdx, channelsBinding);
@@ -562,9 +562,9 @@ TVector<TTableShardInfo> NTableState::ApplyPartitioningCopyTable(const TShardInf
     for (ui64 i = 0; i < count; ++i) {
         // Source shards need to get "Send parts" transaction
         auto srcShardIdx = srcTableInfo->GetPartitions()[i].ShardIdx;
-        Y_VERIFY(ss->ShardInfos.contains(srcShardIdx), "Source table shard not found");
+        Y_ABORT_UNLESS(ss->ShardInfos.contains(srcShardIdx), "Source table shard not found");
         auto srcTabletId = ss->ShardInfos[srcShardIdx].TabletID;
-        Y_VERIFY(srcTabletId != InvalidTabletId);
+        Y_ABORT_UNLESS(srcTabletId != InvalidTabletId);
         txState.Shards.emplace_back(srcShardIdx, ETabletType::DataShard, TTxState::ConfigureParts);
         // Destination shards need to be created, configured and then they will receive parts
         auto idx = ss->RegisterShardInfo(templateDatashardInfo);
@@ -599,7 +599,7 @@ bool CollectPQConfigChanged(const TOperationId& operationId,
                             const TEvPersQueue::TEvProposeTransactionResult::TPtr& ev,
                             TOperationContext& context)
 {
-    Y_VERIFY(context.SS->FindTx(operationId));
+    Y_ABORT_UNLESS(context.SS->FindTx(operationId));
     TTxState& txState = *context.SS->FindTx(operationId);
 
     const auto& evRecord = ev->Get()->Record;
@@ -608,9 +608,9 @@ bool CollectPQConfigChanged(const TOperationId& operationId,
         const TTabletId shardId(evRecord.GetOrigin());
 
         const auto shardIdx = context.SS->MustGetShardIdx(shardId);
-        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
+        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
 
-        Y_VERIFY(txState.State == TTxState::Propose);
+        Y_ABORT_UNLESS(txState.State == TTxState::Propose);
 
         txState.ShardsInProgress.erase(shardIdx);
 
@@ -632,7 +632,7 @@ bool CollectPQConfigChanged(const TOperationId& operationId,
                             const TEvPersQueue::TEvProposeTransactionAttachResult::TPtr& ev,
                             TOperationContext& context)
 {
-    Y_VERIFY(context.SS->FindTx(operationId));
+    Y_ABORT_UNLESS(context.SS->FindTx(operationId));
     TTxState& txState = *context.SS->FindTx(operationId);
 
     //
@@ -660,9 +660,9 @@ bool CollectPQConfigChanged(const TOperationId& operationId,
     const TTabletId shardId(evRecord.GetTabletId());
 
     const auto shardIdx = context.SS->MustGetShardIdx(shardId);
-    Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
+    Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
 
-    Y_VERIFY(txState.State == TTxState::Propose);
+    Y_ABORT_UNLESS(txState.State == TTxState::Propose);
 
     txState.ShardsInProgress.erase(shardIdx);
 
@@ -695,6 +695,7 @@ THolder<TEvPersQueue::TEvProposeTransaction> TConfigureParts::MakeEvProposeTrans
                                                                                        const TTopicTabletInfo& pqShard,
                                                                                        const TString& topicName,
                                                                                        const TString& topicPath,
+                                                                                       const std::optional<NKikimrPQ::TBootstrapConfig>& bootstrapConfig,
                                                                                        const TString& cloudId,
                                                                                        const TString& folderId,
                                                                                        const TString& databaseId,
@@ -706,7 +707,8 @@ THolder<TEvPersQueue::TEvProposeTransaction> TConfigureParts::MakeEvProposeTrans
     event->Record.SetTxId(ui64(txId));
     ActorIdToProto(context.SS->SelfId(), event->Record.MutableSourceActor());
 
-    MakePQTabletConfig(*event->Record.MutableConfig()->MutableTabletConfig(),
+    MakePQTabletConfig(context,
+                      *event->Record.MutableConfig()->MutableTabletConfig(),
                        pqGroup,
                        pqShard,
                        topicName,
@@ -715,9 +717,10 @@ THolder<TEvPersQueue::TEvProposeTransaction> TConfigureParts::MakeEvProposeTrans
                        folderId,
                        databaseId,
                        databasePath);
-    MakeBootstrapConfig(*event->Record.MutableConfig()->MutableBootstrapConfig(),
-                        pqGroup,
-                        txType);
+    if (bootstrapConfig) {
+        Y_ABORT_UNLESS(txType == TTxState::TxCreatePQGroup);
+        event->Record.MutableConfig()->MutableBootstrapConfig()->CopyFrom(*bootstrapConfig);
+    }
 
     LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                 "Propose configure PersQueue" <<
@@ -731,6 +734,7 @@ THolder<TEvPersQueue::TEvUpdateConfig> TConfigureParts::MakeEvUpdateConfig(TTxId
                                                                            const TTopicTabletInfo& pqShard,
                                                                            const TString& topicName,
                                                                            const TString& topicPath,
+                                                                           const std::optional<NKikimrPQ::TBootstrapConfig>& bootstrapConfig,
                                                                            const TString& cloudId,
                                                                            const TString& folderId,
                                                                            const TString& databaseId,
@@ -741,7 +745,8 @@ THolder<TEvPersQueue::TEvUpdateConfig> TConfigureParts::MakeEvUpdateConfig(TTxId
     auto event = MakeHolder<TEvPersQueue::TEvUpdateConfig>();
     event->Record.SetTxId(ui64(txId));
 
-    MakePQTabletConfig(*event->Record.MutableTabletConfig(),
+    MakePQTabletConfig(context,
+                       *event->Record.MutableTabletConfig(),
                        pqGroup,
                        pqShard,
                        topicName,
@@ -750,9 +755,10 @@ THolder<TEvPersQueue::TEvUpdateConfig> TConfigureParts::MakeEvUpdateConfig(TTxId
                        folderId,
                        databaseId,
                        databasePath);
-    MakeBootstrapConfig(*event->Record.MutableBootstrapConfig(),
-                        pqGroup,
-                        txType);
+    if (bootstrapConfig) {
+        Y_ABORT_UNLESS(txType == TTxState::TxCreatePQGroup);
+        event->Record.MutableBootstrapConfig()->CopyFrom(*bootstrapConfig);
+    }
 
     LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                 "Propose configure PersQueue" <<
@@ -886,7 +892,7 @@ void TPropose::PersistState(const TTxState& txState,
 bool TPropose::TryPersistState(TOperationContext& context)
 {
     TTxState* txState = context.SS->FindTx(OperationId);
-    Y_VERIFY(txState);
+    Y_ABORT_UNLESS(txState);
 
     if (!CanPersistState(*txState, context)) {
         return false;
@@ -1006,7 +1012,7 @@ NKikimrSchemeOp::TModifyScheme MoveTableIndexTask(NKikimr::NSchemeShard::TPath& 
 
 void AbortUnsafeDropOperation(const TOperationId& opId, const TTxId& txId, TOperationContext& context) {
     TTxState* txState = context.SS->FindTx(opId);
-    Y_VERIFY(txState);
+    Y_ABORT_UNLESS(txState);
 
     LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, ""
         << TTxState::TypeName(txState->TxType) << " AbortUnsafe"
@@ -1015,9 +1021,9 @@ void AbortUnsafeDropOperation(const TOperationId& opId, const TTxId& txId, TOper
         << ", ssId# " << context.SS->TabletID());
 
     const auto& pathId = txState->TargetPathId;
-    Y_VERIFY(context.SS->PathsById.contains(pathId));
+    Y_ABORT_UNLESS(context.SS->PathsById.contains(pathId));
     auto path = context.SS->PathsById.at(pathId);
-    Y_VERIFY(path);
+    Y_ABORT_UNLESS(path);
 
     if (path->Dropped()) {
         for (const auto& shard : txState->Shards) {

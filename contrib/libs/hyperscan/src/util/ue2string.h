@@ -106,6 +106,7 @@ public:
             boost::random_access_traversal_tag,
             elem const> {
     public:
+        using iterator_category = typename std::random_access_iterator_tag;
         const_iterator() {}
     private:
         friend class boost::iterator_core_access;
@@ -133,7 +134,7 @@ public:
             : lit(&lit_in), idx(idx_in) {}
 
         const ue2_literal *lit = nullptr;
-        size_t idx;
+        size_t idx = 0;
     };
 
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;

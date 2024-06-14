@@ -4,6 +4,7 @@
 #include <ydb/core/protos/msgbus.pb.h>
 #include <ydb/core/protos/msgbus_kv.pb.h>
 #include <ydb/core/protos/msgbus_pq.pb.h>
+#include <ydb/library/actors/core/actor.h>
 #include <library/cpp/messagebus/ybus.h>
 #include <library/cpp/messagebus/protobuf/ybusbuf.h>
 #include <library/cpp/messagebus/session_config.h>
@@ -18,7 +19,6 @@ enum {
     MTYPE_CLIENT_FAKE_CONFIGDUMMY = 10403,
     MTYPE_CLIENT_INSPECT = 10404,
     MTYPE_CLIENT_SCHEME_INITROOT = 10405,
-    MTYPE_CLIENT_BSADM = 10406,
     MTYPE_CLIENT_SCHEME_NAVIGATE = 10407,
     MTYPE_CLIENT_TYPES_REQUEST = 10408,
     MTYPE_CLIENT_TYPES_RESPONSE = 10409,
@@ -39,8 +39,8 @@ enum {
     MTYPE_CLIENT_LOCAL_ENUMERATE_TABLETS_RESULT = 10424, // deprecated
     MTYPE_CLIENT_OLD_KEYVALUE = 10425, // deprecated
     MTYPE_CLIENT_KEYVALUE_RESPONSE = 10426, // deprecated
-    MTYPE_CLIENT_MESSAGE_BUS_TRACE = 10427,
-    MTYPE_CLIENT_MESSAGE_BUS_TRACE_STATUS = 10428,
+    /*MTYPE_CLIENT_MESSAGE_BUS_TRACE*/ MTYPE_CLIENT_DEPRECATED_10427 = 10427,
+    /*MTYPE_CLIENT_MESSAGE_BUS_TRACE_STATUS*/ MTYPE_CLIENT_DEPRECATED_10428 = 10428,
     MTYPE_CLIENT_TABLET_KILL_REQUEST = 10429,
     MTYPE_CLIENT_TABLET_STATE_REQUEST = 10430,
     MTYPE_CLIENT_LOCAL_MINIKQL = 10431,
@@ -49,8 +49,6 @@ enum {
     MTYPE_CLIENT_OLD_FLAT_DESCRIBE_REQUEST = 10435, // deprecated
     MTYPE_CLIENT_OLD_FLAT_DESCRIBE_RESPONSE = 10436, // deprecated
     MTYPE_CLIENT_CREATE_TABLET = 10437,
-    MTYPE_CLIENT_LOAD_REQUEST = 10438,
-    MTYPE_CLIENT_LOAD_RESPONSE = 10439,
     MTYPE_CLIENT_DIRECT_REQUEST_JOB_EXECUTION_STATUS = 10440, // deprecated
     MTYPE_CLIENT_PERSQUEUE = 10441,
     MTYPE_CLIENT_DB_SCHEMA = 10443,
@@ -62,8 +60,6 @@ enum {
     MTYPE_CLIENT_DB_BATCH = 10449,
     MTYPE_CLIENT_FLAT_DESCRIBE_REQUEST = 10450,
     MTYPE_CLIENT_LOCAL_SCHEME_TX = 10453,
-    MTYPE_CLIENT_GET_REQUEST = 10454,
-    MTYPE_CLIENT_GET_RESPONSE = 10455,
     MTYPE_CLIENT_DB_QUERY = 10456,
     MTYPE_CLIENT_TABLET_COUNTERS_REQUEST = 10457,
     MTYPE_CLIENT_CANCEL_BACKUP = 10458,
@@ -102,7 +98,6 @@ struct TBusRequest : TBusMessage<TBusRequest, NKikimrClient::TRequest, MTYPE_CLI
 struct TBusResponse : TBusMessage<TBusResponse, NKikimrClient::TResponse, MTYPE_CLIENT_RESPONSE> {};
 struct TBusFakeConfigDummy : TBusMessage<TBusFakeConfigDummy, NKikimrClient::TFakeConfigDummy, MTYPE_CLIENT_FAKE_CONFIGDUMMY> {};
 struct TBusSchemeInitRoot : TBusMessage<TBusSchemeInitRoot, NKikimrClient::TSchemeInitRoot, MTYPE_CLIENT_SCHEME_INITROOT> {};
-struct TBusBSAdm : TBusMessage<TBusBSAdm, NKikimrClient::TBSAdm, MTYPE_CLIENT_BSADM> {};
 struct TBusTypesRequest : TBusMessage<TBusTypesRequest, NKikimrClient::TTypeMetadataRequest, MTYPE_CLIENT_TYPES_REQUEST> {};
 struct TBusTypesResponse : TBusMessage<TBusTypesResponse, NKikimrClient::TTypeMetadataResponse, MTYPE_CLIENT_TYPES_RESPONSE> {};
 struct TBusHiveCreateTablet : TBusMessage<TBusHiveCreateTablet, NKikimrClient::THiveCreateTablet, MTYPE_CLIENT_HIVE_CREATE_TABLET> {};
@@ -115,8 +110,6 @@ struct TBusKeyValue : TBusMessage<TBusKeyValue, NKikimrClient::TKeyValueRequest,
 struct TBusOldKeyValue : TBusMessage<TBusOldKeyValue, NKikimrClient::TKeyValueRequest, MTYPE_CLIENT_OLD_KEYVALUE> {};
 struct TBusKeyValueResponse : TBusMessage<TBusKeyValueResponse, NKikimrClient::TKeyValueResponse, MTYPE_CLIENT_KEYVALUE_RESPONSE> {};
 struct TBusPersQueue : TBusMessage<TBusPersQueue, NKikimrClient::TPersQueueRequest, MTYPE_CLIENT_PERSQUEUE> {};
-struct TBusMessageBusTraceRequest : TBusMessage<TBusMessageBusTraceRequest, NKikimrClient::TMessageBusTraceRequest, MTYPE_CLIENT_MESSAGE_BUS_TRACE> {};
-struct TBusMessageBusTraceStatus : TBusMessage<TBusMessageBusTraceStatus, NKikimrClient::TMessageBusTraceStatus, MTYPE_CLIENT_MESSAGE_BUS_TRACE_STATUS> {};
 struct TBusTabletKillRequest : TBusMessage<TBusTabletKillRequest, NKikimrClient::TTabletKillRequest, MTYPE_CLIENT_TABLET_KILL_REQUEST> {};
 struct TBusTabletStateRequest : TBusMessage<TBusTabletStateRequest, NKikimrClient::TTabletStateRequest, MTYPE_CLIENT_TABLET_STATE_REQUEST> {};
 struct TBusTabletCountersRequest : TBusMessage<TBusTabletCountersRequest, NKikimrClient::TTabletCountersRequest, MTYPE_CLIENT_TABLET_COUNTERS_REQUEST> {};
@@ -127,10 +120,6 @@ struct TBusSchemeOperationStatus : TBusMessage<TBusSchemeOperationStatus, NKikim
 struct TBusSchemeDescribe : TBusMessage<TBusSchemeDescribe, NKikimrClient::TSchemeDescribe, MTYPE_CLIENT_FLAT_DESCRIBE_REQUEST> {};
 struct TBusOldFlatDescribeRequest : TBusMessage<TBusOldFlatDescribeRequest, NKikimrClient::TSchemeDescribe, MTYPE_CLIENT_OLD_FLAT_DESCRIBE_REQUEST> {};
 struct TBusOldFlatDescribeResponse : TBusMessage<TBusOldFlatDescribeResponse, NKikimrClient::TFlatDescribeResponse, MTYPE_CLIENT_OLD_FLAT_DESCRIBE_RESPONSE> {};
-struct TBusBsTestLoadRequest : TBusMessage<TBusBsTestLoadRequest, NKikimrClient::TBsTestLoadRequest, MTYPE_CLIENT_LOAD_REQUEST> {};
-struct TBusBsTestLoadResponse : TBusMessage<TBusBsTestLoadResponse, NKikimrClient::TBsTestLoadResponse, MTYPE_CLIENT_LOAD_RESPONSE> {};
-struct TBusBsGetRequest : TBusMessage<TBusBsGetRequest, NKikimrClient::TBsGetRequest, MTYPE_CLIENT_GET_REQUEST> {};
-struct TBusBsGetResponse : TBusMessage<TBusBsGetResponse, NKikimrClient::TBsGetResponse, MTYPE_CLIENT_GET_RESPONSE> {};
 struct TBusDbSchema : TBusMessage<TBusDbSchema, NKikimrClient::TJSON, MTYPE_CLIENT_DB_SCHEMA> {};
 struct TBusDbOperation : TBusMessage<TBusDbOperation, NKikimrClient::TJSON, MTYPE_CLIENT_DB_OPERATION> {};
 struct TBusDbResponse : TBusMessage<TBusDbResponse, NKikimrClient::TJSON, MTYPE_CLIENT_DB_RESPONSE> {};
@@ -198,11 +187,8 @@ public:
         RegisterType(new TBusResponse);
         RegisterType(new TBusFakeConfigDummy);
         RegisterType(new TBusSchemeInitRoot);
-        RegisterType(new TBusBSAdm);
         RegisterType(new TBusTypesRequest);
         RegisterType(new TBusTypesResponse);
-        RegisterType(new TBusMessageBusTraceRequest);
-        RegisterType(new TBusMessageBusTraceStatus);
         RegisterType(new TBusHiveCreateTablet);
         RegisterType(new TBusOldHiveCreateTablet);
         RegisterType(new TBusHiveCreateTabletResult);
@@ -223,10 +209,6 @@ public:
         RegisterType(new TBusSchemeDescribe);
         RegisterType(new TBusOldFlatDescribeRequest);
         RegisterType(new TBusOldFlatDescribeResponse);
-        RegisterType(new TBusBsTestLoadRequest);
-        RegisterType(new TBusBsTestLoadResponse);
-        RegisterType(new TBusBsGetRequest);
-        RegisterType(new TBusBsGetResponse);
         RegisterType(new TBusDbSchema);
         RegisterType(new TBusDbOperation);
         RegisterType(new TBusDbResponse);
@@ -264,12 +246,6 @@ class IPersQueueGetReadSessionsInfoWorkerFactory;
 IMessageBusServer* CreateMsgBusServer(
     NBus::TBusMessageQueue *queue,
     const NBus::TBusServerSessionConfig &config,
-    ui32 bindPort = TProtocol::DefaultPort
-);
-IMessageBusServer* CreateMsgBusTracingServer(
-    NBus::TBusMessageQueue *queue,
-    const NBus::TBusServerSessionConfig &config,
-    const TString &tracePath,
     ui32 bindPort = TProtocol::DefaultPort
 );
 

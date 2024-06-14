@@ -1,7 +1,7 @@
 #include <ydb/core/fq/libs/config/protos/fq_config.pb.h>
 #include "proxy.h"
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/core/fq/libs/common/rows_proto_splitter.h>
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
@@ -11,10 +11,10 @@
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 
 #include <library/cpp/yson/node/node_io.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/protobuf/interop/cast.h>
 
 #include <ydb/core/fq/libs/control_plane_storage/control_plane_storage.h>
@@ -111,7 +111,8 @@ private:
         Finished = true;
         NYql::NDqProto::TQueryResponse queryResult(ev->Get()->Record);
 
-        *queryResult.MutableYson() = ResultBuilder->BuildYson(Head);
+        *queryResult.MutableYson() = ResultBuilder->BuildYson(std::move(Head));
+        Head.clear();
         if (!Issues.Empty()) {
             IssuesToMessage(Issues, queryResult.MutableIssues());
         }
@@ -271,10 +272,15 @@ private:
             return;
         }
 
-        auto& data = ev->Get()->Record.GetChannelData().GetData();
-        auto resultSet = ResultBuilder->BuildResultSet({data});
-        FreeSpace -= data.GetRaw().size();
-        OccupiedSpace += data.GetRaw().size();
+        NDq::TDqSerializedBatch data;
+        data.Proto = std::move(*ev->Get()->Record.MutableChannelData()->MutableData());
+        if (data.Proto.HasPayloadId()) {
+            data.Payload = ev->Get()->GetPayload(data.Proto.GetPayloadId());
+        }
+
+        FreeSpace -= data.Size();
+        OccupiedSpace += data.Size();
+        auto resultSet = ResultBuilder->BuildResultSet({ data });
 
         if (OccupiedSpace > ResultBytesLimit) {
             TIssues issues;
@@ -290,21 +296,22 @@ private:
         request.Sender = ev->Sender;
         request.ChannelId = ev->Get()->Record.GetChannelData().GetChannelId();
         request.SeqNo = ev->Get()->Record.GetSeqNo();
-        request.Size = data.GetRaw().size();
+        request.Size = data.Size();
 
         ConstructResults(resultSet, startRowIndex);
         SendResult();
 
+        Size += data.Size();
+        Rows += data.RowCount();
+
         if (!Truncated &&
-            (!AllResultsBytesLimit || Size + data.GetRaw().size() < *AllResultsBytesLimit)
-            && (!RowsLimitPerWrite || Rows + data.GetRows() < *RowsLimitPerWrite)) {
-            Head.push_back(data);
+            (!AllResultsBytesLimit || Size + data.Size() < *AllResultsBytesLimit)
+            && (!RowsLimitPerWrite || Rows + data.RowCount() < *RowsLimitPerWrite)) {
+            Head.push_back(std::move(data));
         } else {
             Truncated = true;
         }
 
-        Size += data.GetRaw().size();
-        Rows += data.GetRows();
         Cookie++;
     }
 
@@ -333,7 +340,7 @@ private:
     };
     THashMap<ui64, TRequest> Requests;
 
-    TVector<NYql::NDqProto::TData> Head;
+    TVector<NDq::TDqSerializedBatch> Head;
     bool Truncated = false;
     TMaybe<ui64> AllResultsBytesLimit = 10000;
     TMaybe<ui64> RowsLimitPerWrite = 1000;

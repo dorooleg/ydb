@@ -5,6 +5,7 @@
 #include <ydb/core/base/subdomain.h>
 #include <ydb/core/base/tablet_types.h>
 #include <ydb/core/base/domain.h>
+#include <ydb/core/driver_lib/run/config.h>
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 #include <ydb/public/lib/deprecated/client/msgbus_client.h>
 #include <ydb/core/client/server/grpc_server.h>
@@ -20,7 +21,9 @@
 #include <ydb/core/testlib/basics/runtime.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/protos/kesus.pb.h>
+#include <ydb/core/protos/table_service_config.pb.h>
 #include <ydb/core/kesus/tablet/events.h>
+#include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
 #include <ydb/core/security/ticket_parser.h>
 #include <ydb/core/base/grpc_service_factory.h>
 #include <ydb/core/persqueue/actor_persqueue_client_iface.h>
@@ -28,7 +31,7 @@
 #include <ydb/core/http_proxy/auth_factory.h>
 #include <ydb/library/accessor/accessor.h>
 
-#include <library/cpp/grpc/server/grpc_server.h>
+#include <ydb/library/grpc/server/grpc_server.h>
 
 #include <google/protobuf/text_format.h>
 
@@ -51,13 +54,13 @@ namespace Tests {
 
     constexpr const char* TestDomainName = "dc-1";
     const ui32 TestDomain = 1;
-    const ui64 DummyTablet1 = 0x840100;
-    const ui64 DummyTablet2 = 0x840101;
-    const ui64 Coordinator = 0x800001;
-    const ui64 Mediator = 0x810001;
-    const ui64 TxAllocator = 0x820001;
-    const ui64 SchemeRoot = 0x850100;
-    const ui64 Hive = 0xA001;
+    const ui64 DummyTablet1 = MakeTabletID(false, 0x840100);
+    const ui64 DummyTablet2 = MakeTabletID(false, 0x840101);
+    const ui64 Coordinator = MakeTabletID(false, 0x800001);
+    const ui64 Mediator = MakeTabletID(false, 0x810001);
+    const ui64 TxAllocator = MakeTabletID(false, 0x820001);
+    const ui64 SchemeRoot = MakeTabletID(false, 0x850100);
+    const ui64 Hive = MakeTabletID(false, 0xA001);
 
     struct TServerSetup {
         TString IpAddress;
@@ -76,10 +79,17 @@ namespace Tests {
     bool IsServerRedirected();
     TServerSetup GetServerSetup();
 
-    ui64 ChangeDomain(ui64 tabletId, ui32 domainUid);
-    ui64 ChangeStateStorage(ui64 tabletId, ui32 ssUid);
-    NMiniKQL::IFunctionRegistry* DefaultFrFactory(const NScheme::TTypeRegistry& typeRegistry);
+    inline ui64 ChangeDomain(ui64 tabletId, ui32 id) {
+        const ui64 mask = static_cast<ui64>(0xfff) << 44;
+        return (tabletId & ~mask) | static_cast<ui64>(id & 0xfff) << 44;
+    }
 
+    inline ui64 ChangeStateStorage(ui64 tabletId, ui32 id) {
+        const ui64 mask = static_cast<ui64>(0xff) << 56;
+        return (tabletId & ~mask) | static_cast<ui64>(id & 0xff) << 56;
+    }
+
+    NMiniKQL::IFunctionRegistry* DefaultFrFactory(const NScheme::TTypeRegistry& typeRegistry);
 
     struct TServerSettings: public TThrRefBase, public TTestFeatureFlagsHolder<TServerSettings> {
         static constexpr ui64 BOX_ID = 999;
@@ -94,6 +104,7 @@ namespace Tests {
 
         ui16 Port;
         ui16 GrpcPort = 0;
+        int GrpcMaxMessageSize = 0;  // 0 - default (4_MB), -1 - no limit
         NKikimrProto::TAuthConfig AuthConfig;
         NKikimrPQ::TPQConfig PQConfig;
         NKikimrPQ::TPQClusterDiscoveryConfig PQClusterDiscoveryConfig;
@@ -114,6 +125,7 @@ namespace Tests {
         TLoggerInitializer LoggerInitializer;
         TStoragePoolKinds StoragePoolTypes;
         TVector<NKikimrKqp::TKqpSetting> KqpSettings;
+        bool EnableForceFollowers = false;
         bool EnableConsole = true;
         bool EnableNodeBroker = false;
         bool EnableConfigsDispatcher = true;
@@ -123,7 +135,8 @@ namespace Tests {
         TDuration KeepSnapshotTimeout = TDuration::Zero();
         ui64 ChangesQueueItemsLimit = 0;
         ui64 ChangesQueueBytesLimit = 0;
-        NKikimrConfig::TAppConfig AppConfig;
+        std::shared_ptr<NKikimrConfig::TAppConfig> AppConfig;
+        std::shared_ptr<TKikimrRunConfig> KikimrRunConfig;
         NKikimrConfig::TCompactionConfig CompactionConfig;
         TMap<ui32, TString> NodeKeys;
         ui64 DomainPlanResolution = 0;
@@ -133,11 +146,17 @@ namespace Tests {
         bool EnableMetering = false;
         TString MeteringFilePath;
         TString AwsRegion;
+        NKqp::IKqpFederatedQuerySetupFactory::TPtr FederatedQuerySetupFactory = std::make_shared<NKqp::TKqpFederatedQuerySetupFactoryNoop>();
+        NYql::ISecuredServiceAccountCredentialsFactory::TPtr CredentialsFactory;
+        NMiniKQL::TComputationNodeFactory ComputationFactory;
+        NYql::IYtGateway::TPtr YtGateway;
+        bool InitializeFederatedQuerySetupFactory = false;
 
         std::function<IActor*(const NKikimrProto::TAuthConfig&)> CreateTicketParser = NKikimr::CreateTicketParser;
         std::shared_ptr<TGrpcServiceFactory> GrpcServiceFactory;
 
         TServerSettings& SetGrpcPort(ui16 value) { GrpcPort = value; return *this; }
+        TServerSettings& SetGrpcMaxMessageSize(int value) { GrpcMaxMessageSize = value; return *this; }
         TServerSettings& SetSupportsRedirect(bool value) { SupportsRedirect = value; return *this; }
         TServerSettings& SetTracePath(const TString& value) { TracePath = value; return *this; }
         TServerSettings& SetDomain(ui32 value) { Domain = value; return *this; }
@@ -158,9 +177,11 @@ namespace Tests {
         TServerSettings& SetEnableNodeBroker(bool value) { EnableNodeBroker = value; return *this; }
         TServerSettings& SetEnableConfigsDispatcher(bool value) { EnableConfigsDispatcher = value; return *this; }
         TServerSettings& SetUseRealThreads(bool value) { UseRealThreads = value; return *this; }
-        TServerSettings& SetAppConfig(const NKikimrConfig::TAppConfig value) { AppConfig = value; return *this; }
+        TServerSettings& SetAppConfig(const NKikimrConfig::TAppConfig& value) { AppConfig = std::make_shared<NKikimrConfig::TAppConfig>(value); return *this; }
+        TServerSettings& InitKikimrRunConfig() { KikimrRunConfig = std::make_shared<TKikimrRunConfig>(*AppConfig); return *this; }
         TServerSettings& SetKeyFor(ui32 nodeId, TString keyValue) { NodeKeys[nodeId] = keyValue; return *this; }
         TServerSettings& SetEnableKqpSpilling(bool value) { EnableKqpSpilling = value; return *this; }
+        TServerSettings& SetEnableForceFollowers(bool value) { EnableForceFollowers = value; return *this; }
         TServerSettings& SetDomainPlanResolution(ui64 resolution) { DomainPlanResolution = resolution; return *this; }
         TServerSettings& SetFeatureFlags(const NKikimrConfig::TFeatureFlags& value) { FeatureFlags = value; return *this; }
         TServerSettings& SetCompactionConfig(const NKikimrConfig::TCompactionConfig& value) { CompactionConfig = value; return *this; }
@@ -172,6 +193,11 @@ namespace Tests {
         TServerSettings& SetChangesQueueBytesLimit(ui64 value) { ChangesQueueBytesLimit = value; return *this; }
         TServerSettings& SetMeteringFilePath(const TString& path) { EnableMetering = true; MeteringFilePath = path; return *this; }
         TServerSettings& SetAwsRegion(const TString& value) { AwsRegion = value; return *this; }
+        TServerSettings& SetFederatedQuerySetupFactory(NKqp::IKqpFederatedQuerySetupFactory::TPtr value) { FederatedQuerySetupFactory = value; return *this; }
+        TServerSettings& SetCredentialsFactory(NYql::ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory) { CredentialsFactory = std::move(credentialsFactory); return *this; }
+        TServerSettings& SetComputationFactory(NMiniKQL::TComputationNodeFactory computationFactory) { ComputationFactory = std::move(computationFactory); return *this; }
+        TServerSettings& SetYtGateway(NYql::IYtGateway::TPtr ytGateway) { YtGateway = std::move(ytGateway); return *this; }
+        TServerSettings& SetInitializeFederatedQuerySetupFactory(bool value) { InitializeFederatedQuerySetupFactory = value; return *this; }
         TServerSettings& SetPersQueueGetReadSessionsInfoWorkerFactory(
             std::shared_ptr<NKikimr::NMsgBusProxy::IPersQueueGetReadSessionsInfoWorkerFactory> factory
         ) {
@@ -205,8 +231,15 @@ namespace Tests {
             , PQConfig(pqConfig)
         {
             AddStoragePool("test", "/" + DomainName + ":test");
-            AppConfig.MutableTableServiceConfig()->MutableResourceManager()->MutableShardsScanningPolicy()->SetParallelScanningAvailable(true);
-            AppConfig.MutableTableServiceConfig()->MutableResourceManager()->MutableShardsScanningPolicy()->SetShardSplitFactor(16);
+            AppConfig = std::make_shared<NKikimrConfig::TAppConfig>();
+            AppConfig->MutableTableServiceConfig()->MutableResourceManager()->MutableShardsScanningPolicy()->SetParallelScanningAvailable(true);
+            AppConfig->MutableTableServiceConfig()->MutableResourceManager()->MutableShardsScanningPolicy()->SetShardSplitFactor(16);
+            AppConfig->MutableHiveConfig()->SetWarmUpBootWaitingPeriod(10);
+            AppConfig->MutableHiveConfig()->SetMaxNodeUsageToKick(100);
+            AppConfig->MutableHiveConfig()->SetMinCounterScatterToBalance(100);
+            AppConfig->MutableHiveConfig()->SetMinScatterToBalance(100);
+            AppConfig->MutableHiveConfig()->SetObjectImbalanceToBalance(100);
+            AppConfig->MutableColumnShardConfig()->SetDisabledOnSchemeShard(false);
             FeatureFlags.SetEnableSeparationComputeActorsFromRead(true);
         }
 
@@ -216,14 +249,13 @@ namespace Tests {
         YDB_FLAG_ACCESSOR(EnableMetadataProvider, true);
         YDB_FLAG_ACCESSOR(EnableBackgroundTasks, false);
         YDB_FLAG_ACCESSOR(EnableExternalIndex, false);
-        
     };
 
     class TServer : public TThrRefBase, TMoveOnly {
     protected:
         void SetupStorage();
 
-        void SetupMessageBus(ui16 port, const TString &tracePath);
+        void SetupMessageBus(ui16 port);
         void SetupDomains(TAppPrepare&);
         void CreateBootstrapTablets();
         void SetupLocalConfig(TLocalConfig &localConfig, const NKikimr::TAppData &appData);
@@ -246,7 +278,7 @@ namespace Tests {
         TServer& operator =(TServer&& server) = default;
         virtual ~TServer();
 
-        void EnableGRpc(const NGrpc::TServerOptions& options);
+        void EnableGRpc(const NYdbGrpc::TServerOptions& options);
         void EnableGRpc(ui16 port);
         void SetupRootStoragePools(const TActorId sender) const;
 
@@ -269,6 +301,7 @@ namespace Tests {
         const NScheme::TTypeRegistry* GetTypeRegistry();
         const NMiniKQL::IFunctionRegistry* GetFunctionRegistry();
         const NYdb::TDriver& GetDriver() const;
+        const NYdbGrpc::TGRpcServer& GetGRpcServer() const;
 
         ui32 StaticNodes() const {
             return Settings->NodeCount;
@@ -278,17 +311,19 @@ namespace Tests {
         }
         void SetupDynamicLocalService(ui32 nodeIdx, const TString &tenantName);
         void DestroyDynamicLocalService(ui32 nodeIdx);
+        void WaitFinalization();
 
     protected:
         const TServerSettings::TConstPtr Settings;
         const bool UseStoragePools;
 
+        std::shared_ptr<void> KqpLoggerScope;
         THolder<TTestActorRuntime> Runtime;
         THolder<NYdb::TDriver> Driver;
         TIntrusivePtr<NBus::TBusMessageQueue> Bus;
         const NBus::TBusServerSessionConfig BusServerSessionConfig; //BusServer hold const & on config
         TAutoPtr<NMsgBusProxy::IMessageBusServer> BusServer;
-        std::unique_ptr<NGrpc::TGRpcServer> GRpcServer;
+        std::unique_ptr<NYdbGrpc::TGRpcServer> GRpcServer;
         TIntrusivePtr<::NMonitoring::TDynamicCounters> GRpcServerRootCounters;
         NFq::IYqSharedResources::TPtr YqSharedResources;
     };
@@ -370,10 +405,6 @@ namespace Tests {
         TAutoPtr<NBus::TBusMessage> InitRootSchemeWithReply(const TString& root);
         void InitRootScheme();
         void InitRootScheme(const TString& root);
-
-        void ExecuteTraceCommand(NKikimrClient::TMessageBusTraceRequest::ECommand command, const TString &path = TString());
-        TString StartTrace(const TString &path);
-        void StopTrace();
 
         // Flat DB operations
         NMsgBusProxy::EResponseStatus WaitCreateTx(TTestActorRuntime* runtime, const TString& path, TDuration timeout);
@@ -480,16 +511,20 @@ namespace Tests {
         THolder<NKesus::TEvKesus::TEvGetConfigResult> GetKesusConfig(TTestActorRuntime* runtime, const TString& kesusPath);
 
     protected:
-        template <class TMsg>
-        TString PrintResult(NBus::TBusMessage* msg, size_t maxSz = 1000) {
-            auto res = dynamic_cast<TMsg*>(msg);
+        TString PrintToString(const ::google::protobuf::Message& msg, size_t maxSz = 1000) {
             TString s;
-            ::google::protobuf::TextFormat::PrintToString(res->Record, &s);
+            ::google::protobuf::TextFormat::PrintToString(msg, &s);
             if (s.size() > maxSz) {
                 s.resize(maxSz);
                 s += "...\n(TRUNCATED)\n";
             }
             return s;
+        }
+
+        template <class TMsg>
+        TString PrintToString(const NBus::TBusMessage* msg, size_t maxSz = 1000) {
+            auto res = dynamic_cast<const TMsg*>(msg);
+            return PrintToString(res->Record, maxSz);
         }
 
         // Waits for kikimr server to become ready
@@ -530,7 +565,7 @@ namespace Tests {
 
         ui32 NodeIdToIndex(TTestActorRuntime* runtime, ui32 id) {
             ui32 offset = runtime->GetNodeId(0);
-            Y_VERIFY(id >= offset, "NodeId# %" PRIu32 " offset# %" PRIu32, id, offset);
+            Y_ABORT_UNLESS(id >= offset, "NodeId# %" PRIu32 " offset# %" PRIu32, id, offset);
             return id - offset;
         }
 

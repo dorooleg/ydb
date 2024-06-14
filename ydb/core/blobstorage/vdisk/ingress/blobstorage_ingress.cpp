@@ -18,23 +18,23 @@ namespace NKikimr {
     TIngressCachePtr TIngressCache::Create(std::shared_ptr<TBlobStorageGroupInfo::TTopology> top, const TVDiskIdShort &vdisk) {
         // vdiskOrderNum
         ui32 vdiskOrderNum = top->GetOrderNumber(vdisk);
-        Y_VERIFY(vdiskOrderNum < MaxVDisksInGroup);
+        Y_ABORT_UNLESS(vdiskOrderNum < MaxVDisksInGroup);
 
         // totalVDisks
         ui32 totalVDisks = top->GetTotalVDisksNum();
-        Y_VERIFY(totalVDisks <= MaxVDisksInGroup);
+        Y_ABORT_UNLESS(totalVDisks <= MaxVDisksInGroup);
 
         // domainsNum and disksInDomain
         ui32 domainsNum = top->GetTotalFailDomainsNum();
         ui32 disksInDomain = top->GetNumVDisksPerFailDomain();
 
-        Y_VERIFY(domainsNum * disksInDomain == totalVDisks, "domainsNum# %" PRIu32 " disksInDomain# %" PRIu32
+        Y_ABORT_UNLESS(domainsNum * disksInDomain == totalVDisks, "domainsNum# %" PRIu32 " disksInDomain# %" PRIu32
                 " totalVDisks# %" PRIu32 " erasure# %s", domainsNum, disksInDomain, totalVDisks,
                 TBlobStorageGroupType::ErasureName[top->GType.GetErasure()].data());
 
         // handoff
         ui32 handoff = top->GType.Handoff();
-        Y_VERIFY(handoff < domainsNum);
+        Y_ABORT_UNLESS(handoff < domainsNum);
 
         // barrierIngressValueMask
         ui32 barrierIngressValueMask = (1ull << totalVDisks) - 1;
@@ -73,9 +73,9 @@ namespace NKikimr {
     TShiftedMainBitVec local(dataPtr, start, (start + totalParts)); \
     start += totalParts;    \
     ui32 handoffNum = (gtype).Handoff(); \
-    Y_VERIFY_DEBUG(handoffNum <= MaxHandoffNodes); \
+    Y_DEBUG_ABORT_UNLESS(handoffNum <= MaxHandoffNodes); \
     const ui32 handoffVectorBits = totalParts * 2; \
-    Y_VERIFY_DEBUG(start + handoffNum * handoffVectorBits <= sizeof(data) * NMatrix::BitsInByte); \
+    Y_DEBUG_ABORT_UNLESS(start + handoffNum * handoffVectorBits <= sizeof(data) * NMatrix::BitsInByte); \
     TShiftedHandoffBitVec handoff[MaxHandoffNodes]; \
     { \
         for (unsigned i = 0; i < handoffNum; i++) { \
@@ -105,7 +105,7 @@ namespace NKikimr {
         ui8& b = reinterpret_cast<ui8&>(Data);
         switch (ingressMode) {
             case EMode::GENERIC:
-                Y_VERIFY_DEBUG((b >> 6) == 0);
+                Y_DEBUG_ABORT_UNLESS((b >> 6) == 0);
                 b |= ui8(mode) << 6;
                 break;
             case EMode::MIRROR3OF4:
@@ -155,7 +155,7 @@ namespace NKikimr {
             case EMode::GENERIC: {
                 TIngress ingress;
                 const ui8 subgroupSz = gtype.BlobSubgroupSize();
-                Y_VERIFY_DEBUG(subgroupSz <= MaxNodesPerBlob);
+                Y_DEBUG_ABORT_UNLESS(subgroupSz <= MaxNodesPerBlob);
                 SETUP_VECTORS(ingress.Data, gtype);
                 if (0 < id.PartId() && id.PartId() < totalParts + 1u) {
                     // good
@@ -216,10 +216,10 @@ namespace NKikimr {
     TIngress::TPairOfVectors TIngress::HandoffParts(const TBlobStorageGroupInfo::TTopology *top,
                                                     const TVDiskIdShort &vdisk,
                                                     const TLogoBlobID &id) const {
-        Y_VERIFY(IngressMode(top->GType) == EMode::GENERIC);
+        Y_ABORT_UNLESS(IngressMode(top->GType) == EMode::GENERIC);
 
         // FIXME: think how we merge ingress (especially for handoff replicas) (when we delete parts)
-        Y_VERIFY_DEBUG(id.PartId() == 0);
+        Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
         SETUP_VECTORS(Data, top->GType);
 
         ui8 nodeId = top->GetIdxInSubgroup(vdisk, id.Hash());
@@ -228,7 +228,7 @@ namespace NKikimr {
             return TPairOfVectors(emptyVec, emptyVec);
         } else {
             ui8 handoffNodeId = nodeId - totalParts;
-            Y_VERIFY_DEBUG(handoffNodeId < handoffNum);
+            Y_DEBUG_ABORT_UNLESS(handoffNodeId < handoffNum);
 
             TVectorType m = handoff[handoffNodeId].ToVector(); // map of handoff replicas on this node
             TVectorType mainVec = main.ToVector();
@@ -236,6 +236,42 @@ namespace NKikimr {
             TVectorType toDel = m & mainVec;    // what we can delete
             return TPairOfVectors(toMove, toDel);
         }
+    }
+
+    NMatrix::TVectorType TIngress::GetVDiskHandoffVec(const TBlobStorageGroupInfo::TTopology *top,
+                                                 const TVDiskIdShort &vdisk,
+                                                 const TLogoBlobID &id) const {
+        Y_ABORT_UNLESS(IngressMode(top->GType) == EMode::GENERIC);
+        Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
+        SETUP_VECTORS(Data, top->GType);
+
+        ui8 nodeId = top->GetIdxInSubgroup(vdisk, id.Hash());
+
+        if (nodeId < totalParts) {
+            return TVectorType(0, totalParts);
+        }
+
+        ui8 handoffNodeId = nodeId - totalParts;
+        Y_DEBUG_ABORT_UNLESS(handoffNodeId < handoffNum);
+        return handoff[handoffNodeId].ToVector();
+    }
+
+    NMatrix::TVectorType TIngress::GetVDiskHandoffDeletedVec(const TBlobStorageGroupInfo::TTopology *top,
+                                                 const TVDiskIdShort &vdisk,
+                                                 const TLogoBlobID &id) const {
+        Y_ABORT_UNLESS(IngressMode(top->GType) == EMode::GENERIC);
+        Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
+        SETUP_VECTORS(Data, top->GType);
+
+        ui8 nodeId = top->GetIdxInSubgroup(vdisk, id.Hash());
+
+        if (nodeId < totalParts) {
+            return TVectorType(0, totalParts);
+        }
+
+        ui8 handoffNodeId = nodeId - totalParts;
+        Y_DEBUG_ABORT_UNLESS(handoffNodeId < handoffNum);
+        return handoff[handoffNodeId].DeletedPartsVector();
     }
 
     NMatrix::TVectorType TIngress::LocalParts(TBlobStorageGroupType gtype) const {
@@ -251,7 +287,7 @@ namespace NKikimr {
 
     NMatrix::TVectorType TIngress::KnownParts(TBlobStorageGroupType gtype, ui8 nodeId) const {
         const ui8 numParts = gtype.TotalPartCount();
-        Y_VERIFY_DEBUG(nodeId < gtype.BlobSubgroupSize());
+        Y_DEBUG_ABORT_UNLESS(nodeId < gtype.BlobSubgroupSize());
         switch (IngressMode(gtype)) {
             case EMode::GENERIC: {
                 SETUP_VECTORS(Data, gtype);
@@ -270,31 +306,34 @@ namespace NKikimr {
     }
 
     TVDiskIdShort TIngress::GetMainReplica(const TBlobStorageGroupInfo::TTopology *top, const TLogoBlobID &id) {
-        Y_VERIFY(IngressMode(top->GType) == EMode::GENERIC);
+        Y_ABORT_UNLESS(IngressMode(top->GType) == EMode::GENERIC);
 
-        Y_VERIFY_DEBUG(id.PartId() != 0);
+        Y_DEBUG_ABORT_UNLESS(id.PartId() != 0);
         ui8 partId = id.PartId();
         return top->GetVDiskInSubgroup(partId - 1, id.Hash());
     }
 
     void TIngress::DeleteHandoff(const TBlobStorageGroupInfo::TTopology *top,
                                  const TVDiskIdShort &vdisk,
-                                 const TLogoBlobID &id) {
-        Y_VERIFY(IngressMode(top->GType) == EMode::GENERIC);
+                                 const TLogoBlobID &id,
+                                 bool deleteLocal) {
+        Y_ABORT_UNLESS(IngressMode(top->GType) == EMode::GENERIC);
 
-        Y_VERIFY_DEBUG(id.PartId() != 0);
+        Y_DEBUG_ABORT_UNLESS(id.PartId() != 0);
         SETUP_VECTORS(Data, top->GType);
 
         ui8 nodeId = top->GetIdxInSubgroup(vdisk, id.Hash());
-        Y_VERIFY(nodeId >= totalParts, "DeleteHandoff: can't delete main replica; nodeId# %u totalParts# %u vdisk# %s "
+        Y_ABORT_UNLESS(nodeId >= totalParts, "DeleteHandoff: can't delete main replica; nodeId# %u totalParts# %u vdisk# %s "
                "id# %s", unsigned(nodeId), unsigned(totalParts), vdisk.ToString().data(), id.ToString().data());
 
         ui8 handoffNodeId = nodeId - totalParts;
-        Y_VERIFY_DEBUG(handoffNodeId < handoffNum);
+        Y_DEBUG_ABORT_UNLESS(handoffNodeId < handoffNum);
 
         ui8 i = id.PartId() - 1u;
-        local.Clear(i);                     // delete local
         handoff[handoffNodeId].Delete(i);   // delete handoff
+        if (deleteLocal) {
+            local.Clear(i);
+        }
     }
 
     // Make a copy of ingress w/o local bits
@@ -384,7 +423,7 @@ namespace NKikimr {
     }
 
     TString TIngress::PrintVDisksForLogoBlob(const TBlobStorageGroupInfo *info, const TLogoBlobID &id) {
-        Y_VERIFY_DEBUG(id.PartId() == 0);
+        Y_DEBUG_ABORT_UNLESS(id.PartId() == 0);
         TBlobStorageGroupInfo::TVDiskIds outVDisks;
         info->PickSubgroup(id.Hash(), &outVDisks, nullptr);
         TStringStream str;
@@ -405,7 +444,7 @@ namespace NKikimr {
                                       const TLogoBlobID& id,
                                       NMatrix::TVectorType recoveredParts) {
         TIngress res;
-        Y_VERIFY(id.PartId() == 0);
+        Y_ABORT_UNLESS(id.PartId() == 0);
         for (ui8 i = recoveredParts.FirstPosition(); i != recoveredParts.GetSize(); i = recoveredParts.NextPosition(i)) {
             res.Merge(*CreateIngressWithLocal(top, vdisk, TLogoBlobID(id, i + 1)));
         }
@@ -505,7 +544,7 @@ namespace NKikimr {
     }
 
     void TBarrierIngress::SetUp(TBarrierIngress *ingress, ui8 id) {
-        Y_VERIFY_DEBUG(id < MaxVDisksInGroup);
+        Y_DEBUG_ABORT_UNLESS(id < MaxVDisksInGroup);
         ingress->Data = (1u << ui32(id));
     }
 
@@ -516,7 +555,7 @@ namespace NKikimr {
 
     void TBarrierIngress::CheckBlobStorageGroup(const TBlobStorageGroupInfo *info) {
         const ui32 num = info->GetTotalVDisksNum();
-        Y_VERIFY(num <= MaxVDisksInGroup, "Number of vdisks in group is too large; MaxVDisksInGroup# %" PRIu32
+        Y_ABORT_UNLESS(num <= MaxVDisksInGroup, "Number of vdisks in group is too large; MaxVDisksInGroup# %" PRIu32
                " actualNum# %" PRIu32, MaxVDisksInGroup, num);
     }
 

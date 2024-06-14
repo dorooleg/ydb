@@ -3,8 +3,9 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "service_table.h"
+#include "audit_dml_operations.h"
 
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
@@ -50,11 +51,10 @@ private:
         SetAuthToken(ev, *Request_);
         SetDatabase(ev, *Request_);
 
-        NYql::TIssues issues;
-        if (CheckSession(req->session_id(), issues)) {
+        if (CheckSession(req->session_id(), Request_.get())) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
         }
 
         if (traceId) {
@@ -70,7 +70,7 @@ private:
         ev->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_ROLLBACK_TX);
         ev->Record.MutableRequest()->MutableTxControl()->set_tx_id(req->tx_id());
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
@@ -81,6 +81,9 @@ private:
             const auto& kqpResponse = record.GetResponse();
             const auto& issueMessage = kqpResponse.GetQueryIssues();
 
+            // RollbackTransaction does not have specific Result, use RollbackTransactionResponse as no-op type substitute
+            AuditContextAppend(Request_.get(), *GetProtoRequest(), Ydb::Table::RollbackTransactionResponse());
+
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, ctx);
         } else {
             return OnGenericQueryResponseError(record, ctx);
@@ -90,7 +93,10 @@ private:
     void ReplyWithResult(StatusIds::StatusCode status,
                          const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message,
                          const TActorContext& ctx) {
-        Request_->SendResult(status, message);
+        NYql::TIssues issues;
+        IssuesFromMessage(message, issues);
+        Request_->RaiseIssues(issues);
+        Request_->ReplyWithYdbStatus(status);
         Die(ctx);
     }
 };

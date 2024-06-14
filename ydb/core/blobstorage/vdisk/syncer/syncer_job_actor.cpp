@@ -6,7 +6,8 @@
 #include <ydb/core/blobstorage/vdisk/anubis_osiris/blobstorage_anubisrunner.h>
 #include <ydb/core/blobstorage/vdisk/synclog/blobstorage_synclogmsgreader.h>
 #include <ydb/core/base/interconnect_channels.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/random_provider/random_provider.h>
 
 using namespace NKikimrServices;
 using namespace NKikimr::NSyncer;
@@ -58,7 +59,7 @@ namespace NKikimr {
 
         // function for sending a message
         void SendOutcomeMsg(std::unique_ptr<IEventBase> &&ev, TActorId &&to, const TActorContext &ctx) {
-            Y_VERIFY(ev && to != TActorId());
+            Y_ABORT_UNLESS(ev && to != TActorId());
             // subscribe on Interconnect Session/Message tracking
             ui32 flags = IEventHandle::FlagTrackDelivery | IEventHandle::FlagSubscribeOnSession;
             const auto channel = TInterconnectChannels::IC_BLOBSTORAGE_SYNCER;
@@ -131,7 +132,7 @@ namespace NKikimr {
 
             // initiate requests
             TSjOutcome outcome = Task->NextRequest();
-            Y_VERIFY(!outcome.Die && outcome.Ev); // can't die in this case and must have event
+            Y_ABORT_UNLESS(!outcome.Die && outcome.Ev); // can't die in this case and must have event
             Handle(std::move(outcome), ctx);
 
             // state function

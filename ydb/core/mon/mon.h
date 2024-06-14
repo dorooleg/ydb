@@ -2,13 +2,20 @@
 
 #include <library/cpp/monlib/service/monservice.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
+#include <library/cpp/monlib/service/pages/resources/css_mon_page.h>
+#include <library/cpp/monlib/service/pages/resources/fonts_mon_page.h>
+#include <library/cpp/monlib/service/pages/resources/js_mon_page.h>
 #include <library/cpp/monlib/service/pages/tablesorter/css_mon_page.h>
 #include <library/cpp/monlib/service/pages/tablesorter/js_mon_page.h>
 
-#include <library/cpp/actors/core/actor.h>
-#include <library/cpp/actors/core/mon.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/mon.h>
 
 namespace NActors {
+
+IEventHandle* GetAuthorizeTicketHandle(const NActors::TActorId& owner, const TString& ticket);
+IEventHandle* SelectAuthorizationScheme(const NActors::TActorId& owner, NMonitoring::IMonHttpRequest& request);
+IEventHandle* GetAuthorizeTicketResult(const NActors::TActorId& owner);
 
 class TActorSystem;
 struct TActorId;
@@ -55,6 +62,7 @@ public:
         const TString& title, bool preTag, TActorSystem* actorSystem, const TActorId& actorId, bool useAuth = true, bool sortPages = true);
     virtual NMonitoring::IMonPage* RegisterCountersPage(const TString& path, const TString& title, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters) = 0;
     virtual NMonitoring::IMonPage* FindPage(const TString& relPath) = 0;
+    virtual void RegisterHandler(const TString& path, const TActorId& handler) = 0;
 };
 
 } // NActors

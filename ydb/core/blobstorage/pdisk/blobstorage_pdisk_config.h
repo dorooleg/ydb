@@ -6,6 +6,11 @@
 #include <ydb/core/blobstorage/base/vdisk_priorities.h>
 #include <ydb/core/control/immediate_control_board_wrapper.h>
 #include <ydb/core/protos/blobstorage.pb.h>
+#include <ydb/core/protos/blobstorage_config.pb.h>
+#include <ydb/core/protos/blobstorage_disk.pb.h>
+#include <ydb/core/protos/blobstorage_pdisk_config.pb.h>
+#include <ydb/core/protos/blobstorage_disk_color.pb.h>
+#include <ydb/core/protos/feature_flags.pb.h>
 #include <ydb/core/protos/config.pb.h>
 
 #include <ydb/library/pdisk_io/drivedata.h>
@@ -197,11 +202,12 @@ struct TPDiskConfig : public TThrRefBase {
         DriveModelBulkWrieBlockSize = choose(64'000, 1 << 20, 2 << 20);
         DriveModelTrimSpeedBps = choose(6ull << 30, 6ull << 30, 0);
         ReorderingMs = choose(1, 7, 50);
-        DeviceInFlight = choose(128, 4, 4);
+        const ui64 hddInFlight = FeatureFlags.GetEnablePDiskHighHDDInFlight() ? 32 : 4;
+        DeviceInFlight = choose(128, 4, hddInFlight);
         CostLimitNs = choose(500'000ull, 20'000'000ull, 50'000'000ull);
 
         UseSpdkNvmeDriver = Path.StartsWith("PCIe:");
-        Y_VERIFY(!UseSpdkNvmeDriver || deviceType == NPDisk::DEVICE_TYPE_NVME,
+        Y_ABORT_UNLESS(!UseSpdkNvmeDriver || deviceType == NPDisk::DEVICE_TYPE_NVME,
                 "SPDK NVMe driver can be used only with NVMe devices!");
     }
 

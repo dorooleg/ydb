@@ -579,6 +579,7 @@ namespace {
         if (!settings) {
             return;
         }
+
         Cout << Endl << "Ttl settings ";
         switch (settings->GetMode()) {
         case NTable::TTtlSettings::EMode::DateTypeColumn:
@@ -603,6 +604,10 @@ namespace {
             Cout << "(unknown):" << Endl
                 << colors.RedColor() << "Unknown ttl settings mode. Please update your version of YDB cli"
                 << colors.OldColor() << Endl;
+        }
+
+        if (settings->GetRunInterval()) {
+            Cout << "Run interval: " << settings->GetRunInterval() << Endl;
         }
     }
 
@@ -853,6 +858,8 @@ void TCommandList::Config(TConfig& config) {
         .StoreTrue(&Recursive);
     config.Opts->AddCharOption('1', "List one object per line")
         .StoreTrue(&FromNewLine);
+    config.Opts->AddCharOption('m', "Multithread recursive request")
+        .StoreTrue(&Multithread);
     AddFormats(config, { EOutputFormat::Pretty, EOutputFormat::Json });
     config.SetFreeArgsMax(1);
     SetFreeArgTitle(0, "<path>", "Path to list");
@@ -872,6 +879,7 @@ int TCommandList::Run(TConfig& config) {
     ISchemePrinter::TSettings settings = {
         Path,
         Recursive,
+        Multithread,
         FromNewLine,
         FillSettings(NScheme::TListDirectorySettings()),
         FillSettings(NTable::TDescribeTableSettings().WithTableStatistics(true))
@@ -907,6 +915,7 @@ TCommandPermissions::TCommandPermissions()
     AddCommand(std::make_unique<TCommandPermissionSet>());
     AddCommand(std::make_unique<TCommandChangeOwner>());
     AddCommand(std::make_unique<TCommandPermissionClear>());
+    AddCommand(std::make_unique<TCommandPermissionList>());
 }
 
 TCommandPermissionGrant::TCommandPermissionGrant()
@@ -1094,6 +1103,36 @@ int TCommandPermissionClear::Run(TConfig& config) {
             )
         ).GetValueSync()
     );
+    return EXIT_SUCCESS;
+}
+
+TCommandPermissionList::TCommandPermissionList()
+    : TYdbOperationCommand("list", std::initializer_list<TString>(), "List permissions")
+{}
+
+void TCommandPermissionList::Config(TConfig& config) {
+    TYdbOperationCommand::Config(config);
+
+    config.SetFreeArgsNum(1);
+    SetFreeArgTitle(0, "<path>", "Path to list permissions for");
+}
+
+void TCommandPermissionList::Parse(TConfig& config) {
+    TClientCommand::Parse(config);
+    ParsePath(config, 0);
+}
+
+int TCommandPermissionList::Run(TConfig& config) {
+    TDriver driver = CreateDriver(config);
+    NScheme::TSchemeClient client(driver);
+    NScheme::TDescribePathResult result = client.DescribePath(
+        Path,
+        FillSettings(NScheme::TDescribePathSettings())
+    ).GetValueSync();
+    ThrowOnError(result);
+    NScheme::TSchemeEntry entry = result.GetEntry();
+    Cout << Endl;
+    PrintAllPermissions(entry.Owner, entry.Permissions, entry.EffectivePermissions);
     return EXIT_SUCCESS;
 }
 

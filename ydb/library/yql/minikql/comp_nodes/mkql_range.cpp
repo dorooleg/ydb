@@ -6,6 +6,7 @@
 #include <ydb/library/yql/minikql/mkql_type_builder.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 
+#include <queue>
 #include <algorithm>
 
 namespace NKikimr {
@@ -63,8 +64,8 @@ TRangeTypeInfo ExtractTypes(TType* rangeType) {
         auto type = rangeBoundaryTupleType->GetElementType(i);
         if (i % 2 == 1) {
             auto baseType = RemoveAllOptionals(type);
-            MKQL_ENSURE(type->IsOptional() && baseType->IsData(),
-                "Expecting (multiple) optional of Data at odd positions of range boundary tuple");
+            MKQL_ENSURE(type->IsOptional() && (baseType->IsData() || baseType->IsPg()),
+                "Expecting (multiple) optional of Data or Pg at odd positions of range boundary tuple");
         } else {
             MKQL_ENSURE(type->IsData() && static_cast<TDataType*>(type)->GetSchemeType() == NUdf::TDataType<i32>::Id,
                 "Expected i32 at even positions of range boundary tuple");
@@ -184,9 +185,8 @@ bool CanConvertToPointRange(const TExpandedRange& range, const TRangeTypeInfo& t
 
     // check for suitable type
     TType* baseType = RemoveAllOptionals(static_cast<TTupleType*>(typeInfo.BoundaryType)->GetElementType(lastCompIdx));
-    auto slot = static_cast<TDataType*>(baseType)->GetDataSlot();
-    Y_ENSURE(slot);
-    if (!(GetDataTypeInfo(*slot).Features & (NUdf::EDataTypeFeatures::IntegralType | NUdf::EDataTypeFeatures::DateType))) {
+    auto slot = baseType->IsData() ? static_cast<TDataType*>(baseType)->GetDataSlot() : TMaybe<EDataSlot>{};
+    if (!slot || !(GetDataTypeInfo(*slot).Features & (NUdf::EDataTypeFeatures::IntegralType | NUdf::EDataTypeFeatures::DateType))) {
         return false;
     }
 
@@ -214,11 +214,14 @@ bool CanConvertToPointRange(const TExpandedRange& range, const TRangeTypeInfo& t
         case EDataSlot::Uint64: return IsAdjacentNumericValues<ui64>(left, right);
 
         case EDataSlot::Date:     return IsAdjacentNumericValues<ui16>(left, right);
+        case EDataSlot::Date32:   return IsAdjacentNumericValues<i32>(left, right);
         case EDataSlot::Datetime: return IsAdjacentNumericValues<ui32>(left, right);
-        default:
-            Y_ENSURE(*slot == EDataSlot::Timestamp);
+        case EDataSlot::Timestamp: return IsAdjacentNumericValues<ui64>(left, right);
+        case EDataSlot::Datetime64: return IsAdjacentNumericValues<i64>(left, right);
+        case EDataSlot::Timestamp64: return IsAdjacentNumericValues<i64>(left, right);
+        default: break;
     }
-    return IsAdjacentNumericValues<ui64>(left, right);
+    MKQL_ENSURE(false, "Unsupported type: " << *slot);
 }
 
 bool RangeIsEmpty(const TExpandedRange& range, const TRangeTypeInfo& typeInfo) {
@@ -277,9 +280,8 @@ bool RangeCanMerge(const TExpandedRange& a, const TExpandedRange& b, const TRang
 
 class TRangeComputeBase {
 public:
-    TRangeComputeBase(TComputationMutables& mutables, TComputationNodePtrVector&& lists, std::vector<TRangeTypeInfo>&& typeInfos)
-        : TypeInfos(std::move(typeInfos))
-        , Lists(std::move(lists))
+    TRangeComputeBase(TComputationMutables&, TComputationNodePtrVector&& lists, std::vector<TRangeTypeInfo>&& typeInfos)
+        : Lists(std::move(lists)), TypeInfos(std::move(typeInfos))
     {
         Y_ENSURE(Lists.size() == TypeInfos.size());
         Y_ENSURE(!Lists.empty());
@@ -347,32 +349,27 @@ public:
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
         TUnboxedValueVector mergedLists;
         auto expandedLists = ExpandLists(ctx);
-        while (!expandedLists.empty()) {
-            TMaybe<size_t> argMin;
-            bool haveEmpty = false;
-            for (size_t i = 0; i < expandedLists.size(); ++i) {
-                if (expandedLists[i].empty()) {
-                    haveEmpty = true;
-                    continue;
-                }
-                auto& current = expandedLists[i].front();
-                if (!argMin || TypeInfos.front().RangeCompare->Less(current, expandedLists[*argMin].front())) {
-                    argMin = i;
-                }
-            }
-            if (argMin) {
-                auto& from = expandedLists[*argMin];
-                if (!RangeIsEmpty(ExpandRange(from.front()), TypeInfos.front())) {
-                    mergedLists.emplace_back(std::move(from.front()));
-                }
-                from.pop_front();
-                haveEmpty = haveEmpty || from.empty();
-            }
 
-            if (haveEmpty) {
-                expandedLists.erase(
-                    std::remove_if(expandedLists.begin(), expandedLists.end(), [](const auto& list) { return list.empty(); }),
-                    expandedLists.end());
+        auto comparator = [&](size_t l, size_t r) { return TypeInfos.front().RangeCompare->Less(expandedLists[r].front(), expandedLists[l].front()); };
+        std::priority_queue<size_t, std::vector<size_t>, decltype(comparator)> queue{comparator};
+        for (size_t i = 0; i < expandedLists.size(); ++i) {
+            if (!expandedLists[i].empty()) {
+                queue.push(i);
+            }
+        }
+
+        while (!queue.empty()) {
+            auto argMin = queue.top();
+            queue.pop();
+
+            auto& from = expandedLists[argMin];
+            if (!RangeIsEmpty(ExpandRange(from.front()), TypeInfos.front())) {
+                mergedLists.emplace_back(std::move(from.front()));
+            }
+            from.pop_front();
+
+            if (!from.empty()) {
+                queue.push(argMin);
             }
         }
 
@@ -499,10 +496,15 @@ public:
         }
         for (size_t i = 1; i < expandedLists.size(); ++i) {
             if (expandedLists[i].empty()) {
-                return ctx.HolderFactory.GetEmptyContainer();
+                return ctx.HolderFactory.GetEmptyContainerLazy();
             }
             if (!DoMultiply(ctx, limit, current, expandedLists[i], currentComponentsCompare, TypeInfos[i])) {
-                return FullRange(ctx);
+                if (i > 0) {
+                    PadInfs(ctx, current, i);
+                    break;
+                } else {
+                    return FullRange(ctx);
+                }
             }
         }
 
@@ -517,6 +519,24 @@ private:
     void RegisterDependencies() const final {
         DependsOn(Limit);
         std::for_each(Lists.cbegin(), Lists.cend(), std::bind(&TRangeMultiplyWrapper::DependsOn, this, std::placeholders::_1));
+    }
+
+    void PadInfs(TComputationContext& ctx, TUnboxedValueQueue& current, size_t currentPrefix) const {
+        size_t extraColumns = 0;
+        for (size_t i = 0; i < TypeInfos.size(); ++i) {
+            const auto& ti = TypeInfos[i];
+            Y_ENSURE(ti.Components.size() % 2 == 1);
+            if (currentPrefix <= i) {
+                extraColumns += (ti.Components.size() - 1) / 2;
+            }
+        }
+
+        TUnboxedValueQueue result;
+        for (const auto& c : current) {
+            auto curr = ExpandRange(c);
+            result.push_back(AppendInfs(ctx, curr, extraColumns));
+        }
+        std::swap(current, result);
     }
 
     bool DoMultiply(TComputationContext& ctx, ui64 limit, TUnboxedValueQueue& current, const TUnboxedValueQueue& next,

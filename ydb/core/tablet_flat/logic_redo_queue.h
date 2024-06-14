@@ -74,7 +74,7 @@ namespace NRedo {
 
         void Cut(ui32 table, NTable::TSnapEdge edge, TGCBlobDelta &gc) noexcept
         {
-            Y_VERIFY(edge.TxStamp != Max<ui64>(), "Undefined TxStamp of edge");
+            Y_ABORT_UNLESS(edge.TxStamp != Max<ui64>(), "Undefined TxStamp of edge");
 
             auto &cur = Edges[table];
 
@@ -100,7 +100,7 @@ namespace NRedo {
 
             while (TAutoPtr<TEntry> entry = was->Pop()) {
                 if (entry->FilterTables(Edges)) {
-                    for (auto blobId : entry->LargeGlobId.Blobs()) {
+                    for (const auto& blobId : entry->LargeGlobId.Blobs()) {
                         LogoBlobIDFromLogoBlobID(blobId, logos->Add());
                     }
 
@@ -116,7 +116,7 @@ namespace NRedo {
 
                     Push(entry.Release());
                 } else {
-                    Y_VERIFY(entry->References == 0);
+                    Y_ABORT_UNLESS(entry->References == 0);
                 }
             }
         }

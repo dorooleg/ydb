@@ -4,8 +4,10 @@
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <library/cpp/monlib/service/pages/templates.h>
+#include <library/cpp/time_provider/time_provider.h>
 #include <util/random/fast.h>
 #include <util/generic/queue.h>
+#include <ydb/core/control/immediate_control_board_impl.h>
 
 namespace NKikimr {
 
@@ -34,7 +36,7 @@ class TPDiskWriterLoadTestActor : public TActorBootstrapped<TPDiskWriterLoadTest
         {}
 
         TDataRef operator [](ui32 index) const override {
-            Y_VERIFY(index == 0);
+            Y_ABORT_UNLESS(index == 0);
             return std::make_pair(Buffer, Len);
         }
 
@@ -279,7 +281,7 @@ public:
 
     void Handle(NPDisk::TEvChunkReserveResult::TPtr& ev, const TActorContext& ctx) {
         auto msg = ev->Get();
-        Y_VERIFY(msg->Status == NKikimrProto::OK);
+        Y_ABORT_UNLESS(msg->Status == NKikimrProto::OK);
         TChunkInfo& chunkInfo = *ReservePending;
         ReservePending = nullptr;
         for (TChunkIdx chunkIdx : msg->ChunkIds) {
@@ -407,7 +409,7 @@ public:
             auto it = std::prev(std::upper_bound(Chunks.begin(), Chunks.end(), w, TChunkInfo::TFindByWeight()));
             TChunkInfo& chunkInfo = *it;
 
-            Y_VERIFY(!chunkInfo.WriteQueue.empty());
+            Y_ABORT_UNLESS(!chunkInfo.WriteQueue.empty());
 
             auto& front = chunkInfo.WriteQueue.front();
             TChunkIdx chunkIdx = front.first;
@@ -519,7 +521,7 @@ public:
         auto pos = TimeSeries.upper_bound(now - TDuration::Seconds(60));
         TimeSeries.erase(TimeSeries.begin(), pos);
         auto it = ChunkUsageCount.find(request->ChunkIdx);
-        Y_VERIFY(it != ChunkUsageCount.end());
+        Y_ABORT_UNLESS(it != ChunkUsageCount.end());
         if (!--it->second) {
             // chunk is completely written and can be destroyed
             if (Reuse) {

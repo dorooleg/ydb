@@ -32,7 +32,7 @@ struct TSchemeShard::TTxInitRoot : public TSchemeShard::TRwTxBase {
 
         Y_VERIFY_S(Self->IsDomainSchemeShard, "Do not run this transaction on tenant schemeshard"
                                               ", tenant schemeshard needs proper initiation by domain schemeshard");
-        Y_VERIFY(!Self->IsSchemeShardConfigured());
+        Y_ABORT_UNLESS(!Self->IsSchemeShardConfigured());
         Y_VERIFY_S(!rootName.empty(), "invalid root name in domain config");
 
         TVector<TString> rootPathElements = SplitPath(rootName);
@@ -297,7 +297,7 @@ struct TSchemeShard::TTxInitTenantSchemeShard : public TSchemeShard::TRwTxBase {
         TVector<TString> rootPathElements = SplitPath(rootPath);
 
         TString joinedRootPath = JoinPath(rootPathElements);
-        Y_VERIFY(!IsStartWithSlash(joinedRootPath)); //skip lead '/'
+        Y_ABORT_UNLESS(!IsStartWithSlash(joinedRootPath)); //skip lead '/'
 
 
 
@@ -392,6 +392,14 @@ struct TSchemeShard::TTxInitTenantSchemeShard : public TSchemeShard::TRwTxBase {
             subdomain->SetDatabaseQuotas(record.GetDatabaseQuotas(), Self);
         }
 
+        if (record.HasAuditSettings()) {
+            subdomain->SetAuditSettings(record.GetAuditSettings());
+        }
+
+        if (record.HasServerlessComputeResourcesMode()) {
+            subdomain->SetServerlessComputeResourcesMode(record.GetServerlessComputeResourcesMode());
+        }
+
         RegisterShard(db, subdomain, processingParams.GetCoordinators(), TTabletTypes::Coordinator);
         RegisterShard(db, subdomain, processingParams.GetMediators(), TTabletTypes::Mediator);
         RegisterShard(db, subdomain, TVector<ui64>{processingParams.GetSchemeShard()}, TTabletTypes::SchemeShard);
@@ -400,6 +408,15 @@ struct TSchemeShard::TTxInitTenantSchemeShard : public TSchemeShard::TRwTxBase {
         }
         if (processingParams.HasSysViewProcessor()) {
             RegisterShard(db, subdomain, TVector<ui64>{processingParams.GetSysViewProcessor()}, TTabletTypes::SysViewProcessor);
+        }
+        if (processingParams.HasStatisticsAggregator()) {
+            RegisterShard(db, subdomain, TVector<ui64>{processingParams.GetStatisticsAggregator()}, TTabletTypes::StatisticsAggregator);
+        }
+        if (processingParams.HasGraphShard()) {
+            RegisterShard(db, subdomain, TVector<ui64>{processingParams.GetGraphShard()}, TTabletTypes::GraphShard);
+        }
+        if (processingParams.HasBackupController()) {
+            RegisterShard(db, subdomain, TVector<ui64>{processingParams.GetBackupController()}, TTabletTypes::BackupController);
         }
 
         subdomain->Initialize(Self->ShardInfos);
@@ -467,7 +484,7 @@ struct TSchemeShard::TTxPublishTenantAsReadOnly : public TSchemeShard::TRwTxBase
 
         const TTabletId selfTabletId = Self->SelfTabletId();
         const NKikimrScheme::TEvPublishTenantAsReadOnly& record = Ev->Get()->Record;
-        Y_VERIFY(Self->ParentDomainId.OwnerId == record.GetDomainSchemeShard());
+        Y_ABORT_UNLESS(Self->ParentDomainId.OwnerId == record.GetDomainSchemeShard());
 
         LOG_NOTICE_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                      "TTxPublishTenantAsReadOnly DoExecute"
@@ -491,7 +508,7 @@ struct TSchemeShard::TTxPublishTenantAsReadOnly : public TSchemeShard::TRwTxBase
         case TTenantInitState::InvalidState:
         case TTenantInitState::Uninitialized:
         case TTenantInitState::Done:
-            Y_FAIL("Invalid state");
+            Y_ABORT("Invalid state");
         };
     }
 
@@ -529,7 +546,7 @@ struct TSchemeShard::TTxPublishTenant : public TSchemeShard::TRwTxBase {
 
         const TTabletId selfTabletId = Self->SelfTabletId();
         const NKikimrScheme::TEvPublishTenant& record = Ev->Get()->Record;
-        Y_VERIFY(Self->ParentDomainId.OwnerId == record.GetDomainSchemeShard());
+        Y_ABORT_UNLESS(Self->ParentDomainId.OwnerId == record.GetDomainSchemeShard());
 
         LOG_NOTICE_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                      "TTxPublishTenant DoExecute"
@@ -552,7 +569,7 @@ struct TSchemeShard::TTxPublishTenant : public TSchemeShard::TRwTxBase {
         case TTenantInitState::InvalidState:
         case TTenantInitState::Uninitialized:
         case TTenantInitState::Inprogress:
-            Y_FAIL("Invalid state");
+            Y_ABORT("Invalid state");
         };
     }
 
@@ -638,7 +655,7 @@ struct TSchemeShard::TTxMigrate : public TSchemeShard::TRwTxBase {
                 TOwnerId(shard.GetShardIdx().GetOwnerId()),
                 TLocalShardIdx(shard.GetShardIdx().GetLocalId())
                 );
-            Y_VERIFY(shardIdx.GetOwnerId() != Self->TabletID());
+            Y_ABORT_UNLESS(shardIdx.GetOwnerId() != Self->TabletID());
 
             TTabletTypes::EType type = (TTabletTypes::EType)shard.GetType();
 
@@ -671,7 +688,7 @@ struct TSchemeShard::TTxMigrate : public TSchemeShard::TRwTxBase {
                          << ", at schemeshard: " << selfTabletId);
 
         if ((TPathElement::EPathType)pathDescr.GetPathType() == TPathElement::EPathType::EPathTypeTable) {
-            Y_VERIFY(record.HasTable());
+            Y_ABORT_UNLESS(record.HasTable());
             const NKikimrScheme::TMigrateTable& tableDescr = record.GetTable();
 
             db.Table<Schema::MigratedTables>().Key(pathId.OwnerId, pathId.LocalPathId).Update(
@@ -692,7 +709,8 @@ struct TSchemeShard::TTxMigrate : public TSchemeShard::TRwTxBase {
                     NIceDb::TUpdate<Schema::MigratedColumns::Family>(colDescr.GetFamily()),
                     NIceDb::TUpdate<Schema::MigratedColumns::DefaultKind>(ETableColumnDefaultKind(colDescr.GetDefaultKind())),
                     NIceDb::TUpdate<Schema::MigratedColumns::DefaultValue>(colDescr.GetDefaultValue()),
-                    NIceDb::TUpdate<Schema::MigratedColumns::NotNull>(colDescr.GetNotNull()));
+                    NIceDb::TUpdate<Schema::MigratedColumns::NotNull>(colDescr.GetNotNull()),
+                    NIceDb::TUpdate<Schema::MigratedColumns::IsBuildInProgress>(colDescr.GetIsBuildInProgress()));
             }
 
             for (const NKikimrScheme::TMigratePartition& partDescr: tableDescr.GetPartitions()) {
@@ -711,7 +729,7 @@ struct TSchemeShard::TTxMigrate : public TSchemeShard::TRwTxBase {
         }
 
         if ((TPathElement::EPathType)pathDescr.GetPathType() == TPathElement::EPathType::EPathTypeTableIndex) {
-            Y_VERIFY(record.HasTableIndex());
+            Y_ABORT_UNLESS(record.HasTableIndex());
             const NKikimrScheme::TMigrateTableIndex& tableIndexDescr = record.GetTableIndex();
 
             db.Table<Schema::MigratedTableIndex>().Key(pathId.OwnerId, pathId.LocalPathId).Update(
@@ -726,7 +744,7 @@ struct TSchemeShard::TTxMigrate : public TSchemeShard::TRwTxBase {
         }
 
         if ((TPathElement::EPathType)pathDescr.GetPathType() == TPathElement::EPathType::EPathTypeKesus) {
-            Y_VERIFY(record.HasKesus());
+            Y_ABORT_UNLESS(record.HasKesus());
             const NKikimrScheme::TMigrateKesus& kesusDescr = record.GetKesus();
 
             db.Table<Schema::MigratedKesusInfos>().Key(pathId.OwnerId, pathId.LocalPathId).Update(

@@ -11,10 +11,11 @@ namespace NKqp {
 using namespace NYdb;
 using namespace NYdb::NTable;
 
-static NKikimrConfig::TAppConfig GetAppConfig(bool sourceRead) {
+static NKikimrConfig::TAppConfig GetAppConfig(bool sourceRead, bool streamLookup = true) {
     auto app = NKikimrConfig::TAppConfig();
     app.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(sourceRead);
     app.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(sourceRead);
+    app.MutableTableServiceConfig()->SetEnableKqpDataQueryStreamLookup(streamLookup);
     return app;
 }
 
@@ -43,7 +44,7 @@ Y_UNIT_TEST_SUITE(KqpCost) {
         //runtime->SetLogPriority(NKikimrServices::GRPC_SERVER, NActors::NLog::PRI_DEBUG);
     }
     Y_UNIT_TEST_TWIN(PointLookup, SourceRead) {
-        TKikimrRunner kikimr(GetAppConfig(SourceRead));
+        TKikimrRunner kikimr(GetAppConfig(SourceRead, false));
         auto db = kikimr.GetTableClient();
         auto session = db.CreateSession().GetValueSync().GetSession();
 
@@ -91,9 +92,9 @@ Y_UNIT_TEST_SUITE(KqpCost) {
         )", NYdb::FormatResultSetYson(result.GetResultSet(0)));
 
         auto stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 2);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().bytes(), 40);
+        size_t phase = stats.query_phases_size() - 1;
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 2);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().bytes(), 40);
     }
 
     Y_UNIT_TEST_TWIN(RangeFullScan, SourceRead) {
@@ -124,14 +125,15 @@ Y_UNIT_TEST_SUITE(KqpCost) {
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().bytes(), 20);
     }
 
+    const static TString Query = R"(SELECT * FROM `/Root/Test` WHERE Amount < 5000ul ORDER BY Group LIMIT 1;)";
+    const static TString Expected = R"([[[3500u];["None"];[1u];["Anna"]]])";
+
     Y_UNIT_TEST_TWIN(ScanQueryRangeFullScan, SourceRead) {
         TKikimrRunner kikimr(GetAppConfig(SourceRead));
 
         auto db = kikimr.GetTableClient();
         EnableDebugLogging(kikimr.GetTestServer().GetRuntime());
-        auto query = Q_(R"(
-            SELECT * FROM `/Root/Test` WHERE Amount < 5000ul ORDER BY Group LIMIT 1;
-        )");
+        auto query = Q_(Query);
 
         NYdb::NTable::TStreamExecScanQuerySettings execSettings;
         execSettings.CollectQueryStats(ECollectQueryStatsMode::Basic);
@@ -140,13 +142,11 @@ Y_UNIT_TEST_SUITE(KqpCost) {
         UNIT_ASSERT_VALUES_EQUAL(it.GetStatus(), EStatus::SUCCESS);
         auto res = CollectStreamResult(it);
 
-        CompareYson(R"(
-            [
-                [[3500u];["None"];[1u];["Anna"]]
-            ]
-        )", res.ResultSetYson);
+        UNIT_ASSERT(res.ConsumedRuFromHeader > 0);
 
-/*        const auto& stats = *res.QueryStats;
+        CompareYson(Expected, res.ResultSetYson);
+/*
+        const auto& stats = *res.QueryStats;
 
         Cerr << stats.DebugString() << Endl;
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 1);
@@ -154,6 +154,44 @@ Y_UNIT_TEST_SUITE(KqpCost) {
 */
     }
 
+    Y_UNIT_TEST_TWIN(ScanScriptingRangeFullScan, SourceRead) {
+        TKikimrRunner kikimr(GetAppConfig(SourceRead));
+
+        NYdb::NScripting::TScriptingClient client(kikimr.GetDriver());
+        auto query = Q_(Query);
+
+        NYdb::NScripting::TExecuteYqlRequestSettings execSettings;
+        execSettings.CollectQueryStats(ECollectQueryStatsMode::Basic);
+
+        auto it = client.StreamExecuteYqlScript(query, execSettings).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(it.GetStatus(), EStatus::SUCCESS);
+        auto res = CollectStreamResult(it);
+
+        UNIT_ASSERT(res.ConsumedRuFromHeader > 0);
+
+        CompareYson(Expected, res.ResultSetYson);
+    }
+
+    Y_UNIT_TEST_TWIN(QuerySeviceRangeFullScan, SourceRead) {
+        TKikimrRunner kikimr(GetAppConfig(SourceRead));
+
+        NYdb::NQuery::TQueryClient client(kikimr.GetDriver());
+        auto query = Q_(Query);
+
+        NYdb::NQuery::TExecuteQuerySettings execSettings;
+
+        auto it = client.StreamExecuteQuery(
+            query,
+            NYdb::NQuery::TTxControl::BeginTx().CommitTx(),
+            execSettings
+        ).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(it.GetStatus(), EStatus::SUCCESS);
+        auto res = CollectStreamResult(it);
+
+        UNIT_ASSERT(res.ConsumedRuFromHeader > 0);
+
+        CompareYson(Expected, res.ResultSetYson);
+    }
 
 }
 

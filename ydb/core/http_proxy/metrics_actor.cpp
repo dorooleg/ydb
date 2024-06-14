@@ -1,10 +1,10 @@
 #include "metrics_actor.h"
 #include "events.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/events.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/cache/cache.h>
 
 #include <library/cpp/monlib/metrics/histogram_collector.h>
@@ -46,7 +46,7 @@ namespace NKikimr::NHttpProxy {
     };
 
     void TMetricsActor::Handle(TEvServerlessProxy::TEvCounter::TPtr& ev, const TActorContext&) {
-        Y_VERIFY(ev->Get()->Labels.size() > 1);
+        Y_ABORT_UNLESS(ev->Get()->Labels.size() > 1);
         auto group = Settings.Counters->GetSubgroup(ev->Get()->Labels[0].first, ev->Get()->Labels[0].second);
         for (ui32 i = 1; i + 1 < ev->Get()->Labels.size(); ++i) {
             if (ev->Get()->Labels[i].second.empty())
@@ -59,7 +59,7 @@ namespace NKikimr::NHttpProxy {
     }
 
     void TMetricsActor::Handle(TEvServerlessProxy::TEvHistCounter::TPtr& ev, const TActorContext&) {
-        Y_VERIFY(ev->Get()->Labels.size() > 1);
+        Y_ABORT_UNLESS(ev->Get()->Labels.size() > 1);
         auto group = Settings.Counters->GetSubgroup(ev->Get()->Labels[0].first, ev->Get()->Labels[0].second);
         for (ui32 i = 1; i + 1 < ev->Get()->Labels.size(); ++i) {
             if (ev->Get()->Labels[i].second.empty())

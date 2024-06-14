@@ -4,18 +4,23 @@
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/scheme_helpers/helpers.h>
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/table_helpers/helpers.h>
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/make_request/make.h>
+#include <ydb/public/sdk/cpp/client/impl/ydb_internal/retry/retry.h>
+#include <ydb/public/sdk/cpp/client/impl/ydb_internal/retry/retry_async.h>
+#include <ydb/public/sdk/cpp/client/impl/ydb_internal/retry/retry_sync.h>
 #undef INCLUDE_YDB_INTERNAL_H
 
 #include <ydb/public/api/grpc/ydb_table_v1.grpc.pb.h>
 #include <ydb/public/api/protos/ydb_table.pb.h>
 #include <ydb/public/sdk/cpp/client/impl/ydb_stats/stats.h>
-#include <ydb/public/sdk/cpp/client/ydb_common_client/impl/client.h>
 #include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_value/value.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/impl/client_session.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/impl/data_query.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/impl/request_migrator.h>
+#include <ydb/public/sdk/cpp/client/ydb_table/impl/table_client.h>
 #include <ydb/public/sdk/cpp/client/resources/ydb_resources.h>
+
+#include <google/protobuf/util/time_util.h>
 
 #include <library/cpp/cache/cache.h>
 
@@ -29,15 +34,9 @@ namespace NYdb {
 namespace NTable {
 
 using namespace NThreading;
+using namespace NSessionPool;
 
-//How often run session pool keep alive check
-constexpr TDuration PERIODIC_ACTION_INTERVAL = TDuration::Seconds(5);
-//How ofter run host scan to perform session balancing
-constexpr TDuration HOSTSCAN_PERIODIC_ACTION_INTERVAL = TDuration::Seconds(2);
-constexpr ui64 KEEP_ALIVE_RANDOM_FRACTION = 4;
-constexpr TDuration KEEP_ALIVE_CLIENT_TIMEOUT = TDuration::Seconds(5);
-constexpr ui64 PERIODIC_ACTION_BATCH_SIZE = 10; //Max number of tasks to perform during one interval
-constexpr ui32 MAX_BACKOFF_DURATION_MS = TDuration::Hours(1).MilliSeconds();
+using TRetryContextAsync = NRetry::Async::TRetryContext<TTableClient, TAsyncStatus>;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -269,7 +268,7 @@ class TTableDescription::TImpl {
 
         // columns
         for (const auto& col : proto.columns()) {
-            Columns_.emplace_back(col.name(), col.type(), col.family());
+            Columns_.emplace_back(col.name(), col.type(), col.family(), col.not_null());
         }
 
         // indexes
@@ -309,6 +308,10 @@ class TTableDescription::TImpl {
         // tiering
         if (proto.tiering().size()) {
             Tiering_ = proto.tiering();
+        }
+
+        if (proto.store_type()) {
+            StoreType_ = (proto.store_type() == Ydb::Table::STORE_TYPE_COLUMN) ? EStoreType::Column : EStoreType::Row;
         }
 
         // column families
@@ -433,8 +436,8 @@ public:
         return Proto_;
     }
 
-    void AddColumn(const TString& name, const Ydb::Type& type, const TString& family) {
-        Columns_.emplace_back(name, type, family);
+    void AddColumn(const TString& name, const Ydb::Type& type, const TString& family, std::optional<bool> notNull) {
+        Columns_.emplace_back(name, type, family, notNull);
     }
 
     void SetPrimaryKeyColumns(const TVector<TString>& primaryKeyColumns) {
@@ -507,6 +510,10 @@ public:
         ReadReplicasSettings_ = TReadReplicasSettings(mode, readReplicasCount);
     }
 
+    void SetStoreType(EStoreType type) {
+        StoreType_ = type;
+    }
+
     const TVector<TString>& GetPrimaryKeyColumns() const {
         return PrimaryKey_;
     }
@@ -529,6 +536,10 @@ public:
 
     const TMaybe<TString>& GetTiering() const {
         return Tiering_;
+    }
+
+    EStoreType GetStoreType() const {
+        return StoreType_;
     }
 
     const TString& GetOwner() const {
@@ -624,6 +635,7 @@ private:
     TMaybe<TReadReplicasSettings> ReadReplicasSettings_;
     bool HasStorageSettings_ = false;
     bool HasPartitioningSettings_ = false;
+    EStoreType StoreType_ = EStoreType::Row;
 };
 
 TTableDescription::TTableDescription()
@@ -676,6 +688,10 @@ TMaybe<TString> TTableDescription::GetTiering() const {
     return Impl_->GetTiering();
 }
 
+EStoreType TTableDescription::GetStoreType() const {
+    return Impl_->GetStoreType();
+}
+
 const TString& TTableDescription::GetOwner() const {
     return Impl_->GetOwner();
 }
@@ -692,8 +708,8 @@ const TVector<TKeyRange>& TTableDescription::GetKeyRanges() const {
     return Impl_->GetKeyRanges();
 }
 
-void TTableDescription::AddColumn(const TString& name, const Ydb::Type& type, const TString& family) {
-    Impl_->AddColumn(name, type, family);
+void TTableDescription::AddColumn(const TString& name, const Ydb::Type& type, const TString& family, std::optional<bool> notNull) {
+    Impl_->AddColumn(name, type, family, notNull);
 }
 
 void TTableDescription::SetPrimaryKeyColumns(const TVector<TString>& primaryKeyColumns) {
@@ -722,6 +738,14 @@ void TTableDescription::AddAsyncSecondaryIndex(const TString& indexName, const T
 
 void TTableDescription::AddAsyncSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns) {
     AddSecondaryIndex(indexName, EIndexType::GlobalAsync, indexColumns, dataColumns);
+}
+
+void TTableDescription::AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns) {
+    AddSecondaryIndex(indexName, EIndexType::GlobalUnique, indexColumns);
+}
+
+void TTableDescription::AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns) {
+    AddSecondaryIndex(indexName, EIndexType::GlobalUnique, indexColumns, dataColumns);
 }
 
 void TTableDescription::AddSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns) {
@@ -784,6 +808,10 @@ void TTableDescription::SetReadReplicasSettings(TReadReplicasSettings::EMode mod
     Impl_->SetReadReplicasSettings(mode, readReplicasCount);
 }
 
+void TTableDescription::SetStoreType(EStoreType type) {
+    Impl_->SetStoreType(type);
+}
+
 const TVector<TPartitionStats>& TTableDescription::GetPartitionStats() const {
     return Impl_->GetPartitionStats();
 }
@@ -842,6 +870,9 @@ void TTableDescription::SerializeTo(Ydb::Table::CreateTableRequest& request) con
         protoColumn.set_name(column.Name);
         protoColumn.mutable_type()->CopyFrom(TProtoAccessor::GetProto(column.Type));
         protoColumn.set_family(column.Family);
+        if (column.NotNull.has_value()) {
+            protoColumn.set_not_null(column.NotNull.value());
+        }
     }
 
     for (const auto& pk : Impl_->GetPrimaryKeyColumns()) {
@@ -858,6 +889,10 @@ void TTableDescription::SerializeTo(Ydb::Table::CreateTableRequest& request) con
 
     if (const auto& tiering = Impl_->GetTiering()) {
         request.set_tiering(*tiering);
+    }
+
+    if (Impl_->GetStoreType() == EStoreType::Column) {
+        request.set_store_type(Ydb::Table::StoreType::STORE_TYPE_COLUMN);
     }
 
     if (Impl_->HasStorageSettings()) {
@@ -1038,6 +1073,11 @@ TColumnFamilyDescription TColumnFamilyBuilder::Build() const {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+TTableBuilder& TTableBuilder::SetStoreType(EStoreType type) {
+    TableDescription_.SetStoreType(type);
+    return *this;
+}
+
 TTableBuilder& TTableBuilder::AddNullableColumn(const TString& name, const EPrimitiveType& type, const TString& family) {
     auto columnType = TTypeBuilder()
         .BeginOptional()
@@ -1045,7 +1085,7 @@ TTableBuilder& TTableBuilder::AddNullableColumn(const TString& name, const EPrim
         .EndOptional()
         .Build();
 
-    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family);
+    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family, false);
     return *this;
 }
 
@@ -1055,7 +1095,7 @@ TTableBuilder& TTableBuilder::AddNullableColumn(const TString& name, const TDeci
             .Decimal(type)
         .EndOptional()
         .Build();
-    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family);
+    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family, false);
     return *this;
 }
 
@@ -1064,7 +1104,7 @@ TTableBuilder& TTableBuilder::AddNullableColumn(const TString& name, const TPgTy
         .Pg(type)
         .Build();
 
-    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family);
+    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family, false);
     return *this;
 }
 
@@ -1073,7 +1113,7 @@ TTableBuilder& TTableBuilder::AddNonNullableColumn(const TString& name, const EP
         .Primitive(type)
         .Build();
 
-    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family);
+    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family, true);
     return *this;
 }
 
@@ -1082,15 +1122,16 @@ TTableBuilder& TTableBuilder::AddNonNullableColumn(const TString& name, const TD
         .Decimal(type)
         .Build();
 
-    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family);
+    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family, true);
     return *this;
 }
 
 TTableBuilder& TTableBuilder::AddNonNullableColumn(const TString& name, const TPgType& type, const TString& family) {
-    throw yexception() << "It is not allowed to create NOT NULL column with pg type";
-    Y_UNUSED(name);
-    Y_UNUSED(type);
-    Y_UNUSED(family);
+    auto columnType = TTypeBuilder()
+        .Pg(type)
+        .Build();
+
+    TableDescription_.AddColumn(name, TProtoAccessor::GetProto(columnType), family, true);
     return *this;
 }
 
@@ -1149,6 +1190,14 @@ TTableBuilder& TTableBuilder::AddSecondaryIndex(const TString& indexName, const 
 
 TTableBuilder& TTableBuilder::AddSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns) {
     return AddSyncSecondaryIndex(indexName, indexColumns);
+}
+
+TTableBuilder& TTableBuilder::AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns) {
+    return AddSecondaryIndex(indexName, EIndexType::GlobalUnique, indexColumns, dataColumns);
+}
+
+TTableBuilder& TTableBuilder::AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns) {
+    return AddSecondaryIndex(indexName, EIndexType::GlobalUnique, indexColumns);
 }
 
 TTableBuilder& TTableBuilder::AddSecondaryIndex(const TString& indexName, const TString& indexColumn) {
@@ -1232,64 +1281,6 @@ TTableDescription TTableBuilder::Build() {
     return TableDescription_;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-class TTablePartIterator::TReaderImpl {
-public:
-    using TSelf = TTablePartIterator::TReaderImpl;
-    using TResponse = Ydb::Table::ReadTableResponse;
-    using TStreamProcessorPtr = NGrpc::IStreamRequestReadProcessor<TResponse>::TPtr;
-    using TReadCallback = NGrpc::IStreamRequestReadProcessor<TResponse>::TReadCallback;
-    using TGRpcStatus = NGrpc::TGrpcStatus;
-    using TBatchReadResult = std::pair<TResponse, TGRpcStatus>;
-
-    TReaderImpl(TStreamProcessorPtr streamProcessor, const TString& endpoint)
-        : StreamProcessor_(streamProcessor)
-        , Finished_(false)
-        , Endpoint_(endpoint)
-    {}
-
-    ~TReaderImpl() {
-        StreamProcessor_->Cancel();
-    }
-
-    bool IsFinished() {
-        return Finished_;
-    }
-
-    TAsyncSimpleStreamPart<TResultSet> ReadNext(std::shared_ptr<TSelf> self) {
-        auto promise = NThreading::NewPromise<TSimpleStreamPart<TResultSet>>();
-        // Capture self - guarantee no dtor call during the read
-        auto readCb = [self, promise](TGRpcStatus&& grpcStatus) mutable {
-            std::optional<TReadTableSnapshot> snapshot;
-            if (self->Response_.has_snapshot()) {
-                snapshot.emplace(
-                    self->Response_.snapshot().plan_step(),
-                    self->Response_.snapshot().tx_id());
-            }
-            if (!grpcStatus.Ok()) {
-                self->Finished_ = true;
-                promise.SetValue({TResultSet(std::move(*self->Response_.mutable_result()->mutable_result_set())),
-                              TStatus(TPlainStatus(grpcStatus, self->Endpoint_)),
-                              snapshot});
-            } else {
-                NYql::TIssues issues;
-                NYql::IssuesFromMessage(self->Response_.issues(), issues);
-                EStatus clientStatus = static_cast<EStatus>(self->Response_.status());
-                promise.SetValue({TResultSet(std::move(*self->Response_.mutable_result()->mutable_result_set())),
-                              TStatus(clientStatus, std::move(issues)),
-                              snapshot});
-            }
-        };
-        StreamProcessor_->Read(&Response_, readCb);
-        return promise.GetFuture();
-    }
-private:
-    TStreamProcessorPtr StreamProcessor_;
-    TResponse Response_;
-    bool Finished_;
-    TString Endpoint_;
-};
 
 TTablePartIterator::TTablePartIterator(
     std::shared_ptr<TReaderImpl> impl,
@@ -1304,69 +1295,6 @@ TAsyncSimpleStreamPart<TResultSet> TTablePartIterator::ReadNext() {
     return ReaderImpl_->ReadNext(ReaderImpl_);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-class TScanQueryPartIterator::TReaderImpl {
-public:
-    using TSelf = TScanQueryPartIterator::TReaderImpl;
-    using TResponse = Ydb::Table::ExecuteScanQueryPartialResponse;
-    using TStreamProcessorPtr = NGrpc::IStreamRequestReadProcessor<TResponse>::TPtr;
-    using TReadCallback = NGrpc::IStreamRequestReadProcessor<TResponse>::TReadCallback;
-    using TGRpcStatus = NGrpc::TGrpcStatus;
-    using TBatchReadResult = std::pair<TResponse, TGRpcStatus>;
-
-    TReaderImpl(TStreamProcessorPtr streamProcessor, const TString& endpoint)
-        : StreamProcessor_(streamProcessor)
-        , Finished_(false)
-        , Endpoint_(endpoint)
-    {}
-
-    ~TReaderImpl() {
-        StreamProcessor_->Cancel();
-    }
-
-    bool IsFinished() const {
-        return Finished_;
-    }
-
-    TAsyncScanQueryPart ReadNext(std::shared_ptr<TSelf> self) {
-        auto promise = NThreading::NewPromise<TScanQueryPart>();
-        // Capture self - guarantee no dtor call during the read
-        auto readCb = [self, promise](TGRpcStatus&& grpcStatus) mutable {
-            if (!grpcStatus.Ok()) {
-                self->Finished_ = true;
-                promise.SetValue({TStatus(TPlainStatus(grpcStatus, self->Endpoint_))});
-            } else {
-                NYql::TIssues issues;
-                NYql::IssuesFromMessage(self->Response_.issues(), issues);
-                EStatus clientStatus = static_cast<EStatus>(self->Response_.status());
-                // TODO: Add headers for streaming calls.
-                TPlainStatus plainStatus{clientStatus, std::move(issues), self->Endpoint_, {}};
-                TStatus status{std::move(plainStatus)};
-                TMaybe<TQueryStats> queryStats;
-
-                if (self->Response_.result().has_query_stats()) {
-                    queryStats = TQueryStats(self->Response_.result().query_stats());
-                }
-
-                if (self->Response_.result().has_result_set()) {
-                    promise.SetValue({std::move(status),
-                        TResultSet(std::move(*self->Response_.mutable_result()->mutable_result_set())), queryStats});
-                } else {
-                    promise.SetValue({std::move(status), queryStats});
-                }
-            }
-        };
-        StreamProcessor_->Read(&Response_, readCb);
-        return promise.GetFuture();
-    }
-private:
-    TStreamProcessorPtr StreamProcessor_;
-    TResponse Response_;
-    bool Finished_;
-    TString Endpoint_;
-};
-
 TScanQueryPartIterator::TScanQueryPartIterator(
     std::shared_ptr<TReaderImpl> impl,
     TPlainStatus&& status)
@@ -1380,1560 +1308,7 @@ TAsyncScanQueryPart TScanQueryPartIterator::ReadNext() {
     return ReaderImpl_->ReadNext(ReaderImpl_);
 }
 
-////////////////////////////////////////////////////////////////////////////////
 
-class TSessionPoolImpl {
-    typedef TAsyncCreateSessionResult
-        (*TAwareSessonProvider)
-            (std::shared_ptr<TTableClient::TImpl> client, const TCreateSessionSettings& settings);
-public:
-    using TKeepAliveCmd = std::function<void(TSession session)>;
-    using TDeletePredicate = std::function<bool(TSession::TImpl* session, TTableClient::TImpl* client, size_t sessionsCount)>;
-    TSessionPoolImpl(ui32 maxActiveSessions);
-    // TAwareSessonProvider:
-    // function is called if session pool is empty,
-    // this is used for additional total session count limitation
-    TAsyncCreateSessionResult GetSession(
-        std::shared_ptr<TTableClient::TImpl> client,
-        const TCreateSessionSettings& settings);
-    // Returns true if session was extracted from session pool and dropped via smart deleter
-    // Returns false if session for given endpoint was not found
-    // NOTE: O(n) under session pool lock, should not be used often
-    bool DropSessionOnEndpoint(std::shared_ptr<TTableClient::TImpl> client, ui64 nodeId);
-    // Returns true if session returned to pool successfully
-    bool ReturnSession(TSession::TImpl* impl, bool active);
-    TPeriodicCb CreatePeriodicTask(std::weak_ptr<TTableClient::TImpl> weakClient, TKeepAliveCmd&& cmd, TDeletePredicate&& predicate);
-    i64 GetActiveSessions() const;
-    i64 GetActiveSessionsLimit() const;
-    i64 GetCurrentPoolSize() const;
-    void DecrementActiveCounter();
-
-    void Drain(std::function<bool(std::unique_ptr<TSession::TImpl>&&)> cb, bool close);
-    void SetStatCollector(NSdkStats::TStatCollector::TSessionPoolStatCollector collector);
-
-    static void CreateFakeSession(NThreading::TPromise<TCreateSessionResult>& promise,
-        std::shared_ptr<TTableClient::TImpl> client);
-private:
-    void UpdateStats();
-
-    mutable std::mutex Mtx_;
-    TMultiMap<TInstant, std::unique_ptr<TSession::TImpl>> Sessions_;
-    bool Closed_;
-    i64 ActiveSessions_;
-    const ui32 MaxActiveSessions_;
-    NSdkStats::TSessionCounter ActiveSessionsCounter_;
-    NSdkStats::TSessionCounter InPoolSessionsCounter_;
-    NSdkStats::TAtomicCounter<::NMonitoring::TRate> FakeSessionsCounter_;
-};
-
-static TDuration RandomizeThreshold(TDuration duration) {
-    TDuration::TValue value = duration.GetValue();
-    if (KEEP_ALIVE_RANDOM_FRACTION) {
-        const i64 randomLimit = value / KEEP_ALIVE_RANDOM_FRACTION;
-        if (randomLimit < 2)
-            return duration;
-        value += static_cast<i64>(RandomNumber<ui64>(randomLimit));
-    }
-    return TDuration::FromValue(value);
-}
-
-static TDuration GetMinTimeToTouch(const TSessionPoolSettings& settings) {
-    return Min(settings.CloseIdleThreshold_, settings.KeepAliveIdleThreshold_);
-}
-
-static TDuration GetMaxTimeToTouch(const TSessionPoolSettings& settings) {
-    return Max(settings.CloseIdleThreshold_, settings.KeepAliveIdleThreshold_);
-}
-
-static TStatus GetStatus(const TOperation& operation) {
-    return operation.Status();
-}
-
-static TStatus GetStatus(const TStatus& status) {
-    return status;
-}
-
-static bool IsSessionCloseRequested(const TStatus& status) {
-    const auto& meta = status.GetResponseMetadata();
-    auto hints = meta.equal_range(NYdb::YDB_SERVER_HINTS);
-    for(auto it = hints.first; it != hints.second; ++it) {
-        if (it->second == NYdb::YDB_SESSION_CLOSE) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-template<typename TResponse>
-NThreading::TFuture<TResponse> InjectSessionStatusInterception(
-        std::shared_ptr<TSession::TImpl>& impl, NThreading::TFuture<TResponse> asyncResponse,
-        bool updateTimeout,
-        TDuration timeout,
-        std::function<void(const TResponse&, TSession::TImpl&)> cb = {})
-{
-    auto promise = NThreading::NewPromise<TResponse>();
-    asyncResponse.Subscribe([impl, promise, cb, updateTimeout, timeout](NThreading::TFuture<TResponse> future) mutable {
-        Y_VERIFY(future.HasValue());
-
-        // TResponse can hold refcounted user provided data (TSession for example)
-        // and we do not want to have copy of it (for example it can cause delay dtor call)
-        // so using move semantic here is mandatory.
-        // Also we must reset captured shared pointer to session impl
-        TResponse value = std::move(future.ExtractValue());
-
-        const TStatus& status = GetStatus(value);
-        // Exclude CLIENT_RESOURCE_EXHAUSTED from transport errors which can cause to session disconnect
-        // since we have guarantee this request wasn't been started to execute.
-
-        if (status.IsTransportError() && status.GetStatus() != EStatus::CLIENT_RESOURCE_EXHAUSTED) {
-            impl->MarkBroken();
-        } else if (status.GetStatus() == EStatus::SESSION_BUSY) {
-            impl->MarkBroken();
-        } else if (status.GetStatus() == EStatus::BAD_SESSION) {
-            impl->MarkBroken();
-        } else if (IsSessionCloseRequested(status)) {
-            impl->MarkAsClosing();
-        } else {
-            // NOTE: About GetState and lock
-            // Simultanious call multiple requests on the same session make no sence, due to server limitation.
-            // But user can perform this call, right now we do not protect session from this, it may cause
-            // raise on session state if respoise is not success.
-            // It should not be a problem - in case of this race we close session
-            // or put it in to settler.
-            if (updateTimeout && status.GetStatus() != EStatus::CLIENT_RESOURCE_EXHAUSTED) {
-                impl->ScheduleTimeToTouch(RandomizeThreshold(timeout), impl->GetState() == TSession::TImpl::EState::S_ACTIVE);
-            }
-        }
-        if (cb) {
-            cb(value, *impl);
-        }
-        impl.reset();
-        promise.SetValue(std::move(value));
-    });
-    return promise.GetFuture();
-}
-
-static ui32 CalcBackoffTime(const TBackoffSettings& settings, ui32 retryNumber) {
-    ui32 backoffSlots = 1 << std::min(retryNumber, settings.Ceiling_);
-    TDuration maxDuration = settings.SlotDuration_ * backoffSlots;
-
-    double uncertaintyRatio = std::max(std::min(settings.UncertainRatio_, 1.0), 0.0);
-    double uncertaintyMultiplier = RandomNumber<double>() * uncertaintyRatio - uncertaintyRatio + 1.0;
-
-    double durationMs = round(maxDuration.MilliSeconds() * uncertaintyMultiplier);
-
-    return std::max(std::min(durationMs, (double)MAX_BACKOFF_DURATION_MS), 0.0);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-class TTableClient::TImpl: public TClientImplCommon<TTableClient::TImpl>, public IMigratorClient {
-public:
-    using TReadTableStreamProcessorPtr = TTablePartIterator::TReaderImpl::TStreamProcessorPtr;
-    using TScanQueryProcessorPtr = TScanQueryPartIterator::TReaderImpl::TStreamProcessorPtr;
-
-    TImpl(std::shared_ptr<TGRpcConnectionsImpl>&& connections, const TClientSettings& settings)
-        : TClientImplCommon(std::move(connections), settings)
-        , Settings_(settings)
-        , SessionPool_(Settings_.SessionPoolSettings_.MaxActiveSessions_)
-    {
-        if (!DbDriverState_->StatCollector.IsCollecting()) {
-            return;
-        }
-
-        SetStatCollector(DbDriverState_->StatCollector.GetClientStatCollector());
-        SessionPool_.SetStatCollector(DbDriverState_->StatCollector.GetSessionPoolStatCollector());
-    }
-
-    ~TImpl() {
-        if (Connections_->GetDrainOnDtors()) {
-            Drain().Wait();
-        }
-    }
-
-    bool LinkObjToEndpoint(const TEndpointKey& endpoint, TEndpointObj* obj, const void* tag) {
-        return DbDriverState_->EndpointPool.LinkObjToEndpoint(endpoint, obj, tag);
-    }
-
-    void InitStopper() {
-        std::weak_ptr<TTableClient::TImpl> weak = shared_from_this();
-        auto cb = [weak]() mutable {
-            auto strong = weak.lock();
-            if (!strong) {
-                auto promise = NThreading::NewPromise<void>();
-                promise.SetException("no more client");
-                return promise.GetFuture();
-            }
-            return strong->Drain();
-        };
-
-        DbDriverState_->AddCb(std::move(cb), TDbDriverState::ENotifyType::STOP);
-    }
-
-    NThreading::TFuture<void> Drain() {
-        TVector<std::unique_ptr<TSession::TImpl>> sessions;
-        // No realocations under lock
-        sessions.reserve(Settings_.SessionPoolSettings_.MaxActiveSessions_);
-        auto drainer = [&sessions](std::unique_ptr<TSession::TImpl>&& impl) mutable {
-            sessions.push_back(std::move(impl));
-            return true;
-        };
-        SessionPool_.Drain(drainer, true);
-        TVector<TAsyncStatus> closeResults;
-        for (auto& s : sessions) {
-            if (s->GetId()) {
-                closeResults.push_back(CloseInternal(s.get()));
-            }
-        }
-        sessions.clear();
-        return NThreading::WaitExceptionOrAll(closeResults);
-    }
-
-    NThreading::TFuture<void> Stop() {
-        return Drain();
-    }
-
-    void ScheduleTask(const std::function<void()>& fn, TDuration timeout) {
-        std::weak_ptr<TTableClient::TImpl> weak = shared_from_this();
-        auto cbGuard = [weak, fn]() {
-            auto strongClient = weak.lock();
-            if (strongClient) {
-                fn();
-            }
-        };
-        Connections_->ScheduleOneTimeTask(std::move(cbGuard), timeout);
-    }
-
-    void ScheduleTaskUnsafe(std::function<void()>&& fn, TDuration timeout) {
-        Connections_->ScheduleOneTimeTask(std::move(fn), timeout);
-    }
-
-    void AsyncBackoff(const TBackoffSettings& settings, ui32 retryNumber, const std::function<void()>& fn) {
-        auto durationMs = CalcBackoffTime(settings, retryNumber);
-        ScheduleTask(fn, TDuration::MilliSeconds(durationMs));
-    }
-
-    void StartPeriodicSessionPoolTask() {
-
-        auto deletePredicate = [](TSession::TImpl* session, TTableClient::TImpl* client, size_t sessionsCount) {
-
-            const auto sessionPoolSettings = client->Settings_.SessionPoolSettings_;
-            const auto spentTime = session->GetTimeToTouchFast() - session->GetTimeInPastFast();
-
-            if (spentTime >= sessionPoolSettings.CloseIdleThreshold_) {
-                if (sessionsCount > sessionPoolSettings.MinPoolSize_) {
-                    return true;
-                }
-            }
-
-            return false;
-        };
-
-        auto keepAliveCmd = [](TSession session) {
-            Y_VERIFY(session.GetId());
-
-            const auto sessionPoolSettings = session.Client_->Settings_.SessionPoolSettings_;
-            const auto spentTime = session.SessionImpl_->GetTimeToTouchFast() - session.SessionImpl_->GetTimeInPastFast();
-
-            const auto maxTimeToTouch = GetMaxTimeToTouch(session.Client_->Settings_.SessionPoolSettings_);
-            const auto minTimeToTouch = GetMinTimeToTouch(session.Client_->Settings_.SessionPoolSettings_);
-
-            auto calcTimeToNextTouch = [maxTimeToTouch, minTimeToTouch] (const TDuration spent) {
-                auto timeToNextTouch = minTimeToTouch;
-                if (maxTimeToTouch > spent) {
-                    auto t = maxTimeToTouch - spent;
-                    timeToNextTouch = Min(t, minTimeToTouch);
-                }
-                return timeToNextTouch;
-            };
-
-            if (spentTime >= sessionPoolSettings.KeepAliveIdleThreshold_) {
-
-                // Handle of session status will be done inside InjectSessionStatusInterception routine.
-                // We just need to reschedule time to next call because InjectSessionStatusInterception doesn't
-                // update timeInPast for calls from internal keep alive routine
-                session.KeepAlive(KeepAliveSettings)
-                    .Subscribe([spentTime, session, maxTimeToTouch, calcTimeToNextTouch](TAsyncKeepAliveResult asyncResult) {
-                        if (!asyncResult.GetValue().IsSuccess())
-                            return;
-
-                        if (spentTime >= maxTimeToTouch) {
-                            auto timeToNextTouch = calcTimeToNextTouch(spentTime);
-                            session.SessionImpl_->ScheduleTimeToTouchFast(timeToNextTouch, true);
-                        }
-                    });
-                return;
-            }
-
-            auto timeToNextTouch = calcTimeToNextTouch(spentTime);
-            session.SessionImpl_->ScheduleTimeToTouchFast(
-                RandomizeThreshold(timeToNextTouch),
-                spentTime >= maxTimeToTouch
-            );
-        };
-
-        std::weak_ptr<TTableClient::TImpl> weak = shared_from_this();
-        Connections_->AddPeriodicTask(
-            SessionPool_.CreatePeriodicTask(
-                weak,
-                std::move(keepAliveCmd),
-                std::move(deletePredicate)
-            ), PERIODIC_ACTION_INTERVAL);
-    }
-
-    static ui64 ScanForeignLocations(std::shared_ptr<TTableClient::TImpl> client) {
-        size_t max = 0;
-        ui64 result = 0;
-
-        auto cb = [&result, &max](ui64 nodeId, const IObjRegistryHandle& handle) {
-            const auto sz = handle.Size();
-            if (sz > max) {
-                result = nodeId;
-                max = sz;
-            }
-        };
-
-        client->DbDriverState_->ForEachForeignEndpoint(cb, client.get());
-
-        return result;
-    }
-
-    static std::pair<ui64, size_t> ScanLocation(std::shared_ptr<TTableClient::TImpl> client,
-        std::unordered_map<ui64, size_t>& sessions, bool allNodes)
-    {
-        std::pair<ui64, size_t> result = {0, 0};
-
-        auto cb = [&result, &sessions](ui64 nodeId, const IObjRegistryHandle& handle) {
-            const auto sz = handle.Size();
-            sessions.insert({nodeId, sz});
-            if (sz > result.second) {
-                result.first = nodeId;
-                result.second = sz;
-            }
-        };
-
-        if (allNodes) {
-            client->DbDriverState_->ForEachEndpoint(cb, client.get());
-        } else {
-            client->DbDriverState_->ForEachLocalEndpoint(cb, client.get());
-        }
-
-        return result;
-    }
-
-    static NMath::TStats CalcCV(const std::unordered_map<ui64, size_t>& in) {
-        TVector<size_t> t;
-        t.reserve(in.size());
-        std::transform(in.begin(), in.end(), std::back_inserter(t), [](const std::pair<ui64, size_t>& pair) {
-            return pair.second;
-        });
-        return NMath::CalcCV(t);
-    }
-
-    void StartPeriodicHostScanTask() {
-        std::weak_ptr<TTableClient::TImpl> weak = shared_from_this();
-
-        // The future in completed when we have finished current migrate task
-        // and ready to accept new one
-        std::pair<ui64, size_t> winner = {0, 0};
-
-        auto periodicCb = [weak, winner](NYql::TIssues&&, EStatus status) mutable -> bool {
-
-            if (status != EStatus::SUCCESS) {
-                return false;
-            }
-
-            auto strongClient = weak.lock();
-            if (!strongClient) {
-                return false;
-            } else {
-                TRequestMigrator& migrator = strongClient->RequestMigrator_;
-
-                const auto balancingPolicy = strongClient->DbDriverState_->GetBalancingPolicy();
-
-                // Try to find any host at foreign locations if prefer local dc
-                const ui64 foreignHost = (balancingPolicy == EBalancingPolicy::UsePreferableLocation) ?
-                    ScanForeignLocations(strongClient) : 0;
-
-                std::unordered_map<ui64, size_t> hostMap;
-
-                winner = ScanLocation(strongClient, hostMap,
-                   balancingPolicy == EBalancingPolicy::UseAllNodes);
-
-                bool forceMigrate = false;
-
-                // There is host in foreign locations
-                if (foreignHost) {
-                    // But no hosts at local
-                    if (hostMap.empty()) {
-                        Y_VERIFY(!winner.second);
-                        // Scan whole cluster - we have no local dc
-                        winner = ScanLocation(strongClient, hostMap, true);
-                    } else {
-                        // We have local and foreign hosts, so force migration to local one
-                        forceMigrate = true;
-                        // Just replace source
-                        winner.first = foreignHost;
-                        winner.second++;
-                    }
-                }
-
-                const auto minCv = strongClient->Settings_.MinSessionCV_;
-
-                const auto stats = CalcCV(hostMap);
-
-                strongClient->DbDriverState_->StatCollector.SetSessionCV(stats.Cv);
-
-                // Just scan to update monitoring counter ^^
-                // Balancing feature is disabled.
-                if (!minCv)
-                    return true;
-
-                if (hostMap.size() < 2)
-                    return true;
-
-                // Migrate last session only if move from foreign to local
-                if (!forceMigrate && winner.second < 2)
-                    return true;
-
-                if (stats.Cv > minCv || forceMigrate) {
-                    migrator.SetHost(winner.first);
-                } else {
-                    migrator.SetHost(0);
-                }
-                return true;
-            }
-        };
-
-        Connections_->AddPeriodicTask(std::move(periodicCb), HOSTSCAN_PERIODIC_ACTION_INTERVAL);
-    }
-
-    TAsyncCreateSessionResult GetSession(const TCreateSessionSettings& settings) {
-        return SessionPool_.GetSession(shared_from_this(), settings);
-    }
-
-    i64 GetActiveSessionCount() const {
-        return SessionPool_.GetActiveSessions();
-    }
-
-    i64 GetActiveSessionsLimit() const {
-        return SessionPool_.GetActiveSessionsLimit();
-    }
-
-    i64 GetCurrentPoolSize() const {
-        return SessionPool_.GetCurrentPoolSize();
-    }
-
-    TAsyncCreateSessionResult CreateSession(const TCreateSessionSettings& settings, bool standalone,
-        TString preferedLocation = TString())
-    {
-        auto request = MakeOperationRequest<Ydb::Table::CreateSessionRequest>(settings);
-
-        auto createSessionPromise = NewPromise<TCreateSessionResult>();
-        auto self = shared_from_this();
-        auto rpcSettings = TRpcRequestSettings::Make(settings);
-        rpcSettings.Header.push_back({NYdb::YDB_CLIENT_CAPABILITIES, NYdb::YDB_CLIENT_CAPABILITY_SESSION_BALANCER});
-
-        auto createSessionExtractor = [createSessionPromise, self, standalone]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                Ydb::Table::CreateSessionResult result;
-                if (any) {
-                    any->UnpackTo(&result);
-                }
-                auto session = TSession(self, result.session_id(), status.Endpoint);
-                if (status.Ok()) {
-                    if (standalone) {
-                        session.SessionImpl_->MarkStandalone();
-                    } else {
-                        session.SessionImpl_->MarkActive();
-                    }
-                    self->DbDriverState_->StatCollector.IncSessionsOnHost(status.Endpoint);
-                } else {
-                    // We do not use SessionStatusInterception for CreateSession request
-                    session.SessionImpl_->MarkBroken();
-                }
-                TCreateSessionResult val(TStatus(std::move(status)), std::move(session));
-                createSessionPromise.SetValue(std::move(val));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::CreateSessionRequest, Ydb::Table::CreateSessionResponse>(
-            std::move(request),
-            createSessionExtractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncCreateSession,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            rpcSettings,
-            TEndpointKey(preferedLocation, 0));
-
-        std::weak_ptr<TDbDriverState> state = DbDriverState_;
-
-        return createSessionPromise.GetFuture();
-    }
-
-    TAsyncKeepAliveResult KeepAlive(const TSession::TImpl* session, const TKeepAliveSettings& settings) {
-        auto request = MakeOperationRequest<Ydb::Table::KeepAliveRequest>(settings);
-        request.set_session_id(session->GetId());
-
-        auto keepAliveResultPromise = NewPromise<TKeepAliveResult>();
-        auto self = shared_from_this();
-
-        auto keepAliveExtractor = [keepAliveResultPromise, self]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                Ydb::Table::KeepAliveResult result;
-                ESessionStatus sessionStatus = ESessionStatus::Unspecified;
-                if (any) {
-                    any->UnpackTo(&result);
-
-                    switch (result.session_status()) {
-                        case Ydb::Table::KeepAliveResult_SessionStatus_SESSION_STATUS_READY:
-                            sessionStatus = ESessionStatus::Ready;
-                        break;
-                        case Ydb::Table::KeepAliveResult_SessionStatus_SESSION_STATUS_BUSY:
-                            sessionStatus = ESessionStatus::Busy;
-                        break;
-                        default:
-                            sessionStatus = ESessionStatus::Unspecified;
-                    }
-                }
-                TKeepAliveResult val(TStatus(std::move(status)), sessionStatus);
-                keepAliveResultPromise.SetValue(std::move(val));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::KeepAliveRequest, Ydb::Table::KeepAliveResponse>(
-            std::move(request),
-            keepAliveExtractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncKeepAlive,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings),
-            session->GetEndpointKey());
-
-        return keepAliveResultPromise.GetFuture();
-    }
-
-    TFuture<TStatus> CreateTable(Ydb::Table::CreateTableRequest&& request, const TCreateTableSettings& settings)
-    {
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::CreateTableRequest,Ydb::Table::CreateTableResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncCreateTable,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TFuture<TStatus> AlterTable(Ydb::Table::AlterTableRequest&& request, const TAlterTableSettings& settings)
-    {
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::AlterTableRequest, Ydb::Table::AlterTableResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncAlterTable,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TAsyncOperation AlterTableLong(Ydb::Table::AlterTableRequest&& request, const TAlterTableSettings& settings)
-    {
-        using Ydb::Table::V1::TableService;
-        using Ydb::Table::AlterTableRequest;
-        using Ydb::Table::AlterTableResponse;
-        return RunOperation<TableService, AlterTableRequest, AlterTableResponse, TOperation>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncAlterTable,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TFuture<TStatus> CopyTable(const TString& sessionId, const TString& src, const TString& dst,
-        const TCopyTableSettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::CopyTableRequest>(settings);
-        request.set_session_id(sessionId);
-        request.set_source_path(src);
-        request.set_destination_path(dst);
-
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::CopyTableRequest, Ydb::Table::CopyTableResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncCopyTable,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TFuture<TStatus> CopyTables(Ydb::Table::CopyTablesRequest&& request, const TCopyTablesSettings& settings)
-    {
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::CopyTablesRequest, Ydb::Table::CopyTablesResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncCopyTables,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TFuture<TStatus> RenameTables(Ydb::Table::RenameTablesRequest&& request, const TRenameTablesSettings& settings)
-    {
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::RenameTablesRequest, Ydb::Table::RenameTablesResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncRenameTables,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TFuture<TStatus> DropTable(const TString& sessionId, const TString& path, const TDropTableSettings& settings) {
-        auto request = MakeOperationRequest<Ydb::Table::DropTableRequest>(settings);
-        request.set_session_id(sessionId);
-        request.set_path(path);
-
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::DropTableRequest, Ydb::Table::DropTableResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncDropTable,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TAsyncDescribeTableResult DescribeTable(const TString& sessionId, const TString& path, const TDescribeTableSettings& settings) {
-        auto request = MakeOperationRequest<Ydb::Table::DescribeTableRequest>(settings);
-        request.set_session_id(sessionId);
-        request.set_path(path);
-        if (settings.WithKeyShardBoundary_) {
-            request.set_include_shard_key_bounds(true);
-        }
-
-        if (settings.WithTableStatistics_) {
-            request.set_include_table_stats(true);
-        }
-
-        if (settings.WithPartitionStatistics_) {
-            request.set_include_partition_stats(true);
-        }
-
-        auto promise = NewPromise<TDescribeTableResult>();
-
-        auto extractor = [promise, settings]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                Ydb::Table::DescribeTableResult result;
-                if (any) {
-                    any->UnpackTo(&result);
-                }
-                TDescribeTableResult describeTableResult(TStatus(std::move(status)),
-                    std::move(result), settings);
-                promise.SetValue(std::move(describeTableResult));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::DescribeTableRequest, Ydb::Table::DescribeTableResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncDescribeTable,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings));
-
-        return promise.GetFuture();
-    }
-
-    template<typename TParamsType>
-    TAsyncDataQueryResult ExecuteDataQuery(TSession& session, const TString& query, const TTxControl& txControl,
-        TParamsType params, const TExecDataQuerySettings& settings)
-    {
-        auto maybeQuery = session.SessionImpl_->GetQueryFromCache(query, Settings_.AllowRequestMigration_);
-        if (maybeQuery) {
-            TDataQuery dataQuery(session, query, maybeQuery->QueryId, maybeQuery->ParameterTypes);
-            return ExecuteDataQuery(session, dataQuery, txControl, params, settings, true);
-        }
-
-        CacheMissCounter.Inc();
-
-        return InjectSessionStatusInterception(session.SessionImpl_,
-            ExecuteDataQueryInternal(session, query, txControl, params, settings, false),
-            true, GetMinTimeToTouch(Settings_.SessionPoolSettings_));
-    }
-
-    template<typename TParamsType>
-    TAsyncDataQueryResult ExecuteDataQuery(TSession& session, const TDataQuery& dataQuery, const TTxControl& txControl,
-        TParamsType params, const TExecDataQuerySettings& settings,
-        bool fromCache)
-    {
-        TString queryKey = dataQuery.Impl_->GetTextHash();
-        auto cb = [queryKey](const TDataQueryResult& result, TSession::TImpl& session) {
-            if (result.GetStatus() == EStatus::NOT_FOUND) {
-                session.InvalidateQueryInCache(queryKey);
-            }
-        };
-
-        return InjectSessionStatusInterception<TDataQueryResult>(
-            session.SessionImpl_,
-            session.Client_->ExecuteDataQueryInternal(session, dataQuery, txControl, params, settings, fromCache),
-            true,
-            GetMinTimeToTouch(session.Client_->Settings_.SessionPoolSettings_),
-            cb);
-    }
-
-    TAsyncPrepareQueryResult PrepareDataQuery(const TSession& session, const TString& query,
-        const TPrepareDataQuerySettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::PrepareDataQueryRequest>(settings);
-        request.set_session_id(session.GetId());
-        request.set_yql_text(query);
-
-        auto promise = NewPromise<TPrepareQueryResult>();
-
-        //See ExecuteDataQueryInternal for explanation
-        auto sessionPtr = new TSession(session);
-        auto extractor = [promise, sessionPtr, query]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                TDataQuery dataQuery(*sessionPtr, query, "");
-
-                if (any) {
-                    Ydb::Table::PrepareQueryResult result;
-                    any->UnpackTo(&result);
-
-                    if (status.Ok()) {
-                        dataQuery = TDataQuery(*sessionPtr, query, result.query_id(), result.parameters_types());
-                        sessionPtr->SessionImpl_->AddQueryToCache(dataQuery);
-                    }
-                }
-
-                TPrepareQueryResult prepareQueryResult(TStatus(std::move(status)),
-                    dataQuery, false);
-                delete sessionPtr;
-                promise.SetValue(std::move(prepareQueryResult));
-            };
-
-        CollectQuerySize(query, QuerySizeHistogram);
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::PrepareDataQueryRequest, Ydb::Table::PrepareDataQueryResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncPrepareDataQuery,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings),
-            session.SessionImpl_->GetEndpointKey());
-
-        return promise.GetFuture();
-    }
-
-    TAsyncStatus ExecuteSchemeQuery(const TString& sessionId, const TString& query,
-        const TExecSchemeQuerySettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::ExecuteSchemeQueryRequest>(settings);
-        request.set_session_id(sessionId);
-        request.set_yql_text(query);
-
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::ExecuteSchemeQueryRequest, Ydb::Table::ExecuteSchemeQueryResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncExecuteSchemeQuery,
-            TRpcRequestSettings::Make(settings));
-    }
-
-    TAsyncBeginTransactionResult BeginTransaction(const TSession& session, const TTxSettings& txSettings,
-        const TBeginTxSettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::BeginTransactionRequest>(settings);
-        request.set_session_id(session.GetId());
-        SetTxSettings(txSettings, request.mutable_tx_settings());
-
-        auto promise = NewPromise<TBeginTransactionResult>();
-
-        auto extractor = [promise, session]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                TString txId;
-                if (any) {
-                    Ydb::Table::BeginTransactionResult result;
-                    any->UnpackTo(&result);
-                    txId = result.tx_meta().id();
-                }
-
-                TBeginTransactionResult beginTxResult(TStatus(std::move(status)),
-                    TTransaction(session, txId));
-                promise.SetValue(std::move(beginTxResult));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::BeginTransactionRequest, Ydb::Table::BeginTransactionResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncBeginTransaction,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings),
-            session.SessionImpl_->GetEndpointKey());
-
-        return promise.GetFuture();
-    }
-
-    TAsyncCommitTransactionResult CommitTransaction(const TSession& session, const TTransaction& tx,
-        const TCommitTxSettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::CommitTransactionRequest>(settings);
-        request.set_session_id(session.GetId());
-        request.set_tx_id(tx.GetId());
-        request.set_collect_stats(GetStatsCollectionMode(settings.CollectQueryStats_));
-
-        auto promise = NewPromise<TCommitTransactionResult>();
-
-        auto extractor = [promise]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                TMaybe<TQueryStats> queryStats;
-                if (any) {
-                    Ydb::Table::CommitTransactionResult result;
-                    any->UnpackTo(&result);
-
-                    if (result.has_query_stats()) {
-                        queryStats = TQueryStats(result.query_stats());
-                    }
-                }
-
-                TCommitTransactionResult commitTxResult(TStatus(std::move(status)), queryStats);
-                promise.SetValue(std::move(commitTxResult));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::CommitTransactionRequest, Ydb::Table::CommitTransactionResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncCommitTransaction,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings),
-            session.SessionImpl_->GetEndpointKey());
-
-        return promise.GetFuture();
-    }
-
-    TAsyncStatus RollbackTransaction(const TSession& session, const TTransaction& tx,
-        const TRollbackTxSettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::RollbackTransactionRequest>(settings);
-        request.set_session_id(session.GetId());
-        request.set_tx_id(tx.GetId());
-
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::RollbackTransactionRequest, Ydb::Table::RollbackTransactionResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncRollbackTransaction,
-            TRpcRequestSettings::Make(settings),
-            session.SessionImpl_->GetEndpointKey());
-    }
-
-    TAsyncExplainDataQueryResult ExplainDataQuery(const TSession& session, const TString& query,
-        const TExplainDataQuerySettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::ExplainDataQueryRequest>(settings);
-        request.set_session_id(session.GetId());
-        request.set_yql_text(query);
-
-        auto promise = NewPromise<TExplainQueryResult>();
-
-        auto extractor = [promise]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                TString ast;
-                TString plan;
-                if (any) {
-                    Ydb::Table::ExplainQueryResult result;
-                    any->UnpackTo(&result);
-                    ast = result.query_ast();
-                    plan = result.query_plan();
-                }
-                TExplainQueryResult val(TStatus(std::move(status)),
-                    std::move(plan), std::move(ast));
-                promise.SetValue(std::move(val));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::ExplainDataQueryRequest, Ydb::Table::ExplainDataQueryResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncExplainDataQuery,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings),
-            session.SessionImpl_->GetEndpointKey());
-
-        return promise.GetFuture();
-    }
-
-    static void SetTypedValue(Ydb::TypedValue* protoValue, const TValue& value) {
-        protoValue->mutable_type()->CopyFrom(TProtoAccessor::GetProto(value.GetType()));
-        protoValue->mutable_value()->CopyFrom(TProtoAccessor::GetProto(value));
-    }
-
-    NThreading::TFuture<std::pair<TPlainStatus, TReadTableStreamProcessorPtr>> ReadTable(
-        const TString& sessionId,
-        const TString& path,
-        const TReadTableSettings& settings)
-    {
-        auto request = MakeRequest<Ydb::Table::ReadTableRequest>();
-        request.set_session_id(sessionId);
-        request.set_path(path);
-        request.set_ordered(settings.Ordered_);
-        if (settings.RowLimit_) {
-            request.set_row_limit(settings.RowLimit_.GetRef());
-        }
-        for (const auto& col : settings.Columns_) {
-            request.add_columns(col);
-        }
-        if (settings.UseSnapshot_) {
-            request.set_use_snapshot(
-                settings.UseSnapshot_.GetRef()
-                ? Ydb::FeatureFlag::ENABLED
-                : Ydb::FeatureFlag::DISABLED);
-        }
-
-        if (settings.From_) {
-            const auto& from = settings.From_.GetRef();
-            if (from.IsInclusive()) {
-                SetTypedValue(request.mutable_key_range()->mutable_greater_or_equal(), from.GetValue());
-            } else {
-                SetTypedValue(request.mutable_key_range()->mutable_greater(), from.GetValue());
-            }
-        }
-
-        if (settings.To_) {
-            const auto& to = settings.To_.GetRef();
-            if (to.IsInclusive()) {
-                SetTypedValue(request.mutable_key_range()->mutable_less_or_equal(), to.GetValue());
-            } else {
-                SetTypedValue(request.mutable_key_range()->mutable_less(), to.GetValue());
-            }
-        }
-
-        auto promise = NewPromise<std::pair<TPlainStatus, TReadTableStreamProcessorPtr>>();
-
-        Connections_->StartReadStream<Ydb::Table::V1::TableService, Ydb::Table::ReadTableRequest, Ydb::Table::ReadTableResponse>(
-            std::move(request),
-            [promise] (TPlainStatus status, TReadTableStreamProcessorPtr processor) mutable {
-                promise.SetValue(std::make_pair(status, processor));
-            },
-            &Ydb::Table::V1::TableService::Stub::AsyncStreamReadTable,
-            DbDriverState_,
-            TRpcRequestSettings::Make(settings));
-
-        return promise.GetFuture();
-
-    }
-
-    TAsyncStatus Close(const TSession::TImpl* sessionImpl, const TCloseSessionSettings& settings) {
-        auto request = MakeOperationRequest<Ydb::Table::DeleteSessionRequest>(settings);
-        request.set_session_id(sessionImpl->GetId());
-        return RunSimple<Ydb::Table::V1::TableService, Ydb::Table::DeleteSessionRequest, Ydb::Table::DeleteSessionResponse>(
-            std::move(request),
-            &Ydb::Table::V1::TableService::Stub::AsyncDeleteSession,
-            TRpcRequestSettings::Make(settings),
-            sessionImpl->GetEndpointKey());
-    }
-
-    TAsyncStatus CloseInternal(const TSession::TImpl* sessionImpl) {
-        static const auto internalCloseSessionSettings = TCloseSessionSettings()
-                .ClientTimeout(TDuration::Seconds(2));
-
-        auto driver = Connections_;
-        return Close(sessionImpl, internalCloseSessionSettings)
-            .Apply([driver{std::move(driver)}](TAsyncStatus status) mutable
-            {
-                driver.reset();
-                return status;
-            });
-    }
-
-    bool ReturnSession(TSession::TImpl* sessionImpl) {
-        Y_VERIFY(sessionImpl->GetState() == TSession::TImpl::S_ACTIVE ||
-                 sessionImpl->GetState() == TSession::TImpl::S_IDLE);
-
-        if (RequestMigrator_.DoCheckAndMigrate(sessionImpl)) {
-            SessionRemovedDueBalancing.Inc();
-            return false;
-        }
-
-        bool needUpdateCounter = sessionImpl->NeedUpdateActiveCounter();
-        // Also removes NeedUpdateActiveCounter flag
-        sessionImpl->MarkIdle();
-        sessionImpl->SetTimeInterval(TDuration::Zero());
-        if (!SessionPool_.ReturnSession(sessionImpl, needUpdateCounter)) {
-            sessionImpl->SetNeedUpdateActiveCounter(needUpdateCounter);
-            return false;
-        }
-        return true;
-    }
-
-    void DeleteSession(TSession::TImpl* sessionImpl) {
-        if (sessionImpl->NeedUpdateActiveCounter()) {
-            SessionPool_.DecrementActiveCounter();
-        }
-
-        if (sessionImpl->GetId()) {
-            CloseInternal(sessionImpl);
-            DbDriverState_->StatCollector.DecSessionsOnHost(sessionImpl->GetEndpoint());
-        }
-
-        delete sessionImpl;
-    }
-
-    ui32 GetSessionRetryLimit() const {
-        return Settings_.SessionPoolSettings_.RetryLimit_;
-    }
-
-    void SetStatCollector(const NSdkStats::TStatCollector::TClientStatCollector& collector) {
-        CacheMissCounter.Set(collector.CacheMiss);
-        QuerySizeHistogram.Set(collector.QuerySize);
-        ParamsSizeHistogram.Set(collector.ParamsSize);
-        RetryOperationStatCollector = collector.RetryOperationStatCollector;
-        SessionRemovedDueBalancing.Set(collector.SessionRemovedDueBalancing);
-        RequestMigrated.Set(collector.RequestMigrated);
-    }
-
-    TAsyncBulkUpsertResult BulkUpsert(const TString& table, TValue&& rows, const TBulkUpsertSettings& settings) {
-        auto request = MakeOperationRequest<Ydb::Table::BulkUpsertRequest>(settings);
-        request.set_table(table);
-        *request.mutable_rows()->mutable_type() = TProtoAccessor::GetProto(rows.GetType());
-        *request.mutable_rows()->mutable_value() = std::move(rows.GetProto());
-
-        auto promise = NewPromise<TBulkUpsertResult>();
-
-        auto extractor = [promise]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                Y_UNUSED(any);
-                TBulkUpsertResult val(TStatus(std::move(status)));
-                promise.SetValue(std::move(val));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::BulkUpsertRequest, Ydb::Table::BulkUpsertResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncBulkUpsert,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings));
-
-        return promise.GetFuture();
-    }
-
-    TAsyncBulkUpsertResult BulkUpsert(const TString& table, EDataFormat format,
-        const TString& data, const TString& schema, const TBulkUpsertSettings& settings)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::BulkUpsertRequest>(settings);
-        request.set_table(table);
-        if (format == EDataFormat::ApacheArrow) {
-            request.mutable_arrow_batch_settings()->set_schema(schema);
-        } else if (format == EDataFormat::CSV) {
-            auto* csv_settings = request.mutable_csv_settings();
-            const auto& format_settings = settings.FormatSettings_;
-            if (!format_settings.empty()) {
-                bool ok = csv_settings->ParseFromString(format_settings);
-                if (!ok) {
-                    return {};
-                }
-            }
-        }
-        request.set_data(data);
-
-        auto promise = NewPromise<TBulkUpsertResult>();
-
-        auto extractor = [promise]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                Y_UNUSED(any);
-                TBulkUpsertResult val(TStatus(std::move(status)));
-                promise.SetValue(std::move(val));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::BulkUpsertRequest, Ydb::Table::BulkUpsertResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncBulkUpsert,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings));
-
-        return promise.GetFuture();
-    }
-
-    TFuture<std::pair<TPlainStatus, TScanQueryProcessorPtr>> StreamExecuteScanQueryInternal(const TString& query,
-        const ::google::protobuf::Map<TString, Ydb::TypedValue>* params,
-        const TStreamExecScanQuerySettings& settings)
-    {
-        auto request = MakeRequest<Ydb::Table::ExecuteScanQueryRequest>();
-        request.mutable_query()->set_yql_text(query);
-
-        if (params) {
-            *request.mutable_parameters() = *params;
-        }
-
-        if (settings.Explain_) {
-            request.set_mode(Ydb::Table::ExecuteScanQueryRequest::MODE_EXPLAIN);
-        } else {
-            request.set_mode(Ydb::Table::ExecuteScanQueryRequest::MODE_EXEC);
-        }
-
-        request.set_collect_stats(GetStatsCollectionMode(settings.CollectQueryStats_));
-
-        auto promise = NewPromise<std::pair<TPlainStatus, TScanQueryProcessorPtr>>();
-
-        Connections_->StartReadStream<
-            Ydb::Table::V1::TableService,
-            Ydb::Table::ExecuteScanQueryRequest,
-            Ydb::Table::ExecuteScanQueryPartialResponse>
-        (
-            std::move(request),
-            [promise] (TPlainStatus status, TScanQueryProcessorPtr processor) mutable {
-                promise.SetValue(std::make_pair(status, processor));
-            },
-            &Ydb::Table::V1::TableService::Stub::AsyncStreamExecuteScanQuery,
-            DbDriverState_,
-            TRpcRequestSettings::Make(settings)
-        );
-
-        return promise.GetFuture();
-    }
-
-    TAsyncScanQueryPartIterator StreamExecuteScanQuery(const TString& query,
-        const ::google::protobuf::Map<TString, Ydb::TypedValue>* params,
-        const TStreamExecScanQuerySettings& settings)
-    {
-        auto promise = NewPromise<TScanQueryPartIterator>();
-
-        auto iteratorCallback = [promise](TFuture<std::pair<TPlainStatus,
-            TTableClient::TImpl::TScanQueryProcessorPtr>> future) mutable
-        {
-            Y_ASSERT(future.HasValue());
-            auto pair = future.ExtractValue();
-            promise.SetValue(TScanQueryPartIterator(
-                pair.second
-                    ? std::make_shared<TScanQueryPartIterator::TReaderImpl>(pair.second, pair.first.Endpoint)
-                    : nullptr,
-                std::move(pair.first))
-            );
-        };
-
-        StreamExecuteScanQueryInternal(query, params, settings).Subscribe(iteratorCallback);
-        return promise.GetFuture();
-    }
-
-    static void CloseAndDeleteSession(
-        std::unique_ptr<TSession::TImpl>&& impl,
-        std::shared_ptr<TTableClient::TImpl> client);
-public:
-    TClientSettings Settings_;
-
-private:
-    static void SetParams(
-        ::google::protobuf::Map<TString, Ydb::TypedValue>* params,
-        Ydb::Table::ExecuteDataQueryRequest* request)
-    {
-        if (params) {
-            request->mutable_parameters()->swap(*params);
-        }
-    }
-
-    static void SetParams(
-        const ::google::protobuf::Map<TString, Ydb::TypedValue>& params,
-        Ydb::Table::ExecuteDataQueryRequest* request)
-    {
-        *request->mutable_parameters() = params;
-    }
-
-    static void CollectParams(
-        ::google::protobuf::Map<TString, Ydb::TypedValue>* params,
-        NSdkStats::TAtomicHistogram<::NMonitoring::THistogram> histgoram)
-    {
-
-        if (params && histgoram.IsCollecting()) {
-            size_t size = 0;
-            for (auto& keyvalue: *params) {
-                size += keyvalue.second.ByteSizeLong();
-            }
-            histgoram.Record(size);
-        }
-    }
-
-    static void CollectParams(
-        const ::google::protobuf::Map<TString, Ydb::TypedValue>& params,
-        NSdkStats::TAtomicHistogram<::NMonitoring::THistogram> histgoram)
-    {
-
-        if (histgoram.IsCollecting()) {
-            size_t size = 0;
-            for (auto& keyvalue: params) {
-                size += keyvalue.second.ByteSizeLong();
-            }
-            histgoram.Record(size);
-        }
-    }
-
-    static void CollectQuerySize(const TString& query, NSdkStats::TAtomicHistogram<::NMonitoring::THistogram>& querySizeHistogram) {
-        if (querySizeHistogram.IsCollecting()) {
-            querySizeHistogram.Record(query.size());
-        }
-    }
-
-    static void CollectQuerySize(const TDataQuery&, NSdkStats::TAtomicHistogram<::NMonitoring::THistogram>&) {}
-
-    template <typename TQueryType, typename TParamsType>
-    TAsyncDataQueryResult ExecuteDataQueryInternal(const TSession& session, const TQueryType& query,
-        const TTxControl& txControl, TParamsType params,
-        const TExecDataQuerySettings& settings, bool fromCache)
-    {
-        auto request = MakeOperationRequest<Ydb::Table::ExecuteDataQueryRequest>(settings);
-        request.set_session_id(session.GetId());
-        auto txControlProto = request.mutable_tx_control();
-        txControlProto->set_commit_tx(txControl.CommitTx_);
-        if (txControl.TxId_) {
-            txControlProto->set_tx_id(*txControl.TxId_);
-        } else {
-            SetTxSettings(txControl.BeginTx_, txControlProto->mutable_begin_tx());
-        }
-
-        request.set_collect_stats(GetStatsCollectionMode(settings.CollectQueryStats_));
-
-        SetQuery(query, request.mutable_query());
-        CollectQuerySize(query, QuerySizeHistogram);
-
-        SetParams(params, &request);
-        CollectParams(params, ParamsSizeHistogram);
-
-        SetQueryCachePolicy(query, settings, request.mutable_query_cache_policy());
-
-        auto promise = NewPromise<TDataQueryResult>();
-        bool keepInCache = settings.KeepInQueryCache_ && settings.KeepInQueryCache_.GetRef();
-
-        // We don't want to delay call of TSession dtor, so we can't capture it by copy
-        // otherwise we break session pool and other clients logic.
-        // Same problem with TDataQuery and TTransaction
-        //
-        // The fast solution is:
-        // - create copy of TSession out of lambda
-        // - capture pointer
-        // - call free just before SetValue call
-        auto sessionPtr = new TSession(session);
-        auto extractor = [promise, sessionPtr, query, fromCache, keepInCache]
-            (google::protobuf::Any* any, TPlainStatus status) mutable {
-                TVector<TResultSet> res;
-                TMaybe<TTransaction> tx;
-                TMaybe<TDataQuery> dataQuery;
-                TMaybe<TQueryStats> queryStats;
-
-                auto queryText = GetQueryText(query);
-                if (any) {
-                    Ydb::Table::ExecuteQueryResult result;
-                    any->UnpackTo(&result);
-
-                    for (size_t i = 0; i < result.result_setsSize(); i++) {
-                        res.push_back(TResultSet(*result.mutable_result_sets(i)));
-                    }
-
-                    if (result.has_tx_meta()) {
-                        tx = TTransaction(*sessionPtr, result.tx_meta().id());
-                    }
-
-                    if (result.has_query_meta()) {
-                        if (queryText) {
-                            auto& query_meta = result.query_meta();
-                            dataQuery = TDataQuery(*sessionPtr, *queryText, query_meta.id(), query_meta.parameters_types());
-                        }
-                    }
-
-                    if (result.has_query_stats()) {
-                        queryStats = TQueryStats(result.query_stats());
-                    }
-                }
-
-                if (keepInCache && dataQuery && queryText) {
-                    sessionPtr->SessionImpl_->AddQueryToCache(*dataQuery);
-                }
-
-                TDataQueryResult dataQueryResult(TStatus(std::move(status)),
-                    std::move(res), tx, dataQuery, fromCache, queryStats);
-
-                delete sessionPtr;
-                tx.Clear();
-                dataQuery.Clear();
-                promise.SetValue(std::move(dataQueryResult));
-            };
-
-        Connections_->RunDeferred<Ydb::Table::V1::TableService, Ydb::Table::ExecuteDataQueryRequest, Ydb::Table::ExecuteDataQueryResponse>(
-            std::move(request),
-            extractor,
-            &Ydb::Table::V1::TableService::Stub::AsyncExecuteDataQuery,
-            DbDriverState_,
-            INITIAL_DEFERRED_CALL_DELAY,
-            TRpcRequestSettings::Make(settings),
-            session.SessionImpl_->GetEndpointKey());
-
-        return promise.GetFuture();
-    }
-
-    static void SetTxSettings(const TTxSettings& txSettings, Ydb::Table::TransactionSettings* proto)
-    {
-        switch (txSettings.Mode_) {
-            case TTxSettings::TS_SERIALIZABLE_RW:
-                proto->mutable_serializable_read_write();
-                break;
-            case TTxSettings::TS_ONLINE_RO:
-                proto->mutable_online_read_only()->set_allow_inconsistent_reads(
-                    txSettings.OnlineSettings_.AllowInconsistentReads_);
-                break;
-            case TTxSettings::TS_STALE_RO:
-                proto->mutable_stale_read_only();
-                break;
-            case TTxSettings::TS_SNAPSHOT_RO:
-                proto->mutable_snapshot_read_only();
-                break;
-            default:
-                throw TContractViolation("Unexpected transaction mode.");
-        }
-    }
-
-    static void SetQuery(const TString& queryText, Ydb::Table::Query* query) {
-        query->set_yql_text(queryText);
-    }
-
-    static void SetQuery(const TDataQuery& queryData, Ydb::Table::Query* query) {
-        query->set_id(queryData.GetId());
-    }
-
-    static void SetQueryCachePolicy(const TString&, const TExecDataQuerySettings& settings,
-        Ydb::Table::QueryCachePolicy* queryCachePolicy)
-    {
-        queryCachePolicy->set_keep_in_cache(settings.KeepInQueryCache_ ? settings.KeepInQueryCache_.GetRef() : false);
-    }
-
-    static void SetQueryCachePolicy(const TDataQuery&, const TExecDataQuerySettings& settings,
-        Ydb::Table::QueryCachePolicy* queryCachePolicy) {
-        queryCachePolicy->set_keep_in_cache(settings.KeepInQueryCache_ ? settings.KeepInQueryCache_.GetRef() : true);
-    }
-
-    static TMaybe<TString> GetQueryText(const TString& queryText) {
-        return queryText;
-    }
-
-    static TMaybe<TString> GetQueryText(const TDataQuery& queryData) {
-        return queryData.GetText();
-    }
-
-public:
-    NSdkStats::TAtomicCounter<::NMonitoring::TRate> CacheMissCounter;
-    NSdkStats::TStatCollector::TClientRetryOperationStatCollector RetryOperationStatCollector;
-    NSdkStats::TAtomicHistogram<::NMonitoring::THistogram> QuerySizeHistogram;
-    NSdkStats::TAtomicHistogram<::NMonitoring::THistogram> ParamsSizeHistogram;
-    NSdkStats::TAtomicCounter<::NMonitoring::TRate> SessionRemovedDueBalancing;
-    NSdkStats::TAtomicCounter<::NMonitoring::TRate> RequestMigrated;
-
-private:
-    TSessionPoolImpl SessionPool_;
-    TRequestMigrator RequestMigrator_;
-    static const TKeepAliveSettings KeepAliveSettings;
-};
-
-const TKeepAliveSettings TTableClient::TImpl::KeepAliveSettings = TKeepAliveSettings().ClientTimeout(KEEP_ALIVE_CLIENT_TIMEOUT);
-
-TSessionPoolImpl::TSessionPoolImpl(ui32 maxActiveSessions)
-    : Closed_(false)
-    , ActiveSessions_(0)
-    , MaxActiveSessions_(maxActiveSessions)
-{}
-
-void TTableClient::TImpl::CloseAndDeleteSession(std::unique_ptr<TSession::TImpl>&& impl,
-                                  std::shared_ptr<TTableClient::TImpl> client) {
-    std::shared_ptr<TSession::TImpl> deleteSession(
-        impl.release(),
-        TSession::TImpl::GetSmartDeleter(client));
-
-    deleteSession->MarkBroken();
-}
-
-void TSessionPoolImpl::CreateFakeSession(
-    NThreading::TPromise<TCreateSessionResult>& promise,
-    std::shared_ptr<TTableClient::TImpl> client)
-{
-    TSession session(client, "", "");
-    // Mark broken to prevent returning to session pool
-    session.SessionImpl_->MarkBroken();
-    TCreateSessionResult val(
-        TStatus(
-            TPlainStatus(
-                EStatus::CLIENT_RESOURCE_EXHAUSTED,
-                "Active sessions limit exceeded"
-            )
-        ),
-        std::move(session)
-    );
-
-    client->ScheduleTaskUnsafe([promise, val{std::move(val)}]() mutable {
-        promise.SetValue(std::move(val));
-    }, TDuration());
-}
-
-TAsyncCreateSessionResult TSessionPoolImpl::GetSession(
-    std::shared_ptr<TTableClient::TImpl> client,
-    const TCreateSessionSettings& settings)
-{
-    auto createSessionPromise = NewPromise<TCreateSessionResult>();
-    std::unique_ptr<TSession::TImpl> sessionImpl;
-    bool needUpdateActiveSessionCounter = false;
-    bool returnFakeSession = false;
-    {
-        std::lock_guard guard(Mtx_);
-        if (MaxActiveSessions_) {
-            if (ActiveSessions_ < MaxActiveSessions_) {
-                ActiveSessions_++;
-                needUpdateActiveSessionCounter = true;
-            } else {
-                returnFakeSession = true;
-            }
-        } else {
-            ActiveSessions_++;
-            needUpdateActiveSessionCounter = true;
-        }
-        if (!Sessions_.empty()) {
-            auto it = std::prev(Sessions_.end());
-            sessionImpl = std::move(it->second);
-            Sessions_.erase(it);
-        }
-        UpdateStats();
-    }
-    if (returnFakeSession) {
-        FakeSessionsCounter_.Inc();
-        CreateFakeSession(createSessionPromise, client);
-        return createSessionPromise.GetFuture();
-    } else if (sessionImpl) {
-        Y_VERIFY(sessionImpl->GetState() == TSession::TImpl::S_IDLE);
-        Y_VERIFY(!sessionImpl->GetTimeInterval());
-        Y_VERIFY(needUpdateActiveSessionCounter);
-        sessionImpl->MarkActive();
-        sessionImpl->SetNeedUpdateActiveCounter(true);
-
-        TCreateSessionResult val(TStatus(TPlainStatus()),
-            TSession(client, std::shared_ptr<TSession::TImpl>(
-                sessionImpl.release(),
-                TSession::TImpl::GetSmartDeleter(client))));
-
-        client->ScheduleTaskUnsafe([createSessionPromise, val{std::move(val)}]() mutable {
-            createSessionPromise.SetValue(std::move(val));
-        }, TDuration());
-
-        return createSessionPromise.GetFuture();
-    } else {
-        const auto& sessionResult = client->CreateSession(settings, false);
-        sessionResult.Subscribe(TSession::TImpl::GetSessionInspector(createSessionPromise, client, settings, 0, needUpdateActiveSessionCounter));
-        return createSessionPromise.GetFuture();
-    }
-}
-
-bool TSessionPoolImpl::DropSessionOnEndpoint(std::shared_ptr<TTableClient::TImpl> client, ui64 nodeId) {
-    std::unique_ptr<TSession::TImpl> sessionImpl;
-    {
-        std::lock_guard guard(Mtx_);
-        for (auto it = Sessions_.begin(); it != Sessions_.end(); it++) {
-            if (it->second->GetEndpointKey().GetNodeId() == nodeId) {
-                sessionImpl = std::move(it->second);
-                Sessions_.erase(it);
-                break;
-            }
-        }
-    }
-    if (!sessionImpl)
-        return false;
-
-    auto deleteFn = TSession::TImpl::GetSmartDeleter(client);
-    deleteFn(sessionImpl.release());
-
-    return true;
-}
-
-bool TSessionPoolImpl::ReturnSession(TSession::TImpl* impl, bool active) {
-    {
-        std::lock_guard guard(Mtx_);
-        if (Closed_)
-            return false;
-        Sessions_.emplace(std::make_pair(impl->GetTimeToTouchFast(), impl));
-        if (active) {
-            Y_VERIFY(ActiveSessions_);
-            ActiveSessions_--;
-            impl->SetNeedUpdateActiveCounter(false);
-        }
-        UpdateStats();
-    }
-    return true;
-}
-
-void TSessionPoolImpl::DecrementActiveCounter() {
-    std::lock_guard guard(Mtx_);
-    Y_VERIFY(ActiveSessions_);
-    ActiveSessions_--;
-    UpdateStats();
-}
-
-void TSessionPoolImpl::Drain(std::function<bool(std::unique_ptr<TSession::TImpl>&&)> cb, bool close) {
-    std::lock_guard guard(Mtx_);
-    Closed_ = close;
-    for (auto it = Sessions_.begin(); it != Sessions_.end();) {
-        const bool cont = cb(std::move(it->second));
-        it = Sessions_.erase(it);
-        if (!cont)
-            break;
-    }
-    UpdateStats();
-}
-
-TPeriodicCb TSessionPoolImpl::CreatePeriodicTask(std::weak_ptr<TTableClient::TImpl> weakClient,
-    TKeepAliveCmd&& cmd, TDeletePredicate&& deletePredicate)
-{
-    auto periodicCb = [this, weakClient, cmd=std::move(cmd), deletePredicate=std::move(deletePredicate)](NYql::TIssues&&, EStatus status) {
-        if (status != EStatus::SUCCESS) {
-            return false;
-        }
-
-        auto strongClient = weakClient.lock();
-        if (!strongClient) {
-            // No more clients alive - no need to run periodic,
-            // moreover it is unsafe to touch this ptr!
-            return false;
-        } else {
-            auto keepAliveBatchSize = PERIODIC_ACTION_BATCH_SIZE;
-            TVector<std::unique_ptr<TSession::TImpl>> sessionsToTouch;
-            sessionsToTouch.reserve(keepAliveBatchSize);
-            TVector<std::unique_ptr<TSession::TImpl>> sessionsToDelete;
-            sessionsToDelete.reserve(keepAliveBatchSize);
-            auto now = TInstant::Now();
-            {
-                std::lock_guard guard(Mtx_);
-                auto& sessions = Sessions_;
-
-                auto it = sessions.begin();
-                while (it != sessions.end() && keepAliveBatchSize--) {
-                    if (now < it->second->GetTimeToTouchFast())
-                        break;
-
-                    if (deletePredicate(it->second.get(), strongClient.get(), sessions.size())) {
-                        sessionsToDelete.emplace_back(std::move(it->second));
-                    } else {
-                        sessionsToTouch.emplace_back(std::move(it->second));
-                    }
-                    sessions.erase(it++);
-                }
-                UpdateStats();
-            }
-
-            for (auto& sessionImpl : sessionsToTouch) {
-                if (sessionImpl) {
-                    Y_VERIFY(sessionImpl->GetState() == TSession::TImpl::S_IDLE);
-                    TSession session(strongClient, std::shared_ptr<TSession::TImpl>(
-                        sessionImpl.release(),
-                        TSession::TImpl::GetSmartDeleter(strongClient)));
-                    cmd(session);
-                }
-            }
-
-            for (auto& sessionImpl : sessionsToDelete) {
-                if (sessionImpl) {
-                    Y_VERIFY(sessionImpl->GetState() == TSession::TImpl::S_IDLE);
-                    TTableClient::TImpl::CloseAndDeleteSession(std::move(sessionImpl), strongClient);
-                }
-            }
-        }
-
-        return true;
-    };
-    return periodicCb;
-}
-
-i64 TSessionPoolImpl::GetActiveSessions() const {
-    std::lock_guard guard(Mtx_);
-    return ActiveSessions_;
-}
-
-i64 TSessionPoolImpl::GetActiveSessionsLimit() const {
-    return MaxActiveSessions_;
-}
-
-i64 TSessionPoolImpl::GetCurrentPoolSize() const {
-    std::lock_guard guard(Mtx_);
-    return Sessions_.size();
-}
 
 static bool IsSessionStatusRetriable(const TCreateSessionResult& res) {
     switch (res.GetStatus()) {
@@ -2974,17 +1349,6 @@ TSessionInspectorFn TSession::TImpl::GetSessionInspector(
             promise.SetValue(std::move(session));
         }
     };
-}
-
-void TSessionPoolImpl::SetStatCollector(NSdkStats::TStatCollector::TSessionPoolStatCollector statCollector) {
-    ActiveSessionsCounter_.Set(statCollector.ActiveSessions);
-    InPoolSessionsCounter_.Set(statCollector.InPoolSessions);
-    FakeSessionsCounter_.Set(statCollector.FakeSessions);
-}
-
-void TSessionPoolImpl::UpdateStats() {
-    ActiveSessionsCounter_.Apply(ActiveSessions_);
-    InPoolSessionsCounter_.Apply(Sessions_.size());
 }
 
 TTableClient::TTableClient(const TDriver& driver, const TClientSettings& settings)
@@ -3030,312 +1394,24 @@ TTypeBuilder TTableClient::GetTypeBuilder() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TRetryState {
-    using TAsyncFunc = std::function<TAsyncStatus()>;
-    using THandleStatusFunc = std::function<TAsyncStatus(const std::shared_ptr<TRetryState>& state,
-        const TStatus& status, const TAsyncFunc& func, ui32 retryNumber)>;
-
-    TMaybe<TSession> Session;
-    THandleStatusFunc HandleStatusFunc;
-};
-
-static void Backoff(const TBackoffSettings& settings, ui32 retryNumber) {
-    auto durationMs = CalcBackoffTime(settings, retryNumber);
-    Sleep(TDuration::MilliSeconds(durationMs));
-}
-
-class TRetryOperationContext : public TThrRefBase, TNonCopyable {
-public:
-    using TRetryContextPtr = TIntrusivePtr<TRetryOperationContext>;
-
-protected:
-    TRetryOperationSettings Settings;
-    TTableClient TableClient;
-    NThreading::TPromise<TStatus> Promise;
-    ui32 RetryNumber;
-
-public:
-    virtual void Execute() = 0;
-
-    TAsyncStatus GetFuture() {
-        return Promise.GetFuture();
-    }
-
-protected:
-    TRetryOperationContext(const TRetryOperationSettings& settings,
-                           const TTableClient& tableClient)
-        : Settings(settings)
-        , TableClient(tableClient)
-        , Promise(NThreading::NewPromise<TStatus>())
-        , RetryNumber(0)
-    {}
-
-    static void RunOp(TRetryContextPtr self) {
-        self->Execute();
-    }
-
-    virtual void Reset() {}
-
-    static void DoRetry(TRetryContextPtr self, bool fast) {
-        self->TableClient.Impl_->AsyncBackoff(
-                    fast ? self->Settings.FastBackoffSettings_ : self->Settings.SlowBackoffSettings_,
-                    self->RetryNumber,
-                    [self]() {
-                        RunOp(self);
-                    }
-        );
-    }
-
-    static void HandleStatus(TRetryContextPtr self, const TStatus& status) {
-        if (status.IsSuccess()) {
-            return self->Promise.SetValue(status);
-        }
-
-        if (self->RetryNumber >= self->Settings.MaxRetries_) {
-            return self->Promise.SetValue(status);
-        }
-        if (self->Settings.Verbose_) {
-            Cerr << "Previous query attempt was finished with unsuccessful status: "
-                << status.GetIssues().ToString() << ". Status is " << status.GetStatus() << "."
-                << "Send retry attempt " << self->RetryNumber << " of " << self->Settings.MaxRetries_ << Endl;
-        }
-        self->RetryNumber++;
-        self->TableClient.Impl_->RetryOperationStatCollector.IncAsyncRetryOperation(status.GetStatus());
-
-        switch (status.GetStatus()) {
-            case EStatus::ABORTED:
-                return RunOp(self);
-
-            case EStatus::OVERLOADED:
-            case EStatus::CLIENT_RESOURCE_EXHAUSTED:
-                return DoRetry(self, false);
-
-            case EStatus::UNAVAILABLE:
-                return DoRetry(self, true);
-
-            case EStatus::BAD_SESSION:
-            case EStatus::SESSION_BUSY:
-                self->Reset();
-                return RunOp(self);
-
-            case EStatus::NOT_FOUND:
-                return self->Settings.RetryNotFound_
-                    ? RunOp(self)
-                    : self->Promise.SetValue(status);
-
-            case EStatus::UNDETERMINED:
-                return self->Settings.Idempotent_
-                    ? DoRetry(self, true)
-                    : self->Promise.SetValue(status);
-
-            case EStatus::TRANSPORT_UNAVAILABLE:
-                if (self->Settings.Idempotent_) {
-                    self->Reset();
-                    return DoRetry(self, true);
-                } else {
-                    return self->Promise.SetValue(status);
-                }
-
-            default:
-                return self->Promise.SetValue(status);
-        }
-    }
-
-    static void HandleException(TRetryContextPtr self, std::exception_ptr e) {
-        self->Promise.SetException(e);
-    }
-};
-
-class TRetryOperationWithSession : public TRetryOperationContext {
-    using TFunc = TTableClient::TOperationFunc;
-
-    TFunc Operation;
-    TMaybe<TSession> Session;
-
-public:
-    explicit TRetryOperationWithSession(TFunc&& operation,
-                                        const TRetryOperationSettings& settings,
-                                        const TTableClient& tableClient)
-        : TRetryOperationContext(settings, tableClient)
-        , Operation(operation)
-    {}
-
-    void Execute() override {
-        TRetryContextPtr self(this);
-        if (!Session) {
-            TableClient.GetSession(
-                TCreateSessionSettings().ClientTimeout(Settings.GetSessionClientTimeout_)).Subscribe(
-                [self](const TAsyncCreateSessionResult& resultFuture) {
-                    try {
-                        auto& result = resultFuture.GetValue();
-                        if (!result.IsSuccess()) {
-                            return HandleStatus(self, result);
-                        }
-
-                        auto* myself = dynamic_cast<TRetryOperationWithSession*>(self.Get());
-                        myself->Session = result.GetSession();
-                        myself->DoRunOp(self);
-                    } catch (...) {
-                        return HandleException(self, std::current_exception());
-                    }
-            });
-        } else {
-            DoRunOp(self);
-        }
-    }
-
-private:
-    void Reset() override {
-        Session.Clear();
-    }
-
-    void DoRunOp(TRetryContextPtr self) {
-        Operation(Session.GetRef()).Subscribe([self](const TAsyncStatus& result) {
-            try {
-                return HandleStatus(self, result.GetValue());
-            } catch (...) {
-                return HandleException(self, std::current_exception());
-            }
-        });
-    }
-};
-
 TAsyncStatus TTableClient::RetryOperation(TOperationFunc&& operation, const TRetryOperationSettings& settings) {
-    TRetryOperationContext::TRetryContextPtr ctx(new TRetryOperationWithSession(std::move(operation), settings, *this));
-    ctx->Execute();
-    return ctx->GetFuture();
+    TRetryContextAsync::TPtr ctx(new NRetry::Async::TRetryWithSession(*this, std::move(operation), settings));
+    return ctx->Execute();
 }
-
-class TRetryOperationWithoutSession : public TRetryOperationContext {
-    using TFunc = TTableClient::TOperationWithoutSessionFunc;
-
-    TFunc Operation;
-
-public:
-    explicit TRetryOperationWithoutSession(TFunc&& operation,
-                                        const TRetryOperationSettings& settings,
-                                        const TTableClient& tableClient)
-        : TRetryOperationContext(settings, tableClient)
-        , Operation(operation)
-    {}
-
-    void Execute() override {
-        TRetryContextPtr self(this);
-        Operation(TableClient).Subscribe([self](const TAsyncStatus& result) {
-            try {
-                return HandleStatus(self, result.GetValue());
-            } catch (...) {
-                return HandleException(self, std::current_exception());
-            }
-        });
-    }
-};
 
 TAsyncStatus TTableClient::RetryOperation(TOperationWithoutSessionFunc&& operation, const TRetryOperationSettings& settings) {
-    TRetryOperationContext::TRetryContextPtr ctx(new TRetryOperationWithoutSession(std::move(operation), settings, *this));
-    ctx->Execute();
-    return ctx->GetFuture();
-}
-
-TStatus TTableClient::RetryOperationSyncHelper(const TOperationWrapperSyncFunc& operationWrapper, const TRetryOperationSettings& settings) {
-    TRetryState retryState;
-    TMaybe<NYdb::TStatus> status;
-
-    for (ui32 retryNumber = 0; retryNumber <= settings.MaxRetries_; ++retryNumber) {
-        status = operationWrapper(retryState);
-
-        if (status->IsSuccess()) {
-            return *status;
-        }
-
-        if (retryNumber == settings.MaxRetries_) {
-            break;
-        }
-
-        switch (status->GetStatus()) {
-            case EStatus::ABORTED:
-                break;
-
-            case EStatus::OVERLOADED:
-            case EStatus::CLIENT_RESOURCE_EXHAUSTED: {
-                Backoff(settings.SlowBackoffSettings_, retryNumber);
-                break;
-            }
-
-            case EStatus::UNAVAILABLE:{
-                Backoff(settings.FastBackoffSettings_, retryNumber);
-                break;
-            }
-
-            case EStatus::BAD_SESSION:
-            case EStatus::SESSION_BUSY:
-                retryState.Session.Clear();
-                break;
-
-            case EStatus::NOT_FOUND:
-                if (!settings.RetryNotFound_) {
-                    return *status;
-                }
-                break;
-
-            case EStatus::UNDETERMINED:
-                if (!settings.Idempotent_) {
-                    return *status;
-                }
-                Backoff(settings.FastBackoffSettings_, retryNumber);
-                break;
-
-            case EStatus::TRANSPORT_UNAVAILABLE:
-                if (!settings.Idempotent_) {
-                    return *status;
-                }
-                retryState.Session.Clear();
-                Backoff(settings.FastBackoffSettings_, retryNumber);
-                break;
-
-            default:
-                return *status;
-        }
-        Impl_->RetryOperationStatCollector.IncSyncRetryOperation(status->GetStatus());
-    }
-
-    return *status;
+    TRetryContextAsync::TPtr ctx(new NRetry::Async::TRetryWithoutSession(*this, std::move(operation), settings));
+    return ctx->Execute();
 }
 
 TStatus TTableClient::RetryOperationSync(const TOperationWithoutSessionSyncFunc& operation, const TRetryOperationSettings& settings) {
-    auto operationWrapper = [this, &operation] (TRetryState&) {
-        return operation(*this);
-    };
-
-    return RetryOperationSyncHelper(operationWrapper, settings);
+    NRetry::Sync::TRetryWithoutSession ctx(*this, operation, settings);
+    return ctx.Execute();
 }
 
 TStatus TTableClient::RetryOperationSync(const TOperationSyncFunc& operation, const TRetryOperationSettings& settings) {
-    TRetryState retryState;
-
-    auto operationWrapper = [this, &operation, &settings] (TRetryState& retryState) {
-        TMaybe<NYdb::TStatus> status;
-
-        if (!retryState.Session) {
-            auto sessionResult = Impl_->GetSession(
-                TCreateSessionSettings().ClientTimeout(settings.GetSessionClientTimeout_)).GetValueSync();
-            if (sessionResult.IsSuccess()) {
-                retryState.Session = sessionResult.GetSession();
-            }
-            status = sessionResult;
-        }
-
-        if (retryState.Session) {
-            status = operation(retryState.Session.GetRef());
-            if (status->IsSuccess()) {
-                return *status;
-            }
-        }
-
-        return *status;
-    };
-
-    return RetryOperationSyncHelper(operationWrapper, settings);
+    NRetry::Sync::TRetryWithSession ctx(*this, operation, settings);
+    return ctx.Execute();
 }
 
 NThreading::TFuture<void> TTableClient::Stop() {
@@ -3352,6 +1428,12 @@ TAsyncBulkUpsertResult TTableClient::BulkUpsert(const TString& table, EDataForma
         const TString& data, const TString& schema, const TBulkUpsertSettings& settings)
 {
     return Impl_->BulkUpsert(table, format, data, schema, settings);
+}
+
+TAsyncReadRowsResult TTableClient::ReadRows(const TString& table, TValue&& rows, const TVector<TString>& columns,
+    const TReadRowsSettings& settings)
+{
+    return Impl_->ReadRows(table, std::move(rows), columns, settings);
 }
 
 TAsyncScanQueryPartIterator TTableClient::StreamExecuteScanQuery(const TString& query, const TParams& params,
@@ -3467,13 +1549,14 @@ static void ConvertCreateTableSettingsToProto(const TCreateTableSettings& settin
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TSession::TSession(std::shared_ptr<TTableClient::TImpl> client, const TString& sessionId, const TString& endpointId)
+TSession::TSession(std::shared_ptr<TTableClient::TImpl> client, const TString& sessionId, const TString& endpointId, bool isOwnedBySessionPool)
     : Client_(client)
     , SessionImpl_(new TSession::TImpl(
             sessionId,
             endpointId,
             client->Settings_.UseQueryCache_,
-            client->Settings_.QueryCacheSize_),
+            client->Settings_.QueryCacheSize_,
+            isOwnedBySessionPool),
         TSession::TImpl::GetSmartDeleter(client))
 {
     if (endpointId) {
@@ -3950,10 +2033,11 @@ bool TPrepareQueryResult::IsQueryFromCache() const {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TExplainQueryResult::TExplainQueryResult(TStatus&& status, TString&& plan, TString&& ast)
+TExplainQueryResult::TExplainQueryResult(TStatus&& status, TString&& plan, TString&& ast, TString&& diagnostics)
     : TStatus(std::move(status))
     , Plan_(std::move(plan))
     , Ast_(std::move(ast))
+    , Diagnostics_(std::move(diagnostics))
 {}
 
 const TString& TExplainQueryResult::GetPlan() const {
@@ -3964,6 +2048,11 @@ const TString& TExplainQueryResult::GetPlan() const {
 const TString& TExplainQueryResult::GetAst() const {
     CheckStatusOk("TExplainQueryResult::GetAst");
     return Ast_;
+}
+
+const TString& TExplainQueryResult::GetDiagnostics() const {
+    CheckStatusOk("TExplainQueryResult::GetDiagnostics");
+    return Diagnostics_;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3993,6 +2082,10 @@ TDataQueryResult::TDataQueryResult(TStatus&& status, TVector<TResultSet>&& resul
 
 const TVector<TResultSet>& TDataQueryResult::GetResultSets() const {
     return ResultSets_;
+}
+
+TVector<TResultSet> TDataQueryResult::ExtractResultSets() && {
+    return std::move(ResultSets_);
 }
 
 TResultSet TDataQueryResult::GetResultSet(size_t resultIndex) const {
@@ -4052,29 +2145,6 @@ TCommitTransactionResult::TCommitTransactionResult(TStatus&& status, const TMayb
 
 const TMaybe<TQueryStats>& TCommitTransactionResult::GetStats() const {
     return QueryStats_;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-std::function<void(TSession::TImpl*)> TSession::TImpl::GetSmartDeleter(std::shared_ptr<TTableClient::TImpl> client) {
-    return [client](TSession::TImpl* sessionImpl) {
-        switch (sessionImpl->GetState()) {
-            case TSession::TImpl::S_STANDALONE:
-            case TSession::TImpl::S_BROKEN:
-            case TSession::TImpl::S_CLOSING:
-                client->DeleteSession(sessionImpl);
-            break;
-            case TSession::TImpl::S_IDLE:
-            case TSession::TImpl::S_ACTIVE: {
-                if (!client->ReturnSession(sessionImpl)) {
-                    client->DeleteSession(sessionImpl);
-                }
-                break;
-            }
-            default:
-            break;
-        }
-    };
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -4185,6 +2255,9 @@ TIndexDescription TIndexDescription::FromProto(const TProto& proto) {
     case TProto::kGlobalAsyncIndex:
         type = EIndexType::GlobalAsync;
         break;
+    case TProto::kGlobalUniqueIndex:
+        type = EIndexType::GlobalUnique;
+        break;
     default: // fallback to global sync
         type = EIndexType::GlobalSync;
         break;
@@ -4212,6 +2285,9 @@ void TIndexDescription::SerializeTo(Ydb::Table::TableIndex& proto) const {
         break;
     case EIndexType::GlobalAsync:
         *proto.mutable_global_async_index() = Ydb::Table::GlobalAsyncIndex();
+        break;
+    case EIndexType::GlobalUnique:
+        *proto.mutable_global_unique_index() = Ydb::Table::GlobalUniqueIndex();
         break;
     case EIndexType::Unknown:
         break;
@@ -4269,6 +2345,11 @@ TChangefeedDescription& TChangefeedDescription::WithVirtualTimestamps() {
     return *this;
 }
 
+TChangefeedDescription& TChangefeedDescription::WithResolvedTimestamps(const TDuration& value) {
+    ResolvedTimestamps_ = value;
+    return *this;
+}
+
 TChangefeedDescription& TChangefeedDescription::WithRetentionPeriod(const TDuration& value) {
     RetentionPeriod_ = value;
     return *this;
@@ -4319,6 +2400,10 @@ bool TChangefeedDescription::GetVirtualTimestamps() const {
     return VirtualTimestamps_;
 }
 
+const std::optional<TDuration>& TChangefeedDescription::GetResolvedTimestamps() const {
+    return ResolvedTimestamps_;
+}
+
 bool TChangefeedDescription::GetInitialScan() const {
     return InitialScan_;
 }
@@ -4363,6 +2448,9 @@ TChangefeedDescription TChangefeedDescription::FromProto(const TProto& proto) {
     case Ydb::Table::ChangefeedFormat::FORMAT_DYNAMODB_STREAMS_JSON:
         format = EChangefeedFormat::DynamoDBStreamsJson;
         break;
+    case Ydb::Table::ChangefeedFormat::FORMAT_DEBEZIUM_JSON:
+        format = EChangefeedFormat::DebeziumJson;
+        break;
     default:
         format = EChangefeedFormat::Unknown;
         break;
@@ -4371,6 +2459,10 @@ TChangefeedDescription TChangefeedDescription::FromProto(const TProto& proto) {
     auto ret = TChangefeedDescription(proto.name(), mode, format);
     if (proto.virtual_timestamps()) {
         ret.WithVirtualTimestamps();
+    }
+    if (proto.has_resolved_timestamps_interval()) {
+        ret.WithResolvedTimestamps(TDuration::MilliSeconds(
+            ::google::protobuf::util::TimeUtil::DurationToMilliseconds(proto.resolved_timestamps_interval())));
     }
     if (!proto.aws_region().empty()) {
         ret.WithAwsRegion(proto.aws_region());
@@ -4433,14 +2525,19 @@ void TChangefeedDescription::SerializeTo(Ydb::Table::Changefeed& proto) const {
     case EChangefeedFormat::DynamoDBStreamsJson:
         proto.set_format(Ydb::Table::ChangefeedFormat::FORMAT_DYNAMODB_STREAMS_JSON);
         break;
+    case EChangefeedFormat::DebeziumJson:
+        proto.set_format(Ydb::Table::ChangefeedFormat::FORMAT_DEBEZIUM_JSON);
+        break;
     case EChangefeedFormat::Unknown:
         break;
     }
 
+    if (ResolvedTimestamps_) {
+        SetDuration(*ResolvedTimestamps_, *proto.mutable_resolved_timestamps_interval());
+    }
+
     if (RetentionPeriod_) {
-        auto& retention = *proto.mutable_retention_period();
-        retention.set_seconds(RetentionPeriod_->Seconds());
-        retention.set_nanos(RetentionPeriod_->NanoSecondsOfSecond());
+        SetDuration(*RetentionPeriod_, *proto.mutable_retention_period());
     }
 
     for (const auto& [key, value] : Attributes_) {
@@ -4461,6 +2558,10 @@ void TChangefeedDescription::Out(IOutputStream& o) const {
       << ", format: " << Format_ << ""
       << ", virtual_timestamps: " << (VirtualTimestamps_ ? "on": "off") << "";
 
+    if (ResolvedTimestamps_) {
+        o << ", resolved_timestamps: " << *ResolvedTimestamps_;
+    }
+
     if (RetentionPeriod_) {
         o << ", retention_period: " << *RetentionPeriod_;
     }
@@ -4477,6 +2578,7 @@ bool operator==(const TChangefeedDescription& lhs, const TChangefeedDescription&
         && lhs.GetMode() == rhs.GetMode()
         && lhs.GetFormat() == rhs.GetFormat()
         && lhs.GetVirtualTimestamps() == rhs.GetVirtualTimestamps()
+        && lhs.GetResolvedTimestamps() == rhs.GetResolvedTimestamps()
         && lhs.GetAwsRegion() == rhs.GetAwsRegion();
 }
 
@@ -4738,6 +2840,11 @@ ui64 TReadReplicasSettings::GetReadReplicasCount() const {
 
 TBulkUpsertResult::TBulkUpsertResult(TStatus&& status)
     : TStatus(std::move(status))
+{}
+
+TReadRowsResult::TReadRowsResult(TStatus&& status, TResultSet&& resultSet)
+    : TStatus(std::move(status))
+    , ResultSet(std::move(resultSet))
 {}
 
 } // namespace NTable

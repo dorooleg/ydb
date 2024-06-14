@@ -11,7 +11,7 @@ TIndexRecord::TChainItem::TChainItem(const TLogoBlobID &id, ui64 offset)
 {
 }
 
-TIndexRecord::TChainItem::TChainItem(TRcBuf&& inlineData, ui64 offset)
+TIndexRecord::TChainItem::TChainItem(TRope&& inlineData, ui64 offset)
     : InlineData(std::move(inlineData))
     , Offset(offset)
 {
@@ -53,27 +53,23 @@ ui32 TIndexRecord::GetReadItems(ui64 offset, ui64 size, TIntermediate::TRead& re
         return 0;
     }
     auto it = UpperBound(Chain.begin(), Chain.end(), offset);
-    Y_VERIFY(it != Chain.begin());
+    Y_ABORT_UNLESS(it != Chain.begin());
     --it;
-    Y_VERIFY(offset >= it->Offset);
+    Y_ABORT_UNLESS(offset >= it->Offset);
     offset -= it->Offset;
 
     ui64 valueOffset = 0;
     ui32 numReads = 0;
     while (size) {
-        Y_VERIFY(it != Chain.end());
+        Y_ABORT_UNLESS(it != Chain.end());
         ui32 readSize = Min<ui64>(size, it->GetSize() - offset);
         if (it->IsInline()) {
-            if (read.Value.size() != read.ValueSize) {
-                read.Value.resize(read.ValueSize);
-            }
-            Y_VERIFY(it->InlineData.size() >= readSize + offset, "size# %" PRIu64 " read# %" PRIu64 " offset# %" PRIu64,
-                    (ui64)it->InlineData.size(), (ui64)readSize, (ui64)offset);
-            Y_VERIFY(read.ValueSize >= readSize + valueOffset);
-            memcpy(const_cast<char *>(read.Value.data()) + valueOffset, it->InlineData.data() + offset, readSize);
+            const auto& rope = it->InlineData;
+            const auto begin = rope.Position(offset);
+            const auto end = begin + readSize;
+            read.Value.Write(valueOffset, TRope(begin, end));
         } else {
-            read.ReadItems.push_back(TIntermediate::TRead::TReadItem(
-                    it->LogoBlobId, static_cast<ui32>(offset), readSize, valueOffset));
+            read.ReadItems.emplace_back(it->LogoBlobId, static_cast<ui32>(offset), readSize, valueOffset);
         }
         size -= readSize;
         offset = 0;
@@ -105,17 +101,18 @@ TString TIndexRecord::Serialize() const {
     data->CreationUnixTime = CreationUnixTime;
 
     ui64 offset = 0;
-    for (ui32 i = 0; i < Chain.size(); ++i) {
-        if (Chain[i].IsInline()) {
+    for (const auto& item : Chain) {
+        if (item.IsInline()) {
             memset(data->Serialized + offset, 0, sizeof(ui64));
             offset += sizeof(ui64);
-            ui32 size = Chain[i].InlineData.size();
+            ui32 size = item.InlineData.size();
             memcpy(data->Serialized + offset, &size, sizeof(ui32));
             offset += sizeof(ui32);
-            memcpy(data->Serialized + offset, Chain[i].InlineData.data(), Chain[i].InlineData.size());
-            offset += Chain[i].InlineData.size();
+            auto& rope = item.InlineData;
+            rope.begin().ExtractPlainDataAndAdvance(data->Serialized + offset, rope.size());
+            offset += rope.size();
         } else {
-            memcpy(data->Serialized + offset, &Chain[i].LogoBlobId, sizeof(TLogoBlobID));
+            memcpy(data->Serialized + offset, &item.LogoBlobId, sizeof(TLogoBlobID));
             offset += sizeof(TLogoBlobID);
         }
     }
@@ -124,13 +121,13 @@ TString TIndexRecord::Serialize() const {
 }
 
 EItemType TIndexRecord::ReadItemType(const TString &rawData) {
-    Y_VERIFY(rawData.size() >= sizeof(TDataHeader));
+    Y_ABORT_UNLESS(rawData.size() >= sizeof(TDataHeader));
     const TDataHeader *dataHeader = (const TDataHeader *)rawData.data();
     return (EItemType)dataHeader->ItemType;
 }
 
 bool TIndexRecord::Deserialize1(const TString &rawData, TString &outErrorInfo) {
-    Y_VERIFY(rawData.size() >= sizeof(TKeyValueData1));
+    Y_ABORT_UNLESS(rawData.size() >= sizeof(TKeyValueData1));
     const TKeyValueData1 *data = (const TKeyValueData1 *)rawData.data();
     const ui32 numItems = TKeyValueData1::GetNumItems(rawData.size());
     if (!data->CheckChecksum(numItems)) {
@@ -152,7 +149,7 @@ bool TIndexRecord::Deserialize1(const TString &rawData, TString &outErrorInfo) {
         outErrorInfo = str.Str();
         return false;
     }
-    Y_VERIFY(data->DataHeader.ItemType == EIT_KEYVALUE_1);
+    Y_ABORT_UNLESS(data->DataHeader.ItemType == EIT_KEYVALUE_1);
     ui64 offset = 0;
     if (data->FirstLogoBlobId) {
         Chain.push_back(TIndexRecord::TChainItem(data->FirstLogoBlobId, offset));
@@ -168,25 +165,27 @@ bool TIndexRecord::Deserialize1(const TString &rawData, TString &outErrorInfo) {
 }
 
 bool TIndexRecord::Deserialize2(const TString &rawData, TString &outErrorInfo) {
-    Y_VERIFY(rawData.size() >= sizeof(TKeyValueData2));
-    const TKeyValueData2 *data = (const TKeyValueData2 *)rawData.data();
-    if (!data->CheckChecksum(rawData.size())) {
+    Y_ABORT_UNLESS(rawData.size() >= sizeof(TKeyValueData2));
+    TRcBuf rawDataBuffer(rawData); // encode TString into TRcBuf to slice it further
+    const TContiguousSpan rawDataSpan = rawDataBuffer.GetContiguousSpan();
+    const TKeyValueData2 *data = reinterpret_cast<const TKeyValueData2*>(rawDataSpan.data());
+    if (!data->CheckChecksum(rawDataSpan.size())) {
         TStringStream str;
-        str << " data->CheckChecksum(rawData.size)# ERROR ";
+        str << " data->CheckChecksum(rawDataSpan.size)# ERROR ";
         str << " CreationUnixTime# " << data->CreationUnixTime;
-        str << " rawData.size# " << rawData.size();
+        str << " rawDataSpan.size# " << rawDataSpan.size();
         str << " data# ";
-        for (ui32 i = 0; i < rawData.size(); ++i) {
-            ui8 d = ((const ui8*)rawData.data())[i];
+        for (ui32 i = 0; i < rawDataSpan.size(); ++i) {
+            ui8 d = ((const ui8*)rawDataSpan.data())[i];
             str << Sprintf("%02x", (ui32)d);
         }
         outErrorInfo = str.Str();
         return false;
     }
-    Y_VERIFY(data->DataHeader.ItemType == EIT_KEYVALUE_2);
+    Y_ABORT_UNLESS(data->DataHeader.ItemType == EIT_KEYVALUE_2);
     CreationUnixTime = data->CreationUnixTime;
     ui64 chainOffset = 0;
-    ui64 endOffset = rawData.size() - sizeof(TKeyValueData2);
+    ui64 endOffset = rawDataSpan.size() - sizeof(TKeyValueData2);
     ui64 offset = 0;
     while (offset < endOffset) {
         if (endOffset - offset < sizeof(ui64)) {
@@ -218,8 +217,10 @@ bool TIndexRecord::Deserialize2(const TString &rawData, TString &outErrorInfo) {
                 outErrorInfo = " Deserialization error# DEA4";
                 return false;
             }
-            TRcBuf inlineData = TRcBuf::Uninitialized(size);
-            memcpy(inlineData.GetDataMut(), data->Serialized + offset, size);
+            TRope inlineData;
+            if (size) {
+                inlineData = TRcBuf(TRcBuf::Piece, data->Serialized + offset, size, rawDataBuffer);
+            }
             offset += size;
             Chain.push_back(TIndexRecord::TChainItem(std::move(inlineData), chainOffset));
             chainOffset += size;

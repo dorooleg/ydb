@@ -1,7 +1,9 @@
 #pragma once
 #include <ydb/core/fq/libs/checkpointing_common/defs.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
+
+#include <ydb/library/yql/dq/actors/protos/dq_events.pb.h>
 
 namespace NFq {
 
@@ -12,10 +14,14 @@ struct TPendingCheckpointStats {
 
 class TPendingCheckpoint {
     THashSet<NActors::TActorId> NotYetAcknowledged;
+    NYql::NDqProto::ECheckpointType Type;
     TPendingCheckpointStats Stats;
 
 public:
-    explicit TPendingCheckpoint(THashSet<NActors::TActorId> toBeAcknowledged, TPendingCheckpointStats stats = TPendingCheckpointStats());
+    explicit TPendingCheckpoint(
+        THashSet<NActors::TActorId> toBeAcknowledged,
+        NYql::NDqProto::ECheckpointType type,
+        TPendingCheckpointStats stats = TPendingCheckpointStats());
 
     void Acknowledge(const NActors::TActorId& actorId);
 
@@ -29,6 +35,9 @@ public:
 
     [[nodiscard]]
     const TPendingCheckpointStats& GetStats() const;
+
+    [[nodiscard]]
+    NYql::NDqProto::ECheckpointType GetType() const;
 };
 
 class TPendingRestoreCheckpoint {

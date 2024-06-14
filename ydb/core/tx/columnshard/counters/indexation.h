@@ -1,12 +1,19 @@
 #pragma once
+#include "common/owner.h"
+#include "splitter.h"
+
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 namespace NKikimr::NColumnShard {
 
-class TIndexationCounters {
+class TIndexationCounters: public TCommonCountersOwner {
 private:
-    ::NMonitoring::TDynamicCounterPtr SubGroup;
+    using TBase = TCommonCountersOwner;
+    NMonitoring::THistogramPtr HistogramCompactionInputBytes;
 public:
+    NMonitoring::TDynamicCounters::TCounterPtr CompactionInputBytes;
+
+    NMonitoring::TDynamicCounters::TCounterPtr ReadErrors;
     NMonitoring::TDynamicCounters::TCounterPtr ReadBytes;
     NMonitoring::TDynamicCounters::TCounterPtr AnalizeCompactedPortions;
     NMonitoring::TDynamicCounters::TCounterPtr AnalizeInsertedPortions;
@@ -20,11 +27,7 @@ public:
     NMonitoring::TDynamicCounters::TCounterPtr MovedPortions;
     NMonitoring::TDynamicCounters::TCounterPtr MovedPortionBytes;
 
-    NMonitoring::TDynamicCounters::TCounterPtr TrashDataSerializationBytes;
-    NMonitoring::TDynamicCounters::TCounterPtr TrashDataSerialization;
-    NMonitoring::THistogramPtr TrashDataSerializationHistogramBytes;
-    NMonitoring::TDynamicCounters::TCounterPtr CorrectDataSerializationBytes;
-    NMonitoring::TDynamicCounters::TCounterPtr CorrectDataSerialization;
+    std::shared_ptr<TSplitterCounters> SplitterCounters;
 
     NMonitoring::THistogramPtr SplittedPortionLargestColumnSize;
     NMonitoring::THistogramPtr SimpleSplitPortionLargestColumnSize;
@@ -33,12 +36,16 @@ public:
     NMonitoring::TDynamicCounters::TCounterPtr TooSmallBlobFinish;
     NMonitoring::TDynamicCounters::TCounterPtr TooSmallBlobStart;
 
-    NMonitoring::THistogramPtr CompactionInputSize;
     NMonitoring::THistogramPtr CompactionDuration;
     NMonitoring::TDynamicCounters::TCounterPtr CompactionExceptions;
     NMonitoring::TDynamicCounters::TCounterPtr CompactionFails;
 
     TIndexationCounters(const TString& module);
+
+    void CompactionInputSize(const ui64 size) const {
+        HistogramCompactionInputBytes->Collect(size);
+        CompactionInputBytes->Add(size);
+    }
 };
 
 }

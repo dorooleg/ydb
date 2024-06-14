@@ -1,6 +1,7 @@
 #pragma once
 #include "defs.h"
 #include <ydb/core/base/blobstorage.h>
+#include <ydb/core/blobstorage/crypto/default.h>
 #include <ydb/core/protos/blobstorage.pb.h>
 
 #include "blobstorage_pdisk_signature.h"
@@ -33,12 +34,36 @@ namespace NKikimr {
             }
         };
 
+        enum class EPDiskMetadataOutcome {
+            OK, // metadata was successfully read/written
+            ERROR, // I/O, locking or some other kind of error has occured
+            UNFORMATTED, // pdisk is not formatted properly
+            METADATA_UNSUPPORTED, // metadata record is unsupported in this PDisk format
+            NO_METADATA, // no metadata record available
+        };
+
         typedef TPrintable_ui8 TOwner;
         typedef ui64 TOwnerRound;
         typedef ui32 TStatusFlags;
         typedef ui64 TKey;
         typedef ui64 THash;
-        typedef TStackVec<TKey, 2> TMainKey;
+
+        struct TMainKey {
+            TStackVec<TKey, 2> Keys;
+            TString ErrorReason = "";
+            bool IsInitialized = false;
+
+            operator bool() const {
+                return !Keys.empty();
+            }
+
+            void Initialize() {
+                if (!IsInitialized && Keys.empty()) {
+                    Keys = { NPDisk::YdbDefaultPDiskSequence };
+                }
+                IsInitialized = true;
+            }
+        };
 
         struct TOwnerToken {
             TOwner Owner = 0;

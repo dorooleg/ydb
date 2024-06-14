@@ -12,6 +12,8 @@
 #include <ydb/core/ymq/queues/std/schema.h>
 
 #include <util/generic/utility.h>
+#include <util/generic/guid.h>
+
 
 using NKikimr::NClient::TValue;
 
@@ -317,7 +319,7 @@ void TCreateQueueSchemaActorV2::HandleQueueId(TSqsEvents::TEvQueueId::TPtr& ev) 
         return;
     }
 
-    Y_VERIFY(resp);
+    Y_ABORT_UNLESS(resp);
     Send(Sender_, std::move(resp));
     PassAway();
 }
@@ -357,7 +359,7 @@ void TCreateQueueSchemaActorV2::OnReadQueueParams(TSqsEvents::TEvExecuted::TPtr&
         RLOG_SQS_ERROR("Failed to read queue params: " << record);
     }
 
-    Y_VERIFY(resp);
+    Y_ABORT_UNLESS(resp);
     Send(Sender_, std::move(resp));
     PassAway();
 }
@@ -575,7 +577,7 @@ void TCreateQueueSchemaActorV2::Step() {
                 return; // do not progress
             }
 
-            Y_VERIFY(TableWithLeaderPathId_.first && TableWithLeaderPathId_.second);
+            Y_ABORT_UNLESS(TableWithLeaderPathId_.first && TableWithLeaderPathId_.second);
             CurrentCreationStep_ = ECreateComponentsStep::DiscoverLeaderTabletId;
             break;
         }
@@ -681,7 +683,7 @@ void TCreateQueueSchemaActorV2::AddRPSQuota() {
     NKikimrKesus::TEvAddQuoterResource cmd;
     auto& res = *cmd.MutableResource();
     res.SetResourcePath(TStringBuilder() << RPS_QUOTA_NAME << "/" << QueuePath_.QueueName);
-    res.MutableHierarhicalDRRResourceConfig()->SetMaxUnitsPerSecond(Cfg().GetQuotingConfig().GetKesusQuoterConfig().GetDefaultLimits().GetStdSendMessageRate());
+    res.MutableHierarchicalDRRResourceConfig()->SetMaxUnitsPerSecond(Cfg().GetQuotingConfig().GetKesusQuoterConfig().GetDefaultLimits().GetStdSendMessageRate());
     AddQuoterResourceActor_ = RunAddQuoterResource(TStringBuilder() << QueuePath_.GetUserPath() << "/" << QUOTER_KESUS_NAME, cmd, RequestId_);
 }
 
@@ -962,7 +964,7 @@ void TCreateQueueSchemaActorV2::CommitNewVersion() {
 
     auto ev = MakeExecuteEvent(query);
     auto* trans = ev->Record.MutableTransaction()->MutableMiniKQLTransaction();
-    Y_VERIFY(TablesFormat_ == 1 || LeaderTabletId_ != 0);
+    Y_ABORT_UNLESS(TablesFormat_ == 1 || LeaderTabletId_ != 0);
     TInstant createdTimestamp = Request_.HasCreatedTimestamp() ? TInstant::Seconds(Request_.GetCreatedTimestamp()) : QueueCreationTimestamp_; 
     TParameters(trans->MutableParams()->MutableProto())
         .Utf8("NAME", QueuePath_.QueueName)
@@ -1027,7 +1029,7 @@ void TCreateQueueSchemaActorV2::OnCommit(TSqsEvents::TEvExecuted::TPtr& ev) {
                 MatchQueueAttributes(currentVersion, currentTablesFormat);
                 return;
              } else {
-                Y_VERIFY(false); // unreachable
+                Y_ABORT_UNLESS(false); // unreachable
              }
         }
     } else {
@@ -1176,7 +1178,7 @@ TDeleteQueueSchemaActorV2::TDeleteQueueSchemaActorV2(const TQueuePath& path,
     , RequestId_(requestId)
     , UserCounters_(std::move(userCounters))
 {
-    Y_VERIFY(advisedQueueVersion > 0);
+    Y_ABORT_UNLESS(advisedQueueVersion > 0);
 
     Version_ = advisedQueueVersion;
 
@@ -1371,7 +1373,7 @@ void TDeleteQueueSchemaActorV2::NextAction() {
             break;
         }
         case EDeleting::RemoveTables: {
-            Y_VERIFY(!Tables_.empty());
+            Y_ABORT_UNLESS(!Tables_.empty());
 
             Register(new TMiniKqlExecutionActor(
                 SelfId(), RequestId_, MakeDeleteTableEvent(GetVersionedQueueDir(QueuePath_, Version_), Tables_.back()), false, QueuePath_, GetTransactionCounters(UserCounters_))

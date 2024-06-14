@@ -43,7 +43,6 @@ namespace NKikimr {
         app->PQConfig.SetBalancerMetadataRetryTimeoutSec(1);
         app->PQConfig.SetClustersUpdateTimeoutSec(1);
         app->PQConfig.SetCheckACL(true);
-        app->StaticBlobStorageConfig->CopyFrom(BSConf);
         if (NetDataSourceUrl) {
             auto& updaterConfig = *app->NetClassifierConfig.MutableUpdaterConfig();
             updaterConfig.SetNetDataSourceUrl(NetDataSourceUrl);
@@ -58,6 +57,8 @@ namespace NKikimr {
         app->SchemeShardConfig = SchemeShardConfig;
         app->MeteringConfig = MeteringConfig;
         app->AwsCompatibilityConfig = AwsCompatibilityConfig;
+        app->S3ProxyResolverConfig = S3ProxyResolverConfig;
+        app->GraphConfig = GraphConfig;
         app->FeatureFlags = FeatureFlags;
 
         // This is a special setting active in test runtime only
@@ -78,9 +79,9 @@ namespace NKikimr {
         Domains->AddDomain(domain);
     }
 
-    void TAppPrepare::AddHive(ui32 hiveUid, ui64 hive)
+    void TAppPrepare::AddHive(ui64 hive)
     {
-        Domains->AddHive(hiveUid, hive);
+        Domains->AddHive(hive);
     }
 
     void TAppPrepare::ClearDomainsAndHive()

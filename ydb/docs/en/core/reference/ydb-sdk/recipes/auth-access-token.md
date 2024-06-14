@@ -118,6 +118,64 @@ Below are examples of the code for authentication using a token in different {{ 
 
 - Node.js
 
-  {% include [auth-access-token](../../../../_includes/nodejs/auth-access-token.md) %}
+  {% include [auth-access-token](../../../_includes/nodejs/auth-access-token.md) %}
+
+- Python
+
+  {% include [auth-access-token](../../../_includes/python/auth-access-token.md) %}
+
+- Python (asyncio)
+
+  {% include [auth-access-token](../../../_includes/python/async/auth-access-token.md) %}
+
+- C# (.NET)
+
+  ```C#
+  using Ydb.Sdk;
+  using Ydb.Sdk.Auth;
+
+  const string endpoint = "grpc://localhost:2136";
+  const string database = "/local";
+  const string token = "MY_VERY_SECURE_TOKEN";
+
+  var config = new DriverConfig(
+      endpoint: endpoint,
+      database: database,
+      credentials: new TokenProvider(token)
+  );
+
+  await using var driver = await Driver.CreateInitialized(config);
+  ```
+
+- PHP
+
+  ```php
+  <?php
+
+  use YdbPlatform\Ydb\Ydb;
+  use YdbPlatform\Ydb\Auth\Implement\AccessTokenAuthentication;
+
+  $config = [
+
+      // Database path
+      'database'    => '/local',
+
+      // Database endpoint
+      'endpoint'    => 'localhost:2136',
+
+      // Auto discovery (dedicated server only)
+      'discovery'   => false,
+
+      // IAM config
+      'iam_config'  => [
+          'insecure' => true,
+          // 'root_cert_file' => './CA.pem', // Root CA file (uncomment for dedicated server)
+      ],
+      
+      'credentials' => new AccessTokenAuthentication('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+  ];
+
+  $ydb = new Ydb($config);
+  ```
 
 {% endlist %}

@@ -3,6 +3,8 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <util/generic/vector.h>
 
+#include <ydb/library/yql/minikql/mkql_type_ops.h>
+
 using namespace NActors;
 
 Y_UNIT_TEST_SUITE(Scheme) {
@@ -148,18 +150,28 @@ Y_UNIT_TEST_SUITE(Scheme) {
         const int ITERATIONS = 1000;//10000000;
 
         {
+            TString res;
             TInstant start = TInstant::Now();
             for (int i = 0; i < ITERATIONS; ++i) {
-                TSerializedCellVec::Serialize(cells);
+                TSerializedCellVec::Serialize(res, cells);
             }
             TInstant finish = TInstant::Now();
             Cerr << "Serialize: " << finish - start << Endl;
         }
 
         {
+            TInstant start = TInstant::Now();
+            for (int i = 0; i < ITERATIONS; ++i) {
+                TSerializedCellVec vec4(vec.GetCells());
+            }
+            TInstant finish = TInstant::Now();
+            Cerr << "Cells constructor: " << finish - start << Endl;
+        }
+
+        {
             TString buf = vec.GetBuffer();
             TInstant start = TInstant::Now();
-                for (int i = 0; i < ITERATIONS; ++i) {
+            for (int i = 0; i < ITERATIONS; ++i) {
                 vec3.Parse(buf);
             }
             TInstant finish = TInstant::Now();
@@ -199,7 +211,7 @@ Y_UNIT_TEST_SUITE(Scheme) {
         UNIT_ASSERT(!TSerializedCellVec::TryParse("\1\1", vec));
 
         const TString buf = TSerializedCellVec::Serialize({TCell(), TCell()});
-        UNIT_ASSERT_VALUES_EQUAL(buf.size(), 2 + 2*4);
+        UNIT_ASSERT_VALUES_EQUAL(buf.size(), sizeof(ui16) + 2 * 4);
 
         {
             for (size_t i = 0; i < buf.size(); ++i) {
@@ -208,6 +220,90 @@ Y_UNIT_TEST_SUITE(Scheme) {
                 UNIT_ASSERT(!TSerializedCellVec::TryParse(hacked, vec));
             }
         }
+    }
+
+    ui64 GetCellsHash(TConstArrayRef<TCell> cells, const TVector<TTypeInfo>& types) {
+        UNIT_ASSERT_VALUES_EQUAL(cells.size(), types.size());
+
+        ui64 hash = 0;
+        for (ui16 i = 0; i < cells.size(); ++i)
+            hash ^= GetValueHash(types[i], cells[i]);
+        return hash;
+    }
+
+    void CompareTypedCellMatrix(const TSerializedCellMatrix& matrix, const TVector<TCell>& cells, const TVector<TTypeInfo>& types, ui64 hash) {
+        UNIT_ASSERT_VALUES_EQUAL(matrix.GetCells().size(), matrix.GetRowCount() * matrix.GetColCount());
+
+        UNIT_ASSERT_VALUES_EQUAL(matrix.GetCells().size(), cells.size());
+        UNIT_ASSERT_VALUES_EQUAL(matrix.GetCells().size(), types.size());
+
+        UNIT_ASSERT_VALUES_EQUAL(CompareTypedCellVectors(matrix.GetCells().data(), cells.data(), types.data(), matrix.GetCells().size(), cells.size()), 0);
+
+        UNIT_ASSERT_VALUES_EQUAL(hash, GetCellsHash(matrix.GetCells(), types));
+    }
+
+    Y_UNIT_TEST(TSerializedCellMatrix) {
+        const ui32 rowCount = 10;
+        const ui16 colCount = 6;
+        
+        TVector<TCell> cells;
+        TVector<TTypeInfo> types;
+        TVector<TString> smallStrings;
+        TVector<TString> bigStrings;
+
+        for (ui16 i = 0; i < rowCount; ++i) {
+            ui64 intVal = 42 + i;
+            smallStrings.emplace_back(Sprintf("str1%d", i));
+            bigStrings.emplace_back(Sprintf(
+                "> You have requested to link your commit to an existing review request 849684\n"
+                "> This review request is not ready yet to be merged, see its merge requirements below %d", i
+            ));
+            float floatVal = 0.42 + (float)i;
+            double doubleVal = -0.0025 + (double)i;
+
+            cells.push_back(TCell((const char*)&intVal, sizeof(ui64)));
+            types.push_back(TTypeInfo(NTypeIds::Uint64));
+            cells.push_back(TCell(smallStrings[i].c_str(), smallStrings[i].size()));
+            types.push_back(TTypeInfo(NTypeIds::Utf8));
+            cells.push_back(TCell(bigStrings[i].c_str(), bigStrings[i].size()));
+            types.push_back(TTypeInfo(NTypeIds::Utf8));
+            cells.push_back(TCell((const char*)&floatVal, sizeof(floatVal)));
+            types.push_back(TTypeInfo(NTypeIds::Float));
+            cells.push_back(TCell((const char*)&doubleVal, sizeof(doubleVal)));
+            types.push_back(TTypeInfo(NTypeIds::Double));
+            cells.push_back(TCell());
+            types.push_back(TTypeInfo(NTypeIds::Utf8));
+        }
+
+        ui64 hash = GetCellsHash(cells, types);
+
+        TSerializedCellMatrix matrix(cells, rowCount, colCount);
+        CompareTypedCellMatrix(matrix, cells, types, hash);
+
+        UNIT_ASSERT_VALUES_EQUAL(matrix.GetBuffer().size(), 2146);
+
+        //test submatrix
+        {
+            TVector<TCell> submatrix;
+            matrix.GetSubmatrix(1, 2, 3, 5, submatrix);
+            UNIT_ASSERT_VALUES_EQUAL(submatrix.size(), 6);
+        }
+
+        TSerializedCellMatrix matrix2(matrix.GetBuffer());
+        CompareTypedCellMatrix(matrix2, cells, types, hash);
+
+        TSerializedCellMatrix matrix3(matrix);
+        CompareTypedCellMatrix(matrix3, cells, types, hash);
+
+        TSerializedCellMatrix matrix4(std::move(matrix));
+        CompareTypedCellMatrix(matrix4, cells, types, hash);
+
+        //if cells are destroyed, matrix should be still alive
+        cells.clear();
+        smallStrings.clear();
+        bigStrings.clear();
+        ui64 hash4 = GetCellsHash(matrix4.GetCells(), types);
+        UNIT_ASSERT_VALUES_EQUAL(hash4, hash);
     }
 
     /**
@@ -311,6 +407,7 @@ Y_UNIT_TEST_SUITE(Scheme) {
                 CompareTypedCells(TCell(charArr, sizeof(ui16)), TCell(charArr, sizeof(ui16)), typeInfo);
                 break;
             case NScheme::NTypeIds::Int32:
+            case NScheme::NTypeIds::Date32:
                 GetValueHash(typeInfo, TCell(charArr, sizeof(i32)));
                 CompareTypedCells(TCell(charArr, sizeof(i32)), TCell(charArr, sizeof(i32)), typeInfo);
                 break;
@@ -319,6 +416,9 @@ Y_UNIT_TEST_SUITE(Scheme) {
                 CompareTypedCells(TCell(charArr, sizeof(ui32)), TCell(charArr, sizeof(ui32)), typeInfo);
                 break;
             case NScheme::NTypeIds::Int64:
+            case NScheme::NTypeIds::Datetime64:
+            case NScheme::NTypeIds::Timestamp64:
+            case NScheme::NTypeIds::Interval64:
                 GetValueHash(typeInfo, TCell(charArr, sizeof(i64)));
                 CompareTypedCells(TCell(charArr, sizeof(i64)), TCell(charArr, sizeof(i64)), typeInfo);
                 break;
@@ -347,6 +447,10 @@ Y_UNIT_TEST_SUITE(Scheme) {
                 GetValueHash(typeInfo, TCell(charArr, 30));
                 CompareTypedCells(TCell(charArr, 30), TCell(charArr, 30), typeInfo);
                 break;
+            case NScheme::NTypeIds::Uuid:
+                GetValueHash(typeInfo, TCell(charArr, 16));
+                CompareTypedCells(TCell(charArr, 16), TCell(charArr, 16), typeInfo);
+                break;
             case NScheme::NTypeIds::Decimal:
                 GetValueHash(typeInfo, TCell(charArr, sizeof(ui64) * 2));
                 CompareTypedCells(TCell(charArr, sizeof(ui64) * 2), TCell(charArr, sizeof(ui64) * 2), typeInfo);
@@ -369,6 +473,37 @@ Y_UNIT_TEST_SUITE(Scheme) {
                 break;
             default:
                 UNIT_FAIL("undefined YQL type");
+            }
+        }
+    }
+
+
+    Y_UNIT_TEST(CompareUuidCells) {
+        const int uuidByteSize = 16;
+        const TTypeInfo uuidTypeInfo(NTypeIds::Uuid);
+
+        struct UuidTestCell {
+            TCell cell;
+            char data[16];
+        };
+
+        TVector<TString> uuidStrs = {
+            "5b99a330-04ef-4f1a-9b64-ba6d5f44eafe", // [30, a3, ...]
+            "afcbef30-9ac3-481a-aa6a-8d9b785dbb0a", // [30, ef, ...]
+            "b91cd23b-861c-4cc1-9119-801a4dac1cb9", // [3b, d2, ...]
+            "65df9ecc-a97d-47b2-ae56-3c023da6ee8c", // [cc, 9e, ...]
+        };
+
+        TVector<UuidTestCell> uuids(uuidStrs.size());
+        for (size_t i = 0; i < uuidStrs.size(); ++i) {
+            NKikimr::NMiniKQL::ParseUuid(uuidStrs[i], uuids[i].data);
+            uuids[i].cell = TCell(uuids[i].data, uuidByteSize);
+        }
+
+        for (size_t i = 0; i < uuidStrs.size(); ++i) {
+            for (size_t j = 0; j < uuidStrs.size(); ++j) {
+                int cmp = CompareTypedCells(uuids[i].cell, uuids[j].cell, uuidTypeInfo);
+                UNIT_ASSERT_EQUAL(std::clamp(cmp, -1, 1), (i == j ? 0 : (i < j ? -1 : +1)));
             }
         }
     }

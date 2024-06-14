@@ -1,12 +1,11 @@
 #include "service_fq_internal.h"
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "rpc_deferrable.h"
 
 #include <ydb/core/fq/libs/events/events.h>
-#include <ydb/core/fq/libs/actors/proxy_private.h>
 #include <ydb/core/fq/libs/protos/fq_private.pb.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <ydb/core/grpc_services/base/base.h>
 
@@ -42,9 +41,9 @@ public:
         const auto req = this->GetProtoRequest();
         auto ev = MakeHolder<EvRequestType>();
         auto request = dynamic_cast<RpcRequestType*>(this->Request_.get());
-        Y_VERIFY(request);
+        Y_ABORT_UNLESS(request);
         auto proxyCtx = dynamic_cast<IRequestProxyCtx*>(request);
-        Y_VERIFY(proxyCtx);
+        Y_ABORT_UNLESS(proxyCtx);
         TString user;
         const TString& internalToken = proxyCtx->GetSerializedToken();
         if (internalToken) {

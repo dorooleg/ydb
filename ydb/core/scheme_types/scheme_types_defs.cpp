@@ -34,8 +34,13 @@ namespace NNames {
     DECLARE_TYPED_TYPE_NAME(Datetime);
     DECLARE_TYPED_TYPE_NAME(Timestamp);
     DECLARE_TYPED_TYPE_NAME(Interval);
+    DECLARE_TYPED_TYPE_NAME(Date32);
+    DECLARE_TYPED_TYPE_NAME(Datetime64);
+    DECLARE_TYPED_TYPE_NAME(Timestamp64);
+    DECLARE_TYPED_TYPE_NAME(Interval64);
 
     DECLARE_TYPED_TYPE_NAME(DyNumber);
+    DECLARE_TYPED_TYPE_NAME(Uuid);
 }
 
 void WriteEscapedValue(IOutputStream &out, const char *data, size_t size) {

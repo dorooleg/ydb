@@ -1,7 +1,8 @@
 #include "mkql_block_if.h"
-#include "mkql_block_impl.h"
-#include "mkql_block_reader.h"
-#include "mkql_block_builder.h"
+
+#include <ydb/library/yql/minikql/computation/mkql_block_reader.h>
+#include <ydb/library/yql/minikql/computation/mkql_block_builder.h>
+#include <ydb/library/yql/minikql/computation/mkql_block_impl.h>
 
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
 #include <ydb/library/yql/minikql/arrow/arrow_util.h>
@@ -14,7 +15,6 @@ namespace NMiniKQL {
 namespace {
 
 class TBlockIfScalarWrapper : public TMutableComputationNode<TBlockIfScalarWrapper> {
-friend class TArrowNode;
 public:
     class TArrowNode : public IArrowKernelComputationNode {
     public:
@@ -60,6 +60,7 @@ public:
         const std::vector<arrow::ValueDescr> ArgsValuesDescr_;
         arrow::compute::ScalarKernel Kernel_;
     };
+    friend class TArrowNode;
 
     TBlockIfScalarWrapper(TComputationMutables& mutables, IComputationNode* pred, IComputationNode* thenNode, IComputationNode* elseNode, TType* resultType,
                           bool thenIsScalar, bool elseIsScalar, const TVector<TType*>& argsTypes)
@@ -131,9 +132,7 @@ template<bool ThenIsScalar, bool ElseIsScalar>
 class TIfBlockExec {
 public:
     explicit TIfBlockExec(TType* type)
-        : Type(type)
-        , ThenReader(MakeBlockReader(TTypeInfoHelper(), type))
-        , ElseReader(MakeBlockReader(TTypeInfoHelper(), type))
+        : ThenReader(MakeBlockReader(TTypeInfoHelper(), type)), ElseReader(MakeBlockReader(TTypeInfoHelper(), type)), Type(type)
     {
     }
 
@@ -175,8 +174,6 @@ public:
             }
 
             ui64 mask = -ui64(predValues[i]);
-
-            TBlockItem result;
             ui64 low = (thenItem.Low() & mask) | (elseItem.Low() & ~mask);
             ui64 high = (thenItem.High() & mask) | (elseItem.High() & ~mask);
             builder->Add(TBlockItem{low, high});
@@ -238,8 +235,8 @@ IComputationNode* WrapBlockIf(TCallable& callable, const TComputationNodeFactory
                                          thenIsScalar, elseIsScalar, argsTypes);
     }
 
-    TVector<IComputationNode*> argsNodes = { predCompute, thenCompute, elseCompute };
-   
+    TComputationNodePtrVector argsNodes = { predCompute, thenCompute, elseCompute };
+
     std::shared_ptr<arrow::compute::ScalarKernel> kernel;
     if (thenIsScalar && elseIsScalar) {
         kernel = MakeBlockIfKernel<true, true>(argsTypes, thenType);

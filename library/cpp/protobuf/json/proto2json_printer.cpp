@@ -2,7 +2,11 @@
 #include "config.h"
 #include "util.h"
 
+#include <google/protobuf/any.pb.h>
+#include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/util/time_util.h>
+
+#include <library/cpp/protobuf/json/proto/enum_options.pb.h>
 
 #include <util/generic/yexception.h>
 #include <util/string/ascii.h>
@@ -79,7 +83,7 @@ namespace NProtobufJson {
                 }
 
                 default:
-                    Y_VERIFY_DEBUG(false, "Unknown FieldNameMode.");
+                    Y_DEBUG_ABORT_UNLESS(false, "Unknown FieldNameMode.");
             }
         }
 
@@ -116,7 +120,7 @@ namespace NProtobufJson {
     }
 
     template <bool InMapContext>
-    void TProto2JsonPrinter::PrintStringValue(const FieldDescriptor& field,
+    Y_NO_INLINE void TProto2JsonPrinter::PrintStringValue(const FieldDescriptor& field,
                                               const TStringBuf& key, const TString& value,
                                               IJsonOutput& json) {
         if (!GetConfig().StringTransforms.empty()) {
@@ -142,6 +146,15 @@ namespace NProtobufJson {
                                             IJsonOutput& json) {
         if (Config.EnumValueGenerator) {
             WriteWithMaybeEmptyKey<InMapContext>(json, key, Config.EnumValueGenerator(*value));
+            return;
+        }
+
+        if (Config.UseJsonEnumValue) {
+            auto jsonEnumValue = value->options().GetExtension(json_enum_value);
+            if (!jsonEnumValue) {
+                ythrow yexception() << "Trying to using json enum value for field " << value->name() << " which is not set.";
+            }
+            WriteWithMaybeEmptyKey<InMapContext>(json, key, jsonEnumValue);
             return;
         }
 
@@ -176,7 +189,7 @@ namespace NProtobufJson {
             }
 
             default:
-                Y_VERIFY_DEBUG(false, "Unknown EnumMode.");
+                Y_DEBUG_ABORT_UNLESS(false, "Unknown EnumMode.");
         }
     }
 
@@ -184,6 +197,9 @@ namespace NProtobufJson {
         using namespace google::protobuf;
         auto type = proto.GetDescriptor()->well_known_type();
 
+        // XXX static_cast will cause UB if used with dynamic messages
+        // (can be created by a DynamicMessageFactory with SetDelegateToGeneratedFactory(false). Unlikely, but still possible).
+        // See workaround with CopyFrom in JsonString2Duration, JsonString2Timestamp (json2proto.cpp)
         if (type == Descriptor::WellKnownType::WELLKNOWNTYPE_DURATION) {
             const auto& duration = static_cast<const Duration&>(proto);
             json.Write(util::TimeUtil::ToString(duration));
@@ -196,11 +212,45 @@ namespace NProtobufJson {
         return false;
     }
 
+    bool TProto2JsonPrinter::TryPrintAny(const Message& proto, IJsonOutput& json) {
+        using namespace google::protobuf;
+
+        const FieldDescriptor* typeUrlField;
+        const FieldDescriptor* valueField;
+        if (!Any::GetAnyFieldDescriptors(proto, &typeUrlField, &valueField)) {
+            return false;
+        }
+        const Reflection* const reflection = proto.GetReflection();
+        const TString& typeUrl = reflection->GetString(proto, typeUrlField);
+        TString fullTypeName;
+        if (!Any::ParseAnyTypeUrl(typeUrl, &fullTypeName)) {
+            return false;
+        }
+        const Descriptor* const valueDesc = proto.GetDescriptor()->file()->pool()->FindMessageTypeByName(fullTypeName);
+        if (!valueDesc) {
+            return false;
+        }
+        DynamicMessageFactory factory;
+        const THolder<Message> valueMessage{factory.GetPrototype(valueDesc)->New()};
+        const TString& serializedValue = reflection->GetString(proto, valueField);
+        if (!valueMessage->ParseFromString(serializedValue)) {
+            return false;
+        }
+
+        json.BeginObject();
+        json.WriteKey("@type").Write(typeUrl);
+        PrintFields(*valueMessage, json);
+        json.EndObject();
+
+        return true;
+    }
+
     void TProto2JsonPrinter::PrintSingleField(const Message& proto,
                                               const FieldDescriptor& field,
                                               IJsonOutput& json,
-                                              TStringBuf key) {
-        Y_VERIFY(!field.is_repeated(), "field is repeated.");
+                                              TStringBuf key,
+                                              bool inProtoMap) {
+        Y_ABORT_UNLESS(!field.is_repeated(), "field is repeated.");
 
         if (!key) {
             key = MakeKey(field);
@@ -225,7 +275,7 @@ namespace NProtobufJson {
 
         const Reflection* reflection = proto.GetReflection();
 
-        bool shouldPrintField = reflection->HasField(proto, &field);
+        bool shouldPrintField = inProtoMap || reflection->HasField(proto, &field);
         if (!shouldPrintField && GetConfig().MissingSingleKeyMode == TProto2JsonConfig::MissingKeyExplicitDefaultThrowRequired) {
             if (field.has_default_value()) {
                 shouldPrintField = true;
@@ -252,7 +302,11 @@ namespace NProtobufJson {
                     if (Config.ConvertTimeAsString && HandleTimeConversion(reflection->GetMessage(proto, &field), json)) {
                         break;
                     }
-                    Print(reflection->GetMessage(proto, &field), json);
+                    const Message& msg = reflection->GetMessage(proto, &field);
+                    if (Config.ConvertAny && TryPrintAny(msg, json)) {
+                        break;
+                    }
+                    Print(msg, json);
                     break;
                 }
 
@@ -292,7 +346,7 @@ namespace NProtobufJson {
                                                 const FieldDescriptor& field,
                                                 IJsonOutput& json,
                                                 TStringBuf key) {
-        Y_VERIFY(field.is_repeated(), "field isn't repeated.");
+        Y_ABORT_UNLESS(field.is_repeated(), "field isn't repeated.");
 
         const bool isMap = field.is_map() && GetConfig().MapAsObject;
         if (!key) {
@@ -393,12 +447,12 @@ namespace NProtobufJson {
 
     void TProto2JsonPrinter::PrintKeyValue(const NProtoBuf::Message& proto,
                                            IJsonOutput& json) {
-        const FieldDescriptor* keyField = proto.GetDescriptor()->FindFieldByName("key");
-        Y_VERIFY(keyField, "Map entry key field not found.");
+        const FieldDescriptor* keyField = proto.GetDescriptor()->map_key();
+        Y_ABORT_UNLESS(keyField, "Map entry key field not found.");
         TString key = MakeKey(proto, *keyField);
-        const FieldDescriptor* valueField = proto.GetDescriptor()->FindFieldByName("value");
-        Y_VERIFY(valueField, "Map entry value field not found.");
-        PrintField(proto, *valueField, json, key);
+        const FieldDescriptor* valueField = proto.GetDescriptor()->map_value();
+        Y_ABORT_UNLESS(valueField, "Map entry value field not found.");
+        PrintSingleField(proto, *valueField, json, key, true);
     }
 
     TString TProto2JsonPrinter::MakeKey(const NProtoBuf::Message& proto,
@@ -472,11 +526,9 @@ namespace NProtobufJson {
             PrintSingleField(proto, field, json, key);
     }
 
-    void TProto2JsonPrinter::Print(const Message& proto, IJsonOutput& json, bool closeMap) {
+    void TProto2JsonPrinter::PrintFields(const Message& proto, IJsonOutput& json) {
         const Descriptor* descriptor = proto.GetDescriptor();
         Y_ASSERT(descriptor);
-
-        json.BeginObject();
 
         // Iterate over all non-extension fields
         for (int f = 0, endF = descriptor->field_count(); f < endF; ++f) {
@@ -503,6 +555,12 @@ namespace NProtobufJson {
                 }
             }
         }
+    }
+
+    void TProto2JsonPrinter::Print(const Message& proto, IJsonOutput& json, bool closeMap) {
+        json.BeginObject();
+
+        PrintFields(proto, json);
 
         if (closeMap) {
             json.EndObject();

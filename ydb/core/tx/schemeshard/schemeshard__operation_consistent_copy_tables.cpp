@@ -48,7 +48,7 @@ NKikimrSchemeOp::TModifyScheme CreateIndexTask(NKikimr::NSchemeShard::TTableInde
 namespace NKikimr::NSchemeShard {
 
 TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context) {
-    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCreateConsistentCopyTables);
+    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCreateConsistentCopyTables);
 
     const auto& op = tx.GetCreateConsistentCopyTables();
 
@@ -115,13 +115,29 @@ TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, con
         TPath dstPath = TPath::Resolve(dstStr, context.SS);
         TPath dstParentPath = dstPath.Parent();
 
-        result.push_back(CreateCopyTable(NextPartId(nextId, result),
-            CopyTableTask(srcPath, dstPath, descr.GetOmitFollowers(), descr.GetIsBackup())));
+        THashSet<TString> sequences;
+        for (const auto& child: srcPath.Base()->GetChildren()) {
+            auto name = child.first;
+            auto pathId = child.second;
 
-        if (descr.GetOmitIndexes()) {
-            continue;
+            TPath childPath = srcPath.Child(name);
+            if (!childPath.IsSequence() || childPath.IsDeleted()) {
+                continue;
+            }
+
+            Y_ABORT_UNLESS(childPath.Base()->PathId == pathId);
+
+            TSequenceInfo::TPtr sequenceInfo = context.SS->Sequences.at(pathId);
+            const auto& sequenceDesc = sequenceInfo->Description;
+            const auto& sequenceName = sequenceDesc.GetName();
+
+            sequences.emplace(sequenceName);
         }
 
+        result.push_back(CreateCopyTable(NextPartId(nextId, result),
+            CopyTableTask(srcPath, dstPath, descr.GetOmitFollowers(), descr.GetIsBackup()), sequences));
+
+        TVector<NKikimrSchemeOp::TSequenceDescription> sequenceDescriptions;
         for (const auto& child: srcPath.Base()->GetChildren()) {
             const auto& name = child.first;
             const auto& pathId = child.second;
@@ -133,11 +149,22 @@ TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, con
                 continue;
             }
 
+            if (srcIndexPath.IsSequence()) {
+                TSequenceInfo::TPtr sequenceInfo = context.SS->Sequences.at(pathId);
+                const auto& sequenceDesc = sequenceInfo->Description;
+                sequenceDescriptions.push_back(sequenceDesc);
+                continue;
+            }
+
+            if (descr.GetOmitIndexes()) {
+                continue;
+            }
+
             if (!srcIndexPath.IsTableIndex()) {
                 continue;
             }
 
-            Y_VERIFY(srcIndexPath.Base()->PathId == pathId);
+            Y_ABORT_UNLESS(srcIndexPath.Base()->PathId == pathId);
             Y_VERIFY_S(srcIndexPath.Base()->GetChildren().size() == 1, srcIndexPath.PathString() << " has children " << srcIndexPath.Base()->GetChildren().size() << " but 1 expected");
 
             TTableIndexInfo::TPtr indexInfo = context.SS->Indexes.at(pathId);
@@ -145,11 +172,24 @@ TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, con
 
             TString srcImplTableName = srcIndexPath.Base()->GetChildren().begin()->first;
             TPath srcImplTable = srcIndexPath.Child(srcImplTableName);
-            Y_VERIFY(srcImplTable.Base()->PathId == srcIndexPath.Base()->GetChildren().begin()->second);
+            Y_ABORT_UNLESS(srcImplTable.Base()->PathId == srcIndexPath.Base()->GetChildren().begin()->second);
             TPath dstImplTable = dstIndexPath.Child(srcImplTableName);
 
             result.push_back(CreateCopyTable(NextPartId(nextId, result),
                 CopyTableTask(srcImplTable, dstImplTable, descr.GetOmitFollowers(), descr.GetIsBackup())));
+        }
+
+        for (auto&& sequenceDescription : sequenceDescriptions) {
+            auto scheme = TransactionTemplate(
+                dstPath.PathString(),
+                NKikimrSchemeOp::EOperationType::ESchemeOpCreateSequence);
+            scheme.SetFailOnExist(true);
+
+            auto* copySequence = scheme.MutableCopySequence();
+            copySequence->SetCopyFrom(srcPath.PathString() + "/" + sequenceDescription.GetName());
+            *scheme.MutableSequence() = std::move(sequenceDescription);
+
+            result.push_back(CreateCopySequence(NextPartId(nextId, result), scheme));
         }
     }
 

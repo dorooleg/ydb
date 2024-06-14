@@ -5,17 +5,25 @@ package FederatedQuery.Internal;
 option java_package = "com.yandex.query.internal";
 option java_outer_classname = "YandexQueryInternalProtos";
 
-import "ydb/library/yql/providers/dq/api/protos/service.proto";
+import "ydb/core/fq/libs/config/protos/storage.proto";
+import "ydb/core/fq/libs/protos/fq_private.proto";
+
+import "ydb/public/api/protos/draft/fq.proto";
+import "ydb/public/api/protos/ydb_issue_message.proto";
+
 import "ydb/library/yql/dq/actors/protos/dq_status_codes.proto";
 import "ydb/library/yql/dq/proto/dq_tasks.proto";
-import "ydb/public/api/protos/ydb_issue_message.proto";
-import "ydb/core/fq/libs/protos/fq_private.proto";
-import "ydb/public/api/protos/draft/fq.proto";
+import "ydb/library/yql/providers/dq/api/protos/service.proto";
 
 import "google/protobuf/duration.proto";
 
 message Consumer {
     string name = 1;
+}
+
+message StatisticsNamedValue {
+    string name = 1;
+    int64 value = 2;
 }
 
 message QueryInternal {
@@ -41,7 +49,13 @@ message QueryInternal {
     repeated Fq.Private.CompressedData dq_graph_compressed = 20;
     Fq.Private.TaskResources resources = 21;
     repeated Ydb.Issue.IssueMessage internal_issue = 22;
-    NYql.NDqProto.StatusIds.StatusCode status_code = 23;    
+    NYql.NDqProto.StatusIds.StatusCode status_code = 23;
+    string operation_id = 24;
+    string execution_id = 25;
+    NFq.NConfig.TYdbStorageConfig compute_connection = 26;
+    google.protobuf.Duration result_ttl = 27;
+    NYql.NDqProto.StatusIds.StatusCode pending_status_code = 28;
+    repeated StatisticsNamedValue statistics = 29;
 }
 
 message JobInternal {
@@ -56,4 +70,10 @@ message ConnectionInternal {
 
 message BindingInternal {
     string cloud_id = 2;
+}
+
+message ComputeDatabaseInternal {
+    string id = 1;
+    NFq.NConfig.TYdbStorageConfig connection = 2;
+    bool synchronized = 3;
 }

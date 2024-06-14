@@ -4,10 +4,11 @@
 #include <ydb/core/tx/long_tx_service/public/events.h>
 #include <ydb/core/util/intrusive_heap.h>
 #include <ydb/core/util/ulid.h>
+#include <ydb/library/services/services.pb.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/interconnect.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 namespace NKikimr {
 namespace NLongTxService {

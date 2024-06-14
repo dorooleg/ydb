@@ -101,7 +101,7 @@ namespace NKikimr {
                 try {
                     new(&page->Items[index].Value) TValue(std::move(value));
                 } catch (...) {
-                    Y_FAIL("TValue ctor should not throw");
+                    Y_ABORT("TValue ctor should not throw");
                 }
 
                 return ComposeId(page->PageId, index);
@@ -127,13 +127,13 @@ namespace NKikimr {
                 }
 
                 // ensure that this item isn't used and set up usage flag
-                Y_VERIFY(!page->UsedItemsMap[index]);
+                Y_ABORT_UNLESS(!page->UsedItemsMap[index]);
                 page->UsedItemsMap[index] = true;
 
                 // find item referring to this one
                 TPageSize *p;
                 for (p = &page->FirstFreeItem; *p != index; p = &page->Items[*p].NextFreeItem) {
-                    Y_VERIFY(!page->UsedItemsMap[*p]);
+                    Y_ABORT_UNLESS(!page->UsedItemsMap[*p]);
                 }
 
                 // fill it with correct value
@@ -143,7 +143,7 @@ namespace NKikimr {
                 try {
                     new(&page->Items[index].Value) TValue(std::move(value));
                 } catch (...) {
-                    Y_FAIL("TValue ctor should not throw");
+                    Y_ABORT("TValue ctor should not throw");
                 }
 
                 // adjust usage counter
@@ -168,7 +168,7 @@ namespace NKikimr {
                 TPage *page;
                 TPageSize index;
                 bool status = FindExistingItem(id, &page, &index);
-                Y_VERIFY(status, "not found TIncrHugeBlobId# %016" PRIx64, id);
+                Y_ABORT_UNLESS(status, "not found TIncrHugeBlobId# %016" PRIx64, id);
 
                 // return reference
                 return page->Items[index].Value;

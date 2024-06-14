@@ -9,6 +9,7 @@
 #include <openssl/rand.h>
 
 #include <util/generic/singleton.h>
+#include <util/string/builder.h>
 #include <util/string/cast.h>
 #include <util/string/hex.h>
 
@@ -70,6 +71,15 @@ TLoginProvider::TBasicResponse TLoginProvider::CreateUser(const TCreateUserReque
     return response;
 }
 
+bool TLoginProvider::CheckSubjectExists(const TString& name, const ESidType::SidType& type) {
+    auto itSidModify = Sids.find(name);
+    return itSidModify != Sids.end() && itSidModify->second.Type == type;
+}
+
+bool TLoginProvider::CheckUserExists(const TString& name) {
+    return CheckSubjectExists(name, ESidType::USER);
+}
+
 TLoginProvider::TBasicResponse TLoginProvider::ModifyUser(const TModifyUserRequest& request) {
     TBasicResponse response;
 
@@ -90,7 +100,9 @@ TLoginProvider::TRemoveUserResponse TLoginProvider::RemoveUser(const TRemoveUser
 
     auto itUserModify = Sids.find(request.User);
     if (itUserModify == Sids.end() || itUserModify->second.Type != ESidType::USER) {
-        response.Error = "User not found";
+        if (!request.MissingOk) {
+            response.Error = "User not found";
+        }
         return response;
     }
 
@@ -149,7 +161,12 @@ TLoginProvider::TBasicResponse TLoginProvider::AddGroupMembership(const TAddGrou
     }
 
     TSidRecord& group = itGroupModify->second;
-    group.Members.insert(request.Member);
+
+    if (group.Members.count(request.Member)) {
+        response.Notice = TStringBuilder() << "Role \"" << request.Member << "\" is already a member of role \"" << group.Name << "\"";
+    } else {
+        group.Members.insert(request.Member);
+    }
 
     ChildToParentIndex[request.Member].insert(request.Group);
 
@@ -166,9 +183,65 @@ TLoginProvider::TBasicResponse TLoginProvider::RemoveGroupMembership(const TRemo
     }
 
     TSidRecord& group = itGroupModify->second;
-    group.Members.erase(request.Member);
+
+    if (!group.Members.count(request.Member)) {
+        response.Warning = TStringBuilder() << "Role \"" << request.Member << "\" is not a member of role \"" << group.Name << "\"";
+    } else {
+        group.Members.erase(request.Member);
+    }
 
     ChildToParentIndex[request.Member].erase(request.Group);
+
+    return response;
+}
+
+TLoginProvider::TRenameGroupResponse TLoginProvider::RenameGroup(const TRenameGroupRequest& request) {
+    TRenameGroupResponse response;
+
+    if (request.Options.CheckName && !CheckAllowedName(request.NewName)) {
+        response.Error = "Name is not allowed";
+        return response;
+    }
+
+    auto itGroupModify = Sids.find(request.Group);
+    if (itGroupModify == Sids.end() || itGroupModify->second.Type != ESidType::GROUP) {
+        response.Error = "Group not found";
+        return response;
+    }
+
+    auto itGroupCreate = Sids.emplace(request.NewName, TSidRecord{.Type = ESidType::GROUP});
+    if (!itGroupCreate.second) {
+        if (itGroupCreate.first->second.Type == ESidType::GROUP) {
+            response.Error = "Group already exists";
+        } else {
+            response.Error = "Account already exists";
+        }
+        return response;
+    }
+
+    TSidRecord& group = itGroupCreate.first->second;
+    group.Name = request.NewName;
+
+    auto itChildToParentIndex = ChildToParentIndex.find(request.Group);
+    if (itChildToParentIndex != ChildToParentIndex.end()) {
+        ChildToParentIndex[request.NewName] = itChildToParentIndex->second;
+        for (const TString& parent : ChildToParentIndex[request.NewName]) {
+            auto itGroup = Sids.find(parent);
+            if (itGroup != Sids.end()) {
+                response.TouchedGroups.emplace_back(itGroup->first);
+                itGroup->second.Members.erase(request.Group);
+                itGroup->second.Members.insert(request.NewName);
+            }
+        }
+        ChildToParentIndex.erase(itChildToParentIndex);
+    }
+
+    for (const TString& member : itGroupModify->second.Members) {
+        ChildToParentIndex[member].erase(request.Group);
+        ChildToParentIndex[member].insert(request.NewName);
+    }
+
+    Sids.erase(itGroupModify);
 
     return response;
 }
@@ -178,7 +251,9 @@ TLoginProvider::TRemoveGroupResponse TLoginProvider::RemoveGroup(const TRemoveGr
 
     auto itGroupModify = Sids.find(request.Group);
     if (itGroupModify == Sids.end() || itGroupModify->second.Type != ESidType::GROUP) {
-        response.Error = "Group not found";
+        if (!request.MissingOk) {
+            response.Error = "Group not found";
+        }
         return response;
     }
 
@@ -226,15 +301,17 @@ std::vector<TString> TLoginProvider::GetGroupsMembership(const TString& member) 
 
 TLoginProvider::TLoginUserResponse TLoginProvider::LoginUser(const TLoginUserRequest& request) {
     TLoginUserResponse response;
-    auto itUser = Sids.find(request.User);
-    if (itUser == Sids.end() || itUser->second.Type != ESidType::USER) {
-        response.Error = "Invalid user";
-        return response;
-    }
+    if (!request.ExternalAuth) {
+        auto itUser = Sids.find(request.User);
+        if (itUser == Sids.end() || itUser->second.Type != ESidType::USER) {
+            response.Error = "Invalid user";
+            return response;
+        }
 
-    if (!Impl->VerifyHash(request.Password, itUser->second.Hash)) {
-        response.Error = "Invalid password";
-        return response;
+        if (!Impl->VerifyHash(request.Password, itUser->second.Hash)) {
+            response.Error = "Invalid password";
+            return response;
+        }
     }
 
     if (Keys.empty() || Keys.back().PrivateKey.empty()) {
@@ -265,9 +342,13 @@ TLoginProvider::TLoginUserResponse TLoginProvider::LoginUser(const TLoginUserReq
         token.set_audience(Audience);
     }
 
-    if (request.Options.WithUserGroups) {
-        auto groups = GetGroupsMembership(request.User);
-        token.set_payload_claim(GROUPS_CLAIM_NAME, jwt::claim(picojson::value(std::vector<picojson::value>(groups.begin(), groups.end()))));
+    if (request.ExternalAuth) {
+        token.set_payload_claim(EXTERNAL_AUTH_CLAIM_NAME, jwt::claim(request.ExternalAuth));
+    } else {
+        if (request.Options.WithUserGroups) {
+            auto groups = GetGroupsMembership(request.User);
+            token.set_payload_claim(GROUPS_CLAIM_NAME, jwt::claim(picojson::value(std::vector<picojson::value>(groups.begin(), groups.end()))));
+        }
     }
 
     auto encoded_token = token.sign(algorithm);
@@ -330,7 +411,12 @@ TLoginProvider::TValidateTokenResponse TLoginProvider::ValidateToken(const TVali
                     response.Groups = groups;
                 }
             }
-            if (!Sids.empty()) {
+            if (decoded_token.has_payload_claim(EXTERNAL_AUTH_CLAIM_NAME)) {
+                const jwt::claim& externalAuthClaim = decoded_token.get_payload_claim(EXTERNAL_AUTH_CLAIM_NAME);
+                if (externalAuthClaim.get_type() == jwt::claim::type::string) {
+                    response.ExternalAuth = externalAuthClaim.as_string();
+                }
+            } else if (!Sids.empty()) {
                 auto itUser = Sids.find(TString(decoded_token.get_subject()));
                 if (itUser == Sids.end()) {
                     response.Error = "Token is valid, but subject wasn't found";

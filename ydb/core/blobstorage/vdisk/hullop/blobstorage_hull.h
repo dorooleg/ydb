@@ -10,7 +10,6 @@ namespace NKikimr {
 
     class TLsnMngr;
     class TPDiskCtx;
-    class THandoffDelegate;
     struct TEvLocalStatusResult;
     using TPDiskCtxPtr = std::shared_ptr<TPDiskCtx>;
 
@@ -61,7 +60,6 @@ namespace NKikimr {
         THull(
             TIntrusivePtr<TLsnMngr> lsnMngr,
             TPDiskCtxPtr pdiskCtx,
-            TIntrusivePtr<THandoffDelegate> handoffDelegate,
             const TActorId skeletonId,
             bool runHandoff,
             THullDbRecovery &&uncond,
@@ -113,7 +111,7 @@ namespace NKikimr {
                 const TDiskPart &diskAddr,
                 ui64 lsn);
 
-        void AddAnubisOsirisLogoBlob(
+        void AddLogoBlob(
                 const TActorContext &ctx,
                 const TLogoBlobID &id,
                 const TIngress &ingress,
@@ -210,6 +208,8 @@ namespace NKikimr {
         bool HasBlockRecordFor(ui64 tabletId) const {
             return BlocksCache.HasRecord(tabletId);
         }
+
+        void PermitGarbageCollection(const TActorContext& ctx);
     };
 
     // FIXME:

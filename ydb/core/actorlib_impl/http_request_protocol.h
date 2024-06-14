@@ -107,11 +107,11 @@ public:
             const TActorContext& ctx,
             NAddr::IRemoteAddrPtr address) noexcept override
     {
-        Y_VERIFY(address.Get() != nullptr);
+        Y_ABORT_UNLESS(address.Get() != nullptr);
 
         NAddr::IRemoteAddrRef addr(address.Release());
 
-        Y_VERIFY(addr.Get() != nullptr);
+        Y_ABORT_UNLESS(addr.Get() != nullptr);
 
         MemLogPrintF("%s"
                      ", actorId #%s"
@@ -125,7 +125,7 @@ public:
             ConnectSocket<TOrigActor>(OriginalActor, ctx, addr);
         };
 
-        Y_VERIFY(addr.Get() != nullptr);
+        Y_ABORT_UNLESS(addr.Get() != nullptr);
 
         ConnectSocket<TOrigActor>(OriginalActor, ctx, addr);
     }
@@ -236,12 +236,12 @@ private:
         switch (ev->GetTypeRewrite()) {
             CFuncCtx(TEvHTTPProtocolRetry::EventType, Retry, ctx);
         default:
-            Y_FAIL("Unknown message type dispatched");
+            Y_ABORT("Unknown message type dispatched");
         }
     }
 
     void Retry(const TActorContext& ctx) noexcept {
-        Y_VERIFY(RetryCall);
+        Y_ABORT_UNLESS(RetryCall);
 
         RetryCall(ctx);
     }

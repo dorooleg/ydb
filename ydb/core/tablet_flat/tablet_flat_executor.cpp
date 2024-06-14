@@ -12,7 +12,7 @@ namespace NFlatExecutorSetup {
     void ITablet::SnapshotComplete(TIntrusivePtr<TTableSnapshotContext> snapContext, const TActorContext &ctx) {
         Y_UNUSED(snapContext);
         Y_UNUSED(ctx);
-        Y_FAIL("must be overriden if plan to use table snapshot completion");
+        Y_ABORT("must be overriden if plan to use table snapshot completion");
     }
 
     void ITablet::CompactionComplete(ui32 tableId, const TActorContext &ctx) {
@@ -37,6 +37,14 @@ namespace NFlatExecutorSetup {
         return true;
     }
 
+    void ITablet::OnYellowChannelsChanged() {
+        // nothing by default
+    }
+
+    void ITablet::OnRejectProbabilityRelaxed() {
+        // nothing by default
+    }
+
     void ITablet::UpdateTabletInfo(TIntrusivePtr<TTabletStorageInfo> info, const TActorId& launcherID) {
         if (info)
             TabletInfo = info;
@@ -54,6 +62,18 @@ namespace NFlatExecutorSetup {
     }
 
     void ITablet::ReadOnlyLeaseDropped() {
+        // nothing by default
+    }
+
+    void ITablet::OnFollowersCountChanged() {
+        // nothing by default
+    }
+
+    void ITablet::OnFollowerSchemaUpdated() {
+        // nothing by default
+    }
+
+    void ITablet::OnFollowerDataUpdated() {
         // nothing by default
     }
 }

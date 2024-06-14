@@ -2,6 +2,8 @@
 
 #include <ydb/core/base/hive.h>
 #include <ydb/core/blob_depot/blob_depot.h>
+#include <ydb/core/cms/console/configs_dispatcher.h>
+#include <ydb/core/cms/console/console.h>
 #include <ydb/core/blobstorage/dsproxy/mock/dsproxy_mock.h>
 #include <ydb/core/blobstorage/dsproxy/mock/model.h>
 #include <ydb/core/blobstorage/pdisk/mock/pdisk_mock.h>
@@ -16,6 +18,7 @@
 #include <ydb/core/mind/local.h>
 #include <ydb/core/mind/tenant_pool.h>
 #include <ydb/core/mind/tenant_node_enumeration.h>
+#include <ydb/core/protos/blobstorage_distributed_config.pb.h>
 #include <ydb/core/sys_view/service/sysview_service.h>
 #include <ydb/core/tx/coordinator/coordinator.h>
 #include <ydb/core/tx/tx_allocator/txallocator.h>

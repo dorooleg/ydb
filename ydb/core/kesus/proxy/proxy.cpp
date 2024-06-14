@@ -6,9 +6,9 @@
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
 
 namespace NKikimr {
 namespace NKesus {
@@ -123,8 +123,8 @@ private:
         LOG_TRACE_S(ctx, NKikimrServices::KESUS_PROXY,
             "Got TEvResolveResult for path " << msg->KesusPath.Quote());
         auto& entry = Cache[msg->KesusPath];
-        Y_VERIFY(entry.State == CACHE_STATE_RESOLVING);
-        Y_VERIFY(msg->Event->Request->ResultSet.size() == 1);
+        Y_ABORT_UNLESS(entry.State == CACHE_STATE_RESOLVING);
+        Y_ABORT_UNLESS(msg->Event->Request->ResultSet.size() == 1);
         entry.State = CACHE_STATE_ACTIVE;
         const auto& result = msg->Event->Request->ResultSet.front();
         entry.LastError.Clear();
@@ -212,7 +212,7 @@ private:
             hFunc(TEvPrivate::TEvResolveResult, Handle);
 
             default:
-                Y_FAIL("Unexpected event 0x%x for TKesusProxyService", ev->GetTypeRewrite());
+                Y_ABORT("Unexpected event 0x%x for TKesusProxyService", ev->GetTypeRewrite());
         }
     }
 };
@@ -257,7 +257,7 @@ private:
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
 
             default:
-                Y_FAIL("Unexpected event 0x%x for TKesusProxyService::TResolveActor", ev->GetTypeRewrite());
+                Y_ABORT("Unexpected event 0x%x for TKesusProxyService::TResolveActor", ev->GetTypeRewrite());
         }
     }
 };

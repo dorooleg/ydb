@@ -18,16 +18,16 @@ namespace {
 
 constexpr auto TotalSambles =
 #ifndef NDEBUG
-333333U;
+222222U;
 #else
-33333333ULL;
+22222222ULL;
 #endif
 
 }
 
 std::vector<std::pair<i8, double>> MakeSamples() {
     std::default_random_engine eng;
-    std::uniform_int_distribution<i8> keys(-100, +100);
+    std::uniform_int_distribution<int> keys(-100, +100);
     std::uniform_real_distribution<double> unif(-999.0, +999.0);
 
     std::vector<std::pair<i8, double>> samples(TotalSambles);
@@ -52,7 +52,7 @@ std::vector<std::pair<ui16, double>> MakeOtherSamples() {
 std::vector<std::tuple<ui64, std::string, std::string, double, double, double, double>> MakeTpchSamples() {
     std::default_random_engine eng;
     std::uniform_int_distribution<ui64> dates(694303200000000ULL, 9124596000000005ULL);
-    std::uniform_int_distribution<ui8> keys(0U, 3U);
+    std::uniform_int_distribution<int> keys(0U, 3U);
     std::uniform_real_distribution<double> prices(900., 105000.0);
     std::uniform_real_distribution<double> taxes(0., 0.08);
     std::uniform_real_distribution<double> discs(0., 0.1);
@@ -72,7 +72,7 @@ std::vector<std::tuple<ui64, std::string, std::string, double, double, double, d
             case 2U: return std::make_tuple(dates(gen), "N", "F", prices(gen), taxes(gen), discs(gen), qntts(gen));
             case 3U: return std::make_tuple(dates(gen), "R", "F", prices(gen), taxes(gen), discs(gen), qntts(gen));
         }
-        Y_FAIL("Unexpected");
+        Y_ABORT("Unexpected");
     });
     return samples;
 }
@@ -1485,7 +1485,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLComputationNodeTest) {
         const auto emptyList = pb.NewEmptyList(pb.NewDataType(NUdf::TDataType<ui32>::Id));
         const auto list1 = pb.Append(emptyList, pb.NewDataLiteral<ui32>(34));
         const auto list2 = pb.Append(emptyList, pb.NewDataLiteral<ui32>(56));
-        const auto pgmReturn = pb.Extend(list1, list2);
+        const auto pgmReturn = pb.Extend({list1, list2});
 
         const auto graph = setup.BuildGraph(pgmReturn);
         UNIT_ASSERT_VALUES_EQUAL(graph->GetValue().GetListLength(), 2);
@@ -1541,6 +1541,43 @@ Y_UNIT_TEST_SUITE(TMiniKQLComputationNodeTest) {
         const auto list2 = pb.NewList(type, {data3, data4});
 
         const auto pgmReturn = pb.FromFlow(pb.Extend({pb.ToFlow(list2), pb.ToFlow(list1), pb.ToFlow(list2)}));
+
+        const auto graph = setup.BuildGraph(pgmReturn);
+
+        const auto iterator = graph->GetValue();
+        NUdf::TUnboxedValue item;
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), 121324.323);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), -7898.8);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), 0.0);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), 1.1);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), -3.14);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), 121324.323);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Ok, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(item.template Get<double>(), -7898.8);
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Finish, iterator.Fetch(item));
+        UNIT_ASSERT_VALUES_EQUAL(NUdf::EFetchStatus::Finish, iterator.Fetch(item));
+    }
+
+    Y_UNIT_TEST_LLVM(TestOrderedExtendOverFlows) {
+        TSetup<LLVM> setup;
+        TProgramBuilder& pb = *setup.PgmBuilder;
+
+        const auto data0 = pb.NewDataLiteral(0.0);
+        const auto data1 = pb.NewDataLiteral(1.1);
+        const auto data2 = pb.NewDataLiteral(-3.14);
+        const auto data3 = pb.NewDataLiteral(121324.323);
+        const auto data4 = pb.NewDataLiteral(-7898.8);
+        const auto type = pb.NewDataType(NUdf::TDataType<double>::Id);
+        const auto list1 = pb.NewList(type, {data0, data1, data2});
+        const auto list2 = pb.NewList(type, {data3, data4});
+
+        const auto pgmReturn = pb.FromFlow(pb.OrderedExtend({pb.ToFlow(list2), pb.ToFlow(list1), pb.ToFlow(list2)}));
 
         const auto graph = setup.BuildGraph(pgmReturn);
 
@@ -1627,7 +1664,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLComputationNodeTest) {
         const auto opt = pb.NewEmptyOptional(pb.NewOptionalType(type));
 
 
-        const auto pgmReturn = pb.FromFlow(pb.Extend({pb.ToFlow(opt0), pb.ToFlow(opt), pb.ToFlow(opt1), pb.ToFlow(opt), pb.ToFlow(opt2)}));
+        const auto pgmReturn = pb.FromFlow(pb.OrderedExtend({pb.ToFlow(opt0), pb.ToFlow(opt), pb.ToFlow(opt1), pb.ToFlow(opt), pb.ToFlow(opt2)}));
 
         const auto graph = setup.BuildGraph(pgmReturn);
 

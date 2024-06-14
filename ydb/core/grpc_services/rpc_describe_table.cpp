@@ -5,7 +5,7 @@
 #include "rpc_scheme_base.h"
 
 #include "service_table.h"
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/ydb_convert/table_description.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
@@ -131,12 +131,13 @@ private:
 
     void SendProposeRequest(const TActorContext &ctx) {
         const auto req = GetProtoRequest();
+        const TString path = req->path();
 
         std::unique_ptr<TEvTxUserProxy::TEvNavigate> navigateRequest(new TEvTxUserProxy::TEvNavigate());
         SetAuthToken(navigateRequest, *Request_);
         SetDatabase(navigateRequest.get(), *Request_);
         NKikimrSchemeOp::TDescribePath* record = navigateRequest->Record.MutableDescribePath();
-        record->SetPath(req->path());
+        record->SetPath(path);
         if (req->include_shard_key_bounds()) {
             record->MutableOptions()->SetReturnBoundaries(true);
         }
@@ -145,7 +146,7 @@ private:
             record->MutableOptions()->SetReturnPartitionStats(true);
         }
 
-        if (AppData(ctx)->AllowPrivateTableDescribeForTest) {
+        if (AppData(ctx)->AllowPrivateTableDescribeForTest || path.EndsWith("/indexImplTable")) {
             record->MutableOptions()->SetShowPrivateTable(true);
         }
 

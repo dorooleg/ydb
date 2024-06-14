@@ -91,6 +91,63 @@ Below are examples of the code for anonymous authentication in different {{ ydb-
 
 - Node.js
 
-  {% include [auth-anonymous](../../../../_includes/nodejs/auth-anonymous.md) %}
+  {% include [auth-anonymous](../../../_includes/nodejs/auth-anonymous.md) %}
+
+- Python
+
+  {% include [auth-anonymous](../../../_includes/python/auth-anonymous.md) %}
+
+- Python (asyncio)
+
+  {% include [auth-anonymous](../../../_includes/python/async/auth-anonymous.md) %}
+
+- C# (.NET)
+
+  ```C#
+  using Ydb.Sdk;
+  using Ydb.Sdk.Auth;
+
+  const string endpoint = "grpc://localhost:2136";
+  const string database = "/local";
+
+  var config = new DriverConfig(
+      endpoint: endpoint,
+      database: database,
+      credentials: new AnonymousProvider()
+  );
+
+  await using var driver = await Driver.CreateInitialized(config);
+  ```
+
+- PHP
+
+  ```php
+  <?php
+
+  use YdbPlatform\Ydb\Ydb;
+  use YdbPlatform\Ydb\Auth\Implement\AnonymousAuthentication;
+
+  $config = [
+
+      // Database path
+      'database'    => '/local',
+
+      // Database endpoint
+      'endpoint'    => 'localhost:2136',
+
+      // Auto discovery (dedicated server only)
+      'discovery'   => false,
+
+      // IAM config
+      'iam_config'  => [
+          'insecure' => true,
+          // 'root_cert_file' => './CA.pem', // Root CA file (uncomment for dedicated server)
+      ],
+      
+      'credentials' => new AnonymousAuthentication()
+  ];
+
+  $ydb = new Ydb($config);
+  ```
 
 {% endlist %}

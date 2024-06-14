@@ -1,15 +1,19 @@
 #include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 #include "rpc_kqp_base.h"
-#include "rpc_common.h"
+#include "rpc_common/rpc_common.h"
 #include "service_table.h"
+#include "audit_dml_operations.h"
 
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/public/api/protos/ydb_scheme.pb.h>
 #include <ydb/core/base/counters.h>
 #include <ydb/core/protos/console_config.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
+#include <ydb/core/protos/query_stats.pb.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
+
+#include <ydb/core/kqp/executer_actor/kqp_executer.h>
 
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
@@ -44,6 +48,7 @@ public:
     void StateWork(TAutoPtr<IEventHandle>& ev) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
+            IgnoreFunc(NKqp::TEvKqpExecuter::TEvExecuterProgress);
             default: TBase::StateWork(ev);
         }
     }
@@ -53,10 +58,10 @@ public:
         const auto traceId = Request_->GetTraceId();
         const auto requestType = Request_->GetRequestType();
 
-        NYql::TIssues issues;
+        AuditContextAppend(Request_.get(), *req);
 
-        if (!CheckSession(req->session_id(), issues)) {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
+        if (!CheckSession(req->session_id(), Request_.get())) {
+            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
         }
 
         if (!req->has_tx_control()) {
@@ -112,7 +117,6 @@ public:
                     NYql::TIssues issues;
                     issues.AddIssue(NYql::ExceptionToIssue(ex));
                     return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
-                    return;
                 }
 
                 queryAction = NKikimrKqp::QUERY_ACTION_EXECUTE_PREPARED;
@@ -143,7 +147,7 @@ public:
 
         ReportCostInfo_ = req->operation_params().report_cost_info() == Ydb::FeatureFlag::ENABLED;
 
-        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
+        ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release(), 0, 0, Span_.GetTraceId());
     }
 
     static void ConvertReadStats(const NKikimrQueryStats::TReadOpStats& from, Ydb::TableStats::OperationStats* to) {
@@ -176,7 +180,7 @@ public:
 
             try {
                 if (kqpResponse.GetYdbResults().size()) {
-                    Y_VERIFY_DEBUG(!kqpResponse.GetYdbResults().GetArena() ||
+                    Y_DEBUG_ABORT_UNLESS(!kqpResponse.GetYdbResults().GetArena() ||
                         queryResult->mutable_result_sets()->GetArena() == kqpResponse.GetYdbResults().GetArena());
                     // https://protobuf.dev/reference/cpp/arenas/#swap
                     // Actualy will be copy in case pf remote execution
@@ -205,6 +209,8 @@ public:
                 issues.AddIssue(NYql::ExceptionToIssue(ex));
                 return Reply(Ydb::StatusIds::INTERNAL_ERROR, issues, ctx);
             }
+
+            AuditContextAppend(Request_.get(), *GetProtoRequest(), *queryResult);
 
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, *queryResult, ctx);
         } else {

@@ -60,7 +60,7 @@ namespace NKikimr::NBlobDepot {
                 } else if (std::holds_alternative<TTabletDisconnected>(response)) {
                     EndWithError(NKikimrProto::ERROR, "BlobDepot tablet disconnected");
                 } else {
-                    Y_FAIL();
+                    Y_ABORT();
                 }
             }
 
@@ -86,7 +86,7 @@ namespace NKikimr::NBlobDepot {
                         if (tag == Reads.size()) {
                             Reads.push_back(TRead{id});
                         } else {
-                            Y_VERIFY(Reads[tag].Id == id);
+                            Y_ABORT_UNLESS(Reads[tag].Id == id);
                         }
                         TReadArg arg{
                             key,
@@ -114,32 +114,35 @@ namespace NKikimr::NBlobDepot {
                 }
             }
 
-            void OnRead(ui64 tag, NKikimrProto::EReplyStatus status, TString dataOrErrorReason) override {
+            void OnRead(ui64 tag, TReadOutcome&& outcome) override {
                 --ReadsInFlight;
 
-                Y_VERIFY(tag < Reads.size());
+                Y_ABORT_UNLESS(tag < Reads.size());
                 TRead& read = Reads[tag];
 
-                switch (status) {
-                    case NKikimrProto::OK: {
-                        Y_VERIFY(dataOrErrorReason.size() == read.Id.BlobSize());
-                        const bool inserted = FoundBlobs.try_emplace(read.Id, std::move(dataOrErrorReason)).second;
+                const bool success = std::visit(TOverloaded{
+                    [&](TReadOutcome::TOk& ok) {
+                        Y_ABORT_UNLESS(ok.Data.size() == read.Id.BlobSize());
+                        const bool inserted = FoundBlobs.try_emplace(read.Id, ok.Data.ConvertToString()).second;
                         Y_VERIFY_S(inserted, "AgentId# " << Agent.LogId << " QueryId# " << GetQueryId()
                             << " duplicate BlobId# " << read.Id << " received");
-                        break;
-                    }
-
-                    case NKikimrProto::NODATA:
+                        return true;
+                    },
+                    [&](TReadOutcome::TNodata& /*nodata*/) {
                         // this blob has just vanished since we found it in index -- may be it was partially written and
                         // now gone; it's okay to have this situation, not a data loss
-                        break;
+                        return true;
+                    },
+                    [&](TReadOutcome::TError& error) {
+                        EndWithError(error.Status, TStringBuilder() << "failed to retrieve BlobId# "
+                            << read.Id << " Error# " << error.ErrorReason);
+                        return false;
+                    }
+                }, outcome.Value);
 
-                    default:
-                        return EndWithError(status, TStringBuilder() << "failed to retrieve BlobId# "
-                            << read.Id << " Error# " << dataOrErrorReason);
+                if (success) {
+                    CheckAndFinish();
                 }
-
-                CheckAndFinish();
             }
 
             void CheckAndFinish() {

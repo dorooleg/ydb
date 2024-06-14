@@ -54,11 +54,11 @@ namespace NPQ {
         ERequestType Type;
         TActorId Sender;
         ui64 CookiePQ;
-        ui32 Partition;
+        TPartitionId Partition;
         ui32 MetadataWritesCount;
         TVector<TRequestedBlob> Blobs;
 
-        TKvRequest(ERequestType type, TActorId sender, ui64 cookie, ui32 partition)
+        TKvRequest(ERequestType type, TActorId sender, ui64 cookie, const TPartitionId& partition)
         : Type(type)
         , Sender(sender)
         , CookiePQ(cookie)
@@ -66,7 +66,7 @@ namespace NPQ {
         , MetadataWritesCount(0)
         {}
 
-        TBlobId GetBlobId(ui32 pos) const { return TBlobId(Partition, Blobs[pos].Offset, Blobs[pos].PartNo, Blobs[pos].Count, Blobs[pos].InternalPartsCount); }
+        TBlobId GetBlobId(ui32 pos) const { return TBlobId(Partition.InternalPartitionId, Blobs[pos].Offset, Blobs[pos].PartNo, Blobs[pos].Count, Blobs[pos].InternalPartsCount); }
 
         THolder<TEvKeyValue::TEvRequest> MakeKvRequest() const
         {
@@ -110,9 +110,9 @@ namespace NPQ {
         }
 
         void Verify(const TRequestedBlob& blob) const {
-            TKey key(TKeyPrefix::TypeData, 0, blob.Offset, blob.PartNo, blob.Count, blob.InternalPartsCount, false);
-            Y_VERIFY(blob.Value.size() == blob.Size);
-            CheckBlob(key, blob.Value);
+            TKey key(TKeyPrefix::TypeData, TPartitionId(0), blob.Offset, blob.PartNo, blob.Count, blob.InternalPartsCount, false);
+            Y_ABORT_UNLESS(blob.Value.size() == blob.Size);
+            TClientBlob::CheckBlob(key, blob.Value);
         }
     };
 
@@ -230,11 +230,10 @@ namespace NPQ {
             }
         };
 
-        TIntabletCache(ui64 tabletId, ui32 l1Size)
+        explicit TIntabletCache(ui64 tabletId)
             : TabletId(tabletId)
             , L1Strategy(nullptr)
         {
-            Y_UNUSED(l1Size);
         }
 
         const TMapType& CachedMap() const { return Cache; }
@@ -259,7 +258,7 @@ namespace NPQ {
 
             for (const auto& blob : kvReq.Blobs) {
                 // Touching blobs in L2. We don't need data here
-                TCacheBlobL2 key = {kvReq.Partition, blob.Offset, blob.PartNo, nullptr};
+                TCacheBlobL2 key = {kvReq.Partition.InternalPartitionId, blob.Offset, blob.PartNo, nullptr};
                 if (blob.Cached)
                     reqData->RequestedBlobs.push_back(key);
                 else
@@ -276,10 +275,10 @@ namespace NPQ {
             THolder<TCacheL2Request> reqData = MakeHolder<TCacheL2Request>(TabletId);
 
             for (const TRequestedBlob& reqBlob : kvReq.Blobs) {
-                TBlobId blob(kvReq.Partition, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
+                TBlobId blob(kvReq.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
                 { // there could be a new blob with same id (for big messages)
                     if (RemoveExists(ctx, blob)) {
-                        TCacheBlobL2 removed = {kvReq.Partition, reqBlob.Offset, reqBlob.PartNo, nullptr};
+                        TCacheBlobL2 removed = {kvReq.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, nullptr};
                         reqData->RemovedBlobs.push_back(removed);
                     }
                 }
@@ -291,7 +290,7 @@ namespace NPQ {
                 if (L1Strategy)
                     L1Strategy->SaveHeadBlob(blob);
 
-                TCacheBlobL2 blobL2 = {kvReq.Partition, reqBlob.Offset, reqBlob.PartNo, cached};
+                TCacheBlobL2 blobL2 = {kvReq.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, cached};
                 reqData->StoredBlobs.push_back(blobL2);
 
                 LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Caching head blob in L1. Partition "
@@ -305,7 +304,7 @@ namespace NPQ {
 
         void SavePrefetchBlobs(const TActorContext& ctx, const TKvRequest& kvReq, const TVector<bool>& store)
         {
-            Y_VERIFY(store.size() == kvReq.Blobs.size());
+            Y_ABORT_UNLESS(store.size() == kvReq.Blobs.size());
 
             THolder<TCacheL2Request> reqData = MakeHolder<TCacheL2Request>(TabletId);
 
@@ -315,11 +314,11 @@ namespace NPQ {
                     continue;
 
                 const TRequestedBlob& reqBlob = kvReq.Blobs[i];
-                TBlobId blob(kvReq.Partition, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
+                TBlobId blob(kvReq.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, reqBlob.Count, reqBlob.InternalPartsCount);
                 {
                     TValueL1 value;
                     if (CheckExists(ctx, blob, value)) {
-                        Y_VERIFY(value.Source == TValueL1::SourceHead);
+                        Y_ABORT_UNLESS(value.Source == TValueL1::SourceHead);
                         continue;
                     }
                 }
@@ -329,7 +328,7 @@ namespace NPQ {
                 Cache[blob] = valL1; // weak
                 Counters.Inc(valL1);
 
-                TCacheBlobL2 blobL2 = {kvReq.Partition, reqBlob.Offset, reqBlob.PartNo, cached};
+                TCacheBlobL2 blobL2 = {kvReq.Partition.InternalPartitionId, reqBlob.Offset, reqBlob.PartNo, cached};
                 reqData->StoredBlobs.push_back(blobL2);
 
                 LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Prefetched blob in L1. Partition "
@@ -355,7 +354,7 @@ namespace NPQ {
             }
 
             auto sp = it->second.GetBlob();
-            Y_VERIFY(sp.get() == value.get(),
+            Y_ABORT_UNLESS(sp.get() == value.get(),
                 "Evicting strange blob. Partition %d offset %ld partNo %d size %ld. L1 ptr %p vs L2 ptr %p",
                 blob.Partition, blob.Offset, blob.PartNo, value->DataSize(), sp.get(), value.get());
 
@@ -410,7 +409,7 @@ namespace NPQ {
                 return nullptr;
             }
 
-            Y_VERIFY(data->DataSize() == it->second.DataSize, "Mismatch L1-L2 blob sizes");
+            Y_ABORT_UNLESS(data->DataSize() == it->second.DataSize, "Mismatch L1-L2 blob sizes");
 
             const TBlobId& blob = it->first;
             LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Got data from cache. Partition "
@@ -429,13 +428,13 @@ namespace NPQ {
                     ++numCached;
                     continue;
                 }
-                TBlobId blobId(kvReq.Partition, blob.Offset, blob.PartNo, blob.Count, blob.InternalPartsCount);
+                TBlobId blobId(kvReq.Partition.InternalPartitionId, blob.Offset, blob.PartNo, blob.Count, blob.InternalPartsCount);
                 TCacheValue::TPtr cached = GetValue(ctx, blobId);
                 if (cached) {
                     ++numCached;
                     blob.Value = cached->GetValue();
                     blob.Cached = true;
-                    Y_VERIFY(blob.Value.size(), "Got empty blob from cache");
+                    Y_ABORT_UNLESS(blob.Value.size(), "Got empty blob from cache");
                 }
             }
             return numCached;
@@ -472,7 +471,7 @@ namespace NPQ {
             auto it = Cache.find(blob);
             if (it != Cache.end()) {
                 out = it->second;
-                Y_VERIFY(out.GetBlob(), "Duplicate blob in L1 with no data");
+                Y_ABORT_UNLESS(out.GetBlob(), "Duplicate blob in L1 with no data");
                 LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Duplicate blob in L1. "
                     << "Partition " << blob.Partition << " offset " << blob.Offset << " count " << blob.Count
                     << " size " << out.DataSize << " actorID " << ctx.SelfID

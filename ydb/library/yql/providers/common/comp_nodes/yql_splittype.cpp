@@ -163,7 +163,7 @@ public:
                 NUdf::TUnboxedValue* inplaceArg = nullptr;
                 NUdf::TUnboxedValue arg = ctx.HolderFactory.CreateDirectArrayHolder(3, inplaceArg);
                 auto flags = castedType->GetArguments()[i].Flags;
-                NUdf::TUnboxedValue flagsList = ctx.HolderFactory.GetEmptyContainer();
+                NUdf::TUnboxedValue flagsList = ctx.HolderFactory.GetEmptyContainerLazy();
                 if (flags & NUdf::ICallablePayload::TArgumentFlags::AutoMap) {
                     NUdf::TUnboxedValue* inplaceFlags = nullptr;
                     flagsList = ctx.HolderFactory.CreateDirectArrayHolder(1, inplaceFlags);
@@ -181,6 +181,15 @@ public:
             inplace[2] = MakeString(castedType->GetPayload()); // Payload
             inplace[3] = NUdf::TUnboxedValuePod(new TYqlTypeResource(exprCtxPtr, castedType->GetReturnType()));; // Result
             return array;
+        }
+
+        case NYql::ETypeAnnotationKind::Pg: {
+            auto castedType = type->UserCast<NYql::TPgExprType>(Pos_, *exprCtxPtr);
+            if (!castedType) {
+                UdfTerminate(exprCtxPtr->IssueManager.GetIssues().ToString().data());
+            }
+
+            return MakeString(castedType->GetName());
         }
 
         default:
@@ -237,6 +246,9 @@ template IComputationNode* WrapSplitType<NYql::ETypeAnnotationKind::Variant>
     (TCallable& callable, const TComputationNodeFactoryContext& ctx, ui32 exprCtxMutableIndex);
 
 template IComputationNode* WrapSplitType<NYql::ETypeAnnotationKind::Callable>
+    (TCallable& callable, const TComputationNodeFactoryContext& ctx, ui32 exprCtxMutableIndex);
+
+template IComputationNode* WrapSplitType<NYql::ETypeAnnotationKind::Pg>
     (TCallable& callable, const TComputationNodeFactoryContext& ctx, ui32 exprCtxMutableIndex);
 
 }

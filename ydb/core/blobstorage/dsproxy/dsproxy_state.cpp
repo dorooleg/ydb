@@ -6,11 +6,11 @@ namespace NKikimr {
     void TBlobStorageGroupProxy::Handle5min(TAutoPtr<IEventHandle> ev) {
         if (ev->Cookie == Cookie5min) {
             if (CurrentStateFunc() == &TBlobStorageGroupProxy::StateEstablishingSessionsTimeout) {
-                Y_VERIFY(!InEstablishingSessionsTimeout5min);
+                Y_ABORT_UNLESS(!InEstablishingSessionsTimeout5min);
                 ++*NodeMon->EstablishingSessionsTimeout5min;
                 InEstablishingSessionsTimeout5min = true;
             } else if (CurrentStateFunc() == &TBlobStorageGroupProxy::StateUnconfiguredTimeout) {
-                Y_VERIFY(!InUnconfiguredTimeout5min);
+                Y_ABORT_UNLESS(!InUnconfiguredTimeout5min);
                 ++*NodeMon->UnconfiguredTimeout5min;
                 InUnconfiguredTimeout5min = true;
             }
@@ -93,7 +93,7 @@ namespace NKikimr {
         Info = std::move(info);
         if (Info) {
             if (Topology) {
-                Y_VERIFY_DEBUG(Topology->EqualityCheck(Info->GetTopology()));
+                Y_DEBUG_ABORT_UNLESS(Topology->EqualityCheck(Info->GetTopology()));
             } else {
                 Topology = Info->PickTopology();
             }
@@ -101,15 +101,15 @@ namespace NKikimr {
         NodeLayoutInfo = nullptr;
         Send(MonActor, new TEvBlobStorage::TEvConfigureProxy(Info));
         if (Info) {
-            Y_VERIFY(!EncryptionMode || *EncryptionMode == Info->GetEncryptionMode());
-            Y_VERIFY(!LifeCyclePhase || *LifeCyclePhase == Info->GetLifeCyclePhase());
-            Y_VERIFY(!GroupKeyNonce || *GroupKeyNonce == Info->GetGroupKeyNonce());
-            Y_VERIFY(!CypherKey || *CypherKey == *Info->GetCypherKey());
+            Y_ABORT_UNLESS(!EncryptionMode || *EncryptionMode == Info->GetEncryptionMode());
+            Y_ABORT_UNLESS(!LifeCyclePhase || *LifeCyclePhase == Info->GetLifeCyclePhase());
+            Y_ABORT_UNLESS(!GroupKeyNonce || *GroupKeyNonce == Info->GetGroupKeyNonce());
+            Y_ABORT_UNLESS(!CypherKey || *CypherKey == *Info->GetCypherKey());
             EncryptionMode = Info->GetEncryptionMode();
             LifeCyclePhase = Info->GetLifeCyclePhase();
             GroupKeyNonce = Info->GetGroupKeyNonce();
             CypherKey = *Info->GetCypherKey();
-            Send(GetNameserviceActorId(), new TEvInterconnect::TEvListNodes);
+            Send(GetNameserviceActorId(), new TEvInterconnect::TEvListNodes(true));
         }
         if (counters) {
             StoragePoolCounters = std::move(counters);
@@ -172,7 +172,7 @@ namespace NKikimr {
     }
 
     void TBlobStorageGroupProxy::SwitchToWorkWhenGoodToGo() {
-        Y_VERIFY(Sessions);
+        Y_ABORT_UNLESS(Sessions);
         if (Sessions->GoodToGo(*Topology, ForceWaitAllDrives)) {
             LOG_INFO_S(*TlsActivationContext, NKikimrServices::BS_PROXY, "Group# " << GroupId
                     << " -> StateWork" << " Marker# DSP11");
@@ -202,15 +202,20 @@ namespace NKikimr {
                 << " Handle TEvProxyQueueState# "<< ev->Get()->ToString()
                 << " Duration# " << establishingSessionsDuration
                 << " Marker# DSP04");
-        Y_VERIFY(Sessions);
+        Y_ABORT_UNLESS(Sessions);
         auto *msg = ev->Get();
-        Y_VERIFY(Topology);
+        Y_ABORT_UNLESS(Topology);
         Sessions->QueueConnectUpdate(Topology->GetOrderNumber(msg->VDiskId), msg->QueueId, msg->IsConnected,
-            msg->ExtraBlockChecksSupport, *Topology);
+            msg->ExtraBlockChecksSupport, msg->CostModel, *Topology);
+        MinREALHugeBlobInBytes = Sessions->GetMinREALHugeBlobInBytes();
         if (msg->IsConnected && (CurrentStateFunc() == &TThis::StateEstablishingSessions ||
                 CurrentStateFunc() == &TThis::StateEstablishingSessionsTimeout)) {
             SwitchToWorkWhenGoodToGo();
+        } else if (!msg->IsConnected && CurrentStateFunc() == &TThis::StateWork && !Sessions->GoodToGo(*Topology, false)) {
+            SetStateEstablishingSessions();
         }
+
+        Y_DEBUG_ABORT_UNLESS(CurrentStateFunc() != &TThis::StateWork || MinREALHugeBlobInBytes);
 
         if (const ui32 prev = std::exchange(NumUnconnectedDisks, Sessions->GetNumUnconnectedDisks()); prev != NumUnconnectedDisks) {
             NodeMon->IncNumUnconnected(NumUnconnectedDisks);
@@ -268,6 +273,9 @@ namespace NKikimr {
             NodeMon->DecNumUnconnected(NumUnconnectedDisks);
         }
 
+        TActivationContext::Send(new IEventHandle(TEvents::TSystem::Unsubscribe, 0, GetNameserviceActorId(), SelfId(),
+            nullptr, 0));
+
         TActorBootstrapped::PassAway();
         // TODO: Unsubscribe
     }
@@ -303,7 +311,7 @@ namespace NKikimr {
 
             Mon.Reset(new TBlobStorageGroupProxyMon(group, percentileGroup, overviewGroup, Info, NodeMon, limited));
             BSProxyCtx.Reset(new TBSProxyContext(group->GetSubgroup("subsystem", "memproxy")));
-            MonActor = Register(CreateBlobStorageGroupProxyMon(Mon, GroupId, Info, SelfId()));
+            MonActor = RegisterWithSameMailbox(CreateBlobStorageGroupProxyMon(Mon, GroupId, Info, SelfId()));
         }
     }
 

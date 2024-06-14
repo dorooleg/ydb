@@ -1,7 +1,10 @@
 #include "ref.h"
+
 #include "blob.h"
 
 #include <library/cpp/yt/malloc/malloc.h>
+
+#include <library/cpp/yt/misc/port.h>
 
 #include <util/system/info.h>
 #include <util/system/align.h>
@@ -384,6 +387,21 @@ TString TSharedRefArray::ToString() const
         ptr += part.size();
     }
     return result;
+}
+
+TSharedRefArray TSharedRefArray::MakeCopy(
+    const TSharedRefArray& array,
+    TRefCountedTypeCookie tagCookie)
+{
+    TSharedRefArrayBuilder builder(
+        array.Size(),
+        array.ByteSize(),
+        tagCookie);
+    for (const auto& part : array) {
+        auto partCopy = builder.AllocateAndAdd(part.Size());
+        ::memcpy(partCopy.Begin(), part.Begin(), part.Size());
+    }
+    return builder.Finish();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

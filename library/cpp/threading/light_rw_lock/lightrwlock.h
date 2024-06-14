@@ -3,7 +3,9 @@
 #include <util/system/rwlock.h>
 #include <util/system/sanitizers.h>
 
-#if defined(_linux_)
+// TLightRWLock and TSAN are not friends...
+
+#if defined(_linux_) && !defined(_tsan_enabled_)
 /* TLightRWLock is optimized for read lock and very fast lock/unlock switching.
    Read lock increments counter.
    Write lock sets highest bit of counter (makes counter negative).
@@ -85,7 +87,7 @@ namespace NS_LightRWLock {
     }
 #endif
 
-#if defined(_x86_64_) || defined(_i386_) || defined (__aarch64__) || defined (__powerpc64__)
+#if defined(_x86_64_) || defined(_i386_) || defined (__aarch64__) || defined (__arm__) || defined (__powerpc64__)
     static bool AtomicLockHighByte(volatile int& item) {
         union TA {
             int x;
@@ -124,7 +126,7 @@ namespace NS_LightRWLock {
                     return;
                 if (errno == EINTR)
                     continue;
-                Y_FAIL("futex error");
+                Y_ABORT("futex error");
             }
         }
     }
@@ -133,7 +135,7 @@ namespace NS_LightRWLock {
         const int result =
             syscall(SYS_futex, &fvar, FUTEX_WAKE_PRIVATE, amount, NULL, NULL, 0);
         if (Y_UNLIKELY(result == -1))
-            Y_FAIL("futex error");
+            Y_ABORT("futex error");
     }
 
 }

@@ -26,6 +26,8 @@ public:
 
     void Release(TActorSystem *actorSystem) override {
         Y_UNUSED(actorSystem);
+        // Notifies log reader of the log reading error.
+        Reader->NotifyError(Offset, ErrorReason);
         delete this;
     }
 };
@@ -99,8 +101,8 @@ class TLogReader : public TLogReaderBase {
     ui64 EndSectorIdx;
     ui64 SectorsToSkip;
     ui64 ExpectedOffset;
-    ui32 LogEndChunkIdx;
-    ui64 LogEndSectorIdx;
+    const ui32 LogEndChunkIdx;
+    const ui64 LogEndSectorIdx;
     TReqId ReqId;
     TVector<TLogChunkItem> ChunksToRead;
     TVector<TLogChunkItem>::iterator CurrentChunkToRead;
@@ -119,6 +121,7 @@ public:
     virtual ~TLogReader();
 
     void Exec(ui64 offsetRead, TVector<ui64> &badOffsets, TActorSystem *actorSystem) override;
+    void NotifyError(ui64 offsetRead, TString& errorReason) override;
 
 private:
     TString SelfInfo();

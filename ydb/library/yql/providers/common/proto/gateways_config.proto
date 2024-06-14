@@ -2,6 +2,8 @@ package NYql;
 option java_package = "ru.yandex.yql.proto";
 
 import "ydb/library/yql/protos/clickhouse.proto";
+import "ydb/library/yql/providers/generic/connector/api/common/data_source.proto";
+import "ydb/library/yql/providers/generic/connector/api/common/endpoint.proto";
 
 
 /////////////////////////////// common ///////////////////////////////
@@ -17,6 +19,11 @@ message TActivationPercentage {
     repeated string IncludeUsers = 3;
     repeated string ExcludeUsers = 4;
     optional bool ExcludeRobots = 5 [default = true];
+    repeated string Tags = 6;
+    repeated string IncludeGroups = 7;
+    repeated string ExcludeGroups = 8;
+    repeated string IncludeRevisions = 9;
+    repeated string ExcludeRevisions = 10;
 }
 
 message TAttr {
@@ -390,6 +397,7 @@ message TS3GatewayConfig {
     optional uint64 ListingCallbackPerThreadQueueSize = 13;
     optional uint64 RegexpCacheSize = 14;
     optional uint64 GeneratorPathsLimit = 15;
+    optional uint64 MaxListingResultSizePerPartition = 16;
 
     repeated TAttr DefaultSettings = 100;
 }
@@ -448,10 +456,12 @@ message TPostgresqlClusterConfig {
     optional string Cluster = 2;
     optional string PGtoken = 3;
     optional string TargetServerType = 4;
+    optional uint64 MaxResultBufferSize = 5 [default = 1000000]; // Zero value disables adaptiveFetch
 }
 
 message TPostgresqlGatewayConfig {
     repeated TPostgresqlClusterConfig ClusterMapping = 1;
+    optional uint64 MaxResultBufferSize = 2 [default = 1000000]; // Zero value disables adaptiveFetch by default
 }
 
 /////////////////////////////// Mysql /////////////////////////////
@@ -482,10 +492,12 @@ message TDqGatewayConfig {
 
     repeated TAttr DefaultSettings = 102;
 
-    optional uint32 WithHiddenPercentage = 5 [default = 0];
-    repeated TDefaultAutoByHourPercentage WithHiddenByHour = 6;
-    repeated string NoWithHiddenForUsers = 7;
-    repeated string WithHiddenForUsers = 8;
+    optional uint32 WithHiddenPercentage = 5 [default = 0];     // Depricated. TODO: remove
+    repeated TDefaultAutoByHourPercentage WithHiddenByHour = 6; // Depricated. TODO: remove
+    repeated string NoWithHiddenForUsers = 7;                   // Depricated. TODO: remove
+    repeated string WithHiddenForUsers = 8;                     // Depricated. TODO: remove
+
+    optional TActivationPercentage HiddenActivation = 9;
 }
 
 /////////////////////////////// Yql Core ///////////////////////////////
@@ -530,6 +542,106 @@ message TDbToolConfig {
 }
 
 
+/////////// Generic gateway for the external data sources ////////////
+
+message TGenericClusterConfig {
+    // Cluster name
+    optional string Name = 1;
+
+    // Data source kind
+    optional NYql.NConnector.NApi.EDataSourceKind Kind = 8;
+
+    // Location represents the network address of a data source instance we want to connect
+    oneof Location {
+        // Endpoint must be used for on-premise deployments.
+        NYql.NConnector.NApi.TEndpoint Endpoint = 9;
+        // DatabaseId must be used when the data source is deployed in cloud.
+        // Data source FQDN and port will be resolved by MDB service.
+        string DatabaseId = 4;
+    }
+
+    // Credentials used to access data source instance
+    optional NYql.NConnector.NApi.TCredentials Credentials = 10;
+
+    // Credentials used to access managed databases APIs.
+    // When working with external data source instances deployed in clouds,
+    // one should either set (ServiceAccountId, ServiceAccountIdSignature) pair 
+    // that will be resolved into IAM Token via Token Accessor, 
+    // or provide IAM Token directly.
+    optional string ServiceAccountId = 6;
+    optional string ServiceAccountIdSignature = 7;
+    optional string Token = 11;
+
+    // If true, the generic provider will ask connector server to use secure connections
+    // to access remote data sources.
+    optional bool UseSsl = 12;
+
+    // Name of a particular database within a database cluster
+    optional string DatabaseName = 13;
+
+    // Transport protocol used to establish a network connection with database
+    optional NYql.NConnector.NApi.EProtocol Protocol = 14;
+
+    // Data source options specific to various data sources
+    map<string, string> DataSourceOptions = 15;
+
+    reserved 2, 3, 5;
+}
+
+message TGenericConnectorConfig {
+    // Connector instance network endpoint
+    optional NYql.NConnector.NApi.TEndpoint Endpoint = 3;
+    // If true, Connector GRPC Client will use TLS encryption.
+    optional bool UseSsl = 4;
+    // Path to the custom CA certificate to verify Connector's certs.
+    // If empty, the default system CA certificate pool will be used.
+    optional string SslCaCrt = 5;
+
+    reserved 1, 2;
+}
+
+message TGenericGatewayConfig {
+    // Connector service network endpoint
+    // TODO: replace with map<DataSourceKind, TGenericConnectorConfig>
+    optional TGenericConnectorConfig Connector = 5;
+
+    // Database clusters supported by this particular instance
+    repeated TGenericClusterConfig ClusterMapping = 3;
+
+    // MDB API endpoint (no need to fill in case of on-prem deployment).
+    optional string MdbGateway = 4;
+
+    // YDB MVP API endpoint (no need to fill in case of on-prem deployment).
+    // Expected format:
+    // [http|https]://host:port/ydbc/cloud-prod/
+    optional string YdbMvpEndpoint = 7;
+
+    repeated TAttr DefaultSettings = 6;
+
+    reserved 1, 2;
+}
+
+/////////////////////////////// Db Resolver ///////////////////////////////////
+
+message TDbResolverConfig {
+    // Ydb / Yds MVP endpoint.
+    // Expected format: 
+    // [http|https]://host:port/ydbc/cloud-prod/
+    optional string YdbMvpEndpoint = 2;
+}
+
+/////////////////////////////// Revision filter ///////////////////////////////
+
+message TRevisionException {
+    repeated string Revisions = 1;
+    repeated string IncludeUsers = 2;
+    repeated string ExcludeUsers = 3;
+}
+
+message TRevisionFilterConfig {
+    repeated TRevisionException RevisionException = 1;
+}
+
 /////////////////////////////// Root ///////////////////////////////
 
 message TGatewaysConfig {
@@ -553,4 +665,7 @@ message TGatewaysConfig {
     optional THttpGatewayConfig HttpGateway = 18;
     optional TYtOrmGatewayConfig YtOrm = 19;
     optional TDbToolConfig DbTool = 20;
+    optional TGenericGatewayConfig Generic = 21;
+    optional TRevisionFilterConfig RevisionFilter = 22;
+    optional TDbResolverConfig DbResolver = 23;
 }

@@ -66,7 +66,7 @@ namespace NTest {
 
         const TChange& BackLog() const noexcept
         {
-            Y_VERIFY(RedoLog, "Redo log is empty, cannot get last entry");
+            Y_ABORT_UNLESS(RedoLog, "Redo log is empty, cannot get last entry");
 
             return *RedoLog.back();
         }
@@ -87,7 +87,7 @@ namespace NTest {
                 DoCommit(false, false);
             }
 
-            Y_VERIFY(OnTx == EOnTx::None);
+            Y_ABORT_UNLESS(OnTx == EOnTx::None);
             return *this;
         }
 
@@ -108,7 +108,7 @@ namespace NTest {
         }
 
         TDbExec& WriteVer(TRowVersion writeVersion) {
-            Y_VERIFY(OnTx != EOnTx::None);
+            Y_ABORT_UNLESS(OnTx != EOnTx::None);
 
             WriteVersion = writeVersion;
             WriteTxId = 0;
@@ -117,7 +117,7 @@ namespace NTest {
         }
 
         TDbExec& WriteTx(ui64 txId) {
-            Y_VERIFY(OnTx != EOnTx::None);
+            Y_ABORT_UNLESS(OnTx != EOnTx::None);
 
             WriteVersion = TRowVersion::Min();
             WriteTxId = txId;
@@ -126,7 +126,7 @@ namespace NTest {
         }
 
         TDbExec& CommitTx(ui32 table, ui64 txId) {
-            Y_VERIFY(OnTx != EOnTx::None);
+            Y_ABORT_UNLESS(OnTx != EOnTx::None);
 
             Base->CommitTx(table, txId, WriteVersion);
 
@@ -134,7 +134,7 @@ namespace NTest {
         }
 
         TDbExec& RemoveTx(ui32 table, ui64 txId) {
-            Y_VERIFY(OnTx != EOnTx::None);
+            Y_ABORT_UNLESS(OnTx != EOnTx::None);
 
             Base->RemoveTx(table, txId);
 
@@ -142,7 +142,7 @@ namespace NTest {
         }
 
         TDbExec& RollbackChanges() {
-            Y_VERIFY(OnTx != EOnTx::None);
+            Y_ABORT_UNLESS(OnTx != EOnTx::None);
 
             Base->RollbackChanges();
 
@@ -234,7 +234,7 @@ namespace NTest {
             RedoLog.back()->Redo = Base->SnapshotToLog(table, { Gen, Step });
             RedoLog.back()->Affects = { table };
 
-            Y_VERIFY(scn == Base->Head().Serial);
+            Y_ABORT_UNLESS(scn == Base->Head().Serial);
 
             return *this;
         }
@@ -273,7 +273,7 @@ namespace NTest {
                     .WithRemovedRowVersions(Base->GetRemovedRowVersions(table))
                     .Do(*subset, logo);
 
-            Y_VERIFY(!eggs.NoResult(), "Unexpected early termination");
+            Y_ABORT_UNLESS(!eggs.NoResult(), "Unexpected early termination");
 
             TVector<TPartView> partViews;
             for (auto &part : eggs.Parts)
@@ -286,7 +286,7 @@ namespace NTest {
 
         TDbExec& Replay(EPlay play)
         {
-            Y_VERIFY(OnTx != EOnTx::Real, "Commit TX before replaying");
+            Y_ABORT_UNLESS(OnTx != EOnTx::Real, "Commit TX before replaying");
 
             Cleanup();
 
@@ -305,7 +305,7 @@ namespace NTest {
                         TSchemeChanges delta;
                         bool ok = delta.ParseFromString(raw);
 
-                        Y_VERIFY(ok, "Cannot read serialized scheme delta");
+                        Y_ABORT_UNLESS(ok, "Cannot read serialized scheme delta");
 
                         TSchemeModifier(*scheme).Apply(delta);
                     }
@@ -351,7 +351,7 @@ namespace NTest {
 
         TDbExec& Affects(ui32 back, std::initializer_list<ui32> tables)
         {
-            Y_VERIFY(back < RedoLog.size(), "Out of redo log entries");
+            Y_ABORT_UNLESS(back < RedoLog.size(), "Out of redo log entries");
 
             const auto &have = RedoLog[RedoLog.size() - (1 + back)]->Affects;
 
@@ -391,22 +391,22 @@ namespace NTest {
             THeader header;
 
             while (auto got = in.Load(&header, sizeof(header))) {
-                Y_VERIFY(got == sizeof(header), "Invalid changes stream");
+                Y_ABORT_UNLESS(got == sizeof(header), "Invalid changes stream");
 
                 const auto abytes = sizeof(ui32) * header.Affects;
 
                 TString alter = TString::TUninitialized(header.Alter);
 
                 if (in.Load((void*)alter.data(), alter.size()) != alter.size())
-                    Y_FAIL("Cannot read alter chunk data in change page");
+                    Y_ABORT("Cannot read alter chunk data in change page");
 
                 TString redo = TString::TUninitialized(header.Redo);
 
                 if (in.Load((void*)redo.data(), redo.size()) != redo.size())
-                    Y_FAIL("Cannot read redo log data in change page");
+                    Y_ABORT("Cannot read redo log data in change page");
 
                 if (in.Skip(abytes) != abytes)
-                    Y_FAIL("Cannot read affects array in change page");
+                    Y_ABORT("Cannot read affects array in change page");
 
                 changes.push_back(new TChange{ header.Serial, header.Serial });
                 changes.back()->Scheme = std::move(alter);
@@ -425,7 +425,7 @@ namespace NTest {
         TDbExec& DoBegin(bool real) noexcept
         {
             if (OnTx == EOnTx::Real && real) {
-                Y_FAIL("Cannot run multiple tx at the same time");
+                Y_ABORT("Cannot run multiple tx at the same time");
             } else if (OnTx == EOnTx::Auto && real) {
                 DoCommit(false, false);
             }
@@ -445,7 +445,7 @@ namespace NTest {
             const auto was = std::exchange(OnTx, EOnTx::None);
 
             if (was != (real ? EOnTx::Real : EOnTx::Auto))
-                Y_FAIL("There is no active dbase tx");
+                Y_ABORT("There is no active dbase tx");
 
             auto prod = Base->Commit({ Gen, Step }, apply, Annex.Get());
             auto up = std::move(prod.Change);

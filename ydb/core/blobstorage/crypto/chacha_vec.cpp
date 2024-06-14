@@ -214,11 +214,11 @@ void ChaChaVec::EncipherImpl(const ui8* plaintext, ui8* ciphertext, size_t len)
 
     const ui32 unalignment = intptr_t(plaintext) % 16;
     if constexpr (!Aligned) {
-        Y_VERIFY(unalignment == 8, "Unalignment# %d", (int)unalignment);
+        Y_ABORT_UNLESS(unalignment == 8, "Unalignment# %d", (int)unalignment);
     }
 
-    Y_VERIFY(intptr_t(ip) % 16 == 0);
-    Y_VERIFY(intptr_t(op) % 16 == 0);
+    Y_ABORT_UNLESS(intptr_t(ip) % 16 == 0);
+    Y_ABORT_UNLESS(intptr_t(op) % 16 == 0);
 
     // Unused if Aligned
     vec i_v[4];
@@ -520,7 +520,7 @@ void ChaChaVec::Encipher(const ui8* plaintext, ui8* ciphertext, size_t len)
     } else if (input_unalignment == 8) {
         EncipherImpl<false>(plaintext, ciphertext, len);
     } else {
-        Y_FAIL("ChaChaVec can work only with input aligned on 8, 16 or more bytes");
+        Y_ABORT("ChaChaVec can work only with input aligned on 8, 16 or more bytes");
     }
 }
 

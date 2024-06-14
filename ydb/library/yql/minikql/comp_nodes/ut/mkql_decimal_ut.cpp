@@ -603,7 +603,7 @@ Y_UNIT_TEST_SUITE(TMiniKQLDecimalTest) {
         UNIT_ASSERT(!iterator.Next(item));
     }
 
-    Y_UNIT_TEST_LLVM(TestMulInt) {
+    Y_UNIT_TEST_LLVM(TestMulUInt) {
         TSetup<LLVM> setup;
         TProgramBuilder& pb = *setup.PgmBuilder;
 
@@ -646,6 +646,81 @@ Y_UNIT_TEST_SUITE(TMiniKQLDecimalTest) {
         UNIT_ASSERT(item.GetInt128() == -3330000);
         UNIT_ASSERT(iterator.Next(item));
         UNIT_ASSERT(item.GetInt128() == -NYql::NDecimal::Inf());
+        UNIT_ASSERT(!iterator.Next(item));
+        UNIT_ASSERT(!iterator.Next(item));
+    }
+
+    Y_UNIT_TEST_LLVM(TestMulTinyInt) {
+        TSetup<LLVM> setup;
+        TProgramBuilder& pb = *setup.PgmBuilder;
+
+        const auto dataType = pb.NewDataType(NUdf::TDataType<i8>::Id);
+        const auto data0 = pb.NewDecimalLiteral(3631400, 32, 4);
+        const auto data1 = pb.NewDataLiteral<i8>(0);
+        const auto data2 = pb.NewDataLiteral<i8>(1);
+        const auto data3 = pb.NewDataLiteral<i8>(-1);
+        const auto data4 = pb.NewDataLiteral<i8>(3);
+        const auto data5 = pb.NewDataLiteral<i8>(-3);
+        const auto data6 = pb.NewDataLiteral<i8>(100);
+        const auto data7 = pb.NewDataLiteral<i8>(-100);
+        const auto data8 = pb.NewDataLiteral<i8>(127);
+        const auto data9 = pb.NewDataLiteral<i8>(-128);
+        const auto list = pb.NewList(dataType, {data1, data2, data3, data4, data5, data6, data7, data8, data9});
+
+        const auto pgmReturn = pb.Map(list,
+            [&](TRuntimeNode item) {
+            return pb.DecimalMul(data0, item);
+        });
+
+        const auto graph = setup.BuildGraph(pgmReturn);
+        const auto iterator = graph->GetValue().GetListIterator();
+        NUdf::TUnboxedValue item;
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == 0);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == 3631400);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == -3631400);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == 10894200);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == -10894200);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == 363140000);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == -363140000);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == 461187800);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetInt128() == -464819200);
+        UNIT_ASSERT(!iterator.Next(item));
+        UNIT_ASSERT(!iterator.Next(item));
+    }
+
+    Y_UNIT_TEST_LLVM(TestCastAndMulTinyInt) {
+        TSetup<LLVM> setup;
+        TProgramBuilder& pb = *setup.PgmBuilder;
+
+        const auto dataType = pb.NewDecimalType(32, 4);
+        const auto data0 = pb.NewDataLiteral<i8>(1);
+        const auto data1 = pb.NewDecimalLiteral(3145926, 32, 4);
+        const auto data2 = pb.NewDecimalLiteral(-3145926, 32, 4);
+        const auto list = pb.NewList(dataType, {data1, data2});
+
+        const auto pgmReturn = pb.Map(list,
+            [&](TRuntimeNode item) {
+            return pb.NewTuple({pb.DecimalMul(item, data0), pb.DecimalMul(item, pb.ToDecimal(data0, 32, 4))});
+        });
+
+        const auto graph = setup.BuildGraph(pgmReturn);
+        const auto iterator = graph->GetValue().GetListIterator();
+        NUdf::TUnboxedValue item;
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetElement(0).GetInt128() == 3145926);
+        UNIT_ASSERT(item.GetElement(1).GetInt128() == 3145926);
+        UNIT_ASSERT(iterator.Next(item));
+        UNIT_ASSERT(item.GetElement(0).GetInt128() == -3145926);
+        UNIT_ASSERT(item.GetElement(1).GetInt128() == -3145926);
         UNIT_ASSERT(!iterator.Next(item));
         UNIT_ASSERT(!iterator.Next(item));
     }

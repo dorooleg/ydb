@@ -60,7 +60,44 @@ TDqConfiguration::TDqConfiguration() {
     REGISTER_SETTING(*this, HashShuffleMaxTasks).Lower(1).Upper(1000);
 
     REGISTER_SETTING(*this, UseWideChannels);
+    REGISTER_SETTING(*this, UseWideBlockChannels)
+        .ValueSetter([this](const TString&, bool value) {
+            UseWideBlockChannels = value;
+            if (value) {
+                UseWideChannels = true;
+            }
+        });
     REGISTER_SETTING(*this, UseFastPickleTransport);
+    REGISTER_SETTING(*this, UseOOBTransport);
+
+    REGISTER_SETTING(*this, AggregateStatsByStage);
+    REGISTER_SETTING(*this, EnableChannelStats);
+    REGISTER_SETTING(*this, ExportStats);
+    REGISTER_SETTING(*this, TaskRunnerStats).Parser([](const TString& v) { return FromString<ETaskRunnerStats>(v); });
+    REGISTER_SETTING(*this, _SkipRevisionCheck);
+    REGISTER_SETTING(*this, UseBlockReader);
+    REGISTER_SETTING(*this, SpillingEngine)
+        .Parser([](const TString& v) {
+            return FromString<TDqSettings::ESpillingEngine>(v);
+        })
+        .ValueSetter([this](const TString&, TDqSettings::ESpillingEngine value) {
+            SpillingEngine = value;
+            if (value != TDqSettings::ESpillingEngine::Disable) {
+                SplitStageOnDqReplicate = false;
+                EnableDqReplicate = true;
+            }
+        });
+    REGISTER_SETTING(*this, DisableLLVMForBlockStages);
+    REGISTER_SETTING(*this, SplitStageOnDqReplicate)
+        .ValueSetter([this](const TString&, bool value) {
+            SplitStageOnDqReplicate = value;
+            if (!value) {
+                EnableDqReplicate = true;
+            }
+        });
+
+    REGISTER_SETTING(*this, _MaxAttachmentsSize);
+    REGISTER_SETTING(*this, DisableCheckpoints);
 }
 
 } // namespace NYql

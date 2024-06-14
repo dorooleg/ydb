@@ -4,11 +4,13 @@
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
+#include <google/protobuf/text_format.h>
+
 
 namespace NKikimr {
 namespace NSysView {
 
-TSysViewProcessor::TSysViewProcessor(const TActorId& tablet, TTabletStorageInfo* info, EProcessorMode processorMode)
+TSysViewProcessor::TSysViewProcessor(const NActors::TActorId& tablet, TTabletStorageInfo* info, EProcessorMode processorMode)
     : TActor(&TThis::StateInit)
     , TTabletExecutedFlat(info, tablet, new NMiniKQL::TMiniKQLFactory)
     , TotalInterval(TDuration::Seconds(processorMode == EProcessorMode::FAST ? 1 : 60))
@@ -386,11 +388,6 @@ void TSysViewProcessor::IgnoreFailure(TNodeId nodeId) {
     NodesInFlight.erase(nodeId);
 }
 
-void TSysViewProcessor::Handle(TEvents::TEvPoisonPill::TPtr&) {
-    Become(&TThis::StateBroken);
-    Send(Tablet(), new TEvents::TEvPoisonPill);
-}
-
 void TSysViewProcessor::Handle(TEvents::TEvUndelivered::TPtr& ev) {
     auto nodeId = (TNodeId)ev.Get()->Cookie;
     SVLOG_W("[" << TabletID() << "] TEvUndelivered: node id# " << nodeId);
@@ -472,7 +469,7 @@ void TSysViewProcessor::Handle(TEvPrivate::TEvProcess::TPtr&) {
                 TEvSysView::TEvGetQueryStatsResponse>(*req);
         }
     } else {
-        Y_FAIL("unknown SVP request");
+        Y_ABORT("unknown SVP request");
     }
 }
 
@@ -490,7 +487,7 @@ void TSysViewProcessor::EntryToProto(NKikimrSysView::TTopPartitionsEntry& dst, c
 }
 
 template <typename TResponse>
-void TSysViewProcessor::ReplyOverloaded(const TActorId& sender) {
+void TSysViewProcessor::ReplyOverloaded(const NActors::TActorId& sender) {
     auto response = MakeHolder<TResponse>();
     response->Record.SetOverloaded(true);
     Send(sender, std::move(response));
@@ -563,7 +560,7 @@ void TSysViewProcessor::Reply(typename TRequest::TPtr& ev) {
         }
     }
 
-    Y_VERIFY(entries);
+    Y_ABORT_UNLESS(entries);
 
     auto from = entries->begin();
     auto to = entries->end();
@@ -656,7 +653,7 @@ bool TSysViewProcessor::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
                 {
                     const auto queryHash = it->second;
                     auto queryIt = Queries.find(queryHash);
-                    Y_VERIFY(queryIt != Queries.end());
+                    Y_ABORT_UNLESS(queryIt != Queries.end());
                     const auto& query = queryIt->second;
 
                     str << "    Hash: " << queryHash

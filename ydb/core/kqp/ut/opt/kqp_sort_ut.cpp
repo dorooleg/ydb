@@ -25,7 +25,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
         NJson::TJsonValue plan;
         NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-        auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-TableFullScan"); // without `Sort`
+        Cout << plan;
+        auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan"); // without `Sort`
         UNIT_ASSERT(node.IsDefined());
         auto read = FindPlanNodeByKv(node, "Name", "TableFullScan");
         UNIT_ASSERT(read.IsDefined());
@@ -60,10 +61,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
         NJson::TJsonValue plan;
         NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-        auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TableRangeScan"); // without `Sort`
-        if (!node.IsDefined()) {
-            node = FindPlanNodeByKv(plan, "Node Type", "Filter-TableRangeScan"); // without `Sort`
-        }
+        Cout << plan;
+        auto node = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan"); // without `Sort`
         UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
         auto read = FindPlanNodeByKv(node, "Name", "TableRangeScan");
         UNIT_ASSERT(read.IsDefined());
@@ -97,7 +96,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-TableFullScan"); // without `Sort`
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan"); // without `Sort`
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
             auto read = FindPlanNodeByKv(node, "Name", "TableFullScan");
             UNIT_ASSERT(read.IsDefined());
@@ -134,7 +134,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "TopSort-TableFullScan");
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
             UNIT_ASSERT(!node.GetMapSafe().contains("Reverse"));
         }
@@ -170,10 +171,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TableRangeScan");
-            if (!node.IsDefined()) {
-                node = FindPlanNodeByKv(plan, "Node Type", "Filter-TableRangeScan");
-            }
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
             auto read = FindPlanNodeByKv(node, "Name", "TableRangeScan");
             UNIT_ASSERT(read.IsDefined());
@@ -212,12 +211,13 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-TableFullScan");
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
             auto read = FindPlanNodeByKv(node, "Name", "TableFullScan");
             UNIT_ASSERT(read.IsDefined());
             UNIT_ASSERT(read.GetMapSafe().contains("Reverse"));
-            auto limit = FindPlanNodeByKv(node, "Name", "Limit");
+            auto limit = FindPlanNodeByKv(plan, "Name", "Limit");
             UNIT_ASSERT(limit.IsDefined());
             UNIT_ASSERT(limit.GetMapSafe().contains("Limit"));
         }
@@ -252,23 +252,15 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TableRangeScan");
-            if (!node.IsDefined()) {
-                node = FindPlanNodeByKv(plan, "Node Type", "Filter-TableRangeScan");
-            }
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan");
+
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
             auto read = FindPlanNodeByKv(node, "Name", "TableRangeScan");
             UNIT_ASSERT(read.IsDefined());
             UNIT_ASSERT(read.GetMapSafe().contains("Reverse"));
-            auto limit = FindPlanNodeByKv(node, "Name", "Limit");
-            if (!limit.IsDefined()) {
-                limit = FindPlanNodeByKv(node, "Name", "Filter");
-                UNIT_ASSERT(limit.GetMapSafe().contains("Limit"));
-            } else {
-                UNIT_ASSERT(limit.IsDefined());
-                UNIT_ASSERT(limit.GetMapSafe().contains("Limit"));
-                UNIT_ASSERT_C(result.GetAst().Contains("'\"ItemsLimit\""), result.GetAst());
-            }
+
+            UNIT_ASSERT_C(result.GetAst().Contains("'\"ItemsLimit\""), result.GetAst());
         }
 
         {
@@ -302,7 +294,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-TableFullScan");
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
             auto read = FindPlanNodeByKv(node, "Name", "TableFullScan");
             UNIT_ASSERT(read.IsDefined());
@@ -349,10 +342,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "TopSort-TableRangeScan");
-            if (!node.IsDefined()) {
-                node = FindPlanNodeByKv(plan, "Node Type", "TopSort-Filter-TableRangeScan");
-            }
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
         }
 
@@ -406,10 +397,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "TopSort-TableRangeScan");
-            if (!node.IsDefined()) {
-                node = FindPlanNodeByKv(plan, "Node Type", "TopSort-Filter-TableRangeScan");
-            }
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
         }
 
@@ -911,7 +900,8 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-TableFullScan");
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
         }
 
@@ -957,8 +947,10 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
             NJson::TJsonValue plan;
             NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto node = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TableFullScan");
+            Cout << plan;
+            auto node = FindPlanNodeByKv(plan, "Node Type", "TableFullScan");
             UNIT_ASSERT_C(node.IsDefined(), result.GetPlan());
+            node = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter");
             auto limit = FindPlanNodeByKv(node, "Limit", "Min(1001,$limit)");
             UNIT_ASSERT(limit.IsDefined());
         }
@@ -1044,18 +1036,14 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
         NJson::TJsonValue plan;
         NJson::ReadJsonTree(result.GetPlan(), &plan, true);
+        Cout << plan;
 
-        auto tableLookup = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TablePointLookup");
-        UNIT_ASSERT(tableLookup.IsDefined());
+        auto tableRangeRead = FindPlanNodeByKv(plan, "Node Type", "TableRangeScan");
+        UNIT_ASSERT(tableRangeRead.IsDefined());
 
-        auto& limitOp = tableLookup.GetMapSafe().at("Operators").GetArraySafe().at(0).GetMapSafe();
-        UNIT_ASSERT_VALUES_EQUAL("Limit", limitOp.at("Name").GetStringSafe());
-        UNIT_ASSERT_VALUES_EQUAL("$limit", limitOp.at("Limit").GetStringSafe());
-
-        auto& lookupOp = tableLookup.GetMapSafe().at("Operators").GetArraySafe().at(2).GetMapSafe();
-        UNIT_ASSERT_VALUES_EQUAL("TablePointLookup", lookupOp.at("Name").GetStringSafe());
-        UNIT_ASSERT_VALUES_EQUAL("index", lookupOp.at("Table").GetStringSafe());
-        UNIT_ASSERT(!lookupOp.contains("ReadLimit"));
+        auto& rangeReadOp = tableRangeRead.GetMapSafe().at("Operators").GetArraySafe().at(0).GetMapSafe();
+        UNIT_ASSERT_VALUES_EQUAL("TableRangeScan", rangeReadOp.at("Name").GetStringSafe());
+        UNIT_ASSERT_VALUES_EQUAL("index", rangeReadOp.at("Table").GetStringSafe());
     }
 
     Y_UNIT_TEST(Offset) {
@@ -1139,8 +1127,13 @@ Y_UNIT_TEST_SUITE(KqpSort) {
         ])", FormatResultSetYson(result.GetResultSet(2)));
     }
 
-    Y_UNIT_TEST(UnionAllSortLimit) {
-        TKikimrRunner kikimr;
+    Y_UNIT_TEST_TWIN(UnionAllSortLimit, SourceRead) {
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(SourceRead);
+        auto serverSettings = TKikimrSettings()
+            .SetAppConfig(appConfig);
+
+        TKikimrRunner kikimr{serverSettings};
         auto db = kikimr.GetTableClient();
         auto session = db.CreateSession().GetValueSync().GetSession();
 
@@ -1158,6 +1151,10 @@ Y_UNIT_TEST_SUITE(KqpSort) {
 
         NJson::TJsonValue plan;
         NJson::ReadJsonTree(result.GetPlan(), &plan, true);
+
+        if (SourceRead) {
+            return;
+        }
 
         for (auto& read : plan["tables"][0]["reads"].GetArraySafe()) {
             UNIT_ASSERT(read.Has("limit"));

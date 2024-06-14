@@ -78,7 +78,7 @@ namespace NTabletFlatExecutor {
 
         void Start(IOps *ops, TActorId owner, ui32 *step0, TMonCo *monCo)
         {
-            Y_VERIFY(!std::exchange(Ops, ops), "Commit manager is already started");
+            Y_ABORT_UNLESS(!std::exchange(Ops, ops), "Commit manager is already started");
 
             Step0 = step0;
             Owner = owner;
@@ -94,7 +94,7 @@ namespace NTabletFlatExecutor {
             return NTable::TTxStamp{ Gen, Head };
         }
 
-        TAutoPtr<TLogCommit> Begin(bool sync, ECommit type) noexcept
+        TAutoPtr<TLogCommit> Begin(bool sync, ECommit type, NWilson::TTraceId traceId) noexcept
         {
             const auto step = Head;
 
@@ -108,7 +108,7 @@ namespace NTabletFlatExecutor {
                 Switch(Head += 1); /* detached commits moves head now */
             }
 
-            return new TLogCommit(sync, step, type);
+            return new TLogCommit(sync, step, type, std::move(traceId));
         }
 
         void Commit(TAutoPtr<TLogCommit> commit) noexcept
@@ -177,7 +177,7 @@ namespace NTabletFlatExecutor {
             ev->GcLeft = std::move(commit.GcDelta.Deleted);
             ev->EmbeddedMetadata = std::move(commit.Metadata);
 
-            Ops->Send(Owner, ev, 0, ui64(commit.Type));
+            Ops->Send(Owner, ev, 0, ui64(commit.Type), std::move(commit.TraceId));
         }
 
     public:

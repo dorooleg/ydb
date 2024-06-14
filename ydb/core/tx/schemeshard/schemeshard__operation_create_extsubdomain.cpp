@@ -149,13 +149,12 @@ public:
         }
 
         auto domainPathId = parentPath.GetPathIdForDomain();
-        Y_VERIFY(context.SS->PathsById.contains(domainPathId));
-        Y_VERIFY(context.SS->SubDomains.contains(domainPathId));
+        Y_ABORT_UNLESS(context.SS->PathsById.contains(domainPathId));
+        Y_ABORT_UNLESS(context.SS->SubDomains.contains(domainPathId));
         if (domainPathId != context.SS->RootPathId()) {
             result->SetError(NKikimrScheme::StatusNameConflict, "Nested subdomains is forbidden");
             return result;
         }
-
 
         bool requestedStoragePools = !settings.GetStoragePools().empty();
         if (requestedStoragePools) {
@@ -192,19 +191,18 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        context.SS->PersistPath(db, newNode->PathId);
         context.SS->ApplyAndPersistUserAttrs(db, newNode->PathId);
 
         if (!acl.empty()) {
             newNode->ApplyACL(acl);
-            context.SS->PersistACL(db, newNode);
         }
+        context.SS->PersistPath(db, newNode->PathId);
 
         context.SS->PersistUpdateNextPathId(db);
 
         context.SS->TabletCounters->Simple()[COUNTER_EXTSUB_DOMAIN_COUNT].Add(1);
 
-        Y_VERIFY(!context.SS->FindTx(OperationId));
+        Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxCreateExtSubDomain, newNode->PathId);
 
         TSubDomainInfo::TPtr alter = new TSubDomainInfo(1, 0, 0, resourcesDomainId ? resourcesDomainId : newNode->PathId);
@@ -218,6 +216,7 @@ public:
             }
 
             alter->SetSharedHive(sharedHive);
+            alter->SetServerlessComputeResourcesMode(NKikimrSubDomains::EServerlessComputeResourcesModeShared);
         }
 
         if (settings.HasDeclaredSchemeQuotas()) {
@@ -228,7 +227,11 @@ public:
             alter->SetDatabaseQuotas(settings.GetDatabaseQuotas());
         }
 
-        Y_VERIFY(!context.SS->SubDomains.contains(newNode->PathId));
+        if (settings.HasAuditSettings()) {
+            alter->SetAuditSettings(settings.GetAuditSettings());
+        }
+
+        Y_ABORT_UNLESS(!context.SS->SubDomains.contains(newNode->PathId));
         auto& subDomainInfo = context.SS->SubDomains[newNode->PathId];
         subDomainInfo = new TSubDomainInfo();
         subDomainInfo->SetAlter(alter);
@@ -255,7 +258,7 @@ public:
         context.SS->ClearDescribePathCaches(newNode);
         context.OnComplete.PublishToSchemeBoard(OperationId, newNode->PathId);
 
-        Y_VERIFY(0 == txState.Shards.size());
+        Y_ABORT_UNLESS(0 == txState.Shards.size());
         parentPath.DomainInfo()->IncPathsInside();
         parentPath.Base()->IncAliveChildren();
 
@@ -264,7 +267,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_FAIL("no AbortPropose for TCreateExtSubDomain");
+        Y_ABORT("no AbortPropose for TCreateExtSubDomain");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -287,7 +290,7 @@ ISubOperation::TPtr CreateExtSubDomain(TOperationId id, const TTxTransaction& tx
 }
 
 ISubOperation::TPtr CreateExtSubDomain(TOperationId id, TTxState::ETxState state) {
-    Y_VERIFY(state != TTxState::Invalid);
+    Y_ABORT_UNLESS(state != TTxState::Invalid);
     return MakeSubOperation<TCreateExtSubDomain>(id, state);
 }
 

@@ -1,9 +1,13 @@
 #pragma once
 
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
+#include <ydb/core/protos/replication.pb.h>
 
 #include <ydb/core/testlib/actors/test_runtime.h>
-#include <ydb/core/base/pathid.h>
+#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/protos/flat_scheme_op.pb.h>
+#include <ydb/core/protos/follower_group.pb.h>
+#include <ydb/core/protos/subdomains.pb.h>
 
 #include <functional>
 
@@ -36,6 +40,7 @@ namespace NLs {
     TCheckFunc PQPartitionsInsideDomain(ui64 count);
     TCheckFunc TopicReservedStorage(ui64 expected);
     TCheckFunc TopicAccountSize(ui64 expected);
+    TCheckFunc TopicAccountSizeGE(ui64 expected);
     TCheckFunc TopicUsedReserveSize(ui64 expected);
     TCheckFunc PathsInsideDomainOneOf(TSet<ui64> variants);
     TCheckFunc ShardsInsideDomain(ui64 count);
@@ -65,6 +70,7 @@ namespace NLs {
     void InExternalSubdomain(const NKikimrScheme::TEvDescribeSchemeResult& record);
     TCheckFunc ExtractTenantSchemeshard(ui64* tenantSchemeShardId);
     TCheckFunc ExtractTenantSysViewProcessor(ui64* tenantSVPId);
+    TCheckFunc ExtractTenantStatisticsAggregator(ui64* tenantSAId);
     TCheckFunc ExtractDomainHive(ui64* domainHiveId);
 
     void NotFinished(const NKikimrScheme::TEvDescribeSchemeResult& record);
@@ -86,6 +92,7 @@ namespace NLs {
     void IsTable(const NKikimrScheme::TEvDescribeSchemeResult& record);
     void IsExternalTable(const NKikimrScheme::TEvDescribeSchemeResult& record);
     void IsExternalDataSource(const NKikimrScheme::TEvDescribeSchemeResult& record);
+    void IsView(const NKikimrScheme::TEvDescribeSchemeResult& record);
     TCheckFunc CheckColumns(const TString& name, const TSet<TString>& columns, const TSet<TString>& droppedColumns, const TSet<TString> keyColumns,
                             NKikimrSchemeOp::EPathState pathState = NKikimrSchemeOp::EPathState::EPathStateNoChanges);
     void CheckBoundaries(const NKikimrScheme::TEvDescribeSchemeResult& record);
@@ -111,6 +118,8 @@ namespace NLs {
         NKikimrSchemeOp::TTTLSettings::EUnit columnUnit = NKikimrSchemeOp::TTTLSettings::UNIT_AUTO);
     TCheckFunc HasTtlDisabled();
     TCheckFunc IsBackupTable(bool value);
+    TCheckFunc ReplicationMode(NKikimrSchemeOp::TTableReplicationConfig::EReplicationMode mode);
+    TCheckFunc ReplicationState(NKikimrReplication::TReplicationState::StateCase state);
 
     TCheckFunc HasColumnTableSchemaPreset(const TString& presetName);
     TCheckFunc HasColumnTableSchemaVersion(ui64 schemaVersion);
@@ -128,6 +137,14 @@ namespace NLs {
     TCheckFunc IndexState(NKikimrSchemeOp::EIndexState state);
     TCheckFunc IndexKeys(const TVector<TString>& keyNames);
     TCheckFunc IndexDataColumns(const TVector<TString>& dataColumnNames);
+
+    TCheckFunc SequenceName(const TString& name);
+    TCheckFunc SequenceIncrement(i64 increment);
+    TCheckFunc SequenceMaxValue(i64 maxValue);
+    TCheckFunc SequenceMinValue(i64 minValue);
+    TCheckFunc SequenceCycle(bool cycle);
+    TCheckFunc SequenceStartValue(i64 startValue);
+    TCheckFunc SequenceCache(ui64 cache);
 
     TCheckFunc StreamMode(NKikimrSchemeOp::ECdcStreamMode mode);
     TCheckFunc StreamFormat(NKikimrSchemeOp::ECdcStreamFormat format);
@@ -147,6 +164,8 @@ namespace NLs {
 
     TCheckFunc KesusConfigIs(ui64 self_check_period_millis, ui64 session_grace_period_millis);
     TCheckFunc DatabaseQuotas(ui64 dataStreamShards);
+    TCheckFunc SharedHive(ui64 sharedHiveId);
+    TCheckFunc ServerlessComputeResourcesMode(NKikimrSubDomains::EServerlessComputeResourcesMode serverlessComputeResourcesMode);
 
     template<class TCheck>
     void PerformAllChecks(const NKikimrScheme::TEvDescribeSchemeResult& result, TCheck&& check) {

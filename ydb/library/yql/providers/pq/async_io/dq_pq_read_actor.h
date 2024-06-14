@@ -11,7 +11,7 @@
 
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 
-#include <library/cpp/actors/core/actor.h>
+#include <ydb/library/actors/core/actor.h>
 
 #include <util/generic/size_literals.h>
 #include <util/system/types.h>
@@ -25,6 +25,7 @@ const i64 PQReadDefaultFreeSpace = 16_MB;
 std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
     NPq::NProto::TDqPqTopicSource&& settings,
     ui64 inputIndex,
+    TCollectStatsLevel statsLevel,
     TTxId txId,
     ui64 taskId,
     const THashMap<TString, TString>& secureParams,
@@ -33,10 +34,9 @@ std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
     ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory,
     const NActors::TActorId& computeActorId,
     const NKikimr::NMiniKQL::THolderFactory& holderFactory,
-    i64 bufferSize = PQReadDefaultFreeSpace,
-    bool rangesMode = true
+    i64 bufferSize = PQReadDefaultFreeSpace
     );
 
-void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driver, ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory, bool rangesMode = true);
+void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driver, ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory);
 
 } // namespace NYql::NDq

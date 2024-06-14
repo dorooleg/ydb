@@ -15,7 +15,7 @@ public:
     TCommandScripting();
 };
 
-class TCommandExecuteYqlScript : public TYdbOperationCommand, public TCommandWithFormat,
+class TCommandExecuteYqlScript : public TYdbOperationCommand,
     public TCommandWithResponseHeaders, TCommandWithParameters
 {
 public:
@@ -28,6 +28,7 @@ public:
 
 private:
     TString CollectStatsMode;
+    TMaybe<TString> FlameGraphPath;
     TString Script;
     TString ScriptFile;
     bool Explain = false;

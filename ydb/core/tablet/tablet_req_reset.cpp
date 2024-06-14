@@ -1,8 +1,8 @@
 #include "tablet_impl.h"
 #include "tablet_sys.h"
 #include <ydb/core/base/logoblob.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 
@@ -120,12 +120,12 @@ public:
         , TabletStorageInfo(tabletStorageInfo)
         , Generation(knownGeneration)
     {
-        Y_VERIFY(!TabletStorageInfo->Channels.empty());
-        Y_VERIFY(TabletStorageInfo->Channels[0].LatestEntry() != nullptr);
+        Y_ABORT_UNLESS(!TabletStorageInfo->Channels.empty());
+        Y_ABORT_UNLESS(TabletStorageInfo->Channels[0].LatestEntry() != nullptr);
     }
 
     void Bootstrap(const TActorContext& ctx) {
-        TActorId stateStorageProxyId = MakeStateStorageProxyID(StateStorageGroupFromTabletID(TabletStorageInfo->TabletID));
+        TActorId stateStorageProxyId = MakeStateStorageProxyID();
         ctx.Send(stateStorageProxyId, new TEvStateStorage::TEvLookup(TabletStorageInfo->TabletID, 0));
         if (Generation == 0) {
             FindLatestLogEntry(ctx);

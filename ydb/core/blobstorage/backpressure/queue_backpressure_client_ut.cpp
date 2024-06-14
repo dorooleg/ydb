@@ -1,11 +1,11 @@
 #include "queue_backpressure_client.h"
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/executor_pool_basic.h>
-#include <library/cpp/actors/core/executor_pool_io.h>
-#include <library/cpp/actors/core/scheduler_basic.h>
-#include <library/cpp/actors/protos/services_common.pb.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <ydb/library/actors/core/executor_pool_io.h>
+#include <ydb/library/actors/core/scheduler_basic.h>
+#include <ydb/library/actors/protos/services_common.pb.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_tools.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/vdisk/vdisk_actor.h>
@@ -61,7 +61,7 @@ public:
                 HFunc(TEvBlobStorage::TEvVReadyNotify, HandleBw);
                 HFunc(TEvBlobStorage::TEvVWindowChange, HandleBw);
                 HFunc(TEvBlobStorage::TEvVSyncGuid, HandleForward);
-                default: Y_FAIL("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
+                default: Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
             }
         }
     }
@@ -161,8 +161,8 @@ public:
         DiskSize = SectorMap->DeviceSize;
         PDiskGuid = 1;
         PDiskKey = 1;
-        MainKey = {1};
-        FormatPDisk(Path, DiskSize, 4096, ChunkSize, PDiskGuid, PDiskKey, PDiskKey, PDiskKey, MainKey.back(), "queue_test",
+        MainKey = NPDisk::TMainKey{ .Keys = { 1 } };
+        FormatPDisk(Path, DiskSize, 4096, ChunkSize, PDiskGuid, PDiskKey, PDiskKey, PDiskKey, MainKey.Keys.back(), "queue_test",
                 false, false, SectorMap, false);
 
         PDiskId = MakeBlobStoragePDiskID(1, 1);
@@ -173,7 +173,7 @@ public:
         pDiskConfig->SectorMap = SectorMap;
         pDiskConfig->EnableSectorEncryption = !pDiskConfig->SectorMap;
         TActorSetupCmd pDiskSetup(CreatePDisk(pDiskConfig.Get(), MainKey, Counters), TMailboxType::Revolving, 0);
-        setup->LocalServices.emplace_back(PDiskId, pDiskSetup);
+        setup->LocalServices.emplace_back(PDiskId, std::move(pDiskSetup));
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         // BlobStorage group info
@@ -205,7 +205,7 @@ public:
 
         IActor* vDisk = CreateVDisk(vDiskConfig, Info, Counters);
         TActorSetupCmd vDiskSetup(vDisk, TMailboxType::Revolving, 0);
-        setup->LocalServices.emplace_back(VDiskActorId, vDiskSetup);
+        setup->LocalServices.emplace_back(VDiskActorId, std::move(vDiskSetup));
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         // Filter
@@ -221,7 +221,7 @@ public:
         // LOGGER
         NActors::TActorId loggerActorId{1, "logger"};
         TIntrusivePtr<NActors::NLog::TSettings> logSettings{new NActors::NLog::TSettings{loggerActorId,
-            NKikimrServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, 0}};
+            NActorsServices::LOGGER, NActors::NLog::PRI_ERROR, NActors::NLog::PRI_ERROR, 0}};
         logSettings->Append(
             NActorsServices::EServiceCommon_MIN,
             NActorsServices::EServiceCommon_MAX,
@@ -239,7 +239,7 @@ public:
         NActors::TLoggerActor *loggerActor = new NActors::TLoggerActor{logSettings, NActors::CreateStderrBackend(),
             Counters};
         NActors::TActorSetupCmd loggerActorCmd{loggerActor, NActors::TMailboxType::Simple, 2};
-        setup->LocalServices.emplace_back(loggerActorId, loggerActorCmd);
+        setup->LocalServices.emplace_back(loggerActorId, std::move(loggerActorCmd));
         AppData.reset(new TAppData(0, 1, 2, 1, TMap<TString, ui32>(), nullptr, nullptr, nullptr, nullptr));
 
         ActorSystem.reset(new TActorSystem{setup, AppData.get(), logSettings});

@@ -5,7 +5,6 @@
 #include <library/cpp/logger/stream.h>
 #include <library/cpp/logger/system.h>
 #include <library/cpp/logger/composite.h>
-#include <library/cpp/logger/backend_creator.h>
 #include <util/datetime/systime.h>
 #include <util/generic/strbuf.h>
 #include <util/stream/format.h>
@@ -101,6 +100,8 @@ NYql::NLog::EComponent ConvertComponent(NYql::NProto::TLoggingConfig::EComponent
     case TLoggingConfig::PROVIDER_S3: return EComponent::ProviderS3;
     case TLoggingConfig::CORE_DQ: return EComponent::CoreDq;
     case TLoggingConfig::HTTP_GATEWAY: return EComponent::HttpGateway;
+    case TLoggingConfig::PROVIDER_GENERIC: return EComponent::ProviderGeneric;
+    case TLoggingConfig::PROVIDER_PG: return EComponent::ProviderPg;
     }
 
     ythrow yexception() << "unknown log component: "
@@ -134,33 +135,6 @@ NYql::NProto::TLoggingConfig::TLogDestination CreateLogDestination(const TString
     }
     return destination;
 }
-
-class TYqlUaLogBackendCreatorInitContext : public ILogBackendCreator::IInitContext {
-public:
-    TYqlUaLogBackendCreatorInitContext(const TString& loggerType, const TString& target = TString())
-        : LoggerType(loggerType)
-        , Target(target)
-    {}
-
-    virtual bool GetValue(TStringBuf name, TString& var) const override {
-        if (name == "LoggerType" && !LoggerType.empty()) {
-            var = LoggerType;
-            return true;
-        } else if (name == "Target" && !Target.empty()) {
-            var = Target;
-            return true;
-        }
-        return false;
-    }
-
-    virtual TVector<THolder<IInitContext>> GetChildren(TStringBuf /*name*/) const override {
-        return TVector<THolder<IInitContext>>();
-    }
-
-private:
-    TString LoggerType;
-    TString Target;
-};
 
 } // namspace
 
@@ -374,30 +348,9 @@ void CleanupLogger() {
     }
 }
 
-void AddUnifiedAgentLogger(const NProto::TLoggingConfig& config) {
-    std::vector<THolder<TLogBackend>> backends;
-
-    for (const auto& logDest : config.GetLogDest()) {
-        // Generate unified agent backend if specified
-        if (logDest.GetType() == NProto::TLoggingConfig::YQL_UA_LOGGER) {
-            TYqlUaLogBackendCreatorInitContext creatorContext(NProto::TLoggingConfig::ELogTo_Name(logDest.GetType()),
-                                                              logDest.GetTarget());
-            if (auto creator = ILogBackendCreator::Create(creatorContext)) {
-                backends.emplace_back(creator->CreateLogBackend());
-            }
-            break;
-        }
-    }
-
-    if (!backends.empty()) {
-        auto& logger = TLoggerOperator<TYqlLog>::Log();
-
-        THolder<TCompositeLogBackend> compositeBackend = MakeHolder<TCompositeLogBackend>();
-        compositeBackend->AddLogBackend(logger.ReleaseBackend());
-        for (auto& backend : backends) {
-            compositeBackend->AddLogBackend(std::move(backend));
-        }
-        logger.ResetBackend(std::move(compositeBackend));
+void ReopenLog() {
+    with_lock(g_InitLoggerMutex) {
+        TLoggerOperator<TYqlLog>::Log().ReopenLog();
     }
 }
 

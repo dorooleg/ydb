@@ -1,5 +1,5 @@
 import "ydb/core/protos/console.proto";
-import "library/cpp/actors/protos/interconnect.proto";
+import "ydb/library/actors/protos/interconnect.proto";
 import "ydb/core/protos/console_base.proto";
 import "ydb/core/protos/console_config.proto";
 import "ydb/core/protos/console_tenant.proto";
@@ -19,7 +19,6 @@ import "ydb/core/protos/blobstorage_config.proto";
 import "ydb/core/protos/node_broker.proto";
 import "ydb/core/protos/cms.proto";
 import "ydb/core/protos/sqs.proto";
-import "ydb/core/protos/issue_id.proto";
 import "ydb/core/protos/query_stats.proto";
 import "ydb/core/protos/subdomains.proto";
 import "ydb/core/protos/load_test.proto";
@@ -27,6 +26,7 @@ import "ydb/public/api/protos/ydb_operation.proto";
 import "ydb/public/api/protos/draft/persqueue_error_codes.proto";
 import "ydb/public/api/protos/ydb_issue_message.proto";
 import "ydb/library/mkql_proto/protos/minikql.proto";
+import "ydb/library/ydb_issue/proto/issue_id.proto";
 
 import "google/protobuf/descriptor.proto";
 
@@ -207,6 +207,7 @@ message TResponse {
     repeated TKeyValueResponse.TGetStatusResult GetStatusResult = 909;
     optional TKeyValueResponse.TTrimLeakedBlobsResult TrimLeakedBlobsResult = 910;
     optional TKeyValueResponse.TSetExecutorFastLogPolicyResult SetExecutorFastLogPolicyResult = 911;
+    repeated TKeyValueResponse.TPatchResult PatchResult = 912;
 
     // THiveCreateTablet
     message TCreateTabletResult {
@@ -310,23 +311,6 @@ message TSchemeInitRoot {
     optional NKikimrTxScheme.TConfig GlobalConfig = 4;
     optional string SecurityToken = 5;
     repeated NKikimrStoragePool.TStoragePool StoragePools = 6;
-}
-
-message TBSAdm {
-    message TVDiskLocation {
-        optional uint32 NodeId = 1;
-        optional uint32 PDiskId = 2;
-        optional uint32 VSlotId = 3;
-    }
-
-    message TGroupReconfigureWipe {
-        optional TVDiskLocation Location = 1;
-    }
-
-    optional uint32 Domain = 1;
-
-    optional TGroupReconfigureWipe GroupReconfigureWipe = 6;
-    optional string SecurityToken = 7;
 }
 
 message THiveCreateTablet {
@@ -463,47 +447,6 @@ message TFlatDescribeResponse {
 message TSchemeOperationStatus {
     optional TFlatTxId FlatTxId = 1;
     optional TFlatTxPollOptions PollOptions = 10;
-};
-
-message TDsTestLoadRequest {
-    optional uint32 NodeId = 1;
-    optional NKikimrDataShardLoad.TEvYCSBTestLoadRequest Event = 2;
-};
-
-message TDsTestLoadResponse {
-    message TItem {
-        optional uint32 NodeId = 1;
-        optional uint32 Status = 2;
-        optional string ErrorReason = 3;
-    };
-    repeated TItem Items = 1;
-};
-
-message TBsTestLoadRequest {
-    repeated uint32 NodeId = 1;
-    optional NKikimr.TEvLoadTestRequest Event = 2;
-};
-
-message TBsTestLoadResponse {
-    message TItem {
-        optional uint32 NodeId = 1;
-        optional uint32 Status = 2;
-        optional string ErrorReason = 3;
-    };
-    repeated TItem Items = 1;
-};
-
-message TBsGetRequest {
-    optional uint32 GroupId = 1;
-    oneof Query {
-        NKikimrProto.TLogoBlobID Extreme = 2;
-    };
-};
-
-message TBsGetResponse {
-    optional NKikimrProto.EReplyStatus Status = 1;
-    optional bytes Buffer = 2;
-    optional string ErrorDescription = 3;
 };
 
 message TJsonSettings {
@@ -671,6 +614,13 @@ message TSqsResponse {
     optional bool IsFifo = 33;
 }
 
+message TSqsActionCounterChanged {
+    optional uint32 Action = 1;
+    optional uint32 ErrorsCount = 2;
+    optional uint64 DurationMs = 3;
+    optional uint64 WorkingDurationMs = 4;
+}
+
 message TInterconnectDebug {
     optional string Name = 1;
     optional uint32 Channel = 2;
@@ -760,9 +710,12 @@ message TTestShardControlRequest {
         optional uint64 MinDataBytes = 4; // then random keys are collected until total length drops below MinDataBytes
         optional uint32 MaxInFlight = 5;
         optional uint64 ValidateAfterBytes = 9; // number of bytes to write before starting automatic validation
+        optional uint32 MaxReadsInFlight = 10;
+        optional bool ResetWritePeriodOnFull = 11; // restart write periods when inflight is full
         repeated TSizeInterval Sizes = 6; // distrubution of generated value size
         repeated TTimeInterval WritePeriods = 7; // time between two events
         repeated TTimeInterval RestartPeriods = 8; // time between automatic restarts
+        optional uint32 PatchRequestsFractionPPM = 12;
     }
 
     optional uint64 TabletId = 1;

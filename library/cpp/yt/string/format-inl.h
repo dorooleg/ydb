@@ -11,12 +11,15 @@
 
 #include <library/cpp/yt/small_containers/compact_vector.h>
 
+#include <library/cpp/yt/containers/enum_indexed_array.h>
+
 #include <library/cpp/yt/misc/enum.h>
 
 #include <util/system/platform.h>
 
 #include <cctype>
 #include <optional>
+#include <span>
 
 namespace NYT {
 
@@ -71,26 +74,34 @@ inline void FormatValue(TStringBuilderBase* builder, TStringBuf value, TStringBu
 
     bool singleQuotes = false;
     bool doubleQuotes = false;
+    bool escape = false;
     while (current < format.end()) {
-        if (*current == 'q') {
-            singleQuotes = true;
-        } else if (*current == 'Q') {
-            doubleQuotes = true;
+        switch (*current++) {
+            case 'q':
+                singleQuotes = true;
+                break;
+            case 'Q':
+                doubleQuotes = true;
+                break;
+            case 'h':
+                escape =  true;
+                break;
         }
-        ++current;
     }
 
     if (padLeft) {
         builder->AppendChar(' ', padding);
     }
 
-    if (singleQuotes || doubleQuotes) {
+    if (singleQuotes || doubleQuotes || escape) {
         for (const char* valueCurrent = value.begin(); valueCurrent < value.end(); ++valueCurrent) {
             char ch = *valueCurrent;
             if (ch == '\n') {
                 builder->AppendString("\\n");
             } else if (ch == '\t') {
                 builder->AppendString("\\t");
+            } else if (ch == '\\') {
+                builder->AppendString("\\\\");
             } else if (ch < PrintableASCIILow || ch > PrintableASCIIHigh) {
                 builder->AppendString("\\x");
                 builder->AppendChar(IntToHexLowercase[static_cast<ui8>(ch) >> 4]);
@@ -305,6 +316,16 @@ struct TValueFormatter<std::vector<T, TAllocator>>
     }
 };
 
+// std::span
+template <class T, size_t Extent>
+struct TValueFormatter<std::span<T, Extent>>
+{
+    static void Do(TStringBuilderBase* builder, const std::span<T, Extent>& collection, TStringBuf /*format*/)
+    {
+        FormatRange(builder, collection, TDefaultFormatter());
+    }
+};
+
 // TCompactVector
 template <class T, unsigned N>
 struct TValueFormatter<TCompactVector<T, N>>
@@ -385,11 +406,11 @@ struct TValueFormatter<THashMultiMap<K, V>>
     }
 };
 
-// TEnumIndexedVector
+// TEnumIndexedArray
 template <class E, class T>
-struct TValueFormatter<TEnumIndexedVector<E, T>>
+struct TValueFormatter<TEnumIndexedArray<E, T>>
 {
-    static void Do(TStringBuilderBase* builder, const TEnumIndexedVector<E, T>& collection, TStringBuf format)
+    static void Do(TStringBuilderBase* builder, const TEnumIndexedArray<E, T>& collection, TStringBuf format)
     {
         builder->AppendChar('{');
         bool firstItem = true;
@@ -590,10 +611,15 @@ void FormatImpl(
                 *argFormatEnd != 'p' &&
                 *argFormatEnd != 'n')
             {
-                if (*argFormatEnd == 'q') {
-                    singleQuotes = true;
-                } else if (*argFormatEnd == 'Q') {
-                    doubleQuotes = true;
+                switch (*argFormatEnd) {
+                    case 'q':
+                        singleQuotes = true;
+                        break;
+                    case 'Q':
+                        doubleQuotes = true;
+                        break;
+                    case 'h':
+                        break;
                 }
                 ++argFormatEnd;
             }
@@ -628,6 +654,35 @@ void FormatImpl(
 }
 
 } // namespace NDetail
+
+////////////////////////////////////////////////////////////////////////////////
+
+template <class... TArgs>
+TLazyMultiValueFormatter<TArgs...>::TLazyMultiValueFormatter(
+    TStringBuf format,
+    TArgs&&... args)
+    : Format_(format)
+    , Args_(std::forward<TArgs>(args)...)
+{ }
+
+template <class... TArgs>
+void FormatValue(
+    TStringBuilderBase* builder,
+    const TLazyMultiValueFormatter<TArgs...>& value,
+    TStringBuf /*format*/)
+{
+    std::apply(
+        [&] <class... TInnerArgs> (TInnerArgs&&... args) {
+            builder->AppendFormat(value.Format_, std::forward<TInnerArgs>(args)...);
+        },
+        value.Args_);
+}
+
+template <class... TArgs>
+auto MakeLazyMultiValueFormatter(TStringBuf format, TArgs&&... args)
+{
+    return TLazyMultiValueFormatter<TArgs...>(format, std::forward<TArgs>(args)...);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -678,6 +733,33 @@ struct TArgFormatterImpl<IndexBase, THeadArg, TTailArgs...>
     }
 };
 
+template <typename TVectorElement>
+struct TSpanArgFormatterImpl
+{
+    explicit TSpanArgFormatterImpl(std::span<TVectorElement> v)
+        : Span_(v)
+    { }
+
+    explicit TSpanArgFormatterImpl(const std::vector<TVectorElement>& v)
+        : Span_(v.begin(), v.size())
+    { }
+
+    explicit TSpanArgFormatterImpl(const TVector<TVectorElement>& v)
+        : Span_(v.begin(), v.size())
+    { }
+
+    std::span<const TVectorElement> Span_;
+
+    void operator() (size_t index, TStringBuilderBase* builder, TStringBuf format) const
+    {
+        if (index >= Span_.size()) {
+            builder->AppendString(TStringBuf("<missing argument>"));
+        } else {
+            FormatValue(builder, *(Span_.begin() + index), format);
+        }
+    }
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 
 template <size_t Length, class... TArgs>
@@ -716,6 +798,46 @@ TString Format(
 {
     TStringBuilder builder;
     Format(&builder, format, std::forward<TArgs>(args)...);
+    return builder.Flush();
+}
+
+template <size_t Length, class TVector>
+void FormatVector(
+    TStringBuilderBase* builder,
+    const char (&format)[Length],
+    const TVector& vec)
+{
+    TSpanArgFormatterImpl formatter(vec);
+    NYT::NDetail::FormatImpl(builder, format, formatter);
+}
+
+template <class TVector>
+void FormatVector(
+    TStringBuilderBase* builder,
+    TStringBuf format,
+    const TVector& vec)
+{
+    TSpanArgFormatterImpl formatter(vec);
+    NYT::NDetail::FormatImpl(builder, format, formatter);
+}
+
+template <size_t Length, class TVector>
+TString FormatVector(
+    const char (&format)[Length],
+    const TVector& vec)
+{
+    TStringBuilder builder;
+    FormatVector(&builder, format, vec);
+    return builder.Flush();
+}
+
+template <class TVector>
+TString FormatVector(
+    TStringBuf format,
+    const TVector& vec)
+{
+    TStringBuilder builder;
+    FormatVector(&builder, format, vec);
     return builder.Flush();
 }
 

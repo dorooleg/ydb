@@ -1,6 +1,6 @@
 #include "tablet_impl.h"
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
 #include <util/generic/set.h>
 
 namespace NKikimr {
@@ -97,7 +97,7 @@ class TTabletReqBlockBlobStorage : public TActorBootstrapped<TTabletReqBlockBlob
     void Handle(TEvTabletBase::TEvBlockBlobStorageResult::TPtr &ev) {
         auto *msg = ev->Get();
         auto it = Find(ReqActors, ev->Sender);
-        Y_VERIFY(it != ReqActors.end(), "must not get response from unknown actor");
+        Y_ABORT_UNLESS(it != ReqActors.end(), "must not get response from unknown actor");
         *it = TActorId();
 
         switch (msg->Status) {

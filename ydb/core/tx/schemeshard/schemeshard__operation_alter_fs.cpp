@@ -26,7 +26,9 @@ public:
     TConfigureParts(TOperationId id)
         : OperationId(id)
     {
-        IgnoreMessages(DebugHint(), {});
+        IgnoreMessages(DebugHint(), {
+            TEvHive::TEvCreateTabletReply::EventType
+        });
     }
 
     bool HandleReply(
@@ -40,9 +42,9 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxAlterFileStore, "invalid tx type %u", txState->TxType);
-        Y_VERIFY(txState->State == TTxState::ConfigureParts, "invalid tx state %u", txState->State);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterFileStore, "invalid tx type %u", txState->TxType);
+        Y_ABORT_UNLESS(txState->State == TTxState::ConfigureParts, "invalid tx state %u", txState->State);
 
         auto tabletId = TTabletId(ev->Get()->Record.GetOrigin());
         auto status = ev->Get()->Record.GetStatus();
@@ -86,18 +88,18 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxAlterFileStore);
-        Y_VERIFY(!txState->Shards.empty());
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterFileStore);
+        Y_ABORT_UNLESS(!txState->Shards.empty());
 
         txState->ClearShardsInProgress();
 
         auto fs = context.SS->FileStoreInfos[txState->TargetPathId];
         Y_VERIFY_S(fs, "FileStore info is null. PathId: " << txState->TargetPathId);
 
-        Y_VERIFY(txState->Shards.size() == 1);
+        Y_ABORT_UNLESS(txState->Shards.size() == 1);
         for (const auto& shard: txState->Shards) {
-            Y_VERIFY(shard.TabletType == ETabletType::FileStore);
+            Y_ABORT_UNLESS(shard.TabletType == ETabletType::FileStore);
             auto shardIdx = shard.Idx;
             auto tabletId = context.SS->ShardInfos[shardIdx].TabletID;
 
@@ -132,7 +134,9 @@ public:
     TPropose(TOperationId id)
         : OperationId(id)
     {
-        IgnoreMessages(DebugHint(), {});
+        IgnoreMessages(DebugHint(), {
+            TEvHive::TEvCreateTabletReply::EventType
+        });
     }
 
     bool HandleReply(
@@ -152,7 +156,7 @@ public:
             return false;
         }
 
-        Y_VERIFY(txState->TxType == TTxState::TxAlterFileStore);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterFileStore);
         TPathId pathId = txState->TargetPathId;
 
         auto fs = context.SS->FileStoreInfos.at(pathId);
@@ -163,7 +167,16 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
+        const auto oldFileStoreSpace = fs->GetFileStoreSpace();
+
         fs->FinishAlter();
+
+        const auto newFileStoreSpace = fs->GetFileStoreSpace();
+
+        // Decrease in occupied space is applied on tx finish
+        auto domainDir = context.SS->PathsById.at(context.SS->ResolvePathIdForDomain(path));
+        Y_ABORT_UNLESS(domainDir);
+        domainDir->ChangeFileStoreSpaceCommit(newFileStoreSpace, oldFileStoreSpace);
 
         context.SS->PersistFileStoreInfo(db, pathId, fs);
         context.SS->PersistRemoveFileStoreAlter(db, pathId);
@@ -183,8 +196,8 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_VERIFY(txState);
-        Y_VERIFY(txState->TxType == TTxState::TxAlterFileStore);
+        Y_ABORT_UNLESS(txState);
+        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterFileStore);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -202,7 +215,7 @@ public:
         TOperationContext& context) override;
 
     void AbortPropose(TOperationContext&) override {
-        Y_FAIL("no AbortPropose for TAlterFileStore");
+        Y_ABORT("no AbortPropose for TAlterFileStore");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -328,7 +341,7 @@ THolder<TProposeResponse> TAlterFileStore::Propose(
         }
     }
 
-    Y_VERIFY(path.Base()->IsCreateFinished());
+    Y_ABORT_UNLESS(path.Base()->IsCreateFinished());
 
     auto fs = context.SS->FileStoreInfos.at(path.Base()->PathId);
     Y_VERIFY_S(fs, "FileStore info is null. PathId: " << path.Base()->PathId);
@@ -371,7 +384,23 @@ THolder<TProposeResponse> TAlterFileStore::Propose(
         return result;
     }
 
+    const auto oldFileStoreSpace = fs->GetFileStoreSpace();
+
     fs->PrepareAlter(*alterConfig);
+
+    const auto newFileStoreSpace = fs->GetFileStoreSpace();
+
+    auto domainDir = context.SS->PathsById.at(path.GetPathIdForDomain());
+    Y_ABORT_UNLESS(domainDir);
+
+    if (!domainDir->CheckFileStoreSpaceChange(newFileStoreSpace, oldFileStoreSpace, errStr)) {
+        result->SetError(NKikimrScheme::StatusPreconditionFailed, errStr);
+        fs->ForgetAlter();
+        return result;
+    }
+
+    // Increase in occupied space is applied immediately
+    domainDir->ChangeFileStoreSpaceBegin(newFileStoreSpace, oldFileStoreSpace);
 
     PrepareChanges(OperationId, path.Base(), fs, storeChannelsBinding, context);
 
@@ -431,9 +460,9 @@ TTxState& TAlterFileStore::PrepareChanges(
         TShardIdx shardIdx = fs->IndexShardIdx;
         TTabletId tabletId = fs->IndexTabletId;
 
-        Y_VERIFY(context.SS->ShardInfos.contains(shardIdx));
+        Y_ABORT_UNLESS(context.SS->ShardInfos.contains(shardIdx));
         auto& shardInfo = context.SS->ShardInfos[shardIdx];
-        Y_VERIFY(shardInfo.TabletID == tabletId);
+        Y_ABORT_UNLESS(shardInfo.TabletID == tabletId);
         txState.Shards.emplace_back(shardIdx, ETabletType::FileStore, TTxState::CreateParts);
         shardInfo.CurrentTxId = operationId.GetTxId();
         context.SS->PersistShardTx(db, shardIdx, operationId.GetTxId());
@@ -523,7 +552,7 @@ void TAlterFileStore::ApplyChannelBindings(
 {
     auto& shardInfo = context.SS->ShardInfos[fs->IndexShardIdx];
     if (!shardInfo.BindedChannels.empty()) {
-        Y_VERIFY(shardInfo.BindedChannels.size() <= channelBindings.size());
+        Y_ABORT_UNLESS(shardInfo.BindedChannels.size() <= channelBindings.size());
         shardInfo.BindedChannels.resize(channelBindings.size());
         Copy(channelBindings.begin(), channelBindings.end(), shardInfo.BindedChannels.begin());
     }
@@ -538,7 +567,7 @@ ISubOperation::TPtr CreateAlterFileStore(TOperationId id, const TTxTransaction& 
 }
 
 ISubOperation::TPtr CreateAlterFileStore(TOperationId id, TTxState::ETxState state) {
-    Y_VERIFY(state != TTxState::Invalid);
+    Y_ABORT_UNLESS(state != TTxState::Invalid);
     return MakeSubOperation<TAlterFileStore>(id, state);
 }
 

@@ -71,7 +71,7 @@ void TSearchEventsProcessor::HandleWakeup(TEvWakeup::TPtr&, const TActorContext&
         case EState::CleanupExecute:
             return RunEventsCleanup(ctx);
         default:
-            Y_FAIL();
+            Y_ABORT();
     }
 }
 
@@ -93,14 +93,8 @@ void TSearchEventsProcessor::HandleQueryResponse(NKqp::TEvKqp::TEvQueryResponse:
         case EState::Stopping:
             return StopSession(ctx);
         default:
-            Y_FAIL();
+            Y_ABORT();
     }
-}
-
-void TSearchEventsProcessor::HandleProcessResponse(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext& ctx) {
-    const auto& record = ev->Get()->Record;
-    LOG_ERROR_S(ctx, NKikimrServices::SQS, "YC Search events processor: failed to list ymq events: " << record);
-    HandleFailure(ctx);
 }
 
 void TSearchEventsProcessor::HandleFailure(const TActorContext& ctx) {
@@ -114,7 +108,7 @@ void TSearchEventsProcessor::HandleFailure(const TActorContext& ctx) {
         case EState::Stopping:
             return;
         default:
-            Y_FAIL();
+            Y_ABORT();
     }
 }
 
@@ -134,9 +128,14 @@ void TSearchEventsProcessor::RunQueuesListQuery(const TActorContext& ctx) {
     request->SetKeepSession(false);
     request->SetPreparedQuery(SelectQueuesQuery);
 
-    NClient::TParameters params;
-    params["$Account"] = LastQueuesKey.Account;
-    params["$QueueName"] = LastQueuesKey.QueueName;
+    NYdb::TParams params = NYdb::TParamsBuilder()
+        .AddParam("$Account")
+            .Utf8(LastQueuesKey.Account)
+            .Build()
+        .AddParam("$QueueName")
+            .Utf8(LastQueuesKey.QueueName)
+            .Build()
+        .Build();
 
     RunQuery(SelectQueuesQuery, &params, true, ctx);
 }
@@ -146,31 +145,31 @@ void TSearchEventsProcessor::OnQueuesListQueryComplete(NKqp::TEvKqp::TEvQueryRes
 
     auto& response = ev->Get()->Record.GetRef().GetResponse();
 
-    Y_VERIFY(response.GetResults().size() == 1);
+    Y_ABORT_UNLESS(response.YdbResultsSize() == 1);
     TString queueName, cloudId;
-    const auto& rr = response.GetResults(0).GetValue().GetStruct(0);
+    NYdb::TResultSetParser parser(response.GetYdbResults(0));
     // "SELECT Account, QueueName, CustomQueueName, CreatedTimestamp, FolderId"
-    for (const auto& row : rr.GetList()) {
-        cloudId = row.GetStruct(0).GetOptional().GetText();
-        queueName = row.GetStruct(1).GetOptional().GetText();
-        auto customName = row.GetStruct(2).GetOptional().GetText();
-        auto createTs = row.GetStruct(3).GetOptional().GetUint64();
-        auto folderId = row.GetStruct(4).GetOptional().GetText();
+    while (parser.TryNextRow()) {
+        cloudId = *parser.ColumnParser(0).GetOptionalUtf8();
+        queueName = *parser.ColumnParser(1).GetOptionalUtf8();
+        auto customName = *parser.ColumnParser(2).GetOptionalUtf8();
+        auto createTs = *parser.ColumnParser(3).GetOptionalUint64();
+        auto folderId = *parser.ColumnParser(4).GetOptionalUtf8();
         auto insResult = ExistingQueues.insert(std::make_pair(
                 queueName, TQueueEvent{EQueueEventType::Existed, createTs, customName, cloudId, folderId}
         ));
-        Y_VERIFY(insResult.second);
+        Y_ABORT_UNLESS(insResult.second);
     }
     if (SessionId.empty()) {
         SessionId = response.GetSessionId();
     } else {
-        Y_VERIFY(SessionId == response.GetSessionId());
+        Y_ABORT_UNLESS(SessionId == response.GetSessionId());
     }
 
     LastQueuesKey.QueueName = queueName;
     LastQueuesKey.Account = cloudId;
 
-    if (rr.ListSize() > 0) {
+    if (parser.RowsCount() > 0) {
         RunQueuesListQuery(ctx);
     } else {
         StopSession(ctx);
@@ -186,22 +185,22 @@ void TSearchEventsProcessor::RunEventsListing(const TActorContext& ctx) {
 void TSearchEventsProcessor::OnEventsListingDone(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
     QueuesEvents.clear();
     const auto& record = ev->Get()->Record.GetRef();
-    Y_VERIFY(record.GetResponse().GetResults().size() == 1);
-    const auto& rr = record.GetResponse().GetResults(0).GetValue().GetStruct(0);
+    Y_ABORT_UNLESS(record.GetResponse().YdbResultsSize() == 1);
+    NYdb::TResultSetParser parser(record.GetResponse().GetYdbResults(0));
 
-    for (const auto& row : rr.GetList()) {
+    while (parser.TryNextRow()) {
         // "SELECT Account, QueueName, EventType, CustomQueueName, EventTimestamp, FolderId
-        auto cloudId = row.GetStruct(0).GetOptional().GetText();
-        auto queueName = row.GetStruct(1).GetOptional().GetText();
-        auto evType = row.GetStruct(2).GetOptional().GetUint64();
-        auto customName = row.GetStruct(3).GetOptional().GetText();
-        auto timestamp = row.GetStruct(4).GetOptional().GetUint64();
-        auto folderId = row.GetStruct(5).GetOptional().GetText();
+        auto cloudId = *parser.ColumnParser(0).GetOptionalUtf8();
+        auto queueName = *parser.ColumnParser(1).GetOptionalUtf8();
+        auto evType = *parser.ColumnParser(2).GetOptionalUint64();
+        auto customName = *parser.ColumnParser(3).GetOptionalUtf8();
+        auto timestamp = *parser.ColumnParser(4).GetOptionalUint64();
+        auto folderId = *parser.ColumnParser(5).GetOptionalUtf8();
         auto& qEvents = QueuesEvents[queueName];
         auto insResult = qEvents.insert(std::make_pair(
                 timestamp, TQueueEvent{EQueueEventType(evType), timestamp, customName, cloudId, folderId}
         ));
-        Y_VERIFY(insResult.second);
+        Y_ABORT_UNLESS(insResult.second);
     }
     ProcessEventsQueue(ctx);
 }
@@ -209,16 +208,29 @@ void TSearchEventsProcessor::OnEventsListingDone(NKqp::TEvKqp::TEvQueryResponse:
 void TSearchEventsProcessor::RunEventsCleanup(const TActorContext& ctx) {
     State = EState::CleanupExecute;
 
-    NClient::TParameters params;
-    auto param = params["$Events"];
+    NYdb::TParamsBuilder paramsBuilder;
+    
+    auto& param = paramsBuilder.AddParam("$Events");
+    param.BeginList();
+
     for (const auto&[qName, events] : QueuesEvents) {
         for (const auto&[_, event]: events) {
-            auto item = param.AddListItem();
-            item["Account"] = event.CloudId;
-            item["QueueName"] = qName;
-            item["EventType"] = static_cast<ui64>(event.Type);
+            param.AddListItem()
+                .BeginStruct()
+                .AddMember("Account")
+                    .Utf8(event.CloudId)
+                .AddMember("QueueName")
+                    .Utf8(qName)
+                .AddMember("EventType")
+                    .Uint64(static_cast<ui64>(event.Type))
+                .EndStruct();
         }
     }
+    param.EndList();
+    param.Build();
+
+    auto params = paramsBuilder.Build();
+
     RunQuery(DeleteEventQuery, &params, false, ctx);
 }
 
@@ -301,7 +313,7 @@ void TSearchEventsProcessor::StopSession(const TActorContext& ctx) {
     }
 }
 
-void TSearchEventsProcessor::RunQuery(const TString& query, NKikimr::NClient::TParameters* params, bool readonly,
+void TSearchEventsProcessor::RunQuery(const TString& query, NYdb::TParams* params, bool readonly,
                                       const TActorContext& ctx) {
     auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
     auto* request = ev->Record.MutableRequest();
@@ -310,6 +322,7 @@ void TSearchEventsProcessor::RunQuery(const TString& query, NKikimr::NClient::TP
     request->SetType(NKikimrKqp::QUERY_TYPE_SQL_DML);
     request->SetKeepSession(State == EState::QueuesListingExecute);
     request->SetQuery(query);
+    request->SetUsePublicResponseDataFormat(true);
 
     if (!SessionId.empty()) {
         request->SetSessionId(SessionId);
@@ -326,7 +339,7 @@ void TSearchEventsProcessor::RunQuery(const TString& query, NKikimr::NClient::TP
     }
     request->MutableTxControl()->set_commit_tx(true);
     if (params != nullptr) {
-        request->MutableParameters()->Swap(params);
+        request->MutableYdbParameters()->swap(*(NYdb::TProtoAccessor::GetProtoMapPtr(*params)));
     }
     Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
 

@@ -6,7 +6,7 @@
 
 #include <ydb/library/yql/dq/common/dq_common.h>
 
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/log.h>
 
 #include <util/generic/ptr.h>
 
@@ -50,7 +50,7 @@ class TDqComputeActorCheckpoints : public NActors::TActor<TDqComputeActorCheckpo
         void Clear();
 
         bool IsReady() const {
-            Y_VERIFY(Checkpoint);
+            Y_ABORT_UNLESS(Checkpoint);
             return SavedComputeActorState && SinksCount == SavedSinkStatesCount;
         }
 
@@ -76,7 +76,7 @@ public:
 
         virtual void Start() = 0;
         virtual void Stop() = 0;
-        virtual void ResumeExecution() = 0;
+        virtual void ResumeExecution(EResumeSource source) = 0;
 
         virtual void LoadState(NDqProto::TComputeActorState&& state) = 0;
 
@@ -108,7 +108,7 @@ public:
         Y_UNUSED(state);
         Y_UNUSED(outputIndex); // Note that we can have both sink and transform on one output index
         Y_UNUSED(checkpoint);
-        Y_FAIL("Transform states are unimplemented");
+        Y_ABORT("Transform states are unimplemented");
     }
 
     void TryToSavePendingCheckpoint();
@@ -127,6 +127,7 @@ private:
     void Handle(NActors::TEvents::TEvPoison::TPtr&);
     void Handle(NActors::TEvInterconnect::TEvNodeDisconnected::TPtr& ev);
     void Handle(NActors::TEvInterconnect::TEvNodeConnected::TPtr& ev);
+    void Handle(NActors::TEvents::TEvUndelivered::TPtr& ev);
     void Handle(TEvRetryQueuePrivate::TEvRetry::TPtr& ev);
     void Handle(NActors::TEvents::TEvWakeup::TPtr& ev);
     void HandleException(const std::exception& err);

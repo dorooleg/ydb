@@ -93,7 +93,7 @@ namespace NKikimr {
     template <>
     inline TAddBulkSstEssence::TSstAndRecsNum<TLevelSegment<TKeyLogoBlob, TMemRecLogoBlob>>
     TAddBulkSstEssence::EnsureOnlyOneSst<TKeyLogoBlob, TMemRecLogoBlob>() const {
-        Y_VERIFY(BlocksAdditions.empty() && BarriersAdditions.empty() && LogoBlobsAdditions.size() == 1);
+        Y_ABORT_UNLESS(BlocksAdditions.empty() && BarriersAdditions.empty() && LogoBlobsAdditions.size() == 1);
         const auto &addition = LogoBlobsAdditions.at(0);
         return addition;
     }
@@ -101,13 +101,13 @@ namespace NKikimr {
     template <>
     inline TAddBulkSstEssence::TSstAndRecsNum<TLevelSegment<TKeyBlock, TMemRecBlock>>
     TAddBulkSstEssence::EnsureOnlyOneSst<TKeyBlock, TMemRecBlock>() const {
-        Y_FAIL("Must not be called");
+        Y_ABORT("Must not be called");
     }
 
     template <>
     inline TAddBulkSstEssence::TSstAndRecsNum<TLevelSegment<TKeyBarrier, TMemRecBarrier>>
     TAddBulkSstEssence::EnsureOnlyOneSst<TKeyBarrier, TMemRecBarrier>() const {
-        Y_FAIL("Must not be called");
+        Y_ABORT("Must not be called");
     }
 
     ////////////////////////////////////////////////////////////////////////////////

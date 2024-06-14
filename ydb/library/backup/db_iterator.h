@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ydb/public/lib/ydb_cli/common/sys.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 
@@ -90,7 +91,7 @@ public:
                 break;
             }
             default:
-                Y_FAIL();
+                Y_ABORT();
             }
         }
     }
@@ -141,7 +142,7 @@ public:
     }
 
     bool IsSkipped() const {
-        return IsDir() && GetCurrentNode()->Name.StartsWith("~") || GetCurrentNode()->Name.StartsWith(".sys");
+        return NConsoleClient::IsSystemObject(*GetCurrentNode());
     }
 
     void Next() {
@@ -192,7 +193,7 @@ public:
                 break;
             }
             default:
-                Y_FAIL();
+                Y_ABORT();
         }
     }
 };

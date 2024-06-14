@@ -1,5 +1,5 @@
 #include "tablet_pipe_client_cache.h"
-#include <library/cpp/actors/core/executor_thread.h>
+#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/core/util/cache.h>
 #include <util/generic/map.h>
 #include <util/system/mutex.h>
@@ -183,12 +183,16 @@ namespace NTabletPipe {
         }
 
     private:
-        void MoveToPool(ui64 tabletId, const TClientCacheEntry& currentClient) {
+        void MoveToPool(ui64 tabletId, TClientCacheEntry& currentClient) {
             TClientCacheEntry* insertedClient;
             if (!PoolContainer->Insert(tabletId, currentClient, insertedClient)) {
-                Y_VERIFY_DEBUG(!insertedClient->Client);
+                Y_DEBUG_ABORT_UNLESS(!insertedClient->Client);
                 *insertedClient = currentClient;
             }
+
+            // Note: client was moved to pool, make sure it's not closed by
+            // the eviction callback
+            currentClient.Client = {};
 
             Container->Erase(tabletId);
         }
@@ -196,7 +200,7 @@ namespace NTabletPipe {
         void Erase(ui64 tabletId, const TActorId& clientId) {
             TClientCacheEntry* currentClient;
             if (Container->Find(tabletId, currentClient)) {
-                Y_VERIFY_DEBUG(!!currentClient->Client);
+                Y_DEBUG_ABORT_UNLESS(!!currentClient->Client);
                 if (!clientId || (currentClient->Client == clientId))
                     Container->Erase(tabletId);
             }

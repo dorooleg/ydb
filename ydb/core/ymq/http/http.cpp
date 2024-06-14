@@ -1,7 +1,7 @@
 #include "http.h"
 #include "xml.h"
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/library/http_proxy/authorization/auth_helpers.h>
 #include <ydb/core/ymq/actor/actor.h>
 #include <ydb/core/ymq/actor/auth_factory.h>
@@ -12,8 +12,8 @@
 #include <ydb/core/ymq/base/limits.h>
 #include <ydb/core/ymq/base/secure_protobuf_printer.h>
 
-#include <library/cpp/actors/core/actorsystem.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/log.h>
 #include <library/cpp/http/server/response.h>
 #include <library/cpp/http/misc/parsed_request.h>
 
@@ -185,6 +185,9 @@ TString THttpRequest::LogHttpRequestResponseCommonInfoString() {
         logString << " Action [" << ActionToString(Action_) << "]";
     }
     logString << " IP [" << SourceAddress_ << "] Duration [" << duration.MilliSeconds() << "ms]";
+    if (UserSid_) {
+        logString << " Subject [" << UserSid_ << "]";
+    }
     return logString;
 }
 
@@ -230,12 +233,6 @@ bool THttpRequest::DoReply(const TReplyParams& p) {
 
         const TDuration parseTime = TInstant::Now() - StartTime_;
         RLOG_SQS_BASE_DEBUG(*Parent_->ActorSystem_, "Parse time: [" << parseTime.MilliSeconds() << "ms]");
-        RLOG_SQS_BASE_INFO(
-                *Parent_->ActorSystem_,
-                "Start request. User [" << UserName_ << "] Queue [" << QueueName_ << "], Cloud [" << AccountName_
-                       << "], Folder [" << FolderId_ << "] Action [" << ActionToString(Action_)
-                       << "] IP [" << SourceAddress_ << "]"
-        );
 
         if (!Parent_->Config.GetYandexCloudMode() && UserName_.empty()) {
             WriteResponse(p, MakeErrorXmlResponse(NErrors::MISSING_PARAMETER, Parent_->AggregatedUserCounters_.Get(), "No user name was provided."));
@@ -568,6 +565,7 @@ bool THttpRequest::SetupRequest() {
     TAuthActorData data {
         .SQSRequest = std::move(requestHolder),
         .HTTPCallback = std::move(httpCallback),
+        .UserSidCallback = [this](const TString& userSid) { UserSid_ = userSid; },
         .EnableQueueLeader = enableQueueLeader,
         .Action = Action_,
         .ExecutorPoolID = Parent_->PoolId_,
@@ -794,7 +792,7 @@ void THttpRequest::SetupModifyPermissions(TModifyPermissionsRequest* const req) 
         SetupModifyPermissionsAction(QueryParams_, *req->MutableActions()->Add()->MutableSet());
     }
 
-    Y_VERIFY(it != ModifyPermissionsActions.end());
+    Y_ABORT_UNLESS(it != ModifyPermissionsActions.end());
 
     if (QueryParams_.Path) {
         req->SetResource(*QueryParams_.Path);
@@ -1028,7 +1026,7 @@ void TAsyncHttpServer::Initialize(
 
 void TAsyncHttpServer::Start() {
     if (!THttpServer::Start()) {
-        Y_FAIL("Unable to start http server for SQS service on port %" PRIu16, Options().Port);
+        Y_ABORT("Unable to start http server for SQS service on port %" PRIu16, Options().Port);
     }
 }
 

@@ -3,28 +3,63 @@
 
 namespace NYql::NDq {
 
-class TDqInputChannel : public TDqInputImpl<TDqInputChannel, IDqInputChannel> {
-    using TBaseImpl = TDqInputImpl<TDqInputChannel, IDqInputChannel>;
-    friend TBaseImpl;
+class TDqInputChannelImpl : public TDqInputImpl<TDqInputChannelImpl, IDqInputChannel> {
+    using TBaseImpl = TDqInputImpl<TDqInputChannelImpl, IDqInputChannel>;
+
+public:
+    TDqInputChannelStats PushStats;
+    TDqInputStats PopStats;
+
+    TDqInputChannelImpl(ui64 channelId, ui32 srcStageId, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, TCollectStatsLevel level,
+        const NKikimr::NMiniKQL::TTypeEnvironment&, const NKikimr::NMiniKQL::THolderFactory&,
+        NDqProto::EDataTransportVersion)
+        : TBaseImpl(inputType, maxBufferBytes)
+    {
+        PopStats.Level = level;
+        PushStats.Level = level;
+        PushStats.ChannelId = channelId;
+        PushStats.SrcStageId = srcStageId;
+    }
+
+    ui64 GetChannelId() const override {
+        return PushStats.ChannelId;
+    }
+
+    const TDqInputChannelStats& GetPushStats() const override {
+        return PushStats;
+    }
+
+    const TDqInputStats& GetPopStats() const override {
+        return PopStats;
+    }
+
 private:
-    std::deque<NDqProto::TData> DataForDeserialize;
+    void Push(TDqSerializedBatch&&) override {
+        Y_ABORT("Not implemented");
+    }
+};
+
+class TDqInputChannel : public IDqInputChannel {
+
+private:
+    std::deque<TDqSerializedBatch> DataForDeserialize;
     ui64 StoredSerializedBytes = 0;
 
-    void PushImpl(NDqProto::TData&& data) {
-        const i64 space = data.GetRaw().size();
-
-        NKikimr::NMiniKQL::TUnboxedValueVector buffer;
-        buffer.reserve(data.GetRows());
-
-        if (Y_UNLIKELY(ProfileStats)) {
+    void PushImpl(TDqSerializedBatch&& data) {
+        const i64 space = data.Size();
+        const size_t rowCount = data.RowCount();
+        auto inputType = Impl.GetInputType();
+        NKikimr::NMiniKQL::TUnboxedValueBatch batch(inputType);
+        if (Y_UNLIKELY(PushStats.CollectProfile())) {
             auto startTime = TInstant::Now();
-            DataSerializer.Deserialize(data, InputType, buffer);
-            ProfileStats->DeserializationTime += (TInstant::Now() - startTime);
+            DataSerializer.Deserialize(std::move(data), inputType, batch);
+            PushStats.DeserializationTime += (TInstant::Now() - startTime);
         } else {
-            DataSerializer.Deserialize(data, InputType, buffer);
+            DataSerializer.Deserialize(std::move(data), inputType, batch);
         }
 
-        AddBatch(std::move(buffer), space);
+        YQL_ENSURE(batch.RowCount() == rowCount);
+        Impl.AddBatch(std::move(batch), space);
     }
 
     void DeserializeAllData() {
@@ -36,75 +71,91 @@ private:
     }
 
 public:
-    TDqInputChannel(ui64 channelId, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, bool collectProfileStats,
+    TDqInputChannelStats PushStats;
+    TDqInputStats PopStats;
+
+    TDqInputChannel(ui64 channelId, ui32 srcStageId, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, TCollectStatsLevel level,
         const NKikimr::NMiniKQL::TTypeEnvironment& typeEnv, const NKikimr::NMiniKQL::THolderFactory& holderFactory,
         NDqProto::EDataTransportVersion transportVersion)
-        : TBaseImpl(inputType, maxBufferBytes)
-        , ChannelId(channelId)
-        , BasicStats(ChannelId)
-        , ProfileStats(collectProfileStats ? &BasicStats : nullptr)
-        , DataSerializer(typeEnv, holderFactory, transportVersion)
-    {}
+        : Impl(channelId, srcStageId, inputType, maxBufferBytes, level, typeEnv, holderFactory, transportVersion)
+        , DataSerializer(typeEnv, holderFactory, transportVersion) {
+    }
 
     ui64 GetChannelId() const override {
-        return ChannelId;
+        return Impl.GetChannelId();
+    }
+
+    const TDqInputChannelStats& GetPushStats() const override {
+        return Impl.GetPushStats();
+    }
+
+    const TDqInputStats& GetPopStats() const override {
+        return Impl.GetPopStats();
     }
 
     i64 GetFreeSpace() const override {
-        return TBaseImpl::GetFreeSpace() - i64(StoredSerializedBytes);
+        return Impl.GetFreeSpace() - i64(StoredSerializedBytes);
     }
 
     ui64 GetStoredBytes() const override {
-        return StoredBytes + StoredSerializedBytes;
+        return Impl.GetStoredBytes() + StoredSerializedBytes;
     }
 
     bool IsFinished() const override {
-        return DataForDeserialize.empty() && TBaseImpl::IsFinished();
+        return DataForDeserialize.empty() && Impl.IsFinished();
     }
 
-    [[nodiscard]]
     bool Empty() const override {
-        return DataForDeserialize.empty() && TBaseImpl::Empty();
+        return (DataForDeserialize.empty() || Impl.IsPaused()) && Impl.Empty();
     }
 
     void Pause() override {
         DeserializeAllData();
-        TBaseImpl::Pause();
+        Impl.Pause();
     }
 
-    [[nodiscard]]
-    bool Pop(NKikimr::NMiniKQL::TUnboxedValueVector& batch) override {
-        if (Batches.empty()) {
+    bool Pop(NKikimr::NMiniKQL::TUnboxedValueBatch& batch) override {
+        if (Impl.Empty() && !Impl.IsPaused()) {
             DeserializeAllData();
         }
-        return TBaseImpl::Pop(batch);
+        return Impl.Pop(batch);
     }
 
-    void Push(NDqProto::TData&& data) override {
-        YQL_ENSURE(!Finished, "input channel " << ChannelId << " already finished");
-        if (Y_UNLIKELY(data.GetRows() == 0)) {
+    void Push(TDqSerializedBatch&& data) override {
+        YQL_ENSURE(!Impl.IsFinished(), "input channel " << PushStats.ChannelId << " already finished");
+        if (Y_UNLIKELY(data.Proto.GetRows() == 0)) {
             return;
         }
-        StoredSerializedBytes += data.GetRaw().size();
+        StoredSerializedBytes += data.Size();
         DataForDeserialize.emplace_back(std::move(data));
     }
 
-    const TDqInputChannelStats* GetStats() const override {
-        return &BasicStats;
+    NKikimr::NMiniKQL::TType* GetInputType() const override {
+        return Impl.GetInputType();
+    }
+
+    void Resume() override {
+        Impl.Resume();
+    }
+
+    bool IsPaused() const override {
+        return Impl.IsPaused();
+    }
+
+    void Finish() override {
+        Impl.Finish();
     }
 
 private:
-    const ui64 ChannelId;
-    TDqInputChannelStats BasicStats;
-    TDqInputChannelStats* ProfileStats = nullptr;
+    TDqInputChannelImpl Impl;
     TDqDataSerializer DataSerializer;
 };
 
-IDqInputChannel::TPtr CreateDqInputChannel(ui64 channelId, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes,
-    bool collectProfileStats, const NKikimr::NMiniKQL::TTypeEnvironment& typeEnv,
+IDqInputChannel::TPtr CreateDqInputChannel(ui64 channelId, ui32 srcStageId, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes,
+    TCollectStatsLevel level, const NKikimr::NMiniKQL::TTypeEnvironment& typeEnv,
     const NKikimr::NMiniKQL::THolderFactory& holderFactory, NDqProto::EDataTransportVersion transportVersion)
 {
-    return new TDqInputChannel(channelId, inputType, maxBufferBytes, collectProfileStats, typeEnv, holderFactory,
+    return new TDqInputChannel(channelId, srcStageId, inputType, maxBufferBytes, level, typeEnv, holderFactory,
         transportVersion);
 }
 

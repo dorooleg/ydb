@@ -279,6 +279,37 @@ Y_UNIT_TEST_SUITE(YtNodeTest) {
         UNIT_ASSERT_VALUES_EQUAL(node, nodeCopy);
     }
 
+    Y_UNIT_TEST(TestSaveLoadWithNeighbours) {
+        TString stringBefore = "before";
+
+        TNode node = TNode()("foo", "bar")("baz", 42);
+        node.Attributes()["attr_name"] = "attr_value";
+
+        TString stringAfter = "after";
+
+        TString bytes;
+        {
+            TStringOutput s(bytes);
+            ::Save(&s, stringBefore);
+            ::Save(&s, node);
+            ::Save(&s, stringAfter);
+        }
+
+        TString deserializedStringBefore;
+        TString deserializedStringAfter;
+        TNode nodeCopy;
+        {
+            TStringInput s(bytes);
+            ::Load(&s, deserializedStringBefore);
+            ::Load(&s, nodeCopy);
+            ::Load(&s, deserializedStringAfter);
+        }
+
+        UNIT_ASSERT_VALUES_EQUAL(stringBefore, deserializedStringBefore);
+        UNIT_ASSERT_VALUES_EQUAL(node, nodeCopy);
+        UNIT_ASSERT_VALUES_EQUAL(stringAfter, deserializedStringAfter);
+    }
+
     Y_UNIT_TEST(TestIntCast) {
         TNode node = 1ull << 31;
         UNIT_ASSERT(node.IsUint64());
@@ -480,5 +511,18 @@ Y_UNIT_TEST_SUITE(YtNodeTest) {
         auto& childString = node.ChildAs<TString>(0);
         childString = "yaddayadda";
         UNIT_ASSERT_VALUES_EQUAL(node.ChildAs<TString>(0), "yaddayadda");
+    }
+}
+
+
+Y_UNIT_TEST_SUITE(YtNodeIoTest) {
+    Y_UNIT_TEST(FromJson) {
+        NYT::TNode node;
+        node = NYT::NodeFromJsonString("1");
+        UNIT_ASSERT_VALUES_EQUAL(node.ConvertTo<int>(), 1);
+        UNIT_ASSERT(!NYT::TryNodeFromJsonString("", node));
+        UNIT_ASSERT_VALUES_EQUAL(node.ConvertTo<int>(), 1);
+        UNIT_ASSERT_EXCEPTION(NYT::NodeFromJsonString(""), yexception);
+        UNIT_ASSERT_VALUES_EQUAL(node.ConvertTo<int>(), 1);
     }
 }

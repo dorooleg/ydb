@@ -38,7 +38,7 @@ public:
         TSetupSysLocks guardLocks(op, DataShard, &locksDb);
 
         TDirectTransaction* tx = dynamic_cast<TDirectTransaction*>(op.Get());
-        Y_VERIFY(tx != nullptr);
+        Y_ABORT_UNLESS(tx != nullptr);
 
         try {
             if (!tx->Execute(&DataShard, txc)) {
@@ -80,9 +80,10 @@ public:
     void Complete(TOperation::TPtr op, const TActorContext& ctx) override {
         Pipeline.RemoveCommittingOp(op);
         DataShard.EnqueueChangeRecords(std::move(op->ChangeRecords()));
+        DataShard.EmitHeartbeats();
 
         TDirectTransaction* tx = dynamic_cast<TDirectTransaction*>(op.Get());
-        Y_VERIFY(tx != nullptr);
+        Y_ABORT_UNLESS(tx != nullptr);
 
         tx->SendResult(&DataShard, ctx);
     }

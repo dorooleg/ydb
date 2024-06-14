@@ -21,7 +21,7 @@ IExecutor* TTabletExecutedFlat::CreateExecutor(const TActorContext &ctx) {
         IActor *executor = NFlatExecutorSetup::CreateExecutor(this, ctx.SelfID);
         const TActorId executorID = ctx.RegisterWithSameMailbox(executor);
         Executor0 = dynamic_cast<TExecutor *>(executor);
-        Y_VERIFY(Executor0);
+        Y_ABORT_UNLESS(Executor0);
 
         ITablet::ExecutorActorID = executorID;
     }
@@ -77,9 +77,13 @@ void TTabletExecutedFlat::Handle(TEvTablet::TEvFAuxUpdate::TPtr &ev) {
 }
 
 void TTabletExecutedFlat::Handle(TEvTablet::TEvNewFollowerAttached::TPtr &ev) {
-    Y_UNUSED(ev);
     if (Executor())
-        Executor()->FollowerAttached();
+        Executor()->FollowerAttached(ev->Get()->TotalFollowers);
+}
+
+void TTabletExecutedFlat::Handle(TEvTablet::TEvFollowerDetached::TPtr &ev) {
+    if (Executor())
+        Executor()->FollowerDetached(ev->Get()->TotalFollowers);
 }
 
 void TTabletExecutedFlat::Handle(TEvTablet::TEvFollowerSyncComplete::TPtr &ev) {
@@ -104,6 +108,15 @@ void TTabletExecutedFlat::OnTabletStop(TEvTablet::TEvTabletStop::TPtr &ev, const
     ctx.Send(Tablet(), new TEvTablet::TEvTabletStopped());
 }
 
+void TTabletExecutedFlat::HandlePoison(const TActorContext &ctx) {
+    if (Executor0) {
+        Executor0->DetachTablet(ExecutorCtx(ctx));
+        Executor0 = nullptr;
+    }
+
+    Detach(ctx);
+}
+
 void TTabletExecutedFlat::HandleTabletStop(TEvTablet::TEvTabletStop::TPtr &ev, const TActorContext &ctx) {
     if (Executor() && Executor()->GetStats().IsActive) {
         OnTabletStop(ev, ctx);
@@ -122,37 +135,37 @@ void TTabletExecutedFlat::HandleTabletDead(TEvTablet::TEvTabletDead::TPtr &ev, c
 }
 
 void TTabletExecutedFlat::HandleLocalMKQL(TEvTablet::TEvLocalMKQL::TPtr &ev, const TActorContext &ctx) {
-    Y_VERIFY(Factory, "Need IMiniKQLFactory to execute MKQL query");
+    Y_ABORT_UNLESS(Factory, "Need IMiniKQLFactory to execute MKQL query");
 
     Execute(Factory->Make(ev), ctx);
 }
 
 void TTabletExecutedFlat::HandleLocalSchemeTx(TEvTablet::TEvLocalSchemeTx::TPtr &ev, const TActorContext &ctx) {
-    Y_VERIFY(Factory, "Need IMiniKQLFactory to execute scheme query");
+    Y_ABORT_UNLESS(Factory, "Need IMiniKQLFactory to execute scheme query");
 
     Execute(Factory->Make(ev), ctx);
 }
 
 void TTabletExecutedFlat::HandleLocalReadColumns(TEvTablet::TEvLocalReadColumns::TPtr &ev, const TActorContext &ctx) {
-    Y_VERIFY(Factory, "Need IMiniKQLFactory to execute read columns query");
+    Y_ABORT_UNLESS(Factory, "Need IMiniKQLFactory to execute read columns query");
 
     Execute(Factory->Make(ev), ctx);
+}
+
+void TTabletExecutedFlat::SignalTabletActive(const TActorIdentity &id) {
+    id.Send(Tablet(), new TEvTablet::TEvTabletActive());
 }
 
 void TTabletExecutedFlat::SignalTabletActive(const TActorContext &ctx) {
     ctx.Send(Tablet(), new TEvTablet::TEvTabletActive());
 }
 
-void TTabletExecutedFlat::DefaultSignalTabletActive(const TActorContext &ctx) {
-    SignalTabletActive(ctx);
-}
-
 void TTabletExecutedFlat::Enqueue(STFUNC_SIG) {
     Y_UNUSED(ev);
+    Y_DEBUG_ABORT("Unhandled StateInit event 0x%08" PRIx32, ev->GetTypeRewrite());
 }
 
 void TTabletExecutedFlat::ActivateExecutor(const TActorContext &ctx) {
-    DefaultSignalTabletActive(ctx);
     OnActivateExecutor(ctx);
 }
 
@@ -247,6 +260,7 @@ void TTabletExecutedFlat::HandleGetCounters(TEvTablet::TEvGetCounters::TPtr &ev)
 bool TTabletExecutedFlat::HandleDefaultEvents(TAutoPtr<IEventHandle>& ev, const TActorIdentity& id) {
     auto ctx(NActors::TActivationContext::ActorContextFor(id));
     switch (ev->GetTypeRewrite()) {
+        CFuncCtx(TEvents::TEvPoison::EventType, HandlePoison, ctx);
         HFuncCtx(TEvTablet::TEvBoot, Handle, ctx);
         HFuncCtx(TEvTablet::TEvRestored, Handle, ctx);
         HFuncCtx(TEvTablet::TEvFBoot, Handle, ctx);
@@ -254,6 +268,7 @@ bool TTabletExecutedFlat::HandleDefaultEvents(TAutoPtr<IEventHandle>& ev, const 
         hFunc(TEvTablet::TEvFAuxUpdate, Handle);
         hFunc(TEvTablet::TEvFollowerGcApplied, Handle);
         hFunc(TEvTablet::TEvNewFollowerAttached, Handle);
+        hFunc(TEvTablet::TEvFollowerDetached, Handle);
         hFunc(TEvTablet::TEvFollowerSyncComplete, Handle);
         HFuncCtx(TEvTablet::TEvTabletStop, HandleTabletStop, ctx);
         HFuncCtx(TEvTablet::TEvTabletDead, HandleTabletDead, ctx);
@@ -263,6 +278,7 @@ bool TTabletExecutedFlat::HandleDefaultEvents(TAutoPtr<IEventHandle>& ev, const 
         hFunc(TEvTablet::TEvGetCounters, HandleGetCounters);
         hFunc(TEvTablet::TEvUpdateConfig, Handle);
         HFuncCtx(NMon::TEvRemoteHttpInfo, RenderHtmlPage, ctx);
+        IgnoreFunc(TEvTablet::TEvReady);
     default:
         return false;
     }
@@ -272,17 +288,21 @@ bool TTabletExecutedFlat::HandleDefaultEvents(TAutoPtr<IEventHandle>& ev, const 
 void TTabletExecutedFlat::StateInitImpl(TAutoPtr<IEventHandle>& ev, const TActorIdentity& id) {
     auto ctx(NActors::TActivationContext::ActorContextFor(id));
     switch (ev->GetTypeRewrite()) {
+        CFuncCtx(TEvents::TEvPoison::EventType, HandlePoison, ctx);
         HFuncCtx(TEvTablet::TEvBoot, Handle, ctx);
+        HFuncCtx(TEvTablet::TEvRestored, Handle, ctx);
         HFuncCtx(TEvTablet::TEvFBoot, Handle, ctx);
         hFunc(TEvTablet::TEvFUpdate, Handle);
         hFunc(TEvTablet::TEvFAuxUpdate, Handle);
         hFunc(TEvTablet::TEvFollowerGcApplied, Handle);
-        HFuncCtx(TEvTablet::TEvRestored, Handle, ctx);
+        hFunc(TEvTablet::TEvNewFollowerAttached, Handle);
+        hFunc(TEvTablet::TEvFollowerDetached, Handle);
+        hFunc(TEvTablet::TEvFollowerSyncComplete, Handle);
         HFuncCtx(TEvTablet::TEvTabletStop, HandleTabletStop, ctx);
         HFuncCtx(TEvTablet::TEvTabletDead, HandleTabletDead, ctx);
-        hFunc(TEvTablet::TEvFollowerSyncComplete, Handle);
         hFunc(TEvTablet::TEvUpdateConfig, Handle);
         HFuncCtx(NMon::TEvRemoteHttpInfo, RenderHtmlPage, ctx);
+        IgnoreFunc(TEvTablet::TEvReady);
     default:
         return Enqueue(ev);
     }

@@ -106,7 +106,7 @@ namespace NKikimr {
 
     template <class TKey, class TMemRec>
     void TFreshData<TKey, TMemRec>::PutAppendix(std::shared_ptr<TFreshAppendix> &&a, ui64 firstLsn, ui64 lastLsn) {
-        Y_VERIFY_DEBUG(lastLsn >= firstLsn);
+        Y_DEBUG_ABORT_UNLESS(lastLsn >= firstLsn);
         Cur->PutAppendix(std::move(a), firstLsn, lastLsn);
         SwapWithDregIfRequired();
     }
@@ -127,7 +127,7 @@ namespace NKikimr {
 
     template <class TKey, class TMemRec>
     TIntrusivePtr<TFreshSegment<TKey, TMemRec>> TFreshData<TKey, TMemRec>::FindSegmentForCompaction() {
-        Y_VERIFY(!CompactionInProgress());
+        Y_ABORT_UNLESS(!CompactionInProgress());
         if (Dreg) {
             Old.Swap(Dreg);
             Dreg.Swap(Cur);
@@ -143,7 +143,7 @@ namespace NKikimr {
     template <class TKey, class TMemRec>
     void TFreshData<TKey, TMemRec>::CompactionSstCreated(TIntrusivePtr<TFreshSegment> &&freshSegment) {
         // FIXME ref count = 2?
-        Y_VERIFY(Old && Old.Get() == freshSegment.Get());
+        Y_ABORT_UNLESS(Old && Old.Get() == freshSegment.Get());
         freshSegment.Drop();
         Old.Drop();
         WaitForCommit = true;
@@ -151,7 +151,7 @@ namespace NKikimr {
 
     template <class TKey, class TMemRec>
     void TFreshData<TKey, TMemRec>::CompactionFinished() {
-        Y_VERIFY(!Old && WaitForCommit);
+        Y_ABORT_UNLESS(!Old && WaitForCommit);
         WaitForCommit = false;
         OldSegLastKeepLsn = ui64(-1);
     }

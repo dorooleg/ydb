@@ -2,10 +2,17 @@
 
 #include "command.h"
 #include "formats.h"
+#include "pretty_table.h"
 
 #include <ydb/public/lib/json_value/ydb_json_value.h>
 #include <ydb/public/sdk/cpp/client/ydb_result/result.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/status/status.h>
+
+namespace NYdb {
+
+    class TResultSetParquetPrinter;
+
+}
 
 namespace NYdb {
 namespace NConsoleClient {
@@ -80,24 +87,31 @@ private:
     bool PrintedSomething = false;
     EOutputFormat Format;
     std::function<bool()> IsInterrupted;
+    std::unique_ptr<TResultSetParquetPrinter> ParquetPrinter;
 };
 
 class TQueryPlanPrinter {
 public:
-    TQueryPlanPrinter(EOutputFormat format, bool analyzeMode = false)
+    TQueryPlanPrinter(EOutputFormat format, bool analyzeMode = false, IOutputStream& output = Cout)
         : Format(format)
-        , AnalyzeMode(analyzeMode) {}
+        , AnalyzeMode(analyzeMode)
+        , Output(output) {}
 
     void Print(const TString& plan);
 
 private:
     void PrintPretty(const NJson::TJsonValue& plan);
     void PrintPrettyImpl(const NJson::TJsonValue& plan, TVector<TString>& offsets);
+    void PrintPrettyTable(const NJson::TJsonValue& plan);
+    void PrintPrettyTableImpl(const NJson::TJsonValue& plan, TString& offset, TPrettyTable& table);
     void PrintJson(const TString& plan);
+    void PrintSimplifyJson(const NJson::TJsonValue& plan);
     TString JsonToString(const NJson::TJsonValue& jsonValue);
 
+private:
     EOutputFormat Format;
     bool AnalyzeMode;
+    IOutputStream& Output;
 };
 
 }

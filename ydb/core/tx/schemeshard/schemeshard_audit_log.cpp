@@ -4,6 +4,7 @@
 
 #include <ydb/core/audit/audit_log.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
+#include <ydb/core/util/address_classifier.h>
 #include <util/string/vector.h>
 
 namespace NKikimr::NSchemeShard {
@@ -33,7 +34,7 @@ std::tuple<TString, TString, TString> GetDatabaseCloudIds(const TPath &databaseP
     if (databasePath.IsEmpty()) {
         return {};
     }
-    Y_VERIFY(databasePath->IsDomainRoot());
+    Y_ABORT_UNLESS(databasePath->IsDomainRoot());
     auto getAttr = [&databasePath](const TString &name) -> TString {
         if (databasePath.Base()->UserAttrs->Attrs.contains(name)) {
             return databasePath.Base()->UserAttrs->Attrs.at(name);
@@ -73,7 +74,7 @@ void AuditLogModifySchemeTransaction(const NKikimrScheme::TEvModifySchemeTransac
 
         TPath databasePath = DatabasePathFromWorkingDir(SS, operation.GetWorkingDir());
         auto [cloud_id, folder_id, database_id] = GetDatabaseCloudIds(databasePath);
-        auto peerName = request.GetPeerName();
+        auto peerName = NKikimr::NAddressClassifier::ExtractAddress(request.GetPeerName());
 
         AUDIT_LOG(
             AUDIT_PART("component", SchemeshardComponentName)
@@ -115,6 +116,52 @@ void AuditLogModifySchemeTransaction(const NKikimrScheme::TEvModifySchemeTransac
             AUDIT_PART("login_group", logEntry.LoginGroup);
             AUDIT_PART("login_member", logEntry.LoginMember);
         );
+    }
+}
+
+//NOTE: Resurrected a way to log audit records into the common log.
+// This should be dropped again as soon as auditlog consumers will switch to a proper way.
+void AuditLogModifySchemeTransactionDeprecated(const NKikimrScheme::TEvModifySchemeTransaction& request, const NKikimrScheme::TEvModifySchemeTransactionResult& response, TSchemeShard* SS, const TString& userSID) {
+    // Each TEvModifySchemeTransaction.Transaction is a self sufficient operation and should be logged independently
+    // (even if it was packed into a single TxProxy transaction with some other operations).
+    for (const auto& operation : request.GetTransaction()) {
+        auto logEntry = MakeAuditLogFragment(operation);
+
+        TPath databasePath = DatabasePathFromWorkingDir(SS, operation.GetWorkingDir());
+        auto peerName = request.GetPeerName();
+
+        auto entry = TStringBuilder();
+
+        entry << "txId: " << std::to_string(request.GetTxId());
+        if (!databasePath.IsEmpty()) {
+            entry << ", database: " << databasePath.GetDomainPathString();
+        }
+        entry << ", subject: " << userSID;
+        entry << ", status: " << NKikimrScheme::EStatus_Name(response.GetStatus());
+        if (response.HasReason()) {
+            entry << ", reason: " << response.GetReason();
+        }
+        entry << ", operation: " << logEntry.Operation;
+        if (logEntry.Paths.size() > 1) {
+            for (const auto& i : logEntry.Paths) {
+                entry << ", dst path: " << i;
+            }
+        } else if (logEntry.Paths.size() == 1) {
+            entry << ", path: " << logEntry.Paths.front();
+        } else {
+            entry << ", no path";
+        }
+        if (!logEntry.NewOwner.empty()) {
+            entry << ", set owner:" << logEntry.NewOwner;
+        }
+        for (const auto& i : logEntry.ACLAdd) {
+            entry << ", add access: " << i;
+        }
+        for (const auto& i : logEntry.ACLRemove) {
+            entry << ", add access: " << i;
+        }
+
+        LOG_NOTICE_S(TlsActivationContext->AsActorContext(), NKikimrServices::FLAT_TX_SCHEMESHARD, "AUDIT: " <<  entry);
     }
 }
 

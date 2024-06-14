@@ -284,8 +284,13 @@ Y_UNIT_TEST_SUITE(TFlatTableDatetime) {
             }
         };
 
+        void DefaultSignalTabletActive(const TActorContext &) override {
+            // must be empty
+        }
+
         void OnActivateExecutor(const TActorContext &ctx) override {
             Become(&TThis::StateWork);
+            SignalTabletActive(ctx);
             Execute(new TTxSchema(*this), ctx);
         }
 
@@ -342,7 +347,7 @@ Y_UNIT_TEST_SUITE(TFlatTableDatetime) {
             Env.GrabEdgeEventRethrow<TEvents::TEvWakeup>(handle);
         }
 
-        const ui32 Tablet = MakeTabletID(0, 0, 1);
+        const ui64 Tablet = MakeTabletID(false, 1) & 0xFFFF'FFFF;
         const TActorId Edge;
     };
 

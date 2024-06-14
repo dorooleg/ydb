@@ -1,4 +1,5 @@
 #include "vdisk_config.h"
+#include "vdisk_performance_params.h"
 #include <ydb/core/base/interconnect_channels.h>
 #include <google/protobuf/text_format.h>
 
@@ -34,7 +35,6 @@ namespace NKikimr {
         HugeBlobsFreeChunkReservation = 1;
         SetupHugeBytes();
         HugeBlobOverhead = 8u;
-        HugeBlobOldMapCompatible = false;
         HullCompLevel0MaxSstsAtOnce = 8u;
         HullCompSortedPartsNum = 8u;
         HullCompLevelRateThreshold = 1.0;
@@ -44,6 +44,7 @@ namespace NKikimr {
         HullCompMaxInFlightReads = 20;
         HullCompReadBatchEfficiencyThreshold = 0.5;  // don't issue reads if there are more gaps than the useful data
         AnubisOsirisMaxInFly = 1000;
+        AddHeader = true;
 
         RecoveryLogCutterFirstDuration = TDuration::Seconds(10);
         RecoveryLogCutterRegularDuration = TDuration::Seconds(30);
@@ -54,7 +55,8 @@ namespace NKikimr {
         AnubisTimeout = TDuration::Minutes(60);
         RunSyncer = true;
         RunAnubis = false;                                          // FIXME: turn on by default
-        RunDefrag = true;
+        RunDefrag = !baseInfo.ReadOnly;
+        RunScrubber = !baseInfo.ReadOnly;
 
         SyncLogMaxDiskAmount = 0; //ui64(2) << ui64(30);                 // 2 GB
         SyncLogMaxEntryPointSize = ui64(128) << ui64(10);           // 128 KB
@@ -76,8 +78,9 @@ namespace NKikimr {
         HandoffMaxInFlightSize = 1000;
         HandoffMaxInFlightByteSize = 16u << 20u;
         HandoffTimeout = TDuration::Seconds(10);
-        RunRepl = true;
-        RunHandoff = false;
+        RunRepl = !baseInfo.ReadOnly;
+
+        ReplMaxTimeToMakeProgress = VDiskPerformance.at(baseInfo.DeviceType).ReplMaxTimeToMakeProgress;
 
         SkeletonFrontGets_MaxInFlightCount = 24;
         SkeletonFrontGets_MaxInFlightCost = 200000000;              // 200ms
@@ -118,6 +121,9 @@ namespace NKikimr {
 #else
         BarrierValidation = true; // switch by default on debug builds
 #endif
+
+        BurstThresholdNs = NPDisk::DevicePerformance.at(baseInfo.DeviceType).BurstThresholdNs;
+        DiskTimeAvailableScale = 1;
     }
 
     void TVDiskConfig::SetupHugeBytes() {
@@ -130,8 +136,9 @@ namespace NKikimr {
                 MinHugeBlobInBytes = 512u << 10u;
                 break;
         }
-        // for compatibility reasons it must be 512KB
-        MilestoneHugeBlobInBytes = 512u << 10u;
+        OldMinHugeBlobInBytes = MinHugeBlobInBytes; // preserved to migrate entry point state correctly 
+        MilestoneHugeBlobInBytes = 512u << 10u;  // for compatibility reasons it must be 512KB
+
     }
 
     void TVDiskConfig::Merge(const NKikimrBlobStorage::TVDiskConfig &update) {
@@ -159,6 +166,7 @@ namespace NKikimr {
         UPDATE_MACRO(ReplInterconnectChannel);
 
         UPDATE_MACRO(BarrierValidation);
+
 #undef UPDATE_MACRO
     }
 
@@ -174,8 +182,17 @@ namespace NKikimr {
         , KindsMap()
     {
         bool result = google::protobuf::TextFormat::ParseFromString(prototext, &AllKindsConfig);
-        Y_VERIFY(result, "Failed to parse AllVDiskKinds config "
+        Y_ABORT_UNLESS(result, "Failed to parse AllVDiskKinds config "
                 "(error in protobuf format):\n%s\n", prototext.data());
+        ParseConfig();
+    }
+
+    TAllVDiskKinds::TAllVDiskKinds(const NKikimrBlobStorage::TAllVDiskKinds &proto)
+        : AllKindsConfig()
+        , VDiskMegaBaseConfig(TVDiskConfig::TBaseInfo())
+        , KindsMap()
+    {
+        AllKindsConfig.CopyFrom(proto);
         ParseConfig();
     }
 
@@ -185,14 +202,14 @@ namespace NKikimr {
         int levels = 0;
         while (k != NKikimrBlobStorage::TVDiskKind::Default) {
             const auto it = KindsMap.find(k);
-            Y_VERIFY(it != KindsMap.end(),
+            Y_ABORT_UNLESS(it != KindsMap.end(),
                     "Can't find kind='%s' in the config (probably config is incorrect)",
                     NKikimrBlobStorage::TVDiskKind::EVDiskKind_Name(k).data());
             merge.push_back(it->second);
             k = it->second->GetBaseKind();
 
             ++levels;
-            Y_VERIFY(levels < 32, "Nesting is too large (cycle in the graph?)");
+            Y_ABORT_UNLESS(levels < 32, "Nesting is too large (cycle in the graph?)");
         }
 
         TIntrusivePtr<TVDiskConfig> cfg(new TVDiskConfig(baseInfo));
@@ -214,11 +231,11 @@ namespace NKikimr {
         KindsMap.clear();
         for (const auto &x : AllKindsConfig.GetVDiskKinds()) {
             EKind kind = x.GetKind();
-            Y_VERIFY(kind != NKikimrBlobStorage::TVDiskKind::Default,
+            Y_ABORT_UNLESS(kind != NKikimrBlobStorage::TVDiskKind::Default,
                     "It is forbidden to redefine Default kind");
             const NKikimrBlobStorage::TVDiskKind *val = &x;
             result = KindsMap.emplace(kind, val).second;
-            Y_VERIFY(result, "Duplicate elements in the AllVDiskKinds config: kind='%s",
+            Y_ABORT_UNLESS(result, "Duplicate elements in the AllVDiskKinds config: kind='%s",
                     NKikimrBlobStorage::TVDiskKind::EVDiskKind_Name(kind).data());
         }
     }

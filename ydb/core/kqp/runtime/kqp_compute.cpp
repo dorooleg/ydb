@@ -1,8 +1,9 @@
 #include "kqp_compute.h"
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_holders_codegen.h>
 #include <ydb/library/yql/minikql/comp_nodes/mkql_factories.h>
-#include <ydb/library/yql/minikql/mkql_node.h>
+#include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 #include <ydb/library/yql/public/udf/udf_terminator.h>
 #include <ydb/library/yql/public/udf/udf_type_builder.h>
@@ -40,7 +41,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto predicate = GetNodeValue(Predicate, ctx, block);
         const auto pass = CastInst::Create(Instruction::Trunc, predicate, Type::getInt1Ty(context), "bool", block);
@@ -83,6 +84,135 @@ private:
     IComputationNode* const Message;
 };
 
+class TKqpIndexLookupJoinWrapper : public TMutableComputationNode<TKqpIndexLookupJoinWrapper> {
+public:
+    class TStreamValue : public TComputationValue<TStreamValue> {
+    public:
+        TStreamValue(TMemoryUsageInfo* memInfo, NUdf::TUnboxedValue&& stream, TComputationContext& ctx,
+            const TKqpIndexLookupJoinWrapper* self)
+            : TComputationValue<TStreamValue>(memInfo)
+            , Stream(std::move(stream))
+            , Self(self)
+            , Ctx(ctx) {
+        }
+
+    private:
+        enum class EOutputMode {
+            OnlyLeftRow,
+            Both
+        };
+
+        NUdf::TUnboxedValue FillResultItems(NUdf::TUnboxedValue leftRow, NUdf::TUnboxedValue rightRow, EOutputMode mode) {
+            auto resultRowSize = (mode == EOutputMode::OnlyLeftRow) ? Self->LeftColumnsIndices.size()
+                : Self->LeftColumnsIndices.size() + Self->RightColumnsIndices.size();
+            auto resultRow = Self->ResultRowCache.NewArray(Ctx, resultRowSize, ResultItems);
+
+            if (mode == EOutputMode::OnlyLeftRow || mode == EOutputMode::Both) {
+                for (size_t i = 0; i < Self->LeftColumnsIndices.size(); ++i) {
+                    ResultItems[Self->LeftColumnsIndices[i]] = std::move(leftRow.GetElement(i));
+                }
+            }
+
+            if (mode == EOutputMode::Both) {
+                if (rightRow.HasValue()) {
+                    for (size_t i = 0; i < Self->RightColumnsIndices.size(); ++i) {
+                        ResultItems[Self->RightColumnsIndices[i]] = std::move(rightRow.GetElement(i));
+                    }
+                } else {
+                    for (size_t i = 0; i < Self->RightColumnsIndices.size(); ++i) {
+                        ResultItems[Self->RightColumnsIndices[i]] = NUdf::TUnboxedValuePod();
+                    }
+                }
+            }
+
+            return resultRow;
+        }
+
+        bool TryBuildResultRow(NUdf::TUnboxedValue inputRow, NUdf::TUnboxedValue& result) {
+            auto leftRow = inputRow.GetElement(0);
+            auto rightRow = inputRow.GetElement(1);
+
+            bool ok = true;
+            switch (Self->JoinType) {
+                case EJoinKind::Inner: {
+                    if (!rightRow.HasValue()) {
+                        ok = false;
+                        break;
+                    }
+
+                    result = FillResultItems(std::move(leftRow), std::move(rightRow), EOutputMode::Both);
+                    break;
+                }
+                case EJoinKind::Left: {
+                    result = FillResultItems(std::move(leftRow), std::move(rightRow), EOutputMode::Both);
+                    break;
+                }
+                case EJoinKind::LeftOnly: {
+                    if (rightRow.HasValue()) {
+                        ok = false;
+                        break;
+                    }
+
+                    result = FillResultItems(std::move(leftRow), std::move(rightRow), EOutputMode::OnlyLeftRow);
+                    break;
+                }
+                default:
+                    MKQL_ENSURE(false, "Unsupported join kind");
+            }
+
+            return ok;
+        }
+
+        NUdf::EFetchStatus Fetch(NUdf::TUnboxedValue& result) override {
+            NUdf::TUnboxedValue row;
+            NUdf::EFetchStatus status = Stream.Fetch(row);
+
+            while (status == NUdf::EFetchStatus::Ok) {
+                if (TryBuildResultRow(std::move(row), result)) {
+                    break;
+                }
+
+                status = Stream.Fetch(row);
+            }
+
+            return status;
+        }
+
+    private:
+        NUdf::TUnboxedValue Stream;
+        const TKqpIndexLookupJoinWrapper* Self;
+        TComputationContext& Ctx;
+        NUdf::TUnboxedValue* ResultItems = nullptr;
+    };
+
+public:
+    TKqpIndexLookupJoinWrapper(TComputationMutables& mutables, IComputationNode* inputNode,
+        EJoinKind joinType, TVector<ui32>&& leftColumnsIndices, TVector<ui32>&& rightColumnsIndices)
+        : TMutableComputationNode<TKqpIndexLookupJoinWrapper>(mutables)
+        , InputNode(inputNode)
+        , JoinType(joinType)
+        , LeftColumnsIndices(std::move(leftColumnsIndices))
+        , RightColumnsIndices(std::move(rightColumnsIndices))
+        , ResultRowCache(mutables) {
+    }
+
+    NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
+        return ctx.HolderFactory.Create<TStreamValue>(InputNode->GetValue(ctx), ctx, this);
+    }
+
+private:
+    void RegisterDependencies() const final {
+        this->DependsOn(InputNode);
+    }
+
+private:
+    IComputationNode* InputNode;
+    const EJoinKind JoinType;
+    const TVector<ui32> LeftColumnsIndices;
+    const TVector<ui32> RightColumnsIndices;
+    const TContainerCacheOnContext ResultRowCache;
+};
+
 } // namespace
 
 IComputationNode* WrapKqpEnsure(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
@@ -97,6 +227,33 @@ IComputationNode* WrapKqpEnsure(TCallable& callable, const TComputationNodeFacto
     auto message = LocateNode(ctx.NodeLocator, callable, 3);
 
     return new TKqpEnsureWrapper(ctx.Mutables, value, predicate, issueCode, message);
+}
+
+IComputationNode* WrapKqpIndexLookupJoin(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
+    MKQL_ENSURE(callable.GetInputsCount() == 4, "Expected 4 args");
+
+    auto inputNode = LocateNode(ctx.NodeLocator, callable, 0);
+    ui32 joinKind = AS_VALUE(TDataLiteral, callable.GetInput(1))->AsValue().Get<ui32>();
+    auto leftColumnsIndicesMap = AS_VALUE(TDictLiteral, callable.GetInput(2));
+    auto rightColumnsIndicesMap = AS_VALUE(TDictLiteral, callable.GetInput(3));
+
+    TVector<ui32> leftColumnsIndices(leftColumnsIndicesMap->GetItemsCount());
+    for (ui32 i = 0; i < leftColumnsIndicesMap->GetItemsCount(); ++i) {
+        auto item = leftColumnsIndicesMap->GetItem(i);
+        ui32 leftIndex = AS_VALUE(TDataLiteral, item.first)->AsValue().Get<ui32>();
+        ui32 resultIndex = AS_VALUE(TDataLiteral, item.second)->AsValue().Get<ui32>();
+        leftColumnsIndices[leftIndex] = resultIndex;
+    }
+
+    TVector<ui32> rightColumnsIndices(rightColumnsIndicesMap->GetItemsCount());
+    for (ui32 i = 0; i < rightColumnsIndicesMap->GetItemsCount(); ++i) {
+        auto item = rightColumnsIndicesMap->GetItem(i);
+        ui32 rightIndex = AS_VALUE(TDataLiteral, item.first)->AsValue().Get<ui32>();
+        ui32 resultIndex = AS_VALUE(TDataLiteral, item.second)->AsValue().Get<ui32>();
+        rightColumnsIndices[rightIndex] = resultIndex;
+    }
+
+    return new TKqpIndexLookupJoinWrapper(ctx.Mutables, inputNode, GetJoinKind(joinKind), std::move(leftColumnsIndices), std::move(rightColumnsIndices));
 }
 
 } // namespace NMiniKQL

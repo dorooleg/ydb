@@ -12,15 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef GRPC_CORE_LIB_CHANNEL_CHANNEL_STACK_BUILDER_H
-#define GRPC_CORE_LIB_CHANNEL_CHANNEL_STACK_BUILDER_H
+#ifndef GRPC_SRC_CORE_LIB_CHANNEL_CHANNEL_STACK_BUILDER_H
+#define GRPC_SRC_CORE_LIB_CHANNEL_CHANNEL_STACK_BUILDER_H
 
 #include <grpc/support/port_platform.h>
 
-#include <stdbool.h>
+#include <util/generic/string.h>
+#include <util/string/cast.h>
+#include <vector>
+
+#include "y_absl/status/statusor.h"
+#include "y_absl/strings/string_view.h"
+
+#include <grpc/support/log.h>
 
 #include "src/core/lib/channel/channel_args.h"
-#include "src/core/lib/channel/channel_stack.h"
+#include "src/core/lib/channel/channel_fwd.h"
+#include "src/core/lib/gprpp/ref_counted_ptr.h"
+#include "src/core/lib/surface/channel_stack_type.h"
+#include "src/core/lib/transport/transport_fwd.h"
 
 namespace grpc_core {
 
@@ -31,21 +41,12 @@ namespace grpc_core {
 // and a transport.
 class ChannelStackBuilder {
  public:
-  // A function that will be called after the channel stack is successfully
-  // built.
-  using PostInitFunc = std::function<void(grpc_channel_stack* channel_stack,
-                                          grpc_channel_element* elem)>;
-
-  // One filter in the currently building stack.
-  struct StackEntry {
-    const grpc_channel_filter* filter;
-    PostInitFunc post_init;
-  };
-
   // Initialize with a name.
-  explicit ChannelStackBuilder(const char* name) : name_(name) {}
+  // channel_args *must be* preconditioned already.
+  ChannelStackBuilder(const char* name, grpc_channel_stack_type type,
+                      const ChannelArgs& channel_args);
 
-  ~ChannelStackBuilder();
+  const char* name() const { return name_; }
 
   // Set the target string.
   ChannelStackBuilder& SetTarget(const char* target);
@@ -63,44 +64,58 @@ class ChannelStackBuilder {
   // Query the transport.
   grpc_transport* transport() const { return transport_; }
 
-  // Set channel args (takes a copy of them).
-  ChannelStackBuilder& SetChannelArgs(const grpc_channel_args* args);
-
   // Query the channel args.
-  const grpc_channel_args* channel_args() const { return args_; }
+  const ChannelArgs& channel_args() const { return args_; }
 
   // Mutable vector of proposed stack entries.
-  std::vector<StackEntry>* mutable_stack() { return &stack_; }
+  std::vector<const grpc_channel_filter*>* mutable_stack() { return &stack_; }
+
+  // Immutable vector of proposed stack entries.
+  const std::vector<const grpc_channel_filter*>& stack() const {
+    return stack_;
+  }
+
+  // The type of channel stack being built.
+  grpc_channel_stack_type channel_stack_type() const { return type_; }
 
   // Helper to add a filter to the front of the stack.
-  void PrependFilter(const grpc_channel_filter* filter, PostInitFunc post_init);
+  void PrependFilter(const grpc_channel_filter* filter);
 
   // Helper to add a filter to the end of the stack.
-  void AppendFilter(const grpc_channel_filter* filter, PostInitFunc post_init);
+  void AppendFilter(const grpc_channel_filter* filter);
+
+  // Determine whether a promise-based call stack is able to be built.
+  // Iterates each filter and ensures that there's a promise factory there.
+  // This will go away once the promise conversion is completed.
+  virtual bool IsPromising() const = 0;
 
   // Build the channel stack.
   // After success, *result holds the new channel stack,
   // prefix_bytes are allocated before the channel stack,
-  // initial_refs, destroy, destroy_arg are as per grpc_channel_stack_init
+  // destroy is as per grpc_channel_stack_init
   // On failure, *result is nullptr.
-  grpc_error_handle Build(size_t prefix_bytes, int initial_refs,
-                          grpc_iomgr_cb_func destroy, void* destroy_arg,
-                          void** result);
+  virtual y_absl::StatusOr<RefCountedPtr<grpc_channel_stack>> Build() = 0;
+
+ protected:
+  ~ChannelStackBuilder() = default;
 
  private:
   static TString unknown_target() { return "unknown"; }
 
   // The name of the stack
   const char* const name_;
+  // The type of stack being built
+  const grpc_channel_stack_type type_;
   // The target
   TString target_{unknown_target()};
   // The transport
   grpc_transport* transport_ = nullptr;
   // Channel args
-  const grpc_channel_args* args_ = nullptr;
+  ChannelArgs args_;
   // The in-progress stack
-  std::vector<StackEntry> stack_;
+  std::vector<const grpc_channel_filter*> stack_;
 };
+
 }  // namespace grpc_core
 
-#endif  // GRPC_CORE_LIB_CHANNEL_CHANNEL_STACK_BUILDER_H
+#endif  // GRPC_SRC_CORE_LIB_CHANNEL_CHANNEL_STACK_BUILDER_H

@@ -7,37 +7,46 @@ class TDqAsyncInputBuffer : public TDqInputImpl<TDqAsyncInputBuffer, IDqAsyncInp
     using TBaseImpl = TDqInputImpl<TDqAsyncInputBuffer, IDqAsyncInputBuffer>;
     friend TBaseImpl;
 public:
-    TDqAsyncInputBuffer(ui64 inputIndex, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, bool collectProfileStats)
-        : TBaseImpl(inputType, maxBufferBytes)
-        , InputIndex(inputIndex)
-        , BasicStats(InputIndex)
-        , ProfileStats(collectProfileStats ? &BasicStats : nullptr) {}
+    TDqAsyncInputBufferStats PushStats;
+    TDqInputStats PopStats;
 
-    ui64 GetInputIndex() const override {
-        return InputIndex;
+    TDqAsyncInputBuffer(ui64 inputIndex, const TString& type, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, TCollectStatsLevel level)
+        : TBaseImpl(inputType, maxBufferBytes)
+    {
+        PopStats.Level = level;
+        PushStats.Level = level;
+        PushStats.InputIndex = inputIndex;
+        PushStats.Type = type;
     }
 
-    void Push(NKikimr::NMiniKQL::TUnboxedValueVector&& batch, i64 space) override {
-        Y_VERIFY(!batch.empty() || !space);
+    ui64 GetInputIndex() const override {
+        return PushStats.InputIndex;
+    }
+
+    const TDqAsyncInputBufferStats& GetPushStats() const override {
+        return PushStats;
+    }
+
+    const TDqInputStats& GetPopStats() const override {
+        return PopStats;
+    }
+
+    void Push(NKikimr::NMiniKQL::TUnboxedValueBatch&& batch, i64 space) override {
+        Y_ABORT_UNLESS(!batch.empty() || !space);
         if (!batch.empty()) {
             AddBatch(std::move(batch), space);
         }
     }
 
-    const TDqAsyncInputBufferStats* GetStats() const override {
-        return &BasicStats;
+    virtual void Push(TDqSerializedBatch&&, i64) override {
+        YQL_ENSURE(!"Unimplemented");
     }
-
-private:
-    const ui64 InputIndex;
-    TDqAsyncInputBufferStats BasicStats;
-    TDqAsyncInputBufferStats* ProfileStats = nullptr;
 };
 
 IDqAsyncInputBuffer::TPtr CreateDqAsyncInputBuffer(
-    ui64 inputIndex, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, bool collectStats)
+    ui64 inputIndex, const TString& type, NKikimr::NMiniKQL::TType* inputType, ui64 maxBufferBytes, TCollectStatsLevel level)
 {
-    return new TDqAsyncInputBuffer(inputIndex, inputType, maxBufferBytes, collectStats);
+    return new TDqAsyncInputBuffer(inputIndex, type, inputType, maxBufferBytes, level);
 }
 
 } // namespace NYql::NDq

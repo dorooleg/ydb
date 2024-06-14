@@ -16,7 +16,7 @@ public:
         : Task(task)
         , Columns(columns)
     {
-        Y_VERIFY(task.HasS3Settings());
+        Y_ABORT_UNLESS(task.HasS3Settings());
     }
 
     IActor* CreateUploader(const TActorId& dataShard, ui64 txId) const override;
@@ -35,7 +35,7 @@ public:
         case ECompressionCodec::Zstd:
             return CreateS3ExportBufferZstd(Task.GetCompression().GetLevel(), Columns, maxRows, maxBytes, minBytes);
         case ECompressionCodec::Invalid:
-            Y_FAIL("unreachable");
+            Y_ABORT("unreachable");
         }
     }
 

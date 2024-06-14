@@ -8,6 +8,8 @@
 #include <util/string/printf.h>
 #include <util/string/cast.h>
 
+#include <util/generic/cast.h>
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -47,12 +49,26 @@ constexpr bool CheckValuesMonotonic(const TValues& values)
 template <typename TValues>
 constexpr bool CheckValuesUnique(const TValues& values)
 {
-    if (CheckValuesMonotonic(values)) {
-        return true;
-    }
     for (size_t i = 0; i < std::size(values); ++i) {
         for (size_t j = i + 1; j < std::size(values); ++j) {
             if (values[i] == values[j]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+template <typename TNames>
+constexpr bool CheckDomainNames(const TNames& names)
+{
+    for (size_t i = 0; i < std::size(names); ++i) {
+        if (std::size(names[i]) == 0) {
+            return false;
+        }
+        for (size_t j = 1; j < std::size(names[i]); ++j) {
+            // If name does not start with a capital letter, all the others must be in lowercase.
+            if (('A' <= names[i][j] && names[i][j] <= 'Z') && ('A' > names[i][0] || names[i][0] > 'Z')) {
                 return false;
             }
         }
@@ -81,9 +97,14 @@ constexpr bool CheckValuesUnique(const TValues& values)
         static constexpr std::array<TStringBuf, DomainSize> Names{{ \
             PP_FOR_EACH(ENUM__GET_DOMAIN_NAMES_ITEM, seq) \
         }}; \
+        static_assert(::NYT::NDetail::CheckDomainNames(Names), \
+            "Enumeration " #enumType " contains names in wrong format"); \
         static constexpr std::array<T, DomainSize> Values{{ \
             PP_FOR_EACH(ENUM__GET_DOMAIN_VALUES_ITEM, seq) \
         }}; \
+        \
+        [[maybe_unused]] static constexpr bool IsMonotonic = \
+            ::NYT::NDetail::CheckValuesMonotonic(Values); \
         \
         static TStringBuf GetTypeName() \
         { \
@@ -164,7 +185,7 @@ constexpr bool CheckValuesUnique(const TValues& values)
     TStringBuf(PP_STRINGIZE(item)),
 
 #define ENUM__VALIDATE_UNIQUE(enumType) \
-    static_assert(::NYT::NDetail::CheckValuesUnique(Values), \
+    static_assert(IsMonotonic || ::NYT::NDetail::CheckValuesUnique(Values), \
         "Enumeration " #enumType " contains duplicate values");
 
 #define ENUM__END_TRAITS(enumType) \
@@ -281,67 +302,6 @@ T TEnumTraits<T, true>::FromString(TStringBuf literal)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-template <class E, class T, E Min, E Max>
-constexpr TEnumIndexedVector<E, T, Min, Max>::TEnumIndexedVector()
-    : Items_{}
-{ }
-
-template <class E, class T, E Min, E Max>
-constexpr TEnumIndexedVector<E, T, Min, Max>::TEnumIndexedVector(std::initializer_list<T> elements)
-    : Items_{}
-{
-    Y_ASSERT(std::distance(elements.begin(), elements.end()) <= N);
-    size_t index = 0;
-    for (const auto& element : elements) {
-        Items_[index++] = element;
-    }
-}
-
-template <class E, class T, E Min, E Max>
-T& TEnumIndexedVector<E, T, Min, Max>::operator[] (E index)
-{
-    Y_ASSERT(index >= Min && index <= Max);
-    return Items_[ToUnderlying(index) - ToUnderlying(Min)];
-}
-
-template <class E, class T, E Min, E Max>
-const T& TEnumIndexedVector<E, T, Min, Max>::operator[] (E index) const
-{
-    return const_cast<TEnumIndexedVector&>(*this)[index];
-}
-
-template <class E, class T, E Min, E Max>
-T* TEnumIndexedVector<E, T, Min, Max>::begin()
-{
-    return Items_.data();
-}
-
-template <class E, class T, E Min, E Max>
-const T* TEnumIndexedVector<E, T, Min, Max>::begin() const
-{
-    return Items_.data();
-}
-
-template <class E, class T, E Min, E Max>
-T* TEnumIndexedVector<E, T, Min, Max>::end()
-{
-    return begin() + N;
-}
-
-template <class E, class T, E Min, E Max>
-const T* TEnumIndexedVector<E, T, Min, Max>::end() const
-{
-    return begin() + N;
-}
-
-template <class E, class T, E Min, E Max>
-bool TEnumIndexedVector<E, T, Min, Max>::IsDomainValue(E value)
-{
-    return value >= Min && value <= Max;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 #define ENUM__BINARY_BITWISE_OPERATOR(T, assignOp, op) \
     [[maybe_unused]] inline constexpr T operator op (T lhs, T rhs) \
     { \
@@ -381,13 +341,6 @@ bool TEnumIndexedVector<E, T, Min, Max>::IsDomainValue(E value)
     ENUM__BIT_SHIFT_OPERATOR(enumType, >>=, >> )
 
 ////////////////////////////////////////////////////////////////////////////////
-
-template <typename E>
-    requires std::is_enum_v<E>
-constexpr std::underlying_type_t<E> ToUnderlying(E value) noexcept
-{
-    return static_cast<std::underlying_type_t<E>>(value);
-}
 
 template <typename E>
     requires TEnumTraits<E>::IsBitEnum

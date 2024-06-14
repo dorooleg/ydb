@@ -8,6 +8,10 @@
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 
+#include <util/stream/file.h>
+#include <util/string/strip.h>
+#include <util/system/env.h>
+
 namespace NFq {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -129,5 +133,29 @@ NThreading::TFuture<NYdb::TStatus> RegisterCheckGeneration(const TGenerationCont
 NThreading::TFuture<NYdb::TStatus> CheckGeneration(const TGenerationContextPtr& context);
 
 NThreading::TFuture<NYdb::TStatus> RollbackTransaction(const TGenerationContextPtr& context);
+
+NKikimr::TYdbCredentialsSettings GetYdbCredentialSettings(const NConfig::TYdbStorageConfig& config);
+
+template <class TSettings>
+TSettings GetClientSettings(const NConfig::TYdbStorageConfig& config,
+                            const NKikimr::TYdbCredentialsProviderFactory& credProviderFactory) {
+    TSettings settings;
+    settings
+        .DiscoveryEndpoint(config.GetEndpoint())
+        .Database(config.GetDatabase());
+
+    settings.CredentialsProviderFactory(credProviderFactory(GetYdbCredentialSettings(config)));
+
+    if (config.GetUseLocalMetadataService()) {
+        settings.SslCredentials(NYdb::TSslCredentials(true));
+    }
+
+    if (config.GetCertificateFile()) {
+        auto cert = StripString(TFileInput(config.GetCertificateFile()).ReadAll());
+        settings.SslCredentials(NYdb::TSslCredentials(true, cert));
+    }
+
+    return settings;
+}
 
 } // namespace NFq

@@ -1,10 +1,10 @@
 #include "loopback_service.h"
 
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/log.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/log.h>
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 
 #include <ydb/core/fq/libs/control_plane_config/control_plane_config.h>
 #include <ydb/core/fq/libs/control_plane_config/events/events.h>
@@ -58,6 +58,7 @@ private:
     void Handle(TEvInternalService::TEvHealthCheckRequest::TPtr& ev) {
         Cookie++;
         Senders[Cookie] = ev->Sender;
+        OriginalCookies[Cookie] = ev->Cookie;
         auto request = ev->Get()->Request;
         Send(NFq::ControlPlaneStorageServiceActorId(), new NFq::TEvControlPlaneStorage::TEvNodesHealthCheckRequest(std::move(request)), 0, Cookie);
     }
@@ -79,6 +80,7 @@ private:
     void Handle(TEvInternalService::TEvGetTaskRequest::TPtr& ev) {
         Cookie++;
         Senders[Cookie] = ev->Sender;
+        OriginalCookies[Cookie] = ev->Cookie;
         auto request = ev->Get()->Request;
         GetRequests.emplace(Cookie, std::move(request));
         Send(NFq::ControlPlaneConfigActorId(), new NFq::TEvControlPlaneConfig::TEvGetTenantInfoRequest(), 0, Cookie);
@@ -137,6 +139,7 @@ private:
     void Handle(TEvInternalService::TEvWriteResultRequest::TPtr& ev) {
         Cookie++;
         Senders[Cookie] = ev->Sender;
+        OriginalCookies[Cookie] = ev->Cookie;
         auto request = ev->Get()->Request;
         Send(NFq::ControlPlaneStorageServiceActorId(), new NFq::TEvControlPlaneStorage::TEvWriteResultDataRequest(std::move(request)), 0, Cookie);
     }

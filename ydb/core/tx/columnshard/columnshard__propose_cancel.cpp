@@ -19,20 +19,15 @@ public:
 
         const auto* msg = Ev->Get();
         const ui64 txId = msg->Record.GetTxId();
-
-        if (Self->BasicTxInfo.contains(txId)) {
-            auto& txInfo = Self->BasicTxInfo[txId];
-            if (txInfo.PlanStep == 0) {
-                // Not planned yet, safe to remove
-                Self->RemoveTx(txc.DB, txId);
-            }
-        }
-
+        Self->ProgressTxController->ExecuteOnCancel(txId, txc);
         return true;
     }
 
-    void Complete(const TActorContext&) override {
+    void Complete(const TActorContext& ctx) override {
         LOG_S_DEBUG("TTxProposeCancel.Complete");
+        const auto* msg = Ev->Get();
+        const ui64 txId = msg->Record.GetTxId();
+        Self->ProgressTxController->CompleteOnCancel(txId, ctx);
     }
 
 private:

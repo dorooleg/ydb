@@ -33,15 +33,14 @@ void TCbs::Reset(ui64 cbsIdx, ui8 ownerIdx, ui8 gateIdx) {
 
 
 void TCbs::PushJob(TIntrusivePtr<TJob> &job) {
-    Y_VERIFY(job);
-    if (job) {
-        LastSeqNo++;
-        job->SeqNo = LastSeqNo;
-        job->CbsIdx = CbsIdx;
-        Jobs.push_back(job);
-        JobsSize++;
-        JobsCost += job->Cost;
-    }
+    Y_ABORT_UNLESS(job);
+    
+    LastSeqNo++;
+    job->SeqNo = LastSeqNo;
+    job->CbsIdx = CbsIdx;
+    Jobs.push_back(job);
+    JobsSize++;
+    JobsCost += job->Cost;
 }
 
 TIntrusivePtr<TJob> TCbs::PeekTailJob() {
@@ -52,7 +51,7 @@ TIntrusivePtr<TJob> TCbs::PeekTailJob() {
 }
 
 TIntrusivePtr<TJob> TCbs::PeekJob() {
-    Y_VERIFY(!Jobs.empty());
+    Y_ABORT_UNLESS(!Jobs.empty());
     if (Jobs.empty()) {
         return nullptr;
     }
@@ -60,7 +59,7 @@ TIntrusivePtr<TJob> TCbs::PeekJob() {
 }
 
 TIntrusivePtr<TJob> TCbs::PopJob() {
-    Y_VERIFY(!Jobs.empty());
+    Y_ABORT_UNLESS(!Jobs.empty());
     TIntrusivePtr<TJob> job = Jobs.front();
     JobsSize--;
     JobsCost -= job->Cost;

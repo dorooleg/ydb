@@ -4,7 +4,7 @@
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 #include <ydb/core/tablet/tablet_counters_protobuf.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 namespace NKesus {
@@ -82,16 +82,16 @@ void TKesusTablet::ClearProxy(TProxyInfo* proxy, const TActorContext& ctx) {
     auto sessionIds = proxy->AttachedSessions; // make a copy
     for (ui64 sessionId : sessionIds) {
         auto* session = Sessions.FindPtr(sessionId);
-        Y_VERIFY(session);
-        Y_VERIFY(session->OwnerProxy == proxy);
-        Y_VERIFY(ScheduleSessionTimeout(session, ctx));
+        Y_ABORT_UNLESS(session);
+        Y_ABORT_UNLESS(session->OwnerProxy == proxy);
+        Y_ABORT_UNLESS(ScheduleSessionTimeout(session, ctx));
     }
     // All sessions must be detached by now
-    Y_VERIFY(proxy->AttachedSessions.empty());
+    Y_ABORT_UNLESS(proxy->AttachedSessions.empty());
 }
 
 void TKesusTablet::ForgetProxy(TProxyInfo* proxy) {
-    Y_VERIFY(proxy->AttachedSessions.empty());
+    Y_ABORT_UNLESS(proxy->AttachedSessions.empty());
     ui32 nodeId = proxy->ActorID.NodeId();
     if (auto* nodeProxies = ProxiesByNode.FindPtr(nodeId)) {
         nodeProxies->erase(proxy);
@@ -104,16 +104,10 @@ void TKesusTablet::ForgetProxy(TProxyInfo* proxy) {
 }
 
 void TKesusTablet::VerifyKesusPath(const TString& kesusPath) {
-    Y_VERIFY_DEBUG(SplitPath(kesusPath) == SplitPath(KesusPath),
+    Y_DEBUG_ABORT_UNLESS(SplitPath(kesusPath) == SplitPath(KesusPath),
         "Incoming request has KesusPath=%s (tablet has KesusPath=%s)",
         kesusPath.Quote().data(),
         KesusPath.Quote().data());
-}
-
-void TKesusTablet::Handle(TEvents::TEvPoisonPill::TPtr& ev) {
-    Y_UNUSED(ev);
-    Send(Tablet(), new TEvents::TEvPoisonPill());
-    Become(&TThis::StateZombie);
 }
 
 void TKesusTablet::Handle(TEvents::TEvUndelivered::TPtr& ev) {
@@ -151,7 +145,7 @@ void TKesusTablet::Handle(TEvents::TEvWakeup::TPtr& ev) {
         QuoterTickProcessingIsScheduled = false;
         return HandleQuoterTick();
     default:
-        Y_VERIFY(false, "Unknown Wakeup event with tag #%" PRIu64, ev->Get()->Tag);
+        Y_ABORT_UNLESS(false, "Unknown Wakeup event with tag #%" PRIu64, ev->Get()->Tag);
     }
 }
 
@@ -173,7 +167,7 @@ void TKesusTablet::Handle(TEvKesus::TEvDescribeProxies::TPtr& ev) {
 }
 
 void TKesusTablet::Handle(TEvKesus::TEvRegisterProxy::TPtr& ev) {
-    Y_VERIFY(ev->Sender);
+    Y_ABORT_UNLESS(ev->Sender);
     const auto& record = ev->Get()->Record;
     VerifyKesusPath(record.GetKesusPath());
     TabletCounters->Cumulative()[COUNTER_REQS_PROXY_REGISTER].Increment(1);
@@ -213,7 +207,7 @@ void TKesusTablet::Handle(TEvKesus::TEvRegisterProxy::TPtr& ev) {
 }
 
 void TKesusTablet::Handle(TEvKesus::TEvUnregisterProxy::TPtr& ev) {
-    Y_VERIFY(ev->Sender);
+    Y_ABORT_UNLESS(ev->Sender);
     const auto& record = ev->Get()->Record;
     VerifyKesusPath(record.GetKesusPath());
     TabletCounters->Cumulative()[COUNTER_REQS_PROXY_UNREGISTER].Increment(1);
@@ -241,22 +235,11 @@ void TKesusTablet::HandleIgnored() {
 }
 
 STFUNC(TKesusTablet::StateInit) {
-    switch (ev->GetTypeRewrite()) {
-        hFunc(TEvents::TEvPoisonPill, Handle);
-
-        default:
-            StateInitImpl(ev, SelfId());
-            break;
-    }
-}
-
-STFUNC(TKesusTablet::StateZombie) {
     StateInitImpl(ev, SelfId());
 }
 
 STFUNC(TKesusTablet::StateWork) {
     switch (ev->GetTypeRewrite()) {
-        hFunc(TEvents::TEvPoisonPill, Handle);
         hFunc(TEvents::TEvUndelivered, Handle);
         hFunc(TEvInterconnect::TEvNodeConnected, Handle);
         hFunc(TEvInterconnect::TEvNodeDisconnected, Handle);
@@ -297,6 +280,7 @@ STFUNC(TKesusTablet::StateWork) {
         hFunc(TEvKesus::TEvSubscribeOnResources, Handle);
         hFunc(TEvKesus::TEvUpdateConsumptionState, Handle);
         hFunc(TEvKesus::TEvAccountResources, Handle);
+        hFunc(TEvKesus::TEvReportResources, Handle);
         hFunc(TEvKesus::TEvResourcesAllocatedAck, Handle);
         hFunc(TEvKesus::TEvGetQuoterResourceCounters, Handle);
         hFunc(TEvTabletPipe::TEvServerDisconnected, Handle);
@@ -306,10 +290,11 @@ STFUNC(TKesusTablet::StateWork) {
         hFunc(TEvPrivate::TEvSelfCheckTimeout, Handle);
 
         IgnoreFunc(TEvTabletPipe::TEvServerConnected);
+        IgnoreFunc(NKesus::TEvKesus::TEvSyncResourcesAck);
 
         default:
             if (!HandleDefaultEvents(ev, SelfId())) {
-                Y_FAIL("Unexpected event 0x%x", ev->GetTypeRewrite());
+                LOG_WARN(*TActivationContext::ActorSystem(), NKikimrServices::KESUS_TABLET, "Unexpected event 0x%x", ev->GetTypeRewrite());
             }
             break;
     }

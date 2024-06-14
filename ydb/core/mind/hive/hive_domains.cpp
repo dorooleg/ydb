@@ -6,8 +6,6 @@ namespace NHive {
 
 void TDomainsView::RegisterNode(const TNodeInfo& node) {
     for (auto &domainKey: node.ServicedDomains) {
-        BLOG_TRACE("Node(" << node.Id << ")"
-                   << " RegisterInDomain (" << domainKey << ") : " << TotalCount[domainKey] << " -> " << TotalCount[domainKey] + 1);
         ++TotalCount[domainKey];
     }
 }
@@ -16,7 +14,7 @@ void TDomainsView::DeregisterNode(const TNodeInfo& node) {
     for (auto &domainKey: node.ServicedDomains) {
          BLOG_TRACE("Node(" << node.Id << ")"
                     << " DeregisterInDomains (" << domainKey << ") : " << TotalCount[domainKey] << " -> " << TotalCount[domainKey] - 1);
-         Y_VERIFY(TotalCount[domainKey], "try decrement empty counter for DomainKey %s", ToString(domainKey).c_str());
+         Y_ABORT_UNLESS(TotalCount[domainKey], "try decrement empty counter for DomainKey %s", ToString(domainKey).c_str());
         --TotalCount[domainKey];
     }
 }
@@ -64,19 +62,24 @@ void THive::Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
     }
 }
 
-TString THive::GetDomainName(TSubDomainKey domain) {
-    auto itDomain = Domains.find(domain);
-    if (itDomain != Domains.end()) {
-        if (!itDomain->second.Path.empty()) {
-            return itDomain->second.Path;
-        }
+void THive::Handle(TEvHive::TEvUpdateDomain::TPtr& ev) {
+    BLOG_D("Handle TEvHive::TEvUpdateDomain(" << ev->Get()->Record.ShortDebugString() << ")");
+    const TSubDomainKey subdomainKey(ev->Get()->Record.GetDomainKey());
+    TDomainInfo& domainInfo = Domains[subdomainKey];
+    if (ev->Get()->Record.HasServerlessComputeResourcesMode()) {
+        domainInfo.ServerlessComputeResourcesMode = ev->Get()->Record.GetServerlessComputeResourcesMode();
     } else {
-        SeenDomain(domain);
+        domainInfo.ServerlessComputeResourcesMode.Clear();
     }
+    Execute(CreateUpdateDomain(subdomainKey, std::move(ev)));
+}
+
+TString THive::GetDomainName(TSubDomainKey domain) {
     if (domain == TSubDomainKey()) {
         return "<empty-subdomain-key>";
     }
-    return TStringBuilder() << domain;
+    SeenDomain(domain);
+    return Domains.at(domain).Path;
 }
 
 } // NHive

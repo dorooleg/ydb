@@ -43,6 +43,11 @@ struct TDict {
     using ValueType = TValue;
 };
 
+template <typename TKey>
+struct TSetType {
+    using KeyType = TKey;
+};
+
 template <typename... TArgs>
 struct TTuple;
 
@@ -66,6 +71,8 @@ struct TBlockType { using ItemType = T; };
 
 template <typename T>
 struct TScalarType { using ItemType = T; };
+
+struct TVoid {};
 
 //////////////////////////////////////////////////////////////////////////////
 // ITypeBuilder
@@ -363,7 +370,7 @@ public:
     }
 
     inline void UnRef() noexcept {
-        Y_VERIFY_DEBUG(Refs_ > 0);
+        Y_DEBUG_ABORT_UNLESS(Refs_ > 0);
         if (--Refs_ == 0) {
             delete this;
         }
@@ -639,8 +646,8 @@ public:
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 28)
 class IFunctionTypeInfoBuilder15: public IFunctionTypeInfoBuilder14 {
 public:
-    virtual IFunctionTypeInfoBuilder15& SupportsBlocks() = 0;
-    virtual IFunctionTypeInfoBuilder15& IsStrict() = 0;
+    virtual IFunctionTypeInfoBuilder15& SupportsBlocksImpl() = 0;
+    virtual IFunctionTypeInfoBuilder15& IsStrictImpl() = 0;
 };
 #endif
 
@@ -689,6 +696,8 @@ using IFunctionTypeInfoBuilderImpl = IFunctionTypeInfoBuilder1;
 
 class IFunctionTypeInfoBuilder: public IFunctionTypeInfoBuilderImpl {
 public:
+    IFunctionTypeInfoBuilder();
+    
     IFunctionTypeInfoBuilder& Implementation(
             TUniquePtr<IBoxedValue> impl) {
         ImplementationImpl(std::move(impl));
@@ -699,6 +708,18 @@ public:
         OptionalArgsImpl(optionalArgs);
         return *this;
     }
+
+#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 28)
+    IFunctionTypeInfoBuilder& SupportsBlocks() {
+        SupportsBlocksImpl();
+        return *this;
+    }
+
+    IFunctionTypeInfoBuilder& IsStrict() {
+        IsStrictImpl();
+        return *this;
+    }
+#endif
 
     IFunctionTypeInfoBuilder& Returns(TDataTypeId type) {
         ReturnsImpl(type);
@@ -729,8 +750,8 @@ public:
     }
 
     template <typename T>
-    TType* SimpleSignatureType() const {
-        return NImpl::TSimpleSignatureTypeHelper<T>::Build(*this);
+    TType* SimpleSignatureType(ui32 optionalArgs = 0) const {
+        return NImpl::TSimpleSignatureTypeHelper<T>::Build(*this, optionalArgs);
     }
 
     IFunctionTypeInfoBuilder& RunConfig(TDataTypeId type) {
@@ -869,6 +890,23 @@ struct TTypeBuilderHelper<TDict<TKey, TValue>> {
                 Key(TTypeBuilderHelper<TKey>::Build(builder))
                 .Value(TTypeBuilderHelper<TValue>::Build(builder))
                 .Build();
+    }
+};
+
+template <typename TKey>
+struct TTypeBuilderHelper<TSetType<TKey>> {
+    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
+        return builder.Dict()->
+                Key(TTypeBuilderHelper<TKey>::Build(builder))
+                .Value(builder.Void())
+                .Build();
+    }
+};
+
+template <>
+struct TTypeBuilderHelper<TVoid> {
+    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
+        return builder.Void();
     }
 };
 
@@ -1029,18 +1067,22 @@ struct TArgsHelper<TArg, TArgs...> {
 
 template <typename TReturn, typename... TArgs>
 struct TSimpleSignatureHelper<TReturn(TArgs...)> {
+    static TType* BuildReturnType(IFunctionTypeInfoBuilder& builder) {
+        return TTypeBuilderHelper<TReturn>::Build(builder);
+    }
     static void Register(IFunctionTypeInfoBuilder& builder) {
-        builder.Returns(TTypeBuilderHelper<TReturn>::Build(builder));
+        builder.Returns(BuildReturnType(builder));
         TArgsHelper<TArgs...>::Add(*builder.Args());
     }
 };
 
 template <typename TReturn, typename... TArgs>
 struct TSimpleSignatureTypeHelper<TReturn(TArgs...)> {
-    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
+    static TType* Build(const IFunctionTypeInfoBuilder& builder, ui32 optionalArgc) {
         auto callableBuilder = builder.Callable(sizeof...(TArgs));
         callableBuilder->Returns(TTypeBuilderHelper<TReturn>::Build(builder));
         TCallableArgsHelper<TArgs...>::Arg(*callableBuilder, builder);
+        callableBuilder->OptionalArgs(optionalArgc);
         return callableBuilder->Build();
     }
 };

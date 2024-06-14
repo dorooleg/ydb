@@ -6,7 +6,7 @@
 #include <ydb/core/tablet_flat/ut/flat_database_ut_common.h>
 #include <ydb/core/tablet_flat/flat_executor_compaction_logic.h>
 #include <ydb/core/tablet/tablet_impl.h>
-#include <ydb/core/util/yverify_stream.h>
+#include <ydb/library/yverify_stream/yverify_stream.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include "tablet_flat_executed.h"
 #include "flat_executor.h"
@@ -123,7 +123,7 @@ namespace NTabletFlatExecutor {
             return pipeConfig;
         }
 
-        ui32 Tablet = MakeTabletID(0, 0, 1);
+        ui64 Tablet = MakeTabletID(false, 1) & 0xFFFF'FFFF;
         const TActorId Edge;
     };
 

@@ -5,10 +5,11 @@
 #include <ydb/core/kqp/common/kqp.h>
 #include <ydb/public/lib/deprecated/kicli/kicli.h>
 
+#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
-#include <library/cpp/actors/core/hfunc.h>
-#include <library/cpp/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/actorsystem.h>
 #include <library/cpp/json/json_writer.h>
 #include <util/stream/file.h>
 
@@ -73,13 +74,11 @@ private:
     STRICT_STFUNC(StateFunc,
           HFunc(NActors::TEvents::TEvWakeup, HandleWakeup);
           HFunc(NKqp::TEvKqp::TEvQueryResponse, HandleQueryResponse);
-          HFunc(NKqp::TEvKqp::TEvProcessResponse, HandleProcessResponse);
           HFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
           IgnoreFunc(NKqp::TEvKqp::TEvCloseSessionResponse);
     )
 
     void HandleQueryResponse(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx);
-    void HandleProcessResponse(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext& ctx);
 
     void HandleWakeup(NActors::TEvents::TEvWakeup::TPtr& ev, const TActorContext& ctx);
 
@@ -94,7 +93,7 @@ private:
     void RunEventsCleanup(const TActorContext& ctx);
     void OnCleanupQueryComplete(const TActorContext&ctx);
 
-    void RunQuery(const TString& query, NKikimr::NClient::TParameters* params, bool readonly,
+    void RunQuery(const TString& query, NYdb::TParams* params, bool readonly,
                   const TActorContext& ctx);
 
     void ProcessEventsQueue(const TActorContext& ctx);

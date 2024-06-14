@@ -3,6 +3,8 @@
 #include "defs.h"
 #include "resolved_value.h"
 
+#include <ydb/core/protos/blob_depot_config.pb.h>
+
 namespace NKikimr::NBlobDepot {
 
 #define ENUMERATE_INCOMING_EVENTS(XX) \
@@ -24,7 +26,7 @@ namespace NKikimr::NBlobDepot {
         template<typename T>
         T& Obtain() {
             T *sp = static_cast<T*>(this);
-            Y_VERIFY_DEBUG(sp && sp == dynamic_cast<T*>(this));
+            Y_DEBUG_ABORT_UNLESS(sp && sp == dynamic_cast<T*>(this));
             return *sp;
         }
 
@@ -62,7 +64,7 @@ namespace NKikimr::NBlobDepot {
             } else if (auto *error = std::get_if<TError>(&Outcome)) {
                 s << "Error# '" << EscapeC(error->ErrorReason) << '\'';
             } else {
-                Y_FAIL();
+                Y_ABORT();
             }
         }
 
@@ -149,6 +151,34 @@ namespace NKikimr::NBlobDepot {
         void RegisterRequestInFlight(TRequestInFlight *requestInFlight);
     };
 
+    struct TReadOutcome {
+        struct TOk {
+            TRope Data;
+        };
+        struct TNodata {
+        };
+        struct TError {
+            NKikimrProto::EReplyStatus Status;
+            TString ErrorReason;
+        };
+        std::variant<TOk, TNodata, TError> Value;
+
+        TString ToString() const {
+            return std::visit(TOverloaded{
+                [](const TOk& value) {
+                    return TStringBuilder() << "{Ok Data.size# " << value.Data.size() << "}";
+                },
+                [](const TNodata& /*value*/) {
+                    return TStringBuilder() << "{Nodata}";
+                },
+                [](const TError& value) {
+                    return TStringBuilder() << "{Error Status# " << NKikimrProto::EReplyStatus_Name(value.Status)
+                        << " ErrorReason# " << value.ErrorReason.Quote() << "}";
+                }
+            }, Value);
+        }
+    };
+
     class TBlobDepotAgent
         : public TActorBootstrapped<TBlobDepotAgent>
         , public TRequestSender
@@ -229,7 +259,7 @@ namespace NKikimr::NBlobDepot {
 
         void Handle(TEvBlobStorage::TEvConfigureProxy::TPtr ev) {
             if (const auto& info = ev->Get()->Info) {
-                Y_VERIFY(info->BlobDepotId);
+                Y_ABORT_UNLESS(info->BlobDepotId);
                 if (TabletId != *info->BlobDepotId) {
                     TabletId = *info->BlobDepotId;
                     LogId = TStringBuilder() << '{' << TabletId << '@' << VirtualGroupId << '}';
@@ -342,7 +372,7 @@ namespace NKikimr::NBlobDepot {
             virtual void Initiate() = 0;
 
             virtual void OnUpdateBlock() {}
-            virtual void OnRead(ui64 /*tag*/, NKikimrProto::EReplyStatus /*status*/, TString /*dataOrErrorReason*/) {}
+            virtual void OnRead(ui64 /*tag*/, TReadOutcome&& /*outcome*/) {}
             virtual void OnIdAllocated(bool /*success*/) {}
             virtual void OnDestroy(bool /*success*/) {}
 

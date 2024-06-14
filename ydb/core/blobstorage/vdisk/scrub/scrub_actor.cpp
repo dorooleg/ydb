@@ -13,15 +13,7 @@ namespace NKikimr {
         , Info(ScrubCtx->Info)
         , LogPrefix(VCtx->VDiskLogPrefix)
         , Counters(VCtx->VDiskCounters->GetSubgroup("subsystem", "scrub"))
-        , SstProcessed(Counters->GetCounter("SstProcessed", true))
-        , HugeBlobsRead(Counters->GetCounter("HugeBlobsRead", true))
-        , HugeBlobBytesRead(Counters->GetCounter("HugeBlobBytesRead", true))
-        , SmallBlobIntervalsRead(Counters->GetCounter("SmallBlobIntervalsRead", true))
-        , SmallBlobIntervalBytesRead(Counters->GetCounter("SmallBlobIntervalBytesRead", true))
-        , SmallBlobsRead(Counters->GetCounter("SmallBlobsRead", true))
-        , SmallBlobBytesRead(Counters->GetCounter("SmallBlobBytesRead", true))
-        , UnreadableBlobsFound(Counters->GetCounter("UnreadableBlobsFound", false))
-        , BlobsFixed(Counters->GetCounter("BlobsFixed", false))
+        , MonGroup(Counters)
         , Arena(&TScrubCoroImpl::AllocateRopeArenaChunk)
         , ScrubEntrypoint(std::move(scrubEntrypoint))
         , ScrubEntrypointLsn(scrubEntrypointLsn)
@@ -35,15 +27,15 @@ namespace NKikimr {
             fFunc(TEvBlobStorage::EvRecoverBlob, ForwardToBlobRecoveryActor);
             hFunc(TEvRestoreCorruptedBlobResult, Handle);
             hFunc(TEvNonrestoredCorruptedBlobNotify, Handle);
-            cFunc(EvGenerateRestoreCorruptedBlobQuery, HandleGenerateRestoreCorruptedBlobQuery);
             hFunc(NPDisk::TEvLogResult, Handle);
             hFunc(NPDisk::TEvCutLog, Handle);
+            hFunc(TEvTakeHullSnapshotResult, Handle);
 
             case TEvents::TSystem::Poison:
                 throw TExPoison();
 
             default:
-                Y_FAIL("unexpected event Type# 0x%08" PRIx32, type);
+                Y_ABORT("unexpected event Type# 0x%08" PRIx32, type);
         }
     }
 
@@ -52,7 +44,7 @@ namespace NKikimr {
     }
 
     void TScrubCoroImpl::ForwardToBlobRecoveryActor(TAutoPtr<IEventHandle> ev) {
-        Send(IEventHandle::Forward(ev, BlobRecoveryActorId));
+        Send(IEventHandle::Forward(std::move(ev), BlobRecoveryActorId));
     }
 
     void TScrubCoroImpl::Run() {
@@ -76,9 +68,9 @@ namespace NKikimr {
                 const TInstant end = start + TDuration::Seconds(30);
                 do {
                     Quantum();
-                    Send(ScrubCtx->SkeletonId, new TEvReportScrubStatus(UnreadableBlobs.size()));
+                    Send(ScrubCtx->SkeletonId, new TEvReportScrubStatus(!UnreadableBlobs.empty()));
                 } while (State && TActorCoroImpl::Now() < end);
-                Send(ScrubCtx->SkeletonId, new TEvReportScrubStatus(UnreadableBlobs.size()));
+                Send(ScrubCtx->SkeletonId, new TEvReportScrubStatus(!UnreadableBlobs.empty()));
                 CommitStateUpdate();
             }
         } catch (const TExDie&) {
@@ -154,6 +146,9 @@ namespace NKikimr {
             }
         }
 
+        // validate currently held blobs
+        FilterUnreadableBlobs(*Snap, *GetBarriersEssence());
+
         ReleaseSnapshot();
 
         if (const ui64 cookie = GenerateRestoreCorruptedBlobQuery()) {
@@ -190,7 +185,7 @@ namespace NKikimr {
         if (State) {
             TString serialized;
             const bool success = State->SerializeToString(&serialized);
-            Y_VERIFY(success);
+            Y_ABORT_UNLESS(success);
             finish(serialized);
             ScrubEntrypoint.MutableScrubState()->CopyFrom(*State);
         } else {
@@ -214,7 +209,7 @@ namespace NKikimr {
         TRcBuf data(TRcBuf::Uninitialized(ScrubEntrypoint.ByteSizeLong()));
         //FIXME(innokentii): better use SerializeWithCachedSizesToArray + check that all fields are set
         const bool success = ScrubEntrypoint.SerializeToArray(reinterpret_cast<uint8_t*>(data.UnsafeGetDataMut()), data.GetSize());
-        Y_VERIFY(success);
+        Y_ABORT_UNLESS(success);
 
         auto seg = ScrubCtx->LsnMngr->AllocLsnForLocalUse();
         ScrubEntrypointLsn = seg.Point();

@@ -35,16 +35,16 @@ namespace NPage {
             : Raw(std::move(raw))
             , Label_(label)
         {
-            Y_VERIFY(uintptr_t(Raw.data()) % alignof(TEntry) == 0);
+            Y_ABORT_UNLESS(uintptr_t(Raw.data()) % alignof(TEntry) == 0);
 
             auto got = NPage::TLabelWrapper().Read(Raw, EPage::Globs);
 
-            Y_VERIFY(got == ECodec::Plain && got.Version == 1);
+            Y_ABORT_UNLESS(got == ECodec::Plain && got.Version == 1);
 
             Header = TDeref<THeader>::At(got.Page.data(), 0);
 
             if (Header->Skip > got.Page.size())
-                Y_FAIL("NPage::TExtBlobs header is out of its blob");
+                Y_ABORT("NPage::TExtBlobs header is out of its blob");
 
             auto *ptr = TDeref<TEntry>::At(got.Page.data(), Header->Skip);
 

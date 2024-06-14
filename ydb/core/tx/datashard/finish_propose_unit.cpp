@@ -29,7 +29,6 @@ private:
     void AddDiagnosticsResult(TOutputOpData::TResultPtr &res);
     void UpdateCounters(TOperation::TPtr op,
                         const TActorContext &ctx);
-    TString PrintErrors(const NKikimrTxDataShard::TEvProposeTransactionResult &rec);
 };
 
 TFinishProposeUnit::TFinishProposeUnit(TDataShard &dataShard,
@@ -52,13 +51,13 @@ TDataShard::TPromotePostExecuteEdges TFinishProposeUnit::PromoteImmediatePostExe
         TTransactionContext& txc)
 {
     if (op->IsMvccSnapshotRead()) {
-        if (op->IsMvccSnapshotRepeatable()) {
+        if (op->IsMvccSnapshotRepeatable() && op->GetPerformedUserReads()) {
             return DataShard.PromoteImmediatePostExecuteEdges(op->GetMvccSnapshot(), TDataShard::EPromotePostExecuteEdges::RepeatableRead, txc);
         } else {
             return DataShard.PromoteImmediatePostExecuteEdges(op->GetMvccSnapshot(), TDataShard::EPromotePostExecuteEdges::ReadOnly, txc);
         }
     } else if (op->MvccReadWriteVersion) {
-        if (op->IsReadOnly()) {
+        if (op->IsReadOnly() || op->LockTxId()) {
             return DataShard.PromoteImmediatePostExecuteEdges(*op->MvccReadWriteVersion, TDataShard::EPromotePostExecuteEdges::ReadOnly, txc);
         } else {
             return DataShard.PromoteImmediatePostExecuteEdges(*op->MvccReadWriteVersion, TDataShard::EPromotePostExecuteEdges::ReadWrite, txc);
@@ -81,6 +80,8 @@ EExecutionStatus TFinishProposeUnit::Execute(TOperation::TPtr op,
     if (op->IsAborted()) {
         // Make sure we confirm aborts with a commit
         op->SetWaitCompletionFlag(true);
+    } else if (DataShard.IsFollower()) {
+        // It doesn't matter whether we wait or not
     } else if (DataShard.IsMvccEnabled() && op->IsImmediate()) {
         auto res = PromoteImmediatePostExecuteEdges(op.Get(), txc);
 
@@ -98,8 +99,11 @@ EExecutionStatus TFinishProposeUnit::Execute(TOperation::TPtr op,
         op->SetFinishProposeTs(DataShard.ConfirmReadOnlyLease());
     }
 
-    if (!op->HasResultSentFlag() && (op->IsDirty() || !Pipeline.WaitCompletion(op)))
+    if (!op->HasResultSentFlag() && (op->IsDirty() || op->HasVolatilePrepareFlag() || !Pipeline.WaitCompletion(op))) {
+        DataShard.IncCounter(COUNTER_PREPARE_COMPLETE);
+        op->SetProposeResultSentEarly();
         CompleteRequest(op, ctx);
+    }
 
     if (!DataShard.IsFollower())
         DataShard.PlanCleanup(ctx);
@@ -127,7 +131,7 @@ EExecutionStatus TFinishProposeUnit::Execute(TOperation::TPtr op,
 void TFinishProposeUnit::Complete(TOperation::TPtr op,
                                   const TActorContext &ctx)
 {
-    if (!op->HasResultSentFlag()) {
+    if (!op->HasResultSentFlag() && !op->IsProposeResultSentEarly()) {
         DataShard.IncCounter(COUNTER_PREPARE_COMPLETE);
 
         if (op->Result())
@@ -140,6 +144,7 @@ void TFinishProposeUnit::Complete(TOperation::TPtr op,
         Pipeline.RemoveActiveOp(op);
 
         DataShard.EnqueueChangeRecords(std::move(op->ChangeRecords()));
+        DataShard.EmitHeartbeats();
     }
 
     DataShard.SendRegistrationRequestTimeCast(ctx);
@@ -149,7 +154,7 @@ void TFinishProposeUnit::CompleteRequest(TOperation::TPtr op,
                                          const TActorContext &ctx)
 {
     auto res = std::move(op->Result());
-    Y_VERIFY(res);
+    Y_ABORT_UNLESS(res);
 
     TDuration duration = TAppData::TimeProvider->Now() - op->GetReceivedAt();
     res->Record.SetProposeLatency(duration.MilliSeconds());
@@ -162,7 +167,7 @@ void TFinishProposeUnit::CompleteRequest(TOperation::TPtr op,
 
     TString errors = res->GetError();
     if (errors.size()) {
-        LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD,
+        LOG_LOG_S_THROTTLE(DataShard.GetLogThrottler(TDataShard::ELogThrottlerType::FinishProposeUnit_CompleteRequest), ctx, NActors::NLog::PRI_ERROR, NKikimrServices::TX_DATASHARD, 
                     "Errors while proposing transaction txid " << op->GetTxId()
                     << " at tablet " << DataShard.TabletID() << " status: "
                     << res->GetStatus() << " errors: " << errors);
@@ -178,7 +183,7 @@ void TFinishProposeUnit::CompleteRequest(TOperation::TPtr op,
     if (op->HasNeedDiagnosticsFlag())
         AddDiagnosticsResult(res);
 
-    DataShard.FillExecutionStats(op->GetExecutionProfile(), *res);
+    DataShard.FillExecutionStats(op->GetExecutionProfile(), *res->Record.MutableTxStats());
 
     DataShard.IncCounter(COUNTER_TX_RESULT_SIZE, res->Record.GetTxResult().size());
 
@@ -217,7 +222,7 @@ void TFinishProposeUnit::UpdateCounters(TOperation::TPtr op,
                                         const TActorContext &ctx)
 {
     auto &res = op->Result();
-    Y_VERIFY(res);
+    Y_ABORT_UNLESS(res);
     auto execLatency = TAppData::TimeProvider->Now() - op->GetReceivedAt();
 
     res->Record.SetExecLatency(execLatency.MilliSeconds());
@@ -231,28 +236,16 @@ void TFinishProposeUnit::UpdateCounters(TOperation::TPtr op,
 
         if (res->IsError()) {
             DataShard.IncCounter(COUNTER_PREPARE_ERROR);
-            LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD,
+            LOG_LOG_S_THROTTLE(DataShard.GetLogThrottler(TDataShard::ELogThrottlerType::FinishProposeUnit_UpdateCounters), ctx,  NActors::NLog::PRI_ERROR, NKikimrServices::TX_DATASHARD,
                         "Prepare transaction failed. txid " << op->GetTxId()
-                        << " at tablet " << DataShard.TabletID()  << " errors: "
-                        << PrintErrors(res->Record));
+                        << " at tablet " << DataShard.TabletID()  << " errors: " << res->GetError());
         } else {
             DataShard.IncCounter(COUNTER_PREPARE_IMMEDIATE);
         }
     }
 }
 
-TString TFinishProposeUnit::PrintErrors(const NKikimrTxDataShard::TEvProposeTransactionResult &rec)
-{
-    TString s;
-    TStringOutput str(s);
-    str << "[ ";
-    for (size_t i = 0; i < rec.ErrorSize(); ++i) {
-        str << NKikimrTxDataShard::TError_EKind_Name(rec.GetError(i).GetKind())
-            << "(" << rec.GetError(i).GetReason() << ") ";
-    }
-    str << "]";
-    return s;
-}
+
 
 THolder<TExecutionUnit> CreateFinishProposeUnit(TDataShard &dataShard,
                                                 TPipeline &pipeline)

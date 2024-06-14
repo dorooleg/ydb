@@ -931,6 +931,10 @@ typedef struct grpc_tls_custom_verification_check_request {
      * grpc_security_constants.h.
      * TODO(ZhenLian): Consider fixing this in the future. */
     const char* peer_cert_full_chain;
+    /* The verified root cert subject.
+     * This value will only be filled if the cryptographic peer certificate
+     * verification was successful */
+    const char* verified_root_cert_subject;
   } peer_info;
 } grpc_tls_custom_verification_check_request;
 
@@ -1046,6 +1050,17 @@ typedef struct grpc_tls_certificate_verifier_external {
  */
 grpc_tls_certificate_verifier* grpc_tls_certificate_verifier_external_create(
     grpc_tls_certificate_verifier_external* external_verifier);
+
+/**
+ * EXPERIMENTAL API - Subject to change
+ *
+ * Factory function for an internal verifier that won't perform any
+ * post-handshake verification. Note: using this solely without any other
+ * authentication mechanisms on the peer identity will leave your applications
+ * to the MITM(Man-In-The-Middle) attacks. Users should avoid doing so in
+ * production environments.
+ */
+grpc_tls_certificate_verifier* grpc_tls_certificate_verifier_no_op_create();
 
 /**
  * EXPERIMENTAL API - Subject to change

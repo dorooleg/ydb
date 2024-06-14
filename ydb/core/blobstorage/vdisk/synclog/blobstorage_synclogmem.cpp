@@ -8,7 +8,7 @@ namespace NKikimr {
         // TSyncLogPage
         ////////////////////////////////////////////////////////////////////////////
         void TSyncLogPage::Put(ui32 pageSize, const TRecordHdr *rec, ui32 dataSize) {
-            Y_VERIFY(HaveRoom(pageSize, dataSize) &&
+            Y_ABORT_UNLESS(HaveRoom(pageSize, dataSize) &&
                    (Header.LastLsn == 0 || rec->Lsn > Header.LastLsn),
                    "Header# %s rec# %s pageSize# %" PRIu32 " dataSize# %" PRIu32,
                    Header.ToString().data(), rec->ToString().data(), pageSize, dataSize);
@@ -114,7 +114,7 @@ namespace NKikimr {
                 if (first) {
                     first = false;
                 } else {
-                    Y_VERIFY(hdr->Lsn > lsn, "lsn# %" PRIu64 " hdrLsn# %" PRIu64, lsn, hdr->Lsn);
+                    Y_ABORT_UNLESS(hdr->Lsn > lsn, "lsn# %" PRIu64 " hdrLsn# %" PRIu64, lsn, hdr->Lsn);
                 }
                 lsn = hdr->Lsn;
 
@@ -158,7 +158,7 @@ namespace NKikimr {
             } else {
                 // pageFirstLsn >= lsn
                 ui64 pageFirstLsn = PagesIt.Get().GetFirstLsn();
-                Y_VERIFY_DEBUG(pageFirstLsn >= lsn);
+                Y_DEBUG_ABORT_UNLESS(pageFirstLsn >= lsn);
                 TPageIterator firstIt(PagesIt.GetSnap());
                 firstIt.SeekToFirst();
                 if (pageFirstLsn == lsn || PagesIt == firstIt) {
@@ -174,16 +174,16 @@ namespace NKikimr {
             }
 
             // we have found the required page and it is PagesIt
-            Y_VERIFY_DEBUG(PagesIt.Valid());
+            Y_DEBUG_ABORT_UNLESS(PagesIt.Valid());
 
             // find exact position in the page
             SetupHdr();
             while (Hdr->Lsn < lsn) {
                 Hdr = Hdr->Next();
-                Y_VERIFY_DEBUG(Hdr != HdrEnd);
+                Y_DEBUG_ABORT_UNLESS(Hdr != HdrEnd);
             }
 
-            Y_VERIFY_DEBUG(Valid());
+            Y_DEBUG_ABORT_UNLESS(Valid());
         }
 
         void TMemRecLogSnapshot::TIterator::Next() {
@@ -229,7 +229,7 @@ namespace NKikimr {
                 return str.Str();
             };
 
-            Y_VERIFY(Pages.empty() || Pages.back()->GetLastLsn() < rec->Lsn,
+            Y_ABORT_UNLESS(Pages.empty() || Pages.back()->GetLastLsn() < rec->Lsn,
                    "pagesSize# %" PRIu32 " lastLsn# %" PRIu64 " recLsn# %" PRIu64 " dump#\n %s",
                    ui32(Pages.size()), Pages.back()->GetLastLsn(), rec->Lsn, errorReport().data());
 
@@ -245,12 +245,12 @@ namespace NKikimr {
         }
 
         void TMemRecLog::PutMany(const void *buf, ui32 size) {
-            Y_VERIFY_DEBUG(size);
+            Y_DEBUG_ABORT_UNLESS(size);
             TRecordHdr *rec = (TRecordHdr*)buf;
             ui32 recSize = 0;
             do {
                 recSize = rec->GetSize();
-                Y_VERIFY_DEBUG(recSize <= size);
+                Y_DEBUG_ABORT_UNLESS(recSize <= size);
                 PutOne(rec, recSize);
                 rec = rec->Next();
                 size -= recSize;
@@ -288,12 +288,12 @@ namespace NKikimr {
             // void skip cache pages, i.e. find the first page that is not in cache
             TSyncLogPages::const_iterator it = ::LowerBound(Pages.begin(), Pages.end(), diskLastLsn, less);
             if (it == Pages.end()) {
-                Y_VERIFY(Pages.empty());
+                Y_ABORT_UNLESS(Pages.empty());
                 return TMemRecLogSnapshotPtr();
             }
 
             ui64 pageLastLsn = (*it)->GetLastLsn();
-            Y_VERIFY(pageLastLsn >= diskLastLsn);
+            Y_ABORT_UNLESS(pageLastLsn >= diskLastLsn);
             if (pageLastLsn == diskLastLsn)
                 ++it;
 
@@ -304,7 +304,7 @@ namespace NKikimr {
             // now it points to the first page we are going to swap
             ui32 recsNum = 0;
             while (it != Pages.end()) {
-                Y_VERIFY((*it)->GetLastLsn() > diskLastLsn);
+                Y_ABORT_UNLESS((*it)->GetLastLsn() > diskLastLsn);
                 if (freeNPages > 0 || (*it)->GetFirstLsn() < freeUpToLsn) { // '<', because 'excluding'
                     pages.push_back(*it);
                     recsNum += (*it)->GetRecsNum();

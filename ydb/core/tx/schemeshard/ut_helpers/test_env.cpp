@@ -8,6 +8,7 @@
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/tx/datashard/datashard.h>
 #include <ydb/core/tx/schemeshard/schemeshard_private.h>
+#include <ydb/core/tx/sequenceproxy/sequenceproxy.h>
 #include <ydb/core/tx/tx_allocator/txallocator.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/filestore/core/filestore.h>
@@ -15,7 +16,7 @@
 #include <library/cpp/testing/unittest/registar.h>
 
 
-static const bool ENABLE_SCHEMESHARD_LOG = true;
+bool NSchemeShardUT_Private::TTestEnv::ENABLE_SCHEMESHARD_LOG = true;
 static const bool ENABLE_DATASHARD_LOG = false;
 static const bool ENABLE_COORDINATOR_MEDIATOR_LOG = false;
 static const bool ENABLE_SCHEMEBOARD_LOG = false;
@@ -33,14 +34,13 @@ public:
           , TTabletExecutedFlat(info, tablet,  new NMiniKQL::TMiniKQLFactory)
     {}
 
+    void DefaultSignalTabletActive(const TActorContext&) override {
+        // must be empty
+    }
+
     void OnActivateExecutor(const TActorContext& ctx) override {
         Become(&TThis::StateWork);
-
-        while (!InitialEventsQueue.empty()) {
-            TAutoPtr<IEventHandle>& ev = InitialEventsQueue.front();
-            ctx.ExecutorThread.Send(ev.Release());
-            InitialEventsQueue.pop_front();
-        }
+        SignalTabletActive(ctx);
     }
 
     void OnDetach(const TActorContext& ctx) override {
@@ -52,25 +52,15 @@ public:
         Die(ctx);
     }
 
-    void Enqueue(STFUNC_SIG) override {
-        InitialEventsQueue.push_back(ev);
-    }
-
     STFUNC(StateInit) {
         StateInitImpl(ev, SelfId());
     }
 
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
-            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
             HFunc(TEvBlockStore::TEvUpdateVolumeConfig, Handle);
-            HFunc(TEvents::TEvPoisonPill, Handle);
-        }
-    }
-
-    STFUNC(StateBroken) {
-        switch (ev->GetTypeRewrite()) {
-            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
+        default:
+            HandleDefaultEvents(ev, SelfId());
         }
     }
 
@@ -84,15 +74,6 @@ private:
         response->Record.SetStatus(NKikimrBlockStore::OK);
         ctx.Send(ev->Sender, response.Release());
     }
-
-    void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx) {
-        Y_UNUSED(ev);
-        Become(&TThis::StateBroken);
-        ctx.Send(Tablet(), new TEvents::TEvPoisonPill());
-    }
-
-private:
-    TDeque<TAutoPtr<IEventHandle>> InitialEventsQueue;
 };
 
 class TFakeFileStore : public TActor<TFakeFileStore>, public NTabletFlatExecutor::TTabletExecutedFlat {
@@ -102,14 +83,13 @@ public:
         , TTabletExecutedFlat(info, tablet,  new NMiniKQL::TMiniKQLFactory)
     {}
 
+    void DefaultSignalTabletActive(const TActorContext&) override {
+        // must be empty
+    }
+
     void OnActivateExecutor(const TActorContext& ctx) override {
         Become(&TThis::StateWork);
-
-        while (!InitialEventsQueue.empty()) {
-            TAutoPtr<IEventHandle>& ev = InitialEventsQueue.front();
-            ctx.ExecutorThread.Send(ev.Release());
-            InitialEventsQueue.pop_front();
-        }
+        SignalTabletActive(ctx);
     }
 
     void OnDetach(const TActorContext& ctx) override {
@@ -121,25 +101,15 @@ public:
         Die(ctx);
     }
 
-    void Enqueue(STFUNC_SIG) override {
-        InitialEventsQueue.push_back(ev);
-    }
-
     STFUNC(StateInit) {
         StateInitImpl(ev, SelfId());
     }
 
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
-            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
             HFunc(TEvFileStore::TEvUpdateConfig, Handle);
-            HFunc(TEvents::TEvPoisonPill, Handle);
-        }
-    }
-
-    STFUNC(StateBroken) {
-        switch (ev->GetTypeRewrite()) {
-            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
+        default:
+            HandleDefaultEvents(ev, SelfId());
         }
     }
 
@@ -153,15 +123,6 @@ private:
         response->Record.SetStatus(NKikimrFileStore::OK);
         ctx.Send(ev->Sender, response.Release());
     }
-
-    void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx) {
-        Y_UNUSED(ev);
-        Become(&TThis::StateBroken);
-        ctx.Send(Tablet(), new TEvents::TEvPoisonPill());
-    }
-
-private:
-    TDeque<TAutoPtr<IEventHandle>> InitialEventsQueue;
 };
 
 class TFakeConfigDispatcher : public TActor<TFakeConfigDispatcher> {
@@ -518,7 +479,7 @@ private:
     TPreSerializedMessage GetSerializedMessage(TAutoPtr<IEventBase> message) {
         TAllocChunkSerializer serializer;
         const bool success = message->SerializeToArcadiaStream(&serializer);
-        Y_VERIFY(success);
+        Y_ABORT_UNLESS(success);
         TIntrusivePtr<TEventSerializedData> data = serializer.Release(message->CreateSerializationInfo());
         return TPreSerializedMessage(message->Type(), data);
     }
@@ -532,18 +493,14 @@ private:
 
 
 // Globally enable/disable log batching at datashard creation time in test
-struct TDatashardLogBatchingSwitch {
-    explicit TDatashardLogBatchingSwitch(bool newVal) {
-        PrevVal = NKikimr::NDataShard::gAllowLogBatchingDefaultValue;
-        NKikimr::NDataShard::gAllowLogBatchingDefaultValue = newVal;
-    }
+NSchemeShardUT_Private::TTestWithReboots::TDatashardLogBatchingSwitch::TDatashardLogBatchingSwitch(bool newVal) {
+    PrevVal = NKikimr::NDataShard::gAllowLogBatchingDefaultValue;
+    NKikimr::NDataShard::gAllowLogBatchingDefaultValue = newVal;
+}
 
-    ~TDatashardLogBatchingSwitch() {
-        NKikimr::NDataShard::gAllowLogBatchingDefaultValue = PrevVal;
-    }
-private:
-    bool PrevVal;
-};
+NSchemeShardUT_Private::TTestWithReboots::TDatashardLogBatchingSwitch::~TDatashardLogBatchingSwitch() {
+    NKikimr::NDataShard::gAllowLogBatchingDefaultValue = PrevVal;
+}
 
 NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTestEnvOptions& opts, TSchemeShardFactory ssFactory, std::shared_ptr<NKikimr::NDataShard::IExportFactory> dsExportFactory)
     : SchemeShardFactory(ssFactory)
@@ -564,7 +521,6 @@ NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTe
     app.SetEnablePersistentPartitionStats(opts.EnablePersistentPartitionStats_);
     app.SetAllowUpdateChannelsBindingOfSolomonPartitions(opts.AllowUpdateChannelsBindingOfSolomonPartitions_);
     app.SetEnableNotNullColumns(opts.EnableNotNullColumns_);
-    app.SetEnableOlapSchemaOperations(opts.EnableOlapSchemaOperations_);
     app.SetEnableProtoSourceIdInfo(opts.EnableProtoSourceIdInfo_);
     app.SetEnablePqBilling(opts.EnablePqBilling_);
     app.SetEnableBackgroundCompaction(opts.EnableBackgroundCompaction_);
@@ -578,20 +534,51 @@ NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTe
     app.SetEnablePQConfigTransactionsAtSchemeShard(opts.EnablePQConfigTransactionsAtSchemeShard_);
     app.SetEnableTopicSplitMerge(opts.EnableTopicSplitMerge_);
     app.SetEnableChangefeedDynamoDBStreamsFormat(opts.EnableChangefeedDynamoDBStreamsFormat_);
+    app.SetEnableChangefeedDebeziumJsonFormat(opts.EnableChangefeedDebeziumJsonFormat_);
+    app.SetEnableTablePgTypes(opts.EnableTablePgTypes_);
+    app.SetEnableServerlessExclusiveDynamicNodes(opts.EnableServerlessExclusiveDynamicNodes_);
+    app.SetEnableAddColumsWithDefaults(opts.EnableAddColumsWithDefaults_);
+    app.SetEnableReplaceIfExistsForExternalEntities(opts.EnableReplaceIfExistsForExternalEntities_);
+
+    app.ColumnShardConfig.SetDisabledOnSchemeShard(false);
 
     if (opts.DisableStatsBatching_.value_or(false)) {
         app.SchemeShardConfig.SetStatsMaxBatchSize(0);
         app.SchemeShardConfig.SetStatsBatchTimeoutMs(0);
     }
 
+    // graph settings
+    if (opts.GraphBackendType_) {
+        app.GraphConfig.SetBackendType(opts.GraphBackendType_.value());
+    }
+    app.GraphConfig.SetAggregateCheckPeriodSeconds(5); // 5 seconds
+    {
+        auto& set = *app.GraphConfig.AddAggregationSettings();
+        set.SetPeriodToStartSeconds(60); // 1 minute to clear
+        set.SetMinimumStepSeconds(10); // 10 seconds
+    }
+    {
+        auto& set = *app.GraphConfig.AddAggregationSettings();
+        set.SetPeriodToStartSeconds(40); // 40 seconds
+        set.SetSampleSizeSeconds(10); // 10 seconds
+        set.SetMinimumStepSeconds(10); // 10 seconds
+    }
+    {
+        auto& set = *app.GraphConfig.AddAggregationSettings();
+        set.SetPeriodToStartSeconds(5); // 4 seconds
+        set.SetSampleSizeSeconds(5); // 5 seconds
+        set.SetMinimumStepSeconds(5); // 5 seconds
+    }
+    //
+
     for (const auto& sid : opts.SystemBackupSIDs_) {
         app.AddSystemBackupSID(sid);
     }
 
-    AddDomain(runtime, app, TTestTxConfig::DomainUid, 0, hive, schemeRoot);
+    AddDomain(runtime, app, TTestTxConfig::DomainUid, hive, schemeRoot);
 
     SetupLogging(runtime);
-    SetupChannelProfiles(app, TTestTxConfig::DomainUid, ChannelsCount);
+    SetupChannelProfiles(app, ChannelsCount);
 
     for (ui32 node = 0; node < runtime.GetNodeCount(); ++node) {
         SetupSchemeCache(runtime, node, app.Domains->GetDomain(TTestTxConfig::DomainUid).Name);
@@ -627,6 +614,13 @@ NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTe
         IActor* txProxy = CreateTxProxy(runtime.GetTxAllocatorTabletIds());
         TActorId txProxyId = runtime.Register(txProxy, node);
         runtime.RegisterService(MakeTxProxyID(), txProxyId, node);
+    }
+
+    // Create sequence proxies
+    for (size_t i = 0; i < runtime.GetNodeCount(); ++i) {
+        IActor* sequenceProxy = NSequenceProxy::CreateSequenceProxy();
+        TActorId sequenceProxyId = runtime.Register(sequenceProxy, i);
+        runtime.RegisterService(NSequenceProxy::MakeSequenceProxyServiceID(), sequenceProxyId, i);
     }
 
     //SetupBoxAndStoragePool(runtime, sender, TTestTxConfig::DomainUid);
@@ -706,17 +700,15 @@ void NSchemeShardUT_Private::TTestEnv::SetupLogging(TTestActorRuntime &runtime) 
     }
 }
 
-void NSchemeShardUT_Private::TTestEnv::AddDomain(TTestActorRuntime &runtime, TAppPrepare &app, ui32 domainUid, ui32 ssId, ui64 hive, ui64 schemeRoot) {
+void NSchemeShardUT_Private::TTestEnv::AddDomain(TTestActorRuntime &runtime, TAppPrepare &app, ui32 domainUid, ui64 hive, ui64 schemeRoot) {
     app.ClearDomainsAndHive();
     ui32 planResolution = 50;
     auto domain = TDomainsInfo::TDomain::ConstructDomainWithExplicitTabletIds(
                 "MyRoot", domainUid, schemeRoot,
-                ssId, ssId, TVector<ui32>{ssId},
-                domainUid, TVector<ui32>{domainUid},
                 planResolution,
-                TVector<ui64>{TDomainsInfo::MakeTxCoordinatorIDFixed(domainUid, 1)},
+                TVector<ui64>{TDomainsInfo::MakeTxCoordinatorIDFixed(1)},
                 TVector<ui64>{},
-                TVector<ui64>{TDomainsInfo::MakeTxAllocatorIDFixed(domainUid, 1)},
+                TVector<ui64>{TDomainsInfo::MakeTxAllocatorIDFixed(1)},
                 DefaultPoolKinds(2));
 
     TVector<ui64> ids = runtime.GetTxAllocatorTabletIds();
@@ -724,7 +716,7 @@ void NSchemeShardUT_Private::TTestEnv::AddDomain(TTestActorRuntime &runtime, TAp
     runtime.SetTxAllocatorTabletIds(ids);
 
     app.AddDomain(domain.Release());
-    app.AddHive(domainUid, hive);
+    app.AddHive(hive);
 }
 
 TFakeHiveState::TPtr NSchemeShardUT_Private::TTestEnv::GetHiveState() const {
@@ -788,13 +780,13 @@ void NSchemeShardUT_Private::TTestEnv::TestWaitNotification(NActors::TTestActorR
     TestWaitNotification(runtime, ids, schemeshardId);
 }
 
-void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, TSet<ui64> tabletIds) {
+void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, TSet<ui64> tabletIds, ui64 hive) {
     TActorId sender = runtime.AllocateEdgeActor();
 
     for (ui64 tabletId : tabletIds) {
         Cerr << "wait until " << tabletId << " is deleted" << Endl;
         auto ev = new TEvFakeHive::TEvSubscribeToTabletDeletion(tabletId);
-        ForwardToTablet(runtime, TTestTxConfig::Hive, sender, ev);
+        ForwardToTablet(runtime, hive, sender, ev);
     }
 
     TAutoPtr<IEventHandle> handle;
@@ -810,8 +802,8 @@ void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActo
     }
 }
 
-void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, ui64 tabletId) {
-    TestWaitTabletDeletion(runtime, TSet<ui64>{tabletId});
+void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, ui64 tabletId, ui64 hive) {
+    TestWaitTabletDeletion(runtime, TSet<ui64>{tabletId}, hive);
 }
 
 void NSchemeShardUT_Private::TTestEnv::TestWaitShardDeletion(NActors::TTestActorRuntime &runtime, ui64 schemeShard, TSet<TShardIdx> shardIds) {
@@ -862,6 +854,22 @@ std::function<NActors::IActor *(const NActors::TActorId &, NKikimr::TTabletStora
     default:
         return nullptr;
     }
+}
+
+void NSchemeShardUT_Private::TTestEnv::TestServerlessComputeResourcesModeInHive(TTestActorRuntime& runtime,
+    const TString& path, NKikimrSubDomains::EServerlessComputeResourcesMode serverlessComputeResourcesMode, ui64 hive)
+{
+    auto record = DescribePath(runtime, path);
+    const auto& pathDescr = record.GetPathDescription();
+    const TSubDomainKey subdomainKey(pathDescr.GetDomainDescription().GetDomainKey());
+
+    const TActorId sender = runtime.AllocateEdgeActor();
+    auto ev = MakeHolder<TEvFakeHive::TEvRequestDomainInfo>(subdomainKey);
+    ForwardToTablet(runtime, hive, sender, ev.Release());
+
+    const auto event = runtime.GrabEdgeEvent<TEvFakeHive::TEvRequestDomainInfoReply>(sender);
+    UNIT_ASSERT(event);
+    UNIT_ASSERT_VALUES_EQUAL(event->Get()->DomainInfo.ServerlessComputeResourcesMode, serverlessComputeResourcesMode);
 }
 
 TEvSchemeShard::TEvInitRootShardResult::EStatus NSchemeShardUT_Private::TTestEnv::InitRoot(NActors::TTestActorRuntime &runtime, ui64 schemeRoot, const NActors::TActorId &sender, const TString& domainName, const TDomainsInfo::TDomain::TStoragePoolKinds& StoragePoolTypes, const TString& owner) {
@@ -1060,7 +1068,7 @@ void NSchemeShardUT_Private::TTestWithReboots::Prepare(const TString &dispatchNa
 
 void NSchemeShardUT_Private::TTestWithReboots::EnableTabletResolverScheduling(ui32 nodeIdx) {
     auto actorId = Runtime->GetLocalServiceId(MakeTabletResolverID(), nodeIdx);
-    Y_VERIFY(actorId);
+    Y_ABORT_UNLESS(actorId);
     Runtime->EnableScheduleForActor(actorId);
 }
 

@@ -11,7 +11,7 @@
 
 #include <util/generic/list.h>
 #include <library/cpp/containers/stack_vector/stack_vec.h>
-#include <library/cpp/actors/util/rope.h>
+#include <ydb/library/actors/util/rope.h>
 #include <library/cpp/digest/crc32c/crc32c.h>
 
 namespace NKikimr {
@@ -100,7 +100,7 @@ public:
     static ui32 GetCrc32c(Iterator begin, size_t size) {
         ui32 hash = 0;
         while (size) {
-            Y_VERIFY(begin.Valid());
+            Y_ABORT_UNLESS(begin.Valid());
             size_t len = std::min(size, begin.ContiguousSize());
             hash = Crc32cExtend(hash, begin.ContiguousData(), len);
             begin += len;
@@ -138,13 +138,13 @@ public:
         TRopeFastView() = default;
 
         ui64 GetContiguousSize(size_t pos) {
-            Y_VERIFY_DEBUG(pos >= Offset);
+            Y_DEBUG_ABORT_UNLESS(pos >= Offset);
             return (BlockBeginIndx <= (pos - Offset) && (pos - Offset) < BlockEndIndx)
                                                              ? (BlockEndIndx - pos + Offset) : 0;
         }
 
         char* DataPtrAt(size_t pos) {
-            Y_VERIFY_DEBUG(pos >= Offset);
+            Y_DEBUG_ABORT_UNLESS(pos >= Offset);
             return (BlockBeginIndx <= (pos - Offset) && (pos - Offset) < BlockEndIndx)
                                      ? BlockData + (pos - BlockBeginIndx) - Offset : UpdateCurrent(pos - Offset);
         }
@@ -185,7 +185,7 @@ public:
             } else {
                 Current += (Boost + pos) - Current.ContiguousData();
             }
-            Y_VERIFY(Current.ContiguousData() == Boost + pos);
+            Y_ABORT_UNLESS(Current.ContiguousData() == Boost + pos);
             return Current;
         }
 
@@ -198,7 +198,7 @@ public:
                     BlockBeginIndx = BlockEndIndx;
                     BlockEndIndx += Current.ContiguousSize();
                 }
-                Y_VERIFY(BlockBeginIndx <= pos && pos < BlockEndIndx);
+                Y_ABORT_UNLESS(BlockBeginIndx <= pos && pos < BlockEndIndx);
                 BlockData = const_cast<char*>(Current.ContiguousData());
                 Boost = BlockData - BlockBeginIndx - Offset;
                 return BlockData + (pos - BlockBeginIndx);
@@ -217,11 +217,11 @@ public:
             }
 
             ui64 offset = Current.ContiguousData() - BlockData;
-            Y_VERIFY(pos >= offset);
+            Y_ABORT_UNLESS(pos >= offset);
             BlockBeginIndx = pos - offset;
             BlockEndIndx = pos + Current.ContiguousSize();
             Boost = BlockData - BlockBeginIndx - Offset;
-            Y_VERIFY(pos >= BlockBeginIndx && pos < BlockEndIndx);
+            Y_ABORT_UNLESS(pos >= BlockBeginIndx && pos < BlockEndIndx);
 
             return BlockData + (pos - BlockBeginIndx);
         }
@@ -301,18 +301,18 @@ struct TPartFragment {
         OwnedRope = piece;
         FastViewer = TRopeHelpers::TRopeFastView(OwnedRope);
         Offset = offset;
-        Y_VERIFY(size <= piece.GetSize());
+        Y_ABORT_UNLESS(size <= piece.GetSize());
         Size = size;
-        Y_VERIFY(offset + size <= partSize);
+        Y_ABORT_UNLESS(offset + size <= partSize);
         PartSize = partSize;
         FastViewer.SetOffset(Offset);
     }
 
     char *GetDataAt(ui64 getOffset) const {
-        Y_VERIFY_DEBUG(Size);
-        Y_VERIFY_DEBUG(getOffset >= Offset, "%s", (TStringBuilder() << "get_offset# " << getOffset
+        Y_DEBUG_ABORT_UNLESS(Size);
+        Y_DEBUG_ABORT_UNLESS(getOffset >= Offset, "%s", (TStringBuilder() << "get_offset# " << getOffset
                     << " Offset# " << Offset << " Size# " << Size << " capacity# " << OwnedRope.GetSize()).c_str());
-        Y_VERIFY_DEBUG(getOffset < Offset + Size, "%s", (TStringBuilder() << "get_offset# " << getOffset
+        Y_DEBUG_ABORT_UNLESS(getOffset < Offset + Size, "%s", (TStringBuilder() << "get_offset# " << getOffset
                     << " Offset# " << Offset << " Size# " << Size << " capacity# " << OwnedRope.GetSize()).c_str());
         return FastViewer.DataPtrAt(getOffset);
     }
@@ -470,7 +470,7 @@ struct TRopeErasureType {
     }
 
     TString ToString() const {
-        Y_VERIFY((ui64)ErasureSpecies < ErasureSpeciesCount);
+        Y_ABORT_UNLESS((ui64)ErasureSpecies < ErasureSpeciesCount);
         return ErasureName[ErasureSpecies];
     }
 

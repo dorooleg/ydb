@@ -125,6 +125,8 @@ def recover_core_dump_file(binary_path, cwd, pid, core_pattern=None):
 
 
 def get_gdb_full_backtrace(binary, core, gdb_path):
+    # XXX ya tool gdb uses shell script as wrapper so we need directory with shell binary in PATH
+    os.environ["PATH"] = os.pathsep.join(filter(None, [os.environ.get("PATH"), "/bin"]))
     cmd = [
         gdb_path, binary, core,
         "--eval-command", "set print thread-events off",
@@ -191,12 +193,12 @@ def resolve_addresses(addresses, symbolizer, binary):
         "--obj",
         binary,
     ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,  **({'text': True} if six.PY3 else {}))
     out, err = proc.communicate(input="\n".join(addresses))
     if proc.returncode:
         raise Exception("Symbolizer failed with rc:{}\nstderr: {}".format(proc.returncode, err))
 
-    resolved = filter(None, out.split("\n\n"))
+    resolved = list(filter(None, out.split("\n\n")))
     if len(addresses) != len(resolved):
         raise Exception("llvm-symbolizer can not extract lines from addresses (count mismatch: {}-{})".format(len(addresses), len(resolved)))
 

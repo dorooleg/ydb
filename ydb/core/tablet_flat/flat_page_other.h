@@ -28,15 +28,15 @@ namespace NPage {
             Tags.resize(TagsCount + (TagsCount & 1), 0);
             Cook.reserve(tags);
 
-            Y_VERIFY(tags <= ui32(-Min<i16>()), "Too many columnt tags");
+            Y_ABORT_UNLESS(tags <= ui32(-Min<i16>()), "Too many column tags");
         }
 
         void Put(TRowId row, ui16 tag, ui32 bytes) noexcept
         {
             if (row < Last && Last != Max<TRowId>()) {
-                Y_FAIL("Frame items have to follow sorted by row");
+                Y_ABORT("Frame items have to follow sorted by row");
             } else if (tag >= TagsCount) {
-                Y_FAIL("Frame item component tag is out of range");
+                Y_ABORT("Frame item component tag is out of range");
             } else if (Last != row) {
                 Flush();
             }
@@ -90,11 +90,7 @@ namespace NPage {
 
             NUtil::NBin::TPut out(buf.mutable_begin());
 
-            if (auto *hdr = out.Skip<NPage::TLabel>()) {
-                hdr->Type = EPage::Frames;
-                hdr->Format = 0;
-                hdr->Size = size;
-            }
+            WriteUnaligned<TLabel>(out.Skip<TLabel>(), TLabel::Encode(EPage::Frames, 0, size));
 
             if (auto *post = out.Skip<THeader>()) {
                 Zero(*post);
@@ -107,8 +103,8 @@ namespace NPage {
 
             out.Put(Tags).Put(Array);
 
-            Y_VERIFY(*out == buf.mutable_end());
-            Y_VERIFY(buf.size() % alignof(TEntry) == 0);
+            Y_ABORT_UNLESS(*out == buf.mutable_end());
+            Y_ABORT_UNLESS(buf.size() % alignof(TEntry) == 0);
             NSan::CheckMemIsInitialized(buf.data(), buf.size());
 
             return buf;
@@ -183,11 +179,7 @@ namespace NPage {
 
             NUtil::NBin::TPut out(buf.mutable_begin());
 
-            if (auto *hdr = out.Skip<NPage::TLabel>()) {
-                hdr->Type = EPage::Globs;
-                hdr->Format = 1;
-                hdr->Size = size < Max<ui32>() ? ui32(size) : Max<ui32>();
-            }
+            WriteUnaligned<TLabel>(out.Skip<TLabel>(), TLabel::Encode(EPage::Globs, 1, size));
 
             if (auto *post = out.Skip<THeader>()) {
                 Zero(*post);
@@ -198,8 +190,8 @@ namespace NPage {
 
             out.Put(Globs);
 
-            Y_VERIFY(*out == buf.mutable_end());
-            Y_VERIFY(buf.size() % alignof(TEntry) == 0);
+            Y_ABORT_UNLESS(*out == buf.mutable_end());
+            Y_ABORT_UNLESS(buf.size() % alignof(TEntry) == 0);
             NSan::CheckMemIsInitialized(buf.data(), buf.size());
 
             return buf;

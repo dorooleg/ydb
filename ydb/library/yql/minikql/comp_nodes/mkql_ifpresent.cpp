@@ -1,5 +1,5 @@
 #include "mkql_ifpresent.h"
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
+#include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>  // Y_IGNORE
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
 namespace NKikimr {
@@ -33,7 +33,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -115,7 +115,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -197,7 +197,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen->GetContext();
+        auto& context = ctx.Codegen.GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -245,7 +245,7 @@ public:
         std::generate_n(std::back_inserter(getters), right.second.size(), [&]() {
             const auto i = idx++;
             return [codegenItem, lget = left.second[i], rget = right.second[i]](const TCodegenContext& ctx, BasicBlock*& block) {
-                auto& context = ctx.Codegen->GetContext();
+                auto& context = ctx.Codegen.GetContext();
 
                 const auto pres = BasicBlock::Create(context, "pres", ctx.Func);
                 const auto miss = BasicBlock::Create(context, "miss", ctx.Func);
@@ -297,7 +297,8 @@ IComputationNode* WrapIfPresent(TCallable& callable, const TComputationNodeFacto
     const auto presentBranch = LocateNode(ctx.NodeLocator, callable, 2);
     const auto missingBranch = LocateNode(ctx.NodeLocator, callable, 3);
     const auto itemArg = LocateExternalNode(ctx.NodeLocator, callable, 1);
-    const bool multiOptional = AS_TYPE(TOptionalType, callable.GetInput(0U).GetStaticType())->GetItemType()->IsOptional();
+    const auto innerType = AS_TYPE(TOptionalType, callable.GetInput(0U).GetStaticType())->GetItemType();
+    const bool multiOptional = innerType->IsOptional() || innerType->IsPg();
     if (const auto type = callable.GetType()->GetReturnType(); type->IsFlow()) {
         const auto presWide = dynamic_cast<IComputationWideFlowNode*>(presentBranch);
         const auto missWide = dynamic_cast<IComputationWideFlowNode*>(missingBranch);

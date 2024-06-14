@@ -65,7 +65,7 @@ namespace NKikimr {
         void Delta(ssize_t bytes) {
             TMemoryConsumer::Delta(bytes);
             MemConsumed += bytes;
-            Y_VERIFY_DEBUG(MemConsumed >= 0);
+            Y_DEBUG_ABORT_UNLESS(MemConsumed >= 0);
         }
 
         using TMemoryConsumer::GetCounter;
@@ -105,7 +105,7 @@ namespace NKikimr {
                 , InitialCapacity(Base.GetCapacity())
             {
 #ifndef NDEBUG
-                Y_VERIFY(InitialCapacity == Base.LastCapacity, "InitialCapacity# %zu Base.LastCapacity# %zu",
+                Y_ABORT_UNLESS(InitialCapacity == Base.LastCapacity, "InitialCapacity# %zu Base.LastCapacity# %zu",
                         InitialCapacity, Base.LastCapacity);
 #endif
             }
@@ -136,7 +136,7 @@ namespace NKikimr {
         ~TTrackableBase() {
             size_t capacity = GetCapacity();
 #ifndef NDEBUG
-            Y_VERIFY(capacity == LastCapacity, "capacity# %zu LastCapacity# %zu", capacity, LastCapacity);
+            Y_ABORT_UNLESS(capacity == LastCapacity, "capacity# %zu LastCapacity# %zu", capacity, LastCapacity);
 #endif
             Consumer.Subtract(capacity);
         }

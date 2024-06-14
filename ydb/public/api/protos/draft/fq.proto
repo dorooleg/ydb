@@ -19,7 +19,7 @@ import "google/protobuf/empty.proto";
 
 // === Query API ===
 
-// Header: ydb-fq-project => yandexcloud://cloud_id/folder_id
+// Header: ydb-fq-project => yandexcloud://folder_id
 
 message Acl {
     enum Visibility {
@@ -118,7 +118,7 @@ message QueryContent {
     string name = 2 [(Ydb.length).le = 1024];
     Acl acl = 3;
     Limits limits = 4;
-    string text = 5 [(Ydb.length).le = 102400]; // The text of the query itself
+    string text = 5 [(Ydb.length).range = {min: 1, max: 102400}]; // The text of the query itself
     bool automatic = 6; // Is used for queries that are created by automatic systems (robots, jdbc driver, ...)
     string description = 7 [(Ydb.length).le = 10240]; // Description of the query, there can be any text
     // Specified settings for query's executor
@@ -126,8 +126,10 @@ message QueryContent {
     // "executor" - type of executor for this query
     map<string, string> execution_settings = 10 [(Ydb.map_key).length.range = {min: 1, max: 100}, (Ydb.length).le = 4096];
     // Syntax of the text
-    // By default it is "yql", but additional syntax "pg" (PostreSQL SQL frontend) is supported as well
+    // By default it is "yql", but additional syntax "pg" (PostgreSQL SQL frontend) is supported as well
     QuerySyntax syntax = 11;
+    // Map of query parameters
+    map<string, Ydb.TypedValue> parameters = 12 [(Ydb.map_key).length.range = {min: 1, max: 100}];
 }
 
 message CommonMeta {
@@ -372,6 +374,7 @@ message Job {
     bool automatic = 11;
     google.protobuf.Timestamp expire_at = 12;
     QueryContent.QuerySyntax syntax = 13;
+    map<string, Ydb.TypedValue> parameters = 14;
 }
 
 // Information about recent query runs
@@ -459,6 +462,7 @@ message YdbDatabase {
 
 message ClickHouseCluster {
     string database_id = 1 [(Ydb.length).le = 1024];
+    string database_name = 8 [(Ydb.length).le = 1024];
     string login = 2 [(Ydb.length).le = 1024, (Ydb.sensitive) = true];
     string password = 3 [(Ydb.length).le = 1024, (Ydb.sensitive) = true];
     IamAuth auth = 4;
@@ -474,6 +478,20 @@ message ObjectStorageConnection {
     IamAuth auth = 2;
 }
 
+message PostgreSQLCluster {
+    string database_id = 1 [(Ydb.length).le = 1024];
+    string database_name = 8 [(Ydb.length).le = 1024];
+    string login = 2 [(Ydb.length).le = 1024, (Ydb.sensitive) = true];
+    string password = 3 [(Ydb.length).le = 1024, (Ydb.sensitive) = true];
+    string schema = 9 [(Ydb.length).le = 1024];
+    IamAuth auth = 4;
+
+    // Just for the sake of simmetry with existing ClickHouse code
+    string host = 5 [(Ydb.length).le = 1024];
+    int32 port = 6 [(Ydb.value) = "[0; 65536]"];
+    bool secure = 7;
+}
+
 message ConnectionSetting {
     enum ConnectionType {
         CONNECTION_TYPE_UNSPECIFIED = 0;
@@ -482,6 +500,7 @@ message ConnectionSetting {
         DATA_STREAMS = 3;
         OBJECT_STORAGE = 4;
         MONITORING = 5;
+        POSTGRESQL_CLUSTER = 6;
     }
 
     oneof connection {
@@ -490,6 +509,7 @@ message ConnectionSetting {
         DataStreams data_streams = 3;
         ObjectStorageConnection object_storage = 4;
         Monitoring monitoring = 5;
+        PostgreSQLCluster postgresql_cluster = 6;
     }
 }
 
@@ -623,7 +643,7 @@ message GetResultDataResult {
 // Binding API
 
 message Schema {
-    repeated Ydb.Column column = 1 [(Ydb.size).le = 100];
+    repeated Ydb.Column column = 1 [(Ydb.size).le = 1000];
 }
 
 message DataStreamsBinding {

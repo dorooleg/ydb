@@ -4,14 +4,14 @@
 #include "events.h"
 #include "local_rate_limiter_allocator.h"
 
-#include <ydb/core/protos/services.pb.h>
+#include <ydb/library/services/services.pb.h>
 #include <ydb/public/lib/value/value.h>
 #include <ydb/core/ymq/actor/infly.h>
 #include <ydb/core/ymq/actor/message_delay_stats.h>
 #include <ydb/core/ymq/base/counters.h>
 
-#include <library/cpp/actors/core/actorid.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actorid.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 #include <util/generic/hash_multi_map.h>
@@ -60,6 +60,8 @@ private:
     void HandleState(const TSqsEvents::TEvExecuted::TRecord& ev);
     void HandleGetConfigurationWhileIniting(TSqsEvents::TEvGetConfiguration::TPtr& ev);
     void HandleGetConfigurationWhileWorking(TSqsEvents::TEvGetConfiguration::TPtr& ev);
+    void HandleActionCounterChanged(TSqsEvents::TEvActionCounterChanged::TPtr& ev);
+    void HandleLocalCounterChanged(TSqsEvents::TEvLocalCounterChanged::TPtr& ev);
     void HandleExecuteWhileIniting(TSqsEvents::TEvExecute::TPtr& ev);
     void HandleExecuteWhileWorking(TSqsEvents::TEvExecute::TPtr& ev);
     void HandleExecuted(TSqsEvents::TEvExecuted::TPtr& ev);
@@ -80,7 +82,10 @@ private:
     void HandleGetRuntimeQueueAttributesWhileWorking(TSqsEvents::TEvGetRuntimeQueueAttributes::TPtr& ev);
     void HandleDeadLetterQueueNotification(TSqsEvents::TEvDeadLetterQueueNotification::TPtr& ev);
     void HandleForceReloadState(TSqsEvents::TEvForceReloadState::TPtr& ev);
+    void HandleReloadStateRequest(TSqsEvents::TEvReloadStateRequest::TPtr& ev);
 
+    void CheckStillDLQ();
+    void ForceReloadState();
     void BecomeWorking();
     void RequestConfiguration();
     void UpdateStateRequest();
@@ -120,6 +125,7 @@ private:
     void ProcessGetRuntimeQueueAttributes(ui64 shard);
     void FailGetRuntimeQueueAttributesForShard(ui64 shard);
     void FailRequestsDuringStartProblems();
+    void SendReloadStateRequestToDLQ();
 
     // send
     void ProcessSendMessageBatch(TSendMessageBatchRequestProcessing& reqInfo);
@@ -437,7 +443,8 @@ private:
     TMessageDelayStatistics DelayStatistics_;
     TInstant RetentionWakeupPlannedAt_;
     bool AskQueueAttributesInProcess_ = false;
-    bool UpdateStateRequestInProcess = false;
+    TInstant UpdateStateRequestStartedAt;
+    THashSet<ui32> ReloadStateRequestedFromNodes;
 
     bool UseCPUOptimization = false;
 

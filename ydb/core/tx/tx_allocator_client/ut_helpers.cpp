@@ -35,7 +35,7 @@ void TTestEnv::AllocateAndCheck(ui64 size) {
 }
 
 void TTestEnv::AsyncAllocate(ui64 size) {
-    Y_VERIFY(TxAllocatorClient);
+    Y_ABORT_UNLESS(TxAllocatorClient);
     TActorId sender = Runtime.AllocateEdgeActor();
     TEvTxAllocatorClient::TEvAllocate *ev = new TEvTxAllocatorClient::TEvAllocate(size);
     Runtime.Send(new IEventHandle(TxAllocatorClient, sender, ev, 0, SomeCockie(size)), 0, true);
@@ -59,8 +59,6 @@ void TTestEnv::Setup() {
     SetupLogging();
     TAppPrepare app;
     auto domain = TDomainsInfo::TDomain::ConstructDomainWithExplicitTabletIds("dc-1", domainId, 0,
-                                                                              domainId, domainId, TVector<ui32>{domainId},
-                                                                              domainId, TVector<ui32>{domainId},
                                                                               100500,
                                                                               TVector<ui64>{},
                                                                               TVector<ui64>{},
@@ -85,7 +83,7 @@ TMsgCounter::TMsgCounter(TTestActorRuntime &runtime, ui32 msgType)
     : Runtime(runtime)
     , Counter(0)
 {
-    PrevObserver = Runtime.SetObserverFunc([this, msgType](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+    PrevObserver = Runtime.SetObserverFunc([this, msgType](TAutoPtr<IEventHandle>& ev) {
         if (ev->GetTypeRewrite() == msgType) {
             this->Counter += 1;
         }

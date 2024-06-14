@@ -12,6 +12,11 @@
                         "Node Type": "Limit",
                         "Operators": [
                             {
+                                "Inputs": [
+                                    {
+                                        "ExternalPlanNodeId": 16
+                                    }
+                                ],
                                 "Limit": "1001",
                                 "Name": "Limit"
                             }
@@ -27,11 +32,25 @@
                                         "Node Type": "TopSort-LeftJoin (MapJoin)",
                                         "Operators": [
                                             {
+                                                "Inputs": [
+                                                    {
+                                                        "InternalOperatorId": 1
+                                                    }
+                                                ],
                                                 "Limit": "1001",
                                                 "Name": "TopSort",
-                                                "TopSortBy": "row.k"
+                                                "TopSortBy": "argument.p.k"
                                             },
                                             {
+                                                "Condition": "k = k",
+                                                "Inputs": [
+                                                    {
+                                                        "ExternalPlanNodeId": 14
+                                                    },
+                                                    {
+                                                        "ExternalPlanNodeId": 12
+                                                    }
+                                                ],
                                                 "Name": "LeftJoin (MapJoin)"
                                             }
                                         ],
@@ -43,11 +62,12 @@
                                                 "PlanNodeType": "Connection",
                                                 "Plans": [
                                                     {
-                                                        "CTE Name": "tx_result_binding_2_0",
+                                                        "CTE Name": "precompute_0_0",
                                                         "Node Type": "ConstantExpr",
                                                         "Operators": [
                                                             {
-                                                                "Iterator": "%kqp%tx_result_binding_0_0",
+                                                                "Inputs": [],
+                                                                "Iterator": "precompute_0_0",
                                                                 "Name": "Iterator"
                                                             }
                                                         ],
@@ -70,14 +90,24 @@
                                                                 "PlanNodeType": "Connection",
                                                                 "Plans": [
                                                                     {
-                                                                        "CTE Name": "tx_result_binding_2_0",
+                                                                        "CTE Name": "precompute_1_0",
                                                                         "Node Type": "Filter-TablePointLookup-ConstantExpr",
                                                                         "Operators": [
                                                                             {
+                                                                                "Inputs": [
+                                                                                    {
+                                                                                        "InternalOperatorId": 1
+                                                                                    }
+                                                                                ],
                                                                                 "Name": "Filter",
                                                                                 "Predicate": "Exist(item.k)"
                                                                             },
                                                                             {
+                                                                                "Inputs": [
+                                                                                    {
+                                                                                        "InternalOperatorId": 2
+                                                                                    }
+                                                                                ],
                                                                                 "Name": "TablePointLookup",
                                                                                 "ReadColumns": [
                                                                                     "k"
@@ -85,7 +115,8 @@
                                                                                 "Table": "postgres_jointest/join3.test_plan/child"
                                                                             },
                                                                             {
-                                                                                "Iterator": "%kqp%tx_result_binding_1_0",
+                                                                                "Inputs": [],
+                                                                                "Iterator": "precompute_1_0",
                                                                                 "Name": "Iterator"
                                                                             }
                                                                         ],
@@ -104,7 +135,7 @@
                                     }
                                 ],
                                 "SortColumns": [
-                                    "k (Asc)"
+                                    "p.k (Asc)"
                                 ]
                             }
                         ]
@@ -118,21 +149,19 @@
                 "PlanNodeType": "Materialize",
                 "Plans": [
                     {
-                        "Node Type": "Filter-Limit",
+                        "CTE Name": "precompute_0_0",
+                        "Node Type": "Aggregate",
                         "Operators": [
                             {
-                                "Name": "Filter",
-                                "Predicate": "Exist(item.k)"
-                            },
-                            {
-                                "Limit": "1",
-                                "Name": "Limit"
+                                "Input": "precompute_0_0",
+                                "Inputs": [],
+                                "Name": "PartitionByKey"
                             }
                         ],
                         "PlanNodeId": 6
                     }
                 ],
-                "Subplan Name": "CTE tx_result_binding_1_0"
+                "Subplan Name": "CTE precompute_1_0"
             },
             {
                 "Node Type": "Precompute_0",
@@ -153,6 +182,7 @@
                                         "Node Type": "TableFullScan",
                                         "Operators": [
                                             {
+                                                "Inputs": [],
                                                 "Name": "TableFullScan",
                                                 "ReadColumns": [
                                                     "k",
@@ -174,7 +204,7 @@
                         ]
                     }
                 ],
-                "Subplan Name": "CTE tx_result_binding_0_0"
+                "Subplan Name": "CTE precompute_0_0"
             }
         ]
     },

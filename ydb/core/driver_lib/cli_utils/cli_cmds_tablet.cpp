@@ -1,13 +1,15 @@
 #include "cli.h"
 #include "cli_cmds.h"
 
+#include <ydb/core/protos/base.pb.h>
+
 namespace NKikimr {
 namespace NDriverClient {
 
-class TClientCommandKeyValueRequest : public TClientCommandConfig {
+class TClientCommandKeyValueRequest : public TClientCommandBase {
 public:
     TClientCommandKeyValueRequest()
-        : TClientCommandConfig("request", { "req" }, "Request to KV tablet")
+        : TClientCommandBase("request", { "req" }, "Request to KV tablet")
     {}
 
     TString ProtoBuf;
@@ -17,18 +19,18 @@ public:
 
     int OnResponse(const NKikimrClient::TResponse& response) {
         if (!OutputFile.empty()) {
-            Y_VERIFY(response.ReadResultSize() == 1);
-            Y_VERIFY(response.GetReadResult(0).HasStatus());
-            Y_VERIFY(response.GetReadResult(0).GetStatus() == NKikimrProto::OK);
-            Y_VERIFY(response.GetReadResult(0).HasValue());
+            Y_ABORT_UNLESS(response.ReadResultSize() == 1);
+            Y_ABORT_UNLESS(response.GetReadResult(0).HasStatus());
+            Y_ABORT_UNLESS(response.GetReadResult(0).GetStatus() == NKikimrProto::OK);
+            Y_ABORT_UNLESS(response.GetReadResult(0).HasValue());
             TFile file(OutputFile, CreateNew | WrOnly);
             TString data = response.GetReadResult(0).GetValue();
             file.Write(data.data(), data.size());
             file.Close();
         } else if (!InputFile.empty()) {
-            Y_VERIFY(response.WriteResultSize() == 1);
-            Y_VERIFY(response.GetWriteResult(0).HasStatus());
-            Y_VERIFY(response.GetWriteResult(0).GetStatus() == NKikimrProto::OK);
+            Y_ABORT_UNLESS(response.WriteResultSize() == 1);
+            Y_ABORT_UNLESS(response.GetWriteResult(0).HasStatus());
+            Y_ABORT_UNLESS(response.GetWriteResult(0).GetStatus() == NKikimrProto::OK);
         } else {
             Cout << GetString(response) << Endl;
         }
@@ -63,9 +65,9 @@ public:
         ProtoBuf = config.ParseResult->GetFreeArgs().at(0);
         Request = GetProtobuf<NKikimrClient::TKeyValueRequest>(ProtoBuf);
         if (!InputFile.empty()) {
-            Y_VERIFY(Request->CmdWriteSize() == 1);
-            Y_VERIFY(Request->GetCmdWrite(0).HasKey());
-            Y_VERIFY(!Request->GetCmdWrite(0).HasValue());
+            Y_ABORT_UNLESS(Request->CmdWriteSize() == 1);
+            Y_ABORT_UNLESS(Request->GetCmdWrite(0).HasKey());
+            Y_ABORT_UNLESS(!Request->GetCmdWrite(0).HasValue());
             TString data = TUnbufferedFileInput(InputFile).ReadAll();
             Request->MutableCmdWrite(0)->SetValue(data);
         }
@@ -81,10 +83,10 @@ public:
     }
 };
 
-class TClientCommandTabletExec : public TClientCommandConfig {
+class TClientCommandTabletExec : public TClientCommandBase {
 public:
     TClientCommandTabletExec()
-        : TClientCommandConfig("execute", { "exec" })
+        : TClientCommandBase("execute", { "exec" })
     {
     }
 

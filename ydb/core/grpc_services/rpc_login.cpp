@@ -1,11 +1,17 @@
 #include "grpc_request_proxy.h"
+#include "service_auth.h"
 
-#include "rpc_calls.h"
-#include "rpc_kqp_base.h"
 #include "rpc_request_base.h"
 
+#include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
+
+#include <ydb/core/security/ldap_auth_provider.h>
+#include <ydb/core/security/login_shared_func.h>
+
+#include <ydb/public/api/protos/ydb_auth.pb.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -15,6 +21,10 @@ using namespace NSchemeShard;
 using TEvLoginRequest = TGRpcRequestWrapperNoAuth<TRpcServices::EvLogin, Ydb::Auth::LoginRequest, Ydb::Auth::LoginResponse>;
 
 class TLoginRPC : public TRpcRequestActor<TLoginRPC, TEvLoginRequest, true> {
+private:
+    TAuthCredentials Credentials;
+    TString PathToDatabase;
+
 public:
     using TRpcRequestActor::TRpcRequestActor;
 
@@ -30,16 +40,12 @@ public:
     }
 
     void Bootstrap() {
-        TString domainName = "/" + AppData()->DomainsInfo->Domains.begin()->second->Name;
-        TString path = AppData()->AuthConfig.GetDomainLoginOnly() ? domainName : DatabaseName;
-        auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
-        request->DatabaseName = path;
-        auto& entry = request->ResultSet.emplace_back();
-        entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
-        entry.Path = ::NKikimr::SplitPath(path);
-        entry.RedirectRequired = false;
-        Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
-
+        const Ydb::Auth::LoginRequest* protoRequest = GetProtoRequest();
+        Credentials = PrepareCredentials(protoRequest->user(), protoRequest->password(), AppData()->AuthConfig);
+        TString domainName = "/" + AppData()->DomainsInfo->GetDomain()->Name;
+        PathToDatabase = AppData()->AuthConfig.GetDomainLoginOnly() ? domainName : DatabaseName;
+        auto sendParameters = GetSendParameters(Credentials, PathToDatabase);
+        Send(sendParameters.Recipient, sendParameters.Event.Release());
         Become(&TThis::StateWork, Timeout, new TEvents::TEvWakeup());
     }
 
@@ -56,15 +62,30 @@ public:
                 IActor* pipe = NTabletPipe::CreateClient(SelfId(), domainInfo->ExtractSchemeShard(), GetPipeClientConfig());
                 PipeClient = RegisterWithSameMailbox(pipe);
                 THolder<TEvSchemeShard::TEvLogin> request = MakeHolder<TEvSchemeShard::TEvLogin>();
-                const Ydb::Auth::LoginRequest* protoRequest = GetProtoRequest();
-                request.Get()->Record.SetUser(protoRequest->user());
-                request.Get()->Record.SetPassword(protoRequest->password());
+                request.Get()->Record = CreateLoginRequest(Credentials, AppData()->AuthConfig);
                 NTabletPipe::SendData(SelfId(), PipeClient, request.Release());
                 return;
             }
         }
         Status = Ydb::StatusIds::SCHEME_ERROR;
         ReplyAndPassAway();
+    }
+
+    void Handle(TEvLdapAuthProvider::TEvAuthenticateResponse::TPtr& ev) {
+        TEvLdapAuthProvider::TEvAuthenticateResponse* response = ev->Get();
+        if (response->Status == TEvLdapAuthProvider::EStatus::SUCCESS) {
+            Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(CreateNavigateKeySetRequest(PathToDatabase).Release()));
+        } else {
+            TResponse loginResponse;
+            Ydb::Operations::Operation& operation = *loginResponse.mutable_operation();
+            Ydb::Issue::IssueMessage* issue = operation.add_issues();
+            issue->set_message(response->Error.Message);
+            Status = ConvertLdapStatus(response->Status);
+            issue->set_issue_code(Status);
+            operation.set_ready(true);
+            operation.set_status(Status);
+            Reply(loginResponse);
+        }
     }
 
     void HandleResult(TEvSchemeShard::TEvLoginResult::TPtr& ev) {
@@ -91,6 +112,7 @@ public:
             hFunc(TEvTabletPipe::TEvClientConnected, HandleConnect);
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleNavigate);
             hFunc(TEvSchemeShard::TEvLoginResult, HandleResult);
+            hFunc(TEvLdapAuthProvider::TEvAuthenticateResponse, Handle);
             cFunc(TEvents::TSystem::Wakeup, HandleTimeout);
         }
     }
@@ -119,10 +141,24 @@ public:
         operation.set_status(Status);
         return Reply(response);
     }
+
+private:
+    static Ydb::StatusIds::StatusCode ConvertLdapStatus(const TEvLdapAuthProvider::EStatus& status) {
+        switch (status) {
+            case NKikimr::TEvLdapAuthProvider::EStatus::SUCCESS:
+                return Ydb::StatusIds::SUCCESS;
+            case NKikimr::TEvLdapAuthProvider::EStatus::UNAUTHORIZED:
+                return Ydb::StatusIds::UNAUTHORIZED;
+            case NKikimr::TEvLdapAuthProvider::EStatus::UNAVAILABLE:
+                return Ydb::StatusIds::UNAVAILABLE;
+            case NKikimr::TEvLdapAuthProvider::EStatus::BAD_REQUEST:
+                return Ydb::StatusIds::BAD_REQUEST;
+        }
+    }
 };
 
-void TGRpcRequestProxyHandleMethods::Handle(TEvLoginRequest::TPtr& ev, const TActorContext& ctx) {
-    ctx.Register(new TLoginRPC(ev->Release().Release()));
+void DoLoginRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
+    f.RegisterActor(new TLoginRPC(p.release()));
 }
 
 template<>

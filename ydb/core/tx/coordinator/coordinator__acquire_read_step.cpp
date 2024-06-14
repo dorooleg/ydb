@@ -20,7 +20,7 @@ struct TTxCoordinator::TTxAcquireReadStep : public TTransactionBase<TTxCoordinat
     bool Execute(TTransactionContext& txc, const TActorContext& ctx) override {
         Y_UNUSED(ctx);
 
-        Y_VERIFY(Self->VolatileState.AcquireReadStepStarting);
+        Y_ABORT_UNLESS(Self->VolatileState.AcquireReadStepStarting);
         Requests.swap(Self->VolatileState.AcquireReadStepPending);
         Self->VolatileState.AcquireReadStepStarting = false;
 
@@ -45,9 +45,9 @@ struct TTxCoordinator::TTxAcquireReadStep : public TTransactionBase<TTxCoordinat
         // updated asynchronously, that would make sure restarted coordinators
         // would not break guarantees for older coordinators.
         NIceDb::TNiceDb db(txc.DB);
-        db.Table<Schema::State>().Key(Schema::State::AcquireReadStepLast).Update(
-            NIceDb::TUpdate<Schema::State::StateValue>(Step));
+        Schema::SaveState(db, Schema::State::AcquireReadStepLast, Step);
 
+        Self->SchedulePlanTickAligned(Step + 1);
         return true;
     }
 
@@ -59,7 +59,7 @@ struct TTxCoordinator::TTxAcquireReadStep : public TTransactionBase<TTxCoordinat
         }
 
         Self->VolatileState.AcquireReadStepLatencyUs.Push(latencyUs);
-        Y_VERIFY(Self->VolatileState.AcquireReadStepInFlight > 0);
+        Y_ABORT_UNLESS(Self->VolatileState.AcquireReadStepInFlight > 0);
         --Self->VolatileState.AcquireReadStepInFlight;
 
         Self->MaybeFlushAcquireReadStep(ctx);
@@ -114,6 +114,7 @@ void TTxCoordinator::Handle(TEvTxProxy::TEvAcquireReadStep::TPtr& ev, const TAct
         Executor()->ConfirmReadOnlyLease([this, sender, cookie, step]() {
             Send(sender, new TEvTxProxy::TEvAcquireReadStepResult(TabletID(), step), 0, cookie);
         });
+        SchedulePlanTickAligned(step + 1);
         return;
     }
 
@@ -122,10 +123,10 @@ void TTxCoordinator::Handle(TEvTxProxy::TEvAcquireReadStep::TPtr& ev, const TAct
 }
 
 void TTxCoordinator::Handle(TEvPrivate::TEvAcquireReadStepFlush::TPtr&, const TActorContext& ctx) {
-    Y_VERIFY(VolatileState.AcquireReadStepFlushing);
+    Y_ABORT_UNLESS(VolatileState.AcquireReadStepFlushing);
     VolatileState.AcquireReadStepFlushing = false;
 
-    Y_VERIFY(!VolatileState.AcquireReadStepStarting);
+    Y_ABORT_UNLESS(!VolatileState.AcquireReadStepStarting);
     VolatileState.AcquireReadStepStarting = true;
     ++VolatileState.AcquireReadStepInFlight;
     VolatileState.AcquireReadStepLast = ctx.Monotonic();

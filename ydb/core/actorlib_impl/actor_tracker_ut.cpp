@@ -1,7 +1,7 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <ydb/core/testlib/basics/runtime.h>
 #include <ydb/core/testlib/basics/appdata.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include "actor_tracker.h"
 
 using namespace NActors;
@@ -38,7 +38,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvents::TEvPoisonPill, HandlePoison);
             default:
-                Y_FAIL();
+                Y_ABORT();
         }
     }
 };
@@ -64,7 +64,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvents::TEvPoisonPill, TBase::HandlePoison);
             default:
-                Y_FAIL();
+                Y_ABORT();
         }
     }
 };

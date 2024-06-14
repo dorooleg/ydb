@@ -122,7 +122,7 @@ public:
     };
 
     struct TExecutorInfo {
-        ui64 CacheSize = 384 * 1024;
+        ui64 CacheSize = 384 * 1024; // (DEPRECATED)
         bool AllowLogBatching = false;
         bool LogFastTactic = true;
         TDuration LogFlushPeriod = TDuration::MicroSeconds(500);
@@ -168,20 +168,13 @@ public:
         return nullptr;
     }
 
-    ECache CachePolicy(ui32 id) const noexcept
-    {
-        auto *family = DefaultFamilyFor(id);
-
-        return family ? family->Cache : ECache::None;
-    }
-
     ECompactionStrategy CompactionStrategyFor(ui32 id) const noexcept
     {
         if (auto *table = GetTableInfo(id)) {
             auto strategy = table->CompactionPolicy->CompactionStrategy;
             if (strategy != NKikimrSchemeOp::CompactionStrategyUnset) {
-                if (table->ColdBorrow && strategy == NKikimrSchemeOp::CompactionStrategySharded) {
-                    // Sharded strategy does not support cold borrow
+                if (strategy == NKikimrSchemeOp::CompactionStrategySharded) {
+                    // Sharded strategy doesn't exist anymore
                     // Use the safe generational strategy instead
                     strategy = NKikimrSchemeOp::CompactionStrategyGenerational;
                 }
@@ -266,6 +259,7 @@ public:
     TAlter& SetByKeyFilter(ui32 tableId, bool enabled);
     TAlter& SetColdBorrow(ui32 tableId, bool enabled);
     TAlter& SetEraseCache(ui32 tableId, bool enabled, ui32 minRows, ui32 maxBytes);
+    TAlter& SetRewrite();
 
     TAutoPtr<TSchemeChanges> Flush();
 

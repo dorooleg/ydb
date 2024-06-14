@@ -1,25 +1,42 @@
 #pragma once
 #include "defs.h"
 #include "audit_log.h"
+#include "audit_dml_operations.h"
 #include "service_ratelimiter_events.h"
 #include "grpc_request_proxy_handle_methods.h"
 #include "local_rate_limiter.h"
 #include "operation_helpers.h"
 #include "rpc_calls.h"
 
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 
 #include <ydb/core/base/path.h>
+#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/base/subdomain.h>
-#include <ydb/core/base/kikimr_issue.h>
+#include <ydb/library/ydb_issue/issue_helpers.h>
 #include <ydb/core/grpc_services/counters/proxy_counters.h>
 #include <ydb/core/security/secure_request.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
+#include <ydb/library/wilson_ids/wilson.h>
 
 #include <util/string/split.h>
 
 namespace NKikimr {
 namespace NGRpcService {
+
+template<typename TCtx>
+bool TGRpcRequestProxyHandleMethods::ValidateAndReplyOnError(TCtx* ctx) {
+    TString validationError;
+    if (!ctx->Validate(validationError)) {
+        const auto issue = MakeIssue(NKikimrIssues::TIssuesIds::YDB_API_VALIDATION_ERROR, validationError);
+        ctx->RaiseIssue(issue);
+        ctx->ReplyWithYdbStatus(Ydb::StatusIds::BAD_REQUEST);
+        ctx->FinishSpan();
+        return false;
+    } else {
+        return true;
+    }
+}
 
 template <typename TEvent>
 class TGrpcRequestCheckActor
@@ -34,9 +51,9 @@ public:
     void OnAccessDenied(const TEvTicketParser::TError& error, const TActorContext& ctx) {
         LOG_INFO(ctx, NKikimrServices::GRPC_SERVER, error.ToString());
         if (error.Retryable) {
-            GrpcRequestBaseCtx_->UpdateAuthState(NGrpc::TAuthState::AS_UNAVAILABLE);
+            GrpcRequestBaseCtx_->UpdateAuthState(NYdbGrpc::TAuthState::AS_UNAVAILABLE);
         } else {
-            GrpcRequestBaseCtx_->UpdateAuthState(NGrpc::TAuthState::AS_FAIL);
+            GrpcRequestBaseCtx_->UpdateAuthState(NYdbGrpc::TAuthState::AS_FAIL);
         }
         GrpcRequestBaseCtx_->RaiseIssue(NYql::TIssue{error.Message});
         ReplyBackAndDie();
@@ -56,7 +73,7 @@ public:
     }
 
     void ProcessCommonAttributes(const TSchemeBoardEvents::TDescribeSchemeResult& schemeData) {
-        static std::vector<TString> allowedAttributes = {"folder_id", "service_account_id", "database_id"};
+        static std::vector<TString> allowedAttributes = {"folder_id", "service_account_id", "database_id", "container_id"};
         TVector<std::pair<TString, TString>> attributes;
         attributes.reserve(schemeData.GetPathDescription().UserAttributesSize());
         for (const auto& attr : schemeData.GetPathDescription().GetUserAttributes()) {
@@ -87,10 +104,11 @@ public:
         , Request_(std::move(request))
         , Counters_(counters)
         , SecurityObject_(std::move(securityObject))
+        , GrpcRequestBaseCtx_(Request_->Get())
         , SkipCheckConnectRigths_(skipCheckConnectRigths)
         , FacilityProvider_(facilityProvider)
+        , Span_(TWilsonGrpc::RequestCheckActor, GrpcRequestBaseCtx_->GetWilsonTraceId(), "RequestCheckActor")
     {
-        GrpcRequestBaseCtx_ = Request_->Get();
         TMaybe<TString> authToken = GrpcRequestBaseCtx_->GetYdbToken();
         if (authToken) {
             TString peerName = GrpcRequestBaseCtx_->GetPeerName();
@@ -98,11 +116,12 @@ public:
             TBase::SetPeerName(peerName);
             InitializeAttributes(schemeData);
             TBase::SetDatabase(CheckedDatabaseName_);
+            InitializeAuditSettings(schemeData);
         }
     }
 
     void Bootstrap(const TActorContext& ctx) {
-        TBase::Become(&TSelf::DbAccessStateFunc);
+        TBase::UnsafeBecome(&TSelf::DbAccessStateFunc);
 
         if (AppData()->FeatureFlags.GetEnableDbCounters()) {
             Counters_ = WrapGRpcProxyDbCounters(Counters_);
@@ -124,7 +143,8 @@ public:
         }
 
         if (AppData(ctx)->FeatureFlags.GetEnableGrpcAudit()) {
-            AuditLog(GrpcRequestBaseCtx_, CheckedDatabaseName_, GetSubject(), ctx);
+            // log info about input connection (remote address, basically)
+            AuditLogConn(GrpcRequestBaseCtx_, CheckedDatabaseName_, TBase::GetUserSID());
         }
 
         // Simple rps limitation
@@ -208,7 +228,7 @@ public:
             const NYql::TIssues issues;
             ReplyUnavailableAndDie(issues);
         } else {
-            GrpcRequestBaseCtx_->UpdateAuthState(NGrpc::TAuthState::AS_OK);
+            GrpcRequestBaseCtx_->UpdateAuthState(NYdbGrpc::TAuthState::AS_OK);
             GrpcRequestBaseCtx_->SetInternalToken(TBase::GetParsedToken());
             Continue();
         }
@@ -221,11 +241,12 @@ public:
     }
 
     void HandlePoison(TEvents::TEvPoisonPill::TPtr&) {
-        TBase::PassAway();
+        GrpcRequestBaseCtx_->FinishSpan();
+        PassAway();
     }
 
-    TIntrusiveConstPtr<TAppConfig> GetAppConfig() const override {
-        return FacilityProvider_->GetAppConfig();
+    ui64 GetChannelBufferSize() const override {
+        return FacilityProvider_->GetChannelBufferSize();
     }
 
     TActorId RegisterActor(IActor* actor) const override {
@@ -234,12 +255,12 @@ public:
         return this->RegisterWithSameMailbox(actor);
     }
 
-private:
-    TString GetSubject() const {
-        const auto sid = TBase::GetUserSID();
-        return sid ? sid : "no subject";
+    void PassAway() override {
+        Span_.EndOk();
+        TBase::PassAway();
     }
 
+private:
     static NYql::TIssues GetRlIssues(const Ydb::RateLimiter::AcquireResourceResponse& resp) {
         NYql::TIssues opIssues;
         NYql::IssuesFromMessage(resp.operation().issues(), opIssues);
@@ -349,65 +370,100 @@ private:
     }
 
 private:
+    void InitializeAuditSettings(const TSchemeBoardEvents::TDescribeSchemeResult& schemeData) {
+        const auto& auditSettings = schemeData.GetPathDescription().GetDomainDescription().GetAuditSettings();
+        DmlAuditEnabled_ = auditSettings.GetEnableDmlAudit();
+        DmlAuditExpectedSubjects_.insert(auditSettings.GetExpectedSubjects().begin(), auditSettings.GetExpectedSubjects().end());
+    }
+
+    bool IsAuditEnabledFor(const TString& userSID) const {
+        return DmlAuditEnabled_ && !DmlAuditExpectedSubjects_.contains(userSID);
+    };
+
+    void AuditRequest(IRequestProxyCtx* requestBaseCtx, const TString& databaseName, const TString& userSID) const {
+        const bool dmlAuditEnabled = requestBaseCtx->IsAuditable() && IsAuditEnabledFor(userSID);
+
+        if (dmlAuditEnabled) {
+            AuditContextStart(requestBaseCtx, databaseName, userSID, Attributes_);
+            requestBaseCtx->SetAuditLogHook([requestBaseCtx](ui32 status, const TAuditLogParts& parts) {
+                AuditContextEnd(requestBaseCtx);
+                AuditLog(status, parts);
+            });
+        }
+    }
+
+private:
     void ReplyUnauthorizedAndDie(const NYql::TIssue& issue) {
         GrpcRequestBaseCtx_->RaiseIssue(issue);
         GrpcRequestBaseCtx_->ReplyWithYdbStatus(Ydb::StatusIds::UNAUTHORIZED);
-        TBase::PassAway();
+        GrpcRequestBaseCtx_->FinishSpan();
+        PassAway();
     }
 
     void ReplyUnavailableAndDie(const NYql::TIssue& issue) {
         GrpcRequestBaseCtx_->RaiseIssue(issue);
         GrpcRequestBaseCtx_->ReplyWithYdbStatus(Ydb::StatusIds::UNAVAILABLE);
-        TBase::PassAway();
+        GrpcRequestBaseCtx_->FinishSpan();
+        PassAway();
     }
 
     void ReplyUnavailableAndDie(const NYql::TIssues& issue) {
         GrpcRequestBaseCtx_->RaiseIssues(issue);
         GrpcRequestBaseCtx_->ReplyWithYdbStatus(Ydb::StatusIds::UNAVAILABLE);
-        TBase::PassAway();
+        GrpcRequestBaseCtx_->FinishSpan();
+        PassAway();
     }
 
     void ReplyUnauthenticatedAndDie() {
         GrpcRequestBaseCtx_->ReplyUnauthenticated("Unknown database");
-        TBase::PassAway();
+        GrpcRequestBaseCtx_->FinishSpan();
+        PassAway();
     }
 
     void ReplyOverloadedAndDie(const NYql::TIssue& issue) {
         GrpcRequestBaseCtx_->RaiseIssue(issue);
         GrpcRequestBaseCtx_->ReplyWithYdbStatus(Ydb::StatusIds::OVERLOADED);
-        TBase::PassAway();
+        GrpcRequestBaseCtx_->FinishSpan();
+        PassAway();
     }
 
     void Continue() {
         if (!ValidateAndReplyOnError(GrpcRequestBaseCtx_)) {
-            TBase::PassAway();
+            PassAway();
             return;
         }
         HandleAndDie(Request_);
     }
 
     void HandleAndDie(TAutoPtr<TEventHandle<TEvProxyRuntimeEvent>>& event) {
+        // Request audit happen after successful authentication
+        // and authorization check against the database
+        AuditRequest(GrpcRequestBaseCtx_, CheckedDatabaseName_, TBase::GetUserSID());
+
+        GrpcRequestBaseCtx_->FinishSpan();
         event->Release().Release()->Pass(*this);
-        TBase::PassAway();
+        PassAway();
     }
 
     void HandleAndDie(TAutoPtr<TEventHandle<TEvListEndpointsRequest>>&) {
         ReplyBackAndDie();
     }
 
-    void HandleAndDie(TRefreshTokenImpl::TPtr&) {
+    template <ui32 TRpcId>
+    void HandleAndDie(TAutoPtr<TEventHandle<TRefreshTokenImpl<TRpcId>>>&) {
         ReplyBackAndDie();
     }
 
     template <typename T>
     void HandleAndDie(T& event) {
+        GrpcRequestBaseCtx_->FinishSpan();
         TGRpcRequestProxyHandleMethods::Handle(event, TlsActivationContext->AsActorContext());
-        TBase::PassAway();
+        PassAway();
     }
 
     void ReplyBackAndDie() {
         TlsActivationContext->Send(Request_->Forward(Owner_));
-        TBase::PassAway();
+        PassAway();
     }
 
     std::pair<bool, std::optional<NYql::TIssue>> CheckConnectRight() {
@@ -482,6 +538,9 @@ private:
     bool SkipCheckConnectRigths_ = false;
     std::vector<std::pair<TString, TString>> Attributes_;
     const IFacilityProvider* FacilityProvider_;
+    bool DmlAuditEnabled_ = false;
+    std::unordered_set<TString> DmlAuditExpectedSubjects_;
+    NWilson::TSpan Span_;
 };
 
 // default behavior - attributes in schema
@@ -493,17 +552,37 @@ void TGrpcRequestCheckActor<TEvent>::InitializeAttributes(const TSchemeBoardEven
     InitializeAttributesFromSchema(schemeData);
 }
 
-// default permissions
+template<typename T>
+inline constexpr bool IsStreamWrite = (
+    std::is_same_v<T, TEvStreamPQWriteRequest>
+    || std::is_same_v<T, TEvStreamTopicWriteRequest>
+    || std::is_same_v<T, TRefreshTokenStreamWriteSpecificRequest>
+);
+
 template <typename TEvent>
 const TVector<TString>& TGrpcRequestCheckActor<TEvent>::GetPermissions() {
-    static const TVector<TString> permissions = {
-                "ydb.databases.list",
-                "ydb.databases.create",
-                "ydb.databases.connect",
-                "ydb.tables.select",
-                "ydb.schemas.getMetadata"
-            };
-    return permissions;
+    if constexpr (IsStreamWrite<TEvent>) {
+        // extended permissions for stream write request family
+        static const TVector<TString> permissions = {
+            "ydb.databases.list",
+            "ydb.databases.create",
+            "ydb.databases.connect",
+            "ydb.tables.select",
+            "ydb.schemas.getMetadata",
+            "ydb.streams.write"
+        };
+        return permissions;
+    } else {
+        // default permissions
+        static const TVector<TString> permissions = {
+            "ydb.databases.list",
+            "ydb.databases.create",
+            "ydb.databases.connect",
+            "ydb.tables.select",
+            "ydb.schemas.getMetadata"
+        };
+        return permissions;
+    }
 }
 
 template <typename TEvent>

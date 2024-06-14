@@ -92,6 +92,12 @@ namespace NKikimr {
         TPairOfVectors HandoffParts(const TBlobStorageGroupInfo::TTopology *top,
                                     const TVDiskIdShort &vdisk,
                                     const TLogoBlobID &id) const;
+        NMatrix::TVectorType GetVDiskHandoffVec(const TBlobStorageGroupInfo::TTopology *top,
+                                           const TVDiskIdShort &vdisk,
+                                           const TLogoBlobID &id) const;
+        NMatrix::TVectorType GetVDiskHandoffDeletedVec(const TBlobStorageGroupInfo::TTopology *top,
+                                           const TVDiskIdShort &vdisk,
+                                           const TLogoBlobID &id) const;
         NMatrix::TVectorType LocalParts(TBlobStorageGroupType gtype) const;
         NMatrix::TVectorType KnownParts(TBlobStorageGroupType gtype, ui8 nodeId) const;
         // Returns main replica for this LogoBlob with PartId != 0
@@ -100,7 +106,8 @@ namespace NKikimr {
         TIngress CopyWithoutLocal(TBlobStorageGroupType gtype) const;
         void DeleteHandoff(const TBlobStorageGroupInfo::TTopology *top,
                            const TVDiskIdShort &vdisk,
-                           const TLogoBlobID &id);
+                           const TLogoBlobID &id,
+                           bool deleteLocal=false);
         TString ToString(const TBlobStorageGroupInfo::TTopology *top,
                         const TVDiskIdShort &vdisk,
                         const TLogoBlobID &id) const;
@@ -221,22 +228,8 @@ namespace NKikimr {
     };
 
     struct TFakeFilter {
-        template <class T>
-        bool Check(const T &) const {
-            return true;
-        }
-        template <class T1, class T2>
-        bool Check(const T1&, const T2&) const {
-            return true;
-        }
-        template <class T1, class T2>
-        bool Check(const T1&, const T2&, bool) const {
-            return true;
-        }
-        template <class T1, class T2, class T3>
-        bool Check(const T1&, const T2&, const T3&, bool) const {
-            return true;
-        }
+        template<typename... T>
+        bool Check(T&&...) const { return true; }
     };
 
 } // NKikimr

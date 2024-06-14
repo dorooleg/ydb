@@ -13,23 +13,12 @@
                         "Value1",
                         "Value2"
                     ],
-                    "type": "Lookup"
-                },
-                {
-                    "columns": [
-                        "Key",
-                        "Value1",
-                        "Value2"
+                    "scan_by": [
+                        "Key [1, 1]",
+                        "Key [3, 3]",
+                        "Key [5, 5]"
                     ],
-                    "type": "Lookup"
-                },
-                {
-                    "columns": [
-                        "Key",
-                        "Value1",
-                        "Value2"
-                    ],
-                    "type": "Lookup"
+                    "type": "Scan"
                 }
             ]
         }

@@ -3,11 +3,14 @@
 #include <library/cpp/monlib/service/monservice.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <library/cpp/monlib/service/pages/index_mon_page.h>
+#include <library/cpp/monlib/service/pages/resources/css_mon_page.h>
+#include <library/cpp/monlib/service/pages/resources/fonts_mon_page.h>
+#include <library/cpp/monlib/service/pages/resources/js_mon_page.h>
 #include <library/cpp/monlib/service/pages/tablesorter/css_mon_page.h>
 #include <library/cpp/monlib/service/pages/tablesorter/js_mon_page.h>
 
-#include <library/cpp/actors/core/mon.h>
-#include <library/cpp/actors/http/http.h>
+#include <ydb/library/actors/core/mon.h>
+#include <ydb/library/actors/http/http.h>
 
 #include "mon.h"
 
@@ -25,6 +28,7 @@ public:
     NMonitoring::IMonPage* RegisterActorPage(TRegisterActorPageFields fields) override;
     NMonitoring::IMonPage* RegisterCountersPage(const TString& path, const TString& title, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters) override;
     NMonitoring::IMonPage* FindPage(const TString& relPath) override;
+    void RegisterHandler(const TString& path, const TActorId& handler) override;
 
 protected:
     TConfig Config;
@@ -36,12 +40,13 @@ protected:
 
     struct TActorMonPageInfo {
         NMonitoring::TMonPagePtr Page;
+        TActorId Handler;
         TString Path;
     };
 
     TMutex Mutex;
     std::vector<TActorMonPageInfo> ActorMonPages;
-    std::vector<TActorId> ActorServices;
+    THashMap<TString, TActorId> ActorServices;
 
     void RegisterActorMonPage(const TActorMonPageInfo& pageInfo);
 };

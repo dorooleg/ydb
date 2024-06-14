@@ -24,15 +24,7 @@ namespace NKikimr {
         std::optional<NKikimrVDiskData::TScrubState> State;
 
         ::NMonitoring::TDynamicCounterPtr Counters;
-        ::NMonitoring::TDynamicCounters::TCounterPtr SstProcessed;
-        ::NMonitoring::TDynamicCounters::TCounterPtr HugeBlobsRead;
-        ::NMonitoring::TDynamicCounters::TCounterPtr HugeBlobBytesRead;
-        ::NMonitoring::TDynamicCounters::TCounterPtr SmallBlobIntervalsRead;
-        ::NMonitoring::TDynamicCounters::TCounterPtr SmallBlobIntervalBytesRead;
-        ::NMonitoring::TDynamicCounters::TCounterPtr SmallBlobsRead;
-        ::NMonitoring::TDynamicCounters::TCounterPtr SmallBlobBytesRead;
-        ::NMonitoring::TDynamicCounters::TCounterPtr UnreadableBlobsFound;
-        ::NMonitoring::TDynamicCounters::TCounterPtr BlobsFixed;
+        NMonGroup::TScrubGroup MonGroup;
 
         TRopeArena Arena;
 
@@ -51,10 +43,6 @@ namespace NKikimr {
         ui32 Checkpoints = 0;
 
         bool Success = false;
-
-        enum {
-            EvGenerateRestoreCorruptedBlobQuery = EventSpaceBegin(TEvents::ES_PRIVATE),
-        };
 
     private:
         struct TUnreadableBlobState {
@@ -79,6 +67,8 @@ namespace NKikimr {
         void AddUnreadableParts(const TLogoBlobID& fullId, NMatrix::TVectorType corrupted, TDiskPart corruptedPart);
         void UpdateUnreadableParts(const TLogoBlobID& fullId, NMatrix::TVectorType corrupted, TDiskPart corruptedPart);
         void UpdateReadableParts(const TLogoBlobID& fullId, NMatrix::TVectorType readable);
+        void Handle(TEvTakeHullSnapshotResult::TPtr ev);
+        void FilterUnreadableBlobs(THullDsSnap& snap, TBarriersSnapshot::TBarriersEssence& barriers);
 
         ui64 GenerateRestoreCorruptedBlobQuery();
         void Handle(TAutoPtr<TEventHandle<TEvRestoreCorruptedBlobResult>> ev);
@@ -129,7 +119,7 @@ namespace NKikimr {
         // PDISK INTERACTION
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-        std::optional<TString> Read(const TDiskPart& part);
+        std::optional<TRcBuf> Read(const TDiskPart& part);
         bool IsReadable(const TDiskPart& part);
         void Write(const TDiskPart& part, TString data);
 

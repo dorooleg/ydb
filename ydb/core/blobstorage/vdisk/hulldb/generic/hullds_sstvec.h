@@ -62,7 +62,7 @@ namespace NKikimr {
         };
 
         ui64 GetFirstLsn() const {
-            Y_VERIFY_DEBUG(!Empty());
+            Y_DEBUG_ABORT_UNLESS(!Empty());
             ui64 firstLsn = ui64(-1);
             for (const auto &x : Segments)
                 firstLsn = Min(firstLsn, x->Info.FirstLsn);
@@ -70,7 +70,7 @@ namespace NKikimr {
         }
 
         ui64 GetLastLsn() const {
-            Y_VERIFY_DEBUG(!Empty());
+            Y_DEBUG_ABORT_UNLESS(!Empty());
             ui64 lastLsn = 0;
             for (const auto &x : Segments)
                 lastLsn = Max(lastLsn, x->Info.LastLsn);
@@ -130,7 +130,7 @@ namespace NKikimr {
 
         // NOTE: this is the obsolete way of discovering Last Compacted Lsn
         TOptLsn ObsoleteLastCompactedLsn() const {
-            Y_VERIFY(!Empty());
+            Y_ABORT_UNLESS(!Empty());
             TOptLsn lastLsn;
             for (const auto &x : Segments) {
                 if (!x->Info.IsCreatedByRepl()) {
@@ -213,14 +213,14 @@ namespace NKikimr {
         }
 
         void Put(const TLevelSegmentPtr &ptr, ui64 volatileOrderId) {
-            Y_VERIFY(Segments.empty() || Segments.back()->VolatileOrderId < volatileOrderId);
+            Y_ABORT_UNLESS(Segments.empty() || Segments.back()->VolatileOrderId < volatileOrderId);
             ptr->VolatileOrderId = volatileOrderId;
             Segments.push_back(ptr);
             Num++;
         }
 
         void SerializeToProto(NKikimrVDiskData::TLevel0 &pb) const {
-            Y_VERIFY(Num == Segments.size());
+            Y_ABORT_UNLESS(Num == Segments.size());
             for (const auto &x : Segments) {
                 auto sst = pb.AddSsts();
                 x->SerializeToProto(*sst);
@@ -245,7 +245,7 @@ namespace NKikimr {
 
         // NOTE: this is the obsolete way of discovering Last Compacted Lsn
         TOptLsn ObsoleteLastCompactedLsn() const {
-            Y_VERIFY(!Empty());
+            Y_ABORT_UNLESS(!Empty());
             TOptLsn lastLsn;
             for (const auto &x : Segments) {
                 if (!x->Info.IsCreatedByRepl()) {

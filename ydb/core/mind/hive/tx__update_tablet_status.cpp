@@ -33,7 +33,7 @@ public:
 
     TTxType GetTxType() const override { return NHive::TXTYPE_UPDATE_TABLET_STATUS; }
 
-    bool IsGoodStatusForPostpone() const {
+    bool IsGoodStatusForPenalties() const {
         switch (Status) {
             case TEvLocal::TEvTabletStatus::StatusBootFailed:
                 switch (Reason) {
@@ -123,6 +123,7 @@ public:
                 }
                 tablet->ActorsToNotify.clear();
                 db.Table<Schema::Tablet>().Key(TabletId).UpdateToNull<Schema::Tablet::ActorsToNotify>();
+                tablet->FailedNodeId = 0;
             } else {
                 if (Local) {
                     SideEffects.Send(Local, new TEvLocal::TEvDeadTabletAck(std::make_pair(TabletId, FollowerId), Generation));
@@ -132,8 +133,8 @@ public:
                     if (Generation < leader.KnownGeneration) {
                         return true;
                     }
-                    if (leader.GetRestartsPerPeriod(now - Self->GetTabletRestartsPeriod()) >= Self->GetTabletRestarsMaxCount()) {
-                        if (IsGoodStatusForPostpone()) {
+                    if (leader.GetRestartsPerPeriod(now - Self->GetTabletRestartsPeriod()) >= Self->GetTabletRestartsMaxCount()) {
+                        if (IsGoodStatusForPenalties()) {
                             leader.PostponeStart(now + Self->GetPostponeStartPeriod());
                             BLOG_D("THive::TTxUpdateTabletStatus::Execute for tablet " << tablet->ToString()
                                 << " postponed start until " << leader.PostponedStart);
@@ -155,10 +156,13 @@ public:
                         }
                         tablet->InitiateStop(SideEffects);
                     }
+                    if (IsGoodStatusForPenalties()) {
+                        tablet->FailedNodeId = Local.NodeId();
+                    }
                 }
                 switch (tablet->GetLeader().State) {
                 case ETabletState::GroupAssignment:
-                    //Y_FAIL("Unexpected tablet boot failure during group assignment");
+                    //Y_ABORT("Unexpected tablet boot failure during group assignment");
                     // Just ignore it. This is fail from previous generation.
                     return true;
                 case ETabletState::StoppingInGroupAssignment:

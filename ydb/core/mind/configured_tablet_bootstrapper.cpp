@@ -2,10 +2,11 @@
 
 #include <ydb/core/tablet/bootstrapper.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
-#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 
 // for 'create' funcs
 #include <ydb/core/mind/bscontroller/bsc.h>
+#include <ydb/core/backup/controller/tablet.h>
 #include <ydb/core/base/hive.h>
 #include <ydb/core/tx/coordinator/coordinator.h>
 #include <ydb/core/tx/mediator/mediator.h>
@@ -23,8 +24,9 @@
 #include <ydb/core/sys_view/processor/processor.h>
 #include <ydb/core/test_tablet/test_tablet.h>
 #include <ydb/core/blob_depot/blob_depot.h>
+#include <ydb/core/statistics/aggregator/aggregator.h>
 
-#include <library/cpp/actors/core/hfunc.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 namespace NKikimr {
 
@@ -161,7 +163,7 @@ TTabletTypes::EType BootstrapperTypeToTabletType(ui32 type) {
     case NKikimrConfig::TBootstrap::CONSOLE:
         return TTabletTypes::Console;
     default:
-        Y_FAIL("unknown tablet type");
+        Y_ABORT("unknown tablet type");
     }
     return TTabletTypes::TypeInvalid;
 }
@@ -226,6 +228,12 @@ TIntrusivePtr<TTabletSetupInfo> MakeTabletSetupInfo(
         break;
     case TTabletTypes::BlobDepot:
         createFunc = &NBlobDepot::CreateBlobDepot;
+        break;
+    case TTabletTypes::StatisticsAggregator:
+        createFunc = &NStat::CreateStatisticsAggregator;
+        break;
+    case TTabletTypes::BackupController:
+        createFunc = &NBackup::CreateBackupController;
         break;
     default:
         return nullptr;

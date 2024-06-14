@@ -185,6 +185,10 @@ public:
             HasInReadsets = false;
             Loaded = false;
         }
+
+        void SetLoaded() {
+            Loaded = true;
+        }
     };
 
     //-- error reporting
@@ -279,7 +283,7 @@ namespace NMiniKQL {
             , AllocCounters(allocCounters)
             , ForceOnline(false)
         {
-            Y_VERIFY(FunctionRegistry);
+            Y_ABORT_UNLESS(FunctionRegistry);
         }
     };
 

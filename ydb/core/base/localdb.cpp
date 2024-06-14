@@ -106,6 +106,8 @@ TCompactionPolicy::TCompactionPolicy()
     , ReadAheadHiThreshold(64 * 1024 * 1024)
     , ReadAheadLoThreshold(16 * 1024 * 1024)
     , MinDataPageSize(7*1024)
+    , MinBTreeIndexNodeSize(7*1024)
+    , MinBTreeIndexNodeKeys(6)
     , SnapshotCompactionBrokerQueue(0)
     , SnapshotResourceBrokerTask(LegacyQueueIdToTaskName(0))
     , BackupCompactionBrokerQueue(1)
@@ -129,6 +131,8 @@ TCompactionPolicy::TCompactionPolicy(const NKikimrSchemeOp::TCompactionPolicy& p
     , ReadAheadHiThreshold(policyPb.HasReadAheadHiThreshold() ? policyPb.GetReadAheadHiThreshold() : 64 * 1024 * 1024)
     , ReadAheadLoThreshold(policyPb.HasReadAheadLoThreshold() ? policyPb.GetReadAheadLoThreshold() : 16 * 1024 * 1024)
     , MinDataPageSize(policyPb.HasMinDataPageSize() ? policyPb.GetMinDataPageSize() : 7 * 1024)
+    , MinBTreeIndexNodeSize(policyPb.HasMinBTreeIndexNodeSize() ? policyPb.GetMinBTreeIndexNodeSize() : 7 * 1024)
+    , MinBTreeIndexNodeKeys(policyPb.HasMinBTreeIndexNodeKeys() ? policyPb.GetMinBTreeIndexNodeKeys() : 6)
     , SnapshotCompactionBrokerQueue(policyPb.HasSnapBrokerQueue() ? policyPb.GetSnapBrokerQueue() : 0)
     , SnapshotResourceBrokerTask(policyPb.HasSnapshotResourceBrokerTask() ? policyPb.GetSnapshotResourceBrokerTask() : LegacyQueueIdToTaskName(0))
     , BackupCompactionBrokerQueue(policyPb.HasBackupBrokerQueue() ? policyPb.GetBackupBrokerQueue() : 1)
@@ -150,7 +154,7 @@ TCompactionPolicy::TCompactionPolicy(const NKikimrSchemeOp::TCompactionPolicy& p
     Generations.reserve(policyPb.GenerationSize());
     for (ui32 i = 0; i < policyPb.GenerationSize(); ++i) {
         const auto& g = policyPb.GetGeneration(i);
-        Y_VERIFY_DEBUG(g.GetGenerationId() == i);
+        Y_DEBUG_ABORT_UNLESS(g.GetGenerationId() == i);
         Generations.emplace_back(g);
     }
     if (policyPb.HasShardPolicy()) {
@@ -168,6 +172,8 @@ void TCompactionPolicy::Serialize(NKikimrSchemeOp::TCompactionPolicy& policyPb) 
     policyPb.SetReadAheadHiThreshold(ReadAheadHiThreshold);
     policyPb.SetReadAheadLoThreshold(ReadAheadLoThreshold);
     policyPb.SetMinDataPageSize(MinDataPageSize);
+    policyPb.SetMinBTreeIndexNodeSize(MinBTreeIndexNodeSize);
+    policyPb.SetMinBTreeIndexNodeKeys(MinBTreeIndexNodeKeys);
     policyPb.SetSnapBrokerQueue(SnapshotCompactionBrokerQueue);
     policyPb.SetSnapshotResourceBrokerTask(SnapshotResourceBrokerTask);
     policyPb.SetBackupBrokerQueue(BackupCompactionBrokerQueue);
@@ -196,10 +202,6 @@ void TCompactionPolicy::Serialize(NKikimrSchemeOp::TCompactionPolicy& policyPb) 
 
 TCompactionPolicyPtr CreateDefaultTablePolicy() {
     TCompactionPolicyPtr policy = new TCompactionPolicy;
-#if KIKIMR_DEFAULT_SHARDED_COMPACTION
-    policy->CompactionStrategy = NKikimrSchemeOp::CompactionStrategySharded;
-    policy->ShardPolicy.SetTaskPriorityBase(100);
-#endif
     return policy;
 }
 
@@ -212,9 +214,6 @@ TCompactionPolicyPtr CreateDefaultUserTablePolicy() {
                 LegacyQueueIdToTaskName(2), false});
     userPolicy->Generations.push_back({400 * 1024 * 1024, 5, 16, 16ull * 1024 * 1024 * 1024,
                 LegacyQueueIdToTaskName(3), false});
-#if KIKIMR_DEFAULT_SHARDED_COMPACTION
-    userPolicy->CompactionStrategy = NKikimrSchemeOp::CompactionStrategySharded;
-#endif
     return userPolicy;
 }
 

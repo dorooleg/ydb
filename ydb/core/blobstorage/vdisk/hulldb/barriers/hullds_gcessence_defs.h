@@ -3,7 +3,7 @@
 #include "defs.h"
 #include <ydb/core/blobstorage/vdisk/hulldb/base/hullbase_barrier.h>
 
-#include <library/cpp/actors/util/named_tuple.h>
+#include <ydb/library/actors/util/named_tuple.h>
 
 namespace NKikimr {
     namespace NGc {
@@ -26,7 +26,7 @@ namespace NKikimr {
                 , KeepData(keepData)
                 , KeepByBarrier(keepByBarrier)
             {
-                Y_VERIFY_DEBUG(keepIndex >= keepData);
+                Y_DEBUG_ABORT_UNLESS(keepIndex >= keepData);
             }
 
             TKeepStatus(bool keepWholeRecord)
@@ -45,7 +45,7 @@ namespace NKikimr {
             }
 
             bool KeepItem() const {
-                Y_VERIFY(KeepIndex >= KeepData);
+                Y_ABORT_UNLESS(KeepIndex >= KeepData);
                 return KeepIndex;
             }
 

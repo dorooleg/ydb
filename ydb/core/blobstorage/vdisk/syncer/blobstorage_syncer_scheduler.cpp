@@ -6,9 +6,9 @@
 #include <ydb/core/blobstorage/vdisk/common/blobstorage_dblogcutter.h>
 #include <ydb/core/blobstorage/vdisk/common/blobstorage_status.h>
 
-#include <library/cpp/actors/core/mon.h>
-#include <library/cpp/actors/core/interconnect.h>
-#include <library/cpp/actors/interconnect/interconnect.h>
+#include <ydb/library/actors/core/mon.h>
+#include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/interconnect/interconnect.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <util/generic/queue.h>
 #include <util/generic/deque.h>
@@ -112,7 +112,7 @@ namespace NKikimr {
             , Ev(ev)
             , NotifyId(notifyId)
         {
-            Y_VERIFY(Ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_ABORT_UNLESS(Ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
         }
     };
 
@@ -228,7 +228,7 @@ namespace NKikimr {
             // fill in SchedulerQueue
             for (const auto &x : *SyncerData->Neighbors) {
                 if (!x.Myself) {
-                    Y_VERIFY_DEBUG(x.Get().PeerSyncState.LastSyncStatus != TSyncStatusVal::Running);
+                    Y_DEBUG_ABORT_UNLESS(x.Get().PeerSyncState.LastSyncStatus != TSyncStatusVal::Running);
                     SchedulerQueue.push(&x);
                 }
             }
@@ -261,7 +261,7 @@ namespace NKikimr {
             if (msg->Task->NeedCommit()) {
                 auto proxy = std::make_unique<TSyncerCommitterProxy>(ctx.SelfID, CommitterId, std::move(msg->Task));
                 const TActorId aid = ctx.Register(proxy.release());
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             } else {
                 ApplyChanges(ctx, *msg->Task);
             }
@@ -284,11 +284,11 @@ namespace NKikimr {
                    SchedulerQueue.top()->Get().PeerSyncState.SchTime <= now) {
                 TVDiskInfoPtr tmp = SchedulerQueue.top();
                 SchedulerQueue.pop();
-                Y_VERIFY_DEBUG(tmp->Get().PeerSyncState.LastSyncStatus != TSyncStatusVal::Running);
+                Y_DEBUG_ABORT_UNLESS(tmp->Get().PeerSyncState.LastSyncStatus != TSyncStatusVal::Running);
                 auto task = std::make_unique<TSyncerJobTask>(TSyncerJobTask::EJustSync, GInfo->GetVDiskId(tmp->OrderNumber),
                     GInfo->GetActorId(tmp->OrderNumber), tmp->Get().PeerSyncState, JobCtx);
                 const TActorId aid = ctx.Register(CreateSyncerJob(SyncerContext, std::move(task), ctx.SelfID));
-                ActiveActors.Insert(aid);
+                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
             }
 
             if (!SchedulerQueue.empty() && !Scheduled) {
@@ -299,11 +299,11 @@ namespace NKikimr {
         }
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_VERIFY_DEBUG(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
+            Y_DEBUG_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::SyncerInfoId);
             // create an actor to handle request
             auto actor = std::make_unique<TSyncerSchedulerHttpActor>(SyncerContext, GInfo, SyncerData, ev, ctx.SelfID);
             auto aid = ctx.RegisterWithSameMailbox(actor.release());
-            ActiveActors.Insert(aid);
+            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
         }
 
         void Handle(TEvLocalStatus::TPtr &ev, const TActorContext &ctx) {

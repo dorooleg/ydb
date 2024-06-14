@@ -64,7 +64,7 @@ NYdb::TValue CreateOptionalValue(const TColumn& column, const TRandomValueProvid
             }
             break;
         default:
-                Y_VERIFY(false, "unimplemented");
+                Y_ABORT_UNLESS(false, "unimplemented");
     }
     return value.Build();
 }
@@ -122,7 +122,7 @@ NYdb::TValue CreateValue(const TColumn& column, const TRandomValueProvider& rvp)
             }
             break;
         default:
-                Y_VERIFY(false, "unimplemented");
+                Y_ABORT_UNLESS(false, "unimplemented");
     }
     return value.Build();
 }
@@ -182,7 +182,7 @@ NYdb::TValue CreateRow(const TVector<TColumn>& columns, const TRandomValueProvid
             break;
 
             default:
-                Y_VERIFY(false, "unimplemented");
+                Y_ABORT_UNLESS(false, "unimplemented");
         }
     }
     value.EndStruct();
@@ -203,16 +203,21 @@ NYdb::TParams CreateParamsAsItems(const TVector<TValue>& values, const TVector<T
 }
 
 NYdb::TParams CreateParamsAsList(const TVector<NYdb::TValue>& batch, const TString& paramName) {
+    NYdb::TParamsBuilder paramsBuilder;
+    AddParamsAsList(paramsBuilder, batch, paramName);
+    return paramsBuilder.Build();
+}
+
+void AddParamsAsList(NYdb::TParamsBuilder& paramsBuilder, const TVector<NYdb::TValue>& batch, const TString& paramName) {
     TValueBuilder builder;
     builder.BeginList();
 
-    for (const NYdb::TValue& item: batch) {
+    for (const NYdb::TValue& item : batch) {
         builder.AddListItem(item);
     }
     builder.EndList();
-    NYdb::TParamsBuilder paramsBuilder;
+
     paramsBuilder.AddParam(paramName, builder.Build());
-    return paramsBuilder.Build();
 }
 
 class TDataProvider
