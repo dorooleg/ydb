@@ -4,16 +4,6 @@ inputs:
   sanitizer:
     required: false
     type: string
-  ccache_remote_path:
-    required: false
-    description: "ccache remote storage definition"
-  extra_compile_flags:
-    required: false
-    default: ""
-    description: "extra compile flags will be added to the end of C_FLAGS and CXX_FLAGS"
-  ninja_target:
-    required: false
-    type: string
 
 runs:
   using: "composite"
@@ -26,13 +16,12 @@ runs:
       patch -p1 < ydb/deploy/patches/0001-sanitizer-build.patch
       cd ../build
       rm -rf *
-      export CC=/usr/bin/clang-14
-      export CC_FOR_BUILD=$CC
       cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCCACHE_PATH=/usr/local/bin/ccache \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_TOOLCHAIN_FILE=../ydb/clang.toolchain \
-        -DCMAKE_CXX_FLAGS="-fsanitize=${{ inputs.sanitizer }} -g -gsplit-dwarf -gz -fno-omit-frame-pointer ${{ inputs.extra_compile_flags }}" \
-        -DCMAKE_C_FLAGS="-fsanitize=${{ inputs.sanitizer }} -g -gsplit-dwarf -gz -fno-omit-frame-pointer ${{ inputs.extra_compile_flags }}" \
+        -DCMAKE_CXX_FLAGS="-fsanitize=${{ inputs.sanitizer }} -g -fno-omit-frame-pointer" \
+        -DCMAKE_C_FLAGS="-fsanitize=${{ inputs.sanitizer }} -g -fno-omit-frame-pointer" \
+        -DCMAKE_EXE_LINKER_FLAGS="-rdynamic" \
         ../ydb
   - name: Configure
     shell: bash
@@ -41,37 +30,17 @@ runs:
       mkdir -p ../build
       cd ../build
       rm -rf *
-      export CONAN_USER_HOME=`pwd`
-      export CC=/usr/bin/clang-14
-      export CC_FOR_BUILD=$CC
-
-      # FIXME: set DCMAKE_CXX_FLAGS_RELWITHDEBINFO and DCMAKE_CXX_FLAGS bacause of global_flags.cmake flags override.
-
       cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCCACHE_PATH=/usr/local/bin/ccache \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_TOOLCHAIN_FILE=../ydb/clang.toolchain \
-        -DCMAKE_C_FLAGS="${{ inputs.extra_compile_flags }}" \
-        -DCMAKE_CXX_FLAGS="${{ inputs.extra_compile_flags }}" \
+        -DCMAKE_CXX_FLAGS="-g" \
+        -DCMAKE_C_FLAGS="-g" \
+        -DCMAKE_EXE_LINKER_FLAGS="-rdynamic" \
         ../ydb
   - name: Build
     shell: bash
     run: |
       ccache -z
-      export CCACHE_BASEDIR=`realpath ..`
-      export CCACHE_REMOTE_STORAGE="${{inputs.ccache_remote_path}}"
-      export CCACHE_SLOPPINESS=locale
-      export CCACHE_MAXSIZE=50G
       cd ../build
-      ninja ${{ inputs.ninja_target }}
+      ninja
       ccache -s
-      df -h
-  - name: report Build failed
-    if: ${{ failure() }}
-    shell: bash
-    run: |
-      echo "# Build failed" >> $GITHUB_STEP_SUMMARY
-  - name: report Build cancelled
-    if: ${{ cancelled() }}
-    shell: bash
-    run: |
-      echo "# Build cancelled" >> $GITHUB_STEP_SUMMARY
