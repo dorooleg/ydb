@@ -2,10 +2,18 @@
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents {
-    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, NActors::TEvents::ES_PRIVATE> {
-        int64_t Value;
-        explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
+
+    enum EEv {
+        EvDiscoveryResponse = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
+        EvEnd
     };
 
-    struct TEvDone : NActors::TEventLocal<TEvDone, NActors::TEvents::ES_PRIVATE> {};
+    struct TEvDone : NActors::TEventLocal<TEvDone, EvEnd> {};
+
+    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvDiscoveryResponse> {
+        int64_t value;
+        TEvWriteValueRequest(int64_t value)
+        : value(value)
+        {}
+    };
 };
