@@ -1,11 +1,20 @@
+#pragma once
+
 #include <library/cpp/actors/core/event_local.h>
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents {
-    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, NActors::TEvents::ES_PRIVATE> {
-        int64_t Value;
-        explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
+    enum EEvents {
+        EvWriteValueRequest = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
+        EvDone
     };
 
-    struct TEvDone : NActors::TEventLocal<TEvDone, NActors::TEvents::ES_PRIVATE> {};
+    struct TEvWriteValueRequest : public NActors::TEventLocal<TEvWriteValueRequest, EvWriteValueRequest> {
+        int64_t Value;
+
+        explicit TEvWriteValueRequest(int64_t value)
+            : Value(value) {}
+    };
+
+    struct TEvDone : public NActors::TEventLocal<TEvDone, EvDone> {};
 };
