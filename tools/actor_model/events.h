@@ -1,11 +1,16 @@
 #include <library/cpp/actors/core/event_local.h>
 #include <library/cpp/actors/core/events.h>
 
-struct TEvents {
-    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, NActors::TEvents::ES_PRIVATE> {
-        int64_t Value;
-        explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
+struct TMyEvents {
+    enum {
+        EvSendValue = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
+        EvComplete,
     };
-
-    struct TEvDone : NActors::TEventLocal<TEvDone, NActors::TEvents::ES_PRIVATE> {};
 };
+
+struct TEvSendValue : NActors::TEventLocal<TEvSendValue, TMyEvents::EvSendValue> {
+    const int64_t Value;
+    explicit TEvSendValue(int64_t value) : Value(value) {}
+};
+
+struct TEvComplete : NActors::TEventLocal<TEvComplete, TMyEvents::EvComplete> {};
