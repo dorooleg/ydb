@@ -23,6 +23,7 @@ int main(int argc, const char* argv[])
 
     auto writerActorId = actorSystem.Register(CreateWriteActor().Release());
     actorSystem.Register(CreateReadActor(writerActorId).Release());
+    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
 
     // Раскомментируйте этот код
     auto shouldContinue = GetProgramShouldContinue();
