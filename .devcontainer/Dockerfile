@@ -18,7 +18,8 @@ antlr3 \
 libaio-dev \
 libidn11-dev \
 ninja-build \
-bear
+bear \
+clangd-19
 
 RUN ln -snf /usr/share/zoneinfo/$CONTAINER_TIMEZONE /etc/localtime && echo $CONTAINER_TIMEZONE > /etc/timezone
 
