@@ -17,7 +17,8 @@ python3-pip \
 antlr3 \
 libaio-dev \
 libidn11-dev \
-ninja-build
+ninja-build \
+bear
 
 RUN ln -snf /usr/share/zoneinfo/$CONTAINER_TIMEZONE /etc/localtime && echo $CONTAINER_TIMEZONE > /etc/timezone
 
@@ -25,6 +26,6 @@ RUN apt-get install -y python3.8
 
 RUN pip3 install conan==1.59
 
-RUN mkdir -p /home/ydbwork/build
+# RUN mkdir -p /home/ydbwork/build
 
-CMD cd /home/ydbwork/build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../ydb/clang.toolchain ../ydb && ninja tools/actor_model/all && bash
+# CMD cd /home/ydbwork/build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../ydb/clang.toolchain ../ydb && ninja tools/actor_model/all && bash
