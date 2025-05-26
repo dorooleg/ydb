@@ -75,15 +75,21 @@ private:
           CreateMaximumDivisorActor(val, SelfId(), WriteActorId).Release());
       AliveActors++;
       Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
-    }
+    } else if (AliveActors == 0)
+      // Empty input
+      Finish();
   }
 
   void HandleMaxDivisorDone() {
     Y_VERIFY(AliveActors != 0);
     if (--AliveActors == 0) {
-      Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
-      PassAway();
+      Finish();
     }
+  }
+
+  void Finish() {
+    Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+    PassAway();
   }
 };
 
@@ -141,11 +147,12 @@ public:
   }
 
   void Bootstrap() {
+    if (TargetValue == 1) {
+      Finish(1);
+      return;
+    }
     Become(&TMaximumDivisorActor::StateFunc);
     Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
-    if (TargetValue == 1) {
-      Finish(1); // Special case for values less than 2
-    }
   }
 
   STRICT_STFUNC(StateFunc, {
@@ -163,6 +170,7 @@ private:
     }
     Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
   }
+
   bool maxPrimeDivisorCycle() {
     if (TargetValue % PotentialDivisor == 0) {
       do {
@@ -171,6 +179,7 @@ private:
       if (TargetValue == 1)
         return true;
     }
+
     PotentialDivisor++;
 
     if (PotentialDivisor * PotentialDivisor > TargetValue) {
