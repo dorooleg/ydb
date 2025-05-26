@@ -7,12 +7,3 @@ __pycache__/
 *_pb2.py
 *_pb2_grpc.py
 *_pb2.pyi
-
-# Actor model temporary build folder
-tmpbuild/
-
-# Bear compile_commands.json
-compile_commands.json
-
-# Clangd cache
-.cache/
