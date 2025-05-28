@@ -14,6 +14,16 @@ THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 poo
     return setup;
 }
 
+void RegisterActors(NActors::TActorSystem& actorSystem) {
+    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+
+    auto writeActor = CreateWriteActor();
+    auto writeActorId = actorSystem.Register(writeActor.Release());
+    
+    auto readActor = CreateReadActor(std::cin, writeActorId);
+    actorSystem.Register(readActor.Release());
+}
+
 int main(int argc, const char* argv[])
 {
     Y_UNUSED(argc, argv);
@@ -21,16 +31,14 @@ int main(int argc, const char* argv[])
     NActors::TActorSystem actorSystem(actorySystemSetup);
     actorSystem.Start();
 
-    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+    RegisterActors(actorSystem);
 
-    // Зарегистрируйте Write и Read акторы здесь
+    auto shouldContinue = GetProgramShouldContinue();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
 
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
     actorSystem.Stop();
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    return shouldContinue->GetReturnCode();
 }
