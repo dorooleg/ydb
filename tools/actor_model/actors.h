@@ -5,5 +5,6 @@
 
 THolder<NActors::IActor> CreateWriteActor();
 THolder<NActors::IActor> CreateReadActor(NActors::TActorId write_actor_id);
+THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency);
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue();

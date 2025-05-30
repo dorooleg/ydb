@@ -21,6 +21,8 @@ int main(int argc, const char* argv[])
     NActors::TActorSystem actorSystem(actorySystemSetup);
     actorSystem.Start();
 
+    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+
     auto writer_id = actorSystem.Register(CreateWriteActor().Release());
     auto reader_id = actorSystem.Register(CreateReadActor(writer_id).Release());
     Y_UNUSED(reader_id);

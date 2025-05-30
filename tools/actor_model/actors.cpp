@@ -82,7 +82,7 @@ public:
 
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
   NActors::TActorId WriteActorId;
-  int64_t WaitingOn = 1;  // Dummy wait for EOF
+  int64_t WaitingOn = 1; // Dummy wait for EOF
 
 public:
   TReadActor(NActors::TActorId write_actor_id) : WriteActorId(write_actor_id) {}
@@ -114,6 +114,7 @@ public:
     Y_VERIFY(WaitingOn >= 0, "weird WaitingOn");
     if (WaitingOn == 0) {
       Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+      PassAway();
     }
   }
 };
@@ -146,6 +147,36 @@ public:
 
 THolder<NActors::IActor> CreateWriteActor() {
   return MakeHolder<TWriteActor>();
+}
+
+class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
+  TDuration Latency;
+  TInstant LastTime;
+
+public:
+  TSelfPingActor(const TDuration &latency) : Latency(latency) {}
+
+  void Bootstrap() {
+    LastTime = TInstant::Now();
+    Become(&TSelfPingActor::StateFunc);
+    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+  }
+
+  STRICT_STFUNC(StateFunc, {
+    cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+  });
+
+  void HandleWakeup() {
+    auto now = TInstant::Now();
+    TDuration delta = now - LastTime;
+    Y_VERIFY(delta <= Latency, "Latency too big");
+    LastTime = now;
+    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+  }
+};
+
+THolder<NActors::IActor> CreateSelfPingActor(const TDuration &latency) {
+  return MakeHolder<TSelfPingActor>(latency);
 }
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
