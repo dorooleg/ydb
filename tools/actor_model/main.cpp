@@ -21,15 +21,14 @@ int main(int argc, const char* argv[])
     NActors::TActorSystem actorSystem(actorySystemSetup);
     actorSystem.Start();
 
-    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+    auto writer_id = actorSystem.Register(CreateWriteActor().Release());
+    auto reader_id = actorSystem.Register(CreateReadActor(writer_id).Release());
+    Y_UNUSED(reader_id);
 
-    // Зарегистрируйте Write и Read акторы здесь
-
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
+    auto shouldContinue = GetProgramShouldContinue();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
     actorSystem.Stop();
     actorSystem.Cleanup();
     // return shouldContinue->GetReturnCode();
