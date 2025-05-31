@@ -155,88 +155,89 @@ TMaximumPrimeDevisorActor
             Send(ReadActor, TEvents::TEvDone)
             PassAway()
 */
-
 class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
+private:
+    int64_t OriginalNumber;
+    int64_t CurrentNumber;
+    NActors::TActorId ReadActor;
+    NActors::TActorId WriteActor;
 
-    int64_t Number; // Число для обработки
-    NActors::TActorId ReadActor;  // ID актора-читателя
-    NActors::TActorId WriteActor; // ID актора-писателя
+    int64_t DivisorCounter = 5;
+    TInstant ComputationStart;
 
-    int64_t DivisorCounter;
-    bool BreakFlag;
-    TInstant LastTime;
 
-    STFUNC(StateFunc) {
-            switch(ev->GetTypeRewrite()) {
-                cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
-                default:
-                break;
+    bool TimeLimitExceeded() const {
+        return (TInstant::Now() - ComputationStart).MilliSeconds() >= 10;
+    }
+
+
+    int64_t FindMinDivisor() {
+        if (CurrentNumber % 2 == 0) return 2;
+        if (CurrentNumber % 3 == 0) return 3;
+
+
+        const int64_t sqrtNum = static_cast<int64_t>(std::sqrt(CurrentNumber));
+
+        while (DivisorCounter <= sqrtNum) {
+            if (TimeLimitExceeded()) return -1;
+
+            if (CurrentNumber % DivisorCounter == 0) return DivisorCounter;
+            if (CurrentNumber % (DivisorCounter + 2) == 0) return DivisorCounter + 2;
+
+            DivisorCounter += 6;
+        }
+
+        return CurrentNumber;
+    }
+
+
+    int64_t ComputeMaxPrimeDivisor() {
+        int64_t maxPrimeDivisor = 1;
+
+        while (CurrentNumber > 1) {
+            int64_t divisor = FindMinDivisor();
+            if (divisor == -1) return -1;
+
+            maxPrimeDivisor = std::max(maxPrimeDivisor, divisor);
+            while (CurrentNumber % divisor == 0) {
+                CurrentNumber /= divisor;
             }
+        }
+
+        return maxPrimeDivisor;
     }
 
     void HandleWakeup() {
-        LastTime = TInstant::Now();
-        BreakFlag = false;
+        ComputationStart = TInstant::Now();
+        int64_t result = ComputeMaxPrimeDivisor();
 
-        int64_t maxDivider = MaxPrime();
-
-        if (BreakFlag) {
+        if (result == -1) {
+            // Не успели вычислить - продолжаем позже
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
         } else {
-            // Отправляем результат писателю
-            Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(maxDivider));
-            // Уведомляем читателя о завершении
+            // Отправляем результат и завершаем работу
+            Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(result));
             Send(ReadActor, std::make_unique<TEvents::TEvDone>());
             PassAway();
         }
     }
 
-    int64_t MaxPrime() {
-        int64_t divisor = 1;
-        // Если остаток больше 1, он сам простой
-        while (Number != 1) {
-            divisor = MinDivisor();
-
-            if (BreakFlag) return 1;
-
-            Number /= divisor;
-            DivisorCounter = 5;
-        }
-        return divisor;
-    }
-
-    int64_t MinDivisor() {
-        if (Number == 1) return 1;
-        if (Number % 2 == 0) return 2;
-        if (Number % 3 == 0) return 3;
-
-        int64_t upperBound = (int64_t)sqrt(Number);
-        for ( ; DivisorCounter <= upperBound; DivisorCounter += 6) {
-            if (Number % DivisorCounter == 0) return DivisorCounter;
-            if (Number % (DivisorCounter + 2) == 0) return DivisorCounter + 2;
-
-            BreakFlag = CheckDuration();
-            if (BreakFlag) return 1;
-        }
-        return Number;
-    }
-
-    bool CheckDuration() {
-        auto now = TInstant::Now();
-        TDuration delta = now - LastTime;
-        return delta.MilliSeconds() >= 10;
-    }
-
 public:
-    TMaximumPrimeDivisorActor(int64_t value, NActors::TActorId reader, NActors::TActorId writer): ReadActor(reader), WriteActor(writer) {
-        Number = value;
-        DivisorCounter = 5;
-    }
+    TMaximumPrimeDivisorActor(int64_t value, NActors::TActorId reader, NActors::TActorId writer)
+            : OriginalNumber(value)
+            , CurrentNumber(std::abs(value))  // Работаем с модулем числа
+            , ReadActor(reader)
+            , WriteActor(writer)
+    {}
 
     void Bootstrap() {
-        Become(&TMaximumPrimeDivisorActor::StateFunc);
+        Become(&TThis::StateFunc);
         Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    });
 };
 
 /*
