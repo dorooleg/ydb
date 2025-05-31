@@ -1,8 +1,7 @@
-#include <iostream>
+#pragma once
 #include <library/cpp/actors/core/actor.h>
-#include <util/generic/ptr.h>
-#include <library/cpp/actors/util/should_continue.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
-THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency);
-
-std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue();
+NActors::IActor* CreateReadActor(NActors::TActorId maxActor);
+NActors::IActor* CreateMaxPrimeActor(NActors::TActorId writeActor);
+NActors::IActor* CreateWriteActor();
