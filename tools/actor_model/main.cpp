@@ -16,21 +16,20 @@ THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 poo
 
 int main(int argc, const char* argv[])
 {
-    Y_UNUSED(argc, argv);
-    auto actorySystemSetup = BuildActorSystemSetup(20, 1);
-    NActors::TActorSystem actorSystem(actorySystemSetup);
+    Y_UNUSED(argc);
+    Y_UNUSED(argv);
+
+    auto actorSystemSetup = BuildActorSystemSetup(4, 1);  // 4 потока, 1 пул
+    NActors::TActorSystem actorSystem(*actorSystemSetup);
     actorSystem.Start();
 
-    actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
+    auto writeActor = actorSystem.Register(CreateWriteActor());
+    auto maxActor = actorSystem.Register(CreateMaxPrimeActor(writeActor));
+    actorSystem.Register(CreateReadActor(maxActor));
 
-    // Зарегистрируйте Write и Read акторы здесь
-
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
+    actorSystem.AwaitAllActors();
     actorSystem.Stop();
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+
+    return 0;
 }
