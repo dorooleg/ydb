@@ -4,5 +4,7 @@
 #include <library/cpp/actors/util/should_continue.h>
 
 THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency);
+THolder<NActors::IActor> CreateReadActor(std::istream& inputStream, NActors::TActorId writeActorId);
+THolder<NActors::IActor> CreateWriteActor();
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue();
