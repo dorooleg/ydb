@@ -38,7 +38,58 @@ TReadActor
             ...
 */
 
-// TODO: напишите реализацию TReadActor
+// Актор для чтения чисел из входного потока
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+private:
+    IInputStream& Strm; // Входной поток
+    const NActors::TActorId WriteActor; // ID актора-писателя
+    size_t ActiveWorkers = 0; // Количество активных вычислителей
+    bool InputFinished = false; // Флаг завершения ввода
+
+public:
+    TReadActor(IInputStream& strm, const NActors::TActorId writeActor)
+            : Strm(strm)
+            , WriteActor(writeActor)
+    {}
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        // Запускаем процесс чтения
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        hFunc(TEvents::TEvDone, HandleDone);
+    });
+
+    // Обработка чтения числа
+    void HandleWakeup() {
+        int64_t value;
+        if (!Strm.Read(&value, sizeof(value))) { // Правильное чтение
+            InputFinished = true;
+            if (ActiveWorkers == 0) {
+                Send(WriteActor, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+            }
+            return;
+        }
+
+        auto maxPrimeDivActor = Register(CreateMaximumPrimeDivisorActor(value, SelfId(), WriteActor).Release());
+        ActiveWorkers++;
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    // Обработка завершения вычислений
+    void HandleDone(TEvents::TEvDone::TPtr&) {
+        ActiveWorkers--;
+        // Если ввод завершен и все вычислители закончили
+        if (InputFinished && ActiveWorkers == 0) {
+            // Завершаем писателя
+            Send(WriteActor, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        }
+    }
+};
+
 
 /*
 Требования к TMaximumPrimeDevisorActor:
@@ -68,7 +119,75 @@ TMaximumPrimeDevisorActor
             PassAway()
 */
 
-// TODO: напишите реализацию TMaximumPrimeDevisorActor
+class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
+private:
+    int64_t Number; // Число для обработки
+    const NActors::TActorId ReadActor; // ID актора-читателя
+    const NActors::TActorId WriteActor; // ID актора-писателя
+    int64_t CurrentDivisor = 2; // Текущий делитель
+    int64_t MaxPrimeDivisor = 1; // Максимальный простой делитель
+
+public:
+    TMaximumPrimeDivisorActor(int64_t number, const NActors::TActorId readActor, const NActors::TActorId writeActor)
+            : Number(number)
+            , ReadActor(readActor)
+            , WriteActor(writeActor)
+    {}
+
+    void Bootstrap() {
+        Become(&TMaximumPrimeDivisorActor::StateFunc);
+        // Начинаем вычисления
+        Send(SelfId(), std::make_unique<TEvents::TEvCompute>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(TEvents::EvCompute, HandleCompute);
+    });
+
+    // Обработка вычислений
+    void HandleCompute() {
+        auto startTime = TInstant::Now();
+        int64_t n = Number;
+
+        // Поиск максимального простого делителя
+        while (n > 1 && CurrentDivisor * CurrentDivisor <= n) {
+            // Проверяем, не превысили ли лимит времени
+            if (TInstant::Now() - startTime > TDuration::MilliSeconds(10)) {
+                // Продолжаем вычисления позже
+                Send(SelfId(), std::make_unique<TEvents::TEvCompute>());
+                return;
+            }
+
+            // Проверяем делимость
+            if (n % CurrentDivisor == 0) {
+                MaxPrimeDivisor = CurrentDivisor;
+                // Убираем все вхождения этого делителя
+                while (n % CurrentDivisor == 0) {
+                    n /= CurrentDivisor;
+                }
+            }
+
+            // Переходим к следующему делителю
+            if (CurrentDivisor == 2) {
+                CurrentDivisor++;
+            } else {
+                CurrentDivisor += 2;
+            }
+        }
+
+        // Если остаток больше 1, он сам простой
+        if (n > 1) {
+            MaxPrimeDivisor = n;
+        }
+
+        // Отправляем результат писателю
+        Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(MaxPrimeDivisor));
+        // Уведомляем читателя о завершении
+        Send(ReadActor, std::make_unique<TEvents::TEvDone>());
+        // Завершаем работу
+        PassAway();
+    }
+};
 
 /*
 Требования к TWriteActor:
@@ -87,7 +206,51 @@ TWriteActor
         PassAway()
 */
 
-// TODO: напишите реализацию TWriteActor
+// Актор для записи и суммирования результатов
+class TWriteActor : public NActors::TActor<TWriteActor> {
+private:
+    int64_t Sum = 0; // Накопленная сумма
+
+public:
+    // Явный конструктор
+    explicit TWriteActor()
+            : NActors::TActor<TWriteActor>(&TWriteActor::StateFunc)
+    {}
+
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(TEvents::TEvWriteValueRequest, HandleWriteValue);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
+    });
+
+    // Обработка нового значения
+    void HandleWriteValue(TEvents::TEvWriteValueRequest::TPtr& ev) {
+        Sum += ev->Get()->Value;
+    }
+
+    // Обработка команды завершения
+    void HandlePoisonPill() {
+        // Выводим результат
+        Cout << Sum << Endl;
+        // Устанавливаем флаг завершения
+        ShouldContinue->ShouldStop(0);
+        // Завершаем работу
+        PassAway();
+    }
+};
+
+// Фабричные функции для создания акторов
+THolder<NActors::IActor> CreateReadActor(IInputStream& strm, const NActors::TActorId writeActor) {
+    return MakeHolder<TReadActor>(strm, writeActor);
+}
+
+THolder<NActors::IActor> CreateMaximumPrimeDivisorActor(int64_t number, const NActors::TActorId readActor, const NActors::TActorId writeActor) {
+    return MakeHolder<TMaximumPrimeDivisorActor>(number, readActor, writeActor);
+}
+
+THolder<NActors::IActor> CreateWriteActor() {
+    return MakeHolder<TWriteActor>();
+}
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;

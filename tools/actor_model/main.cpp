@@ -1,3 +1,4 @@
+// main.cpp
 #include "actors.h"
 #include <library/cpp/actors/core/executor_pool_basic.h>
 #include <library/cpp/actors/core/scheduler_basic.h>
@@ -17,20 +18,27 @@ THolder<NActors::TActorSystemSetup> BuildActorSystemSetup(ui32 threads, ui32 poo
 int main(int argc, const char* argv[])
 {
     Y_UNUSED(argc, argv);
+    // Настройка и запуск системы акторов
     auto actorySystemSetup = BuildActorSystemSetup(20, 1);
     NActors::TActorSystem actorSystem(actorySystemSetup);
     actorSystem.Start();
 
+    // Актор для самотестирования
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
 
-    // Зарегистрируйте Write и Read акторы здесь
+    // Создаем и регистрируем актора-писателя
+    auto writeActor = actorSystem.Register(CreateWriteActor().Release());
+    // Создаем и регистрируем актора-читателя, передаем ему входной поток и ID писателя
+    auto readActor = actorSystem.Register(CreateReadActor(Cin, writeActor).Release());
 
-    // Раскомментируйте этот код
-    // auto shouldContinue = GetProgramShouldContinue();
-    // while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
-    //     Sleep(TDuration::MilliSeconds(200));
-    // }
+    // Основной цикл выполнения
+    auto shouldContinue = GetProgramShouldContinue();
+    while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
+        Sleep(TDuration::MilliSeconds(200));
+    }
+
+    // Завершение работы
     actorSystem.Stop();
     actorSystem.Cleanup();
-    // return shouldContinue->GetReturnCode();
+    return shouldContinue->GetReturnCode();
 }
