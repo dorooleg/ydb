@@ -39,12 +39,11 @@ TReadActor
 */
 
 // Актор для чтения чисел из входного потока
-
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
 private:
-    NActors::TActorId WriteActor; // ID актора-писателя
-    int ActiveWorkers = 0; // Количество активных вычислителей
-    bool InputFinished = false; // Флаг завершения ввода
+    NActors::TActorId WriteActor;
+    int ActiveWorkers = 0;
+    bool InputFinished = false;
 
 public:
     TReadActor(NActors::TActorId writer)
@@ -61,20 +60,63 @@ public:
         cFunc(TEvents::TEvDone::EventType, HandleDone);
     });
 
-
     void HandleWakeup() {
-        int64_t value;
-        try {
-            Cin >> value;
-            Register(CreateMaximumPrimeDivisorActor(value, SelfId(), WriteActor));
-            ActiveWorkers++;
-            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
-        } catch(...) {
+        std::string line;
+        if (std::getline(std::cin, line)) {
+            // Удаляем пробельные символы в начале и конце
+            line.erase(line.find_last_not_of(" \t\n\r\f\v") + 1);
+            line.erase(0, line.find_first_not_of(" \t\n\r\f\v"));
+
+            if (line.empty()) {
+                // Пропускаем пустые строки
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                return;
+            }
+
+            // Проверяем что строка содержит только цифры и опциональный минус
+            bool isNumber = true;
+            size_t startPos = 0;
+            if (line[0] == '-') {
+                startPos = 1;
+                if (line.length() == 1) {
+                    isNumber = false; // Только минус
+                }
+            }
+
+            for (size_t i = startPos; i < line.length(); ++i) {
+                if (!isdigit(line[i])) {
+                    isNumber = false;
+                    break;
+                }
+            }
+
+            if (!isNumber) {
+                // Некорректный ввод - пропускаем строку
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                return;
+            }
+
+            try {
+                int64_t value = std::stoll(line);
+                if (value == 0) {
+                    // Особый случай для нуля - отправляем напрямую писателю
+                    Send(WriteActor, std::make_unique<TEvents::TEvWriteValueRequest>(0));
+                    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                } else {
+                    Register(CreateMaximumPrimeDivisorActor(value, SelfId(), WriteActor));
+                    ActiveWorkers++;
+                    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                }
+            } catch (const std::out_of_range&) {
+                // Число слишком большое - пропускаем
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+            }
+        } else {
+            // Конец ввода
             InputFinished = true;
             if (ActiveWorkers == 0) {
                 Send(WriteActor, std::make_unique<NActors::TEvents::TEvPoisonPill>());
             }
-
         }
     }
 
