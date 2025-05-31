@@ -2,5 +2,12 @@
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents {
-    // Вам нужно самостоятельно сюда добавить все необходимые events в NActors::TEvents::ES_PRIVATE
+    struct TEvWriteValueRequest : public NActors::TEventLocal<TEvWriteValueRequest, 1> {
+        int64_t Value;
+        TEvWriteValueRequest(int64_t value = 0) : Value(value) {}
+    };
+
+    struct TEvDone : public NActors::TEventLocal<TEvDone, 2> {
+        TEvDone() = default;
+    };
 };

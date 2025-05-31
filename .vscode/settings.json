@@ -1,0 +1,26 @@
+{
+    "files.associations": {
+        ".fantomasignore": "ignore",
+        "__bit_reference": "cpp",
+        "__node_handle": "cpp",
+        "atomic": "cpp",
+        "bitset": "cpp",
+        "cstddef": "cpp",
+        "deque": "cpp",
+        "limits": "cpp",
+        "locale": "cpp",
+        "optional": "cpp",
+        "ratio": "cpp",
+        "system_error": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "vector": "cpp",
+        "charconv": "cpp",
+        "chrono": "cpp",
+        "format": "cpp",
+        "ranges": "cpp",
+        "array": "cpp",
+        "functional": "cpp",
+        "utility": "cpp"
+    }
+}

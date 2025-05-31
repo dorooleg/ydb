@@ -2,6 +2,7 @@
 #include "events.h"
 #include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/actors/core/hfunc.h>
+#include <util/system/datetime.h>
 
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
@@ -88,6 +89,175 @@ TWriteActor
 */
 
 // TODO: напишите реализацию TWriteActor
+
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+    IInputStream& Strm;
+    const NActors::TActorId WriteActor;
+    int InFlight = 0;
+    bool Finished = false;
+    TString CurrentLine;
+    size_t Pos = 0;
+
+public:
+    TReadActor(IInputStream& strm, const NActors::TActorId& writeActor)
+        : Strm(strm), WriteActor(writeActor) {}
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), new NActors::TEvents::TEvWakeup());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(NActors::TEvents::TEvWakeup, HandleWakeup);
+        hFunc(TEvents::TEvDone, HandleDone);
+    });
+
+    bool ReadNextNumber(int64_t& value) {
+        while (true) {
+            if (Pos >= CurrentLine.size()) {
+                if (!Strm.ReadLine(CurrentLine)) {
+                    return false;
+                }
+                Pos = 0;
+                // Удаляем начальные и конечные пробелы вручную
+                while (Pos < CurrentLine.size() && isspace(CurrentLine[Pos])) {
+                    Pos++;
+                }
+                size_t end = CurrentLine.size();
+                while (end > Pos && isspace(CurrentLine[end-1])) {
+                    end--;
+                }
+                if (end != CurrentLine.size()) {
+                    CurrentLine = CurrentLine.substr(Pos, end - Pos);
+                    Pos = 0;
+                }
+            }
+
+            size_t endPos = Pos;
+            while (endPos < CurrentLine.size() && !isspace(CurrentLine[endPos])) {
+                endPos++;
+            }
+
+            if (endPos > Pos) {
+                TString numStr = CurrentLine.substr(Pos, endPos - Pos);
+                try {
+                    value = FromString<int64_t>(numStr);
+                    Pos = endPos + 1;
+                    return true;
+                } catch (...) {
+                    Pos = endPos + 1;
+                    continue;
+                }
+            }
+            Pos = endPos + 1;
+        }
+    }
+
+    void HandleWakeup(const NActors::TEvents::TEvWakeup::TPtr&) {
+        int64_t value;
+        if (ReadNextNumber(value)) {
+            Register(CreateMaxPrimeDevActor(value, SelfId(), WriteActor).Release());
+            InFlight++;
+            Send(SelfId(), new NActors::TEvents::TEvWakeup());
+        } else {
+            Finished = true;
+            if (InFlight == 0) {
+                Send(WriteActor, new NActors::TEvents::TEvPoisonPill());
+                PassAway();
+            }
+        }
+    }
+
+    void HandleDone(const TEvents::TEvDone::TPtr&) {
+        InFlight--;
+        if (Finished && InFlight == 0) {
+            Send(WriteActor, new NActors::TEvents::TEvPoisonPill());
+            PassAway();
+        }
+    }
+};
+
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
+    int64_t Value;
+    const NActors::TActorId ReadActor;
+    const NActors::TActorId WriteActor;
+    int64_t CurrentDivisor = 2;
+    int64_t MaxPrime = 1;
+
+public:
+    TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorId& readActor, 
+                            const NActors::TActorId& writeActor)
+        : Value(value), ReadActor(readActor), WriteActor(writeActor) {}
+
+    void Bootstrap() {
+        Become(&TMaximumPrimeDevisorActor::StateFunc);
+        Send(SelfId(), new NActors::TEvents::TEvWakeup());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(NActors::TEvents::TEvWakeup, HandleWakeup);
+    });
+
+    void HandleWakeup(const NActors::TEvents::TEvWakeup::TPtr&) {
+        TInstant start = TInstant::Now();
+        int64_t v = Value;
+        
+        while (v > 1 && (TInstant::Now() - start).MilliSeconds() <= 10) {
+            if (v % CurrentDivisor == 0) {
+                MaxPrime = CurrentDivisor;
+                while (v % CurrentDivisor == 0) {
+                    v /= CurrentDivisor;
+                }
+            }
+            CurrentDivisor++;
+        }
+
+        Value = v;
+        if (v == 1) {
+            Send(WriteActor, new TEvents::TEvWriteValueRequest(MaxPrime));
+            Send(ReadActor, new TEvents::TEvDone());
+            PassAway();
+        } else {
+            Send(SelfId(), new NActors::TEvents::TEvWakeup());
+        }
+    }
+};
+
+class TWriteActor : public NActors::TActor<TWriteActor> {
+    int64_t Sum = 0;
+
+public:
+    TWriteActor()
+        : TActor(&TWriteActor::StateFunc) {}
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(TEvents::TEvWriteValueRequest, HandleWriteValue);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
+    });
+
+    void HandleWriteValue(const TEvents::TEvWriteValueRequest::TPtr& ev) {
+        Sum += ev->Get()->Value;
+    }
+
+    void HandlePoisonPill() {
+        std::cout << Sum << std::endl;
+        ShouldContinue->ShouldStop();
+        PassAway();
+    }
+};
+
+THolder<NActors::IActor> CreateReadActor(IInputStream& strm, const NActors::TActorId& writeActor) {
+    return MakeHolder<TReadActor>(strm, writeActor);
+}
+
+THolder<NActors::IActor> CreateMaxPrimeDevActor(int64_t value, const NActors::TActorId& readActor, 
+                                              const NActors::TActorId& writeActor) {
+    return MakeHolder<TMaximumPrimeDevisorActor>(value, readActor, writeActor);
+}
+
+THolder<NActors::IActor> CreateWriteActor() {
+    return MakeHolder<TWriteActor>();
+}
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
