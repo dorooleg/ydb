@@ -5,6 +5,8 @@
 
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
+class TMaxPrimeDivisorActor;
+
 /*
 Вам нужно написать реализацию TReadActor, TMaximumPrimeDevisorActor, TWriteActor
 */
@@ -39,6 +41,53 @@ TReadActor
 */
 
 // TODO: напишите реализацию TReadActor
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+    const NActors::TActorId m_WriterActorId;
+    size_t m_ActiveWorkersCount = 0;
+    bool m_InputFinished = false;
+
+public:
+    TReadActor(NActors::TActorId writerActorId)
+        : m_WriterActorId(writerActorId)
+    {}
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), new NActors::TEvents::TEvWakeup());
+    }
+
+private:
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        cFunc(TEvents::EvDone, HandleWorkerDone);
+    });
+
+    void HandleWakeup() {
+        int64_t inputNumber;
+        if (std::cin >> inputNumber) {
+            m_ActiveWorkersCount++;
+            Register(CreateMaxPrimeDivisorActor(inputNumber, SelfId(), m_WriterActorId).Release());
+            Send(SelfId(), new NActors::TEvents::TEvWakeup());
+        } else {
+            m_InputFinished = true;
+            if (m_ActiveWorkersCount == 0) {
+                Shutdown();
+            }
+        }
+    }
+
+    void HandleWorkerDone() {
+        m_ActiveWorkersCount--;
+        if (m_InputFinished && m_ActiveWorkersCount == 0) {
+            Shutdown();
+        }
+    }
+
+    void Shutdown() {
+        Send(m_WriterActorId, new NActors::TEvents::TEvPoisonPill());
+        PassAway();
+    }
+};
 
 /*
 Требования к TMaximumPrimeDevisorActor:
@@ -68,7 +117,69 @@ TMaximumPrimeDevisorActor
             PassAway()
 */
 
+int64_t FindLargestPrimeDivisor(int64_t number) {
+    if (number <= 1) {
+        return 1;
+    }
+
+    int64_t largestPrime = -1;
+
+    // Handle even numbers
+    while (number % 2 == 0) {
+        largestPrime = 2;
+        number /= 2;
+    }
+
+    // Check odd divisors up to sqrt(n)
+    for (int64_t divisor = 3; divisor * divisor <= number; divisor += 2) {
+        while (number % divisor == 0) {
+            largestPrime = divisor;
+            number /= divisor;
+        }
+    }
+
+    // If remaining number is prime
+    if (number > 1) {
+        largestPrime = number;
+    }
+
+    return largestPrime != -1 ? largestPrime : 1;
+}
+
 // TODO: напишите реализацию TMaximumPrimeDevisorActor
+class TMaxPrimeDivisorActor : public NActors::TActorBootstrapped<TMaxPrimeDivisorActor> {
+    const int64_t m_InputNumber;
+    const NActors::TActorId m_ReaderActorId;
+    const NActors::TActorId m_WriterActorId;
+
+public:
+    TMaxPrimeDivisorActor(int64_t number, 
+                         NActors::TActorId readerActorId, 
+                         NActors::TActorId writerActorId)
+        : m_InputNumber(number)
+        , m_ReaderActorId(readerActorId)
+        , m_WriterActorId(writerActorId)
+    {}
+
+    void Bootstrap() {
+        ProcessAndRespond();
+    }
+
+private:
+    void ProcessAndRespond() {
+        int64_t result = FindLargestPrimeDivisor(m_InputNumber);
+
+        Send(m_WriterActorId, new TEvents::TEvWriteValueRequest(result));
+        Send(m_ReaderActorId, new TEvents::TEvDone());
+        PassAway();
+    }
+};
+
+THolder<NActors::IActor> CreateMaxPrimeDivisorActor(int64_t value, 
+                                                   NActors::TActorId readerActorId, 
+                                                   NActors::TActorId writerActorId) {
+    return MakeHolder<TMaxPrimeDivisorActor>(value, readerActorId, writerActorId);
+}
 
 /*
 Требования к TWriteActor:
@@ -88,39 +199,68 @@ TWriteActor
 */
 
 // TODO: напишите реализацию TWriteActor
-
-class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
-    TDuration Latency;
-    TInstant LastTime;
+class TWriteActor : public NActors::TActor<TWriteActor> {
+    int64_t m_ResultSum = 0;
 
 public:
-    TSelfPingActor(const TDuration& latency)
-        : Latency(latency)
+    TWriteActor() : TActor(&TWriteActor::StateFunc) {}
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(TEvents::TEvWriteValueRequest, HandleResult);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandleShutdown);
+    });
+
+    void HandleResult(TEvents::TEvWriteValueRequest::TPtr& event) {
+        m_ResultSum += event->Get()->Value;
+    }
+
+    void HandleShutdown() {
+        std::cout << m_ResultSum << std::endl;
+        ShouldContinue->ShouldStop();
+        PassAway();
+    }
+};
+
+class TSystemMonitorActor : public NActors::TActorBootstrapped<TSystemMonitorActor> {
+    TDuration m_MaxAllowedLatency;
+    TInstant m_LastPingTime;
+
+public:
+    TSystemMonitorActor(const TDuration& maxLatency)
+        : m_MaxAllowedLatency(maxLatency)
     {}
 
     void Bootstrap() {
-        LastTime = TInstant::Now();
-        Become(&TSelfPingActor::StateFunc);
+        m_LastPingTime = TInstant::Now();
+        Become(&TSystemMonitorActor::StateFunc);
         Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
     STRICT_STFUNC(StateFunc, {
-        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandlePing);
     });
 
-    void HandleWakeup() {
-        auto now = TInstant::Now();
-        TDuration delta = now - LastTime;
-        Y_VERIFY(delta <= Latency, "Latency too big");
-        LastTime = now;
+    void HandlePing() {
+        auto currentTime = TInstant::Now();
+        TDuration actualLatency = currentTime - m_LastPingTime;
+        Y_VERIFY(actualLatency <= m_MaxAllowedLatency, "System latency exceeded allowed maximum");
+        m_LastPingTime = currentTime;
         Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 };
 
-THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
-    return MakeHolder<TSelfPingActor>(latency);
+THolder<NActors::IActor> CreateSystemMonitorActor(const TDuration& latency) {
+    return MakeHolder<TSystemMonitorActor>(latency);
 }
 
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
     return ShouldContinue;
+}
+
+THolder<NActors::IActor> CreateReadActor(NActors::TActorId writerActorId) {
+    return MakeHolder<TReadActor>(writerActorId);
+}
+
+THolder<NActors::IActor> CreateWriteActor() {
+    return MakeHolder<TWriteActor>();
 }
