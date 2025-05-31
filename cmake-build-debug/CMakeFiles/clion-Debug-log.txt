@@ -1,0 +1,63 @@
+"D:\Programs\JetBrains\CLion 2024.3.3\bin\cmake\win\x64\bin\cmake.exe" -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_MAKE_PROGRAM=D:/Programs/JetBrains/CLion 2024.3.3/bin/ninja/win/x64/ninja.exe" -G Ninja -S D:\Programming\CLionProjects\ydb -B D:\Programming\CLionProjects\ydb\cmake-build-debug
+-- The C compiler identification is GNU 13.1.0
+-- The CXX compiler identification is GNU 13.1.0
+-- The ASM compiler identification is GNU
+-- Found assembler: D:/Programs/JetBrains/CLion 2024.3.3/bin/mingw/bin/gcc.exe
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: D:/Programs/JetBrains/CLion 2024.3.3/bin/mingw/bin/gcc.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: D:/Programs/JetBrains/CLion 2024.3.3/bin/mingw/bin/g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+CMake Deprecation Warning at CMakeLists.txt:26 (cmake_policy):
+  The OLD behavior for policy CMP0104 will be removed from a future version
+  of CMake.
+
+  The cmake-policies(7) manual explains that the OLD behaviors of all
+  policies are deprecated and that a policy should be set to OLD only under
+  specific short-term circumstances.  Projects should be ported to the NEW
+  behavior and not rely on setting a policy to OLD.
+
+
+-- Found Python3: D:/Python/python.exe (found version "3.13.2") found components: Interpreter
+CMake Error at cmake/llvm-tools.cmake:7 (message):
+  clang++ not found
+Call Stack (most recent call first):
+  CMakeLists.txt:34 (include)
+
+
+CMake Error at cmake/llvm-tools.cmake:19 (message):
+  clang not found
+Call Stack (most recent call first):
+  CMakeLists.txt:34 (include)
+
+
+CMake Error at cmake/llvm-tools.cmake:27 (message):
+  llvm-link not found
+Call Stack (most recent call first):
+  CMakeLists.txt:34 (include)
+
+
+CMake Error at cmake/llvm-tools.cmake:33 (message):
+  llvm opt tool not found
+Call Stack (most recent call first):
+  CMakeLists.txt:34 (include)
+
+
+g++.exe: error: unrecognized command-line option '-fcolor-diagnostics'
+g++.exe: error: unrecognized command-line option '-faligned-allocation'; did you mean '-fsized-deallocation'?
+g++.exe: error: unrecognized command-line option '-fdebug-default-version=4'
+g++.exe: error: unrecognized command-line option '-Wimport-preprocessor-directive-pedantic'
+-- Conan: checking conan executable
+CMake Error at cmake/conan.cmake:832 (message):
+  Conan executable not found! Please install conan.
+Call Stack (most recent call first):
+  cmake/conan.cmake:566 (conan_check)
+  CMakeLists.txt:42 (conan_cmake_install)
+
+
+-- Configuring incomplete, errors occurred!

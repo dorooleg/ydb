@@ -36,9 +36,9 @@ TMaximumPrimeDevisorActor
 class TMaximumPrimeDevisorActor
         : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor>
 {
-    ui64 N;
-    ui64 Div = 2;
-    ui64 MaxPrime = 1;
+    ui64 N;               // остаётся разложить
+    ui64 Div = 2;         // текущий делитель
+    ui64 MaxPrime = 1;    // ответ
 
     const NActors::TActorId ReadActor;
     const NActors::TActorId WriteActor;
@@ -86,11 +86,11 @@ private:
             }
         }
 
-        if (N == 1) {
+        if (N == 1) {                       // всё посчитали
             Send(WriteActor, new TEvents::TEvWriteValueRequest(MaxPrime));
             Send(ReadActor,  new TEvents::TEvDone);
             PassAway();
-        } else {
+        } else {                            // продолжим позже
             Send(SelfId(), new NActors::TEvents::TEvWakeup);
         }
     }
@@ -130,7 +130,7 @@ class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     NActors::TActorId WriteActor;
 
     bool  InputFinished = false;
-    ui64  InFlight      = 0;
+    ui64  InFlight      = 0;      // живых MaxPrime-акторов
 
 public:
     TReadActor(std::istream& in, NActors::TActorId writer)
@@ -161,7 +161,7 @@ private:
                 ).Release()
             );
             ++InFlight;
-            Send(SelfId(), new NActors::TEvents::TEvWakeup);
+            Send(SelfId(), new NActors::TEvents::TEvWakeup);   // читать дальше
         } else {
             InputFinished = true;
             TryFinish();
