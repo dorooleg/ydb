@@ -1,23 +1,24 @@
-// events.h
 #include <library/cpp/actors/core/event_local.h>
 #include <library/cpp/actors/core/events.h>
 
 struct TEvents {
-    enum EEv {
-        EvWriteValueRequest = NActors::TEvents::ES_PRIVATE, // Событие для передачи значения
-        EvDone, // Событие завершения вычислений
-        EvCompute // Событие для продолжения вычислений
+
+    struct EEv {
+        enum {
+            Done = EventSpaceBegin(NActors::TEvents::ES_PRIVATE),
+            WriteValueRequest
+        };
     };
 
-    // Событие с вычисленным значением
-    struct TEvWriteValueRequest : NActors::TEventLocal<TEvWriteValueRequest, EvWriteValueRequest> {
-        int64_t Value;
-        explicit TEvWriteValueRequest(int64_t value) : Value(value) {}
+    struct TEvDone: public NActors::TEventLocal<TEvDone, EEv::Done> {
+        DEFINE_SIMPLE_LOCAL_EVENT(TEvDone, "EEv::Done");
     };
 
-    // Событие завершения работы
-    struct TEvDone : NActors::TEventLocal<TEvDone, EvDone> {};
+    struct TEvWriteValueRequest: public NActors::TEventLocal<TEvWriteValueRequest, EEv::WriteValueRequest> {
+        int64_t value;
 
-    // Событие для продолжения вычислений
-    struct TEvCompute : NActors::TEventLocal<TEvCompute, EvCompute> {};
+        TEvWriteValueRequest(int64_t value) {
+            this->value = value;
+        }
+    };
 };

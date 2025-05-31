@@ -27,9 +27,8 @@ int main(int argc, const char* argv[])
     actorSystem.Register(CreateSelfPingActor(TDuration::Seconds(1)).Release());
 
     // Создаем и регистрируем актора-писателя
-    auto writeActor = actorSystem.Register(CreateWriteActor().Release());
-    // Создаем и регистрируем актора-читателя, передаем ему входной поток и ID писателя
-    auto readActor = actorSystem.Register(CreateReadActor(Cin, writeActor).Release());
+    NActors::TActorId writer = actorSystem.Register(CreateWriteActor().Release());
+    actorSystem.Register(CreateReadActor(writer).Release());
 
     // Основной цикл выполнения
     auto shouldContinue = GetProgramShouldContinue();
