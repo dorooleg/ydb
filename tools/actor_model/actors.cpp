@@ -1,13 +1,13 @@
 #include "actors.h"
-#include "events.h" // Подключаем наши события
-#include <library/cpp/actors/core/hfunc.h> // Для STRICT_STFUNC и hFunc/cFunc
-#include <iostream>     // Для std::cin и std.cout
-#include <chrono>       // Для TInstant (хотя в акторах уже есть)
+#include "events.h"
+#include <library/cpp/actors/core/hfunc.h>
+#include <iostream>
+#include <chrono> 
 
-// Этот объект будет управлять завершением программы
+
 static auto ShouldContinue = std::make_shared<TProgramShouldContinue>();
 
-// --- TWriteActor ---
+
 class TWriteActor : public NActors::TActor<TWriteActor> {
     long long CurrentSum_ = 0;
 
@@ -32,18 +32,17 @@ public:
     }
 };
 
-// Фабрика для TWriteActor
+
 THolder<NActors::IActor> CreateWriteActor() {
     return MakeHolder<TWriteActor>();
 }
 
-// --- TMaximumPrimeDevisorActor ---
+
 class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
     const NActors::TActorId ReadActorId_;
     const NActors::TActorId WriteActorId_;
     const int64_t OriginalValue_;
 
-    // Состояние для пошагового вычисления
     int64_t NumberToFactor_;
     int64_t CurrentDivisor_;
     int64_t LargestPrimeFactor_;
@@ -77,9 +76,9 @@ public:
             IsFirstWakeup_ = false;
 
             if (OriginalValue_ <= 1) {
-                int64_t value_to_send = 0; // Значение по умолчанию для чисел <= 0
+                int64_t value_to_send = 0; 
                 if (OriginalValue_ == 1) {
-                    value_to_send = 1;    // Специальный случай для числа 1
+                    value_to_send = 1;
                 }
                 Send(WriteActorId_, MakeHolder<TEvents::TEvWriteData>(value_to_send));
                 Send(ReadActorId_, MakeHolder<TEvents::TEvDone>());
@@ -91,14 +90,12 @@ public:
         auto startTime = TInstant::Now();
         bool calculationDone = false;
 
-        while (true) { // Внутренний цикл для одной "порции" вычислений
-            if (NumberToFactor_ == 1) { // Все разложили
+        while (true) {
+            if (NumberToFactor_ == 1) {
                 calculationDone = true;
                 break;
             }
 
-            // Оптимизация: если квадрат текущего делителя больше оставшегося числа,
-            // то оставшееся число (если оно > 1) и есть наибольший простой делитель.
             if (CurrentDivisor_ * CurrentDivisor_ > NumberToFactor_) {
                 if (NumberToFactor_ > 1) {
                     LargestPrimeFactor_ = NumberToFactor_;
@@ -112,25 +109,25 @@ public:
                 while (NumberToFactor_ % CurrentDivisor_ == 0) {
                     NumberToFactor_ /= CurrentDivisor_;
                 }
-                // Если после деления число стало 1, мы закончили
+
                 if (NumberToFactor_ == 1) {
                     calculationDone = true;
                     break;
                 }
             }
             
-            // Переходим к следующему предполагаемому делителю
+
             if (CurrentDivisor_ == 2) {
                 CurrentDivisor_ = 3;
             } else {
-                CurrentDivisor_ += 2; // Проверяем только нечетные числа после 2
+                CurrentDivisor_ += 2;
             }
 
-            // Проверяем, не вышло ли время для текущей "порции"
+
             if (TInstant::Now() - startTime > MAX_CALCULATION_SLICE_) {
-                break; // Выходим из внутреннего цикла, calculationDone останется false
+                break;
             }
-        } // Конец while(true) для "порции" вычислений
+        }
         
         if (calculationDone) {
             if (LargestPrimeFactor_ == 0 && OriginalValue_ > 1) {
@@ -140,19 +137,18 @@ public:
             Send(ReadActorId_, MakeHolder<TEvents::TEvDone>());
             PassAway();
         } else {
-            // Время для "порции" истекло, но вычисления не завершены. Отправляем себе Wakeup.
             Send(SelfId(), MakeHolder<NActors::TEvents::TEvWakeup>());
         }
     }
 };
 
-// Фабрика для TMaximumPrimeDevisorActor
+
 THolder<NActors::IActor> CreateMaximumPrimeDevisorActor(int64_t value, NActors::TActorId readActorId, NActors::TActorId writeActorId) {
     return MakeHolder<TMaximumPrimeDevisorActor>(value, readActorId, writeActorId);
 }
 
 
-// --- TReadActor ---
+
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
     const NActors::TActorId WriteActorId_;
     int PendingDevisorActors_ = 0;
@@ -176,7 +172,7 @@ public:
     });
 
     void HandleWakeup() {
-        if (EofReached_) { // Если уже достигли конца файла, но проснулись (например, по TEvDone), просто проверяем завершение
+        if (EofReached_) { 
             CheckCompletion();
             return;
         }
@@ -185,11 +181,9 @@ public:
         if (std::cin >> value) {
             Register(CreateMaximumPrimeDevisorActor(value, SelfId(), WriteActorId_).Release());
             PendingDevisorActors_++;
-            Send(SelfId(), MakeHolder<NActors::TEvents::TEvWakeup>()); // Запланировать следующее чтение
+            Send(SelfId(), MakeHolder<NActors::TEvents::TEvWakeup>()); 
         } else {
             EofReached_ = true;
-            // Если при чтении произошла ошибка или достигнут EOF, и нет ожидающих акторов,
-            // то можно сразу попытаться завершить работу.
             CheckCompletion();
         }
     }
@@ -208,12 +202,12 @@ public:
     }
 };
 
-// Фабрика для TReadActor
+
 THolder<NActors::IActor> CreateReadActor(NActors::TActorId writeActorId) {
     return MakeHolder<TReadActor>(writeActorId);
 }
 
-// --- TSelfPingActor (из примера) ---
+
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
     TInstant LastTime;
@@ -236,7 +230,6 @@ public:
     void HandleWakeup() {
         auto now = TInstant::Now();
         TDuration delta = now - LastTime;
-        // Y_VERIFY(delta <= Latency * 1.1, TStringBuilder() << "Latency too big: " << delta << " > " << Latency); // Добавим небольшой запас
         LastTime = now;
         Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
@@ -246,7 +239,7 @@ THolder<NActors::IActor> CreateSelfPingActor(const TDuration& latency) {
     return MakeHolder<TSelfPingActor>(latency);
 }
 
-// Функция для получения объекта синхронизации завершения
+
 std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
     return ShouldContinue;
 }
