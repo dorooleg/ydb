@@ -141,7 +141,7 @@ class TFetchingScript {
 private:
     YDB_READONLY_DEF(TString, BranchName);
     std::vector<std::shared_ptr<IFetchingStep>> Steps;
-    TAtomic StartInstant;
+    TAtomic StartInstant = 0;
     TAtomic FinishInstant;
 
 public:
