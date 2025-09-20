@@ -226,12 +226,13 @@ int64_t CalculateMaximumPrimeDivisor(int64_t value) {
 }
 
 
-class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
+class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
 private:
     int64_t Value;
     NActors::TActorId ReadActorId;
     NActors::TActorId WriteActorId;
     int64_t CurrentNumber;
+    int64_t CurrentDivisor;
     int64_t MaxPrimeDivisor;
     TInstant StartTime;
 
