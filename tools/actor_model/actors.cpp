@@ -232,7 +232,6 @@ private:
     NActors::TActorId ReadActorId;
     NActors::TActorId WriteActorId;
     int64_t CurrentNumber;
-    int64_t CurrentDivisor;
     int64_t MaxPrimeDivisor;
     TInstant StartTime;
 
@@ -352,9 +351,10 @@ std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
 }
 
 
-THolder<NActors::IActor> CreateReadActor(const NActors::TActorId& writeActorId) {
-    return MakeHolder<TReadActor>(writeActorId);
+THolder<NActors::IActor> CreateReadActor(std::istream& inputStream, NActors::TActorId writeActorId) {
+    return MakeHolder<TReadActor>(inputStream, writeActorId);
 }
+
 
 THolder<NActors::IActor> CreateMaximumPrimeDevisorActor(int64_t value, const NActors::TActorId& readActorId, const NActors::TActorId& writeActorId) {
     return MakeHolder<TMaximumPrimeDevisorActor>(value, readActorId, writeActorId);

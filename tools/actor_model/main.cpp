@@ -25,7 +25,7 @@ int main(int argc, const char* argv[])
 
     // Зарегистрируйте Write и Read акторы здесь
     auto writeActorId = actorSystem.Register(CreateWriteActor().Release());
-    auto readActorId = actorSystem.Register(CreateReadActor(writeActorId).Release());
+    actorSystem.Register(CreateReadActor(writeActorId).Release());
     // Раскомментируйте этот код
     auto shouldContinue = GetProgramShouldContinue();
     while (shouldContinue->PollState() == TProgramShouldContinue::Continue) {
