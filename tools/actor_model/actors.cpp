@@ -258,7 +258,7 @@ public:
     void HandleWakeup() {
         StartTime = TInstant::Now();
 
-        int64_t result = CalculateMaximumPrimeDevisor(Value);
+        int64_t result = CalculateMaximumPrimeDivisor(Value);
 
         Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(result));
 
