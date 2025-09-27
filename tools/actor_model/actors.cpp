@@ -43,17 +43,16 @@ TReadActor
 
 
 
+
 class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
 private:
-    std::istream& InputStream;
     NActors::TActorId WriteActorId;
-    int WaitingResponses;
+    int PendingCalculations = 0;
+    bool FinishedReading = false;
 
 public:
-    TReadActor(std::istream& inputStream, NActors::TActorId writeActorId)
-        : InputStream(inputStream)
-        , WriteActorId(writeActorId)
-        , WaitingResponses(0)
+    TReadActor(const NActors::TActorId& writeActorId)
+        : WriteActorId(writeActorId)
     {}
 
     void Bootstrap() {
@@ -68,20 +67,28 @@ public:
 
     void HandleWakeup() {
         int64_t value;
-        if (InputStream >> value) {
-            WaitingResponses++;
-            Register(new TMaximumPrimeDivisorActor(value, SelfId(), WriteActorId));
+        if (std::cin >> value) {
+            auto actor = CreateMaximumPrimeDevisorActor(value, SelfId(), WriteActorId);
+            Register(actor.Release());
+            PendingCalculations++;
 
             Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
-        } else if (WaitingResponses == 0) {
-            Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        } else {
+            FinishedReading = true;
+            CheckCompletion();
         }
     }
 
-    void HandleDone() {
-        WaitingResponses--;
-        if (WaitingResponses == 0 && InputStream.eof()) {
-            Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+    void HandleDone(TEvents::TEvDone::TPtr& ev) {
+        Y_UNUSED(ev);
+        PendingCalculations--;
+        CheckCompletion();
+    }
+
+    void CheckCompletion() {
+        if (FinishedReading && PendingCalculations == 0) {
+            Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoison>());
+            PassAway();
         }
     }
 };
@@ -226,28 +233,30 @@ int64_t CalculateMaximumPrimeDivisor(int64_t value) {
 }
 
 
-class TMaximumPrimeDivisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDivisorActor> {
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
 private:
     int64_t Value;
     NActors::TActorId ReadActorId;
     NActors::TActorId WriteActorId;
-    int64_t CurrentNumber;
-    int64_t CurrentDivisor;
-    int64_t MaxPrimeDivisor;
+    int64_t Result = 1;
+    int64_t CurrentDivisor = 1;
+    int64_t MaxDivisor;
+    bool Calculated = false;
     TInstant StartTime;
 
 public:
-    TMaximumPrimeDivisorActor(int64_t value, NActors::TActorId readActorId, NActors::TActorId writeActorId)
+    TMaximumPrimeDevisorActor(int64_t value, const NActors::TActorId& readActorId, const NActors::TActorId& writeActorId)
         : Value(value)
         , ReadActorId(readActorId)
         , WriteActorId(writeActorId)
-        , CurrentNumber(value)
-        , CurrentDivisor(2)
-        , MaxPrimeDivisor(1)
-    {}
+    {
+        MaxDivisor = static_cast<int64_t>(std::sqrt(value));
+        if (MaxDivisor < 1) MaxDivisor = 1;
+    }
 
     void Bootstrap() {
-        Become(&TMaximumPrimeDivisorActor::StateFunc);
+        Become(&TMaximumPrimeDevisorActor::StateFunc);
+        StartTime = TInstant::Now();
         Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
     }
 
@@ -256,17 +265,41 @@ public:
     });
 
     void HandleWakeup() {
-        StartTime = TInstant::Now();
+        if (!Calculated) {
+            auto iterationStartTime = TInstant::Now();
 
-        int64_t result = CalculateMaximumPrimeDivisor(Value);
+            while (CurrentDivisor <= MaxDivisor) {
+                if (Value % CurrentDivisor == 0) {
+                    if (is_prime(CurrentDivisor)) {
+                        Result = CurrentDivisor;
+                    }
 
-        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(result));
+                    int64_t pairDivisor = Value / CurrentDivisor;
+                    if (pairDivisor != CurrentDivisor && is_prime(pairDivisor)) {
+                        Result = std::max(Result, pairDivisor);
+                    }
+                }
+
+                CurrentDivisor++;
+
+                auto elapsed = TInstant::Now() - iterationStartTime;
+                if (elapsed > TDuration::MilliSeconds(10)) {
+                    Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                    return;
+                }
+            }
+
+            Calculated = true;
+        }
+
+        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(Result));
 
         Send(ReadActorId, std::make_unique<TEvents::TEvDone>());
 
         PassAway();
     }
 };
+
 
 
 /*
@@ -314,7 +347,6 @@ public:
 
 
 
-
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
     TInstant LastTime;
@@ -352,13 +384,12 @@ std::shared_ptr<TProgramShouldContinue> GetProgramShouldContinue() {
 }
 
 
-THolder<NActors::IActor> CreateReadActor(std::istream& inputStream, NActors::TActorId writeActorId) {
-    return MakeHolder<TReadActor>(inputStream, writeActorId);
+THolder<NActors::IActor> CreateReadActor(const NActors::TActorId& writeActorId) {
+    return MakeHolder<TReadActor>(writeActorId);
 }
 
-
 THolder<NActors::IActor> CreateMaximumPrimeDevisorActor(int64_t value, const NActors::TActorId& readActorId, const NActors::TActorId& writeActorId) {
-    return MakeHolder<TMaximumPrimeDivisorActor>(value, readActorId, writeActorId);
+    return MakeHolder<TMaximumPrimeDevisorActor>(value, readActorId, writeActorId);
 }
 
 THolder<NActors::IActor> CreateWriteActor() {
