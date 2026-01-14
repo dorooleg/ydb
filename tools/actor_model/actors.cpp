@@ -87,7 +87,33 @@ TWriteActor
         PassAway()
 */
 
-// TODO: напишите реализацию TWriteActor
+class TWriteActor : public NActors::TActor<TWriteActor> {
+    i64 Sum = 0;
+
+public:
+    TWriteActor()
+        : TActor(&TWriteActor::StateFunc)
+    {}
+
+    STRICT_STFUNC(StateFunc, {
+        hFunc(TEvents::TEvWriteValueRequest, Handle);
+        cFunc(NActors::TEvents::TEvPoisonPill::EventType, HandlePoisonPill);
+    });
+
+    void Handle(TEvents::TEvWriteValueRequest::TPtr& ev) {
+        Sum += ev->Get()->Value;
+    }
+
+    void HandlePoisonPill() {
+        Cout << Sum << Endl;
+        ShouldContinue->ShouldStop(0);
+        PassAway();
+    }
+};
+
+THolder<NActors::IActor> CreateWriteActor() {
+    return MakeHolder<TWriteActor>();
+}
 
 class TSelfPingActor : public NActors::TActorBootstrapped<TSelfPingActor> {
     TDuration Latency;
