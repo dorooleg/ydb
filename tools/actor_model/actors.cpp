@@ -68,7 +68,53 @@ TMaximumPrimeDevisorActor
             PassAway()
 */
 
-// TODO: напишите реализацию TMaximumPrimeDevisorActor
+class TMaximumPrimeDevisorActor : public NActors::TActorBootstrapped<TMaximumPrimeDevisorActor> {
+    i64 Number;
+    i64 CurrentDivisor;
+    i64 MaxPrimeDivisor;
+    NActors::TActorId ReadActorId;
+    NActors::TActorId WriteActorId;
+
+public:
+    TMaximumPrimeDevisorActor(i64 number, NActors::TActorId readActorId, NActors::TActorId writeActorId)
+        : Number(number)
+        , CurrentDivisor(2)
+        , MaxPrimeDivisor(1)
+        , ReadActorId(readActorId)
+        , WriteActorId(writeActorId)
+    {}
+
+    void Bootstrap() {
+        Become(&TMaximumPrimeDevisorActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+    });
+
+    void HandleWakeup() {
+        auto startTime = TInstant::Now();
+
+        while (Number > 1) {
+            if (Number % CurrentDivisor == 0) {
+                MaxPrimeDivisor = CurrentDivisor;
+                Number /= CurrentDivisor;
+            } else {
+                CurrentDivisor++;
+            }
+
+            if (TInstant::Now() - startTime > TDuration::MilliSeconds(10)) {
+                Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+                return;
+            }
+        }
+
+        Send(WriteActorId, std::make_unique<TEvents::TEvWriteValueRequest>(MaxPrimeDivisor));
+        Send(ReadActorId, std::make_unique<TEvents::TEvDone>());
+        PassAway();
+    }
+};
 
 /*
 Требования к TWriteActor:
