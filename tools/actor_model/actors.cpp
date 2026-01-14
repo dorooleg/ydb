@@ -38,7 +38,54 @@ TReadActor
             ...
 */
 
-// TODO: напишите реализацию TReadActor
+class TReadActor : public NActors::TActorBootstrapped<TReadActor> {
+    NActors::TActorId WriteActorId;
+    ui32 ActiveActors = 0;
+    bool FinishedReading = false;
+
+public:
+    TReadActor(NActors::TActorId writeActorId)
+        : WriteActorId(writeActorId)
+    {}
+
+    void Bootstrap() {
+        Become(&TReadActor::StateFunc);
+        Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+    }
+
+    STRICT_STFUNC(StateFunc, {
+        cFunc(NActors::TEvents::TEvWakeup::EventType, HandleWakeup);
+        cFunc(TEvents::TEvDone::EventType, HandleDone);
+    });
+
+    void HandleWakeup() {
+        i64 value;
+        if (Cin >> value) {
+            auto actor = MakeHolder<TMaximumPrimeDevisorActor>(value, SelfId(), WriteActorId);
+            Register(actor.Release());
+            ActiveActors++;
+            Send(SelfId(), std::make_unique<NActors::TEvents::TEvWakeup>());
+        } else {
+            FinishedReading = true;
+            CheckFinish();
+        }
+    }
+
+    void HandleDone() {
+        ActiveActors--;
+        CheckFinish();
+    }
+
+    void CheckFinish() {
+        if (FinishedReading && ActiveActors == 0) {
+            Send(WriteActorId, std::make_unique<NActors::TEvents::TEvPoisonPill>());
+        }
+    }
+};
+
+THolder<NActors::IActor> CreateReadActor(NActors::TActorId writeActorId) {
+    return MakeHolder<TReadActor>(writeActorId);
+}
 
 /*
 Требования к TMaximumPrimeDevisorActor:
