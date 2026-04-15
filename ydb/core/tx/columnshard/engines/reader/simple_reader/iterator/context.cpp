@@ -125,11 +125,25 @@ void TSpecialReadContext::RegisterActors(const NCommon::ISourcesConstructor& sou
     TGuard<TSpinLock> g(DuplicatesManagerLock);
     AFL_VERIFY(!DuplicatesManager);
     if (NeedDuplicateFiltering()) {
-        const auto* casted_sources = dynamic_cast<const NCommon::TSourcesConstructorWithAccessors<TSourceConstructor>*>(&sources);
-        AFL_VERIFY(casted_sources);
+        const auto* castedSources = dynamic_cast<const NCommon::TSourcesConstructorWithAccessors<TSourceConstructor>*>(&sources);
+        if (castedSources) {
+            // we do not pass conflicting portions of concurrent txs to the duplicate filter because they are invisible for the given tx
+            std::deque<std::shared_ptr<TPortionInfo>> portionsToDuplicateFilter;
+            castedSources->ForEachConstructor([&](const TSourceConstructor& constructor) {
+                const auto info = constructor.GetPortion();
+                auto state = GetPortionStateAtScanStart(*info);
+                if (!state.Conflicting) {
+                    portionsToDuplicateFilter.emplace_back(std::move(info));
+                }
+            });
+            DuplicatesManager = NActors::TActivationContext::Register(new NDuplicateFiltering::TDuplicateManager(*this, portionsToDuplicateFilter));
+            return;
+        }
+        const auto* castedIntervalSources = dynamic_cast<const NCommon::TSourcesConstructorWithAccessors<TIntervalSourceConstructor>*>(&sources);
+        AFL_VERIFY(castedIntervalSources);
         // we do not pass conflicting portions of concurrent txs to the duplicate filter because they are invisible for the given tx
         std::deque<std::shared_ptr<TPortionInfo>> portionsToDuplicateFilter;
-        casted_sources->ForEachConstructor([&](const TSourceConstructor& constructor) {
+        castedIntervalSources->ForEachConstructor([&](const TIntervalSourceConstructor& constructor) {
             const auto info = constructor.GetPortion();
             auto state = GetPortionStateAtScanStart(*info);
             if (!state.Conflicting) {

@@ -17,7 +17,11 @@ public:
         AFL_VERIFY(sources.size());
         for (const auto& [id, borders] : sources) {
             Borders.emplace_back(TIntervalBorder::First(borders.GetBegin(), id));
-            Borders.emplace_back(TIntervalBorder::Last(borders.GetEnd(), id));
+            if (borders.GetIsLast()) {
+                Borders.emplace_back(TIntervalBorder::Last(borders.GetEnd(), id));
+            } else {
+                Borders.emplace_back(TIntervalBorder::First(borders.GetEnd(), id));
+            }
         }
         std::sort(Borders.begin(), Borders.end());
     }
@@ -110,10 +114,15 @@ private:
     };
 
 private:
-    YDB_READONLY_DEF(std::vector<TIntervalInfo>, Intervals);
+    YDB_ACCESSOR_DEF(std::vector<TIntervalInfo>, Intervals);
     std::set<TPortionSpan, TIntervalsIterator::TPortionSpan::TComparatorByLeftBorder> Portions;
     std::set<TPortionSpan, TIntervalsIterator::TPortionSpan::TComparatorByRightBorder> CurrentPortions;
     ui64 NextInterval = 0;
+    
+public:
+    std::vector<TIntervalInfo>& GetIntervalsMutable() {
+        return Intervals;
+    }
 
 private:
     TIntervalsIterator(
@@ -214,7 +223,7 @@ public:
     }
 
     static TIntervalsIterator BuildFromSplitter(
-        const TColumnDataSplitter& splitter, const std::vector<ui32>& intervalIdxs, const ui64 basePortionId) {
+        const TColumnDataSplitter& splitter, const std::vector<ui32>& intervalIdxs, const ui64 mainPortionId) {
         TIntervalsIteratorBuilder builder;
         auto intervalIt = intervalIdxs.begin();
         ui64 currentInterval = 0;
@@ -230,14 +239,16 @@ public:
                 return true;
             }
 
-            builder.AppendInterval(begin, end, portions);
+            auto copyPortions = portions;
+            copyPortions.erase(std::numeric_limits<ui64>::max());
+            builder.AppendInterval(begin, end, std::move(copyPortions));
 
             ++currentInterval;
             ++intervalIt;
             return true;
         };
 
-        splitter.ForEachIntersectingInterval(callback, basePortionId);
+        splitter.ForEachIntersectingInterval(callback, mainPortionId);
         AFL_VERIFY(builder.NumIntervals() == intervalIdxs.size())("builder", builder.NumIntervals())(
                                                "intervals", TStringBuilder() << '[' << JoinSeq(',', intervalIdxs) << ']');
         return builder.Build();

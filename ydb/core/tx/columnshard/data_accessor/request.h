@@ -238,7 +238,7 @@ public:
 
     void AddPortion(const TPortionInfo::TConstPtr& portion) {
         AFL_VERIFY(portion);
-        AFL_VERIFY(Portions.emplace(portion->GetPortionId(), portion).second);
+        Portions.emplace(portion->GetPortionId(), portion);
     }
 
     TString GetTaskId() const {

@@ -7,7 +7,7 @@ namespace NKikimr::NOlap::NReader::NSimple::NDuplicateFiltering {
 
 class TBuildFilterTaskExecutor: public std::enable_shared_from_this<TBuildFilterTaskExecutor>, TNonCopyable {
 private:
-    inline static const ui64 BATCH_PORTIONS_COUNT_SOFT_LIMIT = 10;
+    inline static const ui64 BATCH_PORTIONS_COUNT_SOFT_LIMIT = 1000;
 
     TIntervalsIterator Portions;
 

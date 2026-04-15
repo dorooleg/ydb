@@ -20,6 +20,8 @@ private:
 public:
     static TReplaceKeyAdapter BuildStart(const TPortionInfo& portion, const TReadMetadataBase& readMetadata);
     static TReplaceKeyAdapter BuildFinish(const TPortionInfo& portion, const TReadMetadataBase& readMetadata);
+    static TReplaceKeyAdapter BuildStart(NArrow::TSimpleRow start, NArrow::TSimpleRow end, const TReadMetadataBase& readMetadata);
+    static TReplaceKeyAdapter BuildFinish(NArrow::TSimpleRow start, NArrow::TSimpleRow end, const TReadMetadataBase& readMetadata);
 
     const NArrow::TSimpleRow& GetValue() const {
         return Value;

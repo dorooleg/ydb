@@ -22,8 +22,7 @@ public:
 };
 
 class TEvRequestFilter: public NActors::TEventLocal<TEvRequestFilter, NColumnShard::TEvPrivate::EvRequestFilter> {
-private:
-    YDB_READONLY_DEF(TString, ExternalTaskId);
+public:
     NArrow::TSimpleRow MinPK;
     NArrow::TSimpleRow MaxPK;
     YDB_READONLY_DEF(ui64, PortionId);
@@ -43,7 +42,7 @@ public:
 class TEvFilterConstructionResult
     : public NActors::TEventLocal<TEvFilterConstructionResult, NColumnShard::TEvPrivate::EvFilterConstructionResult> {
 private:
-    using TFilters = THashMap<TDuplicateMapInfo, NArrow::TColumnFilter>;
+    using TFilters = THashMap<TDuplicateMapInfo, TPortionColumnFilter>;
     TConclusion<TFilters> Result;
 
 public:

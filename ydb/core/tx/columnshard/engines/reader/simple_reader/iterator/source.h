@@ -34,21 +34,6 @@ class IFetchTaskConstructor;
 class IFetchingStep;
 class TBuildFakeSpec;
 
-class TPortionPage {
-private:
-    YDB_READONLY(ui32, StartIndex, 0);
-    YDB_READONLY(ui32, RecordsCount, 0);
-    YDB_READONLY(ui64, MemoryBytes, 0);
-    YDB_ACCESSOR_DEF(std::shared_ptr<arrow::Table>, Result);
-
-public:
-    TPortionPage(const ui32 startIndex, const ui32 recordsCount, const ui64 memoryBytes)
-        : StartIndex(startIndex)
-        , RecordsCount(recordsCount)
-        , MemoryBytes(memoryBytes) {
-    }
-};
-
 class IDataSource: public NCommon::IDataSource {
 private:
     using TBase = NCommon::IDataSource;
@@ -412,7 +397,7 @@ public:
     }
 
     TPortionDataSource(
-        const ui32 sourceIdx, const std::shared_ptr<TPortionInfo>& portion, const std::shared_ptr<NCommon::TSpecialReadContext>& context);
+        const ui32 sourceIdx, const std::shared_ptr<TPortionInfo>& portion, const std::shared_ptr<NCommon::TSpecialReadContext>& context, NArrow::TSimpleRow start, NArrow::TSimpleRow end);
 };
 
 class TAggregationDataSource: public IDataSource {

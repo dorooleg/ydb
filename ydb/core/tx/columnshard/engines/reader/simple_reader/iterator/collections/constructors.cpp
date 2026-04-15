@@ -39,9 +39,56 @@ std::vector<TInsertWriteId> TPortionsSources::GetUncommittedWriteIds() const {
     return result;
 }
 
+void TIntervalsSources::DoInitCursor(const std::shared_ptr<IScanCursor>& cursor) {
+    while (TBase::GetConstructorsCount()) {
+        bool usage = false;
+        if (!cursor->CheckEntityIsBorder(TBase::MutableNextConstructor(), usage)) {
+            TBase::DropNextConstructor();
+            continue;
+        }
+        {
+            const auto& cursorLocal = std::dynamic_pointer_cast<ISimpleScanCursor>(cursor);
+            if (cursorLocal) {
+                TBase::MutableNextConstructor().ValidateCursor(*cursorLocal);
+            }
+        }
+        if (usage) {
+            TBase::MutableNextConstructor().SetIsStartedByCursor();
+        } else {
+            TBase::DropNextConstructor();
+        }
+        break;
+    }
+}
+
+std::vector<TInsertWriteId> TIntervalsSources::GetUncommittedWriteIds() const {
+    std::vector<TInsertWriteId> result;
+    for (auto&& i : TBase::GetConstructors()) {
+        if (!i.GetPortion()->IsCommitted()) {
+            AFL_VERIFY(i.GetPortion()->GetPortionType() == EPortionType::Written);
+            auto* written = static_cast<const TWrittenPortionInfo*>(i.GetPortion().get());
+            result.emplace_back(written->GetInsertWriteId());
+        }
+    }
+    return result;
+}
+
+std::shared_ptr<TPortionDataSource> TIntervalSourceConstructor::Construct(
+    const std::shared_ptr<NCommon::TSpecialReadContext>& context, std::shared_ptr<TPortionDataAccessor>&& accessor) const {
+        
+    // TODO: add intervals
+    auto result = std::make_shared<TPortionDataSource>(GetSourceIdx(), Portion, context, Start, End);
+    result->SetPortionAccessor(std::move(accessor));
+    if (IsStartedByCursorFlag) {
+        result->SetIsStartedByCursor();
+    }
+    FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, result->AddEvent("s"));
+    return result;
+}
+
 std::shared_ptr<TPortionDataSource> TSourceConstructor::Construct(
     const std::shared_ptr<NCommon::TSpecialReadContext>& context, std::shared_ptr<TPortionDataAccessor>&& accessor) const {
-    auto result = std::make_shared<TPortionDataSource>(GetSourceIdx(), Portion, context);
+    auto result = std::make_shared<TPortionDataSource>(GetSourceIdx(), Portion, context, Portion->IndexKeyStart(), Portion->IndexKeyEnd());
     result->SetPortionAccessor(std::move(accessor));
     if (IsStartedByCursorFlag) {
         result->SetIsStartedByCursor();

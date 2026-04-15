@@ -53,6 +53,7 @@ public:
 class TColumnDataAllocation: public NGroupedMemoryManager::IAllocation {
 private:
     TBuildFilterTaskContext Request;
+    TInstant Start;
 
 private:
     virtual void DoOnAllocationImpossible(const TString& errorMessage) override {
@@ -68,8 +69,10 @@ private:
         }
         auto columnDataManager = Request.GetGlobalContext().GetColumnDataManager();
         auto columns = Request.GetGlobalContext().GetFetchingColumnIds();
+        Request.GetGlobalContext().GetCounters()->OnAllocateColumnMemory((TInstant::Now() - Start).MilliSeconds());
         columnDataManager->AskColumnData(NBlobOperations::EConsumer::DUPLICATE_FILTERING, portionAddresses, std::move(columns),
             std::make_shared<TColumnFetchingCallback>(std::move(Request), guard));
+        
         return true;
     }
 
@@ -77,6 +80,7 @@ public:
     TColumnDataAllocation(TBuildFilterTaskContext&& request, const ui64 mem)
         : NGroupedMemoryManager::IAllocation(mem)
         , Request(std::move(request))
+        , Start(TInstant::Now())
     {
     }
 };
@@ -106,6 +110,10 @@ private:
         for (const auto& accessor : result.ExtractPortionsVector()) {
             mem += accessor->GetColumnRawBytes(Request.GetGlobalContext().GetFetchingColumnIds(), false);
         }
+        ui64 mem = 1;
+        // for (const auto& accessor : result.ExtractPortionsVector()) {
+        //     mem += accessor->GetColumnRawBytes(Request.GetGlobalContext().GetFetchingColumnIds(), false);
+        // }
 
         NGroupedMemoryManager::TDeduplicationMemoryLimiterOperator::SendToAllocation(
             Request.GetGlobalContext().GetRequestGuard()->GetMemoryProcessId(), Request.GetGlobalContext().GetRequestGuard()->GetMemoryScopeId(),
@@ -153,6 +161,7 @@ private:
         auto dataAccessorsManager = Request.GetGlobalContext().GetDataAccessorsManager();
         request->RegisterSubscriber(std::make_shared<TColumnDataAccessorFetching>(std::move(Request), guard));
         dataAccessorsManager->AskData(request);
+        Request.GetGlobalContext();
         return true;
     }
 
@@ -170,7 +179,7 @@ bool TBuildFilterTaskExecutor::ScheduleNext(TBuildFilterContext&& context) {
     std::vector<TIntervalInfo> intervals;
     THashSet<ui64> portionIds;
 
-    while (portionIds.size() < BATCH_PORTIONS_COUNT_SOFT_LIMIT && Portions.Next()) {
+    while (Portions.Next()) {
         intervals.emplace_back(Portions.GetCurrentInterval());
         for (const ui64 portion : Portions.GetCurrentPortionIds()) {
             portionIds.emplace(portion);

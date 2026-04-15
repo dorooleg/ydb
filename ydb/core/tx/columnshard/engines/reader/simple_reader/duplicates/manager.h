@@ -31,8 +31,8 @@ class TDuplicateManager: public NActors::TActor<TDuplicateManager> {
 private:
     class TFilterSizeProvider {
     public:
-        size_t operator()(const NArrow::TColumnFilter& filter) {
-            return filter.GetDataSize();
+        size_t operator()(const TPortionColumnFilter& filter) {
+            return filter.Filter.GetDataSize() + sizeof(filter.Offset);
         }
     };
 
@@ -48,7 +48,7 @@ private:
         {
         }
 
-        void OnFilterReady(const NArrow::TColumnFilter& filter) {
+        void OnFilterReady(const TPortionColumnFilter& filter) {
             Constructor->AddFilter(IntervalIdx, filter);
         }
 
@@ -59,7 +59,7 @@ private:
 
     class TIntervalInFlightInfo {
     private:
-        THashMap<ui64, std::vector<TIntervalFilterCallback>> SubscribersByPortion;
+        mutable THashMap<ui64, std::vector<TIntervalFilterCallback>> SubscribersByPortion;
         std::shared_ptr<TJobStatus> Job;
 
     public:
@@ -72,10 +72,10 @@ private:
         }
 
         void AddSubscriber(ui64 portionId, TIntervalFilterCallback&& callback) {
-            AFL_VERIFY(SubscribersByPortion.emplace(portionId, std::vector<TIntervalFilterCallback>({std::move(callback)})).second);
+            SubscribersByPortion[portionId].push_back(std::move(callback));
         }
 
-        bool OnFilterReady(const ui64 portionId, const NArrow::TColumnFilter& filter) {
+        bool OnFilterReady(const ui64 portionId, const TPortionColumnFilter& filter) {
             if (auto findPortion = SubscribersByPortion.find(portionId); findPortion != SubscribersByPortion.end()) {
                 for (auto&& subscriber : findPortion->second) {
                     subscriber.OnFilterReady(filter);
@@ -107,7 +107,7 @@ private:
     };
 
 private:
-    inline static const ui64 FILTER_CACHE_SIZE = 10000000;  // 10 MiB
+    inline static const ui64 FILTER_CACHE_SIZE = 1000000000;  // 10 MiB
     inline static const ui64 BORDER_CACHE_SIZE_COUNT = 10000;
 
     const std::shared_ptr<ISnapshotSchema> LastSchema;
@@ -118,15 +118,18 @@ private:
     const std::shared_ptr<TPortionStore> Portions;
     const std::shared_ptr<NDataAccessorControl::IDataAccessorsManager> DataAccessorsManager;
     const std::shared_ptr<NColumnFetching::TColumnDataManager> ColumnDataManager;
+    std::optional<NArrow::TSimpleRow> Left;
+    std::optional<NArrow::TSimpleRow> Right;
+    std::set<NArrow::TSimpleRow> Borders;
 
-    TLRUCache<TDuplicateMapInfo, NArrow::TColumnFilter, TNoopDelete, TFilterSizeProvider> FiltersCache;
+    THashMap<ui64, THashMap<TDuplicateMapInfo, TPortionColumnFilter>> FiltersCache;
     TLRUCache<ui64, TSortableBorders> MaterializedBordersCache;
-    THashMap<TIntervalBordersView, TIntervalInFlightInfo> IntervalsInFlight;
+    THashMap<TIntervalBorders, TIntervalInFlightInfo> IntervalsInFlight;
     ui64 ExpectedIntersectionCount = 0;
     std::shared_ptr<TAtomicCounter> AbortionFlag;
 
 private:
-    static TPortionIntervalTree MakeIntervalTree(const std::deque<std::shared_ptr<TPortionInfo>>& portions) {
+    TPortionIntervalTree MakeIntervalTree(const std::deque<std::shared_ptr<TPortionInfo>>& portions) {
         TPortionIntervalTree intervals;
         for (const auto& portion : portions) {
             intervals.AddRange(TPortionIntervalTree::TOwnedRange(portion->IndexKeyStart(), true,
@@ -134,6 +137,24 @@ private:
         }
         return intervals;
     }
+    
+    void NextRange() {
+        Left = Right;
+        if (!Borders.empty()) {
+            Right = *Borders.rbegin();
+        }
+        
+        for (int i = 0; i < 500 && !Borders.empty(); i++) {
+            Borders.erase(Borders.begin());
+        }
+        
+        if (!Borders.empty()) {
+            Right = *Borders.rbegin();
+        }
+    }
+    
+    NArrow::TSimpleRow GetLeft(const NArrow::TSimpleRow& minPK, const NArrow::TSimpleRow& maxPK);
+    NArrow::TSimpleRow GetRight(const NArrow::TSimpleRow& minPK, const NArrow::TSimpleRow& maxPK);
 
     static std::shared_ptr<TPortionStore> MakePortionsIndex(const TPortionIntervalTree& intervals) {
         THashMap<ui64, TPortionInfo::TConstPtr> portions;

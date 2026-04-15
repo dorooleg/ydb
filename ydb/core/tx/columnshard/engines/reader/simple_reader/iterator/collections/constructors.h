@@ -12,6 +12,55 @@ class TPortionInfo;
 }
 
 namespace NKikimr::NOlap::NReader::NSimple {
+    
+class TIntervalSourceConstructor: public NCommon::TDataSourceConstructor {
+private:
+    YDB_READONLY_DEF(std::shared_ptr<TPortionInfo>, Portion);
+    ui32 RecordsCount = 0;
+    bool IsStartedByCursorFlag = false;
+    NKikimr::NArrow::TSimpleRow Start;
+    NKikimr::NArrow::TSimpleRow End;
+
+    virtual ui64 DoGetEntityRecordsCount() const override {
+        return RecordsCount;
+    }
+    virtual ui64 DoGetDeprecatedPortionId() const override {
+        return Portion->GetPortionId();
+    }
+
+public:
+    void SetIsStartedByCursor() {
+        IsStartedByCursorFlag = true;
+    }
+    bool GetIsStartedByCursor() const {
+        return IsStartedByCursorFlag;
+    }
+
+    TIntervalSourceConstructor(const std::shared_ptr<TPortionInfo>& portion, const bool isVisible, const NReader::ERequestSorting sorting, NKikimr::NArrow::TSimpleRow&& start, NKikimr::NArrow::TSimpleRow&& end)
+        : NCommon::TDataSourceConstructor(
+              TReplaceKeyAdapter((sorting == NReader::ERequestSorting::DESC) ? NKikimr::NArrow::TSimpleRow{end} : NKikimr::NArrow::TSimpleRow{start}
+                ,
+                  sorting == NReader::ERequestSorting::DESC),
+              TReplaceKeyAdapter((sorting == NReader::ERequestSorting::DESC) ? NKikimr::NArrow::TSimpleRow{start} : NKikimr::NArrow::TSimpleRow{end},
+                  sorting == NReader::ERequestSorting::DESC), !isVisible)
+        , Portion(std::move(portion))
+        , RecordsCount(portion->GetRecordsCount())
+        , Start(start)
+        , End(end)
+    {
+    }
+
+    std::shared_ptr<TPortionDataSource> Construct(const std::shared_ptr<NCommon::TSpecialReadContext>& context, std::shared_ptr<TPortionDataAccessor>&& accessor) const;
+
+    virtual bool QueryAgnosticLess(const TDataSourceConstructor& rhs) const override {
+        return Portion->GetPortionId() < VerifyDynamicCast<const TIntervalSourceConstructor*>(&rhs)->GetPortion()->GetPortionId();
+    }
+
+    void ValidateCursor(const ISimpleScanCursor& cursor) const {
+        AFL_VERIFY(cursor.GetPortionId() && GetPortion()->GetPortionId() == *cursor.GetPortionId())("expected", GetPortion()->GetPortionId())(
+                                                                            "cursor", cursor.GetPortionId().value_or(0));
+    }
+};
 
 class TSourceConstructor: public NCommon::TDataSourceConstructor {
 private:
@@ -54,6 +103,52 @@ public:
     void ValidateCursor(const ISimpleScanCursor& cursor) const {
         AFL_VERIFY(cursor.GetPortionId() && GetPortion()->GetPortionId() == *cursor.GetPortionId())("expected", GetPortion()->GetPortionId())(
                                                                             "cursor", cursor.GetPortionId().value_or(0));
+    }
+};
+
+class TIntervalsSources: public NCommon::TSourcesConstructorWithAccessors<TIntervalSourceConstructor> {
+private:
+    using TBase = NCommon::TSourcesConstructorWithAccessors<TIntervalSourceConstructor>;
+
+    virtual void DoFillReadStats(TReadStats& stats) const override {
+        ui64 compactedPortionsBytes = 0;
+        ui64 insertedPortionsBytes = 0;
+        ui64 committedPortionsBytes = 0;
+
+        TBase::ForEachConstructor([&](const TIntervalSourceConstructor& constructor) {
+            if (constructor.GetPortion()->GetPortionType() == EPortionType::Compacted) {
+                compactedPortionsBytes += constructor.GetPortion()->GetTotalBlobBytes();
+            } else if (constructor.GetPortion()->GetProduced() == NPortion::EProduced::INSERTED) {
+                insertedPortionsBytes += constructor.GetPortion()->GetTotalBlobBytes();
+            } else {
+                committedPortionsBytes += constructor.GetPortion()->GetTotalBlobBytes();
+            }
+        });
+
+        stats.IndexPortions = TBase::GetConstructorsCount();
+        stats.InsertedPortionsBytes = insertedPortionsBytes;
+        stats.CompactedPortionsBytes = compactedPortionsBytes;
+        stats.CommittedPortionsBytes = committedPortionsBytes;
+    }
+
+    virtual void DoInitCursor(const std::shared_ptr<IScanCursor>& cursor) override;
+
+    virtual std::vector<TInsertWriteId> GetUncommittedWriteIds() const override;
+
+    virtual std::shared_ptr<NCommon::IDataSource> DoExtractNextImpl(const std::shared_ptr<NCommon::TSpecialReadContext>& context) override {
+        auto constructor = TBase::PopObjectWithAccessor();
+        return constructor.MutableObject().Construct(context, constructor.DetachAccessor());
+    }
+
+public:
+    TIntervalsSources(std::deque<TIntervalSourceConstructor>&& sources, const ERequestSorting sorting)
+        : TBase(sorting) {
+        InitializeConstructors(std::move(sources));
+    }
+
+    static std::unique_ptr<TIntervalsSources> BuildEmpty() {
+        std::deque<TIntervalSourceConstructor> sources;
+        return std::make_unique<TIntervalsSources>(std::move(sources), ERequestSorting::NONE);
     }
 };
 

@@ -13,6 +13,7 @@
 #include <ydb/library/formats/arrow/simple_arrays_cache.h>
 
 #include <util/folder/path.h>
+#include <algorithm>
 
 namespace NKikimr::NOlap {
 ITableMetadataAccessor::ITableMetadataAccessor(const TString& tablePath)
@@ -38,6 +39,11 @@ TUserTableAccessor::TUserTableAccessor(const TString& tableName, const NColumnSh
     AFL_VERIFY(pathId.IsValid());
 }
 
+struct TInfo {
+    std::optional<NArrow::TSimpleRow> Left;
+    std::optional<IColumnEngine::TSelectedPortionInfo> PortionInfo;
+};
+
 std::unique_ptr<NReader::NCommon::ISourcesConstructor> TUserTableAccessor::SelectMetadata(const TSelectMetadataContext& context,
     const NReader::TReadDescription& readDescription, const bool isPlain) const {
     AFL_VERIFY(readDescription.PKRangesFilter);
@@ -45,12 +51,64 @@ std::unique_ptr<NReader::NCommon::ISourcesConstructor> TUserTableAccessor::Selec
     std::vector<IColumnEngine::TSelectedPortionInfo> portions =
         context.GetEngine().Select(PathId.InternalPathId, readDescription.GetSnapshot(), *readDescription.PKRangesFilter,
             readDescription.readNonconflictingPortions, readDescription.readConflictingPortions, readDescription.ownPortions);
+    
+    THashMap<ui64, TInfo> previous;
     if (!isPlain) {
-        std::deque<NReader::NSimple::TSourceConstructor> sources;
-        for (auto&& i : portions) {
-            sources.emplace_back(NReader::NSimple::TSourceConstructor(i.GetPortion(), i.GetIsVisible(), readDescription.GetSorting()));
+        std::sort(portions.begin(), portions.end(), [](const auto& l, const auto& r) {
+            if (l.GetPortion()->IndexKeyStart() < r.GetPortion()->IndexKeyStart()) {
+                return true;
+            }
+            if (l.GetPortion()->IndexKeyStart() == r.GetPortion()->IndexKeyStart()) {
+                return l.GetPortion()->IndexKeyEnd() < r.GetPortion()->IndexKeyEnd();
+            }
+            return false;
+        });
+        std::deque<NReader::NSimple::TIntervalSourceConstructor> sources;
+        // for (const auto& p: portions) {
+        //     const auto& portion = p.GetPortion();
+        //     const bool isVisible = p.GetIsVisible();
+        //     sources.emplace_back(NReader::NSimple::TIntervalSourceConstructor(
+        //         portion, isVisible, readDescription.GetSorting(),
+        //         NArrow::TSimpleRow(portion->IndexKeyStart()), NArrow::TSimpleRow(portion->IndexKeyEnd())));
+        // }
+        
+        for (size_t i = 0; i < portions.size(); ++i) {
+            previous[portions[i].GetPortion()->GetPortionId()] = TInfo{portions[i].GetPortion()->IndexKeyStart(), portions[i]};
+            if (previous.size() >= 300) {
+                for (auto it = previous.begin(); it != previous.end();) {
+                    const auto& portion = it->second.PortionInfo->GetPortion();
+                    const bool isVisible = it->second.PortionInfo->GetIsVisible();
+                    if (*it->second.Left == portions[i].GetPortion()->IndexKeyStart() && it->second.Left != it->second.PortionInfo->GetPortion()->IndexKeyEnd()) {
+                        ++it;
+                        continue;
+                    }
+                    if (it->second.PortionInfo->GetPortion()->IndexKeyEnd() <= portions[i].GetPortion()->IndexKeyStart()) {
+                        sources.emplace_back(NReader::NSimple::TIntervalSourceConstructor(
+                            portion, isVisible, readDescription.GetSorting(),
+                            NArrow::TSimpleRow(*it->second.Left), NArrow::TSimpleRow(it->second.PortionInfo->GetPortion()->IndexKeyEnd())));
+                        previous.erase(it++);
+                    } else {
+                        sources.emplace_back(NReader::NSimple::TIntervalSourceConstructor(
+                            portion, isVisible, readDescription.GetSorting(),
+                            NArrow::TSimpleRow(*it->second.Left), NArrow::TSimpleRow(portions[i].GetPortion()->IndexKeyStart())));
+                        it->second.Left = portions[i].GetPortion()->IndexKeyStart();
+                        ++it;
+                    }
+                }
+            }
         }
-        return std::make_unique<NReader::NSimple::TPortionsSources>(std::move(sources), readDescription.GetSorting());
+        
+        for (auto it = previous.begin(); it != previous.end();) {
+            const auto& portion = it->second.PortionInfo->GetPortion();
+            const bool isVisible = it->second.PortionInfo->GetIsVisible();
+            sources.emplace_back(NReader::NSimple::TIntervalSourceConstructor(
+                portion, isVisible, readDescription.GetSorting(),
+                NArrow::TSimpleRow(*it->second.Left), NArrow::TSimpleRow(portion->IndexKeyEnd())));
+            previous.erase(it++);
+        }
+
+        // Cerr << "sources.size() = " << sources.size() << Endl;
+        return std::make_unique<NReader::NSimple::TIntervalsSources>(std::move(sources), readDescription.GetSorting());
     } else {
         std::vector<std::shared_ptr<TPortionInfo>> sources;
         for (auto&& i : portions) {

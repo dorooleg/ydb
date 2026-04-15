@@ -16,8 +16,8 @@ private:
 
     static std::vector<std::shared_ptr<NGroupedMemoryManager::TStageFeatures>> GetStageFeatures() {
         static const std::vector<std::shared_ptr<NGroupedMemoryManager::TStageFeatures>> StageFeatures = {
-            NGroupedMemoryManager::TDeduplicationMemoryLimiterOperator::BuildStageFeatures("INTERSECTIONS", 10000000),   // 10 MiB
-            NGroupedMemoryManager::TDeduplicationMemoryLimiterOperator::BuildStageFeatures("ACCESSORS", 100000000),   // 100 MiB
+            NGroupedMemoryManager::TDeduplicationMemoryLimiterOperator::BuildStageFeatures("INTERSECTIONS", 1000000000),   // 10 MiB
+            NGroupedMemoryManager::TDeduplicationMemoryLimiterOperator::BuildStageFeatures("ACCESSORS", 1000000000),   // 100 MiB
             NGroupedMemoryManager::TDeduplicationMemoryLimiterOperator::BuildStageFeatures("COLUMN_DATA", 10000000000),   // 10 GiB
         };
         return StageFeatures;
@@ -49,8 +49,13 @@ private:
     const TEvRequestFilter::TPtr OriginalRequest;
     bool Done = false;
 
-    std::vector<std::optional<NArrow::TColumnFilter>> Filters;
+    std::vector<std::optional<TPortionColumnFilter>> Filters;
     ui64 FiltersAccumulated = 0;
+    ui64 RecordsCount = 0;
+    std::shared_ptr<NColumnShard::TDuplicateFilteringCounters> Counters;
+    TInstant StartTime;
+    TInstant PrevStep;
+    std::unordered_map<NColumnShard::TDeduplicationStep, TDuration> Steps;
 
 private:
     bool IsReady() const {
@@ -60,27 +65,51 @@ private:
         return Filters.size() == FiltersAccumulated;
     }
 
+    NArrow::TColumnFilter BuildDeniedFilter(ui32 recrodsCount) {
+        NArrow::TColumnFilter filter = NArrow::TColumnFilter::BuildAllowFilter();
+        filter.Add(false, recrodsCount);
+        return filter;
+    }
+
     void Complete() {
         AFL_VERIFY(!IsDone());
         AFL_VERIFY(IsReady());
         NArrow::TColumnFilter result = NArrow::TColumnFilter::BuildAllowFilter();
+        ui64 offset = 0;
         for (const auto& filter : Filters) {
             AFL_VERIFY(!!filter);
-            result.Append(*filter);
+            if (offset < filter->Offset) {
+                ui64 delta = filter->Offset - offset;
+                result.Append(BuildDeniedFilter(delta));
+                offset += delta; 
+            }
+            result.Append(filter->Filter);
+            offset += filter->Filter.GetRecordsCount().value_or(0);
         }
+        if (offset < RecordsCount) {
+            ui64 delta = RecordsCount - offset;
+            result.Append(BuildDeniedFilter(delta));
+        }
+        // Cerr << "TPortionColumnFilter: " << result.DebugString() << " " << RecordsCount << Endl;
         OriginalRequest->Get()->GetSubscriber()->OnFilterReady(std::move(result));
         Done = true;
         AFL_VERIFY(IsDone());
     }
 
 public:
+    void AddStepLatency(NColumnShard::TDeduplicationStep step) {
+        TInstant now = TInstant::Now();
+        Steps[step] = now - PrevStep;
+        PrevStep = now;
+    }
+    
     void SetIntervalsCount(const ui32 cnt) {
         AFL_VERIFY(Filters.empty());
         AFL_VERIFY(cnt);
         Filters.resize(cnt);
     }
 
-    void AddFilter(const ui32 intervalIdx, const NArrow::TColumnFilter& filterExt) {
+    void AddFilter(const ui32 intervalIdx, const TPortionColumnFilter& filterExt) {
         AFL_VERIFY(!IsDone());
         AFL_VERIFY(intervalIdx < Filters.size());
         AFL_VERIFY(!Filters[intervalIdx]);
@@ -104,10 +133,15 @@ public:
         return OriginalRequest;
     }
 
-    TFilterAccumulator(const TEvRequestFilter::TPtr& request);
+    TFilterAccumulator(const TEvRequestFilter::TPtr& request, ui64 recordsCount, std::shared_ptr<NColumnShard::TDuplicateFilteringCounters> counters);
 
     ~TFilterAccumulator() {
         AFL_VERIFY(IsDone() || (OriginalRequest->Get()->GetAbortionFlag() && OriginalRequest->Get()->GetAbortionFlag()->Val()) || TActorSystem::IsStopped())("state", DebugString());
+        Counters->OnRequestFinish((TInstant::Now() - StartTime).MilliSeconds());
+        AddStepLatency(NColumnShard::TDeduplicationStep::FINISH);
+        for (const auto& [step, delta]: Steps) {
+            Counters->OnStep(step, delta.MilliSeconds());
+        }
     }
 
     TString DebugString() const {
@@ -124,7 +158,7 @@ public:
     }
 
     ui64 GetDataSize() const {
-        return Filters.capacity() * sizeof(std::optional<NArrow::TColumnFilter>);
+        return Filters.capacity() * sizeof(std::optional<TPortionColumnFilter>);
     }
 };
 
@@ -245,7 +279,7 @@ public:
 
     static ui64 GetApproximateDataSize(const ui64 intersectionCount) {
         return intersectionCount *
-               (sizeof(ui64) + sizeof(TPortionInfo::TConstPtr) + sizeof(TIntervalInfo) + sizeof(std::optional<NArrow::TColumnFilter>));
+               (sizeof(ui64) + sizeof(TPortionInfo::TConstPtr) + sizeof(TIntervalInfo) + sizeof(std::optional<TPortionColumnFilter>));
     }
     ui64 GetDataSize() const {
         return RequiredPortions.size() * (sizeof(ui64) + sizeof(TPortionInfo::TConstPtr));

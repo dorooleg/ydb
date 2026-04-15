@@ -50,10 +50,11 @@ public:
 }   // namespace
 
 void TAccessorsFetcherImpl::StartRequest(
-    std::shared_ptr<TDataAccessorsRequest>&& request, const std::shared_ptr<NReader::NCommon::TSpecialReadContext>& context) {
+    std::shared_ptr<TDataAccessorsRequest>&& request, const std::shared_ptr<NReader::NCommon::TSpecialReadContext>& context, THashMap<ui64, ui64>& refCount) {
     AFL_VERIFY(!InFlightRequests);
     request->RegisterSubscriber(std::make_shared<TLocalPortionAccessorFetchingSubscriber>(context));
     context->GetCommonContext()->GetDataAccessorsManager()->AskData(std::move(request));
+    RefCountInflight = refCount;
     AFL_VERIFY(++InFlightRequests == 1);
 }
 

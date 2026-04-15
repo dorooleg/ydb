@@ -214,6 +214,8 @@ public:
 class TAccessorsFetcherImpl {
 private:
     THashMap<ui64, std::shared_ptr<TPortionDataAccessor>> Accessors;
+    THashMap<ui64, ui64> RefCount;
+    THashMap<ui64, ui64> RefCountInflight;
     int InFlightRequests = 0;
     bool Finished = false;
 
@@ -224,7 +226,11 @@ public:
     }
 
     ui32 GetSize() const {
-        return Accessors.size();
+        ui32 result = 0;
+        for (const auto& i : RefCount) {
+            result += i.second;
+        }
+        return result;
     }
 
     bool HasRequest() const {
@@ -234,12 +240,16 @@ public:
     std::shared_ptr<TPortionDataAccessor> ExtractAccessorVerified(const ui64 portionId) {
         auto it = Accessors.find(portionId);
         AFL_VERIFY(it != Accessors.end());
-        auto result = std::move(it->second);
-        Accessors.erase(it);
-        return std::move(result);
+        auto result = it->second;
+        auto& refCount = RefCount[portionId];
+        --refCount;
+        if (!refCount) {
+            Accessors.erase(it);
+        }
+        return std::make_shared<TPortionDataAccessor>(*result);
     }
 
-    void StartRequest(std::shared_ptr<TDataAccessorsRequest>&& request, const std::shared_ptr<NReader::NCommon::TSpecialReadContext>& context);
+    void StartRequest(std::shared_ptr<TDataAccessorsRequest>&& request, const std::shared_ptr<NReader::NCommon::TSpecialReadContext>& context, THashMap<ui64, ui64>& refCount);
 
     void AddRequestedAccessors(TDataAccessorsResult&& accessors) {
         if (Finished) {
@@ -255,13 +265,13 @@ public:
         }
 
         AFL_VERIFY(InFlightRequests);
-        if (Accessors.empty()) {
-            Accessors = std::move(accessors.ExtractPortions());
-        } else {
-            for (auto&& i : accessors.ExtractPortions()) {
-                AFL_VERIFY(Accessors.emplace(i.first, std::move(i.second)).second);
-            }
+        for (auto&& i : accessors.ExtractPortions()) {
+            Accessors[i.first] = std::move(i.second);
         }
+        for (const auto& [portionId, counter]: RefCountInflight) {
+            RefCount[portionId] += counter;
+        }
+        RefCountInflight.clear();
         AFL_VERIFY(InFlightRequests);
         --InFlightRequests;
     }
@@ -313,10 +323,12 @@ private:
         }
         if (!Accessors.HasRequest() && (Accessors.GetSize() < Constructors.GetSize() && Accessors.GetSize() < inFlightCurrentLimit)) {
             Constructors.PrepareOrdered(inFlightCurrentLimit * 2);
+            THashMap<ui64, ui64> refCount;
             std::shared_ptr<TDataAccessorsRequest> request =
                 std::make_shared<TDataAccessorsRequest>(NGeneralCache::TPortionsMetadataCachePolicy::EConsumer::SCAN);
             for (ui32 idx = Accessors.GetSize(); idx < Constructors.GetAlreadySorted().size(); ++idx) {
                 request->AddPortion(Constructors.GetAlreadySorted()[idx].GetPortion());
+                refCount[Constructors.GetAlreadySorted()[idx].GetPortion()->GetPortionId()]++;
                 if (request->GetSize() == 2 * inFlightCurrentLimit) {
                     break;
                 }
@@ -324,7 +336,7 @@ private:
             AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD_SCAN)("event", "START_FETCH_ACCESSORS")("acc_count", Accessors.GetSize())(
                 "add", request->GetSize())("in_flight", inFlightCurrentLimit);
             request->SetColumnIds(context->GetAllUsageColumns()->GetColumnIds());
-            Accessors.StartRequest(std::move(request), context);
+            Accessors.StartRequest(std::move(request), context, refCount);
         }
         if (!Accessors.GetSize()) {
             AFL_VERIFY(Accessors.HasRequest());

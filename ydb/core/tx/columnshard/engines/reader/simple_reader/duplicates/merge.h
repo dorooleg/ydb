@@ -14,6 +14,44 @@
 
 namespace NKikimr::NOlap::NReader::NSimple::NDuplicateFiltering {
 
+class TOffsetsBuilder {
+private:
+    THashMap<ui64, ui64> Offsets;
+    YDB_READONLY(ui64, RowsAdded, 0);
+    YDB_READONLY(ui64, RowsSkipped, 0);
+
+    void AddImpl(const ui64 portionId) {
+        Offsets[portionId]++;
+    }
+
+public:
+    void AddRecord(const NArrow::NMerger::TBatchIterator& cursor) {
+        AddImpl(cursor.GetSourceId());
+        RowsAdded++;
+    }
+
+    void SkipRecord(const NArrow::NMerger::TBatchIterator& cursor) {
+        AddImpl(cursor.GetSourceId());
+        RowsSkipped++;
+    }
+
+    void ValidateDataSchema(const std::shared_ptr<arrow::Schema>& /*schema*/) const {
+    }
+
+    bool IsBufferExhausted() const {
+        return false;
+    }
+    
+    void IncOffset(const ui64 portionId, ui64 delta = 1) {
+        Offsets[portionId] += delta;
+    }
+    
+    ui64 GetOffset(const ui64 portionId) const {
+        auto it = Offsets.find(portionId);
+        return it == Offsets.end() ? 0 : it->second;
+    }
+};
+
 class TBuildFilterTaskContext {
 private:
     TBuildFilterContext Context;
@@ -97,8 +135,8 @@ private:
         return "BUILD_DUPLICATE_FILTERS";
     }
 
-    THashMap<ui64, NArrow::TColumnFilter> BuildFiltersOnInterval(const TIntervalInfo& interval, NArrow::NMerger::TMergePartialStream& merger,
-        const THashMap<ui64, std::shared_ptr<NArrow::TGeneralContainer>>& columnData);
+    THashMap<ui64, TPortionColumnFilter> BuildFiltersOnInterval(const TIntervalInfo& interval, NArrow::NMerger::TMergePartialStream& merger,
+        const THashMap<ui64, std::shared_ptr<NArrow::TGeneralContainer>>& columnData, TOffsetsBuilder& offsetsBuilder);
     std::vector<std::string> GetVersionColumnNames() const {
         return IIndexInfo::GetSnapshotColumnNames();
     }

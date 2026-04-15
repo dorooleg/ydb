@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ydb/core/formats/arrow/arrow_filter.h>
 #include <ydb/core/formats/arrow/common/container.h>
 #include <ydb/core/formats/arrow/reader/position.h>
 #include <ydb/core/formats/arrow/rows/view.h>
@@ -128,23 +129,6 @@ public:
     }
 };
 
-class TPortionStore: TMoveOnly {
-private:
-    THashMap<ui64, TPortionInfo::TConstPtr> Portions;
-
-public:
-    TPortionStore(THashMap<ui64, TPortionInfo::TConstPtr>&& portions)
-        : Portions(std::move(portions))
-    {
-    }
-
-    TPortionInfo::TConstPtr GetPortionVerified(const ui64 portionId) const {
-        auto* findPortion = Portions.FindPtr(portionId);
-        AFL_VERIFY(findPortion)("portion", portionId);
-        return *findPortion;
-    }
-};
-
 class TIntervalBordersView {
 private:
     TPortionBorderView Begin;
@@ -163,6 +147,10 @@ public:
     const TPortionBorderView& GetEnd() const {
         return End;
     }
+    
+    bool operator==(const TIntervalBordersView& other) const {
+        return std::tie(Begin, End) == std::tie(other.Begin, other.End);
+    }
 
     bool operator==(const TIntervalBordersView& other) const {
         return std::tie(Begin, End) == std::tie(other.Begin, other.End);
@@ -179,18 +167,41 @@ public:
     }
 };
 
+class TPortionStore: TMoveOnly {
+private:
+    THashMap<ui64, TPortionInfo::TConstPtr> Portions;
+
+public:
+    TPortionStore(THashMap<ui64, TPortionInfo::TConstPtr>&& portions)
+        : Portions(std::move(portions))
+    {
+    }
+
+    TPortionInfo::TConstPtr GetPortionVerified(const ui64 portionId) const {
+        auto* findPortion = Portions.FindPtr(portionId);
+        AFL_VERIFY(findPortion)("portion", portionId);
+        return *findPortion;
+    }
+};
+
 class TSortableBorders {
 private:
     YDB_READONLY_DEF(std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>, Begin);
     YDB_READONLY_DEF(std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>, End);
+    YDB_READONLY_DEF(bool, IsLast);
 
 public:
     TSortableBorders(const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& begin,
-        const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& end)
+        const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& end, bool isLast = true)
         : Begin(begin)
         , End(end)
+        , IsLast(isLast)
     {
         AFL_VERIFY(Begin->Compare(*End) != std::partial_ordering::greater)("borders", DebugString());
+    }
+    
+    operator size_t() const {
+        return CombineHashes((size_t)*Begin, (size_t)*End);
     }
 
     TString DebugString() const {
@@ -200,16 +211,50 @@ public:
     }
 };
 
+class TIntervalBorders {
+private:
+    TSortableBorders Interval;
+
+public:
+    TIntervalBorders(const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& begin, const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& end)
+        : Interval(begin, end)
+    {
+    }
+
+    const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& GetBegin() const {
+        return Interval.GetBegin();
+    }
+    const std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>& GetEnd() const {
+        return Interval.GetEnd();
+    }
+    
+    operator size_t() const {
+        return (size_t)Interval;
+    }
+    
+    bool operator==(const TIntervalBorders& other) const {
+        return Interval.GetBegin() == other.Interval.GetBegin() && Interval.GetEnd() == other.Interval.GetEnd();
+    }
+
+    TString DebugString() const {
+        TStringBuilder sb;
+        sb << "{Begin=" << GetBegin()->DebugString() << ";End=" << GetEnd()->DebugString() << "}";
+        return sb;
+    }
+};
+
 class TDuplicateMapInfo {
 private:
     TSnapshot MaxVersion;
     TIntervalBordersView Interval;
+    TIntervalBorders IntervalData;
     YDB_READONLY_DEF(ui64, PortionId);
 
 public:
-    TDuplicateMapInfo(const TSnapshot& maxVersion, const TIntervalBordersView& interval, const ui64 portionId)
+    TDuplicateMapInfo(const TSnapshot& maxVersion, const TIntervalBordersView& interval, const TIntervalBorders& intervalData, const ui64 portionId)
         : MaxVersion(maxVersion)
         , Interval(interval)
+        , IntervalData(intervalData)
         , PortionId(portionId)
     {
     }
@@ -228,14 +273,18 @@ public:
         return TStringBuilder() << "MaxVersion=" << MaxVersion.DebugString() << ";PortionId=" << PortionId;
     }
 
-    const TIntervalBordersView& GetInterval() const {
+    const TIntervalBorders& GetInterval() const {
+        return IntervalData;
+    }
+    
+    const TIntervalBordersView& GetView() const {
         return Interval;
     }
 };
 
 class TIntervalBorder {
 private:
-    YDB_READONLY_DEF(bool, IsLast);
+    YDB_ACCESSOR_DEF(bool, IsLast);
     YDB_READONLY_DEF(std::shared_ptr<NArrow::NMerger::TSortableBatchPosition>, Key);
     YDB_READONLY_DEF(ui64, PortionId);
 
@@ -292,6 +341,10 @@ public:
         return Begin;
     }
 
+    TIntervalBorder& GetEnd() {
+        return End;
+    }
+    
     const TIntervalBorder& GetEnd() const {
         return End;
     }
@@ -307,9 +360,14 @@ public:
         return IntersectingPortionsCount == 0;
     }
 
-    TIntervalBordersView MakeView() const {
-        return TIntervalBordersView(Begin.MakeView(), End.MakeView());
+    TIntervalBorders MakeInterval() const {
+        return TIntervalBorders(Begin.GetKey(), End.GetKey());
     }
+};
+
+struct TPortionColumnFilter {
+    ui64 Offset = 0;
+    NArrow::TColumnFilter Filter;
 };
 
 }   // namespace NKikimr::NOlap::NReader::NSimple::NDuplicateFiltering

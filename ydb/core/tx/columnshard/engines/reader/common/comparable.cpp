@@ -20,20 +20,28 @@ std::partial_ordering TReplaceKeyAdapter::Compare(const TReplaceKeyAdapter& item
     }
 }
 
-TReplaceKeyAdapter TReplaceKeyAdapter::BuildStart(const TPortionInfo& portion, const TReadMetadataBase& readMetadata) {
+TReplaceKeyAdapter TReplaceKeyAdapter::BuildStart(NArrow::TSimpleRow start, NArrow::TSimpleRow end, const TReadMetadataBase& readMetadata) {
     if (readMetadata.IsDescSorted()) {
-        return TReplaceKeyAdapter(portion.IndexKeyEnd(), true);
+        return TReplaceKeyAdapter(std::move(end), true);
     } else {
-        return TReplaceKeyAdapter(portion.IndexKeyStart(), false);
+        return TReplaceKeyAdapter(std::move(start), false);
     }
 }
 
-TReplaceKeyAdapter TReplaceKeyAdapter::BuildFinish(const TPortionInfo& portion, const TReadMetadataBase& readMetadata) {
+TReplaceKeyAdapter TReplaceKeyAdapter::BuildFinish(NArrow::TSimpleRow start, NArrow::TSimpleRow end, const TReadMetadataBase& readMetadata) {
     if (readMetadata.IsDescSorted()) {
-        return TReplaceKeyAdapter(portion.IndexKeyStart(), true);
+        return TReplaceKeyAdapter(std::move(start), true);
     } else {
-        return TReplaceKeyAdapter(portion.IndexKeyEnd(), false);
+        return TReplaceKeyAdapter(std::move(end), false);
     }
+}
+
+TReplaceKeyAdapter TReplaceKeyAdapter::BuildStart(const TPortionInfo& portion, const TReadMetadataBase& readMetadata) {
+    return BuildStart(portion.IndexKeyStart(), portion.IndexKeyEnd(), readMetadata);
+}
+
+TReplaceKeyAdapter TReplaceKeyAdapter::BuildFinish(const TPortionInfo& portion, const TReadMetadataBase& readMetadata) {
+    return BuildFinish(portion.IndexKeyStart(), portion.IndexKeyEnd(), readMetadata);
 }
 
 }   // namespace NKikimr::NOlap::NReader::NCommon
