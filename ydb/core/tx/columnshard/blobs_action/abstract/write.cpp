@@ -1,5 +1,7 @@
 #include "write.h"
 
+#include <ydb/core/tx/columnshard/blob_cache.h>
+
 #include <ydb/library/actors/core/log.h>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::TX_COLUMNSHARD_BLOBS
@@ -34,6 +36,11 @@ void IBlobsWritingAction::OnBlobWriteResult(const TUnifiedBlobId& blobId, const 
     AFL_VERIFY(it != WritingStart.end());
     if (status == NKikimrProto::EReplyStatus::OK) {
         Counters->OnReply(blobId.BlobSize(), TMonotonic::Now() - it->second);
+        if (GetCacheAfterWrite()) {
+            auto dataIt = BlobsForWrite.find(blobId);
+            AFL_VERIFY(dataIt != BlobsForWrite.end())("blob_id", blobId.ToStringNew());
+            NBlobCache::AddRangeToCache(TBlobRange::FromBlobId(blobId), dataIt->second);
+        }
     } else {
         Counters->OnFail(blobId.BlobSize(), TMonotonic::Now() - it->second);
     }

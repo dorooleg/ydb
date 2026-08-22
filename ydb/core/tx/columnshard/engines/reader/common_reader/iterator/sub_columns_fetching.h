@@ -228,6 +228,7 @@ private:
         for (auto&& i : ColumnChunks) {
             if (!!i.GetHeaderRange()) {
                 const auto headerStart = TInstant::Now();
+                const TString readSource = blobs.GetReadSource(*StorageId, *i.GetHeaderRange());
                 const TString readBlob = blobs.ExtractVerified(*StorageId, *i.GetHeaderRange());
                 const TString blob = i.GetSavedBlob() ? (i.GetSavedBlob() + readBlob) : readBlob;
                 const auto fullHeader = NArrow::NAccessor::NSubColumns::TConstructor::GetFullHeaderSize(blob);
@@ -252,7 +253,7 @@ private:
                         const ui64 rawBytes = i.GetPartialArray()->GetHeader().GetHeaderSize();
                         LWTRACK(SubColumnsHeaderRead, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(),
                             source->GetTxId(), source->GetDeprecatedPortionId(), GetEntityId(), columnName, headerDuration, chunkIndex,
-                            blobBytes, rawBytes);
+                            blobBytes, rawBytes, readSource);
                         source->AddBytesRead(blobBytes);
                     }
                 } else {
@@ -271,6 +272,7 @@ private:
             } else {
                 if (!!i.GetOthersReadData()) {
                     const auto dataStart = TInstant::Now();
+                    const TString readSource = blobs.GetReadSource(*StorageId, *i.GetOthersReadData());
                     i.SetOthersBlob(blobs.ExtractVerified(*StorageId, *i.GetOthersReadData()));
                     const auto dataDuration = TInstant::Now() - dataStart;
                     if (auto source = Source.lock()) {
@@ -280,13 +282,14 @@ private:
                         const ui64 rawBytes = i.GetPartialArray()->GetHeader().GetOthersSize();
                         LWTRACK(SubColumnsDataRead, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(),
                             source->GetTxId(), source->GetDeprecatedPortionId(), GetEntityId(), columnName, dataDuration, "others", chunkIndex,
-                            blobBytes, rawBytes);
+                            blobBytes, rawBytes, readSource);
                         source->AddBytesRead(blobBytes);
                     }
                 }
                 for (auto&& [subColName, chunkData] : i.MutableChunks()) {
                     if (!!chunkData.GetBlobRangeOptional()) {
                         const auto dataStart = TInstant::Now();
+                        const TString readSource = blobs.GetReadSource(*StorageId, *chunkData.GetBlobRangeOptional());
                         chunkData.SetBlobData(blobs.ExtractVerified(*StorageId, *chunkData.GetBlobRangeOptional()));
                         const auto dataDuration = TInstant::Now() - dataStart;
                         if (auto source = Source.lock()) {
@@ -297,7 +300,7 @@ private:
                             const ui64 rawBytes = i.GetPartialArray()->GetHeader().GetColumnStats().GetColumnSize(colIndex);
                             LWTRACK(SubColumnsDataRead, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(),
                                 source->GetTxId(), source->GetDeprecatedPortionId(), GetEntityId(), columnName, dataDuration, subColName,
-                                chunkIndex, blobBytes, rawBytes);
+                                chunkIndex, blobBytes, rawBytes, readSource);
                             source->AddBytesRead(blobBytes);
                         }
                     }

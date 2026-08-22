@@ -106,6 +106,7 @@ RECURSE(
 )
 
 RECURSE_FOR_TESTS(
+    ut
     ut_rw
     ut_schema
     backup

@@ -13,12 +13,64 @@
 #include <ydb/core/tx/columnshard/engines/scheme/index_info.h>
 #include <ydb/core/tx/columnshard/engines/storage/indexes/skip_index/meta.h>
 
+#include <library/cpp/json/json_reader.h>
+#include <library/cpp/json/json_value.h>
 #include <util/string/builder.h>
 #include <yql/essentials/minikql/mkql_terminator.h>
 
 namespace NKikimr::NOlap::NReader::NCommon {
 
 LWTRACE_USING(YDB_CS_DATA_SOURCE);
+
+namespace {
+
+struct TFetchOriginalDataVolume {
+    ui64 BlobBytes = 0;
+    ui64 InplaceBytes = 0;
+};
+
+TFetchOriginalDataVolume ComputeFetchOriginalDataBytes(
+    const std::shared_ptr<IDataSource>& source, const NArrow::NSSA::TOriginalColumnDataProcessor* fetchProcessor) {
+    TFetchOriginalDataVolume result;
+    if (!fetchProcessor) {
+        return result;
+    }
+    std::set<ui32> dataColumnIds;
+    for (auto&& [colId, addr] : fetchProcessor->GetDataAddresses()) {
+        dataColumnIds.insert(colId);
+    }
+    if (!dataColumnIds.empty()) {
+        result.BlobBytes += source->GetColumnBlobBytes(dataColumnIds);
+    }
+    if (!fetchProcessor->GetIndexContext().empty() && source->HasPortionAccessor() && source->GetSourceSchemaOptional()) {
+        const auto& accessor = source->GetPortionAccessor();
+        std::set<ui32> indexEntityIds;
+        const auto& indexInfo = source->GetSourceSchemaOptional()->GetIndexInfo();
+        for (auto&& [colId, idxCtx] : fetchProcessor->GetIndexContext()) {
+            for (auto&& [subCol, ops] : idxCtx.GetOperationsBySubColumn().GetData()) {
+                NIndexes::NRequest::TOriginalDataAddress addr(colId, subCol);
+                for (auto&& op : ops) {
+                    for (auto&& skipIdx : indexInfo.FindSkipIndexes(addr, op)) {
+                        indexEntityIds.insert(skipIdx->GetIndexId());
+                    }
+                }
+            }
+        }
+        if (!indexEntityIds.empty()) {
+            result.BlobBytes += accessor.GetIndexBlobBytes(indexEntityIds, false);
+            for (const ui32 indexId : indexEntityIds) {
+                for (const auto* chunk : accessor.GetIndexChunksPointers(indexId)) {
+                    if (chunk->HasBlobData()) {
+                        result.InplaceBytes += chunk->GetDataSize();
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
+}   // namespace
 
 bool TStepAction::DoApply(IDataReader& owner) {
     AFL_VERIFY(FinishedFlag);
@@ -82,11 +134,20 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
         return;
     }
     const auto& scanOrbit = source->GetContext()->GetCommonContext()->GetScanOrbit();
-    if (!NLWTrace::HasShuttles(source->GetDataSourceOrbit()) && !(scanOrbit && NLWTrace::HasShuttles(*scanOrbit)) &&
-        !LWPROBE_ENABLED(ProgramConst) && !LWPROBE_ENABLED(ProgramCalculation) && !LWPROBE_ENABLED(ProgramProjection) &&
-        !LWPROBE_ENABLED(ProgramFilter) && !LWPROBE_ENABLED(ProgramAggregation) && !LWPROBE_ENABLED(ProgramFetchOriginalData) &&
-        !LWPROBE_ENABLED(ProgramAssembleOriginalData) && !LWPROBE_ENABLED(ProgramCheckIndexData) && !LWPROBE_ENABLED(ProgramCheckHeaderData) &&
-        !LWPROBE_ENABLED(ProgramStreamLogic) && !LWPROBE_ENABLED(ProgramReserveMemory)) {
+    const bool tracingEnabled = NLWTrace::HasShuttles(source->GetDataSourceOrbit()) || (scanOrbit && NLWTrace::HasShuttles(*scanOrbit)) ||
+                                LWPROBE_ENABLED(ProgramConst) || LWPROBE_ENABLED(ProgramCalculation) || LWPROBE_ENABLED(ProgramProjection) ||
+                                LWPROBE_ENABLED(ProgramFilter) || LWPROBE_ENABLED(ProgramAggregation) || LWPROBE_ENABLED(ProgramFetchOriginalData) ||
+                                LWPROBE_ENABLED(ProgramAssembleOriginalData) || LWPROBE_ENABLED(ProgramCheckIndexData) ||
+                                LWPROBE_ENABLED(ProgramCheckHeaderData) || LWPROBE_ENABLED(ProgramStreamLogic) || LWPROBE_ENABLED(ProgramReserveMemory);
+    const TString inBackgroundResult = ToString(NArrow::NSSA::IResourceProcessor::EExecutionResult::InBackground);
+    if (!tracingEnabled) {
+        if (processor->GetProcessorType() == NArrow::NSSA::EProcessorType::FetchOriginalData && source->HasPendingFetchOriginalDataProbe()) {
+            source->UpdatePendingFetchOriginalDataExecution(executionDurationMs, currentExecutionResult);
+            if (currentExecutionResult != inBackgroundResult) {
+                source->ExtractPendingFetchOriginalDataProbe();
+                source->ExtractReadIoBytes();
+            }
+        }
         return;
     }
     const auto& step = source->GetExecutionContext().GetCursorStep();
@@ -175,36 +236,9 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
             break;
         case NArrow::NSSA::EProcessorType::FetchOriginalData: {
             ui64 blobBytes = 0;
-            ui64 rawBytes = 0;
             auto* fetchProcessor = dynamic_cast<const NArrow::NSSA::TOriginalColumnDataProcessor*>(processor.get());
             if (fetchProcessor) {
-                std::set<ui32> dataColumnIds;
-                for (auto&& [colId, addr] : fetchProcessor->GetDataAddresses()) {
-                    dataColumnIds.insert(colId);
-                }
-                if (!dataColumnIds.empty()) {
-                    blobBytes += source->GetColumnBlobBytes(dataColumnIds);
-                    rawBytes += source->GetColumnRawBytes(dataColumnIds);
-                }
-                if (!fetchProcessor->GetIndexContext().empty() && source->HasPortionAccessor() && source->GetSourceSchemaOptional()) {
-                    const auto& accessor = source->GetPortionAccessor();
-                    std::set<ui32> indexEntityIds;
-                    const auto& indexInfo = source->GetSourceSchemaOptional()->GetIndexInfo();
-                    for (auto&& [colId, idxCtx] : fetchProcessor->GetIndexContext()) {
-                        for (auto&& [subCol, ops] : idxCtx.GetOperationsBySubColumn().GetData()) {
-                            NIndexes::NRequest::TOriginalDataAddress addr(colId, subCol);
-                            for (auto&& op : ops) {
-                                for (auto&& skipIdx : indexInfo.FindSkipIndexes(addr, op)) {
-                                    indexEntityIds.insert(skipIdx->GetIndexId());
-                                }
-                            }
-                        }
-                    }
-                    if (!indexEntityIds.empty()) {
-                        blobBytes += accessor.GetIndexBlobBytes(indexEntityIds, false);
-                        rawBytes += accessor.GetIndexRawBytes(indexEntityIds, false);
-                    }
-                }
+                blobBytes = ComputeFetchOriginalDataBytes(source, fetchProcessor).BlobBytes;
             }
             bool hasSubColumns = false;
             // After ADD COLUMN the portion source schema may not contain the column yet.
@@ -221,7 +255,12 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
                     source->AddBytesRead(blobBytes);
                 }
             }
-            LWTRACK(ProgramFetchOriginalData, PROGRAM_PROBE_ARGS, blobBytes, rawBytes, PROGRAM_PROBE_RESERVED, PROGRAM_PROBE_TAIL);
+            if (source->HasPendingFetchOriginalDataProbe()) {
+                source->UpdatePendingFetchOriginalDataExecution(executionDurationMs, tracingExecutionResult);
+                if (currentExecutionResult != ToString(NArrow::NSSA::IResourceProcessor::EExecutionResult::InBackground)) {
+                    FlushPendingFetchOriginalData(source, finishDurationMs);
+                }
+            }
         } break;
         case NArrow::NSSA::EProcessorType::AssembleOriginalData:
             LWTRACK(ProgramAssembleOriginalData, PROGRAM_PROBE_ARGS, PROGRAM_PROBE_RESERVED, PROGRAM_PROBE_TAIL);
@@ -246,6 +285,50 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
 #undef PROGRAM_PROBE_TAIL
 }
 
+void TProgramStep::PreparePendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const ui32 nodeId,
+    const TString& currentCategoryName, const std::shared_ptr<NArrow::NSSA::IResourceProcessor>& processor, const ui64 reservedMemory) const {
+    auto* fetchProcessor = dynamic_cast<const NArrow::NSSA::TOriginalColumnDataProcessor*>(processor.get());
+    const auto volume = ComputeFetchOriginalDataBytes(source, fetchProcessor);
+    const auto prevTracing = source->GetExecutionContext().GetPrevNodeTracing();
+    TFetchOriginalDataProbeState state;
+    state.NodeId = nodeId;
+    state.TracingName = prevTracing.CategoryName + " - " + currentCategoryName;
+    state.RowsCount = source->GetRecordsCount();
+    if (const auto visitor = source->GetExecutionContext().GetExecutionVisitorOptional()) {
+        if (const auto* resources = visitor->MutableContext().GetResourcesOptional()) {
+            state.RowsCount = resources->GetRecordsCountActualOptional().value_or(source->GetRecordsCount());
+        }
+    }
+    state.BlobBytes = volume.BlobBytes;
+    state.InplaceBytes = volume.InplaceBytes;
+    state.ReservedMemory = reservedMemory;
+    state.Details = processor ? processor->DebugJson().GetStringRobust() : TString();
+    source->SetPendingFetchOriginalDataProbe(std::move(state));
+}
+
+void TProgramStep::FlushPendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const TDuration durationMs) const {
+    auto pending = source->ExtractPendingFetchOriginalDataProbe();
+    if (!pending) {
+        return;
+    }
+    const auto io = source->ExtractReadIoBytes();
+    NJson::TJsonValue details = NJson::JSON_MAP;
+    if (!pending->Details || !NJson::ReadJsonTree(pending->Details, &details) || !details.IsMap()) {
+        details = NJson::JSON_MAP;
+        if (pending->Details) {
+            details.InsertValue("extra", pending->Details);
+        }
+    }
+    details.InsertValue("tier_bytes", io.TierBytes);
+    if (io.StorageIds) {
+        details.InsertValue("storage_ids", io.StorageIds);
+    }
+    LWTRACK(ProgramFetchOriginalData, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(),
+        source->GetDeprecatedPortionId(), source->GetExecutionContext().GetCursorStep().GetStepIndex(), pending->TracingName, pending->NodeId,
+        durationMs, pending->ExecutionDuration, pending->RowsCount, pending->BlobBytes, io.CacheBytes, io.BsBytes,
+        pending->InplaceBytes, pending->ReservedMemory, pending->ExecutionResult, details.GetStringRobust());
+}
+
 NO_SANITIZE_THREAD
 TConclusion<bool> TProgramStep::DoExecuteInplace(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step) const {
     const bool started = !source->GetExecutionContext().HasProgramIterator();
@@ -254,6 +337,7 @@ TConclusion<bool> TProgramStep::DoExecuteInplace(const std::shared_ptr<IDataSour
     }
     auto iterator = source->GetExecutionContext().GetProgramIteratorVerified();
     if (!started) {
+        FlushPendingFetchOriginalData(source, source->GetAndResetWaitDuration());
         iterator->Next();
         source->MutableExecutionContext().OnFinishProgramStepExecution();
     }
@@ -280,6 +364,9 @@ TConclusion<bool> TProgramStep::DoExecuteInplace(const std::shared_ptr<IDataSour
 
         // Snapshot before Execute(): allocation callbacks may mutate ResourceGuards concurrently afterwards.
         const ui64 reservedMemoryBeforeExecute = source->GetReservedMemory();
+        if (tracingProcessor->GetProcessorType() == NArrow::NSSA::EProcessorType::FetchOriginalData) {
+            PreparePendingFetchOriginalData(source, tracingNodeId, tracingCategoryName, tracingProcessor, reservedMemoryBeforeExecute);
+        }
         const TMonotonic start = TMonotonic::Now();
         auto conclusion = source->GetExecutionContext().GetExecutionVisitorVerified()->Execute();
         const TDuration executionDurationMs = TMonotonic::Now() - start;

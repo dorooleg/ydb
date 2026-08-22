@@ -187,6 +187,7 @@ void InspectOlapExpressionImpl(const TExprNode::TPtr& node, TOlapFilterInspectio
     if (const auto maybeApply = TMaybeNode<TKqpOlapApply>(node)) {
         inspection.HasOlapApply = true;
         InspectOlapExpressionImpl(maybeApply.Cast().Lambda().Ptr(), inspection);
+        InspectOlapExpressionImpl(maybeApply.Cast().Args().Ptr(), inspection);
         return;
     }
 

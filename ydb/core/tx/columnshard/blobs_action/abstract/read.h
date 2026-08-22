@@ -14,6 +14,7 @@ namespace NKikimr::NOlap {
 class TActionReadBlobs {
 private:
     THashMap<TBlobRange, TString> Blobs;
+    THashMap<TBlobRange, TString> ReadSources;
 
 public:
     TString DebugString() const;
@@ -28,9 +29,21 @@ public:
         }
     }
 
+    TActionReadBlobs(THashMap<TBlobRange, TString>&& blobs, THashMap<TBlobRange, TString>&& readSources)
+        : Blobs(std::move(blobs))
+        , ReadSources(std::move(readSources))
+    {
+        for (auto&& i : Blobs) {
+            AFL_VERIFY(i.second.size());
+        }
+    }
+
     void Merge(TActionReadBlobs&& item) {
         for (auto&& i : item.Blobs) {
             Add(i.first, std::move(i.second));
+        }
+        for (auto&& i : item.ReadSources) {
+            ReadSources.emplace(i.first, std::move(i.second));
         }
     }
 
@@ -98,6 +111,14 @@ public:
 
     bool IsEmpty() const {
         return Blobs.empty();
+    }
+
+    TString GetReadSource(const TBlobRange& bRange) const {
+        auto it = ReadSources.find(bRange);
+        if (it == ReadSources.end()) {
+            return "unknown";
+        }
+        return it->second;
     }
 };
 
@@ -171,11 +192,15 @@ private:
     TMonotonic StartWaitingRanges;
     i32 WaitingRangesCount = 0;
     THashMap<TBlobRange, TString> Replies;
+    THashMap<TBlobRange, TString> ReplyReadSource;
     THashMap<TBlobRange, TErrorStatus> Fails;
     THashMap<TBlobRange, std::vector<TBlobRange>> Groups;
     std::shared_ptr<NBlobOperations::TReadCounters> Counters;
     bool Started = false;
     bool DataExtracted = false;
+    YDB_READONLY(ui64, CacheBytes, 0);
+    YDB_READONLY(ui64, BsBytes, 0);
+    YDB_READONLY(ui64, TierBytes, 0);
     YDB_ACCESSOR(bool, IsBackgroundProcess, true);
     YDB_ACCESSOR(bool, CacheAfterRead, true);
 
@@ -242,9 +267,10 @@ public:
         AFL_VERIFY(IsFinished());
         AFL_VERIFY(!DataExtracted);
         DataExtracted = true;
-        auto result = TActionReadBlobs(std::move(Replies));
+        auto result = TActionReadBlobs(std::move(Replies), std::move(ReplyReadSource));
         RangesForResult.clear();
         Replies.clear();
+        ReplyReadSource.clear();
         return result;
     }
 

@@ -26,14 +26,16 @@ namespace NKikimr::NOlap::NReader {
         NAMES("pathId", "tabletId", "txId", "sourceId", "stepIndex", "name", "programNodeId", "durationMs", "executionDurationMs", "rowsCount", \
             "totalReservedBytes", "executionResult", "details"))                                                                                \
     PROBE(ProgramFetchOriginalData, GROUPS("DataSource"),                                                                                       \
-        TYPES(ui64, ui64, ui64, ui64, ui32, TString, ui32, TDuration, TDuration, ui32, ui64, ui64, ui64, TString, TString),                     \
+        TYPES(ui64, ui64, ui64, ui64, ui32, TString, ui32, TDuration, TDuration, ui32, ui64, ui64, ui64, ui64, ui64, TString, TString),         \
         NAMES("pathId", "tabletId", "txId", "sourceId", "stepIndex", "name", "programNodeId", "durationMs", "executionDurationMs", "rowsCount", \
-            "blobBytes", "rawBytes", "totalReservedBytes", "executionResult", "details"))                                                       \
-    PROBE(SubColumnsHeaderRead, GROUPS("DataSource"), TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, ui32, ui64, ui64),                \
-        NAMES("pathId", "tabletId", "txId", "sourceId", "columnId", "columnName", "durationMs", "chunkIndex", "blobBytes", "rawBytes"))         \
-    PROBE(SubColumnsDataRead, GROUPS("DataSource"), TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, TString, ui32, ui64, ui64),         \
+            "blobBytes", "cacheBytes", "bsBytes", "inplaceBytes", "totalReservedBytes", "executionResult", "details"))                          \
+    PROBE(SubColumnsHeaderRead, GROUPS("DataSource"), TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, ui32, ui64, ui64, TString),       \
+        NAMES("pathId", "tabletId", "txId", "sourceId", "columnId", "columnName", "durationMs", "chunkIndex", "blobBytes", "rawBytes",          \
+            "readSource"))                                                                                                                      \
+    PROBE(SubColumnsDataRead, GROUPS("DataSource"),                                                                                            \
+        TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, TString, ui32, ui64, ui64, TString),                                           \
         NAMES("pathId", "tabletId", "txId", "sourceId", "columnId", "columnName", "durationMs", "subColumnName", "chunkIndex", "blobBytes",     \
-            "rawBytes"))                                                                                                                        \
+            "rawBytes", "readSource"))                                                                                                          \
     PROBE(ProgramAssembleOriginalData, GROUPS("DataSource"),                                                                                    \
         TYPES(ui64, ui64, ui64, ui64, ui32, TString, ui32, TDuration, TDuration, ui32, ui64, TString, TString),                                 \
         NAMES("pathId", "tabletId", "txId", "sourceId", "stepIndex", "name", "programNodeId", "durationMs", "executionDurationMs", "rowsCount", \
@@ -58,9 +60,9 @@ namespace NKikimr::NOlap::NReader {
         NAMES("pathId", "tabletId", "txId", "sourceId", "stepIndex", "name", "durationMs", "executionDurationMs", "columnsCount",               \
             "bytesAssembled", "rowsCount", "totalReservedBytes"))                                                                               \
     PROBE(ColumnBlobsFetching, GROUPS("DataSource"),                                                                                            \
-        TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, TDuration, ui32, ui64, ui64, ui32, ui64),                                       \
+        TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, TDuration, ui32, ui64, ui64, ui64, ui64, ui64, TString, ui32, ui64),             \
         NAMES("pathId", "tabletId", "txId", "sourceId", "stepIndex", "name", "durationMs", "executionDurationMs", "columnsCount", "blobBytes",  \
-            "rawBytes", "rowsCount", "totalReservedBytes"))                                                                                     \
+            "rawBytes", "cacheBytes", "bsBytes", "tierBytes", "storageIds", "rowsCount", "totalReservedBytes"))                                 \
     PROBE(MemoryAllocation, GROUPS("DataSource"), TYPES(ui64, ui64, ui64, ui64, ui32, TString, TDuration, TDuration, ui64, bool, ui64),         \
         NAMES("pathId", "tabletId", "txId", "sourceId", "stepIndex", "name", "durationMs", "executionDurationMs", "reservedBytes", "success",   \
             "totalReservedBytes"))                                                                                                              \

@@ -7,8 +7,10 @@
 #include <ydb/core/base/logoblob.h>
 #include <ydb/core/tx/ctor_logger.h>
 
+#include <ydb/library/actors/core/actor.h>
 #include <ydb/library/actors/core/actorid.h>
 #include <ydb/library/actors/core/event_local.h>
+#include <ydb/library/actors/core/events.h>
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <util/generic/vector.h>
@@ -96,10 +98,12 @@ struct TEvBlobCache {
     struct TEvCacheBlobRange: public NActors::TEventLocal<TEvCacheBlobRange, EvCacheBlobRange> {
         TBlobRange BlobRange;
         TString Data;
+        bool Sticky = true;
 
-        TEvCacheBlobRange(const TBlobRange& blobRange, const TString& data)
+        TEvCacheBlobRange(const TBlobRange& blobRange, const TString& data, const bool sticky = true)
             : BlobRange(blobRange)
             , Data(data)
+            , Sticky(sticky)
         {
         }
     };
@@ -126,7 +130,19 @@ NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusive
 
 // Explicitly add and remove data from cache. This is usefull for newly written data that is likely to be read by
 // indexing, compaction and user queries and for the data that has been compacted and will not be read again.
-void AddRangeToCache(const TBlobRange& blobRange, const TString& data);
-void ForgetBlob(const TUnifiedBlobId& blobId);
+inline void AddRangeToCache(const TBlobRange& blobRange, const TString& data) {
+    if (!TlsActivationContext) {
+        return;
+    }
+    TlsActivationContext->Send(
+        new IEventHandle(MakeBlobCacheServiceId(), NActors::TActorId(), new TEvBlobCache::TEvCacheBlobRange(blobRange, data)));
+}
+
+inline void ForgetBlob(const TUnifiedBlobId& blobId) {
+    if (!TlsActivationContext) {
+        return;
+    }
+    TlsActivationContext->Send(new IEventHandle(MakeBlobCacheServiceId(), NActors::TActorId(), new TEvBlobCache::TEvForgetBlob(blobId)));
+}
 
 }   // namespace NKikimr::NBlobCache

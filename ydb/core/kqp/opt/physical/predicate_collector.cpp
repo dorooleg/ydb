@@ -1,5 +1,7 @@
 #include "predicate_collector.h"
 
+#include <ydb/core/kqp/expr_nodes/kqp_expr_nodes.h>
+
 #include <yql/essentials/core/yql_opt_utils.h>
 #include <yql/essentials/core/yql_expr_optimize.h>
 #include <yql/essentials/utils/log/log.h>
@@ -211,6 +213,8 @@ bool CheckExpressionNodeForPushdown(const TExprBase& node, const TExprNode* lamb
         return IsSupportedDataType(maybeData.Cast(), options.AllowOlapApply);
     } else if (const auto maybeMember = node.Maybe<TCoMember>()) {
         return IsMemberColumn(maybeMember.Cast(), lambdaArg);
+    } else if (node.Maybe<TKqpOlapJsonValue>()) {
+        return true;
     } else if (const auto maybeJsonValue = node.Maybe<TCoJsonValue>()) {
         const auto jsonOp = maybeJsonValue.Cast();
         return jsonOp.Json().Maybe<TCoMember>() && jsonOp.JsonPath().Maybe<TCoUtf8>();

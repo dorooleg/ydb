@@ -133,6 +133,14 @@ public:
         return std::move(*result);
     }
 
+    TString GetReadSource(const TString& storageId, const TBlobRange& range) const {
+        auto it = BlobsByStorage.find(storageId);
+        if (it == BlobsByStorage.end()) {
+            return "unknown";
+        }
+        return it->second.GetReadSource(range);
+    }
+
     ui64 GetTotalBlobsSize() const {
         ui64 result = 0;
         for (auto&& i : BlobsByStorage) {
@@ -196,6 +204,46 @@ protected:
 public:
     i64 GetWaitingRangesCount() const {
         return BlobsWaitingCount;
+    }
+
+    ui64 GetCacheBytes() const {
+        ui64 result = 0;
+        for (auto&& [_, action] : Agents) {
+            result += action->GetCacheBytes();
+        }
+        return result;
+    }
+
+    ui64 GetBsBytes() const {
+        ui64 result = 0;
+        for (auto&& [_, action] : Agents) {
+            result += action->GetBsBytes();
+        }
+        return result;
+    }
+
+    ui64 GetTierBytes() const {
+        ui64 result = 0;
+        for (auto&& [_, action] : Agents) {
+            result += action->GetTierBytes();
+        }
+        return result;
+    }
+
+    TString GetReadStorageIds() const {
+        TStringBuilder sb;
+        bool first = true;
+        for (auto&& [id, action] : Agents) {
+            if (!action->GetCacheBytes() && !action->GetBsBytes() && !action->GetTierBytes()) {
+                continue;
+            }
+            if (!first) {
+                sb << ",";
+            }
+            first = false;
+            sb << id;
+        }
+        return sb;
     }
 
     void Abort() {

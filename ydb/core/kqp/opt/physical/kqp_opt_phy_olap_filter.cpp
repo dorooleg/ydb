@@ -11,6 +11,9 @@
 #include <yql/essentials/core/yql_opt_utils.h>
 #include <yql/essentials/core/peephole_opt/yql_opt_peephole_physical.h>
 
+#include <util/generic/hash_set.h>
+#include <util/string/cast.h>
+
 #include <unordered_set>
 
 namespace NKikimr::NKqp::NOpt {
@@ -347,6 +350,36 @@ TString GetAlias(const TString& colName) {
     }
     return "";
 }
+
+bool IsPushableJsonValue(const TCoJsonValue& jsonValue, const TExprNode& argument) {
+    const auto maybeColMember = jsonValue.Json().Maybe<TCoMember>();
+    const auto maybePathUtf8 = jsonValue.JsonPath().Maybe<TCoUtf8>();
+    return maybeColMember && maybePathUtf8 && maybeColMember.Cast().Struct().Raw() == &argument;
+}
+
+TMaybeNode<TExprBase> ConvertJsonValueToOlap(const TCoJsonValue& jsonValue, TExprContext& ctx, TPositionHandle pos,
+                                             const TPushdownOptions& pushdownOptions) {
+    auto maybeColMember = jsonValue.Json().Maybe<TCoMember>();
+    auto maybePathUtf8 = jsonValue.JsonPath().Maybe<TCoUtf8>();
+    if (!maybeColMember || !maybePathUtf8) {
+        return {};
+    }
+
+    const TString colName = GetOlapColumnName(maybeColMember.Cast().Name().StringValue(), pushdownOptions.StripAliasPrefixFromColName);
+    auto builder = Build<TKqpOlapJsonValue>(ctx, pos)
+        .Column<TCoAtom>()
+            .Value(colName)
+            .Build()
+        .Path(maybePathUtf8.Cast());
+    if (auto maybeReturningType = jsonValue.ReturningType()) {
+        builder.ReturningType(maybeReturningType.Cast());
+    } else {
+        builder.ReturningType<TCoDataType>()
+            .Type().Value("Utf8", TNodeFlags::Default).Build()
+            .Build();
+    }
+    return builder.Done();
+}
 } //namespace
 
 std::vector<TExprBase> ConvertComparisonNode(const TExprBase& nodeIn, const TExprNode& argument, TExprContext& ctx, TPositionHandle pos,
@@ -381,28 +414,14 @@ std::vector<TExprBase> ConvertComparisonNode(const TExprBase& nodeIn, const TExp
             // clang-format on
         }
 
+        if (auto maybeJsonValue = node.Maybe<TKqpOlapJsonValue>()) {
+            return maybeJsonValue.Cast();
+        }
+
         if (auto maybeJsonValue = node.Maybe<TCoJsonValue>()) {
-            auto maybeColMember = maybeJsonValue.Cast().Json().Maybe<TCoMember>();
-            auto maybePathUtf8 = maybeJsonValue.Cast().JsonPath().Maybe<TCoUtf8>();
-            auto maybeReturningType = maybeJsonValue.Cast().ReturningType();
-
-            YQL_ENSURE(maybeColMember, "Expected TCoMember in column field of JSON_VALUE function for pushdown");
-            YQL_ENSURE(maybePathUtf8, "Expected TCoUtf8 in path of JSON_VALUE function for pushdown");
-            const TString colName = GetOlapColumnName(maybeColMember.Cast().Name().StringValue(), pushdownOptions.StripAliasPrefixFromColName);
-
-            auto builder = Build<TKqpOlapJsonValue>(ctx, pos)
-                .Column<TCoAtom>()
-                    .Value(colName)
-                .Build()
-                .Path(maybePathUtf8.Cast());
-            if (maybeReturningType) {
-                builder.ReturningType(maybeReturningType.Cast());
-            } else {
-                builder.ReturningType<TCoDataType>()
-                    .Type().Value("Utf8", TNodeFlags::Default).Build()
-                    .Build();
-            }
-            return builder.Done();
+            auto converted = ConvertJsonValueToOlap(maybeJsonValue.Cast(), ctx, pos, pushdownOptions);
+            YQL_ENSURE(converted.IsValid(), "Expected TCoMember in column field of JSON_VALUE function for pushdown");
+            return converted;
         }
 
         if (auto maybeJsonExists = node.Maybe<TCoJsonExists>()) {
@@ -724,6 +743,31 @@ TMaybeNode<TExprBase> ExistsPushdown(const TCoExists& exists, TExprContext& ctx,
 }
 } // anonymous namespace
 
+TExprNode::TPtr RewritePushableJsonValues(const TExprNode::TPtr& predicate, const TExprNode& argument, TExprContext& ctx,
+                                          const TPushdownOptions& pushdownOptions) {
+    const auto jsonValues = FindNodes(predicate, [&argument](const TExprNode::TPtr& node) {
+        const auto maybeJsonValue = TMaybeNode<TCoJsonValue>(node);
+        return maybeJsonValue && IsPushableJsonValue(maybeJsonValue.Cast(), argument);
+    });
+    if (jsonValues.empty()) {
+        return predicate;
+    }
+
+    TNodeOnNodeOwnedMap replacements;
+    for (const auto& jsonValueNode : jsonValues) {
+        auto converted = ConvertJsonValueToOlap(TCoJsonValue(jsonValueNode), ctx, jsonValueNode->Pos(), pushdownOptions);
+        if (!converted.IsValid()) {
+            continue;
+        }
+        replacements.emplace(jsonValueNode.Get(), converted.Cast().Ptr());
+    }
+    if (replacements.empty()) {
+        return predicate;
+    }
+    auto start = predicate;
+    return ctx.ReplaceNodes(std::move(start), replacements);
+}
+
 TMaybeNode<TExprBase> YqlApplyPushdown(const TExprBase& apply, const TExprNode& argument, TExprContext& ctx, const TPushdownOptions& pushdownOptions) {
     const auto parameters = FindNodes(apply.Ptr(), [](const TExprNode::TPtr& node) {
         if (const auto maybeParam = TMaybeNode<TCoParameter>(node)) {
@@ -732,20 +776,54 @@ TMaybeNode<TExprBase> YqlApplyPushdown(const TExprBase& apply, const TExprNode& 
         return false;
     });
 
-    const auto members = FindNodes(apply.Ptr(), [&argument] (const TExprNode::TPtr& node) {
-        if (const auto maybeMember = TMaybeNode<TCoMember>(node))
-            return maybeMember.Cast().Struct().Raw() == &argument;
-        return false;
+    const auto olapJsonValues = FindNodes(apply.Ptr(), [](const TExprNode::TPtr& node) {
+        return !!TMaybeNode<TKqpOlapJsonValue>(node);
+    });
+    const auto jsonValues = FindNodes(apply.Ptr(), [&argument](const TExprNode::TPtr& node) {
+        const auto maybeJsonValue = TMaybeNode<TCoJsonValue>(node);
+        return maybeJsonValue && IsPushableJsonValue(maybeJsonValue.Cast(), argument);
+    });
+
+    THashSet<const TExprNode*> jsonValueMembers;
+    for (const auto& jsonValueNode : jsonValues) {
+        jsonValueMembers.insert(TCoJsonValue(jsonValueNode).Json().Raw());
+    }
+
+    const auto members = FindNodes(apply.Ptr(), [&argument, &jsonValueMembers](const TExprNode::TPtr& node) {
+        const auto maybeMember = TMaybeNode<TCoMember>(node);
+        if (!maybeMember || maybeMember.Cast().Struct().Raw() != &argument) {
+            return false;
+        }
+        return !jsonValueMembers.contains(node.Get());
     });
 
     // Temporary fix for https://st.yandex-team.ru/KIKIMR-22560
-    if (!members.size()) {
+    if (!members.size() && !jsonValues.size() && !olapJsonValues.size()) {
         return nullptr;
     }
 
-    TNodeOnNodeOwnedMap replacements(members.size());
+    TNodeOnNodeOwnedMap replacements;
     TExprNode::TListType realArgs;
     TExprNode::TListType lambdaArgs;
+
+    ui32 jsonValueArgIndex = 0;
+    auto addJsonValueArg = [&](const TExprNode::TPtr& original, const TExprNode::TPtr& olapJsonValue) {
+        realArgs.push_back(olapJsonValue);
+        const TString argumentName = "json_value_" + ToString(jsonValueArgIndex++);
+        lambdaArgs.emplace_back(ctx.NewArgument(original->Pos(), TStringBuf(argumentName)));
+        replacements.emplace(original.Get(), lambdaArgs.back());
+    };
+
+    for (const auto& jsonValueNode : olapJsonValues) {
+        addJsonValueArg(jsonValueNode, jsonValueNode);
+    }
+    for (const auto& jsonValueNode : jsonValues) {
+        auto converted = ConvertJsonValueToOlap(TCoJsonValue(jsonValueNode), ctx, jsonValueNode->Pos(), pushdownOptions);
+        if (!converted.IsValid()) {
+            return nullptr;
+        }
+        addJsonValueArg(jsonValueNode, converted.Cast().Ptr());
+    }
 
     for (const auto& member : members) {
         const auto columnName = GetOlapColumnName(TCoMember(member).Name().StringValue(), pushdownOptions.StripAliasPrefixFromColName);
@@ -1125,6 +1203,9 @@ TExprBase KqpPushOlapFilter(TExprBase node, TExprContext& ctx, const TKqpOptimiz
     if (pushdownOptions.AllowOlapApply) {
         TVector<TOLAPPredicateNode> remainingAfterApply;
         for (const auto &predicateExprHolder : remaining) {
+            // Extract JSON_VALUE before peephole: otherwise it is expanded to Json2.* over the
+            // whole JSON column, and KqpOlapApply would fetch that column instead of the json path.
+            auto remainingPredicate = RewritePushableJsonValues(predicateExprHolder.ExprNode, lambdaArg, ctx, pushdownOptions);
             // Closure an original predicate, we cannot call `Peephole` for free args.
             TVector<const TTypeAnnotationNode *> argTypes{lambda.Args().Arg(0).Ptr()->GetTypeAnn()};
             auto olapPredicateClosure = Build<TKqpPredicateClosure>(ctx, node.Pos())
@@ -1132,7 +1213,7 @@ TExprBase KqpPushOlapFilter(TExprBase node, TExprContext& ctx, const TKqpOptimiz
                     .Args({"arg"})
                     .Body<TCoOptionalIf>()
                         .Predicate<TExprApplier>()
-                            .Apply(TExprBase(predicateExprHolder.ExprNode))
+                            .Apply(TExprBase(remainingPredicate))
                             .With(lambda.Args().Arg(0), "arg")
                         .Build()
                         .Value<TExprApplier>()

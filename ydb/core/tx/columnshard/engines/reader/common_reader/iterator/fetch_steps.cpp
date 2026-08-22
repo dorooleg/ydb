@@ -18,10 +18,19 @@ namespace NKikimr::NOlap::NReader::NCommon {
 LWTRACE_USING(YDB_CS_DATA_SOURCE);
 
 void TColumnBlobsFetchingStep::ReportTracing(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step,
-    const TDuration executionDurationMs, const ui64 blobBytes, const ui64 rawBytes) const {
+    const TDuration executionDurationMs, const ui64 blobBytes, const ui64 rawBytes, const ui64 cacheBytes, const ui64 bsBytes,
+    const ui64 tierBytes, const TString& storageIds) const {
     LWTRACK(ColumnBlobsFetching, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(),
         source->GetDeprecatedPortionId(), step.GetStepIndex(), step.GetTracingName(), source->GetAndResetWaitDuration(), executionDurationMs,
-        Columns.GetColumnsCount(), blobBytes, rawBytes, source->GetRecordsCount(), source->GetReservedMemory());
+        Columns.GetColumnsCount(), blobBytes, rawBytes, cacheBytes, bsBytes, tierBytes, storageIds, source->GetRecordsCount(),
+        source->GetReservedMemory());
+}
+
+void TColumnBlobsFetchingStep::ReportFetchIo(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step,
+    const TDuration executionDurationMs, const ui64 cacheBytes, const ui64 bsBytes, const ui64 tierBytes, const TString& storageIds) const {
+    ui64 blobBytes = source->GetColumnBlobBytes(Columns.GetColumnIds());
+    ui64 rawBytes = source->GetColumnRawBytes(Columns.GetColumnIds());
+    ReportTracing(source, step, executionDurationMs, blobBytes, rawBytes, cacheBytes, bsBytes, tierBytes, storageIds);
 }
 
 TConclusion<bool> TColumnBlobsFetchingStep::DoExecuteInplace(
@@ -34,7 +43,9 @@ TConclusion<bool> TColumnBlobsFetchingStep::DoExecuteInplace(
     ui64 blobBytes = source->GetColumnBlobBytes(Columns.GetColumnIds());
     ui64 rawBytes = source->GetColumnRawBytes(Columns.GetColumnIds());
     source->AddBytesRead(blobBytes);
-    ReportTracing(source, step, executionDurationMs, blobBytes, rawBytes);
+    if (result) {
+        ReportTracing(source, step, executionDurationMs, blobBytes, rawBytes, 0, 0, 0, TString());
+    }
 
     return result;
 }

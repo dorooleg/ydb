@@ -20,9 +20,15 @@
 #include <ydb/core/util/evlog/log.h>
 
 #include <library/cpp/lwtrace/shuttle.h>
+#include <util/generic/hash_set.h>
+#include <util/generic/vector.h>
 #include <util/string/join.h>
+#include <util/string/split.h>
 
+#include <algorithm>
 #include <atomic>
+#include <optional>
+#include <utility>
 
 namespace NKikimr::NOlap {
 class IDataReader;
@@ -144,6 +150,18 @@ public:
     const std::shared_ptr<NArrow::NSSA::NGraph::NExecution::TExecutionVisitor>& GetExecutionVisitorVerified() const;
 };
 
+struct TFetchOriginalDataProbeState {
+    ui32 NodeId = 0;
+    TString TracingName;
+    TDuration ExecutionDuration;
+    ui32 RowsCount = 0;
+    ui64 BlobBytes = 0;
+    ui64 InplaceBytes = 0;
+    ui64 ReservedMemory = 0;
+    TString ExecutionResult;
+    TString Details;
+};
+
 class IDataSource: public ICursorEntity, public NArrow::NSSA::IDataSource {
 public:
     enum class EType {
@@ -212,6 +230,11 @@ protected:
     TMonotonic SourceCreatedTimestamp;
     TDuration TotalExecutionDuration;
     ui64 TotalBytesRead = 0;
+    std::atomic<ui64> ReadCacheBytes{0};
+    std::atomic<ui64> ReadBsBytes{0};
+    std::atomic<ui64> ReadTierBytes{0};
+    THashSet<TString> ReadStorageIds;
+    std::optional<TFetchOriginalDataProbeState> PendingFetchOriginalDataProbe;
     std::unique_ptr<TFetchedResult> StageResult;
     virtual ui32 GetRecordsCountVirtual() const;
 
@@ -261,6 +284,62 @@ public:
     NO_SANITIZE_THREAD
     void AddBytesRead(const ui64 bytes) {
         TotalBytesRead += bytes;
+    }
+
+    void AddReadIoBytes(const ui64 cacheBytes, const ui64 bsBytes, const ui64 tierBytes, const TString& storageIds) {
+        ReadCacheBytes.fetch_add(cacheBytes, std::memory_order_relaxed);
+        ReadBsBytes.fetch_add(bsBytes, std::memory_order_relaxed);
+        ReadTierBytes.fetch_add(tierBytes, std::memory_order_relaxed);
+        if (storageIds) {
+            TVector<TString> parts;
+            Split(storageIds, ",", parts);
+            for (auto&& part : parts) {
+                if (part) {
+                    ReadStorageIds.emplace(std::move(part));
+                }
+            }
+        }
+    }
+
+    struct TFetchedIoBytes {
+        ui64 CacheBytes = 0;
+        ui64 BsBytes = 0;
+        ui64 TierBytes = 0;
+        TString StorageIds;
+    };
+
+    TFetchedIoBytes ExtractReadIoBytes() {
+        TFetchedIoBytes result;
+        result.CacheBytes = ReadCacheBytes.exchange(0, std::memory_order_relaxed);
+        result.BsBytes = ReadBsBytes.exchange(0, std::memory_order_relaxed);
+        result.TierBytes = ReadTierBytes.exchange(0, std::memory_order_relaxed);
+        if (!ReadStorageIds.empty()) {
+            TVector<TString> ids(ReadStorageIds.begin(), ReadStorageIds.end());
+            std::sort(ids.begin(), ids.end());
+            result.StorageIds = JoinSeq(",", ids);
+            ReadStorageIds.clear();
+        }
+        return result;
+    }
+
+    void SetPendingFetchOriginalDataProbe(TFetchOriginalDataProbeState&& state) {
+        PendingFetchOriginalDataProbe = std::move(state);
+    }
+
+    bool HasPendingFetchOriginalDataProbe() const {
+        return PendingFetchOriginalDataProbe.has_value();
+    }
+
+    void UpdatePendingFetchOriginalDataExecution(const TDuration executionDuration, const TString& executionResult) {
+        AFL_VERIFY(PendingFetchOriginalDataProbe);
+        PendingFetchOriginalDataProbe->ExecutionDuration = executionDuration;
+        PendingFetchOriginalDataProbe->ExecutionResult = executionResult;
+    }
+
+    std::optional<TFetchOriginalDataProbeState> ExtractPendingFetchOriginalDataProbe() {
+        auto result = std::move(PendingFetchOriginalDataProbe);
+        PendingFetchOriginalDataProbe.reset();
+        return result;
     }
 
     void OnStartProcessing();

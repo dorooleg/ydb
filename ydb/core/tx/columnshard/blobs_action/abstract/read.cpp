@@ -1,5 +1,7 @@
 #include "read.h"
 
+#include <ydb/core/tx/columnshard/blobs_action/common/const.h>
+
 #include <ydb/library/actors/core/log.h>
 
 #include <util/string/join.h>
@@ -43,6 +45,7 @@ void IBlobsReadingAction::Start(const THashSet<TBlobRange>& rangesInProgress) {
     for (auto&& i : RangesForResult) {
         AFL_VERIFY(i.second.size() == i.first.Size);
         AFL_VERIFY(Replies.emplace(i.first, i.second).second);
+        AFL_VERIFY(ReplyReadSource.emplace(i.first, "inplace").second);
     }
 }
 
@@ -54,11 +57,23 @@ void IBlobsReadingAction::OnReadResult(const TBlobRange& range, const TString& d
     AFL_VERIFY(WaitingRangesCount >= 0);
     Counters->OnReply(range.Size, TMonotonic::Now() - StartWaitingRanges);
     AFL_VERIFY(data.size() == range.Size)("data", data.size())("range", range.ToString())("from_cache", fromCache);
+    TString readSource;
+    if (fromCache) {
+        CacheBytes += range.Size;
+        readSource = "cache";
+    } else if (GetStorageId().empty() || GetStorageId() == NBlobOperations::TGlobal::DefaultStorageId) {
+        BsBytes += range.Size;
+        readSource = "bs";
+    } else {
+        TierBytes += range.Size;
+        readSource = "tier";
+    }
     for (auto&& i : it->second) {
         AFL_VERIFY(static_cast<ui64>(i.Offset) + i.GetBlobSize() <= static_cast<ui64>(range.Offset) + data.size())
         ("group", range.ToString())("sub", i.ToString())("data", data.size());
         AFL_VERIFY(range.Offset <= i.Offset)("group", range.ToString())("sub", i.ToString());
         Replies.emplace(i, data.substr(i.Offset - range.Offset, i.GetBlobSize()));
+        AFL_VERIFY(ReplyReadSource.emplace(i, readSource).second);
     }
     Groups.erase(it);
 }

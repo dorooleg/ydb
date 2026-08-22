@@ -119,6 +119,8 @@ TIntrusivePtr<IOperator> TPushOlapFilterRule::SimpleMatchAndApply(const TIntrusi
     .Done();
     // clang-format on
 
+    predicate = TExprBase(NOpt::RewritePushableJsonValues(predicate.Ptr(), *lambdaArg, ctx.ExprCtx, pushdownOptions));
+
     auto lambdaAfterRewrite = TExprBase(ApplyPeephole(predicate.Ptr(), lambda.Args().Arg(0).Ptr(), ctx)).Cast<TCoLambda>();
     lambdaArg = lambdaAfterRewrite.Args().Arg(0).Ptr();
     predicate = lambdaAfterRewrite.Body();

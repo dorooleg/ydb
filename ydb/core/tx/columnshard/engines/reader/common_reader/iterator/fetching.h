@@ -82,6 +82,9 @@ private:
     void ReportTracing(const std::shared_ptr<IDataSource>& source, const TDuration executionDurationMs, const TString& currentExecutionResult,
         const ui32 nodeId, const TString& currentCategoryName, const std::shared_ptr<NArrow::NSSA::IResourceProcessor>& processor,
         const ui64 reservedMemory) const;
+    void PreparePendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const ui32 nodeId, const TString& currentCategoryName,
+        const std::shared_ptr<NArrow::NSSA::IResourceProcessor>& processor, const ui64 reservedMemory) const;
+    void FlushPendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const TDuration durationMs) const;
 
 public:
     virtual TConclusion<bool> DoExecuteInplace(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step) const override;

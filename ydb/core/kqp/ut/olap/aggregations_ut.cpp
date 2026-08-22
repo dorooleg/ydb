@@ -1363,6 +1363,32 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
         TestTableWithNulls({testCase});
     }
 
+    Y_UNIT_TEST(Json_Value_NotILike_NonAscii) {
+        TAggregationTestCase testCase;
+        testCase.SetQuery(R"(
+                SELECT id FROM `/Root/tableWithNulls`
+                WHERE id = 6
+                    AND JSON_VALUE(jsondoc, "$.col1") NOT ILIKE '%Привет%' ESCAPE('|');
+            )")
+            .AddExpectedPlanOptions("KqpOlapJsonValue")
+            .AddExpectedPlanOptions("KqpOlapApply")
+            .SetExpectedReply(R"([[6]])");
+        TestTableWithNulls({testCase});
+    }
+
+    Y_UNIT_TEST(Json_Value_ILike_InnerWildcard) {
+        TAggregationTestCase testCase;
+        testCase.SetQuery(R"(
+                SELECT id, JSON_VALUE(jsonval, "$.\"col-abc\"") FROM `/Root/tableWithNulls`
+                WHERE id = 1
+                    AND JSON_VALUE(jsonval, "$.\"col-abc\"") ILIKE "%A%b%";
+            )")
+            .AddExpectedPlanOptions("KqpOlapJsonValue")
+            .AddExpectedPlanOptions("KqpOlapApply")
+            .SetExpectedReply(R"([[1;["val-abc"]]])");
+        TestTableWithNulls({testCase});
+    }
+
     Y_UNIT_TEST(BlockGenericWithDistinct) {
         TAggregationTestCase testCase;
         testCase.SetQuery(R"(

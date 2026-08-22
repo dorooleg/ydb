@@ -1,4 +1,5 @@
 #include "constructor.h"
+#include "fetch_steps.h"
 
 #include <ydb/core/tx/columnshard/blobs_reader/actor.h>
 #include <ydb/core/tx/columnshard/columnshard_private_events.h>
@@ -11,7 +12,16 @@ namespace NKikimr::NOlap::NReader::NCommon {
 
 void TBlobsFetcherTask::DoOnDataReady(const std::shared_ptr<NResourceBroker::NSubscribe::TResourcesGuard>& /*resourcesGuard*/) {
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, Source->AddEvent("fbf"));
+    const ui64 cacheBytes = GetCacheBytes();
+    const ui64 bsBytes = GetBsBytes();
+    const ui64 tierBytes = GetTierBytes();
+    const TString storageIds = GetReadStorageIds();
+    const TMonotonic start = TMonotonic::Now();
     Source->MutableStageData().AddBlobs(Source->DecodeBlobAddresses(ExtractBlobsData()));
+    const TDuration executionDurationMs = TMonotonic::Now() - start;
+    if (auto fetchingStep = std::dynamic_pointer_cast<const TColumnBlobsFetchingStep>(Step.GetStep())) {
+        fetchingStep->ReportFetchIo(Source, Step, executionDurationMs, cacheBytes, bsBytes, tierBytes, storageIds);
+    }
     AFL_VERIFY(Step.Next());
     auto task = std::make_shared<TStepAction>(std::move(Source), std::move(Step), Context->GetCommonContext()->GetScanActorId(), false);
     Context->GetCommonContext()->SendTaskToExecute(task);
@@ -48,6 +58,9 @@ TBlobsFetcherTask::TBlobsFetcherTask(const std::vector<std::shared_ptr<IBlobsRea
 void TColumnsFetcherTask::DoOnDataReady(const std::shared_ptr<NResourceBroker::NSubscribe::TResourcesGuard>& /*resourcesGuard*/) {
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, Source->AddEvent("cf_reply"));
     const TMonotonic start = TMonotonic::Now();
+    if (Source->HasPendingFetchOriginalDataProbe()) {
+        Source->AddReadIoBytes(GetCacheBytes(), GetBsBytes(), GetTierBytes(), GetReadStorageIds());
+    }
     NBlobOperations::NRead::TCompositeReadBlobs blobsData = ExtractBlobsData();
     blobsData.Merge(std::move(ProvidedBlobs));
     TReadActionsCollection readActions;

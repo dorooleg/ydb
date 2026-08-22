@@ -47,4 +47,10 @@ bool CollectOlapOperationForProjection(TExprNode::TPtr input, const TExprNode& a
                                        ui32& nextMemberId, TExprContext& ctx, const TPushdownOptions& pushdownOptions);
 TMaybeNode<TExprBase> YqlApplyPushdown(const TExprBase& apply, const TExprNode& argument, TExprContext& ctx, const TPushdownOptions& pushdownOptions);
 
+// Replace pushable JSON_VALUE(column, '$.path') with KqpOlapJsonValue so peephole does not
+// expand it into Json2.* over the whole JSON column. The extracted value can then be passed
+// into KqpOlapApply (e.g. NOT ILIKE / Re2).
+TExprNode::TPtr RewritePushableJsonValues(const TExprNode::TPtr& predicate, const TExprNode& argument, TExprContext& ctx,
+                                          const TPushdownOptions& pushdownOptions);
+
 } // namespace NKikimr::NKqp::NOpt

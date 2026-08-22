@@ -39,6 +39,7 @@ void TWriteOperation::Start(
     writeMeta->SetBulk(IsBulk());
     auto writingAction = owner.StoragesManager->GetInsertOperator()->StartWritingAction(NOlap::NBlobOperations::EConsumer::WRITING_OPERATOR);
     writingAction->SetBulk(IsBulk());
+    writingAction->SetCacheAfterWrite(context.GetNoTxWrite() && IsBulk());
     NEvWrite::TWriteData writeData(writeMeta, data, owner.TablesManager.GetPrimaryIndex()->GetReplaceKey(), std::move(writingAction));
     std::shared_ptr<NConveyor::ITask> task = std::make_shared<NOlap::TBuildBatchesTask>(std::move(writeData), context);
     NConveyorComposite::TInsertServiceOperator::SendTaskToExecute(task);
