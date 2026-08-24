@@ -301,8 +301,8 @@ void IDataSource::OnEmptyStageData(const std::shared_ptr<NCommon::IDataSource>& 
 
     const TDuration durationMs = GetAndResetWaitDuration();
     LWTRACK(SourceFinished, DataSourceOrbit, GetRawPathId(), GetTabletId(), GetTxId(), GetDeprecatedPortionId(), 0,
-        ExecutionContext.GetPrevCategoryName() + " - " + "SourceFinished(Empty)", durationMs, GetTotalDuration(), GetTotalBytesRead(),
-        GetTotalExecutionDuration(), GetReservedMemory());
+        ExecutionContext.GetPrevCategoryName() + " - " + "SourceFinished(Empty)", durationMs, GetConveyorQueueWaitDuration(),
+        GetTotalDuration(), GetTotalBytesRead(), GetTotalExecutionDuration(), GetReservedMemory());
 }
 
 void IDataSource::BuildStageResult(const std::shared_ptr<IDataSource>& sourcePtr) {
@@ -317,8 +317,8 @@ void IDataSource::BuildStageResult(const std::shared_ptr<IDataSource>& sourcePtr
 
     const TDuration durationMs = GetAndResetWaitDuration();
     LWTRACK(SourceFinished, DataSourceOrbit, GetRawPathId(), GetTabletId(), GetTxId(), GetDeprecatedPortionId(), 0,
-        ExecutionContext.GetPrevCategoryName() + " - " + "SourceFinished", durationMs, GetTotalDuration(), GetTotalBytesRead(),
-        GetTotalExecutionDuration(), GetReservedMemory());
+        ExecutionContext.GetPrevCategoryName() + " - " + "SourceFinished", durationMs, GetConveyorQueueWaitDuration(), GetTotalDuration(),
+        GetTotalBytesRead(), GetTotalExecutionDuration(), GetReservedMemory());
 }
 
 bool IDataSource::AddTxConflict() {

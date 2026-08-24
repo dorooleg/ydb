@@ -82,6 +82,7 @@ bool TStepAction::DoApply(IDataReader& owner) {
 }
 
 TConclusion<bool> TStepAction::DoExecuteImpl() {
+    Source->SetConveyorQueueWaitDuration(GetQueueWaitDuration());
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, Source->AddEvent("step_action"));
     if (Source->GetContext()->IsAborted()) {
         AFL_VERIFY(!FinishedFlag);
@@ -215,7 +216,8 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
 
 #define PROGRAM_PROBE_ARGS                                                                                                            \
     source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(), source->GetDeprecatedPortionId(), \
-        step.GetStepIndex(), tracingName, nodeId, finishDurationMs, executionDurationMs, filteredRows
+        step.GetStepIndex(), tracingName, nodeId, finishDurationMs, executionDurationMs, source->GetConveyorQueueWaitDuration(),     \
+        filteredRows
 #define PROGRAM_PROBE_RESERVED reservedMemory
 #define PROGRAM_PROBE_TAIL tracingExecutionResult, details
     switch (processorType) {
@@ -325,8 +327,8 @@ void TProgramStep::FlushPendingFetchOriginalData(const std::shared_ptr<IDataSour
     }
     LWTRACK(ProgramFetchOriginalData, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(),
         source->GetDeprecatedPortionId(), source->GetExecutionContext().GetCursorStep().GetStepIndex(), pending->TracingName, pending->NodeId,
-        durationMs, pending->ExecutionDuration, pending->RowsCount, pending->BlobBytes, io.CacheBytes, io.BsBytes,
-        pending->InplaceBytes, pending->ReservedMemory, pending->ExecutionResult, details.GetStringRobust());
+        durationMs, pending->ExecutionDuration, source->GetConveyorQueueWaitDuration(), pending->RowsCount, pending->BlobBytes, io.CacheBytes,
+        io.BsBytes, pending->InplaceBytes, pending->ReservedMemory, pending->ExecutionResult, details.GetStringRobust());
 }
 
 NO_SANITIZE_THREAD

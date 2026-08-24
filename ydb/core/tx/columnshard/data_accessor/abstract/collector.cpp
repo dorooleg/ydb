@@ -19,7 +19,9 @@ std::vector<TPortionInfo::TConstPtr> TConsumerPortions::GetPortions(const TGranu
     std::vector<TPortionInfo::TConstPtr> result;
     result.reserve(PortionIds.size());
     for (auto&& i : PortionIds) {
-        result.emplace_back(granule.GetPortionVerifiedPtr(i, false));
+        if (auto portion = granule.GetPortionOptional(i, false)) {
+            result.emplace_back(std::move(portion));
+        }
     }
     return result;
 }

@@ -225,6 +225,7 @@ protected:
     std::vector<std::shared_ptr<NGroupedMemoryManager::TAllocationGuard>> ResourceGuards;
     NLWTrace::TOrbit DataSourceOrbit;
     TMonotonic LastProbeTimestamp;
+    TDuration ConveyorQueueWaitDuration;
     TMonotonic SourcesAheadQueueEnterTime;
     ui32 SourcesAhead = 0;
     TMonotonic SourceCreatedTimestamp;
@@ -246,6 +247,14 @@ public:
         const TDuration result = LastProbeTimestamp ? (now - LastProbeTimestamp) : TDuration::Zero();
         LastProbeTimestamp = now;
         return result;
+    }
+
+    void SetConveyorQueueWaitDuration(const TDuration d) {
+        ConveyorQueueWaitDuration = d;
+    }
+
+    TDuration GetConveyorQueueWaitDuration() const {
+        return ConveyorQueueWaitDuration;
     }
 
     void SetSourcesAheadQueueEnterTime(const TMonotonic t) {

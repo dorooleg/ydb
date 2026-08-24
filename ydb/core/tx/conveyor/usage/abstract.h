@@ -4,8 +4,10 @@
 
 #include <ydb/library/accessor/accessor.h>
 #include <ydb/library/actors/core/actorid.h>
+#include <ydb/library/actors/core/monotonic.h>
 #include <ydb/library/conclusion/status.h>
 
+#include <util/datetime/base.h>
 #include <util/generic/string.h>
 
 namespace NKikimr::NConveyor {
@@ -72,12 +74,18 @@ public:
 private:
     YDB_ACCESSOR(EPriority, Priority, EPriority::Normal);
     bool ExecutedFlag = false;
+    const TMonotonic CreateInstant = TMonotonic::Now();
+    TDuration QueueWaitDuration;
 protected:
     virtual void DoExecute(const std::shared_ptr<ITask>& taskPtr) = 0;
     virtual void DoOnCannotExecute(const TString& reason);
 public:
     using TPtr = std::shared_ptr<ITask>;
     virtual ~ITask() = default;
+
+    TDuration GetQueueWaitDuration() const {
+        return QueueWaitDuration;
+    }
 
     virtual TString GetTaskClassIdentifier() const = 0;
 

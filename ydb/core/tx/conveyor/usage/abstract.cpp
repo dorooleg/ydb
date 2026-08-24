@@ -14,6 +14,7 @@ void ITask::Execute(std::shared_ptr<TTaskSignals> signals, const std::shared_ptr
     AFL_VERIFY(!ExecutedFlag);
     ExecutedFlag = true;
     const TMonotonic start = TMonotonic::Now();
+    QueueWaitDuration = start - CreateInstant;
     try {
         DoExecute(taskPtr);
         if (signals) {
