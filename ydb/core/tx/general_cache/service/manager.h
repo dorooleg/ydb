@@ -11,6 +11,7 @@
 #include <ydb/library/signals/object_counter.h>
 
 #include <library/cpp/cache/cache.h>
+#include <util/generic/serialized_enum.h>
 
 namespace NKikimr::NGeneralCache::NPrivate {
 
@@ -56,13 +57,14 @@ private:
 public:
     bool TakeFromCache(const TManagerCounters& counters, TLRUCache<TAddress, TObject, TNoopDelete, typename TPolicy::TSizeCalcer>& cache) {
         std::vector<TAddress> toRemove;
+        const TString consumerId = ::ToString(Consumer);
         for (auto&& [sourceId, addresses] : Wait) {
             for (auto&& addr : addresses) {
                 auto it = cache.Find(addr);
                 if (it == cache.End()) {
-                    counters.ObjectCacheMiss->Inc();
+                    counters.OnObjectCacheMiss(consumerId);
                 } else {
-                    counters.ObjectCacheHit->Inc();
+                    counters.OnObjectCacheHit(consumerId);
                     AFL_VERIFY(Result.emplace(addr, it.Value()).second);
                     WaitObjectsCount.Dec();
                     toRemove.emplace_back(addr);
@@ -265,22 +267,23 @@ public:
             RequestsQueue.pop_front();
             auto& sourceWaitObjects = request->GetWaitBySource(SourceId);
             Counters->GetQueueObjectsCount()->Sub(sourceWaitObjects.size());
+            const TString consumerId = ::ToString(request->GetConsumer());
             if (request->IsAborted()) {
-                Counters->AbortedRequests->Inc();
+                Counters->OnAbortedRequest(consumerId);
                 continue;
             }
             AFL_VERIFY(RequestsInProgress.emplace(request->GetRequestId()).second);
             if (!currentConsumer || *currentConsumer != request->GetConsumer()) {
                 consumerAddresses = &requestedAddresses[request->GetConsumer()];
             }
-            Counters->DirectRequests->Inc();
+            Counters->OnDirectRequest(consumerId);
             for (auto&& i : sourceWaitObjects) {
                 auto it = RequestedObjects.find(i);
                 if (it == RequestedObjects.end()) {
                     it = RequestedObjects.emplace(i, std::vector<std::shared_ptr<TRequest>>()).first;
                     Counters->GetTotalInFlight()->Inc();
                     AFL_VERIFY(consumerAddresses->emplace(i).second);
-                    Counters->DirectObjects->Inc();
+                    Counters->OnDirectObject(consumerId);
                 }
                 it->second.emplace_back(request);
             }
@@ -425,18 +428,19 @@ public:
     void AddRequest(const std::shared_ptr<TRequest>& request) {
         YDB_LOG_DEBUG_COMP(NKikimrServices::GENERAL_CACHE, "",
             {"event", "add_request"});
+        const TString consumerId = ::ToString(request->GetConsumer());
         if (request->IsAborted()) {
-            Counters->IncomingAbortedRequestsCount->Inc();
+            Counters->OnIncomingAbortedRequest(consumerId);
             return;
         } else {
-            Counters->IncomingRequestsCount->Inc();
+            Counters->OnIncomingRequest(consumerId);
         }
         if (request->TakeFromCache(*Counters, Cache)) {
             Counters->OnHitCacheRequestFinished(request->GetStartRequest(), request->GetCreated(), TMonotonic::Now());
-            Counters->RequestCacheHit->Inc();
+            Counters->OnRequestCacheHit(consumerId);
             return;
         } else {
-            Counters->RequestCacheMiss->Inc();
+            Counters->OnRequestCacheMiss(consumerId);
         }
         for (auto&& i : request->GetWaitBySource()) {
             auto& sourceInfo = UpsertSourceInfo(i.first);

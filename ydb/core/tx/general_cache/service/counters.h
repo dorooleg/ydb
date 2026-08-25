@@ -4,6 +4,8 @@
 #include <ydb/library/accessor/positive_integer.h>
 #include <ydb/library/signals/owner.h>
 
+#include <util/generic/hash.h>
+
 namespace NKikimr::NGeneralCache::NPrivate {
 
 class TManagerCounters: public NColumnShard::TCommonCountersOwner {
@@ -15,6 +17,48 @@ private:
     const NMonitoring::THistogramPtr RequestDeliveringDuration;
     const std::shared_ptr<TPositiveControlInteger> TotalInFlight = std::make_shared<TPositiveControlInteger>();
     const std::shared_ptr<TPositiveControlInteger> QueueObjectsCount = std::make_shared<TPositiveControlInteger>();
+
+public:
+    class TConsumerCounters: public NColumnShard::TCommonCountersOwner {
+    private:
+        using TBase = NColumnShard::TCommonCountersOwner;
+
+    public:
+        const NMonitoring::TDynamicCounters::TCounterPtr IncomingRequestsCount;
+        const NMonitoring::TDynamicCounters::TCounterPtr IncomingAbortedRequestsCount;
+        const NMonitoring::TDynamicCounters::TCounterPtr DirectRequests;
+        const NMonitoring::TDynamicCounters::TCounterPtr DirectObjects;
+        const NMonitoring::TDynamicCounters::TCounterPtr RequestCacheHit;
+        const NMonitoring::TDynamicCounters::TCounterPtr RequestCacheMiss;
+        const NMonitoring::TDynamicCounters::TCounterPtr ObjectCacheHit;
+        const NMonitoring::TDynamicCounters::TCounterPtr ObjectCacheMiss;
+        const NMonitoring::TDynamicCounters::TCounterPtr AbortedRequests;
+
+        TConsumerCounters(const TCommonCountersOwner& parent, const TString& consumerId)
+            : TBase(parent, "Consumer", consumerId)
+            , IncomingRequestsCount(TBase::GetDeriviative("Incoming/Requests/Count"))
+            , IncomingAbortedRequestsCount(TBase::GetDeriviative("Incoming/AbortedRequests/Count"))
+            , DirectRequests(TBase::GetDeriviative("Direct/Request/Count"))
+            , DirectObjects(TBase::GetDeriviative("Direct/Object/Count"))
+            , RequestCacheHit(TBase::GetDeriviative("Cache/Request/Hit/Count"))
+            , RequestCacheMiss(TBase::GetDeriviative("Cache/Request/Miss/Count"))
+            , ObjectCacheHit(TBase::GetDeriviative("Cache/Object/Hit/Count"))
+            , ObjectCacheMiss(TBase::GetDeriviative("Cache/Object/Miss/Count"))
+            , AbortedRequests(TBase::GetDeriviative("AbortedRequest/Count"))
+        {
+        }
+    };
+
+private:
+    mutable THashMap<TString, std::shared_ptr<TConsumerCounters>> Consumers;
+
+    const TConsumerCounters& GetConsumer(const TString& consumerId) const {
+        auto it = Consumers.find(consumerId);
+        if (it == Consumers.end()) {
+            it = Consumers.emplace(consumerId, std::make_shared<TConsumerCounters>(*this, consumerId)).first;
+        }
+        return *it->second;
+    }
 
 public:
     bool CheckTotalLimit() const {
@@ -66,7 +110,51 @@ public:
     const NMonitoring::TDynamicCounters::TCounterPtr NoExistsObject;
     const NMonitoring::TDynamicCounters::TCounterPtr FailedObject;
     const NMonitoring::TDynamicCounters::TCounterPtr UselessCleaningCount;
-    
+
+    void OnIncomingRequest(const TString& consumerId) const {
+        IncomingRequestsCount->Inc();
+        GetConsumer(consumerId).IncomingRequestsCount->Inc();
+    }
+
+    void OnIncomingAbortedRequest(const TString& consumerId) const {
+        IncomingAbortedRequestsCount->Inc();
+        GetConsumer(consumerId).IncomingAbortedRequestsCount->Inc();
+    }
+
+    void OnRequestCacheHit(const TString& consumerId) const {
+        RequestCacheHit->Inc();
+        GetConsumer(consumerId).RequestCacheHit->Inc();
+    }
+
+    void OnRequestCacheMiss(const TString& consumerId) const {
+        RequestCacheMiss->Inc();
+        GetConsumer(consumerId).RequestCacheMiss->Inc();
+    }
+
+    void OnObjectCacheHit(const TString& consumerId) const {
+        ObjectCacheHit->Inc();
+        GetConsumer(consumerId).ObjectCacheHit->Inc();
+    }
+
+    void OnObjectCacheMiss(const TString& consumerId) const {
+        ObjectCacheMiss->Inc();
+        GetConsumer(consumerId).ObjectCacheMiss->Inc();
+    }
+
+    void OnDirectRequest(const TString& consumerId) const {
+        DirectRequests->Inc();
+        GetConsumer(consumerId).DirectRequests->Inc();
+    }
+
+    void OnDirectObject(const TString& consumerId) const {
+        DirectObjects->Inc();
+        GetConsumer(consumerId).DirectObjects->Inc();
+    }
+
+    void OnAbortedRequest(const TString& consumerId) const {
+        AbortedRequests->Inc();
+        GetConsumer(consumerId).AbortedRequests->Inc();
+    }
 
     TManagerCounters(NColumnShard::TCommonCountersOwner& base, const NPublic::TConfig& config)
         : TBase(base, "signals_owner", "manager")
