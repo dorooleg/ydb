@@ -1,6 +1,7 @@
 #include "restore.h"
 
 #include <ydb/core/tx/columnshard/columnshard_private_events.h>
+#include <ydb/core/tx/columnshard/engines/predicate/filter.h>
 #include <ydb/core/tx/columnshard/engines/writer/buffer/events.h>
 #include <ydb/core/tx/columnshard/operations/slice_builder/builder.h>
 #include <ydb/core/tx/conveyor/usage/service.h>

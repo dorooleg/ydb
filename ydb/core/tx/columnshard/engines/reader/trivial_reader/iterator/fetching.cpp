@@ -399,10 +399,12 @@ TConclusion<bool> TBuildResultStep::DoExecuteInplace(
     source->MutableStageResult().SetResultChunk(std::move(resultBatch), StartIndex, RecordsCount);
     ReportTracing(source, step, TMonotonic::Now() - startExecution);
     const ui64 blobBytes = source->GetTotalBytesRead();
+    const auto readStats = source->SnapshotReadTraceStats();
     NActors::TActivationContext::AsActorContext().Send(context->GetCommonContext()->GetScanActorId(),
         new NColumnShard::TEvPrivate::TEvTaskProcessedResult(std::make_shared<TApplySourceResult>(source, step),
             source->GetContext()->GetCommonContext()->GetCounters().GetResultsForSourceGuard(), source->GetDeprecatedPortionId(), blobBytes,
-            sSource->GetUsedRawBytes(), recordsCount, source->GetRecordsCount(), source->GetReservedMemory()));
+            sSource->GetUsedRawBytes(), recordsCount, source->GetRecordsCount(), source->GetReservedMemory(), readStats.CacheBytes,
+            readStats.BsBytes, readStats.TierBytes, readStats.ToDetailsJson()));
     return false;
 }
 
@@ -454,10 +456,12 @@ TConclusion<bool> TPrepareResultStep::DoExecuteInplace(
         source->MutableStageResult().SetEmptyResultChunk();
         context->GetCommonContext()->GetCounters().OnSourceFinished(source->GetRecordsCount(), sSource->GetUsedRawBytes(), 0);
         const ui64 blobBytes = source->GetTotalBytesRead();
+        const auto readStats = source->SnapshotReadTraceStats();
         NActors::TActivationContext::AsActorContext().Send(context->GetCommonContext()->GetScanActorId(),
             new NColumnShard::TEvPrivate::TEvTaskProcessedResult(std::make_shared<TApplySourceResult>(source, step),
                 source->GetContext()->GetCommonContext()->GetCounters().GetResultsForSourceGuard(), source->GetDeprecatedPortionId(), blobBytes,
-                sSource->GetUsedRawBytes(), 0, source->GetRecordsCount(), source->GetReservedMemory()));
+                sSource->GetUsedRawBytes(), 0, source->GetRecordsCount(), source->GetReservedMemory(), readStats.CacheBytes, readStats.BsBytes,
+                readStats.TierBytes, readStats.ToDetailsJson()));
         return false;
     }
     source->MutableAs<IDataSource>()->InitFetchingPlan(plan);

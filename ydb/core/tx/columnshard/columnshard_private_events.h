@@ -7,7 +7,8 @@
 #include <ydb/core/formats/arrow/special_keys.h>
 #include <ydb/core/protos/counters_columnshard.pb.h>
 #include <ydb/core/tx/columnshard/counters/scan.h>
-#include <ydb/core/tx/columnshard/engines/column_engine.h>
+#include <ydb/core/tx/columnshard/data_accessor/abstract/collector.h>
+#include <ydb/core/tx/columnshard/engines/reader/tracing/scan_stats.h>
 #include <ydb/core/tx/columnshard/engines/writer/indexed_blob_constructor.h>
 #include <ydb/core/tx/columnshard/engines/writer/write_controller.h>
 #include <ydb/core/tx/columnshard/normalizer/abstract/abstract.h>
@@ -24,6 +25,8 @@ namespace NKikimr::NOlap {
 class IBlobsWritingAction;
 class TPortionInfo;
 class TPortionInfoConstructor;
+class TColumnEngineChanges;
+class IMetadataAccessorResultProcessor;
 }   // namespace NKikimr::NOlap
 
 namespace NKikimr::NOlap::NGeneralCache {
@@ -212,6 +215,12 @@ struct TEvPrivate {
         ui32 FilteredRows = 0;
         ui32 TotalRows = 0;
         ui64 TotalReservedBytes = 0;
+        ui64 CacheBytes = 0;
+        ui64 BsBytes = 0;
+        ui64 TierBytes = 0;
+        TString ReadTraceDetails;
+        THashMap<TString, NOlap::NReader::TIndexCheckStats> IndexChecks;
+        bool HasScanReadStats = false;
 
     public:
         TConclusion<std::shared_ptr<NOlap::NReader::IApplyAction>>& MutableResult() {
@@ -242,8 +251,34 @@ struct TEvPrivate {
             return TotalReservedBytes;
         }
 
+        ui64 GetCacheBytes() const {
+            return CacheBytes;
+        }
+
+        ui64 GetBsBytes() const {
+            return BsBytes;
+        }
+
+        ui64 GetTierBytes() const {
+            return TierBytes;
+        }
+
+        const TString& GetReadTraceDetails() const {
+            return ReadTraceDetails;
+        }
+
+        const THashMap<TString, NOlap::NReader::TIndexCheckStats>& GetIndexChecks() const {
+            return IndexChecks;
+        }
+
+        bool GetHasScanReadStats() const {
+            return HasScanReadStats;
+        }
+
         TEvTaskProcessedResult(TConclusion<std::shared_ptr<NOlap::NReader::IApplyAction>>&& result, TCounterGuard&& scanCounters,
-            ui64 sourceId = 0, ui64 blobBytes = 0, ui64 rawBytes = 0, ui32 filteredRows = 0, ui32 totalRows = 0, ui64 totalReservedBytes = 0)
+            ui64 sourceId = 0, ui64 blobBytes = 0, ui64 rawBytes = 0, ui32 filteredRows = 0, ui32 totalRows = 0, ui64 totalReservedBytes = 0,
+            ui64 cacheBytes = 0, ui64 bsBytes = 0, ui64 tierBytes = 0, TString readTraceDetails = {}, bool hasScanReadStats = false,
+            THashMap<TString, NOlap::NReader::TIndexCheckStats> indexChecks = {})
             : Result(std::move(result))
             , ScanCounter(std::move(scanCounters))
             , SourceId(sourceId)
@@ -252,6 +287,12 @@ struct TEvPrivate {
             , FilteredRows(filteredRows)
             , TotalRows(totalRows)
             , TotalReservedBytes(totalReservedBytes)
+            , CacheBytes(cacheBytes)
+            , BsBytes(bsBytes)
+            , TierBytes(tierBytes)
+            , ReadTraceDetails(std::move(readTraceDetails))
+            , IndexChecks(std::move(indexChecks))
+            , HasScanReadStats(hasScanReadStats)
         {
         }
     };

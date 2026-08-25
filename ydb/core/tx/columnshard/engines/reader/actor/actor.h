@@ -8,6 +8,7 @@
 #include <ydb/core/tx/columnshard/engines/reader/abstract/abstract.h>
 #include <ydb/core/tx/columnshard/engines/reader/abstract/read_context.h>
 #include <ydb/core/tx/columnshard/engines/reader/abstract/read_metadata.h>
+#include <ydb/core/tx/columnshard/engines/reader/tracing/scan_stats.h>
 #include <ydb/core/tx/conveyor_composite/usage/config.h>
 #include <ydb/core/tx/tracing/usage/tracing.h>
 
@@ -16,6 +17,7 @@
 #include <ydb/library/chunks_limiter/chunks_limiter.h>
 
 #include <library/cpp/lwtrace/all.h>
+#include <util/generic/hash.h>
 
 namespace NKikimr::NOlap::NReader {
 
@@ -215,6 +217,10 @@ private:
     ui64 TotalBlobBytes = 0;
     ui64 TotalRawBytes = 0;
     ui64 TotalRowsCount = 0;
+    ui64 TotalCacheBytes = 0;
+    ui64 TotalBsBytes = 0;
+    ui64 TotalTierBytes = 0;
+    THashMap<TString, TIndexCheckStats> TotalIndexChecks;
     ui32 PageFaults = 0;
     TInstant StartWaitTime;
     TDuration WaitTime;

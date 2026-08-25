@@ -14,7 +14,8 @@ void IDataTasksProcessor::ITask::DoExecute(const std::shared_ptr<NConveyor::ITas
     } else if (*result) {
         NActors::TActivationContext::AsActorContext().Send(OwnerId,
             new NColumnShard::TEvPrivate::TEvTaskProcessedResult(static_pointer_cast<IDataTasksProcessor::ITask>(taskPtr), std::move(Guard),
-                GetSourceId(), GetBlobBytes(), GetRawBytes(), GetFilteredRows(), GetTotalRows(), GetTotalReservedBytes()));
+                GetSourceId(), GetBlobBytes(), GetRawBytes(), GetFilteredRows(), GetTotalRows(), GetTotalReservedBytes(), GetReadCacheBytes(),
+                GetReadBsBytes(), GetReadTierBytes(), GetReadTraceDetails(), HasScanReadStats(), GetIndexChecks()));
     }
 }
 

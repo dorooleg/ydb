@@ -111,6 +111,12 @@ void TStepAction::CacheSourceStats() {
     CachedFilteredRows = Source->GetFilteredRowsCount();
     CachedTotalRows = Source->GetRecordsCountOptional().value_or(0);
     CachedTotalReservedBytes = Source->GetReservedMemory();
+    const auto readStats = Source->SnapshotReadTraceStats();
+    CachedCacheBytes = readStats.CacheBytes;
+    CachedBsBytes = readStats.BsBytes;
+    CachedTierBytes = readStats.TierBytes;
+    CachedReadTraceDetails = readStats.ToDetailsJson();
+    CachedIndexChecks = readStats.Indexes;
 }
 
 TStepAction::TStepAction(
@@ -187,6 +193,13 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
             if (skipIndexes.empty() || !hasActualIndexData) {
                 indexStatus = "NoIndex";
                 indexFilteredRows = source->GetRecordsCount();
+                if (skipIndexes.empty()) {
+                    source->AddIndexCheck("none", "NoIndex");
+                } else {
+                    for (auto&& skipIdx : skipIndexes) {
+                        source->AddIndexCheck(skipIdx->GetClassName(), "NoIndex");
+                    }
+                }
             } else if (const auto* resources = visitor ? visitor->MutableContext().GetResourcesOptional() : nullptr) {
                 // Re-read resources after non-resource work — concurrent ExtractResources may have cleared them.
                 const ui32 outputColumnId = indexProcessor->GetOutputColumnIdOnce();
@@ -209,6 +222,11 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
                 } else {
                     indexStatus = "Partial";
                     indexFilteredRows = resources->GetFilter().GetFilteredCount().value_or(source->GetRecordsCount());
+                }
+            }
+            if (indexStatus != "NoIndex") {
+                for (auto&& skipIdx : skipIndexes) {
+                    source->AddIndexCheck(skipIdx->GetClassName(), indexStatus);
                 }
             }
         }

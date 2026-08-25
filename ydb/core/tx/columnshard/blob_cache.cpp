@@ -97,7 +97,7 @@ private:
     static constexpr i64 MAX_REQUEST_BYTES = 8ll << 20;
     static constexpr TDuration DEFAULT_READ_DEADLINE = TDuration::Seconds(30);
     static constexpr ui64 DEFAULT_MAX_CACHE_DATA_SIZE = 1000ull << 20;
-    static constexpr i64 DEFAULT_WRITE_PROTECT_DURATION_MS = 5400000;
+    static constexpr i64 DEFAULT_WRITE_PROTECT_DURATION_MS = 10800000;
 
     struct TCacheEntry {
         TString Data;
@@ -158,7 +158,10 @@ private:
     const TCounterPtr MaxSizeBytes;
     const TCounterPtr StickyBytesCounter;
     const TCounterPtr StickyBlobs;
+    const TCounterPtr StickyHits;
+    const TCounterPtr StickyHitsBytes;
     const TCounterPtr StickyEvictions;
+    const TCounterPtr StickyEvicted Bytes;
 
     TIntrusivePtr<NMemory::IMemoryConsumer> MemoryConsumer;
 
@@ -201,7 +204,10 @@ public:
         , MaxSizeBytes(counters->GetCounter("MaxSizeBytes"))
         , StickyBytesCounter(counters->GetCounter("StickyBytes"))
         , StickyBlobs(counters->GetCounter("StickyBlobs"))
+        , StickyHits(counters->GetCounter("StickyHits", true))
+        , StickyHitsBytes(counters->GetCounter("StickyHitsBytes", true))
         , StickyEvictions(counters->GetCounter("StickyEvictions", true))
+        , StickyEvictedBytes(counters->GetCounter("StickyEvictedBytes", true))
     {
     }
 
@@ -276,10 +282,14 @@ private:
 
         // Is in cache?
         if (auto cached = LookupCached(blobRange, readItem.PromoteInCache())) {
-            Y_ABORT_UNLESS(cached->size() == blobRange.Size, "Cached %s, size %" PRISZT, blobRange.ToString().c_str(), cached->size());
+            Y_ABORT_UNLESS(cached->Data.size() == blobRange.Size, "Cached %s, size %" PRISZT, blobRange.ToString().c_str(), cached->Data.size());
             Hits->Inc();
             HitsBytes->Add(blobRange.Size);
-            SendResult(sender, blobRange, NKikimrProto::OK, *cached, {}, ctx, true);
+            if (cached->Sticky) {
+                StickyHits->Inc();
+                StickyHitsBytes->Add(blobRange.Size);
+            }
+            SendResult(sender, blobRange, NKikimrProto::OK, cached->Data, {}, ctx, true);
             return true;
         }
 
@@ -655,32 +665,37 @@ private:
         return StickyCache.contains(blobRange) || RegularCache.FindWithoutPromote(blobRange) != RegularCache.End();
     }
 
-    std::optional<TString> LookupCached(const TBlobRange& blobRange, const bool promote) {
+    struct TCachedLookup {
+        TString Data;
+        bool Sticky = false;
+    };
+
+    std::optional<TCachedLookup> LookupCached(const TBlobRange& blobRange, const bool promote) {
         if (auto exact = LookupExact(blobRange, promote)) {
             return exact;
         }
         return LookupCovering(blobRange, promote);
     }
 
-    std::optional<TString> LookupExact(const TBlobRange& blobRange, const bool promote) {
+    std::optional<TCachedLookup> LookupExact(const TBlobRange& blobRange, const bool promote) {
         if (auto it = StickyCache.find(blobRange); it != StickyCache.end()) {
-            return it->second.Data;
+            return TCachedLookup{it->second.Data, true};
         }
         if (promote) {
             auto it = RegularCache.Find(blobRange);
             if (it != RegularCache.End()) {
-                return it.Value().Data;
+                return TCachedLookup{it.Value().Data, false};
             }
         } else {
             auto it = RegularCache.FindWithoutPromote(blobRange);
             if (it != RegularCache.End()) {
-                return it.Value().Data;
+                return TCachedLookup{it.Value().Data, false};
             }
         }
         return std::nullopt;
     }
 
-    std::optional<TString> LookupCovering(const TBlobRange& blobRange, const bool promote) {
+    std::optional<TCachedLookup> LookupCovering(const TBlobRange& blobRange, const bool promote) {
         const auto [begin, end] = CachedRanges.equal_range(blobRange.BlobId);
         for (auto it = begin; it != end; ++it) {
             if (*it == blobRange || !Covers(*it, blobRange)) {
@@ -691,8 +706,8 @@ private:
                 continue;
             }
             const ui32 shift = blobRange.Offset - it->Offset;
-            Y_ABORT_UNLESS(shift + blobRange.Size <= covering->size());
-            return covering->substr(shift, blobRange.Size);
+            Y_ABORT_UNLESS(shift + blobRange.Size <= covering->Data.size());
+            return TCachedLookup{covering->Data.substr(shift, blobRange.Size), covering->Sticky};
         }
         return std::nullopt;
     }
@@ -783,7 +798,9 @@ private:
             Evictions->Inc();
             EvictedBytes->Add(victim.Size);
             if (stickyVictim) {
+                // Sticky victim is still inside WriteProtectDurationMs (default 3h).
                 StickyEvictions->Inc();
+                StickyEvictedBytes->Add(victim.Size);
             }
 
             // RemoveCachedRange already updates SizeBytes/SizeBlobs/CacheDataSize

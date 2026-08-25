@@ -135,6 +135,9 @@ public:
         AFL_VERIFY(IsReady());
         auto result = DoStartWritingAction();
         result->SetCounters(Counters->GetConsumerCounter(consumerId)->GetWriteCounters());
+        if (consumerId == NBlobOperations::EConsumer::GENERAL_COMPACTION) {
+            result->SetCacheAfterWrite(true);
+        }
         return result;
     }
 

@@ -1,10 +1,14 @@
 #pragma once
 
 #include <ydb/core/tx/columnshard/counters/scan.h>
+#include <ydb/core/tx/columnshard/engines/reader/tracing/scan_stats.h>
 #include <ydb/core/tx/conveyor/usage/abstract.h>
 
 #include <ydb/library/accessor/accessor.h>
 #include <ydb/library/conclusion/result.h>
+
+#include <util/generic/hash.h>
+#include <util/generic/string.h>
 
 namespace NKikimr::NOlap::NReader {
 
@@ -46,6 +50,31 @@ public:
 
     virtual ui64 GetTotalReservedBytes() const {
         return 0;
+    }
+
+    virtual ui64 GetReadCacheBytes() const {
+        return 0;
+    }
+
+    virtual ui64 GetReadBsBytes() const {
+        return 0;
+    }
+
+    virtual ui64 GetReadTierBytes() const {
+        return 0;
+    }
+
+    virtual TString GetReadTraceDetails() const {
+        return {};
+    }
+
+    virtual bool HasScanReadStats() const {
+        return false;
+    }
+
+    virtual const THashMap<TString, TIndexCheckStats>& GetIndexChecks() const {
+        static const THashMap<TString, TIndexCheckStats> empty;
+        return empty;
     }
 
     virtual ~IApplyAction() = default;

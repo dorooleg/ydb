@@ -22,6 +22,7 @@ void TBlobsFetcherTask::DoOnDataReady(const std::shared_ptr<NResourceBroker::NSu
     if (auto fetchingStep = std::dynamic_pointer_cast<const TColumnBlobsFetchingStep>(Step.GetStep())) {
         fetchingStep->ReportFetchIo(Source, Step, executionDurationMs, cacheBytes, bsBytes, tierBytes, storageIds);
     }
+    Source->AddReadIoBytes(cacheBytes, bsBytes, tierBytes, storageIds);
     AFL_VERIFY(Step.Next());
     auto task = std::make_shared<TStepAction>(std::move(Source), std::move(Step), Context->GetCommonContext()->GetScanActorId(), false);
     Context->GetCommonContext()->SendTaskToExecute(task);
@@ -58,9 +59,7 @@ TBlobsFetcherTask::TBlobsFetcherTask(const std::vector<std::shared_ptr<IBlobsRea
 void TColumnsFetcherTask::DoOnDataReady(const std::shared_ptr<NResourceBroker::NSubscribe::TResourcesGuard>& /*resourcesGuard*/) {
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, Source->AddEvent("cf_reply"));
     const TMonotonic start = TMonotonic::Now();
-    if (Source->HasPendingFetchOriginalDataProbe()) {
-        Source->AddReadIoBytes(GetCacheBytes(), GetBsBytes(), GetTierBytes(), GetReadStorageIds());
-    }
+    Source->AddReadIoBytes(GetCacheBytes(), GetBsBytes(), GetTierBytes(), GetReadStorageIds());
     NBlobOperations::NRead::TCompositeReadBlobs blobsData = ExtractBlobsData();
     blobsData.Merge(std::move(ProvidedBlobs));
     TReadActionsCollection readActions;

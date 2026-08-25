@@ -43,6 +43,10 @@ struct TCacheEnv {
         Runtime.Send(new IEventHandle(Cache, Sender, new TEvBlobCache::TEvReadBlobRange(range, std::move(opts))), 0, true);
         return Runtime.GrabEdgeEvent<TEvBlobCache::TEvReadBlobRangeResult>(handle, timeout);
     }
+
+    i64 Counter(const TString& name, const bool derivative = true) const {
+        return Counters->GetCounter(name, derivative)->Val();
+    }
 };
 
 }   // namespace
@@ -60,6 +64,9 @@ Y_UNIT_TEST_SUITE(TBlobCacheWriteProtect) {
         UNIT_ASSERT_VALUES_EQUAL(result->Status, NKikimrProto::OK);
         UNIT_ASSERT(result->FromCache);
         UNIT_ASSERT_VALUES_EQUAL(result->Data, data);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHits"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHitsBytes"), 16);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("Hits"), 1);
     }
 
     Y_UNIT_TEST(CoveringSubrangeHit) {
@@ -79,6 +86,8 @@ Y_UNIT_TEST_SUITE(TBlobCacheWriteProtect) {
         UNIT_ASSERT_VALUES_EQUAL(result->Status, NKikimrProto::OK);
         UNIT_ASSERT(result->FromCache);
         UNIT_ASSERT_VALUES_EQUAL(result->Data, data.substr(8, 10));
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHits"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHitsBytes"), 10);
     }
 
     Y_UNIT_TEST(EvictNonStickyBeforeSticky) {
@@ -97,6 +106,9 @@ Y_UNIT_TEST_SUITE(TBlobCacheWriteProtect) {
         TAutoPtr<IEventHandle> regularHandle;
         auto* regularResult = env.Read(regularRange, regularHandle, TDuration::MilliSeconds(50));
         UNIT_ASSERT(!regularResult);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHits"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyEvictions"), 0);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("Evictions"), 1);
     }
 
     Y_UNIT_TEST(EvictOldestStickyWhenOnlyStickyRemain) {
@@ -115,6 +127,23 @@ Y_UNIT_TEST_SUITE(TBlobCacheWriteProtect) {
         TAutoPtr<IEventHandle> firstHandle;
         auto* firstResult = env.Read(first, firstHandle, TDuration::MilliSeconds(50));
         UNIT_ASSERT(!firstResult);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHits"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyEvictions"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyEvictedBytes"), 60);
+    }
+
+    Y_UNIT_TEST(RegularHitDoesNotCountAsSticky) {
+        TCacheEnv env(1ull << 20);
+        const auto range = MakeBlobRange(8, 16);
+        env.AddToCache(range, TString(16, 'H'), false);
+
+        TAutoPtr<IEventHandle> handle;
+        auto* result = env.Read(range, handle);
+        UNIT_ASSERT(result);
+        UNIT_ASSERT(result->FromCache);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("Hits"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHits"), 0);
+        UNIT_ASSERT_VALUES_EQUAL(env.Counter("StickyHitsBytes"), 0);
     }
 
     Y_UNIT_TEST(ForgetBlobDropsStickyAndCovering) {

@@ -14,6 +14,7 @@
 #include <ydb/core/tx/columnshard/engines/reader/common_reader/common/columns_set.h>
 #include <ydb/core/tx/columnshard/engines/reader/common_reader/common/script_counters.h>
 #include <ydb/core/tx/columnshard/engines/reader/common_reader/common/script_cursor.h>
+#include <ydb/core/tx/columnshard/engines/reader/tracing/scan_stats.h>
 #include <ydb/core/tx/columnshard/engines/scheme/versions/filtered_scheme.h>
 #include <ydb/core/tx/columnshard/resource_subscriber/task.h>
 #include <ydb/core/tx/limiter/grouped_memory/usage/abstract.h>
@@ -234,6 +235,10 @@ protected:
     std::atomic<ui64> ReadCacheBytes{0};
     std::atomic<ui64> ReadBsBytes{0};
     std::atomic<ui64> ReadTierBytes{0};
+    std::atomic<ui64> TotalCacheBytes{0};
+    std::atomic<ui64> TotalBsBytes{0};
+    std::atomic<ui64> TotalTierBytes{0};
+    THashMap<TString, TIndexCheckStats> IndexChecks;
     THashSet<TString> ReadStorageIds;
     std::optional<TFetchOriginalDataProbeState> PendingFetchOriginalDataProbe;
     std::unique_ptr<TFetchedResult> StageResult;
@@ -299,6 +304,9 @@ public:
         ReadCacheBytes.fetch_add(cacheBytes, std::memory_order_relaxed);
         ReadBsBytes.fetch_add(bsBytes, std::memory_order_relaxed);
         ReadTierBytes.fetch_add(tierBytes, std::memory_order_relaxed);
+        TotalCacheBytes.fetch_add(cacheBytes, std::memory_order_relaxed);
+        TotalBsBytes.fetch_add(bsBytes, std::memory_order_relaxed);
+        TotalTierBytes.fetch_add(tierBytes, std::memory_order_relaxed);
         if (storageIds) {
             TVector<TString> parts;
             Split(storageIds, ",", parts);
@@ -308,6 +316,19 @@ public:
                 }
             }
         }
+    }
+
+    void AddIndexCheck(const TString& className, const TString& status) {
+        IndexChecks[IndexClassTraceName(className)].Add(status);
+    }
+
+    TScanReadTraceStats SnapshotReadTraceStats() const {
+        TScanReadTraceStats result;
+        result.CacheBytes = TotalCacheBytes.load(std::memory_order_relaxed);
+        result.BsBytes = TotalBsBytes.load(std::memory_order_relaxed);
+        result.TierBytes = TotalTierBytes.load(std::memory_order_relaxed);
+        result.Indexes = IndexChecks;
+        return result;
     }
 
     struct TFetchedIoBytes {

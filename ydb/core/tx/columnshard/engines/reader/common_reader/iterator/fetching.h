@@ -27,6 +27,11 @@ private:
     ui32 CachedFilteredRows = 0;
     ui32 CachedTotalRows = 0;
     ui64 CachedTotalReservedBytes = 0;
+    ui64 CachedCacheBytes = 0;
+    ui64 CachedBsBytes = 0;
+    ui64 CachedTierBytes = 0;
+    TString CachedReadTraceDetails;
+    THashMap<TString, TIndexCheckStats> CachedIndexChecks;
 
     void CacheSourceStats();
 
@@ -61,6 +66,30 @@ public:
 
     virtual ui64 GetTotalReservedBytes() const override {
         return CachedTotalReservedBytes;
+    }
+
+    virtual ui64 GetReadCacheBytes() const override {
+        return CachedCacheBytes;
+    }
+
+    virtual ui64 GetReadBsBytes() const override {
+        return CachedBsBytes;
+    }
+
+    virtual ui64 GetReadTierBytes() const override {
+        return CachedTierBytes;
+    }
+
+    virtual TString GetReadTraceDetails() const override {
+        return CachedReadTraceDetails;
+    }
+
+    virtual bool HasScanReadStats() const override {
+        return true;
+    }
+
+    virtual const THashMap<TString, TIndexCheckStats>& GetIndexChecks() const override {
+        return CachedIndexChecks;
     }
 
     template <class T>
