@@ -161,7 +161,7 @@ private:
     const TCounterPtr StickyHits;
     const TCounterPtr StickyHitsBytes;
     const TCounterPtr StickyEvictions;
-    const TCounterPtr StickyEvicted Bytes;
+    const TCounterPtr StickyEvictedBytes;
 
     TIntrusivePtr<NMemory::IMemoryConsumer> MemoryConsumer;
 
