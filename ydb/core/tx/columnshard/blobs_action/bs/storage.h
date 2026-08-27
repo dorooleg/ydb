@@ -1,9 +1,10 @@
 #pragma once
 #include "blob_manager.h"
 
-#include <ydb/core/tx/columnshard/blob_cache.h>
 #include <ydb/core/tx/columnshard/blobs_action/abstract/gc.h>
 #include <ydb/core/tx/columnshard/blobs_action/abstract/storage.h>
+
+#include <ydb/library/actors/core/actorid.h>
 
 namespace NKikimr::NOlap::NBlobOperations::NBlobStorage {
 
@@ -11,7 +12,6 @@ class TOperator: public IBlobsStorageOperator {
 private:
     using TBase = IBlobsStorageOperator;
     std::shared_ptr<TBlobManager> Manager;
-    const TActorId BlobCacheActorId;
     const TActorId TabletActorId;
 
 protected:

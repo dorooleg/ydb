@@ -7,7 +7,6 @@ namespace NKikimr::NOlap::NBlobOperations::NBlobStorage {
 class TReadingAction: public IBlobsReadingAction {
 private:
     using TBase = IBlobsReadingAction;
-    const TActorId BlobCacheActorId;
 
 protected:
     virtual void DoStartReading(THashSet<TBlobRange>&& ranges) override;
@@ -17,9 +16,8 @@ protected:
     }
 
 public:
-    TReadingAction(const TString& storageId, const TActorId& blobCacheActorId)
+    TReadingAction(const TString& storageId)
         : TBase(storageId)
-        , BlobCacheActorId(blobCacheActorId)
     {
     }
 };

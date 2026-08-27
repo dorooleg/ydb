@@ -49,6 +49,16 @@ struct TCacheEnv {
     }
 };
 
+TBlobRange MakeOtherShardRange(const TBlobRange& origin) {
+    for (ui32 cookie = origin.BlobId.GetLogoBlobId().Cookie() + 1; cookie < 10000; ++cookie) {
+        auto range = MakeBlobRange(cookie, origin.GetBlobSize());
+        if (BlobCacheShardIndex(range.BlobId) != BlobCacheShardIndex(origin.BlobId)) {
+            return range;
+        }
+    }
+    Y_ABORT("failed to find a blob id for another blob cache shard");
+}
+
 }   // namespace
 
 Y_UNIT_TEST_SUITE(TBlobCacheWriteProtect) {
@@ -159,6 +169,86 @@ Y_UNIT_TEST_SUITE(TBlobCacheWriteProtect) {
 
         TAutoPtr<IEventHandle> subHandle;
         UNIT_ASSERT(!env.Read(MakeBlobRange(7, 32, 4, 8), subHandle, TDuration::MilliSeconds(50)));
+    }
+}
+
+using namespace NActors;
+
+Y_UNIT_TEST_SUITE(TBlobCacheSharding) {
+    Y_UNIT_TEST(ServiceIdKeepsLegacyShardZero) {
+        char legacy[12] = "blob_cache";
+        UNIT_ASSERT(MakeBlobCacheServiceId(0) == TActorId(0, TStringBuf(legacy, 12)));
+        UNIT_ASSERT(MakeBlobCacheServiceId(0) != MakeBlobCacheServiceId(1));
+    }
+
+    Y_UNIT_TEST(RoutesByBlobIdHash) {
+        TAppPrepare app;
+        TTestBasicRuntime runtime;
+        SetupTabletServices(runtime, &app, true);
+        const TActorId sender = runtime.AllocateEdgeActor();
+
+        const auto range = MakeBlobRange(1, 16);
+        const TString data(16, 'A');
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(range.BlobId), sender, new TEvBlobCache::TEvCacheBlobRange(range, data)), 0, true);
+        runtime.DispatchEvents(TDispatchOptions(), TDuration::MilliSeconds(1));
+
+        TReadBlobRangeOptions opts{ .CacheAfterRead = false, .IsBackgroud = false };
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(range.BlobId), sender, new TEvBlobCache::TEvReadBlobRange(range, std::move(opts))), 0, true);
+        TAutoPtr<IEventHandle> handle;
+        auto* result = runtime.GrabEdgeEvent<TEvBlobCache::TEvReadBlobRangeResult>(handle, TDuration::Seconds(1));
+        UNIT_ASSERT(result);
+        UNIT_ASSERT_VALUES_EQUAL(result->Status, NKikimrProto::OK);
+        UNIT_ASSERT(result->FromCache);
+        UNIT_ASSERT_VALUES_EQUAL(result->Data, data);
+    }
+
+    Y_UNIT_TEST(DifferentBlobsGoToDifferentShards) {
+        TAppPrepare app;
+        TTestBasicRuntime runtime;
+        SetupTabletServices(runtime, &app, true);
+        const TActorId sender = runtime.AllocateEdgeActor();
+
+        const auto first = MakeBlobRange(1, 16);
+        const auto second = MakeOtherShardRange(first);
+        UNIT_ASSERT_VALUES_UNEQUAL(BlobCacheShardIndex(first.BlobId), BlobCacheShardIndex(second.BlobId));
+
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(first.BlobId), sender, new TEvBlobCache::TEvCacheBlobRange(first, TString(16, 'A'))), 0, true);
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(second.BlobId), sender, new TEvBlobCache::TEvCacheBlobRange(second, TString(16, 'B'))), 0, true);
+        runtime.DispatchEvents(TDispatchOptions(), TDuration::MilliSeconds(1));
+
+        TReadBlobRangeOptions firstOpts{ .CacheAfterRead = false, .IsBackgroud = false };
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(first.BlobId), sender, new TEvBlobCache::TEvReadBlobRange(first, std::move(firstOpts))), 0, true);
+        TAutoPtr<IEventHandle> firstHandle;
+        auto* firstResult = runtime.GrabEdgeEvent<TEvBlobCache::TEvReadBlobRangeResult>(firstHandle, TDuration::Seconds(1));
+        UNIT_ASSERT(firstResult);
+        UNIT_ASSERT(firstResult->FromCache);
+        UNIT_ASSERT_VALUES_EQUAL(firstResult->Data, TString(16, 'A'));
+
+        TReadBlobRangeOptions secondOpts{ .CacheAfterRead = false, .IsBackgroud = false };
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(second.BlobId), sender, new TEvBlobCache::TEvReadBlobRange(second, std::move(secondOpts))), 0, true);
+        TAutoPtr<IEventHandle> secondHandle;
+        auto* secondResult = runtime.GrabEdgeEvent<TEvBlobCache::TEvReadBlobRangeResult>(secondHandle, TDuration::Seconds(1));
+        UNIT_ASSERT(secondResult);
+        UNIT_ASSERT(secondResult->FromCache);
+        UNIT_ASSERT_VALUES_EQUAL(secondResult->Data, TString(16, 'B'));
+    }
+
+    Y_UNIT_TEST(WrongShardMissesCachedRange) {
+        TAppPrepare app;
+        TTestBasicRuntime runtime;
+        SetupTabletServices(runtime, &app, true);
+        const TActorId sender = runtime.AllocateEdgeActor();
+
+        const auto range = MakeBlobRange(1, 16);
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(range.BlobId), sender, new TEvBlobCache::TEvCacheBlobRange(range, TString(16, 'A'))), 0, true);
+        runtime.DispatchEvents(TDispatchOptions(), TDuration::MilliSeconds(1));
+
+        const ui32 wrongShard = (BlobCacheShardIndex(range.BlobId) + 1) % BlobCacheShardCount;
+        TReadBlobRangeOptions opts{ .CacheAfterRead = false, .IsBackgroud = false };
+        runtime.Send(new IEventHandle(MakeBlobCacheServiceId(wrongShard), sender, new TEvBlobCache::TEvReadBlobRange(range, std::move(opts))), 0, true);
+        TAutoPtr<IEventHandle> handle;
+        auto* result = runtime.GrabEdgeEvent<TEvBlobCache::TEvReadBlobRangeResult>(handle, TDuration::MilliSeconds(50));
+        UNIT_ASSERT(!result || !result->FromCache);
     }
 }
 

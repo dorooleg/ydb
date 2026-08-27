@@ -21,7 +21,7 @@ std::shared_ptr<NKikimr::NOlap::IBlobsWritingAction> TOperator::DoStartWritingAc
 }
 
 std::shared_ptr<NKikimr::NOlap::IBlobsReadingAction> TOperator::DoStartReadingAction() {
-    return std::make_shared<TReadingAction>(GetStorageId(), BlobCacheActorId);
+    return std::make_shared<TReadingAction>(GetStorageId());
 }
 
 void TOperator::DoStartGCAction(const std::shared_ptr<IBlobsGCAction>& action) const {
@@ -49,7 +49,6 @@ TOperator::TOperator(const TString& storageId, const NActors::TActorId& tabletAc
     const ui64 generation, const std::shared_ptr<NDataSharing::TStorageSharedBlobsManager>& sharedBlobs)
     : TBase(storageId, sharedBlobs)
     , Manager(std::make_shared<TBlobManager>(tabletInfo, generation, sharedBlobs->GetSelfTabletId()))
-    , BlobCacheActorId(NBlobCache::MakeBlobCacheServiceId())
     , TabletActorId(tabletActorId)
 {
 }

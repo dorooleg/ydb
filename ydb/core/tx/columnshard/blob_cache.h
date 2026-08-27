@@ -14,6 +14,10 @@
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <util/generic/vector.h>
+#include <util/system/unaligned_mem.h>
+
+#include <atomic>
+#include <memory>
 
 namespace NKikimr::NBlobCache {
 
@@ -120,13 +124,64 @@ struct TEvBlobCache {
     };
 };
 
-inline NActors::TActorId MakeBlobCacheServiceId() {
+constexpr ui32 BlobCacheShardCount = 16;
+constexpr ui64 DefaultBlobCacheMaxBytes = 1000ull << 20;
+
+class TBlobCacheSharedState: public TThrRefBase {
+public:
+    const ui32 ShardCount;
+    std::atomic<i64> TotalMaxCacheDataSize;
+
+    TBlobCacheSharedState(const ui32 shardCount, const i64 totalMaxCacheDataSize)
+        : ShardCount(shardCount)
+        , TotalMaxCacheDataSize(totalMaxCacheDataSize)
+        , ShardCacheDataSize(std::make_unique<std::atomic<ui64>[]>(shardCount))
+    {
+        for (ui32 i = 0; i < shardCount; ++i) {
+            ShardCacheDataSize[i].store(0, std::memory_order_relaxed);
+        }
+    }
+
+    void SetShardCacheDataSize(const ui32 shard, const ui64 size) {
+        ShardCacheDataSize[shard].store(size, std::memory_order_relaxed);
+    }
+
+    ui64 GetTotalCacheDataSize() const {
+        ui64 total = 0;
+        for (ui32 i = 0; i < ShardCount; ++i) {
+            total += ShardCacheDataSize[i].load(std::memory_order_relaxed);
+        }
+        return total;
+    }
+
+private:
+    std::unique_ptr<std::atomic<ui64>[]> ShardCacheDataSize;
+};
+
+inline TIntrusivePtr<TBlobCacheSharedState> MakeBlobCacheSharedState(const ui32 shardCount, const i64 totalMaxCacheDataSize) {
+    return MakeIntrusive<TBlobCacheSharedState>(shardCount, totalMaxCacheDataSize);
+}
+
+inline ui32 BlobCacheShardIndex(const TUnifiedBlobId& blobId) {
+    return static_cast<ui32>(blobId.Hash() % BlobCacheShardCount);
+}
+
+inline NActors::TActorId MakeBlobCacheServiceId(ui32 shardIndex = 0) {
     static_assert(TActorId::MaxServiceIDLength == 12, "Unexpected actor id length");
-    const char x[12] = "blob_cache";
+    char x[12] = { 'b', 'l', 'o', 'b', '_', 'c', 'a', 'c', 'h', 'e', 0, 0 };
+    WriteUnaligned<ui16>(x + 10, static_cast<ui16>(shardIndex % BlobCacheShardCount));
     return TActorId(0, TStringBuf(x, 12));
 }
 
-NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters>);
+inline NActors::TActorId MakeBlobCacheServiceId(const TUnifiedBlobId& blobId) {
+    return MakeBlobCacheServiceId(BlobCacheShardIndex(blobId));
+}
+
+NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters);
+NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters,
+    ui32 shardIndex, ui32 shardCount, TIntrusivePtr<TBlobCacheSharedState> sharedState);
+
+void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions opts);
 
 // Explicitly add and remove data from cache. This is usefull for newly written data that is likely to be read by
 // indexing, compaction and user queries and for the data that has been compacted and will not be read again.
@@ -135,14 +190,14 @@ inline void AddRangeToCache(const TBlobRange& blobRange, const TString& data) {
         return;
     }
     TlsActivationContext->Send(
-        new IEventHandle(MakeBlobCacheServiceId(), NActors::TActorId(), new TEvBlobCache::TEvCacheBlobRange(blobRange, data)));
+        new IEventHandle(MakeBlobCacheServiceId(blobRange.BlobId), NActors::TActorId(), new TEvBlobCache::TEvCacheBlobRange(blobRange, data)));
 }
 
 inline void ForgetBlob(const TUnifiedBlobId& blobId) {
     if (!TlsActivationContext) {
         return;
     }
-    TlsActivationContext->Send(new IEventHandle(MakeBlobCacheServiceId(), NActors::TActorId(), new TEvBlobCache::TEvForgetBlob(blobId)));
+    TlsActivationContext->Send(new IEventHandle(MakeBlobCacheServiceId(blobId), NActors::TActorId(), new TEvBlobCache::TEvForgetBlob(blobId)));
 }
 
 }   // namespace NKikimr::NBlobCache

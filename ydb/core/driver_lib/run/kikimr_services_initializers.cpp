@@ -1450,8 +1450,13 @@ void TBlobCacheInitializer::InitializeServices(
             maxCacheSize = Config.GetBlobCacheConfig().GetMaxSizeBytes();
         }
     }
-    setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(NBlobCache::MakeBlobCacheServiceId(),
-        TActorSetupCmd(NBlobCache::CreateBlobCache(maxCacheSize, blobCacheGroup), TMailboxType::ReadAsFilled, appData->UserPoolId)));
+    const i64 totalMaxCacheSize = static_cast<i64>(maxCacheSize.value_or(NBlobCache::DefaultBlobCacheMaxBytes));
+    auto sharedState = NBlobCache::MakeBlobCacheSharedState(NBlobCache::BlobCacheShardCount, totalMaxCacheSize);
+    for (ui32 shard = 0; shard < NBlobCache::BlobCacheShardCount; ++shard) {
+        setup->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(NBlobCache::MakeBlobCacheServiceId(shard),
+            TActorSetupCmd(NBlobCache::CreateBlobCache(maxCacheSize, blobCacheGroup, shard, NBlobCache::BlobCacheShardCount, sharedState),
+                TMailboxType::ReadAsFilled, appData->UserPoolId)));
+    }
 }
 
 // TLoggerInitializer

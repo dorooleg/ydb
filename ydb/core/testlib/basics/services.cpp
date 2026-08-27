@@ -185,12 +185,15 @@ namespace NKikimr {
 
     void SetupBlobCache(TTestActorRuntime& runtime, ui32 nodeIndex)
     {
-        runtime.AddLocalService(NBlobCache::MakeBlobCacheServiceId(),
-            TActorSetupCmd(
-                NBlobCache::CreateBlobCache(std::nullopt, runtime.GetDynamicCounters(nodeIndex)->GetSubgroup("type", "BLOB_CACHE")),
-                TMailboxType::ReadAsFilled,
-                0),
-            nodeIndex);
+        auto sharedState = NBlobCache::MakeBlobCacheSharedState(NBlobCache::BlobCacheShardCount, NBlobCache::DefaultBlobCacheMaxBytes);
+        for (ui32 shard = 0; shard < NBlobCache::BlobCacheShardCount; ++shard) {
+            runtime.AddLocalService(NBlobCache::MakeBlobCacheServiceId(shard),
+                TActorSetupCmd(NBlobCache::CreateBlobCache(std::nullopt,
+                                  runtime.GetDynamicCounters(nodeIndex)->GetSubgroup("type", "BLOB_CACHE"), shard,
+                                  NBlobCache::BlobCacheShardCount, sharedState),
+                    TMailboxType::ReadAsFilled, 0),
+                nodeIndex);
+        }
     }
 
     template<size_t N>

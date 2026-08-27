@@ -12,10 +12,15 @@
 #include <ydb/library/actors/core/hfunc.h>
 
 #include <library/cpp/cache/cache.h>
-#include <util/string/vector.h>
+#include <util/generic/hash.h>
 #include <util/generic/set.h>
+#include <util/string/cast.h>
+#include <util/string/vector.h>
 #include <optional>
 
+#include <array>
+#include <algorithm>
+#include <memory>
 #include <tuple>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::BLOB_CACHE
@@ -96,7 +101,7 @@ private:
     static constexpr i64 MAX_IN_FLIGHT_BYTES = 250ll << 20;
     static constexpr i64 MAX_REQUEST_BYTES = 8ll << 20;
     static constexpr TDuration DEFAULT_READ_DEADLINE = TDuration::Seconds(30);
-    static constexpr ui64 DEFAULT_MAX_CACHE_DATA_SIZE = 1000ull << 20;
+    static constexpr ui64 DEFAULT_MAX_CACHE_DATA_SIZE = DefaultBlobCacheMaxBytes;
     static constexpr i64 DEFAULT_WRITE_PROTECT_DURATION_MS = 10800000;
 
     struct TCacheEntry {
@@ -122,6 +127,9 @@ private:
     const bool UseMaxCacheDataSizeFromConfig;
     TControlWrapper MaxInFlightDataSize;
     TControlWrapper WriteProtectDurationMs;
+    const ui32 ShardIndex;
+    const ui32 ShardCount;
+    const TIntrusivePtr<TBlobCacheSharedState> SharedState;
     i64 CacheDataSize;   // Current size of all blobs in cache
     ui64 StickyBytes = 0;
     ui64 ReadCookie;
@@ -171,13 +179,17 @@ public:
     }
 
 public:
-    explicit TBlobCache(const std::optional<ui64>& maxSize, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters)
+    explicit TBlobCache(const std::optional<ui64>& maxSize, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters, const ui32 shardIndex,
+        const ui32 shardCount, TIntrusivePtr<TBlobCacheSharedState> sharedState)
         : TActorBootstrapped<TBlobCache>()
         , RegularCache(SIZE_MAX)
         , MaxCacheDataSize(maxSize.value_or(DEFAULT_MAX_CACHE_DATA_SIZE), 0, 1ull << 40)
         , UseMaxCacheDataSizeFromConfig(maxSize.has_value())
         , MaxInFlightDataSize(Min<i64>(MaxCacheDataSize, MAX_IN_FLIGHT_BYTES), 0, 10ull << 30)
         , WriteProtectDurationMs(DEFAULT_WRITE_PROTECT_DURATION_MS, 0, 86400000)
+        , ShardIndex(shardIndex)
+        , ShardCount(shardCount)
+        , SharedState(std::move(sharedState))
         , CacheDataSize(0)
         , ReadCookie(1)
         , InFlightDataSize(0)
@@ -217,17 +229,39 @@ public:
         TControlBoard::RegisterSharedControl(MaxInFlightDataSize, icb->BlobCache.MaxInFlightDataSize);
         TControlBoard::RegisterSharedControl(WriteProtectDurationMs, icb->BlobCache.WriteProtectDurationMs);
 
-        LOG_S_NOTICE("MaxCacheDataSize: " << (i64)MaxCacheDataSize << " InFlightDataSize: " << (i64)InFlightDataSize);
+        LOG_S_NOTICE("BlobCache shard " << ShardIndex << "/" << ShardCount << " MaxCacheDataSize: " << GetLocalMaxCacheDataSize()
+                                        << " MaxInFlightDataSize: " << GetLocalMaxInFlightDataSize());
 
-        MaxSizeBytes->Set((i64)MaxCacheDataSize);
+        MaxSizeBytes->Set(GetLocalMaxCacheDataSize());
 
-        Send(NMemory::MakeMemoryControllerId(), new NMemory::TEvConsumerRegister(NMemory::EMemoryConsumerKind::ColumnTablesBlobCache));
+        if (ShardIndex == 0) {
+            Send(NMemory::MakeMemoryControllerId(), new NMemory::TEvConsumerRegister(NMemory::EMemoryConsumerKind::ColumnTablesBlobCache));
+        }
 
         Become(&TBlobCache::StateFunc);
         ScheduleWakeup();
     }
 
 private:
+    i64 GetLocalMaxCacheDataSize() const {
+        i64 total = (i64)MaxCacheDataSize;
+        if (SharedState && !UseMaxCacheDataSizeFromConfig) {
+            total = SharedState->TotalMaxCacheDataSize.load(std::memory_order_relaxed);
+        }
+        if (ShardCount <= 1) {
+            return total;
+        }
+        return std::max<i64>(total / static_cast<i64>(ShardCount), 1);
+    }
+
+    i64 GetLocalMaxInFlightDataSize() const {
+        const i64 total = (i64)MaxInFlightDataSize;
+        if (ShardCount <= 1) {
+            return total;
+        }
+        return std::max<i64>(total / static_cast<i64>(ShardCount), 1);
+    }
+
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvents::TEvPoisonPill, Handle);
@@ -266,7 +300,7 @@ private:
 
     void Handle(TEvBlobCache::TEvReadBlobRange::TPtr& ev, const TActorContext& ctx) {
         const TBlobRange& blobRange = ev->Get()->BlobRange;
-        const bool promote = (i64)MaxCacheDataSize && ev->Get()->ReadOptions.CacheAfterRead;
+        const bool promote = GetLocalMaxCacheDataSize() && ev->Get()->ReadOptions.CacheAfterRead;
 
         LOG_S_DEBUG("Read request: " << blobRange << " cache: " << (ui32)promote << " sender:" << ev->Sender);
 
@@ -322,7 +356,7 @@ private:
         LOG_S_DEBUG("Batch read request: " << JoinStrings(ranges.begin(), ranges.end(), " "));
 
         auto& readOptions = ev->Get()->ReadOptions;
-        readOptions.CacheAfterRead = (i64)MaxCacheDataSize && readOptions.CacheAfterRead;
+        readOptions.CacheAfterRead = GetLocalMaxCacheDataSize() && readOptions.CacheAfterRead;
 
         for (const auto& blobRange : ranges) {
             HandleSingleRangeRead(TReadItem(readOptions, blobRange), ev->Sender, ctx);
@@ -384,23 +418,32 @@ private:
         }
 
         const i64 newMaxCacheDataSize = ev->Get()->LimitBytes;
-        if (newMaxCacheDataSize == (i64)MaxCacheDataSize) {
-            return;
+        if (SharedState) {
+            if (newMaxCacheDataSize == SharedState->TotalMaxCacheDataSize.load(std::memory_order_relaxed)) {
+                return;
+            }
+            LOG_S_DEBUG("Updating max cache data size: " << newMaxCacheDataSize);
+            SharedState->TotalMaxCacheDataSize.store(newMaxCacheDataSize, std::memory_order_relaxed);
+        } else {
+            if (newMaxCacheDataSize == (i64)MaxCacheDataSize) {
+                return;
+            }
+            LOG_S_DEBUG("Updating max cache data size: " << newMaxCacheDataSize);
+            MaxCacheDataSize = newMaxCacheDataSize;
         }
 
-        LOG_S_DEBUG("Updating max cache data size: " << newMaxCacheDataSize);
-
-        MaxCacheDataSize = newMaxCacheDataSize;
-
-        MaxSizeBytes->Set((i64)MaxCacheDataSize);
+        MaxSizeBytes->Set(GetLocalMaxCacheDataSize());
     }
 
     void UpdateConsumption() {
+        if (SharedState) {
+            SharedState->SetShardCacheDataSize(ShardIndex, CacheDataSize);
+        }
         if (!MemoryConsumer) {
             return;
         }
 
-        MemoryConsumer->SetConsumption(CacheDataSize);
+        MemoryConsumer->SetConsumption(SharedState ? SharedState->GetTotalCacheDataSize() : CacheDataSize);
     }
 
     void SendBatchReadRequestToDS(const std::vector<TBlobRange>& blobRanges, const ui64 cookie, ui32 dsGroup,
@@ -437,7 +480,7 @@ private:
             const TBlobRange& blobRange = readItem.BlobRange;
 
             // NOTE: if queue is not empty, at least 1 in-flight request is allowed
-            if (InFlightDataSize && InFlightDataSize >= MaxInFlightDataSize) {
+            if (InFlightDataSize && InFlightDataSize >= GetLocalMaxInFlightDataSize()) {
                 break;
             }
             InFlightDataSize += blobRange.Size;
@@ -628,7 +671,7 @@ private:
         YDB_LOG_DEBUG("",
             {"insertCache", blobRange},
             {"sticky", sticky});
-        if (HasCached(blobRange) || !(i64)MaxCacheDataSize) {
+        if (HasCached(blobRange) || !GetLocalMaxCacheDataSize()) {
             return;
         }
 
@@ -776,7 +819,7 @@ private:
 
     void Evict(const TActorContext&) {
         ExpireSticky();
-        while (CacheDataSize + InFlightDataSize > MaxCacheDataSize) {
+        while (CacheDataSize + InFlightDataSize > GetLocalMaxCacheDataSize()) {
             TBlobRange victim;
             bool stickyVictim = false;
             if (RegularCache.Size()) {
@@ -793,7 +836,8 @@ private:
             }
 
             LOG_S_DEBUG("Evict: " << victim << " sticky: " << stickyVictim << " CacheDataSize: " << CacheDataSize
-                                  << " InFlightDataSize: " << (i64)InFlightDataSize << " MaxCacheDataSize: " << (i64)MaxCacheDataSize);
+                                  << " InFlightDataSize: " << (i64)InFlightDataSize
+                                  << " MaxCacheDataSize: " << GetLocalMaxCacheDataSize());
 
             Evictions->Inc();
             EvictedBytes->Add(victim.Size);
@@ -831,8 +875,40 @@ private:
 
 }   // namespace
 
+void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions opts) {
+    if (blobRanges.empty()) {
+        return;
+    }
+    std::array<std::vector<TBlobRange>, BlobCacheShardCount> rangesByShard;
+    for (auto&& range : blobRanges) {
+        rangesByShard[BlobCacheShardIndex(range.BlobId)].emplace_back(std::move(range));
+    }
+    auto& ctx = NActors::TActorContext::AsActorContext();
+    for (ui32 shard = 0; shard < BlobCacheShardCount; ++shard) {
+        if (rangesByShard[shard].empty()) {
+            continue;
+        }
+        ctx.Send(MakeBlobCacheServiceId(shard),
+            new TEvBlobCache::TEvReadBlobRangeBatch(std::move(rangesByShard[shard]), TReadBlobRangeOptions(opts)));
+    }
+}
+
 NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters) {
-    return new TBlobCache(maxBytes, counters);
+    return CreateBlobCache(maxBytes, counters, 0, 1, {});
+}
+
+NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters,
+    const ui32 shardIndex, const ui32 shardCount, TIntrusivePtr<TBlobCacheSharedState> sharedState) {
+    AFL_VERIFY(shardCount >= 1);
+    AFL_VERIFY(shardIndex < shardCount);
+    if (shardCount > 1) {
+        AFL_VERIFY(sharedState);
+        AFL_VERIFY(sharedState->ShardCount == shardCount);
+    }
+    if (shardCount > 1) {
+        counters = counters->GetSubgroup("shard", ToString(shardIndex));
+    }
+    return new TBlobCache(maxBytes, counters, shardIndex, shardCount, std::move(sharedState));
 }
 
 }   // namespace NKikimr::NBlobCache
