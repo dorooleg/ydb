@@ -779,7 +779,14 @@ private:
                 auto status = FetchInput(inputIndex);
                 if (status == NUdf::EFetchStatus::Yield) {
                     StartInputIndex_ = inputIndex;
-                    return status;
+                    // Rows already taken from this input are globally ordered relative to
+                    // every other known head. Emit them instead of waiting for the next
+                    // chunk/Finish — otherwise LIMIT 1 over DqCnMerge stalls until every
+                    // producer fully finishes (typical OLAP TopSort + Take plan).
+                    if (!OutputBlockLen_) {
+                        return status;
+                    }
+                    break;
                 }
                 if (status == NUdf::EFetchStatus::Ok) {
                     std::make_heap(InputRows_.begin(), InputRows_.end());

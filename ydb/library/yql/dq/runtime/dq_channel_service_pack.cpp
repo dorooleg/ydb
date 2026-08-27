@@ -152,10 +152,18 @@ public:
         Packer.SetMinFillPercentage(arrayBufferMinFillPercentage);
     }
 
-    void Flush(bool finished) override {
-        if (finished) {
+    void FlushPending(bool finished) {
+        if (PendingChunk) {
+            PendingChunk->Finished = finished;
+            Buffer->Push(std::move(*PendingChunk));
+            PendingChunk.Clear();
+        } else if (finished) {
             Buffer->SendFinish();
         }
+    }
+
+    void Flush(bool finished) override {
+        FlushPending(finished);
     }
 
     void Push(NUdf::TUnboxedValue&&) override {
@@ -163,21 +171,29 @@ public:
     }
 
     void Push(NDqProto::TCheckpoint&& checkpoint) override {
+        FlushPending(false);
         Buffer->Push(TDataChunk(std::move(checkpoint)));
     }
 
     void Push(NDqProto::TWatermark&& watermark) override {
+        FlushPending(false);
         Buffer->Push(TDataChunk(std::move(watermark)));
     }
 
     void WidePush(NUdf::TUnboxedValue* values, ui32 width) override {
+        FlushPending(false);
         ui32 rows = NKikimr::NMiniKQL::TArrowBlock::From(values[width - 1]).GetDatum().scalar_as<arrow::UInt64Scalar>().value;
         Packer.AddWideItem(values, width);
         for (ui32 i = 0; i < width; ++i) {
             values[i] = {};
         }
-        Buffer->Push(TDataChunk(Packer.Finish(), rows, TransportVersion, PackerVersion, false));
+        // Hold the last block until Flush so Finish can ride on the same chunk.
+        // Otherwise Merge pops the data, Yields waiting for a separate 1-byte Finish,
+        // and LIMIT 1 over DqCnMerge stalls until every producer completes.
+        PendingChunk.ConstructInPlace(Packer.Finish(), rows, TransportVersion, PackerVersion, false);
     }
+
+    TMaybe<TDataChunk> PendingChunk;
 };
 
 template<bool fast>
@@ -264,6 +280,7 @@ std::unique_ptr<TOutputSerializer> CreateSerializer(const TDqChannelSettings& se
 }
 
 std::unique_ptr<TOutputSerializer> ConvertToLocalSerializer(std::unique_ptr<TOutputSerializer>&& serializer) {
+    serializer->Flush(false);
     ui32 blockLengthIndex;
     TVector<const NKikimr::NMiniKQL::TBlockType*> items;
     auto rowType = serializer->RowType;
