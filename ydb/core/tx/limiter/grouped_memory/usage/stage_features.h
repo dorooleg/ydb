@@ -39,6 +39,8 @@ public:
     void UpdateVolume(const ui64 from, const ui64 to, const bool allocated);
     bool IsAllocatable(const ui64 volume, const ui64 additional) const;
     void Add(const ui64 volume, const bool allocated);
+    void OnWait(const ui64 volume);
+    void OnWaitDuration(const TDuration duration);
 
     void SetMemoryConsumptionUpdateFunction(std::function<void(ui64)> func);
 

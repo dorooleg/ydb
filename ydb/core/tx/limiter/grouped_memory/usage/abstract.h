@@ -101,6 +101,7 @@ private:
     static inline TAtomicCounter Counter = 0;
     YDB_READONLY(ui64, Identifier, Counter.Inc());
     YDB_READONLY(ui64, Memory, 0);
+    YDB_READONLY(TInstant, RequestInstant, TInstant::Now());
     bool Allocated = false;
     virtual void DoOnAllocationImpossible(const TString& errorMessage) = 0;
     virtual bool DoOnAllocated(
@@ -110,6 +111,10 @@ public:
     virtual ~IAllocation() = default;
     IAllocation(const ui64 mem)
         : Memory(mem) {
+    }
+
+    TDuration GetWaitDuration() const {
+        return TInstant::Now() - RequestInstant;
     }
 
     void ResetAllocation() {

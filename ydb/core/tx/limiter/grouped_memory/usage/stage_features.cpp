@@ -162,6 +162,26 @@ void TStageFeatures::Add(const ui64 volume, const bool allocated) {
     UpdateConsumption(this);
 }
 
+void TStageFeatures::OnWait(const ui64 volume) {
+    auto* current = this;
+    while (current) {
+        if (current->Counters) {
+            current->Counters->OnWait(volume);
+        }
+        current = current->Owner.get();
+    }
+}
+
+void TStageFeatures::OnWaitDuration(const TDuration duration) {
+    auto* current = this;
+    while (current) {
+        if (current->Counters) {
+            current->Counters->OnWaitDuration(duration);
+        }
+        current = current->Owner.get();
+    }
+}
+
 
 void TStageFeatures::SetMemoryConsumptionUpdateFunction(std::function<void(ui64)> func) {
     MemoryConsumptionUpdate = std::move(func);

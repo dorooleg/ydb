@@ -37,6 +37,7 @@ bool TAllocationInfo::Allocate(const NActors::TActorId& ownerId) {
         {"allocationId", Identifier},
         {"stage", Stage->GetName()});
     AFL_VERIFY(Allocation)("status", GetAllocationStatus())("volume", AllocatedVolume)("id", Identifier)("stage", Stage->GetName());
+    Stage->OnWaitDuration(Allocation->GetWaitDuration());
     auto allocationResult = Stage->Allocate(AllocatedVolume);
     if (allocationResult.IsFail()) {
         AllocationFailed = true;

@@ -104,6 +104,9 @@ bool TAllocateMemoryStep::TFetchingStepAllocation::DoOnAllocated(std::shared_ptr
     } else {
         data->RegisterAllocationGuard(std::move(guard));
     }
+    LWTRACK(MemoryAllocation, data->GetDataSourceOrbit(), data->GetRawPathId(), data->GetTabletId(), data->GetTxId(),
+        data->GetDeprecatedPortionId(), Step.GetStepIndex(), Step.GetTracingName(), data->GetAndResetWaitDuration(), TDuration::Zero(),
+        data->GetConveyorQueueWaitDuration(), GetMemory(), true, data->GetReservedMemory());
     if (!ScheduleContinuation) {
         // Allocation was satisfied inline (e.g. memory limiter disabled). The caller continues on the
         // same stack — do not start a concurrent TStepAction that would race with it.
@@ -140,16 +143,12 @@ void TAllocateMemoryStep::TFetchingStepAllocation::DoOnAllocationImpossible(cons
         {"error", errorMessage});
     if (sourcePtr) {
         FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, sourcePtr->AddEvent("fail_malloc"));
+        LWTRACK(MemoryAllocation, sourcePtr->GetDataSourceOrbit(), sourcePtr->GetRawPathId(), sourcePtr->GetTabletId(), sourcePtr->GetTxId(),
+            sourcePtr->GetDeprecatedPortionId(), Step.GetStepIndex(), Step.GetTracingName(), sourcePtr->GetAndResetWaitDuration(),
+            TDuration::Zero(), sourcePtr->GetConveyorQueueWaitDuration(), GetMemory(), false, sourcePtr->GetReservedMemory());
         sourcePtr->GetContext()->GetCommonContext()->AbortWithError(
             "cannot allocate memory for step " + Step.GetName() + ": '" + errorMessage + "'");
     }
-}
-
-void TAllocateMemoryStep::ReportTracing(
-    const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step, const TDuration executionDurationMs, const ui64 size) const {
-    LWTRACK(MemoryAllocation, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(),
-        source->GetDeprecatedPortionId(), step.GetStepIndex(), step.GetTracingName(), source->GetAndResetWaitDuration(), executionDurationMs,
-        source->GetConveyorQueueWaitDuration(), size, true, source->GetReservedMemory());
 }
 
 TConclusion<bool> TAllocateMemoryStep::DoExecuteInplace(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step) const {
@@ -166,10 +165,7 @@ TConclusion<bool> TAllocateMemoryStep::DoExecuteInplace(const std::shared_ptr<ID
         }
         size += sizeLocal;
     }
-    const TMonotonic start = TMonotonic::Now();
     auto allocation = std::make_shared<TFetchingStepAllocation>(source, size, step, StageIndex);
-    const TDuration executionDurationMs = TMonotonic::Now() - start;
-    ReportTracing(source, step, executionDurationMs, size);
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, source->AddEvent("smalloc"));
     source->GetContext()->SendToGroupedMemoryAllocation(source->GetMemoryGroupId(), { allocation }, (ui32)StageIndex);
     return false;

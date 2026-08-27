@@ -92,6 +92,7 @@ public:
             if (allocationInfo->GetAllocationStatus() != EAllocationStatus::Waiting) {
             } else if (WaitAllocations.GetMinExternalGroupId().value_or(externalGroupId) < externalGroupId) {
                 WaitAllocations.AddAllocationExt(externalGroupId, allocationInfo);
+                allocationInfo->GetStage()->OnWait(allocationInfo->GetAllocatedVolume());
             } else if (allocationInfo->IsAllocatable(0) || (isPriorityProcess && externalGroupId <= GroupIds.GetMinExternalIdVerified())) {
                 Y_UNUSED(WaitAllocations.RemoveAllocationExt(externalGroupId, allocationInfo));
                 auto success = allocationInfo->Allocate(OwnerActorId);
@@ -101,6 +102,7 @@ public:
                 LWPROBE(Allocated, "on_register", allocationInfo->GetIdentifier(), stage->GetName(), stage->GetLimit(), stage->GetHardLimit().value_or(std::numeric_limits<ui64>::max()), stage->GetUsage().Val(), stage->GetWaiting().Val(), allocationInfo->GetAllocationTime(), false, success);
             } else {
                 WaitAllocations.AddAllocationExt(externalGroupId, allocationInfo);
+                allocationInfo->GetStage()->OnWait(allocationInfo->GetAllocatedVolume());
             }
         }
     }

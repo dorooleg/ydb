@@ -1,16 +1,21 @@
 #pragma once
 #include <ydb/library/signals/owner.h>
 
+#include <util/datetime/base.h>
+
 namespace NKikimr::NOlap::NGroupedMemoryManager {
 
 class TStageCounters: public NColumnShard::TCommonCountersOwner {
 private:
     using TBase = NColumnShard::TCommonCountersOwner;
     NMonitoring::TDynamicCounters::TCounterPtr AllocatedBytes;
+    NMonitoring::TDynamicCounters::TCounterPtr DeriviativeAllocatedBytes;
     NMonitoring::TDynamicCounters::TCounterPtr AllocatedChunks;
     NMonitoring::TDynamicCounters::TCounterPtr Allocations;
     NMonitoring::TDynamicCounters::TCounterPtr Free;
     NMonitoring::TDynamicCounters::TCounterPtr WaitingBytes;
+    NMonitoring::TDynamicCounters::TCounterPtr DeriviativeWaitingBytes;
+    NMonitoring::TDynamicCounters::TCounterPtr DeriviativeWaitingDurationUs;
     NMonitoring::TDynamicCounters::TCounterPtr WaitingChunks;
     NMonitoring::TDynamicCounters::TCounterPtr AllocationFailCount;
 
@@ -21,10 +26,13 @@ public:
     TStageCounters(const TCommonCountersOwner& owner, const TString& name)
         : TBase(owner, "stage", name)
         , AllocatedBytes(TBase::GetValue("Allocated/Bytes"))
+        , DeriviativeAllocatedBytes(TBase::GetDeriviative("Allocated/Bytes"))
         , AllocatedChunks(TBase::GetValue("Allocated/Count"))
         , Allocations(TBase::GetDeriviative("Allocated/Count"))
         , Free(TBase::GetDeriviative("Free/Count"))
         , WaitingBytes(TBase::GetValue("Waiting/Bytes"))
+        , DeriviativeWaitingBytes(TBase::GetDeriviative("Waiting/Bytes"))
+        , DeriviativeWaitingDurationUs(TBase::GetDeriviative("Waiting/Duration/Us"))
         , WaitingChunks(TBase::GetValue("Waiting/Count"))
         , AllocationFailCount(TBase::GetValue("AllocationFails/Count"))
         , ValueHardLimit(TBase::GetValue("Limit/Hard/Bytes"))
@@ -35,10 +43,19 @@ public:
         AllocationFailCount->Add(1);
     }
 
+    void OnWait(const ui64 volume) {
+        DeriviativeWaitingBytes->Add(volume);
+    }
+
+    void OnWaitDuration(const TDuration duration) {
+        DeriviativeWaitingDurationUs->Add(duration.MicroSeconds());
+    }
+
     void Add(const ui64 volume, const bool allocated) {
         Allocations->Inc();
         if (allocated) {
             AllocatedBytes->Add(volume);
+            DeriviativeAllocatedBytes->Add(volume);
             AllocatedChunks->Add(1);
         } else {
             WaitingBytes->Add(volume);

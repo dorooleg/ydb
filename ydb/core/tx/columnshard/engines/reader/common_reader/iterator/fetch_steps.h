@@ -27,9 +27,6 @@ private:
     const NArrow::NSSA::IMemoryCalculationPolicy::EStage StageIndex;
     const std::optional<ui64> PredefinedSize;
 
-    void ReportTracing(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step, const TDuration executionDurationMs,
-        const ui64 size) const;
-
 protected:
     virtual TConclusion<bool> DoExecuteInplace(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step) const override;
     virtual ui64 GetProcessingDataSize(const std::shared_ptr<IDataSource>& source) const override;
