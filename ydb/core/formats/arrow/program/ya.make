@@ -72,3 +72,7 @@ RECURSE(
     benchmark
     string_fast
 )
+
+RECURSE_FOR_TESTS(
+    ut
+)
