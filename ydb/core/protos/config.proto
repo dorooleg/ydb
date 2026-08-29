@@ -814,6 +814,8 @@ message TCompositeConveyorConfig {
     optional bool Enabled = 1 [default = true];
     repeated TWorkersPool WorkerPools = 2;
     repeated TCategory Categories = 3;
+    optional uint64 ProcessPessimizationCpuLimitUs = 4 [default = 25000000];
+    optional uint32 PessimizedProcessWorkersLimit = 5 [default = 8];
 }
 
 message TPrioritiesQueueConfig {

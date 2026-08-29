@@ -19,6 +19,7 @@ private:
     THashMap<ui64, std::shared_ptr<TProcess>> Processes;
     std::map<TDuration, std::deque<std::shared_ptr<TProcess>>> WeightedProcesses;
     const NConfig::TCategory Config;
+    const TDuration PessimizationCpuLimit;
 
     [[nodiscard]] bool RemoveWeightedProcess(const std::shared_ptr<TProcess>& process);
 
@@ -26,9 +27,10 @@ public:
     ui32 GetWaitingQueueSize() const {
         return WaitingTasksCount->Val();
     }
-    TProcessCategory(const NConfig::TCategory& config, TCounters& counters)
+    TProcessCategory(const NConfig::TCategory& config, TCounters& counters, const TDuration pessimizationCpuLimit)
         : Category(config.GetCategory())
-        , Config(config) {
+        , Config(config)
+        , PessimizationCpuLimit(pessimizationCpuLimit) {
         Counters = counters.GetCategorySignals(Category);
         RegisterProcess(0, RegisterScope("DEFAULT", TCPULimitsConfig(1000, 1000)));
         Counters->WaitingQueueSizeLimit->Set(config.GetQueueSizeLimit());
@@ -54,12 +56,16 @@ public:
 
     void RegisterProcess(const ui64 internalProcessId, std::shared_ptr<TProcessScope>&& scope) {
         scope->IncProcesses();
-        AFL_VERIFY(Processes.emplace(internalProcessId, std::make_shared<TProcess>(internalProcessId, std::move(scope), WaitingTasksCount)).second);
+        AFL_VERIFY(Processes.emplace(internalProcessId,
+            std::make_shared<TProcess>(internalProcessId, std::move(scope), WaitingTasksCount, PessimizationCpuLimit)).second);
     }
 
     void UnregisterProcess(const ui64 processId) {
         auto it = Processes.find(processId);
         AFL_VERIFY(it != Processes.end());
+        if (it->second->IsPessimized()) {
+            Counters->PessimizedProcessesCount->Add(-1);
+        }
         Y_UNUSED(RemoveWeightedProcess(it->second));
         if (it->second->GetScope()->DecProcesses()) {
             AFL_VERIFY(Scopes.erase(it->second->GetScope()->GetScopeId()));
@@ -72,7 +78,8 @@ public:
     }
 
     bool HasTasks() const;
-    std::optional<TWorkerTask> ExtractTaskWithPrediction(const std::shared_ptr<TWPCategorySignals>& counters, THashSet<TString>& scopeIds);
+    std::optional<TWorkerTask> ExtractTaskWithPrediction(
+        const std::shared_ptr<TWPCategorySignals>& counters, THashSet<TString>& scopeIds, const bool allowPessimized);
     TProcessScope& MutableProcessScope(const TString& scopeName);
     TProcessScope* MutableProcessScopeOptional(const TString& scopeName);
     std::shared_ptr<TProcessScope> GetProcessScopePtrVerified(const TString& scopeName) const;

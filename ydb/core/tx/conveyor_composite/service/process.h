@@ -78,10 +78,17 @@ private:
     TAverageCalcer<TDuration> AverageTaskDuration;
     ui32 LinksCount = 0;
     TDuration BaseWeight = TDuration::Zero();
+    TDuration TotalCPU = TDuration::Zero();
+    const TDuration PessimizationCpuLimit;
+    bool Pessimized = false;
 
 public:
     ui32 GetInProgressTasksCount() const {
         return InProgressTasksCount.Val();
+    }
+
+    bool IsPessimized() const {
+        return Pessimized;
     }
 
     void SetBaseWeight(const TDuration d) {
@@ -116,10 +123,16 @@ public:
         return std::move(result).BuildTask(signals->GetTaskSignals(taskClass));
     }
 
-    void PutTaskResult(TWorkerTaskResult&& result) {
+    [[nodiscard]] bool PutTaskResult(TWorkerTaskResult&& result) {
         CPUUsage->Exchange(result.GetPredictedDuration(), result.GetStart(), result.GetFinish());
         AverageTaskDuration.Add(result.GetDuration());
         InProgressTasksCount.Dec();
+        TotalCPU += result.GetDuration();
+        if (!Pessimized && TotalCPU >= PessimizationCpuLimit) {
+            Pessimized = true;
+            return true;
+        }
+        return false;
     }
 
     [[nodiscard]] bool DecRegistration() {
@@ -136,11 +149,12 @@ public:
         ++LinksCount;
     }
 
-    TProcess(
-        const ui64 processId, const std::shared_ptr<TProcessScope>& scope, const std::shared_ptr<TPositiveControlInteger>& waitingTasksCount)
+    TProcess(const ui64 processId, const std::shared_ptr<TProcessScope>& scope,
+        const std::shared_ptr<TPositiveControlInteger>& waitingTasksCount, const TDuration pessimizationCpuLimit)
         : ProcessId(processId)
         , Scope(scope)
-        , WaitingTasksCount(waitingTasksCount) {
+        , WaitingTasksCount(waitingTasksCount)
+        , PessimizationCpuLimit(pessimizationCpuLimit) {
         AFL_VERIFY(WaitingTasksCount);
         CPUUsage = std::make_shared<TCPUUsage>(Scope->GetCPUUsage());
         IncRegistration();

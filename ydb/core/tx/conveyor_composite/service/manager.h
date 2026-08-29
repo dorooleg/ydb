@@ -31,11 +31,12 @@ public:
         , Counters(counters)
     {
         for (auto&& i : GetEnumAllValues<ESpecialTaskCategory>()) {
-            Categories.emplace_back(std::make_shared<TProcessCategory>(Config.GetCategoryConfig(i), Counters));
+            Categories.emplace_back(std::make_shared<TProcessCategory>(
+                Config.GetCategoryConfig(i), Counters, Config.GetProcessPessimizationCpuLimit()));
         }
         for (auto&& i : Config.GetWorkerPools()) {
-            WorkerPools.emplace_back(std::make_shared<TWorkersPool>(
-                i.GetName(), distributorActorId, i, Counters.GetWorkersPoolSignals(i.GetName()), Categories));
+            WorkerPools.emplace_back(std::make_shared<TWorkersPool>(i.GetName(), distributorActorId, i,
+                Counters.GetWorkersPoolSignals(i.GetName()), Categories, Config.GetPessimizedProcessWorkersLimit()));
         }
     }
 

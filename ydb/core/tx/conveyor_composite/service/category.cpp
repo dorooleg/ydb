@@ -6,10 +6,14 @@ bool TProcessCategory::HasTasks() const {
     return WeightedProcesses.size();
 }
 
-std::optional<TWorkerTask> TProcessCategory::ExtractTaskWithPrediction(const std::shared_ptr<TWPCategorySignals>& counters, THashSet<TString>& scopeIds) {
+std::optional<TWorkerTask> TProcessCategory::ExtractTaskWithPrediction(
+    const std::shared_ptr<TWPCategorySignals>& counters, THashSet<TString>& scopeIds, const bool allowPessimized) {
     std::shared_ptr<TProcess> pMin;
     for (auto it = WeightedProcesses.begin(); it != WeightedProcesses.end(); ++it) {
         for (ui32 i = 0; i < it->second.size(); ++i) {
+            if (!allowPessimized && it->second[i]->IsPessimized()) {
+                continue;
+            }
             if (!it->second[i]->GetScope()->CheckToRun()) {
                 continue;
             }
@@ -97,7 +101,9 @@ void TProcessCategory::PutTaskResult(TWorkerTaskResult&& result, THashSet<TStrin
         return;
     }
     Y_UNUSED(RemoveWeightedProcess(it->second));
-    it->second->PutTaskResult(std::move(result));
+    if (it->second->PutTaskResult(std::move(result))) {
+        Counters->PessimizedProcessesCount->Add(1);
+    }
     if (it->second->GetTasksCount()) {
         WeightedProcesses[it->second->GetWeightedUsage()].emplace_back(it->second);
     }

@@ -15,6 +15,7 @@ private:
 
 public:
     const ::NMonitoring::TDynamicCounters::TCounterPtr ProcessesCount;
+    const ::NMonitoring::TDynamicCounters::TCounterPtr PessimizedProcessesCount;
 
     const ::NMonitoring::TDynamicCounters::TCounterPtr WaitingQueueSize;
     const ::NMonitoring::TDynamicCounters::TCounterPtr WaitingQueueSizeLimit;
@@ -23,6 +24,7 @@ public:
         : TBase(base, "category", ::ToString(cat))
         , Category(cat)
         , ProcessesCount(TBase::GetValue("ProcessesCount"))
+        , PessimizedProcessesCount(TBase::GetValue("PessimizedProcessesCount"))
         , WaitingQueueSize(TBase::GetValue("WaitingQueueSize"))
         , WaitingQueueSizeLimit(TBase::GetValue("WaitingQueueSizeLimit")) {
     }

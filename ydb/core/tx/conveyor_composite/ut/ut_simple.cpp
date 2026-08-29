@@ -15,6 +15,9 @@
 #include <contrib/libs/protobuf/src/google/protobuf/text_format.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <util/generic/xrange.h>
+#include <util/generic/ylimits.h>
+
+#include <array>
 
 using namespace NKikimr::NConveyorComposite;
 
@@ -60,6 +63,40 @@ public:
     TSleepTask(const TDuration d, TAtomicCounter& c)
         : ExecutionTime(d)
         , Counter(&c) {
+    }
+};
+
+class TWorkerRecordingTask: public NKikimr::NConveyor::ITask {
+private:
+    const TDuration ExecutionTime;
+    TAtomicCounter* Counter;
+    std::array<TAtomicCounter, 16>* PerWorker = nullptr;
+    ui64 AssignedWorker = Max<ui64>();
+
+    virtual void DoExecute(const std::shared_ptr<ITask>& /*taskPtr*/) override {
+        const TMonotonic start = TMonotonic::Now();
+        while (TMonotonic::Now() - start < ExecutionTime) {
+        }
+        if (PerWorker) {
+            AFL_VERIFY(AssignedWorker < PerWorker->size())("worker", AssignedWorker);
+            (*PerWorker)[AssignedWorker].Inc();
+        }
+        Counter->Inc();
+    }
+
+public:
+    virtual TString GetTaskClassIdentifier() const override {
+        return "SLEEP_RECORDING";
+    }
+
+    virtual void OnAssignedToWorker(const ui64 workerIdx) override {
+        AssignedWorker = workerIdx;
+    }
+
+    TWorkerRecordingTask(const TDuration d, TAtomicCounter& c, std::array<TAtomicCounter, 16>* perWorker)
+        : ExecutionTime(d)
+        , Counter(&c)
+        , PerWorker(perWorker) {
     }
 };
 
@@ -501,5 +538,80 @@ Y_UNIT_TEST_SUITE(CompositeConveyorTests) {
     };
     Y_UNIT_TEST(TestUniformDistribution) {
         TTestingExecutorUniformDistribution().Execute();
+    }
+
+    Y_UNIT_TEST(PessimizedProcessUsesOnlyFirstWorkers) {
+        const ui64 threadsCount = 64;
+        THolder<NActors::TActorSystemSetup> actorSystemSetup = NKikimr::BuildActorSystemSetup(threadsCount, 1);
+        NActors::TActorSystem actorSystem(actorSystemSetup);
+        actorSystem.Start();
+        auto counters = MakeIntrusive<::NMonitoring::TDynamicCounters>();
+        const TString textProto = R"(
+            ProcessPessimizationCpuLimitUs: 50000
+            PessimizedProcessWorkersLimit: 8
+            WorkerPools {
+                WorkersCount: 16
+                MaxBatchSize: 1
+                Links {
+                    Category: "scan"
+                    Weight: 1
+                }
+            }
+            Categories {
+                Name: "scan"
+            }
+        )";
+        NKikimrConfig::TCompositeConveyorConfig protoConfig;
+        AFL_VERIFY(google::protobuf::TextFormat::ParseFromString(textProto, &protoConfig));
+        NConfig::TConfig config = NConfig::TConfig::BuildFromProto(protoConfig).DetachResult();
+        const auto actorId = actorSystem.Register(CreateService(config, counters));
+
+        const ui64 processId = 1;
+        actorSystem.Send(actorId, new TEvExecution::TEvRegisterProcess(TCPULimitsConfig(1000, 1), ESpecialTaskCategory::Scan, "s", processId));
+
+        auto waitCounter = [](TAtomicCounter& counter, const i64 expected) {
+            const TMonotonic deadline = TMonotonic::Now() + TDuration::Seconds(30);
+            while (counter.Val() < expected) {
+                UNIT_ASSERT_C(TMonotonic::Now() < deadline, "timeout waiting for conveyor tasks");
+                Sleep(TDuration::MilliSeconds(10));
+            }
+            UNIT_ASSERT_VALUES_EQUAL(counter.Val(), expected);
+        };
+
+        {
+            TAtomicCounter warmupDone;
+            const ui32 warmupTasks = 4;
+            for (ui32 i = 0; i < warmupTasks; ++i) {
+                actorSystem.Send(actorId, new TEvExecution::TEvNewTask(
+                    std::make_shared<TSleepTask>(TDuration::MilliSeconds(20), warmupDone), ESpecialTaskCategory::Scan, processId));
+            }
+            waitCounter(warmupDone, warmupTasks);
+        }
+
+        TAtomicCounter recordedDone;
+        std::array<TAtomicCounter, 16> perWorker;
+        const ui32 recordedTasks = 32;
+        for (ui32 i = 0; i < recordedTasks; ++i) {
+            actorSystem.Send(actorId, new TEvExecution::TEvNewTask(
+                std::make_shared<TWorkerRecordingTask>(TDuration::MilliSeconds(2), recordedDone, &perWorker),
+                ESpecialTaskCategory::Scan, processId));
+        }
+        waitCounter(recordedDone, recordedTasks);
+
+        ui32 restrictedCount = 0;
+        ui32 unrestrictedCount = 0;
+        for (ui32 i = 0; i < perWorker.size(); ++i) {
+            if (i < 8) {
+                restrictedCount += perWorker[i].Val();
+            } else {
+                unrestrictedCount += perWorker[i].Val();
+            }
+        }
+        UNIT_ASSERT_VALUES_EQUAL(restrictedCount, recordedTasks);
+        UNIT_ASSERT_VALUES_EQUAL(unrestrictedCount, 0);
+
+        actorSystem.Send(actorId, new TEvExecution::TEvUnregisterProcess(ESpecialTaskCategory::Scan, processId));
+        actorSystem.Stop();
+        actorSystem.Cleanup();
     }
 }

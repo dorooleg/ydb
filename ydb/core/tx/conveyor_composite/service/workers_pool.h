@@ -61,13 +61,17 @@ private:
     TAverageCalcer<TDuration> DeliveringDuration;
     std::deque<TDuration> DeliveryDurations;
     ui64 MaxBatchSize = 30;
+    ui32 PessimizedProcessWorkersLimit = 8;
+
+    bool DrainOnWorkers(const std::vector<ui32>& workerIdxs, const bool allowPessimized);
 
 public:
     static constexpr double Eps = 1e-6;
     using TPtr = std::shared_ptr<TWorkersPool>;
 
     TWorkersPool(const TString& poolName, const NActors::TActorId& distributorId, const NConfig::TWorkersPool& config,
-        const std::shared_ptr<TWorkersPoolCounters>& counters, const std::vector<std::shared_ptr<TProcessCategory>>& categories);
+        const std::shared_ptr<TWorkersPoolCounters>& counters, const std::vector<std::shared_ptr<TProcessCategory>>& categories,
+        const ui32 pessimizedProcessWorkersLimit);
 
     const std::shared_ptr<TWorkersPoolCounters>& GetCounters() const {
         return Counters;
@@ -90,7 +94,7 @@ public:
 
     void PutTaskResults(std::vector<TWorkerTaskResult>&& result, const ui64 workersPoolId = 0, const ui64 workerIdx = 0);
     bool HasFreeWorker() const;
-    void RunTask(std::vector<TWorkerTask>&& tasksBatch);
+    void RunTask(std::vector<TWorkerTask>&& tasksBatch, const ui32 workerIdx);
     void ReleaseWorker(const ui32 workerIdx);
 };
 

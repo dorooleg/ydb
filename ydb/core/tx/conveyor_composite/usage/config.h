@@ -9,6 +9,8 @@
 #include <ydb/library/conclusion/result.h>
 #include <ydb/library/conclusion/status.h>
 
+#include <util/datetime/base.h>
+
 namespace NKikimr::NConveyorComposite::NConfig {
 
 class TWorkerPoolCategoryUsage {
@@ -134,6 +136,8 @@ private:
     YDB_READONLY_DEF(std::vector<TCategory>, Categories);
     YDB_READONLY_DEF(std::vector<TWorkersPool>, WorkerPools);
     YDB_READONLY_FLAG(Enabled, true);
+    YDB_READONLY(TDuration, ProcessPessimizationCpuLimit, TDuration::Seconds(35));
+    YDB_READONLY(ui32, PessimizedProcessWorkersLimit, 8);
 
     TConfig() = default;
     [[nodiscard]] TConclusionStatus DeserializeFromProto(const NKikimrConfig::TCompositeConveyorConfig& config);

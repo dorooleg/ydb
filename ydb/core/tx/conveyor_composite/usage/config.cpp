@@ -62,6 +62,15 @@ TConclusionStatus TConfig::DeserializeFromProto(const NKikimrConfig::TCompositeC
             AFL_VERIFY(i.AddWorkerPool(defWorkersPool->GetWorkersPoolId()));
         }
     }
+    if (config.HasProcessPessimizationCpuLimitUs()) {
+        ProcessPessimizationCpuLimit = TDuration::MicroSeconds(config.GetProcessPessimizationCpuLimitUs());
+    }
+    if (config.HasPessimizedProcessWorkersLimit()) {
+        if (!config.GetPessimizedProcessWorkersLimit()) {
+            return TConclusionStatus::Fail("incorrect pessimized process workers limit: 0");
+        }
+        PessimizedProcessWorkersLimit = config.GetPessimizedProcessWorkersLimit();
+    }
     return TConclusionStatus::Success();
 }
 
@@ -97,6 +106,8 @@ TString TConfig::DebugString() const {
     }
     sb << "]};";
     sb << "Enabled=" << EnabledFlag << ";";
+    sb << "pessimization_cpu_limit=" << ProcessPessimizationCpuLimit << ";";
+    sb << "pessimized_workers_limit=" << PessimizedProcessWorkersLimit << ";";
     sb << "}";
     return sb;
 }
