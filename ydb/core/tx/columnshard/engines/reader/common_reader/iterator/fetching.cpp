@@ -9,6 +9,7 @@
 #include <ydb/core/formats/arrow/program/index.h>
 #include <ydb/core/formats/arrow/program/original.h>
 #include <ydb/core/tx/columnshard/blobs_reader/actor.h>
+#include <ydb/core/tx/columnshard/engines/reader/abstract/read_context.h>
 #include <ydb/core/tx/columnshard/engines/reader/tracing/data_source_probes.h>
 #include <ydb/core/tx/columnshard/engines/scheme/index_info.h>
 #include <ydb/core/tx/columnshard/engines/storage/indexes/skip_index/meta.h>
@@ -105,6 +106,21 @@ TConclusion<bool> TStepAction::DoExecuteImpl() {
     return FinishedFlag;
 }
 
+bool TStepAction::DoTryEnqueueEmptyApply(const std::shared_ptr<IDataTasksProcessor::ITask>& taskPtr, NColumnShard::TCounterGuard& guard) {
+    if (!Source || Source->GetContext()->IsAborted()) {
+        return false;
+    }
+    if (!Source->HasStageResult() || !Source->GetStageResult().IsEmpty()) {
+        return false;
+    }
+    auto indexChecks = GetIndexChecks();
+    Source->GetContext()->GetCommonContext()->EnqueueEmptyApply(std::make_unique<TEmptyApplyItem>(
+        std::shared_ptr<IApplyAction>(taskPtr), std::move(guard), CachedSourceIdx, CachedSourceId, GetBlobBytes(), GetRawBytes(),
+        GetFilteredRows(), GetTotalRows(), GetTotalReservedBytes(), GetReadCacheBytes(), GetReadBsBytes(), GetReadTierBytes(),
+        TString(GetReadTraceDetails()), std::move(indexChecks), HasScanReadStats()));
+    return true;
+}
+
 void TStepAction::CacheSourceStats() {
     CachedBlobBytes = Source->ExtractTotalBytesRead();
     CachedRawBytes = Source->GetUsedRawBytesOptional();
@@ -125,6 +141,7 @@ TStepAction::TStepAction(
     , Source(std::move(source))
     , Cursor(std::move(cursor))
     , CachedSourceId(Source->GetDeprecatedPortionId())
+    , CachedSourceIdx(Source->GetSourceIdx())
 {
     if (changeSyncSection) {
         Source->StartAsyncSection();

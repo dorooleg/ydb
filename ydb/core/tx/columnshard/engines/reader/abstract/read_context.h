@@ -17,10 +17,54 @@
 #include <ydb/library/accessor/accessor.h>
 
 #include <library/cpp/lwtrace/shuttle.h>
+#include <util/generic/deque.h>
+#include <util/generic/vector.h>
+#include <util/system/mutex.h>
 
 namespace NKikimr::NOlap::NReader {
 
 class TPartialSourceAddress;
+class IApplyAction;
+
+struct TEmptyApplyItem {
+    TConclusion<std::shared_ptr<IApplyAction>> Result;
+    NColumnShard::TCounterGuard ScanCounter;
+    ui32 SourceIdx = 0;
+    ui64 SourceId = 0;
+    ui64 BlobBytes = 0;
+    ui64 RawBytes = 0;
+    ui32 FilteredRows = 0;
+    ui32 TotalRows = 0;
+    ui64 TotalReservedBytes = 0;
+    ui64 CacheBytes = 0;
+    ui64 BsBytes = 0;
+    ui64 TierBytes = 0;
+    TString ReadTraceDetails;
+    THashMap<TString, TIndexCheckStats> IndexChecks;
+    bool HasScanReadStats = false;
+
+    TEmptyApplyItem(TConclusion<std::shared_ptr<IApplyAction>>&& result, NColumnShard::TCounterGuard&& scanCounter, const ui32 sourceIdx,
+        const ui64 sourceId, const ui64 blobBytes, const ui64 rawBytes, const ui32 filteredRows, const ui32 totalRows,
+        const ui64 totalReservedBytes, const ui64 cacheBytes, const ui64 bsBytes, const ui64 tierBytes, TString&& readTraceDetails,
+        THashMap<TString, TIndexCheckStats>&& indexChecks, const bool hasScanReadStats)
+        : Result(std::move(result))
+        , ScanCounter(std::move(scanCounter))
+        , SourceIdx(sourceIdx)
+        , SourceId(sourceId)
+        , BlobBytes(blobBytes)
+        , RawBytes(rawBytes)
+        , FilteredRows(filteredRows)
+        , TotalRows(totalRows)
+        , TotalReservedBytes(totalReservedBytes)
+        , CacheBytes(cacheBytes)
+        , BsBytes(bsBytes)
+        , TierBytes(tierBytes)
+        , ReadTraceDetails(std::move(readTraceDetails))
+        , IndexChecks(std::move(indexChecks))
+        , HasScanReadStats(hasScanReadStats)
+    {
+    }
+};
 
 class TComputeShardingPolicy {
 private:
@@ -70,6 +114,9 @@ private:
     const NConveyorComposite::TProcessGuard ConveyorProcessGuard;
     std::shared_ptr<NArrow::NSSA::IColumnResolver> Resolver;
     std::shared_ptr<NLWTrace::TOrbit> ScanOrbit;
+    mutable TMutex EmptyApplyMutex;
+    std::deque<std::unique_ptr<TEmptyApplyItem>> EmptyApplies;
+    bool EmptyApplyFlushScheduled = false;
 
 public:
     const NArrow::NSSA::IColumnResolver* GetResolver() const {
@@ -80,6 +127,14 @@ public:
     bool SendTaskToExecute(const std::shared_ptr<NConveyorComposite::ITask>& task) const {
         return ConveyorProcessGuard.SendTaskToExecute(task);
     }
+
+    // Bloom/filter-denied sources finish on conveyor in waves. Batch their apply
+    // so the scan actor does one ContinueProcessing per chunk instead of per source.
+    static constexpr ui32 EmptyApplyBatchLimit = 64;
+
+    void EnqueueEmptyApply(std::unique_ptr<TEmptyApplyItem>&& item);
+    std::vector<std::unique_ptr<TEmptyApplyItem>> ExtractEmptyApplies(const ui32 maxCount);
+    bool HasPendingEmptyApplies() const;
 
     template <class T>
     std::shared_ptr<const T> GetReadMetadataPtrVerifiedAs() const {

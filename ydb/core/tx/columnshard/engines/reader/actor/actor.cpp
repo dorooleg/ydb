@@ -100,9 +100,9 @@ void TColumnShardScan::Bootstrap(const TActorContext& ctx) {
     Y_ABORT_UNLESS(!ScanIterator);
     ResourceSubscribeActorId = ctx.Register(new NResourceBroker::NSubscribe::TActor(TabletId, SelfId()));
 
-    std::shared_ptr<TReadContext> context = std::make_shared<TReadContext>(StoragesManager, DataAccessorsManager, ColumnDataManager,
-        ScanCountersPool, ReadMetadataRange, SelfId(), ResourceSubscribeActorId, ComputeShardingPolicy, ScanId, CPULimits, ScanOrbit);
-    ScanIterator = ReadMetadataRange->StartScan(context);
+    ReadContext = std::make_shared<TReadContext>(StoragesManager, DataAccessorsManager, ColumnDataManager, ScanCountersPool, ReadMetadataRange,
+        SelfId(), ResourceSubscribeActorId, ComputeShardingPolicy, ScanId, CPULimits, ScanOrbit);
+    ScanIterator = ReadMetadataRange->StartScan(ReadContext);
     auto startResult = ScanIterator->Start();
     StartInstant = TMonotonic::Now();
     if (!startResult) {
@@ -123,32 +123,33 @@ void TColumnShardScan::Bootstrap(const TActorContext& ctx) {
     }
 }
 
-void TColumnShardScan::HandleScan(NColumnShard::TEvPrivate::TEvTaskProcessedResult::TPtr& ev) {
+void TColumnShardScan::ProcessAppliedItem(TConclusion<std::shared_ptr<IApplyAction>>& result, const ui64 sourceId, const ui64 blobBytes,
+    const ui64 rawBytes, const ui32 filteredRows, const ui32 totalRows, const ui64 totalReservedBytes, const ui64 cacheBytes,
+    const ui64 bsBytes, const ui64 tierBytes, const TString& readTraceDetails, const THashMap<TString, TIndexCheckStats>& indexChecks,
+    const bool hasScanReadStats) {
     TDuration delta = TDuration::Zero();
     if (ChunksLimiter.HasMore()) {
         delta = TInstant::Now() - StartWaitTime;
         WaitTime += delta;
     }
     StartWaitTime = TInstant::Now();
-    TotalBlobBytes += ev->Get()->GetBlobBytes();
-    TotalRawBytes += ev->Get()->GetRawBytes();
-    TotalRowsCount += ev->Get()->GetFilteredRows();
-    if (ev->Get()->GetHasScanReadStats()) {
-        TotalCacheBytes += ev->Get()->GetCacheBytes();
-        TotalBsBytes += ev->Get()->GetBsBytes();
-        TotalTierBytes += ev->Get()->GetTierBytes();
-        for (const auto& [name, stats] : ev->Get()->GetIndexChecks()) {
+    TotalBlobBytes += blobBytes;
+    TotalRawBytes += rawBytes;
+    TotalRowsCount += filteredRows;
+    if (hasScanReadStats) {
+        TotalCacheBytes += cacheBytes;
+        TotalBsBytes += bsBytes;
+        TotalTierBytes += tierBytes;
+        for (const auto& [name, stats] : indexChecks) {
             TotalIndexChecks[name].Merge(stats);
         }
     }
-    if (ev->Get()->GetSourceId() > 0) {
+    if (sourceId > 0) {
         ++TotalPartialSourcesCount;
-        LWTRACK(ScanFinishSource, *ScanOrbit, PathId, TabletId, TxId, ScanId, (ui64)ev->Get()->GetSourceId(), ev->Get()->GetBlobBytes(),
-            ev->Get()->GetRawBytes(), ev->Get()->GetCacheBytes(), ev->Get()->GetBsBytes(), ev->Get()->GetTierBytes(),
-            ev->Get()->GetFilteredRows(), ev->Get()->GetTotalRows(), ev->Get()->GetTotalReservedBytes(), ev->Get()->GetReadTraceDetails());
+        LWTRACK(ScanFinishSource, *ScanOrbit, PathId, TabletId, TxId, ScanId, sourceId, blobBytes, rawBytes, cacheBytes, bsBytes, tierBytes,
+            filteredRows, totalRows, totalReservedBytes, readTraceDetails);
     }
     auto g = Stats->MakeGuard("task_result", IS_INFO_LOG_ENABLED(NKikimrServices::TX_COLUMNSHARD_SCAN));
-    auto& result = ev->Get()->MutableResult();
     if (result.IsFail()) {
         YDB_LOG_ERROR_COMP(NKikimrServices::TX_COLUMNSHARD_SCAN, "",
             {"event", "TEvTaskProcessedResult"},
@@ -158,10 +159,50 @@ void TColumnShardScan::HandleScan(NColumnShard::TEvPrivate::TEvTaskProcessedResu
     } else {
         YDB_LOG_DEBUG_COMP(NKikimrServices::TX_COLUMNSHARD_SCAN, "",
             {"event", "TEvTaskProcessedResult"});
-        if (!ScanIterator->Finished()) {
+        if (ScanIterator && !ScanIterator->Finished()) {
             ScanIterator->Apply(result.GetResult());
         }
     }
+}
+
+void TColumnShardScan::FlushEmptyApplies() {
+    if (!ReadContext) {
+        return;
+    }
+    auto items = ReadContext->ExtractEmptyApplies(TReadContext::EmptyApplyBatchLimit);
+    if (items.empty()) {
+        return;
+    }
+    YDB_LOG_DEBUG_COMP(NKikimrServices::TX_COLUMNSHARD_SCAN, "",
+        {"event", "FlushEmptyApplies"},
+        {"count", items.size()});
+    for (auto& item : items) {
+        ProcessAppliedItem(item->Result, item->SourceId, item->BlobBytes, item->RawBytes, item->FilteredRows, item->TotalRows,
+            item->TotalReservedBytes, item->CacheBytes, item->BsBytes, item->TierBytes, item->ReadTraceDetails, item->IndexChecks,
+            item->HasScanReadStats);
+        if (Finished) {
+            return;
+        }
+    }
+    if (ReadContext->HasPendingEmptyApplies()) {
+        Send(SelfId(), new NColumnShard::TEvPrivate::TEvFlushEmptySourceApplies);
+    }
+}
+
+void TColumnShardScan::HandleScan(NColumnShard::TEvPrivate::TEvTaskProcessedResult::TPtr& ev) {
+    FlushEmptyApplies();
+    if (Finished) {
+        return;
+    }
+    ProcessAppliedItem(ev->Get()->MutableResult(), ev->Get()->GetSourceId(), ev->Get()->GetBlobBytes(), ev->Get()->GetRawBytes(),
+        ev->Get()->GetFilteredRows(), ev->Get()->GetTotalRows(), ev->Get()->GetTotalReservedBytes(), ev->Get()->GetCacheBytes(),
+        ev->Get()->GetBsBytes(), ev->Get()->GetTierBytes(), ev->Get()->GetReadTraceDetails(), ev->Get()->GetIndexChecks(),
+        ev->Get()->GetHasScanReadStats());
+    ContinueProcessing();
+}
+
+void TColumnShardScan::HandleScan(NColumnShard::TEvPrivate::TEvFlushEmptySourceApplies::TPtr& /*ev*/) {
+    FlushEmptyApplies();
     ContinueProcessing();
 }
 

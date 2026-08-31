@@ -64,6 +64,7 @@ struct TEvPrivate {
         EvExportSaveCursor,
 
         EvTaskProcessedResult,
+        EvFlushEmptySourceApplies,
         EvPingSnapshotsUsage,
         EvWritePortionResult,
         EvStartCompaction,
@@ -296,6 +297,8 @@ struct TEvPrivate {
         {
         }
     };
+
+    class TEvFlushEmptySourceApplies: public NActors::TEventLocal<TEvFlushEmptySourceApplies, EvFlushEmptySourceApplies> {};
 
     struct TEvTieringModified: public TEventLocal<TEvTieringModified, EvTieringModified> {};
 

@@ -22,6 +22,7 @@ private:
     TFetchingScriptCursor Cursor;
     bool FinishedFlag = false;
     ui64 CachedSourceId = 0;
+    ui32 CachedSourceIdx = 0;
     ui64 CachedBlobBytes = 0;
     ui64 CachedRawBytes = 0;
     ui32 CachedFilteredRows = 0;
@@ -38,6 +39,7 @@ private:
 protected:
     virtual bool DoApply(IDataReader& owner) override;
     virtual TConclusion<bool> DoExecuteImpl() override;
+    virtual bool DoTryEnqueueEmptyApply(const std::shared_ptr<IDataTasksProcessor::ITask>& taskPtr, NColumnShard::TCounterGuard& guard) override;
 
 public:
     virtual TString GetTaskClassIdentifier() const override {

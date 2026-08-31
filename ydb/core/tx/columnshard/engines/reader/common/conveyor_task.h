@@ -92,6 +92,9 @@ public:
     protected:
         virtual void DoExecute(const std::shared_ptr<NConveyor::ITask>& taskPtr) override final;
         virtual void DoOnCannotExecute(const TString& reason) override;
+        virtual bool DoTryEnqueueEmptyApply(const std::shared_ptr<ITask>& /*taskPtr*/, NColumnShard::TCounterGuard& /*guard*/) {
+            return false;
+        }
 
     public:
         using TPtr = std::shared_ptr<ITask>;

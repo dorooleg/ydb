@@ -4,7 +4,10 @@
 
 #include <ydb/core/tx/columnshard/engines/filter.h>
 #include <ydb/core/tx/columnshard/engines/portions/written.h>
+#include <ydb/core/tx/columnshard/engines/reader/abstract/read_context.h>
+#include <ydb/core/tx/columnshard/engines/reader/common/conveyor_task.h>
 #include <ydb/core/tx/columnshard/engines/reader/tracing/data_source_probes.h>
+#include <ydb/core/tx/columnshard/engines/reader/tracing/scan_stats.h>
 #include <ydb/core/tx/columnshard/engines/reader/trivial_reader/duplicates/events.h>
 #include <ydb/core/tx/conveyor_composite/usage/service.h>
 #include <ydb/core/tx/limiter/grouped_memory/usage/service.h>
@@ -457,11 +460,12 @@ TConclusion<bool> TPrepareResultStep::DoExecuteInplace(
         context->GetCommonContext()->GetCounters().OnSourceFinished(source->GetRecordsCount(), sSource->GetUsedRawBytes(), 0);
         const ui64 blobBytes = source->GetTotalBytesRead();
         const auto readStats = source->SnapshotReadTraceStats();
-        NActors::TActivationContext::AsActorContext().Send(context->GetCommonContext()->GetScanActorId(),
-            new NColumnShard::TEvPrivate::TEvTaskProcessedResult(std::make_shared<TApplySourceResult>(source, step),
-                source->GetContext()->GetCommonContext()->GetCounters().GetResultsForSourceGuard(), source->GetDeprecatedPortionId(), blobBytes,
-                sSource->GetUsedRawBytes(), 0, source->GetRecordsCount(), source->GetReservedMemory(), readStats.CacheBytes, readStats.BsBytes,
-                readStats.TierBytes, readStats.ToDetailsJson()));
+        context->GetCommonContext()->EnqueueEmptyApply(std::make_unique<TEmptyApplyItem>(
+            std::shared_ptr<IApplyAction>(std::make_shared<TApplySourceResult>(source, step)),
+            source->GetContext()->GetCommonContext()->GetCounters().GetResultsForSourceGuard(), source->GetSourceIdx(),
+            source->GetDeprecatedPortionId(), blobBytes, sSource->GetUsedRawBytes(), 0, source->GetRecordsCount(),
+            source->GetReservedMemory(), readStats.CacheBytes, readStats.BsBytes, readStats.TierBytes, readStats.ToDetailsJson(),
+            THashMap<TString, TIndexCheckStats>(readStats.Indexes), true));
         return false;
     }
     source->MutableAs<IDataSource>()->InitFetchingPlan(plan);

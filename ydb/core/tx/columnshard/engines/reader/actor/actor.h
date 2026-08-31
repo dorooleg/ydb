@@ -64,12 +64,14 @@ private:
             hFunc(TEvents::TEvUndelivered, HandleScan);
             hFunc(TEvents::TEvWakeup, HandleScan);
             hFunc(NColumnShard::TEvPrivate::TEvTaskProcessedResult, HandleScan);
+            hFunc(NColumnShard::TEvPrivate::TEvFlushEmptySourceApplies, HandleScan);
             default:
                 AFL_VERIFY(false)("unexpected_event", ev->GetTypeName());
         }
     }
 
     void HandleScan(NColumnShard::TEvPrivate::TEvTaskProcessedResult::TPtr& ev);
+    void HandleScan(NColumnShard::TEvPrivate::TEvFlushEmptySourceApplies::TPtr& ev);
 
     void HandleScan(NKqp::TEvKqpCompute::TEvScanDataAck::TPtr& ev);
 
@@ -89,6 +91,12 @@ private:
 
 private:
     void CheckHanging(const bool logging = false) const;
+
+    void ProcessAppliedItem(TConclusion<std::shared_ptr<IApplyAction>>& result, const ui64 sourceId, const ui64 blobBytes, const ui64 rawBytes,
+        const ui32 filteredRows, const ui32 totalRows, const ui64 totalReservedBytes, const ui64 cacheBytes, const ui64 bsBytes,
+        const ui64 tierBytes, const TString& readTraceDetails, const THashMap<TString, TIndexCheckStats>& indexChecks,
+        const bool hasScanReadStats);
+    void FlushEmptyApplies();
 
     void MakeResult(size_t reserveRows = 0);
 
@@ -149,6 +157,7 @@ private:
     const NConveyorComposite::TCPULimitsConfig CPULimits;
 
     TReadMetadataBase::TConstPtr ReadMetadataRange;
+    std::shared_ptr<TReadContext> ReadContext;
     std::unique_ptr<TScanIteratorBase> ScanIterator;
 
     std::vector<std::pair<TString, NScheme::TTypeInfo>> KeyYqlSchema;
