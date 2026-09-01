@@ -128,7 +128,7 @@ public:
         AverageTaskDuration.Add(result.GetDuration());
         InProgressTasksCount.Dec();
         TotalCPU += result.GetDuration();
-        if (!Pessimized && TotalCPU >= PessimizationCpuLimit) {
+        if (PessimizationCpuLimit && !Pessimized && TotalCPU >= PessimizationCpuLimit) {
             Pessimized = true;
             return true;
         }

@@ -13,6 +13,10 @@ enum class ESpecialTaskCategory {
     Deduplication = 4 /* "deduplication" */
 };
 
+inline bool UsesProcessPessimization(const ESpecialTaskCategory category) {
+    return category == ESpecialTaskCategory::Scan;
+}
+
 class TProcessGuard: TNonCopyable {
 private:
     const ESpecialTaskCategory Category;

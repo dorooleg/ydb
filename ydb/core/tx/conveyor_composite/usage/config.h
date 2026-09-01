@@ -136,6 +136,8 @@ private:
     YDB_READONLY_DEF(std::vector<TCategory>, Categories);
     YDB_READONLY_DEF(std::vector<TWorkersPool>, WorkerPools);
     YDB_READONLY_FLAG(Enabled, true);
+    // Scan-only: after a scan process spends this much CPU it is limited to
+    // PessimizedProcessWorkersLimit workers. Insert/compaction/other categories ignore this.
     YDB_READONLY(TDuration, ProcessPessimizationCpuLimit, TDuration::Seconds(35));
     YDB_READONLY(ui32, PessimizedProcessWorkersLimit, 8);
 

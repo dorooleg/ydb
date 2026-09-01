@@ -614,4 +614,69 @@ Y_UNIT_TEST_SUITE(CompositeConveyorTests) {
         actorSystem.Stop();
         actorSystem.Cleanup();
     }
+
+    Y_UNIT_TEST(InsertProcessIsNotPessimized) {
+        const ui64 threadsCount = 64;
+        THolder<NActors::TActorSystemSetup> actorSystemSetup = NKikimr::BuildActorSystemSetup(threadsCount, 1);
+        NActors::TActorSystem actorSystem(actorSystemSetup);
+        actorSystem.Start();
+        auto counters = MakeIntrusive<::NMonitoring::TDynamicCounters>();
+        const TString textProto = R"(
+            ProcessPessimizationCpuLimitUs: 50000
+            PessimizedProcessWorkersLimit: 8
+            WorkerPools {
+                WorkersCount: 16
+                MaxBatchSize: 1
+                Links {
+                    Category: "insert"
+                    Weight: 1
+                }
+            }
+            Categories {
+                Name: "insert"
+            }
+        )";
+        NKikimrConfig::TCompositeConveyorConfig protoConfig;
+        AFL_VERIFY(google::protobuf::TextFormat::ParseFromString(textProto, &protoConfig));
+        NConfig::TConfig config = NConfig::TConfig::BuildFromProto(protoConfig).DetachResult();
+        const auto actorId = actorSystem.Register(CreateService(config, counters));
+
+        auto waitCounter = [](TAtomicCounter& counter, const i64 expected) {
+            const TMonotonic deadline = TMonotonic::Now() + TDuration::Seconds(30);
+            while (counter.Val() < expected) {
+                UNIT_ASSERT_C(TMonotonic::Now() < deadline, "timeout waiting for conveyor tasks");
+                Sleep(TDuration::MilliSeconds(10));
+            }
+            UNIT_ASSERT_VALUES_EQUAL(counter.Val(), expected);
+        };
+
+        {
+            TAtomicCounter warmupDone;
+            const ui32 warmupTasks = 4;
+            for (ui32 i = 0; i < warmupTasks; ++i) {
+                actorSystem.Send(actorId, new TEvExecution::TEvNewTask(
+                    std::make_shared<TSleepTask>(TDuration::MilliSeconds(20), warmupDone), ESpecialTaskCategory::Insert, 0));
+            }
+            waitCounter(warmupDone, warmupTasks);
+        }
+
+        TAtomicCounter recordedDone;
+        std::array<TAtomicCounter, 16> perWorker;
+        const ui32 recordedTasks = 32;
+        for (ui32 i = 0; i < recordedTasks; ++i) {
+            actorSystem.Send(actorId, new TEvExecution::TEvNewTask(
+                std::make_shared<TWorkerRecordingTask>(TDuration::MilliSeconds(2), recordedDone, &perWorker),
+                ESpecialTaskCategory::Insert, 0));
+        }
+        waitCounter(recordedDone, recordedTasks);
+
+        ui32 unrestrictedCount = 0;
+        for (ui32 i = 8; i < perWorker.size(); ++i) {
+            unrestrictedCount += perWorker[i].Val();
+        }
+        UNIT_ASSERT_C(unrestrictedCount > 0, "insert must keep using workers beyond the scan pessimization limit");
+
+        actorSystem.Stop();
+        actorSystem.Cleanup();
+    }
 }

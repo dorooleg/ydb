@@ -31,8 +31,10 @@ public:
         , Counters(counters)
     {
         for (auto&& i : GetEnumAllValues<ESpecialTaskCategory>()) {
+            const TDuration pessimizationCpuLimit =
+                UsesProcessPessimization(i) ? Config.GetProcessPessimizationCpuLimit() : TDuration::Zero();
             Categories.emplace_back(std::make_shared<TProcessCategory>(
-                Config.GetCategoryConfig(i), Counters, Config.GetProcessPessimizationCpuLimit()));
+                Config.GetCategoryConfig(i), Counters, pessimizationCpuLimit));
         }
         for (auto&& i : Config.GetWorkerPools()) {
             WorkerPools.emplace_back(std::make_shared<TWorkersPool>(i.GetName(), distributorActorId, i,
