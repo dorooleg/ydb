@@ -114,10 +114,10 @@ bool TStepAction::DoTryEnqueueEmptyApply(const std::shared_ptr<IDataTasksProcess
         return false;
     }
     auto indexChecks = GetIndexChecks();
-    Source->GetContext()->GetCommonContext()->EnqueueEmptyApply(std::make_unique<TEmptyApplyItem>(
-        std::shared_ptr<IApplyAction>(taskPtr), std::move(guard), CachedSourceIdx, CachedSourceId, GetBlobBytes(), GetRawBytes(),
-        GetFilteredRows(), GetTotalRows(), GetTotalReservedBytes(), GetReadCacheBytes(), GetReadBsBytes(), GetReadTierBytes(),
-        TString(GetReadTraceDetails()), std::move(indexChecks), HasScanReadStats()));
+    Source->GetContext()->GetCommonContext()->EnqueueEmptyApply(
+        std::make_unique<TEmptyApplyItem>(std::shared_ptr<IApplyAction>(taskPtr), std::move(guard), CachedSourceIdx, CachedSourceId,
+            GetBlobBytes(), GetRawBytes(), GetFilteredRows(), GetTotalRows(), GetTotalReservedBytes(), GetReadCacheBytes(), GetReadBsBytes(),
+            GetReadTierBytes(), TString(GetReadTraceDetails()), std::move(indexChecks), HasScanReadStats()));
     return true;
 }
 
@@ -160,16 +160,18 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
     const auto& scanOrbit = source->GetContext()->GetCommonContext()->GetScanOrbit();
     const bool tracingEnabled = NLWTrace::HasShuttles(source->GetDataSourceOrbit()) || (scanOrbit && NLWTrace::HasShuttles(*scanOrbit)) ||
                                 LWPROBE_ENABLED(ProgramConst) || LWPROBE_ENABLED(ProgramCalculation) || LWPROBE_ENABLED(ProgramProjection) ||
-                                LWPROBE_ENABLED(ProgramFilter) || LWPROBE_ENABLED(ProgramAggregation) || LWPROBE_ENABLED(ProgramFetchOriginalData) ||
-                                LWPROBE_ENABLED(ProgramAssembleOriginalData) || LWPROBE_ENABLED(ProgramCheckIndexData) ||
-                                LWPROBE_ENABLED(ProgramCheckHeaderData) || LWPROBE_ENABLED(ProgramStreamLogic) || LWPROBE_ENABLED(ProgramReserveMemory);
+                                LWPROBE_ENABLED(ProgramFilter) || LWPROBE_ENABLED(ProgramAggregation) ||
+                                LWPROBE_ENABLED(ProgramFetchOriginalData) || LWPROBE_ENABLED(ProgramAssembleOriginalData) ||
+                                LWPROBE_ENABLED(ProgramCheckIndexData) || LWPROBE_ENABLED(ProgramCheckHeaderData) ||
+                                LWPROBE_ENABLED(ProgramStreamLogic) || LWPROBE_ENABLED(ProgramReserveMemory);
     const TString inBackgroundResult = ToString(NArrow::NSSA::IResourceProcessor::EExecutionResult::InBackground);
     if (!tracingEnabled) {
-        if (processor->GetProcessorType() == NArrow::NSSA::EProcessorType::FetchOriginalData && source->HasPendingFetchOriginalDataProbe()) {
-            source->UpdatePendingFetchOriginalDataExecution(executionDurationMs, currentExecutionResult);
+        if (processor->GetProcessorType() == NArrow::NSSA::EProcessorType::FetchOriginalData &&
+            source->UpdatePendingFetchOriginalDataExecution(executionDurationMs, currentExecutionResult, nodeId)) {
             if (currentExecutionResult != inBackgroundResult) {
-                source->ExtractPendingFetchOriginalDataProbe();
-                source->ExtractReadIoBytes();
+                if (source->ExtractPendingFetchOriginalDataProbe(nodeId)) {
+                    source->ExtractReadIoBytes();
+                }
             }
         }
         return;
@@ -251,8 +253,7 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
 
 #define PROGRAM_PROBE_ARGS                                                                                                            \
     source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(), source->GetDeprecatedPortionId(), \
-        step.GetStepIndex(), tracingName, nodeId, finishDurationMs, executionDurationMs, source->GetConveyorQueueWaitDuration(),     \
-        filteredRows
+        step.GetStepIndex(), tracingName, nodeId, finishDurationMs, executionDurationMs, source->GetConveyorQueueWaitDuration(), filteredRows
 #define PROGRAM_PROBE_RESERVED reservedMemory
 #define PROGRAM_PROBE_TAIL tracingExecutionResult, details
     switch (processorType) {
@@ -292,10 +293,9 @@ void TProgramStep::ReportTracing(const std::shared_ptr<IDataSource>& source, con
                     source->AddBytesRead(blobBytes);
                 }
             }
-            if (source->HasPendingFetchOriginalDataProbe()) {
-                source->UpdatePendingFetchOriginalDataExecution(executionDurationMs, tracingExecutionResult);
+            if (source->UpdatePendingFetchOriginalDataExecution(executionDurationMs, tracingExecutionResult, nodeId)) {
                 if (currentExecutionResult != ToString(NArrow::NSSA::IResourceProcessor::EExecutionResult::InBackground)) {
-                    FlushPendingFetchOriginalData(source, finishDurationMs);
+                    FlushPendingFetchOriginalData(source, finishDurationMs, nodeId);
                 }
             }
         } break;
@@ -343,8 +343,9 @@ void TProgramStep::PreparePendingFetchOriginalData(const std::shared_ptr<IDataSo
     source->SetPendingFetchOriginalDataProbe(std::move(state));
 }
 
-void TProgramStep::FlushPendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const TDuration durationMs) const {
-    auto pending = source->ExtractPendingFetchOriginalDataProbe();
+void TProgramStep::FlushPendingFetchOriginalData(
+    const std::shared_ptr<IDataSource>& source, const TDuration durationMs, const std::optional<ui32> nodeId) const {
+    auto pending = source->ExtractPendingFetchOriginalDataProbe(nodeId);
     if (!pending) {
         return;
     }

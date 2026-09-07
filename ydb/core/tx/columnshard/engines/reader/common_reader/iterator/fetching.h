@@ -13,6 +13,8 @@
 
 #include <util/datetime/base.h>
 
+#include <optional>
+
 namespace NKikimr::NOlap::NReader::NCommon {
 
 class TStepAction: public IDataTasksProcessor::ITask {
@@ -115,7 +117,8 @@ private:
         const ui64 reservedMemory) const;
     void PreparePendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const ui32 nodeId, const TString& currentCategoryName,
         const std::shared_ptr<NArrow::NSSA::IResourceProcessor>& processor, const ui64 reservedMemory) const;
-    void FlushPendingFetchOriginalData(const std::shared_ptr<IDataSource>& source, const TDuration durationMs) const;
+    void FlushPendingFetchOriginalData(
+        const std::shared_ptr<IDataSource>& source, const TDuration durationMs, const std::optional<ui32> nodeId = std::nullopt) const;
 
 public:
     virtual TConclusion<bool> DoExecuteInplace(const std::shared_ptr<IDataSource>& source, const TFetchingScriptCursor& step) const override;

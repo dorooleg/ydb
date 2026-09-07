@@ -25,6 +25,7 @@
 #include <util/generic/vector.h>
 #include <util/string/join.h>
 #include <util/string/split.h>
+#include <util/system/mutex.h>
 
 #include <algorithm>
 #include <atomic>
@@ -232,14 +233,17 @@ protected:
     TMonotonic SourceCreatedTimestamp;
     TDuration TotalExecutionDuration;
     ui64 TotalBytesRead = 0;
-    std::atomic<ui64> ReadCacheBytes{0};
-    std::atomic<ui64> ReadBsBytes{0};
-    std::atomic<ui64> ReadTierBytes{0};
-    std::atomic<ui64> TotalCacheBytes{0};
-    std::atomic<ui64> TotalBsBytes{0};
-    std::atomic<ui64> TotalTierBytes{0};
+    std::atomic<ui64> ReadCacheBytes{ 0 };
+    std::atomic<ui64> ReadBsBytes{ 0 };
+    std::atomic<ui64> ReadTierBytes{ 0 };
+    std::atomic<ui64> TotalCacheBytes{ 0 };
+    std::atomic<ui64> TotalBsBytes{ 0 };
+    std::atomic<ui64> TotalTierBytes{ 0 };
     THashMap<TString, TIndexCheckStats> IndexChecks;
     THashSet<TString> ReadStorageIds;
+    // Continuation may extract this probe while the original Execute() frame is still in
+    // ReportTracing (issue #49169). TString fields are not safe to mutate without a lock.
+    TMutex PendingFetchOriginalDataProbeLock;
     std::optional<TFetchOriginalDataProbeState> PendingFetchOriginalDataProbe;
     std::unique_ptr<TFetchedResult> StageResult;
     virtual ui32 GetRecordsCountVirtual() const;
@@ -353,20 +357,29 @@ public:
     }
 
     void SetPendingFetchOriginalDataProbe(TFetchOriginalDataProbeState&& state) {
+        TGuard<TMutex> g(PendingFetchOriginalDataProbeLock);
         PendingFetchOriginalDataProbe = std::move(state);
     }
 
-    bool HasPendingFetchOriginalDataProbe() const {
-        return PendingFetchOriginalDataProbe.has_value();
-    }
-
-    void UpdatePendingFetchOriginalDataExecution(const TDuration executionDuration, const TString& executionResult) {
-        AFL_VERIFY(PendingFetchOriginalDataProbe);
+    // Returns false if a continuation already extracted this probe or replaced it with another node.
+    bool UpdatePendingFetchOriginalDataExecution(const TDuration executionDuration, const TString& executionResult, const ui32 nodeId) {
+        TGuard<TMutex> g(PendingFetchOriginalDataProbeLock);
+        if (!PendingFetchOriginalDataProbe || PendingFetchOriginalDataProbe->NodeId != nodeId) {
+            return false;
+        }
         PendingFetchOriginalDataProbe->ExecutionDuration = executionDuration;
         PendingFetchOriginalDataProbe->ExecutionResult = executionResult;
+        return true;
     }
 
-    std::optional<TFetchOriginalDataProbeState> ExtractPendingFetchOriginalDataProbe() {
+    std::optional<TFetchOriginalDataProbeState> ExtractPendingFetchOriginalDataProbe(const std::optional<ui32> nodeId = std::nullopt) {
+        TGuard<TMutex> g(PendingFetchOriginalDataProbeLock);
+        if (!PendingFetchOriginalDataProbe) {
+            return std::nullopt;
+        }
+        if (nodeId && PendingFetchOriginalDataProbe->NodeId != *nodeId) {
+            return std::nullopt;
+        }
         auto result = std::move(PendingFetchOriginalDataProbe);
         PendingFetchOriginalDataProbe.reset();
         return result;
