@@ -259,6 +259,10 @@ private:
 
     std::shared_ptr<NIndexes::TSkipIndex> SelectOptimalIndex(
         const std::vector<std::shared_ptr<NIndexes::TSkipIndex>>& indexes, const NArrow::NSSA::TIndexCheckOperation& op) const;
+    // Resolves the index meta (nullptr if there is no suitable index) for every check operation of the fetch context.
+    THashMap<TCheckIndexContext, std::shared_ptr<NIndexes::IIndexMeta>> SelectIndexesForFetch(const TFetchIndexContext& indexContext) const;
+    // Blob bytes that have to be read from storage to fetch the indexes selected for the given contexts (inplace data is already in memory).
+    ui64 GetIndexesBlobBytesForFetch(const THashMap<ui32, TFetchIndexContext>& indexes) const;
 
     virtual TConclusion<bool> DoStartFetchImpl(
         const NArrow::NSSA::TProcessorContext& context, const std::vector<std::shared_ptr<NCommon::IKernelFetchLogic>>& fetchersExt) override;

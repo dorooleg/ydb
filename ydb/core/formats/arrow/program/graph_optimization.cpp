@@ -226,6 +226,19 @@ TConclusion<bool> TGraph::OptimizeMergeFetching(TGraphNode* baseNode) {
         }
     }
     bool changed = false;
+    const auto addReserveMemoryNode = [&](TGraphNode* nodeFetch) {
+        std::shared_ptr<IMemoryCalculationPolicy> policy;
+        if (baseNode->Is(EProcessorType::Filter)) {
+            policy = std::make_shared<TFilterCalculationPolicy>();
+        } else if (baseNode->Is(EProcessorType::Projection)) {
+            policy = std::make_shared<TFetchingCalculationPolicy>();
+        }
+        auto reserveMemory = std::make_shared<TReserveMemoryProcessor>(*nodeFetch->GetProcessorAs<TOriginalColumnDataProcessor>(), policy);
+        auto nodeReserve = AddNode(reserveMemory);
+        nodeReserve->GetProcessor()->AddOutput(0);
+        nodeFetch->GetProcessor()->AddInput(0);
+        AddEdge(nodeReserve.get(), nodeFetch, 0);
+    };
     TGraphNode* nodeFetch = nullptr;
     if (dataAddresses.size() > 1) {
         THashSet<ui32> columnIds;
@@ -251,17 +264,7 @@ TConclusion<bool> TGraph::OptimizeMergeFetching(TGraphNode* baseNode) {
         nodeFetch = dataAddresses.front();
     }
     if (nodeFetch) {
-        std::shared_ptr<IMemoryCalculationPolicy> policy;
-        if (baseNode->Is(EProcessorType::Filter)) {
-            policy = std::make_shared<TFilterCalculationPolicy>();
-        } else if (baseNode->Is(EProcessorType::Projection)) {
-            policy = std::make_shared<TFetchingCalculationPolicy>();
-        }
-        auto reserveMemory = std::make_shared<TReserveMemoryProcessor>(*nodeFetch->GetProcessorAs<TOriginalColumnDataProcessor>(), policy);
-        auto nodeReserve = AddNode(reserveMemory);
-        nodeReserve->GetProcessor()->AddOutput(0);
-        nodeFetch->GetProcessor()->AddInput(0);
-        AddEdge(nodeReserve.get(), nodeFetch, 0);
+        addReserveMemoryNode(nodeFetch);
     }
 
     if (indexes.size() + headers.size() > 1) {
@@ -296,7 +299,12 @@ TConclusion<bool> TGraph::OptimizeMergeFetching(TGraphNode* baseNode) {
             }
             RemoveNode(i->GetIdentifier());
         }
+        if (indexes.size()) {
+            addReserveMemoryNode(nodeFetch.get());
+        }
         changed = true;
+    } else if (indexes.size() == 1 && headers.empty()) {
+        addReserveMemoryNode(indexes.front());
     }
     return changed;
 }

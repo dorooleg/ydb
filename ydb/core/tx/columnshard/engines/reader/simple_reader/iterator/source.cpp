@@ -226,36 +226,53 @@ TConclusion<bool> TPortionDataSource::DoStartFetchImpl(
     return true;
 }
 
+THashMap<NArrow::NSSA::IDataSource::TCheckIndexContext, std::shared_ptr<NIndexes::IIndexMeta>> TPortionDataSource::SelectIndexesForFetch(
+    const TFetchIndexContext& indexContext) const {
+    THashMap<TCheckIndexContext, std::shared_ptr<NIndexes::IIndexMeta>> result;
+    for (auto&& i : indexContext.GetOperationsBySubColumn().GetData()) {
+        NIndexes::NRequest::TOriginalDataAddress addr(indexContext.GetColumnId(), i.first);
+        for (auto&& op : i.second) {
+            TCheckIndexContext checkAddr(indexContext.GetColumnId(), i.first, op);
+            std::shared_ptr<NIndexes::IIndexMeta> indexMeta = GetStageData().GetIndexes()->FindIndexFor(addr, op);
+            if (!indexMeta) {
+                indexMeta = SelectOptimalIndex(GetSourceSchema()->GetIndexInfo().FindSkipIndexes(addr, op), op);
+            }
+            AFL_VERIFY(result.emplace(checkAddr, indexMeta).second);
+        }
+    }
+    return result;
+}
+
+ui64 TPortionDataSource::GetIndexesBlobBytesForFetch(const THashMap<ui32, TFetchIndexContext>& indexes) const {
+    std::set<ui32> indexIds;
+    for (auto&& [_, indexContext] : indexes) {
+        for (auto&& [_, indexMeta] : SelectIndexesForFetch(indexContext)) {
+            if (indexMeta) {
+                indexIds.emplace(indexMeta->GetIndexId());
+            }
+        }
+    }
+    ui64 result = 0;
+    for (const ui32 indexId : indexIds) {
+        for (const auto* chunk : GetPortionAccessor().GetIndexChunksPointers(indexId)) {
+            if (const auto* blobRange = chunk->GetBlobRangeOptional()) {
+                result += blobRange->GetSize();
+            }
+        }
+    }
+    return result;
+}
+
 TConclusion<std::vector<std::shared_ptr<NArrow::NSSA::IFetchLogic>>> TPortionDataSource::DoStartFetchIndex(
     const NArrow::NSSA::TProcessorContext& /*context*/, const TFetchIndexContext& indexContext) {
     YDB_LOG_DEBUG("",
         {"sourceIdx", GetSourceIdx()});
-    THashMap<TCheckIndexContext, std::shared_ptr<NIndexes::IIndexMeta>> indexInfo;
-    for (auto&& i : indexContext.GetOperationsBySubColumn().GetData()) {
-        NIndexes::NRequest::TOriginalDataAddress addr(indexContext.GetColumnId(), i.first);
-        for (auto&& op : i.second) {
-            auto indexMeta = MutableStageData().GetIndexes()->FindIndexFor(addr, op);
-            TCheckIndexContext checkAddr(indexContext.GetColumnId(), i.first, op);
-            if (!indexMeta) {
-                const auto indexesMeta = GetSourceSchema()->GetIndexInfo().FindSkipIndexes(addr, op);
-                if (indexesMeta.empty()) {
-                    MutableStageData().AddRemapDataToIndex(checkAddr, nullptr);
-                    continue;
-                }
-                indexMeta = SelectOptimalIndex(indexesMeta, op);
-                if (!indexMeta) {
-                    MutableStageData().AddRemapDataToIndex(checkAddr, nullptr);
-                    continue;
-                }
-            }
-            AFL_VERIFY(indexInfo.emplace(checkAddr, indexMeta).second);
-            MutableStageData().AddRemapDataToIndex(checkAddr, indexMeta);
-        }
-    }
     THashMap<ui32, THashSet<NIndexes::NRequest::TOriginalDataAddress>> addresses;
-    for (auto&& [check, index] : indexInfo) {
-        const NIndexes::NRequest::TOriginalDataAddress addr(check.GetColumnId(), check.GetSubColumnName());
-        addresses[index->GetIndexId()].emplace(addr);
+    for (auto&& [check, index] : SelectIndexesForFetch(indexContext)) {
+        MutableStageData().AddRemapDataToIndex(check, index);
+        if (index) {
+            addresses[index->GetIndexId()].emplace(NIndexes::NRequest::TOriginalDataAddress(check.GetColumnId(), check.GetSubColumnName()));
+        }
     }
     std::vector<std::shared_ptr<NArrow::NSSA::IFetchLogic>> result;
     for (auto&& i : addresses) {
@@ -476,7 +493,7 @@ TPortionDataSource::TPortionDataSource(
 }
 
 TConclusion<bool> TPortionDataSource::DoStartReserveMemory(const NArrow::NSSA::TProcessorContext& context,
-    const THashMap<ui32, IDataSource::TDataAddress>& columns, const THashMap<ui32, IDataSource::TFetchIndexContext>& /*indexes*/,
+    const THashMap<ui32, IDataSource::TDataAddress>& columns, const THashMap<ui32, IDataSource::TFetchIndexContext>& indexes,
     const THashMap<ui32, IDataSource::TFetchHeaderContext>& /*headers*/, const std::shared_ptr<NArrow::NSSA::IMemoryCalculationPolicy>& policy) {
     class TEntitySize {
     private:
@@ -509,8 +526,10 @@ TConclusion<bool> TPortionDataSource::DoStartReserveMemory(const NArrow::NSSA::T
 
     auto source = context.GetDataSourceVerifiedAs<NCommon::IDataSource>();
 
-    const ui64 sizeToReserve = policy->GetReserveMemorySize(
-        result.GetBlobsSize(), result.GetRawSize(), GetContext()->GetReadMetadata()->GetLimitRobustOptional(), GetRecordsCount());
+    // Index data is not affected by the limit/records ratio: skip-index blobs are read completely, so reserve their full size.
+    const ui64 sizeToReserve = policy->GetReserveMemorySize(result.GetBlobsSize(), result.GetRawSize(),
+                                   GetContext()->GetReadMetadata()->GetLimitRobustOptional(), GetRecordsCount()) +
+                               GetIndexesBlobBytesForFetch(indexes);
 
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, AddEvent("mr"));
     return NCommon::StartProgramStepReserveMemory(source, sizeToReserve, policy->GetStage());
