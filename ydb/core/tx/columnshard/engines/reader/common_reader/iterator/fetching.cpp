@@ -114,11 +114,12 @@ bool TStepAction::DoTryEnqueueEmptyApply(const std::shared_ptr<IDataTasksProcess
         return false;
     }
     auto indexChecks = GetIndexChecks();
-    Source->GetContext()->GetCommonContext()->EnqueueEmptyApply(
+    // If the scan has already been stopped the item is refused and destroyed here (guard included); the caller
+    // then falls back to the regular event, which the actor system drops for the finished scan actor.
+    return Source->GetContext()->GetCommonContext()->EnqueueEmptyApply(
         std::make_unique<TEmptyApplyItem>(std::shared_ptr<IApplyAction>(taskPtr), std::move(guard), CachedSourceIdx, CachedSourceId,
             GetBlobBytes(), GetRawBytes(), GetFilteredRows(), GetTotalRows(), GetTotalReservedBytes(), GetReadCacheBytes(), GetReadBsBytes(),
             GetReadTierBytes(), TString(GetReadTraceDetails()), std::move(indexChecks), HasScanReadStats()));
-    return true;
 }
 
 void TStepAction::CacheSourceStats() {

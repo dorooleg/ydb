@@ -46,11 +46,14 @@ TReadContext::TReadContext(const std::shared_ptr<IStoragesManager>& storagesMana
     }
 }
 
-void TReadContext::EnqueueEmptyApply(std::unique_ptr<TEmptyApplyItem>&& item) {
+bool TReadContext::EnqueueEmptyApply(std::unique_ptr<TEmptyApplyItem>&& item) {
     AFL_VERIFY(item);
     bool sendFlush = false;
     {
         TGuard<TMutex> g(EmptyApplyMutex);
+        if (EmptyAppliesStopped) {
+            return false;
+        }
         EmptyApplies.emplace_back(std::move(item));
         if (!EmptyApplyFlushScheduled) {
             EmptyApplyFlushScheduled = true;
@@ -59,6 +62,25 @@ void TReadContext::EnqueueEmptyApply(std::unique_ptr<TEmptyApplyItem>&& item) {
     }
     if (sendFlush) {
         NActors::TActivationContext::Send(ScanActorId, std::make_unique<NColumnShard::TEvPrivate::TEvFlushEmptySourceApplies>());
+    }
+    return true;
+}
+
+void TReadContext::StopEmptyApplies() {
+    std::deque<std::unique_ptr<TEmptyApplyItem>> dropped;
+    {
+        TGuard<TMutex> g(EmptyApplyMutex);
+        EmptyAppliesStopped = true;
+        EmptyApplyFlushScheduled = false;
+        dropped.swap(EmptyApplies);
+    }
+    // Items are destroyed outside the lock: their destructors release sources and memory guards,
+    // which send events to the memory limiter.
+    if (dropped.size()) {
+        YDB_LOG_INFO_COMP(NKikimrServices::TX_COLUMNSHARD_SCAN, "",
+            {"event", "drop_pending_empty_applies"},
+            {"count", dropped.size()},
+            {"scanId", ScanId});
     }
 }
 

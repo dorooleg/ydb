@@ -660,6 +660,11 @@ void TColumnShardScan::Finish(const NColumnShard::TScanCounters::EStatusFinish s
         {"computeActorId", ScanComputeActorId},
         {"stats", Stats->ToJson()},
         {"iterator", (ScanIterator ? ScanIterator->DebugString(false) : "NO")});
+    if (ReadContext) {
+        // Pending empty applies reference their sources, which reference this context back: without
+        // draining here they would outlive the actor and leak together with the memory limiter guards.
+        ReadContext->StopEmptyApplies();
+    }
     PassAway();
 }
 

@@ -117,6 +117,7 @@ private:
     mutable TMutex EmptyApplyMutex;
     std::deque<std::unique_ptr<TEmptyApplyItem>> EmptyApplies;
     bool EmptyApplyFlushScheduled = false;
+    bool EmptyAppliesStopped = false;
 
 public:
     const NArrow::NSSA::IColumnResolver* GetResolver() const {
@@ -132,9 +133,16 @@ public:
     // so the scan actor does one ContinueProcessing per chunk instead of per source.
     static constexpr ui32 EmptyApplyBatchLimit = 64;
 
-    void EnqueueEmptyApply(std::unique_ptr<TEmptyApplyItem>&& item);
+    // The queue is owned by this context, while every queued item owns its source, which owns
+    // TSpecialReadContext, which owns this context again. Anything left in the queue after the scan
+    // actor is gone forms a reference cycle and leaks sources together with their grouped memory
+    // limiter guards and the process guard. Therefore the queue must be stopped (and drained) when
+    // the scan finishes, and enqueue refuses items afterwards (returns false, the item stays with the
+    // caller and is destroyed there).
+    [[nodiscard]] bool EnqueueEmptyApply(std::unique_ptr<TEmptyApplyItem>&& item);
     std::vector<std::unique_ptr<TEmptyApplyItem>> ExtractEmptyApplies(const ui32 maxCount);
     bool HasPendingEmptyApplies() const;
+    void StopEmptyApplies();
 
     template <class T>
     std::shared_ptr<const T> GetReadMetadataPtrVerifiedAs() const {
@@ -160,6 +168,7 @@ public:
 
     void Stop() {
         AbortionFlag->Inc();
+        StopEmptyApplies();
     }
 
     bool IsActive() const {

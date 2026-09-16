@@ -61,7 +61,7 @@ private:
     TAverageCalcer<TDuration> DeliveringDuration;
     std::deque<TDuration> DeliveryDurations;
     ui64 MaxBatchSize = 30;
-    ui32 PessimizedProcessWorkersLimit = 8;
+    ui32 PessimizedProcessWorkersLimit = 16;
 
     bool DrainOnWorkers(const std::vector<ui32>& workerIdxs, const bool allowPessimized);
 

@@ -460,12 +460,13 @@ TConclusion<bool> TPrepareResultStep::DoExecuteInplace(
         context->GetCommonContext()->GetCounters().OnSourceFinished(source->GetRecordsCount(), sSource->GetUsedRawBytes(), 0);
         const ui64 blobBytes = source->GetTotalBytesRead();
         const auto readStats = source->SnapshotReadTraceStats();
-        context->GetCommonContext()->EnqueueEmptyApply(std::make_unique<TEmptyApplyItem>(
+        // Refused only when the scan has already been stopped: the result is not needed anymore and is destroyed here.
+        Y_UNUSED(context->GetCommonContext()->EnqueueEmptyApply(std::make_unique<TEmptyApplyItem>(
             std::shared_ptr<IApplyAction>(std::make_shared<TApplySourceResult>(source, step)),
             source->GetContext()->GetCommonContext()->GetCounters().GetResultsForSourceGuard(), source->GetSourceIdx(),
             source->GetDeprecatedPortionId(), blobBytes, sSource->GetUsedRawBytes(), 0, source->GetRecordsCount(),
             source->GetReservedMemory(), readStats.CacheBytes, readStats.BsBytes, readStats.TierBytes, readStats.ToDetailsJson(),
-            THashMap<TString, TIndexCheckStats>(readStats.Indexes), true));
+            THashMap<TString, TIndexCheckStats>(readStats.Indexes), true)));
         return false;
     }
     source->MutableAs<IDataSource>()->InitFetchingPlan(plan);
