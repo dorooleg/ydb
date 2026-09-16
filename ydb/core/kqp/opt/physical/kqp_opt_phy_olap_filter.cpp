@@ -566,28 +566,13 @@ TExprBase BuildOneElementComparison(const std::pair<TExprBase, TExprBase>& param
     }
 
     if (!udfName.empty()) {
-        const auto& leftArg = ctx.NewArgument(pos, "left");
-        const auto& rightArg = ctx.NewArgument(pos, "right");
-
-        const auto& callUdfLambda = ctx.NewLambda(pos, ctx.NewArguments(pos, {leftArg, rightArg}),
-            ctx.Builder(pos)
-                .Callable("Apply")
-                    .Callable(0, "Udf")
-                        .Atom(0, udfName)
-                    .Seal()
-                    .Add(1, leftArg)
-                    .Add(2, rightArg)
-                .Seal()
-            .Build()
-        );
-
-        return Build<TKqpOlapApply>(ctx, pos)
-            .Lambda(callUdfLambda)
+        return Build<TKqpOlapUdf>(ctx, pos)
             .Args()
                 .Add(parameter.first)
                 .Add(parameter.second)
             .Build()
             .KernelName(ctx.NewAtom(pos, udfName))
+            .OutputType(ExpandType(predicate.Pos(), *(predicate.Ptr()->GetTypeAnn()), ctx))
         .Done();
     }
 
