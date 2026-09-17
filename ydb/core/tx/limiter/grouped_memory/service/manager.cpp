@@ -2,6 +2,8 @@
 
 #include <ydb/library/accessor/validator.h>
 
+#include <vector>
+
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::GROUPED_MEMORY_LIMITER
 
 namespace NKikimr::NOlap::NGroupedMemoryManager {
@@ -35,8 +37,11 @@ void TManager::UnregisterGroup(const ui64 externalProcessId, const ui64 external
         {"externalGroupId", externalGroupId},
         {"size", ProcessIds.GetSize()});
     if (auto* process = GetProcessMemoryByExternalIdOptional(externalProcessId)) {
-        auto g = BuildProcessOrderGuard(*process);
-        process->UnregisterGroup(externalScopeId, externalGroupId);
+        {
+            auto g = BuildProcessOrderGuard(*process);
+            process->UnregisterGroup(externalScopeId, externalGroupId);
+        }
+        TryAllocateWaiting();
     }
     RefreshSignals();
 }
@@ -60,14 +65,18 @@ void TManager::AllocationUpdated(const ui64 externalProcessId, const ui64 extern
 }
 
 void TManager::TryAllocateWaiting() {
-    if (Processes.size()) {
-        auto it = Processes.find(ProcessIds.GetMinInternalIdVerified());
-        AFL_VERIFY(it != Processes.end());
-        TProcessMemory& process = it->second;
-        AFL_VERIFY(process.IsPriorityProcess());
-        process.TryAllocateWaiting(0);
-        UpdateWaitingProcesses(&process);
+    std::vector<TProcessMemory*> unrestrictedProcesses;
+    unrestrictedProcesses.reserve(WaitingProcesses.size());
+    for (const auto& usage : WaitingProcesses) {
+        auto it = ProcessesOrdered.find(usage);
+        AFL_VERIFY(it != ProcessesOrdered.end());
+        unrestrictedProcesses.emplace_back(it->second);
     }
+    for (auto* process : unrestrictedProcesses) {
+        auto g = BuildProcessOrderGuard(*process);
+        process->TryAllocateWaiting(0);
+    }
+
     for (auto waitingIt = WaitingProcesses.begin(); waitingIt != WaitingProcesses.end();) {
         // Check root availability
         if (!DefaultStage->IsAllocatable(1, 0)) {
@@ -137,7 +146,8 @@ void TManager::RegisterProcess(const ui64 externalProcessId, const std::vector<s
     if (!internalId) {
         const ui64 internalProcessId = ProcessIds.RegisterExternalIdOrGet(externalProcessId);
         auto info = Processes.emplace(
-            internalProcessId, TProcessMemory(externalProcessId, internalProcessId, OwnerActorId, Processes.empty(), stages, DefaultStage));
+            internalProcessId, TProcessMemory(externalProcessId, internalProcessId, OwnerActorId, Processes.empty(), stages, DefaultStage,
+                Config.GetUnrestrictedGroupsCount()));
         AFL_VERIFY(info.second);
         ProcessesOrdered.emplace(info.first->second.BuildUsageAddress(), &info.first->second);
         UpdateWaitingProcesses(&info.first->second);

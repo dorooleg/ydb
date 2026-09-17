@@ -17,6 +17,7 @@ bool TConfig::DeserializeFromProto(const NKikimrConfig::TGroupedMemoryLimiterCon
     }
 
     Enabled = config.GetEnabled();
+    UnrestrictedGroupsCount = config.GetUnrestrictedGroupsCount();
 
     return true;
 }
@@ -27,6 +28,7 @@ TString TConfig::DebugString() const {
        << ";HardMemoryLimit=" << HardMemoryLimit.value_or(0)
        << ";Enabled=" << Enabled
        << ";CountBuckets=" << CountBuckets
+       << ";UnrestrictedGroupsCount=" << UnrestrictedGroupsCount
        << ";";
     return sb;
 }

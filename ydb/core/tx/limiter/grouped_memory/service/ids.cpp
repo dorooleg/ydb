@@ -1,6 +1,8 @@
 #include "ids.h"
 #include <ydb/library/actors/core/log.h>
 
+#include <iterator>
+
 namespace NKikimr::NOlap::NGroupedMemoryManager {
 
 ui64 TIdsControl::ExtractInternalIdVerified(const ui64 externalId) {
@@ -86,6 +88,18 @@ ui64 TExternalIdsControl::GetMinExternalIdVerified() const {
 
 void TExternalIdsControl::RegisterExternalId(const ui64 id) {
     AFL_VERIFY(ExternalIds.emplace(id).second);
+}
+
+bool TExternalIdsControl::IsUnrestricted(const ui64 id, const ui32 limit) const {
+    if (!limit || !ExternalIds.contains(id)) {
+        return false;
+    }
+    if (ExternalIds.size() <= limit) {
+        return true;
+    }
+    auto it = ExternalIds.begin();
+    std::advance(it, limit);
+    return id < *it;
 }
 
 }   // namespace NKikimr::NOlap::NGroupedMemoryManager

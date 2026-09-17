@@ -20,6 +20,7 @@ private:
     TExternalIdsControl GroupIds;
     ui32 Links = 1;
     const NActors::TActorId OwnerActorId;
+    const ui32 UnrestrictedGroupsCount;
 
     TAllocationInfo& GetAllocationInfoVerified(const ui64 allocationId) const {
         auto it = AllocationInfo.find(allocationId);
@@ -51,10 +52,12 @@ private:
     friend class TAllocationGroups;
 
 public:
-    TProcessMemoryScope(const ui64 externalProcessId, const ui64 externalScopeId, const NActors::TActorId& ownerActorId)
+    TProcessMemoryScope(const ui64 externalProcessId, const ui64 externalScopeId, const NActors::TActorId& ownerActorId,
+        const ui32 unrestrictedGroupsCount)
         : ExternalProcessId(externalProcessId)
         , ExternalScopeId(externalScopeId)
-        , OwnerActorId(ownerActorId) {
+        , OwnerActorId(ownerActorId)
+        , UnrestrictedGroupsCount(unrestrictedGroupsCount) {
     }
 
     void Register() {
@@ -79,6 +82,7 @@ public:
 
     void RegisterAllocation(const bool isPriorityProcess, const ui64 externalGroupId, const std::shared_ptr<IAllocation>& allocation,
         const std::shared_ptr<TStageFeatures>& stage) {
+        Y_UNUSED(isPriorityProcess);
         AFL_VERIFY(allocation);
         AFL_VERIFY(stage);
         if (!GroupIds.HasExternalId(externalGroupId)) {
@@ -88,18 +92,19 @@ public:
             AFL_VERIFY(!AllocationInfo.contains(allocation->GetIdentifier()));
         } else {
             auto allocationInfo = RegisterAllocationImpl(externalGroupId, allocation, stage);
+            const bool unrestricted = GroupIds.IsUnrestricted(externalGroupId, UnrestrictedGroupsCount);
 
             if (allocationInfo->GetAllocationStatus() != EAllocationStatus::Waiting) {
-            } else if (WaitAllocations.GetMinExternalGroupId().value_or(externalGroupId) < externalGroupId) {
+            } else if (!unrestricted && WaitAllocations.GetMinExternalGroupId().value_or(externalGroupId) < externalGroupId) {
                 WaitAllocations.AddAllocationExt(externalGroupId, allocationInfo);
                 allocationInfo->GetStage()->OnWait(allocationInfo->GetAllocatedVolume());
-            } else if (allocationInfo->IsAllocatable(0) || (isPriorityProcess && externalGroupId <= GroupIds.GetMinExternalIdVerified())) {
+            } else if (allocationInfo->IsAllocatable(0) || unrestricted) {
                 Y_UNUSED(WaitAllocations.RemoveAllocationExt(externalGroupId, allocationInfo));
                 auto success = allocationInfo->Allocate(OwnerActorId);
                 if (!success) {
                     UnregisterAllocation(allocationInfo->GetIdentifier());
                 }
-                LWPROBE(Allocated, "on_register", allocationInfo->GetIdentifier(), stage->GetName(), stage->GetLimit(), stage->GetHardLimit().value_or(std::numeric_limits<ui64>::max()), stage->GetUsage().Val(), stage->GetWaiting().Val(), allocationInfo->GetAllocationTime(), false, success);
+                LWPROBE(Allocated, "on_register", allocationInfo->GetIdentifier(), stage->GetName(), stage->GetLimit(), stage->GetHardLimit().value_or(std::numeric_limits<ui64>::max()), stage->GetUsage().Val(), stage->GetWaiting().Val(), allocationInfo->GetAllocationTime(), unrestricted, success);
             } else {
                 WaitAllocations.AddAllocationExt(externalGroupId, allocationInfo);
                 allocationInfo->GetStage()->OnWait(allocationInfo->GetAllocatedVolume());
@@ -157,9 +162,7 @@ public:
                 {"event", "remove_group"},
                 {"externalGroupId", externalGroupId},
                 {"minGroup", GroupIds.GetMinExternalIdOptional()});
-            if (isPriorityProcess && (externalGroupId < GroupIds.GetMinExternalIdDef(externalGroupId))) {
-                Y_UNUSED(TryAllocateWaiting(isPriorityProcess, 0));
-            }
+            Y_UNUSED(TryAllocateWaiting(isPriorityProcess, 0));
         } else {
             YDB_LOG_WARN_COMP(NKikimrServices::GROUPED_MEMORY_LIMITER, "",
                 {"event", "remove_absent_group"},
@@ -173,9 +176,7 @@ public:
             {"event", "register_group"},
             {"externalGroupId", externalGroupId},
             {"minGroup", GroupIds.GetMinExternalIdOptional()});
-        if (isPriorityProcess && (externalGroupId < GroupIds.GetMinExternalIdDef(externalGroupId))) {
-            Y_UNUSED(TryAllocateWaiting(isPriorityProcess, 0));
-        }
+        Y_UNUSED(TryAllocateWaiting(isPriorityProcess, 0));
     }
 
     bool HasWaitingAllocations() const {
@@ -211,6 +212,7 @@ private:
     const NActors::TActorId OwnerActorId;
     bool PriorityProcessFlag = false;
     ui64 MemoryUsage = 0;
+    const ui32 UnrestrictedGroupsCount;
 
     YDB_ACCESSOR(ui32, LinksCount, 1);
     YDB_READONLY_DEF(std::vector<std::shared_ptr<TStageFeatures>>, Stages);
@@ -314,7 +316,8 @@ public:
     void RegisterScope(const ui64 externalScopeId) {
         auto it = AllocationScopes.find(externalScopeId);
         if (it == AllocationScopes.end()) {
-            AFL_VERIFY(AllocationScopes.emplace(externalScopeId, std::make_shared<TProcessMemoryScope>(ExternalProcessId, externalScopeId, OwnerActorId)).second);
+            AFL_VERIFY(AllocationScopes.emplace(externalScopeId,
+                std::make_shared<TProcessMemoryScope>(ExternalProcessId, externalScopeId, OwnerActorId, UnrestrictedGroupsCount)).second);
         } else {
             it->second->Register();
         }
@@ -326,11 +329,13 @@ public:
     }
 
     TProcessMemory(const ui64 externalProcessId, const ui64 internalProcessId, const NActors::TActorId& ownerActorId, const bool isPriority,
-        const std::vector<std::shared_ptr<TStageFeatures>>& stages, const std::shared_ptr<TStageFeatures>& defaultStage)
+        const std::vector<std::shared_ptr<TStageFeatures>>& stages, const std::shared_ptr<TStageFeatures>& defaultStage,
+        const ui32 unrestrictedGroupsCount = 16)
         : ExternalProcessId(externalProcessId)
         , InternalProcessId(internalProcessId)
         , OwnerActorId(ownerActorId)
         , PriorityProcessFlag(isPriority)
+        , UnrestrictedGroupsCount(unrestrictedGroupsCount)
         , Stages(stages)
         , DefaultStage(defaultStage) {
     }

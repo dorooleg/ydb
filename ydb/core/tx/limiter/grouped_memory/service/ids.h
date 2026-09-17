@@ -47,6 +47,8 @@ public:
     [[nodiscard]] bool UnregisterExternalId(const ui64 id) {
         return ExternalIds.erase(id);
     }
+
+    bool IsUnrestricted(const ui64 id, const ui32 limit) const;
 };
 
 class TIdsControl {

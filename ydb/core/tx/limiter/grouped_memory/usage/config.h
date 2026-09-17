@@ -15,6 +15,7 @@ private:
     YDB_READONLY_DEF(std::optional<ui64>, MemoryLimit);
     YDB_READONLY_DEF(std::optional<ui64>, HardMemoryLimit);
     YDB_READONLY(ui64, CountBuckets, 1);
+    YDB_READONLY(ui32, UnrestrictedGroupsCount, 16);
 
 public:
 
