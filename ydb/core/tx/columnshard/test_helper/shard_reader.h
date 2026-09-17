@@ -8,6 +8,7 @@
 #include <ydb/core/tx/datashard/datashard.h>
 
 #include <ydb/library/accessor/accessor.h>
+#include <ydb/library/formats/arrow/protos/ssa.pb.h>
 
 #include <contrib/libs/apache/arrow/cpp/src/arrow/record_batch.h>
 

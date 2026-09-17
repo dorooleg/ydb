@@ -642,6 +642,7 @@ TTypedColumn CompileYqlKernelToString(const TTypedColumn& argument, TKqpOlapComp
     function->AddArguments()->SetId(argument.Id);
     function->SetKernelIdx(ctx.GetKernelRequestBuilder().AddToString(argument.Type, resultType));
     function->SetFunctionType(TProgram::YQL_KERNEL);
+    function->SetKernelName("ToString");
     return {command->GetColumn().GetId(), resultType};
 }
 

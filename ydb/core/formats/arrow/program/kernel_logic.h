@@ -96,6 +96,39 @@ public:
     virtual bool IsBoolInResult() const override;
 };
 
+// Transparent Utf8→String cast inserted by the OLAP compiler for ignore-case UDFs.
+// GetOriginalAddress unwraps this node so CheckIndex still sees the source column.
+class TToStringKernel: public IKernelLogic {
+private:
+    virtual TConclusion<bool> DoExecute(const std::vector<TColumnChainInfo>& /*input*/, const std::vector<TColumnChainInfo>& /*output*/,
+        TAccessorsCollection& /*resources*/) const override {
+        return false;
+    }
+
+    virtual std::optional<TIndexCheckOperation> DoGetIndexCheckerOperation() const override {
+        return std::nullopt;
+    }
+
+public:
+    static TString GetClassNameStatic() {
+        return "ToString";
+    }
+
+    virtual TString GetClassName() const override {
+        return GetClassNameStatic();
+    }
+
+    virtual ECalculationHardness GetWeight() const override {
+        return ECalculationHardness::NotSpecified;
+    }
+
+    virtual bool IsBoolInResult() const override {
+        return false;
+    }
+
+    static const inline TFactory::TRegistrator<TToStringKernel> Registrator = TFactory::TRegistrator<TToStringKernel>(GetClassNameStatic());
+};
+
 class TLogicMatchString: public IKernelLogic {
 private:
     using TBase = IKernelLogic;
