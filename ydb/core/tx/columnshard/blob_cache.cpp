@@ -98,7 +98,7 @@ private:
         }
     };
 
-    static constexpr i64 MAX_IN_FLIGHT_BYTES = 250ll << 20;
+    static constexpr i64 MAX_IN_FLIGHT_BYTES = 2500ll << 20;
     static constexpr i64 MAX_REQUEST_BYTES = 8ll << 20;
     static constexpr TDuration DEFAULT_READ_DEADLINE = TDuration::Seconds(30);
     static constexpr ui64 DEFAULT_MAX_CACHE_DATA_SIZE = DefaultBlobCacheMaxBytes;

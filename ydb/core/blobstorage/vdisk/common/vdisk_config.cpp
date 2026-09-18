@@ -97,8 +97,8 @@ namespace NKikimr {
             ReplMaxTimeToMakeProgress = TDuration::Minutes(180);
         }
 
-        SkeletonFrontGets_MaxInFlightCount = 24;
-        SkeletonFrontGets_MaxInFlightCost = 200000000;              // 200ms
+        SkeletonFrontGets_MaxInFlightCount = 256;
+        SkeletonFrontGets_MaxInFlightCost = 2000000000;              // 2s
         SkeletonFrontDiscover_MaxInFlightCount = 100;
         SkeletonFrontDiscover_MaxInFlightCost = 300000000;          // 300ms
         SkeletonFrontLogPuts_MaxInFlightCount = 4000;
@@ -110,7 +110,7 @@ namespace NKikimr {
         SkeletonFrontExtPutAsyncBlob_TotalCost = 700000000;         // 700ms
         SkeletonFrontExtPutUserData_TotalCost = 300000000;          // 300ms
         SkeletonFrontExtGetAsync_TotalCost = 300000000;             // 300ms
-        SkeletonFrontExtGetFast_TotalCost = 300000000;              // 300ms
+        SkeletonFrontExtGetFast_TotalCost = 2000000000;              // 2s
         SkeletonFrontExtGetDiscover_TotalCost = 300000000;          // 300ms
         SkeletonFrontExtGetLow_TotalCost = 300000000;              // 300ms
 
@@ -120,7 +120,7 @@ namespace NKikimr {
 
         WindowCostChangeToRecalculatePercent = 2;                   // 2%
         WindowMinLowWatermarkPercent = 2;                           // 2%
-        WindowMaxLowWatermarkPercent = 50;                          // 50%
+        WindowMaxLowWatermarkPercent = 80;                          // 80%
         WindowPercentThreshold = 5;                                 // 5%
         WindowCostChangeUntilFrozenPercent = 20;                    // 20%
         WindowCostChangeUntilDeathPercent = 33;                     // 33%
