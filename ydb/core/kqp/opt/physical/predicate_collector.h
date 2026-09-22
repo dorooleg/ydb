@@ -1,5 +1,6 @@
 #pragma once
 #include <yql/essentials/ast/yql_expr.h>
+#include <yql/essentials/core/expr_nodes/yql_expr_nodes.h>
 #include <yql/essentials/core/expr_nodes_gen/yql_expr_nodes_gen.h>
 
 namespace NKikimr::NKqp::NOpt {
