@@ -12,6 +12,7 @@
 #include <ydb/library/actors/core/event_local.h>
 #include <ydb/library/actors/core/events.h>
 
+#include <library/cpp/lwtrace/shuttle.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <util/generic/vector.h>
 #include <util/system/unaligned_mem.h>
@@ -66,10 +67,13 @@ struct TEvBlobCache {
     struct TEvReadBlobRangeBatch: public NActors::TEventLocal<TEvReadBlobRangeBatch, EvReadBlobRangeBatch> {
         std::vector<TBlobRange> BlobRanges;
         TReadBlobRangeOptions ReadOptions;
+        std::shared_ptr<NLWTrace::TOrbit> TraceOrbit;
 
-        explicit TEvReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions&& opts)
+        explicit TEvReadBlobRangeBatch(
+            std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions&& opts, std::shared_ptr<NLWTrace::TOrbit> traceOrbit)
             : BlobRanges(std::move(blobRanges))
             , ReadOptions(std::move(opts))
+            , TraceOrbit(traceOrbit)
         {
         }
     };
@@ -178,10 +182,10 @@ inline NActors::TActorId MakeBlobCacheServiceId(const TUnifiedBlobId& blobId) {
 }
 
 NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters);
-NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters,
-    ui32 shardIndex, ui32 shardCount, TIntrusivePtr<TBlobCacheSharedState> sharedState);
+NActors::IActor* CreateBlobCache(const std::optional<ui64>& maxBytes, TIntrusivePtr<::NMonitoring::TDynamicCounters> counters, ui32 shardIndex,
+    ui32 shardCount, TIntrusivePtr<TBlobCacheSharedState> sharedState);
 
-void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions opts);
+void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions opts, std::shared_ptr<NLWTrace::TOrbit> traceOrbit);
 
 // Explicitly add and remove data from cache. This is usefull for newly written data that is likely to be read by
 // indexing, compaction and user queries and for the data that has been compacted and will not be read again.

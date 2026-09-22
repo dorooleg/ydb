@@ -2,11 +2,10 @@
 #include "columnshard.h"
 
 #include <ydb/core/base/appdata.h>
-
-#include <ydb/core/base/appdata.h>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/memory_controller_iface.h>
 #include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/tx/columnshard/engines/reader/tracing/data_source_probes.h>
 
 #include <ydb/library/actors/core/actor.h>
 #include <ydb/library/actors/core/hfunc.h>
@@ -16,11 +15,11 @@
 #include <util/generic/set.h>
 #include <util/string/cast.h>
 #include <util/string/vector.h>
-#include <optional>
 
-#include <array>
 #include <algorithm>
+#include <array>
 #include <memory>
+#include <optional>
 #include <tuple>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::BLOB_CACHE
@@ -29,6 +28,8 @@ namespace NKikimr::NBlobCache {
 namespace {
 
 using namespace NActors;
+
+using namespace NOlap::NReader::NLWTrace_YDB_CS_DATA_SOURCE;
 
 class TBlobCache: public TActorBootstrapped<TBlobCache> {
 private:
@@ -47,10 +48,33 @@ private:
         };
 
         TBlobRange BlobRange;
+        std::shared_ptr<NLWTrace::TOrbit> TraceParent;
+        bool TraceEnabled;
+        TMonotonic QueuedAt;
+
+        static bool IsTracingEnabled(const std::shared_ptr<NLWTrace::TOrbit>& traceOrbit) {
+            return (traceOrbit && traceOrbit->HasShuttles()) || LWPROBE_ENABLED(BlobReadDispatched) || LWPROBE_ENABLED(BlobReadReplied);
+        }
+
+        static bool IsTracingEnabled() {
+            return LWPROBE_ENABLED(BlobReadDispatched) || LWPROBE_ENABLED(BlobReadReplied);
+        }
 
         TReadItem(const TReadBlobRangeOptions& opts, const TBlobRange& blobRange)
             : TReadBlobRangeOptions(opts)
             , BlobRange(blobRange)
+            , TraceEnabled(IsTracingEnabled())
+            , QueuedAt(TraceEnabled ? TMonotonic::Now() : TMonotonic::Zero())
+        {
+            Y_ABORT_UNLESS(blobRange.BlobId.IsValid());
+        }
+
+        TReadItem(const TReadBlobRangeOptions& opts, const TBlobRange& blobRange, std::shared_ptr<NLWTrace::TOrbit> traceOrbit)
+            : TReadBlobRangeOptions(opts)
+            , BlobRange(blobRange)
+            , TraceParent(traceOrbit)
+            , TraceEnabled(IsTracingEnabled(traceOrbit))
+            , QueuedAt(TraceEnabled ? TMonotonic::Now() : TMonotonic::Zero())
         {
             Y_ABORT_UNLESS(blobRange.BlobId.IsValid());
         }
@@ -108,6 +132,7 @@ private:
         TString Data;
 
         TCacheEntry() = default;
+
         explicit TCacheEntry(TString data)
             : Data(std::move(data))
         {
@@ -134,6 +159,16 @@ private:
     ui64 StickyBytes = 0;
     ui64 ReadCookie;
     THashMap<ui64, std::vector<TBlobRange>> CookieToRange;   // All in-flight requests
+
+    struct TReadTrace {
+        NLWTrace::TOrbit Orbit;
+        TDuration QueueWait;
+        TMonotonic DispatchedAt;
+        ui64 RequestBytes;
+        std::vector<std::shared_ptr<NLWTrace::TOrbit>> Parents;
+    };
+
+    THashMap<ui64, TReadTrace> CookieToTrace;
     THashMap<TBlobRange, TReadInfo> OutstandingReads;   // All in-flight and enqueued reads
     TDeque<TReadItem> ReadQueue;   // Reads that are waiting to be sent
         // TODO: Consider making per-group queues
@@ -359,7 +394,7 @@ private:
         readOptions.CacheAfterRead = GetLocalMaxCacheDataSize() && readOptions.CacheAfterRead;
 
         for (const auto& blobRange : ranges) {
-            HandleSingleRangeRead(TReadItem(readOptions, blobRange), ev->Sender, ctx);
+            HandleSingleRangeRead(TReadItem(readOptions, blobRange, ev->Get()->TraceOrbit), ev->Sender, ctx);
         }
 
         MakeReadRequests(ctx);
@@ -446,7 +481,7 @@ private:
         MemoryConsumer->SetConsumption(SharedState ? SharedState->GetTotalCacheDataSize() : CacheDataSize);
     }
 
-    void SendBatchReadRequestToDS(const std::vector<TBlobRange>& blobRanges, const ui64 cookie, ui32 dsGroup,
+    void SendBatchReadRequestToDS(const std::vector<TBlobRange>& blobRanges, const ui64 cookie, const ui32 dsGroup,
         TReadItem::EReadVariant readVariant, const TActorContext& ctx) {
         LOG_S_DEBUG("Sending read from BlobCache: group: " << dsGroup << " ranges: " << JoinStrings(blobRanges.begin(), blobRanges.end(), " ")
                                                            << " cookie: " << cookie);
@@ -457,8 +492,17 @@ private:
             queires[i].Set(blobRanges[i].BlobId.GetLogoBlobId(), blobRanges[i].Offset, blobRanges[i].Size);
         }
 
-        NKikimrBlobStorage::EGetHandleClass readClass = TReadItem::ReadClass(readVariant);
-        TInstant deadline = ReadDeadline(readVariant);
+        const NKikimrBlobStorage::EGetHandleClass readClass = TReadItem::ReadClass(readVariant);
+        const TInstant deadline = ReadDeadline(readVariant);
+        if (auto traceIt = CookieToTrace.find(cookie); traceIt != CookieToTrace.end()) {
+            traceIt->second.RequestBytes = 0;
+            for (const auto& blobRange : blobRanges) {
+                traceIt->second.RequestBytes += blobRange.Size;
+            }
+            traceIt->second.DispatchedAt = TMonotonic::Now();
+            LWTRACK(BlobReadDispatched, traceIt->second.Orbit, cookie, dsGroup, blobRanges.size(), traceIt->second.RequestBytes,
+                traceIt->second.QueueWait, ReadQueue.size(), InFlightDataSize, readClass);
+        }
         SendToBSProxy(ctx, dsGroup, new TEvBlobStorage::TEvGet(queires, blobRanges.size(), deadline, readClass, false), cookie);
 
         ReadRequests->Inc();
@@ -473,11 +517,11 @@ private:
     }
 
     void MakeReadRequests(const TActorContext& ctx) {
-        THashMap<std::tuple<ui64, ui32, TReadItem::EReadVariant>, std::vector<TBlobRange>> groupedBlobRanges;
+        THashMap<std::tuple<ui64, ui32, TReadItem::EReadVariant>, std::vector<TReadItem>> groupedBlobRanges;
 
         while (!ReadQueue.empty()) {
-            const auto& readItem = ReadQueue.front();
-            const TBlobRange& blobRange = readItem.BlobRange;
+            const auto& queuedItem = ReadQueue.front();
+            const TBlobRange& blobRange = queuedItem.BlobRange;
 
             // NOTE: if queue is not empty, at least 1 in-flight request is allowed
             if (InFlightDataSize && InFlightDataSize >= GetLocalMaxInFlightDataSize()) {
@@ -487,8 +531,9 @@ private:
             SizeBytesInFlight->Add(blobRange.Size);
             SizeBlobsInFlight->Inc();
 
+            auto readItem = std::move(ReadQueue.front());
             auto blobSrc = readItem.BlobSource();
-            groupedBlobRanges[blobSrc].push_back(blobRange);
+            groupedBlobRanges[blobSrc].emplace_back(std::move(readItem));
 
             ReadQueue.pop_front();
         }
@@ -508,7 +553,8 @@ private:
 
             std::vector<ui64> dsReads;
 
-            for (auto& blobRange : rangesGroup) {
+            for (auto& readItem : rangesGroup) {
+                auto& blobRange = readItem.BlobRange;
                 if (requestSize && (requestSize + blobRange.Size > MAX_REQUEST_BYTES)) {
                     dsReads.push_back(cookie);
                     cookie = ++ReadCookie;
@@ -517,6 +563,25 @@ private:
 
                 requestSize += blobRange.Size;
                 CookieToRange[cookie].emplace_back(std::move(blobRange));
+                if (readItem.TraceEnabled) {
+                    auto& trace = CookieToTrace[cookie];
+                    trace.QueueWait = Max(trace.QueueWait, TMonotonic::Now() - readItem.QueuedAt);
+                    if (readItem.TraceParent) {
+                        bool isNewParent = true;
+                        for (const auto& parent : trace.Parents) {
+                            if (parent == readItem.TraceParent) {
+                                isNewParent = false;
+                                break;
+                            }
+                        }
+                        if (isNewParent) {
+                            NLWTrace::TOrbit childOrbit;
+                            readItem.TraceParent->Fork(childOrbit);
+                            trace.Orbit.Take(childOrbit);
+                            trace.Parents.emplace_back(std::move(readItem.TraceParent));
+                        }
+                    }
+                }
             }
             if (requestSize) {
                 dsReads.push_back(cookie);
@@ -561,6 +626,21 @@ private:
             // This shouldn't happen
             LOG_S_CRIT("Unknown read result cookie: " << readCookie);
             return;
+        }
+
+        if (auto traceIt = CookieToTrace.find(readCookie); traceIt != CookieToTrace.end()) {
+            ui64 responseBytes = 0;
+            for (size_t i = 0; i < ev->Get()->ResponseSz; ++i) {
+                responseBytes += ev->Get()->Responses[i].Buffer.size();
+            }
+            const auto& blobRangesForTrace = cookieIt->second;
+            LWTRACK(BlobReadReplied, traceIt->second.Orbit, readCookie, ev->Get()->GroupId, blobRangesForTrace.size(),
+                traceIt->second.RequestBytes, TMonotonic::Now() - traceIt->second.DispatchedAt, responseBytes,
+                NKikimrProto::EReplyStatus_Name(ev->Get()->Status));
+            for (const auto& parent : traceIt->second.Parents) {
+                parent->Join(traceIt->second.Orbit);
+            }
+            CookieToTrace.erase(traceIt);
         }
 
         std::vector<TBlobRange> blobRanges = std::move(cookieIt->second);
@@ -633,6 +713,7 @@ private:
 
             std::vector<TBlobRange> blobRanges = std::move(cookieIt->second);
             CookieToRange.erase(readCookie);
+            CookieToTrace.erase(readCookie);
 
             for (size_t i = 0; i < blobRanges.size(); ++i) {
                 Y_ABORT_UNLESS(blobRanges[i].BlobId.GetTabletId() == tabletId);
@@ -722,17 +803,17 @@ private:
 
     std::optional<TCachedLookup> LookupExact(const TBlobRange& blobRange, const bool promote) {
         if (auto it = StickyCache.find(blobRange); it != StickyCache.end()) {
-            return TCachedLookup{it->second.Data, true};
+            return TCachedLookup{ it->second.Data, true };
         }
         if (promote) {
             auto it = RegularCache.Find(blobRange);
             if (it != RegularCache.End()) {
-                return TCachedLookup{it.Value().Data, false};
+                return TCachedLookup{ it.Value().Data, false };
             }
         } else {
             auto it = RegularCache.FindWithoutPromote(blobRange);
             if (it != RegularCache.End()) {
-                return TCachedLookup{it.Value().Data, false};
+                return TCachedLookup{ it.Value().Data, false };
             }
         }
         return std::nullopt;
@@ -750,7 +831,7 @@ private:
             }
             const ui32 shift = blobRange.Offset - it->Offset;
             Y_ABORT_UNLESS(shift + blobRange.Size <= covering->Data.size());
-            return TCachedLookup{covering->Data.substr(shift, blobRange.Size), covering->Sticky};
+            return TCachedLookup{ covering->Data.substr(shift, blobRange.Size), covering->Sticky };
         }
         return std::nullopt;
     }
@@ -836,8 +917,7 @@ private:
             }
 
             LOG_S_DEBUG("Evict: " << victim << " sticky: " << stickyVictim << " CacheDataSize: " << CacheDataSize
-                                  << " InFlightDataSize: " << (i64)InFlightDataSize
-                                  << " MaxCacheDataSize: " << GetLocalMaxCacheDataSize());
+                                  << " InFlightDataSize: " << (i64)InFlightDataSize << " MaxCacheDataSize: " << GetLocalMaxCacheDataSize());
 
             Evictions->Inc();
             EvictedBytes->Add(victim.Size);
@@ -875,7 +955,7 @@ private:
 
 }   // namespace
 
-void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions opts) {
+void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRangeOptions opts, std::shared_ptr<NLWTrace::TOrbit> traceOrbit) {
     if (blobRanges.empty()) {
         return;
     }
@@ -889,7 +969,7 @@ void SendReadBlobRangeBatch(std::vector<TBlobRange>&& blobRanges, TReadBlobRange
             continue;
         }
         ctx.Send(MakeBlobCacheServiceId(shard),
-            new TEvBlobCache::TEvReadBlobRangeBatch(std::move(rangesByShard[shard]), TReadBlobRangeOptions(opts)));
+            new TEvBlobCache::TEvReadBlobRangeBatch(std::move(rangesByShard[shard]), TReadBlobRangeOptions(opts), traceOrbit));
     }
 }
 

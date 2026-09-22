@@ -53,6 +53,7 @@ TBlobsFetcherTask::TBlobsFetcherTask(const std::vector<std::shared_ptr<IBlobsRea
     , Context(context)
     , Guard(Context->GetCommonContext()->GetCounters().GetFetchBlobsGuard())
 {
+    ForkTraceOrbit(Source->GetDataSourceOrbit());
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, Source->AddEvent("sbf"));
 }
 

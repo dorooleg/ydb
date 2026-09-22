@@ -7,6 +7,7 @@
 
 #include <ydb/library/conclusion/status.h>
 
+#include <library/cpp/lwtrace/shuttle.h>
 #include <util/generic/hash_set.h>
 
 namespace NKikimr::NOlap {
@@ -195,6 +196,7 @@ private:
     THashMap<TBlobRange, TString> ReplyReadSource;
     THashMap<TBlobRange, TErrorStatus> Fails;
     THashMap<TBlobRange, std::vector<TBlobRange>> Groups;
+    std::shared_ptr<NLWTrace::TOrbit> TraceOrbit = std::make_shared<NLWTrace::TOrbit>();
     std::shared_ptr<NBlobOperations::TReadCounters> Counters;
     bool Started = false;
     bool DataExtracted = false;
@@ -216,6 +218,14 @@ protected:
     virtual THashMap<TBlobRange, std::vector<TBlobRange>> GroupBlobsForOptimization(std::vector<TBlobRange>&& ranges) const = 0;
 
 public:
+    NLWTrace::TOrbit& MutableTraceOrbit() {
+        return *TraceOrbit;
+    }
+
+    std::shared_ptr<NLWTrace::TOrbit> GetTraceOrbit() const {
+        return TraceOrbit;
+    }
+
     void RetryRead(const TBlobRange& range) {
         DoRetryRead(range);
     }

@@ -183,6 +183,7 @@ private:
     std::shared_ptr<NResourceBroker::NSubscribe::TResourcesGuard> ResourcesGuard;
     i64 BlobsWaitingCount = 0;
     bool ResultsExtracted = false;
+    NLWTrace::TOrbit* TraceParent = nullptr;
 
 protected:
     bool IsFetchingStarted() const {
@@ -196,6 +197,8 @@ protected:
 
     void OnDataReady();
     bool OnError(const TString& storageId, const TBlobRange& range, const IBlobsReadingAction::TErrorStatus& status);
+    void ForkTraceOrbit(NLWTrace::TOrbit& orbit);
+    void JoinTraceOrbit();
 
     virtual TString DoDebugString() const {
         return "";

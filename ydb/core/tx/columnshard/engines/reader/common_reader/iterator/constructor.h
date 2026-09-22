@@ -123,6 +123,7 @@ public:
         , Cursor(cursor)
         , Guard(Source->GetContext()->GetCommonContext()->GetCounters().GetFetchBlobsGuard())
     {
+        ForkTraceOrbit(Source->GetDataSourceOrbit());
         FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, source->AddEvent("scf"));
     }
 };
