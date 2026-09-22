@@ -2,6 +2,8 @@
 
 #include <ydb/core/kqp/expr_nodes/kqp_expr_nodes.h>
 
+#include <yql/essentials/core/sql_types/yql_atom_enums.h>
+
 #include <yql/essentials/core/yql_opt_utils.h>
 #include <yql/essentials/core/yql_expr_optimize.h>
 #include <yql/essentials/utils/log/log.h>
@@ -451,6 +453,38 @@ void CollectChildrenPredicates(const TExprNode& opNode, TOLAPPredicateNode& pred
 }
 
 } // namespace
+
+bool CanBePushedAsOlapJsonValue(const TCoJsonValue& jsonValue, const TExprNode* lambdaArg) {
+    // Currently we support only simple columns of the row and constant paths in pushdown.
+    if (!IsMemberColumn(jsonValue.Json(), lambdaArg) || !jsonValue.JsonPath().Maybe<TCoUtf8>()) {
+        return false;
+    }
+
+    // `KqpOlapJsonValue` kernel matches `JsonValue` semantics only without RETURNING (lenient `SqlValueConvertToUtf8`).
+    // With an explicit RETURNING type `JsonValue` is stricter (e.g. `SqlValueUtf8` returns NULL for a JSON number even for
+    // RETURNING Utf8, `SqlValueNumber` + cast is used for numeric types) and date types are not supported by the kernel at all.
+    // Such JSON_VALUE is computed by `KqpOlapApply` (or by KQP) over the whole JSON column via `Json2` UDFs.
+    if (jsonValue.ReturningType()) {
+        return false;
+    }
+
+    // `KqpOlapJsonValue` returns NULL both on empty result and on error (default modes of JSON_VALUE).
+    const auto isDefaultNull = [](const TCoAtom& mode, const TExprBase& value) {
+        return mode.Value() == ToString(EJsonValueHandlerMode::DefaultValue) && value.Maybe<TCoNull>();
+    };
+    if (!isDefaultNull(jsonValue.OnEmptyMode(), jsonValue.OnEmpty()) || !isDefaultNull(jsonValue.OnErrorMode(), jsonValue.OnError())) {
+        return false;
+    }
+
+    // PASSING variables are not supported by `KqpOlapJsonValue`. Before the common optimizer they are `JsonVariables`
+    // (always typed as `Dict<Utf8, Resource<'JsonNode'>>` even when empty), after it `AsDict` (typed as `EmptyDict` when empty).
+    const auto& variables = jsonValue.Variables().Ref();
+    if (variables.IsCallable({"JsonVariables", "AsDict"})) {
+        return variables.ChildrenSize() == 0;
+    }
+    const auto variablesType = variables.GetTypeAnn();
+    return variablesType && variablesType->GetKind() == ETypeAnnotationKind::EmptyDict;
+}
 
 void CollectPredicates(const TExprBase& predicate, TOLAPPredicateNode& predicateTree, const TExprNode* lambdaArg, const TTypeAnnotationNode* inputType,
                        const TPushdownOptions& options) {

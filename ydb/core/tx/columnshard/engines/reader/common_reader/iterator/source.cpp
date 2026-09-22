@@ -40,8 +40,11 @@ void TExecutionContext::Stop() {
 void TExecutionContext::Start(const std::shared_ptr<IDataSource>& source,
     const std::shared_ptr<NArrow::NSSA::NGraph::NExecution::TCompiledGraph>& program, const TFetchingScriptCursor& step) {
     auto readMeta = source->GetContext()->GetCommonContext()->GetReadMetadata();
-    NArrow::NSSA::TProcessorContext context(
-        source, source->MutableStageData().ExtractTable(), readMeta->GetLimitRobustOptional(), readMeta->IsDescSorted());
+    // ItemsLimit is a distinct-key cap when DistinctMarker is present (reader sync point). SSA CutFilter
+    // would otherwise keep only that many physical rows and hide later keys in the same source.
+    const std::optional<i64> ssaLimit =
+        readMeta->GetProgram().GetDistinctKeyColumnIdOptional() ? std::nullopt : readMeta->GetLimitRobustOptional();
+    NArrow::NSSA::TProcessorContext context(source, source->MutableStageData().ExtractTable(), ssaLimit, readMeta->IsDescSorted());
     auto visitor = std::make_shared<NArrow::NSSA::NGraph::NExecution::TExecutionVisitor>(std::move(context));
     AFL_VERIFY(!Program);
     Program = program;
@@ -301,8 +304,8 @@ void IDataSource::OnEmptyStageData(const std::shared_ptr<NCommon::IDataSource>& 
 
     const TDuration durationMs = GetAndResetWaitDuration();
     LWTRACK(SourceFinished, DataSourceOrbit, GetRawPathId(), GetTabletId(), GetTxId(), GetDeprecatedPortionId(), 0,
-        ExecutionContext.GetPrevCategoryName() + " - " + "SourceFinished(Empty)", durationMs, GetConveyorQueueWaitDuration(),
-        GetTotalDuration(), GetTotalBytesRead(), GetTotalExecutionDuration(), GetReservedMemory());
+        ExecutionContext.GetPrevCategoryName() + " - " + "SourceFinished(Empty)", durationMs, GetConveyorQueueWaitDuration(), GetTotalDuration(),
+        GetTotalBytesRead(), GetTotalExecutionDuration(), GetReservedMemory());
 }
 
 void IDataSource::BuildStageResult(const std::shared_ptr<IDataSource>& sourcePtr) {
