@@ -60,6 +60,7 @@ TBlobsFetcherTask::TBlobsFetcherTask(const std::vector<std::shared_ptr<IBlobsRea
 void TColumnsFetcherTask::DoOnDataReady(const std::shared_ptr<NResourceBroker::NSubscribe::TResourcesGuard>& /*resourcesGuard*/) {
     FOR_DEBUG_LOG(NKikimrServices::COLUMNSHARD_SCAN_EVLOG, Source->AddEvent("cf_reply"));
     const TMonotonic start = TMonotonic::Now();
+    Source->AddPendingFetchOriginalDataIoBytes(GetCacheBytes(), GetBsBytes(), GetTierBytes());
     Source->AddReadIoBytes(GetCacheBytes(), GetBsBytes(), GetTierBytes(), GetReadStorageIds());
     NBlobOperations::NRead::TCompositeReadBlobs blobsData = ExtractBlobsData();
     blobsData.Merge(std::move(ProvidedBlobs));

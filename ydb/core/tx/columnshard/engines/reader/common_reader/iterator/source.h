@@ -159,6 +159,9 @@ struct TFetchOriginalDataProbeState {
     ui32 RowsCount = 0;
     ui64 BlobBytes = 0;
     ui64 InplaceBytes = 0;
+    ui64 CacheBytes = 0;
+    ui64 BsBytes = 0;
+    ui64 TierBytes = 0;
     ui64 ReservedMemory = 0;
     TString ExecutionResult;
     TString Details;
@@ -359,6 +362,16 @@ public:
     void SetPendingFetchOriginalDataProbe(TFetchOriginalDataProbeState&& state) {
         TGuard<TMutex> g(PendingFetchOriginalDataProbeLock);
         PendingFetchOriginalDataProbe = std::move(state);
+    }
+
+    void AddPendingFetchOriginalDataIoBytes(const ui64 cacheBytes, const ui64 bsBytes, const ui64 tierBytes) {
+        TGuard<TMutex> g(PendingFetchOriginalDataProbeLock);
+        if (!PendingFetchOriginalDataProbe) {
+            return;
+        }
+        PendingFetchOriginalDataProbe->CacheBytes += cacheBytes;
+        PendingFetchOriginalDataProbe->BsBytes += bsBytes;
+        PendingFetchOriginalDataProbe->TierBytes += tierBytes;
     }
 
     // Returns false if a continuation already extracted this probe or replaced it with another node.

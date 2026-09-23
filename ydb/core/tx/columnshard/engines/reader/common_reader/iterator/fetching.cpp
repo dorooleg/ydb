@@ -359,14 +359,15 @@ void TProgramStep::FlushPendingFetchOriginalData(
             details.InsertValue("extra", pending->Details);
         }
     }
-    details.InsertValue("tier_bytes", io.TierBytes);
+    details.InsertValue("tier_bytes", pending->TierBytes);
     if (io.StorageIds) {
         details.InsertValue("storage_ids", io.StorageIds);
     }
     LWTRACK(ProgramFetchOriginalData, source->GetDataSourceOrbit(), source->GetRawPathId(), source->GetTabletId(), source->GetTxId(),
         source->GetDeprecatedPortionId(), source->GetExecutionContext().GetCursorStep().GetStepIndex(), pending->TracingName, pending->NodeId,
-        durationMs, pending->ExecutionDuration, source->GetConveyorQueueWaitDuration(), pending->RowsCount, pending->BlobBytes, io.CacheBytes,
-        io.BsBytes, pending->InplaceBytes, pending->ReservedMemory, pending->ExecutionResult, details.GetStringRobust());
+        durationMs, pending->ExecutionDuration, source->GetConveyorQueueWaitDuration(), pending->RowsCount, pending->BlobBytes,
+        pending->CacheBytes, pending->BsBytes, pending->TierBytes, pending->InplaceBytes, pending->ReservedMemory, pending->ExecutionResult,
+        details.GetStringRobust());
 }
 
 NO_SANITIZE_THREAD

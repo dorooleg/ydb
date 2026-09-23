@@ -77,6 +77,7 @@
     MACRO(15, ##__VA_ARGS__)         \
     MACRO(16, ##__VA_ARGS__)         \
     MACRO(17, ##__VA_ARGS__)         \
+    MACRO(18, ##__VA_ARGS__)         \
     /**/
 
 #define FOREACH_LEFT_TYPE(MACRO, ...) \
