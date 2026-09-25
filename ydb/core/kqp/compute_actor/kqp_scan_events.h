@@ -10,6 +10,7 @@
 
 #include <ydb/library/actors/core/event_local.h>
 #include <ydb/library/actors/core/events.h>
+#include <library/cpp/lwtrace/protos/lwtrace.pb.h>
 
 #include <contrib/libs/apache/arrow/cpp/src/arrow/record_batch.h>
 
@@ -35,6 +36,12 @@ struct TEvScanExchange {
 
     class TEvFetcherFinished: public NActors::TEventLocal<TEvFetcherFinished, EvFetcherFinished> {
     public:
+        explicit TEvFetcherFinished(NLWTrace::TTraceResponse trace = {})
+            : Trace(std::move(trace))
+        {
+        }
+
+        NLWTrace::TTraceResponse Trace;
     };
 
     class TEvSendData: public NActors::TEventLocal<TEvSendData, EvSendData> {

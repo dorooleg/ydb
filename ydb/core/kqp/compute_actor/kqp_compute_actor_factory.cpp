@@ -174,7 +174,7 @@ public:
             auto& info = args.ComputesByStages->UpsertTaskWithScan(*args.Task, meta);
             IActor* computeActor = CreateKqpScanComputeActor(
                 args.ExecuterId, args.TxId, args.Task, AsyncIoFactory, runtimeSettings, memoryLimits,
-                std::move(args.TraceId), std::move(args.Arena),
+                std::move(args.TraceId), std::move(args.TraceOrbit), std::move(args.Arena),
                 std::move(schedulableOptions), args.BlockTrackingMode);
             TActorId result = args.UseBatchPool
                 ? TlsActivationContext->Register(computeActor, TActorId(), TMailboxType::HTSwap, AppData()->BatchPoolId)

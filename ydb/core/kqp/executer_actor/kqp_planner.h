@@ -14,6 +14,7 @@
 #include <ydb/library/actors/wilson/wilson_span.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/log.h>
+#include <library/cpp/lwtrace/shuttle.h>
 
 #include <util/string/vector.h>
 
@@ -51,6 +52,7 @@ public:
         const bool WithProgressStats;
         const TMaybe<NKikimrKqp::TRlPath>& RlPath;
         NWilson::TSpan& ExecuterSpan;
+        NLWTrace::TOrbit& TraceOrbit;
         TVector<NKikimrKqp::TKqpNodeResources> ResourcesSnapshot;
         const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& ExecuterRetriesConfig;
         const ui64 MkqlMemoryLimit;
@@ -122,6 +124,7 @@ private:
     THashSet<ui32> TrackingNodes;
     TVector<NKikimrKqp::TKqpNodeResources> ResourcesSnapshot;
     NWilson::TSpan& ExecuterSpan;
+    NLWTrace::TOrbit& TraceOrbit;
     const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& ExecuterRetriesConfig;
     ui64 LocalRunMemoryEst = 0;
     TVector<TTaskResourceEstimation> ResourceEstimations;

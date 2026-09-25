@@ -4,16 +4,20 @@
 #include <ydb/library/formats/arrow/arrow_helpers.h>
 #include <ydb/library/formats/arrow/size_calcer.h>
 #include <ydb/core/kqp/common/kqp_resolve.h>
+#include <ydb/core/kqp/common/kqp_lwtrace_probes.h>
 #include <ydb/core/kqp/common/kqp_yql.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
 #include <ydb/core/tx/datashard/range_ops.h>
 
 #include <ydb/library/wilson_ids/wilson.h>
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor_impl.h>
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::KQP_COMPUTE
 
 namespace NKikimr::NKqp::NScanPrivate {
+
+LWTRACE_USING(KQP_PROVIDER);
 
 namespace {
 
@@ -31,7 +35,7 @@ TKqpScanFetcherActor::TKqpScanFetcherActor(const NKikimrKqp::TKqpSnapshot& snaps
     const TMaybe<NKikimrDataEvents::ELockMode> lockMode, const TString& database,
     const NKikimrTxDataShard::TKqpTransaction_TScanTaskMeta& meta, const TShardsScanningPolicy& shardsScanningPolicy,
     TIntrusivePtr<TKqpCounters> counters, NWilson::TTraceId traceId,
-    const TCPULimits& cpuLimits, const bool useBatchPool)
+    const TCPULimits& cpuLimits, NLWTrace::TOrbit traceOrbit, const bool useBatchPool)
     : Meta(meta)
     , ScanDataMeta(Meta)
     , RuntimeSettings(settings)
@@ -42,6 +46,7 @@ TKqpScanFetcherActor::TKqpScanFetcherActor(const NKikimrKqp::TKqpSnapshot& snaps
     , LockMode(lockMode)
     , CPULimits(cpuLimits)
     , UseBatchPool(useBatchPool)
+    , TraceOrbit(std::move(traceOrbit))
     , ComputeActorIds(std::move(computeActors))
     , Snapshot(snapshot)
     , ShardsScanningPolicy(shardsScanningPolicy)
@@ -168,6 +173,15 @@ void TKqpScanFetcherActor::HandleExecute(TEvKqpCompute::TEvScanData::TPtr& ev) {
         {"finished", ev->Get()->Finished},
         {"locks", locks},
         {"brokenLocks", brokenLocks});
+
+    auto& traceStats = ShardTraceStats[state->TabletId];
+    if (traceStats.Messages == 0) {
+        LWTRACK(KqpScanFetcherFirstDataReceived, TraceOrbit, std::get<ui64>(TxId), ScanId, state->TabletId,
+            ev->Get()->GetRowsCount(), ev->Get()->RawBytes, ev->Get()->Finished);
+    }
+    ++traceStats.Messages;
+    traceStats.Rows += ev->Get()->GetRowsCount();
+    traceStats.RawBytes += ev->Get()->RawBytes;
 
     TInstant startTime = TActivationContext::Now();
     if (ev->Get()->Finished) {
@@ -492,8 +506,12 @@ bool TKqpScanFetcherActor::SendGlobalFail(
 }
 
 bool TKqpScanFetcherActor::SendScanFinished() {
-    for (auto&& i : ComputeActorIds) {
-        Sender<TEvScanExchange::TEvFetcherFinished>().SendTo(i);
+    NLWTrace::TTraceResponse trace;
+    if (TraceOrbit.HasShuttles()) {
+        NLwTraceMonPage::TraceManager().CreateTraceResponse(trace, TraceOrbit);
+    }
+    for (size_t index = 0; index < ComputeActorIds.size(); ++index) {
+        Send(ComputeActorIds[index], new TEvScanExchange::TEvFetcherFinished(index == 0 ? std::move(trace) : NLWTrace::TTraceResponse()));
     }
     return true;
 }
@@ -626,6 +644,14 @@ void TKqpScanFetcherActor::ProcessPendingScanDataItem(TEvKqpCompute::TEvScanData
         {"brokenLocksCount", msg.LocksInfo.BrokenLocks.size()});
     auto shardScanner = InFlightShards.GetShardScannerVerified(state->TabletId);
     auto tasksForCompute = shardScanner->OnReceiveData(msg, shardScanner);
+
+    if (msg.Finished) {
+        const auto it = ShardTraceStats.find(state->TabletId);
+        AFL_ENSURE(it != ShardTraceStats.end());
+        LWTRACK(KqpScanFetcherShardFinishedProcessed, TraceOrbit, std::get<ui64>(TxId), ScanId, state->TabletId,
+            it->second.Messages, it->second.Rows, it->second.RawBytes, latency);
+        ShardTraceStats.erase(it);
+    }
     AFL_ENSURE(tasksForCompute.size() == 1 || tasksForCompute.size() == 0 || tasksForCompute.size() == ComputeActorIds.size())(
         "size", tasksForCompute.size())("compute_size", ComputeActorIds.size());
     for (auto&& i : tasksForCompute) {

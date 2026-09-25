@@ -36,6 +36,7 @@
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/interconnect.h>
 #include <ydb/library/actors/wilson/wilson_span.h>
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <ydb/library/mkql_proto/mkql_proto.h>
 #include <ydb/library/plan2svg/plan2svg.h>
 #include <ydb/library/wilson_ids/wilson.h>
@@ -937,6 +938,13 @@ protected:
         static_cast<TDerived*>(this)->CheckExecutionComplete();
     }
 
+    void HandleLwTrace(TEvKqpLwTrace::TPtr& ev) {
+        auto& traceManager = NLwTraceMonPage::TraceManager();
+        for (const auto& trace : ev->Get()->Record.GetTrace()) {
+            traceManager.HandleTraceResponse(trace, traceManager.GetProbesMap(), ResponseEv->Orbit);
+        }
+    }
+
     void HandleNodeState(NYql::NDq::TEvDqCompute::TEvNodeState::TPtr& ev) {
         if (CollectProfileStats(Request.StatsMode)) {
             Stats->UpdateNodeStats(ev->Sender.NodeId(), ev->Get()->Record);
@@ -1513,6 +1521,7 @@ protected:
             .WithProgressStats = Request.ProgressStatsPeriod != TDuration::Zero(),
             .RlPath = Request.RlPath,
             .ExecuterSpan =  ExecuterSpan,
+            .TraceOrbit = ResponseEv->Orbit,
             .ResourcesSnapshot = std::move(ResourcesSnapshot),
             .ExecuterRetriesConfig = ExecuterRetriesConfig,
             .MkqlMemoryLimit = Request.MkqlMemoryLimit,

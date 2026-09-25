@@ -22,6 +22,8 @@
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 #include <ydb/library/actors/struct_log/log_stack.h>
 
+#include <library/cpp/lwtrace/shuttle.h>
+
 namespace NKikimr::NKqp::NScanPrivate {
 
 class TKqpScanFetcherActor: public NActors::TActorBootstrapped<TKqpScanFetcherActor>, public IExternalObjectsProvider {
@@ -59,6 +61,17 @@ private:
     const TCPULimits CPULimits;
     const bool UseBatchPool;
 
+    struct TShardTraceStats {
+        ui64 Messages = 0;
+        ui64 Rows = 0;
+        ui64 RawBytes = 0;
+    };
+
+    // This actor processes one event at a time, so one orbit is safe and keeps
+    // the first-receive and final-process markers on the same raw KQP track.
+    NLWTrace::TOrbit TraceOrbit;
+    THashMap<ui64, TShardTraceStats> ShardTraceStats;
+
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::KQP_SCAN_FETCH_ACTOR;
@@ -69,7 +82,7 @@ public:
         const TMaybe<NKikimrDataEvents::ELockMode> lockMode, const TString& database,
         const NKikimrTxDataShard::TKqpTransaction_TScanTaskMeta& meta, const TShardsScanningPolicy& shardsScanningPolicy,
         TIntrusivePtr<TKqpCounters> counters, NWilson::TTraceId traceId, const TCPULimits& cpuLimits,
-        bool useBatchPool = false);
+        NLWTrace::TOrbit traceOrbit, bool useBatchPool = false);
 
     static TVector<TSerializedTableRange> BuildSerializedTableRanges(
         const NKikimrTxDataShard::TKqpTransaction::TScanTaskMeta::TReadOpMeta& readData);

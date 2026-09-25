@@ -7,6 +7,7 @@
 #include <ydb/library/actors/wilson/wilson_span.h>
 
 #include <ydb/library/wilson_ids/wilson.h>
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 
 #include <contrib/libs/tcmalloc/tcmalloc/malloc_extension.h>
 
@@ -388,6 +389,13 @@ public:
                 .ChannelQuotaManager = ChannelQuotaManager,
                 .ReportStatsSettings = reportStatsSettings,
                 .TraceId = NWilson::TTraceId(ev->TraceId),
+                .TraceOrbit = [&msg] {
+                    NLWTrace::TOrbit orbit;
+                    if (msg.HasLwTrace()) {
+                        NLwTraceMonPage::TraceManager().HandleTraceRequest(msg.GetLwTrace(), orbit);
+                    }
+                    return orbit;
+                }(),
                 .Arena = ev->Get()->Arena,
                 .SerializedGUCSettings = serializedGUCSettings,
                 .NumberOfTasks = tasksCount,
@@ -443,6 +451,13 @@ public:
                 Register(CreateKqpScanFetcher(msg.GetSnapshot(), std::move(m.MutableActorIds()),
                     m.GetMeta(), NYql::NDq::TComputeRuntimeSettings(), msg.GetDatabase(), txId, lockTxId, lockNodeId, lockMode,
                     CaFactory_->GetShardsScanningPolicy(), Counters_, NWilson::TTraceId(ev->TraceId), cpuLimits,
+                    [&msg] {
+                        NLWTrace::TOrbit orbit;
+                        if (msg.HasLwTrace()) {
+                            NLwTraceMonPage::TraceManager().HandleTraceRequest(msg.GetLwTrace(), orbit);
+                        }
+                        return orbit;
+                    }(),
                     msg.GetUseBatchPool()));
             }
         }

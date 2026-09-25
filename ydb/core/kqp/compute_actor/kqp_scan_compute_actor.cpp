@@ -1,5 +1,8 @@
 #include "kqp_scan_compute_actor.h"
 
+#include <ydb/core/kqp/common/kqp_lwtrace_probes.h>
+#include <ydb/core/kqp/common/kqp_lwtrace_events.h>
+
 #include "kqp_scan_common.h"
 #include "kqp_compute_actor_impl.h"
 
@@ -13,10 +16,13 @@
 #include <ydb/core/protos/kqp_stats.pb.h>
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor_impl.h>
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::KQP_COMPUTE
 
 namespace NKikimr::NKqp::NScanPrivate {
+
+LWTRACE_USING(KQP_PROVIDER);
 
 namespace {
 
@@ -30,10 +36,11 @@ static constexpr TDuration RL_MAX_BATCH_DELAY = TDuration::Seconds(50);
 TKqpScanComputeActor::TKqpScanComputeActor(NScheduler::TSchedulableActorOptions schedulableOptions, const TActorId& executerId, ui64 txId,
     NDqProto::TDqTask* task, IDqAsyncIoFactory::TPtr asyncIoFactory,
     const TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits, NWilson::TTraceId traceId,
-    TIntrusivePtr<NActors::TProtoArenaHolder> arena, EBlockTrackingMode mode)
+    NLWTrace::TOrbit traceOrbit, TIntrusivePtr<NActors::TProtoArenaHolder> arena, EBlockTrackingMode mode)
     : TBase(std::move(schedulableOptions), executerId, txId, task, std::move(asyncIoFactory), AppData()->FunctionRegistry, settings,
         memoryLimits, /* ownMemoryQuota = */ true, /* passExceptions = */ true, /* taskCounters = */ nullptr, std::move(traceId), std::move(arena))
     , ComputeCtx(settings.StatsMode)
+    , TraceOrbit(std::move(traceOrbit))
     , BlockTrackingMode(mode)
 {
     InitializeTask();
@@ -160,6 +167,20 @@ TMaybe<google::protobuf::Any> TKqpScanComputeActor::ExtraData() {
     return result;
 }
 
+void TKqpScanComputeActor::BeforeReportState() {
+    auto event = MakeHolder<TEvKqpLwTrace>();
+    event->Record.SetTxId(std::get<ui64>(TxId));
+    for (auto& trace : FetcherTraces) {
+        event->Record.AddTrace()->Swap(&trace);
+    }
+    if (TraceOrbit.HasShuttles()) {
+        NLwTraceMonPage::TraceManager().CreateTraceResponse(*event->Record.AddTrace(), TraceOrbit);
+    }
+    if (event->Record.TraceSize()) {
+        Send(ExecuterId, event.Release());
+    }
+}
+
 void TKqpScanComputeActor::HandleEvWakeup(EEvWakeupTag tag) {
     YDB_LOG_DEBUG_COMP(NKikimrServices::KQP_COMPUTE, "Handling wakeup event",
         {"event", "HandleEvWakeup"},
@@ -222,6 +243,7 @@ void TKqpScanComputeActor::Handle(TEvScanExchange::TEvRegisterFetcher::TPtr& ev)
     YDB_LOG_DEBUG_COMP(NKikimrServices::KQP_COMPUTE, "Received TEvRegisterFetcher",
         {"sender", ev->Sender});
     Y_ABORT_UNLESS(Fetchers.emplace(ev->Sender).second);
+    ++RegisteredFetchers;
     Send(ev->Sender, new TEvScanExchange::TEvAckData(CalculateFreeSpace()));
     ++AcksSent;
     ScanDataInFlight = true;
@@ -231,7 +253,11 @@ void TKqpScanComputeActor::Handle(TEvScanExchange::TEvFetcherFinished::TPtr& ev)
     YDB_LOG_DEBUG_COMP(NKikimrServices::KQP_COMPUTE, "Received TEvFetcherFinished",
         {"sender", ev->Sender});
     Y_ABORT_UNLESS(Fetchers.erase(ev->Sender) == 1);
+    if (ev->Get()->Trace.GetTrace().EventsSize()) {
+        FetcherTraces.emplace_back(std::move(ev->Get()->Trace));
+    }
     if (Fetchers.size() == 0) {
+        LWTRACK(KqpScanComputeInputsFinished, TraceOrbit, std::get<ui64>(TxId), GetTask().GetId(), RegisteredFetchers, SendDataReceived);
         ScanData->Finish();
         DoExecute();
     }

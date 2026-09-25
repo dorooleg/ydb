@@ -24,6 +24,7 @@ import "ydb/library/yql/dq/actors/protos/dq_stats.proto";
 import "ydb/library/yql/dq/proto/dq_tasks.proto";
 import "ydb/core/protos/sys_view_types.proto";
 import "ydb/core/scheme/protos/key_range.proto";
+import "library/cpp/lwtrace/protos/lwtrace.proto";
 
 enum ERequestType {
     REQUEST_TYPE_PROCESS_QUERY = 1;
@@ -680,6 +681,7 @@ message TEvStartKqpTasksRequest {
     optional bool SupportShuttingDown = 21 [default = true];
     optional bool EnableWatermarks = 22 [default = false];
     optional bool UseBatchPool = 23 [default = false];
+    optional NLWTrace.TTraceRequest LwTrace = 24;
 
     reserved 15;
     reserved 16;
@@ -714,6 +716,11 @@ message TEvStartKqpTasksResponse {
     optional uint64 TxId = 1;
     repeated TStartedTask StartedTasks = 2;
     repeated TNotStartedTask NotStartedTasks = 3;
+}
+
+message TEvKqpLwTrace {
+    optional uint64 TxId = 1;
+    repeated NLWTrace.TTraceResponse Trace = 2;
 }
 
 message TEvCancelKqpTasksRequest {

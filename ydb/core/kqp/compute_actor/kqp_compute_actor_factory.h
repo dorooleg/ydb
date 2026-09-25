@@ -11,6 +11,7 @@
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 #include <ydb/library/yql/dq/proto/dq_tasks.pb.h>
 #include <ydb/library/yql/dq/runtime/dq_channel_service.h>
+#include <library/cpp/lwtrace/shuttle.h>
 
 namespace NKikimr::NKqp {
     struct TKqpFederatedQuerySetup;
@@ -116,6 +117,7 @@ public:
         NYql::NDq::IMemoryQuotaManager::TPtr ChannelQuotaManager;
         TMaybe<NYql::NDq::TReportStatsSettings> ReportStatsSettings;
         NWilson::TTraceId TraceId;
+        NLWTrace::TOrbit TraceOrbit;
         TIntrusivePtr<NActors::TProtoArenaHolder> Arena;
         const TString& SerializedGUCSettings;
         const ui32 NumberOfTasks;

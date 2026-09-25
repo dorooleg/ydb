@@ -115,6 +115,7 @@ private:
                 hFunc(TEvents::TEvUndelivered, HandleUndelivered);
                 hFunc(TEvPrivate::TEvRetry, HandleRetry);
                 hFunc(TEvKqpNode::TEvStartKqpTasksResponse, HandleStartKqpTasksResponse);
+                hFunc(TEvKqpLwTrace, HandleLwTrace);
                 IgnoreFunc(TEvKqpNode::TEvCancelKqpTasksResponse);
                 hFunc(TEvInterconnect::TEvNodeDisconnected, HandleDisconnected);
                 hFunc(NActors::NMon::TEvHttpInfo, HandleHttpInfo);

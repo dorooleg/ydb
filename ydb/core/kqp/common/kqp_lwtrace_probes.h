@@ -101,6 +101,15 @@ struct TQueryAction {
     PROBE(KqpScanExecuterFinalize, GROUPS("KQP"), \
         TYPES(ui64, ui64, TString, ui64), \
         NAMES("TxId", "lastCompletedTask", "lastCompletedComputeActor", "ResultsSize")) \
+    PROBE(KqpScanFetcherFirstDataReceived, GROUPS("KQP", "Scan"), \
+        TYPES(ui64, ui64, ui64, ui64, ui64, bool), \
+        NAMES("TxId", "scanId", "tabletId", "rows", "rawBytes", "finished")) \
+    PROBE(KqpScanFetcherShardFinishedProcessed, GROUPS("KQP", "Scan"), \
+        TYPES(ui64, ui64, ui64, ui64, ui64, ui64, TDuration), \
+        NAMES("TxId", "scanId", "tabletId", "messages", "rows", "rawBytes", "fetcherQueueWaitMs")) \
+    PROBE(KqpScanComputeInputsFinished, GROUPS("KQP", "Scan"), \
+        TYPES(ui64, ui64, ui64, ui64), \
+        NAMES("TxId", "taskId", "registeredFetchers", "receivedMessages")) \
     PROBE(KqpLiteralExecuterCreateErrorResponse, GROUPS("KQP"), \
         TYPES(ui64), \
         NAMES("TxId")) \

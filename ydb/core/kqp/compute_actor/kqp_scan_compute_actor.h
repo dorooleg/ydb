@@ -10,6 +10,7 @@
 #include <ydb/services/udf_store/wasm/query_compartment_scope.h>
 
 #include <library/cpp/string_utils/quote/quote.h>
+#include <library/cpp/lwtrace/shuttle.h>
 
 namespace NKikimr::NKqp::NScanPrivate {
 
@@ -33,6 +34,9 @@ private:
     bool ScanDataInFlight = false;
     ui64 SendDataReceived = 0;
     ui64 AcksSent = 0;
+    ui64 RegisteredFetchers = 0;
+    NLWTrace::TOrbit TraceOrbit;
+    TVector<NLWTrace::TTraceResponse> FetcherTraces;
 
     struct TLockHash {
         size_t operator()(const NKikimrDataEvents::TLock& lock) {
@@ -80,7 +84,7 @@ public:
     TKqpScanComputeActor(NScheduler::TSchedulableActorOptions schedulableOptions, const TActorId& executerId, ui64 txId,
         NYql::NDqProto::TDqTask* task, NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory,
         const NYql::NDq::TComputeRuntimeSettings& settings, const NYql::NDq::TComputeMemoryLimits& memoryLimits, NWilson::TTraceId traceId,
-        TIntrusivePtr<NActors::TProtoArenaHolder> arena, EBlockTrackingMode mode);
+        NLWTrace::TOrbit traceOrbit, TIntrusivePtr<NActors::TProtoArenaHolder> arena, EBlockTrackingMode mode);
 
     ~TKqpScanComputeActor();
 
@@ -118,6 +122,8 @@ public:
     void FillExtraStats(NYql::NDqProto::TDqComputeActorStats* dst, bool last);
 
     TMaybe<google::protobuf::Any> ExtraData() override;
+
+    void BeforeReportState() override;
 
     void HandleEvWakeup(EEvWakeupTag tag);
 

@@ -3,6 +3,7 @@
 #include <ydb/core/kqp/compute_actor/kqp_compute_actor_factory.h>
 
 #include <ydb/core/kqp/common/kqp_event_ids.h>
+#include <ydb/core/kqp/common/kqp_lwtrace_events.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
 #include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
 
@@ -55,6 +56,7 @@ struct TEvKqpNode {
 
     struct TEvCancelKqpTasksResponse : public TEventPB<TEvCancelKqpTasksResponse,
         NKikimrKqp::TEvCancelKqpTasksResponse, TKqpNodeEvents::EvCancelKqpTasksResponse> {};
+
 };
 
 NYql::NDq::TReportStatsSettings ReportStatsSettingsFromProto(const NYql::NDqProto::TComputeRuntimeSettings& runtimeSettings);
