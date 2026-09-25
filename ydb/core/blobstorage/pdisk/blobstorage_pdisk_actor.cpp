@@ -860,6 +860,7 @@ public:
             {"marker", "BSY02"},
             {"result", result->ToString()},
             {"to", ev->Sender.LocalId()});
+        result->Orbit = std::move(ev->Get()->Orbit);
         Send(ev->Sender, result.Release());
         PDisk->Mon.GetReadCounter(evChunkRead.PriorityClass)->CountResponse();
     }
@@ -1048,6 +1049,7 @@ public:
         double burstMs;
         TChunkRead* request = PDisk->ReqCreator.CreateChunkRead(*ev->Get(), ev->Sender, burstMs, std::move(ev->TraceId));
         request->DebugInfoGenerator = PDisk->DebugInfoGenerator;
+        request->Orbit = std::move(ev->Get()->Orbit);
         PDisk->InputRequest(request);
     }
 

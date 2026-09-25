@@ -494,6 +494,7 @@ private:
 
         const NKikimrBlobStorage::EGetHandleClass readClass = TReadItem::ReadClass(readVariant);
         const TInstant deadline = ReadDeadline(readVariant);
+        auto request = std::make_unique<TEvBlobStorage::TEvGet>(queires, blobRanges.size(), deadline, readClass, false);
         if (auto traceIt = CookieToTrace.find(cookie); traceIt != CookieToTrace.end()) {
             traceIt->second.RequestBytes = 0;
             for (const auto& blobRange : blobRanges) {
@@ -502,8 +503,9 @@ private:
             traceIt->second.DispatchedAt = TMonotonic::Now();
             LWTRACK(BlobReadDispatched, traceIt->second.Orbit, cookie, dsGroup, blobRanges.size(), traceIt->second.RequestBytes,
                 traceIt->second.QueueWait, ReadQueue.size(), InFlightDataSize, readClass);
+            traceIt->second.Orbit.Fork(request->Orbit);
         }
-        SendToBSProxy(ctx, dsGroup, new TEvBlobStorage::TEvGet(queires, blobRanges.size(), deadline, readClass, false), cookie);
+        SendToBSProxy(ctx, dsGroup, request.release(), cookie);
 
         ReadRequests->Inc();
     }
@@ -629,6 +631,7 @@ private:
         }
 
         if (auto traceIt = CookieToTrace.find(readCookie); traceIt != CookieToTrace.end()) {
+            traceIt->second.Orbit.Join(ev->Get()->Orbit);
             ui64 responseBytes = 0;
             for (size_t i = 0; i < ev->Get()->ResponseSz; ++i) {
                 responseBytes += ev->Get()->Responses[i].Buffer.size();

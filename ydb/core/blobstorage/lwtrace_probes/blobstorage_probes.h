@@ -72,6 +72,13 @@ struct TEventTypeField {
       TYPES(NKikimr::TEventTypeField, ui64, ui64, ui32, ui32, ui32, double, double, double, double, TString, TString), \
       NAMES("type", "size", "tabletId", "groupId", "channel", "vdiskOrderNum", "startTime", "totalDurationMs", \
           "vdiskDurationMs", "transferDurationMs", "handleClass", "status")) \
+    PROBE(VDiskVGetDequeued, GROUPS("VDisk", "PDisk"), \
+      TYPES(ui32, ui32, ui32, ui64, ui32, ui64, bool, double), \
+      NAMES("nodeId", "groupId", "vdiskOrderNum", "internalMessageId", "handleClass", "itemsCount", "indexOnly", "skeletonQueueWaitMs")) \
+    PROBE(VDiskVGetReplied, GROUPS("VDisk", "PDisk"), \
+      TYPES(ui32, ui32, ui32, ui64, ui32, double, double, double, double, ui64, ui64, ui32), \
+      NAMES("nodeId", "groupId", "vdiskOrderNum", "internalMessageId", "handleClass", "totalMs", "prePdiskMs", \
+          "pdiskCriticalPathMs", "postPdiskMs", "pdiskReads", "pdiskBytes", "status")) \
     PROBE(VDiskSkeletonFrontVMovedPatchRecieved, GROUPS("VDisk", "DSProxy"), \
       TYPES(ui32, ui32, ui32, ui64, ui64), \
       NAMES("nodeId", "groupId", "vdiskOrderNum", "tabletId", "size")) \

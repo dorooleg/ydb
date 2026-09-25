@@ -9,6 +9,7 @@ import "ydb/core/protos/blobstorage_disk.proto";
 import "ydb/core/protos/blobstorage_disk_color.proto";
 import "ydb/core/protos/blobstorage_ddisk.proto";
 import "ydb/core/protos/node_whiteboard.proto";
+import "library/cpp/lwtrace/protos/lwtrace.proto";
 import "google/protobuf/any.proto";
 import "ydb/public/api/protos/annotations/sensitive.proto";
 
@@ -427,6 +428,7 @@ message TEvVGet {
 
     optional bytes SnapshotId = 30; // read data from specific snapshot (if set)
     optional bool EnablePayload = 31; // reply with payload out of protobuf
+    optional NLWTrace.TTraceRequest LwTrace = 32;
 }
 
 message TQueryResult {
@@ -468,6 +470,7 @@ message TEvVGetResult {
 
     optional bool IsRangeOverflow = 24 [default = false]; // true if RangeQuery response is too large and is cut
     optional fixed64 IncarnationGuid = 30;
+    optional NLWTrace.TTraceResponse LwTrace = 31;
 
     optional NKikimrBlobStorage.TGroupInfo RecentGroup = 100; // filled in by VDisk on RACE when VDisk has newer generation
 }

@@ -1,6 +1,10 @@
 PROTO_LIBRARY()
 PROTOC_FATAL_WARNINGS()
 
+PEERDIR(
+    library/cpp/lwtrace/protos
+)
+
 SET(PROTOC_TRANSITIVE_HEADERS "no")
 
 GRPC()

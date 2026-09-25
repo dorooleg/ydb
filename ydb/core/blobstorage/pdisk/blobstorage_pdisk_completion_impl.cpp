@@ -386,6 +386,7 @@ void TCompletionChunkRead::Exec(TActorSystem *actorSystem) {
     LWTRACK(PDiskChunkResponseTime, Read->Orbit, PDisk->PCtx->PDiskId, Read->ReqId.Id, Read->PriorityClass, responseTimeMs,
             Read->Size);
 
+    result->Orbit = std::move(Read->Orbit);
     actorSystem->Send(Read->Sender, result.Release());
     Read->IsReplied = true;
     Read->Span.EndOk();
@@ -410,6 +411,7 @@ void TCompletionChunkRead::ReplyError(TActorSystem *actorSystem, TString reason)
         {"PDiskId", PDisk->PCtx->PDiskId},
         {"reqId", Read->ReqId},
         {"reason", reason});
+    result->Orbit = std::move(Read->Orbit);
     actorSystem->Send(Read->Sender, result.Release());
     Read->IsReplied = true;
     Read->Span.EndError(reason);

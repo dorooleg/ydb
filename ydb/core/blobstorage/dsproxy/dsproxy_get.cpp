@@ -8,6 +8,7 @@
 #include <ydb/library/actors/retro_tracing/collector/retro_collector.h>
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 #include <library/cpp/digest/crc32c/crc32c.h>
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <util/generic/set.h>
 #include <util/system/datetime.h>
 #include "dsproxy_get_impl.h"
@@ -138,6 +139,11 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
                 orderNumber,
                 vGets.size()
             );
+            Orbit.Fork(vGets[i]->Orbit);
+            if (vGets[i]->Orbit.HasShuttles()) {
+                NLwTraceMonPage::TraceManager().CreateTraceRequest(
+                    *vGets[i]->Record.MutableLwTrace(), vGets[i]->Orbit);
+            }
         }
         for (size_t i = 0; i < vPuts.size(); ++i) {
             if (RootCauseTrack.IsOn) {
@@ -194,6 +200,11 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
     }
 
     void Handle(TEvBlobStorage::TEvVGetResult::TPtr &ev) {
+        if (const auto& record = ev->Get()->Record; record.HasLwTrace()) {
+            auto& traceManager = NLwTraceMonPage::TraceManager();
+            traceManager.HandleTraceResponse(record.GetLwTrace(), traceManager.GetProbesMap(), Orbit);
+        }
+        Orbit.Join(ev->Get()->Orbit);
         ProcessReplyFromQueue(ev->Get());
 
         const ui64 cyclesPerUs = NHPTimer::GetCyclesPerSecond() / 1000000;

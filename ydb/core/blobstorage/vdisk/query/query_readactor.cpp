@@ -1,5 +1,6 @@
 #include "query_readbatch.h"
 #include <ydb/core/blobstorage/base/vdisk_priorities.h>
+#include <ydb/core/blobstorage/lwtrace_probes/blobstorage_probes.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/library/wilson_ids/wilson.h>
 #include <ydb/library/actors/wilson/wilson_span.h>
@@ -49,6 +50,13 @@ namespace NKikimr {
                     Priority, cookie));
 
                 msg->BlobId = it->HugeBlobId;
+                Ctx->OrigEv->Get()->Orbit.Fork(msg->Orbit);
+                if (auto& trace = Ctx->OrigEv->Get()->TraceInfo) {
+                    if (!trace->PDiskReads++) {
+                        trace->FirstPDiskReadAt = ctx.Monotonic();
+                    }
+                    trace->PDiskBytes += it->Part.Size;
+                }
 
                 YDB_LOG_DEBUG_CTX(ctx, VDISKP(Ctx->VCtx->VDiskLogPrefix, "GLUEREAD(%p): %s", this, msg->ToString().data()));
 
@@ -68,6 +76,10 @@ namespace NKikimr {
         }
 
         void Handle(NPDisk::TEvChunkReadResult::TPtr &ev, const TActorContext &ctx) {
+            Ctx->OrigEv->Get()->Orbit.Join(ev->Get()->Orbit);
+            if (auto& trace = Ctx->OrigEv->Get()->TraceInfo) {
+                trace->LastPDiskReadAt = ctx.Monotonic();
+            }
             TString message;
             const NKikimrProto::EReplyStatus status = ev->Get()->Status;
             if (status != NKikimrProto::OK) {

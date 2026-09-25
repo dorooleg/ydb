@@ -30,6 +30,7 @@
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <ydb/library/actors/wilson/wilson_span.h>
 
 #include <util/generic/set.h>
@@ -245,11 +246,12 @@ namespace NKikimr {
             template<typename TFront>
             void Enqueue(const TActorContext &ctx, ui32 recByteSize, std::unique_ptr<IEventHandle> converted,
                          const NBackpressure::TMessageId &msgId, ui64 cost, const TInstant &deadline,
-                         NKikimrBlobStorage::EVDiskQueueId extQueueId, TFront& /*front*/,
+                         NKikimrBlobStorage::EVDiskQueueId extQueueId, TFront& front,
                          const NBackpressure::TQueueClientId& clientId, std::shared_ptr<TVDiskSkeletonTrace> &&trace,
                          ui64 internalMessageId) {
                 if (!Queue.Head() && CanSendToSkeleton(cost)) {
                     // send to Skeleton for further processing
+                    front.TraceVGetDequeued(*converted, ctx.Monotonic());
                     ctx.Send(converted.release());
                     IdleLight.Set(true, ++IdleLightSeqNo);
                     ++InFlightCount;
@@ -311,6 +313,7 @@ namespace NKikimr {
                             ++Deadlines;
                             front.GetExtQueue(rec->ExtQueueId).DeadlineHappened(ctx, rec, now, front);
                         } else {
+                            front.TraceVGetDequeued(*rec->Ev, ctx.Monotonic());
                             ctx.Send(rec->Ev.release());
 
                             IdleLight.Set(true, ++IdleLightSeqNo);
@@ -1316,6 +1319,25 @@ namespace NKikimr {
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVPatchDiff>
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVPatchXorDiff>;
 
+        void TraceVGetDequeued(IEventHandle& event, TMonotonic now) {
+            if (event.GetTypeRewrite() != TEvBlobStorage::TEvVGet::EventType) {
+                return;
+            }
+
+            auto* vGet = event.Get<TEvBlobStorage::TEvVGet>();
+            if (!vGet->TraceInfo) {
+                return;
+            }
+
+            auto& trace = *vGet->TraceInfo;
+            trace.DequeuedAt = now;
+            const auto& record = vGet->Record;
+            LWTRACK(VDiskVGetDequeued, vGet->Orbit, VCtx->NodeId, VCtx->GroupId.GetRawId(),
+                VCtx->Top->GetFailDomainOrderNumber(VCtx->ShortSelfVDisk), record.GetMsgQoS().GetInternalMessageId(),
+                record.GetHandleClass(), record.ExtremeQueriesSize(), record.GetIndexOnly(),
+                (now - trace.ReceivedAt).MicroSeconds() / 1000.0);
+        }
+
         template <class TEvent>
         void HandleRequestWithQoS(const TActorContext &ctx, TAutoPtr<TEventHandle<TEvent>> &ev, const char *msgName, ui64 cost,
                                   TIntQueueClass &intQueue) {
@@ -1531,6 +1553,13 @@ namespace NKikimr {
         }
 
         void Handle(TEvBlobStorage::TEvVGet::TPtr &ev, const TActorContext &ctx) {
+            if (ev->Get()->Record.HasLwTrace()) {
+                NLwTraceMonPage::TraceManager().HandleTraceRequest(ev->Get()->Record.GetLwTrace(), ev->Get()->Orbit);
+            }
+            if (ev->Get()->Orbit.HasShuttles()) {
+                ev->Get()->TraceInfo = std::make_unique<TEvBlobStorage::TEvVGet::TTraceInfo>();
+                ev->Get()->TraceInfo->ReceivedAt = ctx.Monotonic();
+            }
             const ui64 cost = VCtx->CostModel->GetCost(*ev->Get());
             // select correct internal queue
             Y_VERIFY_S(ev->Get()->Record.HasHandleClass(), VCtx->VDiskLogPrefix);

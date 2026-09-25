@@ -1157,7 +1157,19 @@ namespace NKikimr {
         : TEventPB<TEvBlobStorage::TEvVGet, NKikimrBlobStorage::TEvVGet, TEvBlobStorage::EvVGet>
         , TEventWithRelevanceTracker
     {
+        mutable NLWTrace::TOrbit Orbit;
+
+        struct TTraceInfo {
+            TMonotonic ReceivedAt;
+            TMonotonic DequeuedAt;
+            TMonotonic FirstPDiskReadAt;
+            TMonotonic LastPDiskReadAt;
+            ui64 PDiskReads = 0;
+            ui64 PDiskBytes = 0;
+        };
+
         bool IsInternal = false;
+        std::unique_ptr<TTraceInfo> TraceInfo;
 
         TEvVGet() = default;
 
@@ -1389,6 +1401,8 @@ namespace NKikimr {
         : public TEvVResultBaseWithQoSPB<TEvBlobStorage::TEvVGetResult,
                 NKikimrBlobStorage::TEvVGetResult,
                 TEvBlobStorage::EvVGetResult> {
+        mutable NLWTrace::TOrbit Orbit;
+
         const bool EnablePayload = false;
 
         TEvVGetResult() = default;

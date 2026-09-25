@@ -4,9 +4,14 @@
 #include "query_public.h"
 #include "query_spacetracker.h"
 #include <ydb/core/blobstorage/vdisk/hulldb/hull_ds_all_snap.h>
+#include <ydb/core/blobstorage/lwtrace_probes/blobstorage_probes.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_response.h>
 #include <ydb/library/wilson_ids/wilson.h>
 #include <ydb/core/retro_tracing_impl/spans/lazy_retro_span.h>
+
+#include <library/cpp/lwtrace/mon/mon_lwtrace.h>
+
+LWTRACE_USING(BLOBSTORAGE_PROVIDER);
 
 namespace NKikimr {
 
@@ -119,11 +124,32 @@ namespace NKikimr {
                 Span.EndOk();
             }
 
+            if (const auto& trace = BatcherCtx->OrigEv->Get()->TraceInfo) {
+                const TMonotonic now = ctx.Monotonic();
+                const TMonotonic pdiskBegin = trace->PDiskReads ? trace->FirstPDiskReadAt : now;
+                const TMonotonic pdiskEnd = trace->PDiskReads ? trace->LastPDiskReadAt : now;
+                LWTRACK(VDiskVGetReplied, BatcherCtx->OrigEv->Get()->Orbit, QueryCtx->HullCtx->VCtx->NodeId,
+                    QueryCtx->HullCtx->VCtx->GroupId.GetRawId(),
+                    QueryCtx->HullCtx->VCtx->Top->GetFailDomainOrderNumber(QueryCtx->HullCtx->VCtx->ShortSelfVDisk),
+                    Record.GetMsgQoS().GetInternalMessageId(), Record.GetHandleClass(),
+                    (now - trace->ReceivedAt).MicroSeconds() / 1000.0,
+                    (pdiskBegin - trace->DequeuedAt).MicroSeconds() / 1000.0,
+                    (pdiskEnd - pdiskBegin).MicroSeconds() / 1000.0,
+                    (now - pdiskEnd).MicroSeconds() / 1000.0, trace->PDiskReads, trace->PDiskBytes,
+                    Result->Record.GetStatus());
+            }
+
+            if (NLwTraceMonPage::TraceManager().IsTraced(BatcherCtx->OrigEv->Get()->Orbit)) {
+                NLwTraceMonPage::TraceManager().CreateTraceResponse(
+                    *Result->Record.MutableLwTrace(), BatcherCtx->OrigEv->Get()->Orbit);
+            }
+
             if (hasNotYet && ReplSchedulerId) {
                 // send reply event to repl scheduler to possibly fix NOT_YET replies
                 ctx.Send(ReplSchedulerId, new TEvBlobStorage::TEvEnrichNotYet(BatcherCtx->OrigEv, std::move(Result)));
             } else {
                 // send reply event to sender
+                Result->Orbit = std::move(BatcherCtx->OrigEv->Get()->Orbit);
                 SendVDiskResponse(ctx, BatcherCtx->OrigEv->Sender, Result.release(), BatcherCtx->OrigEv->Cookie, QueryCtx->HullCtx->VCtx, Record.GetHandleClass());
             }
 
