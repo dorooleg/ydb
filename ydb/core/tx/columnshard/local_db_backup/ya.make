@@ -1,6 +1,7 @@
 LIBRARY()
 
 SRCS(
+    backup_actor.cpp
     page.cpp
     writer.cpp
 )
@@ -14,6 +15,7 @@ PEERDIR(
     ydb/core/tablet_flat
     ydb/core/wrappers
     ydb/library/actors/core
+    ydb/library/actors/protos
     ydb/library/services
 )
 
