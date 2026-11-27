@@ -38,6 +38,7 @@ private:
 
     virtual std::shared_ptr<TFetchingScript> DoGetColumnsFetchingPlan(const NCommon::IDataSource& source, const bool isFinalSyncPoint) override;
     mutable std::optional<std::shared_ptr<TFetchingScript>> SourcesAggregationScript;
+    mutable std::shared_ptr<NArrow::NSSA::IResourcesAggregator> SourcesAggregator;
     mutable std::optional<std::shared_ptr<TFetchingScript>> RestoreResultScript;
 
     bool NeedDuplicateFiltering() const {
@@ -47,21 +48,28 @@ private:
 public:
     std::shared_ptr<TFetchingScript> GetSourcesAggregationScript() const {
         if (!SourcesAggregationScript) {
-            auto graph = GetReadMetadata()->GetProgram().GetGraphOptional();
-            if (!graph || !graph->GetResultsAggregationProcessor()) {
+            const auto& readMetadata = GetReadMetadata();
+            const auto& graph = readMetadata->GetProgram().GetGraphOptional();
+            // Merged results leave in no key order, and limits count rows of single sources.
+            const bool canMergeSources = graph && !readMetadata->IsSorted() && !readMetadata->GetLimitRobustOptional() &&
+                                         !readMetadata->GetProgram().GetDistinctKeyColumnIdOptional();
+            SourcesAggregator = canMergeSources ? graph->GetResultsAggregationProcessor() : nullptr;
+            if (!SourcesAggregator) {
                 SourcesAggregationScript = nullptr;
             } else {
-                // TODO: fix me, temporary disabled
-                SourcesAggregationScript = nullptr;
-                // auto aggrProc = GetReadMetadata()->GetProgram().GetChainVerified()->GetResultsAggregationProcessor();
-                // NCommon::TFetchingScriptBuilder builder(*this);
-                // builder.AddStep(std::make_shared<TInitializeSourceStep>());
-                // builder.AddStep(std::make_shared<TStepAggregationSources>(aggrProc));
-                // builder.AddStep(std::make_shared<TCleanAggregationSources>(aggrProc));
-                // SourcesAggregationScript = std::move(builder).Build();
+                NCommon::TFetchingScriptBuilder builder(*this);
+                builder.AddStep(std::make_shared<TInitializeSourceStep>());
+                builder.AddStep(std::make_shared<TStepAggregationSources>(SourcesAggregator));
+                builder.AddStep(std::make_shared<TCleanAggregationSources>(SourcesAggregator));
+                SourcesAggregationScript = std::move(builder).Build();
             }
         }
         return *SourcesAggregationScript;
+    }
+
+    const std::shared_ptr<NArrow::NSSA::IResourcesAggregator>& GetSourcesAggregatorVerified() const {
+        AFL_VERIFY(GetSourcesAggregationScript());
+        return SourcesAggregator;
     }
 
     std::shared_ptr<TFetchingScript> GetRestoreResultScript() const {

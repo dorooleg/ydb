@@ -307,6 +307,8 @@ class IResourcesAggregator {
 private:
     virtual TConclusionStatus DoExecute(
         const std::vector<std::unique_ptr<TAccessorsCollection>>& sources, TAccessorsCollection& collectionResult) const = 0;
+    virtual TConclusionStatus DoCheckSource(const TAccessorsCollection& source, const TAccessorsCollection* sample) const = 0;
+    virtual void DoFillResultColumnIds(THashSet<ui32>& columnIds) const = 0;
 
 public:
     virtual ~IResourcesAggregator() = default;
@@ -314,6 +316,17 @@ public:
     [[nodiscard]] TConclusionStatus Execute(
         const std::vector<std::unique_ptr<TAccessorsCollection>>& sources, TAccessorsCollection& collectionResult) const {
         return DoExecute(sources, collectionResult);
+    }
+
+    // Execute accepts only sources that pass this check and, if a sample is given, have the same column types as the sample.
+    [[nodiscard]] TConclusionStatus CheckSource(const TAccessorsCollection& source, const TAccessorsCollection* sample = nullptr) const {
+        return DoCheckSource(source, sample);
+    }
+
+    THashSet<ui32> GetResultColumnIds() const {
+        THashSet<ui32> result;
+        DoFillResultColumnIds(result);
+        return result;
     }
 };
 
@@ -329,6 +342,24 @@ private:
             }
         }
         return TConclusionStatus::Success();
+    }
+
+    virtual TConclusionStatus DoCheckSource(const TAccessorsCollection& source, const TAccessorsCollection* sample) const override {
+        for (auto&& i : Aggregators) {
+            auto conclusion = i->CheckSource(source, sample);
+            if (conclusion.IsFail()) {
+                return conclusion;
+            }
+        }
+        return TConclusionStatus::Success();
+    }
+
+    virtual void DoFillResultColumnIds(THashSet<ui32>& columnIds) const override {
+        for (auto&& i : Aggregators) {
+            for (auto&& columnId : i->GetResultColumnIds()) {
+                columnIds.emplace(columnId);
+            }
+        }
     }
 
 public:

@@ -38,8 +38,8 @@ TScanHead::TScanHead(std::unique_ptr<NCommon::ISourcesConstructor>&& sourcesCons
         SourcesCollection =
             std::make_shared<TUnorderedResultCollection>(Context, std::move(sourcesConstructor), readMetadataContext->GetLimitRobustOptional());
         SyncPoints.emplace_back(std::make_shared<TSyncPointResult>(SyncPoints.size(), context, SourcesCollection));
-        SyncPoints.emplace_back(std::make_shared<TSyncPointResultsAggregationControl>(
-            SourcesCollection, Context->GetSourcesAggregationScript(), Context->GetRestoreResultScript(), SyncPoints.size(), context));
+        SyncPoints.emplace_back(std::make_shared<TSyncPointResultsAggregationControl>(SourcesCollection, Context->GetSourcesAggregationScript(),
+            Context->GetRestoreResultScript(), Context->GetSourcesAggregatorVerified(), SyncPoints.size(), context));
     } else if (readMetadataContext->IsSorted()) {
         // Physical-row LimitControl stops after LIMIT source rows. DistinctLimit needs LIMIT distinct keys,
         // which may sit past that prefix (duplicate runs in PK order). Skip the row-limit collection then.

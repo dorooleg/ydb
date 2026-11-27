@@ -153,17 +153,24 @@ public:
                 if (!aggregators.back()) {
                     return nullptr;
                 }
-            } else {
-                //                return nullptr;
             }
         }
+        std::shared_ptr<IResourcesAggregator> result;
         if (aggregators.size() > 1) {
-            return std::make_shared<TCompositeResourcesAggregator>(std::move(aggregators));
+            result = std::make_shared<TCompositeResourcesAggregator>(std::move(aggregators));
         } else if (aggregators.size() == 1) {
-            return aggregators.front();
+            result = aggregators.front();
         } else {
             return nullptr;
         }
+        // A projected column computed over aggregates cannot be merged by the aggregators.
+        const THashSet<ui32> aggregatedColumnIds = result->GetResultColumnIds();
+        for (auto&& i : ResultRoot->GetProcessor()->GetInput()) {
+            if (!aggregatedColumnIds.contains(i.GetColumnId())) {
+                return nullptr;
+            }
+        }
+        return result;
     }
 
     const THashMap<ui64, std::shared_ptr<TNode>>& GetNodes() const {

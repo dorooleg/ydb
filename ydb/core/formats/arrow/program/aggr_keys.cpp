@@ -7,8 +7,11 @@
 #include <ydb/library/formats/arrow/replace_key.h>
 #include <ydb/library/formats/arrow/switch/switch_type.h>
 
+#include <util/digest/numeric.h>
 #include <util/string/join.h>
 #include <yql/essentials/minikql/comp_nodes/mkql_rh_hash.h>
+
+#include <cmath>
 
 #ifndef WIN32
 #ifdef NO_SANITIZE_THREAD
@@ -209,77 +212,164 @@ TConclusion<TFunctionResult> TAggregateFunction::Call(const TExecFunctionContext
 }
 
 namespace {
+
+bool IsMergeableKeyType(const arrow::DataType& dataType) {
+    return NArrow::SwitchType(dataType.id(), [](const auto& type) {
+        using TWrap = std::decay_t<decltype(type)>;
+        return TWrap::IsAppropriate;
+    });
+}
+
+bool IsMergeableValueType(const arrow::DataType& dataType, const EAggregate aggregationType) {
+    // Decimals are stored as fixed size binaries and cannot be ordered or summed as such.
+    if (dataType.id() == arrow::Type::DECIMAL || dataType.id() == arrow::Type::DECIMAL256) {
+        return false;
+    }
+    return NArrow::SwitchType(dataType.id(), [&](const auto& type) {
+        using TWrap = std::decay_t<decltype(type)>;
+        switch (aggregationType) {
+            case EAggregate::Some:
+            case EAggregate::Min:
+            case EAggregate::Max:
+                return TWrap::IsAppropriate;
+            case EAggregate::Sum:
+                return TWrap::IsCType && !std::is_same_v<typename TWrap::T, arrow::BooleanType>;
+            case EAggregate::Unspecified:
+            case EAggregate::Count:
+            case EAggregate::NumRows:
+                return false;
+        }
+        return false;
+    });
+}
+
+template <class TWrap>
+bool MergeValue(const EAggregate aggregationType, typename TWrap::ValueType& accumulator, const typename TWrap::ValueType value) {
+    switch (aggregationType) {
+        case EAggregate::Some:
+            return true;
+        case EAggregate::Sum:
+            if constexpr (TWrap::IsCType && !std::is_same_v<typename TWrap::T, arrow::BooleanType>) {
+                accumulator += value;
+                return true;
+            } else {
+                return false;
+            }
+        case EAggregate::Min:
+        case EAggregate::Max:
+            if constexpr (std::is_floating_point_v<typename TWrap::ValueType>) {
+                // NaN is skipped as fmin and fmax do.
+                if (std::isnan(value)) {
+                    return true;
+                }
+                if (std::isnan(accumulator)) {
+                    accumulator = value;
+                    return true;
+                }
+            }
+            if (aggregationType == EAggregate::Min ? value < accumulator : accumulator < value) {
+                accumulator = value;
+            }
+            return true;
+        case EAggregate::Unspecified:
+        case EAggregate::Count:
+        case EAggregate::NumRows:
+            return false;
+    }
+    return false;
+}
+
+TConclusion<std::shared_ptr<arrow::Scalar>> GetResultScalar(const TAccessorsCollection& source, const ui32 columnId) {
+    if (const auto& scalar = source.GetConstantScalarOptional(columnId)) {
+        return scalar;
+    }
+    const auto& accessor = source.GetAccessorOptional(columnId);
+    if (!accessor) {
+        return TConclusionStatus::Fail("no aggregation result column " + ::ToString(columnId));
+    }
+    if (accessor->GetRecordsCount() != 1) {
+        return TConclusionStatus::Fail(
+            "aggregation result column " + ::ToString(columnId) + " has " + ::ToString(accessor->GetRecordsCount()) + " records");
+    }
+    return accessor->GetScalar(0);
+}
+
 class TResultsAggregator: public IResourcesAggregator {
 private:
     const TColumnChainInfo ColumnInfo;
     const EAggregate AggregationType;
+
+    virtual void DoFillResultColumnIds(THashSet<ui32>& columnIds) const override {
+        columnIds.emplace(ColumnInfo.GetColumnId());
+    }
+
+    virtual TConclusionStatus DoCheckSource(const TAccessorsCollection& source, const TAccessorsCollection* sample) const override {
+        auto scalar = GetResultScalar(source, ColumnInfo.GetColumnId());
+        if (scalar.IsFail()) {
+            return scalar;
+        }
+        const auto& dataType = *scalar.GetResult()->type;
+        if (!IsMergeableValueType(dataType, AggregationType)) {
+            return TConclusionStatus::Fail("cannot merge " + ::ToString(AggregationType) + " results of type " + dataType.ToString());
+        }
+        if (sample) {
+            auto sampleScalar = GetResultScalar(*sample, ColumnInfo.GetColumnId());
+            if (sampleScalar.IsFail()) {
+                return sampleScalar;
+            }
+            if (!sampleScalar.GetResult()->type->Equals(dataType)) {
+                return TConclusionStatus::Fail("different types of aggregation results: " + dataType.ToString() + " and " +
+                                               sampleScalar.GetResult()->type->ToString());
+            }
+        }
+        return TConclusionStatus::Success();
+    }
+
     virtual TConclusionStatus DoExecute(
         const std::vector<std::unique_ptr<TAccessorsCollection>>& sources, TAccessorsCollection& collectionResult) const override {
-        std::vector<const arrow::Scalar*> scalars;
-        std::optional<arrow::Type::type> type;
+        AFL_VERIFY(sources.size());
+        std::vector<std::shared_ptr<arrow::Scalar>> scalars;
         for (auto&& i : sources) {
             AFL_VERIFY(i);
-            const auto& scalar = i->GetConstantScalarVerified(ColumnInfo.GetColumnId());
-            if (!type) {
-                type = scalar->type->id();
-            } else {
-                AFL_VERIFY(*type == scalar->type->id());
+            auto status = CheckSource(*i, sources.front().get());
+            if (status.IsFail()) {
+                return status;
             }
-            scalars.emplace_back(scalar.get());
+            scalars.emplace_back(GetResultScalar(*i, ColumnInfo.GetColumnId()).DetachResult());
         }
+        const auto dataType = scalars.front()->type;
+        std::shared_ptr<arrow::Scalar> result;
         TString errorMessage;
-        if (!NArrow::SwitchType(*type, [&](const auto& type) {
+        if (!NArrow::SwitchType(dataType->id(), [&](const auto& type) {
                 using TWrap = std::decay_t<decltype(type)>;
-                using TScalarType = typename TWrap::TScalar;
-                std::optional<typename TWrap::ValueType> result;
-                for (auto&& i : scalars) {
-                    const typename TWrap::ValueType value = type.GetValue(*static_cast<const TScalarType*>(i));
-                    if (!i->is_valid) {
-                        continue;
-                    }
-                    if (!result) {
-                        result = value;
-                    } else {
-                        switch (AggregationType) {
-                            case EAggregate::Some:
-                                break;
-                            case EAggregate::Unspecified:
-                            case EAggregate::Count:
-                            case EAggregate::NumRows:
-                                AFL_VERIFY(false);
-                            case EAggregate::Sum:
-                                if constexpr (TWrap::IsCType) {
-                                    *result += value;
-                                }
-                                if constexpr (TWrap::IsStringView) {
-                                    errorMessage = "cannot sum string views";
-                                    return false;
-                                }
-                                break;
-                            case EAggregate::Max:
-                                if (*result < value) {
-                                    result = value;
-                                }
-                                break;
-                            case EAggregate::Min:
-                                if (value < *result) {
-                                    result = value;
-                                }
-                                break;
+                if constexpr (!TWrap::IsAppropriate) {
+                    return false;
+                } else {
+                    using TScalarType = typename TWrap::TScalar;
+                    std::optional<typename TWrap::ValueType> value;
+                    for (auto&& i : scalars) {
+                        if (!i->is_valid) {
+                            continue;
+                        }
+                        const typename TWrap::ValueType current = type.GetValue(*static_cast<const TScalarType*>(i.get()));
+                        if (!value) {
+                            value = current;
+                        } else if (!MergeValue<TWrap>(AggregationType, *value, current)) {
+                            errorMessage = "cannot merge " + ::ToString(AggregationType) + " results of type " + dataType->ToString();
+                            return false;
                         }
                     }
+                    if (value) {
+                        result = type.BuildScalar(*value, dataType);
+                    } else {
+                        result = std::make_shared<TScalarType>(dataType);
+                    }
+                    return true;
                 }
-                if (result) {
-                    collectionResult.AddCalculated(ColumnInfo.GetColumnId(),
-                        NAccessor::TTrivialArray::BuildArrayFromScalar(type.BuildScalar(*result, scalars.front()->type)));
-                } else {
-                    collectionResult.AddCalculated(ColumnInfo.GetColumnId(),
-                        NAccessor::TTrivialArray::BuildArrayFromScalar(std::make_shared<TScalarType>(scalars.front()->type)));
-                }
-                return true;
             })) {
-            return TConclusionStatus::Fail(errorMessage);
+            return TConclusionStatus::Fail(errorMessage.empty() ? TString("cannot merge results of type ") + dataType->ToString() : errorMessage);
         }
+        collectionResult.AddCalculated(ColumnInfo.GetColumnId(), NAccessor::TTrivialArray::BuildArrayFromScalar(result));
         collectionResult.TakeSequenceFrom(*sources.front());
         return TConclusionStatus::Success();
     }
@@ -294,11 +384,90 @@ public:
 }   // namespace
 
 std::shared_ptr<IResourcesAggregator> TAggregateFunction::BuildResultsAggregator(const TColumnChainInfo& output) const {
-    AFL_VERIFY(!GetFunctionOptions());
+    if (GetFunctionOptions()) {
+        return nullptr;
+    }
     return std::make_shared<TResultsAggregator>(output, TAggregationsHelper::GetSecondaryAggregationId(AggregationType));
 }
 
 namespace {
+// Group key of a row in a per-source aggregation result. Unlike TReplaceKeyHashable it tells NULL from any value.
+class TMergeKey {
+private:
+    const std::vector<std::shared_ptr<arrow::Array>>* Columns = nullptr;
+    ui32 Position = 0;
+    ui64 Hash = 0;
+
+    template <class TFunc>
+    static void ApplyToValue(const arrow::Array& column, TFunc&& func) {
+        AFL_VERIFY(NArrow::SwitchType(column.type_id(), [&](const auto& type) {
+            using TWrap = std::decay_t<decltype(type)>;
+            if constexpr (TWrap::IsAppropriate) {
+                func(type, *type.CastArray(&column));
+                return true;
+            } else {
+                return false;
+            }
+        }));
+    }
+
+    ui64 CalcHash() const {
+        ui64 result = 0;
+        for (auto&& column : *Columns) {
+            if (column->IsNull(Position)) {
+                result = CombineHashes<ui64>(result, 0);
+                continue;
+            }
+            ApplyToValue(*column, [&](const auto& type, const auto& array) {
+                result = CombineHashes<ui64>(result, type.CalcHash(type.GetValue(array, Position)));
+            });
+        }
+        return result;
+    }
+
+public:
+    struct THash {
+        size_t operator()(const TMergeKey& key) const {
+            return key.Hash;
+        }
+    };
+
+    TMergeKey() = default;
+
+    TMergeKey(const std::vector<std::shared_ptr<arrow::Array>>& columns, const ui32 position)
+        : Columns(&columns)
+        , Position(position)
+        , Hash(CalcHash()) {
+    }
+
+    bool operator==(const TMergeKey& other) const {
+        if (Hash != other.Hash) {
+            return false;
+        }
+        AFL_VERIFY(Columns->size() == other.Columns->size());
+        for (ui32 i = 0; i < Columns->size(); ++i) {
+            const arrow::Array& column = *(*Columns)[i];
+            const arrow::Array& otherColumn = *(*other.Columns)[i];
+            const bool isNull = column.IsNull(Position);
+            if (isNull != otherColumn.IsNull(other.Position)) {
+                return false;
+            }
+            if (isNull) {
+                continue;
+            }
+            bool equal = false;
+            ApplyToValue(column, [&](const auto& type, const auto& array) {
+                using TArray = std::decay_t<decltype(array)>;
+                equal = type.GetValue(array, Position) == type.GetValue(static_cast<const TArray&>(otherColumn), other.Position);
+            });
+            if (!equal) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 class TResultsAggregatorWithKeys: public IResourcesAggregator {
 public:
     class TColumnAggregationInfo {
@@ -324,91 +493,117 @@ private:
     const std::vector<TColumnChainInfo> KeyColumns;
     const std::vector<TColumnAggregationInfo> Aggregations;
 
-    TConclusion<std::shared_ptr<arrow::Array>> BuildColumn(const ui32 keysCount, const TColumnAggregationInfo& aggr,
-        const std::vector<std::unique_ptr<TAccessorsCollection>>& sources, const std::vector<std::vector<ui32>>& decoder) const {
-        std::vector<const IChunkedArray*> arrays;
-        std::optional<arrow::Type::type> type;
-        for (ui32 sourceIdx = 0; sourceIdx < sources.size(); ++sourceIdx) {
-            auto& source = sources[sourceIdx];
-            const auto& acc = source->GetAccessorVerified(aggr.GetColumnInfo().GetColumnId());
-            AFL_VERIFY(acc->GetRecordsCount() == decoder[sourceIdx].size())("count", acc->GetRecordsCount());
-            arrays.emplace_back(acc.get());
-            if (!type) {
-                type = acc->GetDataType()->id();
-            } else {
-                AFL_VERIFY(*type == acc->GetDataType()->id());
+    virtual void DoFillResultColumnIds(THashSet<ui32>& columnIds) const override {
+        for (auto&& i : KeyColumns) {
+            columnIds.emplace(i.GetColumnId());
+        }
+        for (auto&& i : Aggregations) {
+            columnIds.emplace(i.GetColumnInfo().GetColumnId());
+        }
+    }
+
+    virtual TConclusionStatus DoCheckSource(const TAccessorsCollection& source, const TAccessorsCollection* sample) const override {
+        std::optional<ui32> recordsCount;
+        const auto checkColumn = [&](const ui32 columnId, const std::optional<EAggregate> aggregationType) {
+            const auto& accessor = source.GetAccessorOptional(columnId);
+            if (!accessor) {
+                return TConclusionStatus::Fail("no aggregation result column " + ::ToString(columnId));
+            }
+            if (!recordsCount) {
+                recordsCount = accessor->GetRecordsCount();
+            } else if (*recordsCount != accessor->GetRecordsCount()) {
+                return TConclusionStatus::Fail("different records count in aggregation result columns");
+            }
+            const auto& dataType = *accessor->GetDataType();
+            if (aggregationType ? !IsMergeableValueType(dataType, *aggregationType) : !IsMergeableKeyType(dataType)) {
+                return TConclusionStatus::Fail("cannot merge aggregation results of type " + dataType.ToString());
+            }
+            if (sample) {
+                const auto& sampleAccessor = sample->GetAccessorOptional(columnId);
+                if (!sampleAccessor || !sampleAccessor->GetDataType()->Equals(dataType)) {
+                    return TConclusionStatus::Fail("different types of aggregation results in column " + ::ToString(columnId));
+                }
+            }
+            return TConclusionStatus::Success();
+        };
+        for (auto&& i : KeyColumns) {
+            auto status = checkColumn(i.GetColumnId(), std::nullopt);
+            if (status.IsFail()) {
+                return status;
             }
         }
+        for (auto&& i : Aggregations) {
+            auto status = checkColumn(i.GetColumnInfo().GetColumnId(), i.GetAggregationType());
+            if (status.IsFail()) {
+                return status;
+            }
+        }
+        return TConclusionStatus::Success();
+    }
+
+    TConclusion<std::shared_ptr<arrow::Array>> BuildColumn(const ui32 keysCount, const TColumnAggregationInfo& aggr,
+        const std::vector<std::unique_ptr<TAccessorsCollection>>& sources, const std::vector<std::vector<ui32>>& decoder) const {
+        std::vector<std::shared_ptr<arrow::Array>> arrays;
+        for (ui32 sourceIdx = 0; sourceIdx < sources.size(); ++sourceIdx) {
+            arrays.emplace_back(sources[sourceIdx]->GetArrayVerified(aggr.GetColumnInfo().GetColumnId()));
+            AFL_VERIFY((ui32)arrays.back()->length() == decoder[sourceIdx].size())("count", arrays.back()->length());
+        }
+        const auto dataType = arrays.front()->type();
         std::shared_ptr<arrow::Array> arrResult;
         TString errorMessage;
-        if (!NArrow::SwitchType(*type, [&](const auto& type) {
+        if (!NArrow::SwitchType(dataType->id(), [&](const auto& type) {
                 using TWrap = std::decay_t<decltype(type)>;
-                using TArrayType = typename TWrap::TArray;
-                std::vector<std::optional<typename TWrap::ValueType>> result;
-                result.resize(keysCount);
-                for (ui32 sourceIdx = 0; sourceIdx < arrays.size(); ++sourceIdx) {
-                    auto& source = arrays[sourceIdx];
-                    auto addr = source->GetChunkSlow(0);
-                    AFL_VERIFY((ui32)addr.GetArray()->length() == decoder[sourceIdx].size());
-                    const auto& sourceDecoder = decoder[sourceIdx];
-                    const auto& arrWithType = *static_cast<const TArrayType*>(addr.GetArray().get());
-                    for (ui32 decoderIdx = 0; decoderIdx < sourceDecoder.size(); ++decoderIdx) {
-                        const typename TWrap::ValueType value = type.GetValue(arrWithType, decoderIdx);
-                        if (!result[sourceDecoder[decoderIdx]]) {
-                            if (!arrWithType.IsNull(decoderIdx)) {
-                                result[sourceDecoder[decoderIdx]] = value;
+                if constexpr (!TWrap::IsAppropriate) {
+                    return false;
+                } else {
+                    using TArrayType = typename TWrap::TArray;
+                    std::vector<std::optional<typename TWrap::ValueType>> result;
+                    result.resize(keysCount);
+                    for (ui32 sourceIdx = 0; sourceIdx < arrays.size(); ++sourceIdx) {
+                        const auto& arrWithType = *static_cast<const TArrayType*>(arrays[sourceIdx].get());
+                        const auto& sourceDecoder = decoder[sourceIdx];
+                        for (ui32 decoderIdx = 0; decoderIdx < sourceDecoder.size(); ++decoderIdx) {
+                            if (arrWithType.IsNull(decoderIdx)) {
+                                continue;
                             }
-                        } else {
-                            switch (aggr.GetAggregationType()) {
-                                case EAggregate::Some:
-                                    break;
-                                case EAggregate::Unspecified:
-                                case EAggregate::Count:
-                                case EAggregate::NumRows:
-                                    AFL_VERIFY(false);
-                                case EAggregate::Sum:
-                                    if constexpr (TWrap::IsCType) {
-                                        *result[sourceDecoder[decoderIdx]] += value;
-                                    }
-                                    if constexpr (TWrap::IsStringView) {
-                                        errorMessage = "cannot sum string views";
-                                        return false;
-                                    }
-                                    break;
-                                case EAggregate::Max:
-                                    if (*result[sourceDecoder[decoderIdx]] < value) {
-                                        result[sourceDecoder[decoderIdx]] = value;
-                                    }
-                                    break;
-                                case EAggregate::Min:
-                                    if (value < *result[sourceDecoder[decoderIdx]]) {
-                                        result[sourceDecoder[decoderIdx]] = value;
-                                    }
-                                    break;
+                            const typename TWrap::ValueType value = type.GetValue(arrWithType, decoderIdx);
+                            auto& accumulator = result[sourceDecoder[decoderIdx]];
+                            if (!accumulator) {
+                                accumulator = value;
+                            } else if (!MergeValue<TWrap>(aggr.GetAggregationType(), *accumulator, value)) {
+                                errorMessage =
+                                    "cannot merge " + ::ToString(aggr.GetAggregationType()) + " results of type " + dataType->ToString();
+                                return false;
                             }
                         }
                     }
-                }
-                auto builder = NArrow::MakeBuilder(arrays.front()->GetDataType());
-                for (auto&& i : result) {
-                    if (!i) {
-                        TStatusValidator::Validate(builder->AppendNull());
-                    } else {
-                        type.AppendValue(*builder, *i);
+                    auto builder = NArrow::MakeBuilder(dataType);
+                    for (auto&& i : result) {
+                        if (!i) {
+                            TStatusValidator::Validate(builder->AppendNull());
+                        } else {
+                            type.AppendValue(*builder, *i);
+                        }
                     }
+                    arrResult = NArrow::FinishBuilder(std::move(builder));
+                    return true;
                 }
-                arrResult = NArrow::FinishBuilder(std::move(builder));
-                return true;
             })) {
-            return TConclusionStatus::Fail(errorMessage);
+            return TConclusionStatus::Fail(errorMessage.empty() ? TString("cannot merge results of type ") + dataType->ToString() : errorMessage);
         }
         return arrResult;
     }
 
     virtual TConclusionStatus DoExecute(
         const std::vector<std::unique_ptr<TAccessorsCollection>>& sources, TAccessorsCollection& collectionResult) const override {
+        AFL_VERIFY(sources.size());
         ui32 reserveCount = 0;
         for (auto&& i : sources) {
+            AFL_VERIFY(i);
+            auto status = CheckSource(*i, sources.front().get());
+            if (status.IsFail()) {
+                return status;
+            }
             reserveCount += i->GetRecordsCountActualVerified();
         }
         ui64 countCapacity = 4096;
@@ -420,54 +615,31 @@ private:
         std::vector<std::vector<ui32>> decoder;
         decoder.resize(sources.size());
         std::vector<std::unique_ptr<arrow::ArrayBuilder>> keyBuilders;
-        std::vector<arrow::Type::type> types;
-        types.resize(KeyColumns.size());
-        keyBuilders.resize(KeyColumns.size());
+        for (auto&& c : KeyColumns) {
+            keyBuilders.emplace_back(NArrow::MakeBuilder(sources.front()->GetAccessorVerified(c.GetColumnId())->GetDataType()));
+        }
         ui32 keysCount = 0;
         {
-            NMiniKQL::TRobinHoodHashFixedMap<TReplaceKeyHashable, ui32> keyToIndex(countCapacity);
+            NMiniKQL::TRobinHoodHashFixedMap<TMergeKey, ui32, std::equal_to<TMergeKey>, TMergeKey::THash> keyToIndex(countCapacity);
             for (ui32 sourceIdx = 0; sourceIdx < sources.size(); ++sourceIdx) {
-                auto& source = sources[sourceIdx];
-                AFL_VERIFY(source);
-                arraysStorage.emplace_back(std::vector<std::shared_ptr<arrow::Array>>());
-                auto& keyArrays = arraysStorage.back();
-                ui32 cIdx = 0;
-                std::optional<ui32> count;
+                auto& keyArrays = arraysStorage.emplace_back();
                 for (auto&& c : KeyColumns) {
-                    auto arr = source->GetArrayVerified(c.GetColumnId());
-                    if (!types[cIdx]) {
-                        types[cIdx] = arr->type()->id();
-                        keyBuilders[cIdx] = NArrow::MakeBuilder(arr->type());
-                    } else {
-                        AFL_VERIFY(types[cIdx] == arr->type()->id());
-                    }
-                    keyArrays.emplace_back(arr);
-                    if (!count) {
-                        count = arr->length();
-                    } else {
-                        AFL_VERIFY(*count == arr->length());
-                    }
-                    ++cIdx;
+                    keyArrays.emplace_back(sources[sourceIdx]->GetArrayVerified(c.GetColumnId()));
+                    AFL_VERIFY(keyArrays.front()->length() == keyArrays.back()->length());
                 }
-                AFL_VERIFY(count);
-                decoder[sourceIdx].resize(*count);
-                TReplaceKeyHashable pos(keyArrays, 0, types);
-                while (!pos.IsFinished()) {
+                const ui32 count = keyArrays.front()->length();
+                decoder[sourceIdx].resize(count);
+                for (ui32 position = 0; position < count; ++position) {
                     bool isNew;
-                    auto* it = keyToIndex.Insert(pos, isNew);
+                    auto* it = keyToIndex.Insert(TMergeKey(keyArrays, position), isNew);
                     if (isNew) {
-                        keyToIndex.RestorePayload(it, keysCount);
+                        keyToIndex.RestorePayload(keyToIndex.GetMutablePayloadPtr(it), keysCount);
                         ++keysCount;
-                        ui32 idx = 0;
-                        for (auto&& k : keyArrays) {
-                            AFL_VERIFY(NArrow::Append(*keyBuilders[idx], types[idx], *k, pos.GetPosition()));
-                            ++idx;
+                        for (ui32 idx = 0; idx < keyArrays.size(); ++idx) {
+                            AFL_VERIFY(NArrow::Append(*keyBuilders[idx], *keyArrays[idx], position));
                         }
                     }
-                    ui32 keyIndex;
-                    keyToIndex.SavePayload(it, keyIndex);
-                    decoder[sourceIdx][pos.GetPosition()] = keyIndex;
-                    pos.Next();
+                    keyToIndex.SavePayload(keyToIndex.GetPayloadPtr(it), decoder[sourceIdx][position]);
                     if (isNew) {
                         keyToIndex.CheckGrow();
                     }

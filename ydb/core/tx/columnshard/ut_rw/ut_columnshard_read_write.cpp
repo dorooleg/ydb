@@ -1630,6 +1630,107 @@ void TestScanResumedByCursorDeduplicates(const TString& readerClassName) {
     UNIT_ASSERT_VALUES_EQUAL(rowsCount, portionsCount + 1);
 }
 
+// Every portion is aggregated by itself, then the shard merges the results of portions. Portions with nulls only
+// give NULL aggregates and a NULL group key, which the merge must neither take for values nor mix with other keys.
+void TestReadAggregateManyPortions(const TString& readerClassName) {
+    TTestBasicRuntime runtime;
+    TTester::Setup(runtime);
+    runtime.GetAppData(0).ColumnShardConfig.SetReaderClassName(readerClassName);
+    runtime.GetAppData(0).ColumnShardConfig.SetDeduplicationEnabled(true);
+    auto csControllerGuard = NKikimr::NYDBTest::TControllers::RegisterCSControllerGuard<TDefaultTestsController>();
+    csControllerGuard->DisableBackground(NKikimr::NYDBTest::ICSController::EBackground::Compaction);
+
+    TActorId sender = runtime.AllocateEdgeActor();
+    CreateTestBootstrapper(runtime, CreateTestTabletInfo(TTestTxConfig::TxTablet0, TTabletTypes::ColumnShard), &CreateColumnShard);
+    {
+        TDispatchOptions options;
+        options.FinalEvents.push_back(TDispatchOptions::TFinalEventCondition(TEvTablet::EvBoot));
+        runtime.DispatchEvents(options);
+    }
+
+    const TestTableDescription table;
+    const ui64 tableId = 1;
+    auto planStep = SetupSchema(runtime, sender, tableId, table);
+
+    // Portions [100, 200) and [300, 400) have NULL level and request_id, the others have values [200, 300) and [400, 500).
+    ui64 writeId = 0;
+    ui64 txId = 100;
+    for (const ui64 begin : { 100, 200, 300, 400 }) {
+        TTestBlobOptions options;
+        options.SameValueColumns = { "resource_type" };
+        if (begin % 200 == 100) {
+            options.NullColumns = { "level", "request_id" };
+        }
+        std::vector<ui64> writeIds;
+        UNIT_ASSERT(WriteData(
+            runtime, sender, ++writeId, tableId, MakeTestBlob({ begin, begin + 100 }, table.Schema, options), table.Schema, true, &writeIds));
+        planStep = ProposeCommit(runtime, sender, ++txId, writeIds);
+        PlanCommit(runtime, sender, planStep, txId);
+    }
+
+    // SELECT min(column), max(column), some(column), count(column) [, keys] FROM t [GROUP BY keys], keys are schema indexes
+    const auto read = [&](const TString& column, const std::vector<ui32>& keys) {
+        NKikimrSSA::TProgram ssa = MakeSelectAggregates(table.GetColumnIds({ column }).front(), keys, false);
+        auto* projection = ssa.AddCommand()->MutableProjection();
+        for (const ui32 id : { 100, 101, 102, 103 }) {
+            projection->AddColumns()->SetId(id);
+        }
+        for (const ui32 key : keys) {
+            projection->AddColumns()->SetId(key + 1);
+        }
+        TString serialized;
+        UNIT_ASSERT(ssa.SerializeToString(&serialized));
+        NKikimrSSA::TOlapProgram program;
+        program.SetProgram(serialized);
+        TString programText;
+        UNIT_ASSERT(program.SerializeToString(&programText));
+
+        TShardReader reader(runtime, TTestTxConfig::TxTablet0, tableId, NOlap::TSnapshot(planStep, txId));
+        // Results of merged portions leave in no key order, so they are merged in unsorted scans only.
+        reader.SetReverse(std::nullopt);
+        reader.SetProgram(programText);
+        auto batch = reader.ReadAll();
+        UNIT_ASSERT_C(reader.IsCorrectlyFinished(), readerClassName << ", " << column);
+        UNIT_ASSERT(batch);
+        return batch;
+    };
+
+    {
+        auto batch = read("level", {});
+        UNIT_ASSERT_VALUES_EQUAL_C(batch->num_rows(), 1, readerClassName);
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("100"), { 200 }));
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("101"), { 499 }));
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("103"), { 200 }));
+    }
+    {
+        auto batch = read("request_id", {});
+        UNIT_ASSERT_VALUES_EQUAL_C(batch->num_rows(), 1, readerClassName);
+        UNIT_ASSERT_VALUES_EQUAL(std::static_pointer_cast<arrow::StringArray>(batch->GetColumnByName("100"))->GetString(0), "200");
+        UNIT_ASSERT_VALUES_EQUAL(std::static_pointer_cast<arrow::StringArray>(batch->GetColumnByName("101"))->GetString(0), "499");
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("103"), { 200 }));
+    }
+    {
+        // GROUP BY resource_type: one group, every portion has it
+        auto batch = read("level", { 1 });
+        UNIT_ASSERT_VALUES_EQUAL_C(batch->num_rows(), 1, readerClassName);
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("100"), { 200 }));
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("101"), { 499 }));
+        UNIT_ASSERT(CheckIntValues(batch->GetColumnByName("103"), { 200 }));
+    }
+    {
+        // GROUP BY level: 200 groups with one row each and the NULL group of both portions with nulls
+        auto batch = read("message", { 4 });
+        UNIT_ASSERT_VALUES_EQUAL_C(batch->num_rows(), 201, readerClassName);
+        auto keys = batch->GetColumnByName("level");
+        UNIT_ASSERT(keys);
+        UNIT_ASSERT_VALUES_EQUAL(keys->null_count(), 1);
+        auto counts = std::static_pointer_cast<arrow::UInt64Array>(batch->GetColumnByName("103"));
+        for (i64 i = 0; i < batch->num_rows(); ++i) {
+            UNIT_ASSERT_VALUES_EQUAL(counts->Value(i), keys->IsNull(i) ? 200u : 1u);
+        }
+    }
+}
+
 // Two rows per portion: {1,20}, {2,19} ... {10,11}. Every key once. Sorted by first key the portions
 // go 1,2..10; sorted by last key they go 10..2,1 -- so slot 3 is a different portion in each order.
 NOlap::TSnapshot WriteOverlappingPortions(
@@ -2828,6 +2929,14 @@ Y_UNIT_TEST_SUITE(TColumnShardTestReadWrite) {
         TestScanResumedByCursorDeduplicates("SIMPLE");
     }
 
+    Y_UNIT_TEST(ReadAggregateManyPortions) {
+        TestReadAggregateManyPortions("TRIVIAL");
+    }
+
+    Y_UNIT_TEST(ReadAggregateManyPortionsSimpleReader) {
+        TestReadAggregateManyPortions("SIMPLE");
+    }
+
     Y_UNIT_TEST(ScanResumedByCursorWithoutSorting) {
         TestScanResumedByCursorWithoutSorting("TRIVIAL");
     }
@@ -3183,9 +3292,9 @@ Y_UNIT_TEST_SUITE(TColumnShardTestReadWrite) {
         for (ui32 key = 0; key < schema.size() - 1; ++key) {
             Cerr << "-- group by key: " << key << ", " << key + 1 << "\n";
             if (sameValTypes.contains(schema[key].GetType().GetTypeId()) && sameValTypes.contains(schema[key + 1].GetType().GetTypeId())) {
-                TestReadAggregate(schema, testBlob, SimpleReader, (key % 2), { key, key + 1 }, resGrouped, resFiltered);
+                TestReadAggregate(schema, testBlob, (key % 2), SimpleReader, { key, key + 1 }, resGrouped, resFiltered);
             } else {
-                TestReadAggregate(schema, testBlob, SimpleReader, (key % 2), { key, key + 1 }, resDefault, resFiltered);
+                TestReadAggregate(schema, testBlob, (key % 2), SimpleReader, { key, key + 1 }, resDefault, resFiltered);
             }
         }
         for (ui32 key = 0; key < schema.size() - 2; ++key) {
